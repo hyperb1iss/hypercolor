@@ -35,6 +35,50 @@ fn sample_template(id: &str, origin: ComponentOrigin) -> ComponentTemplate {
 }
 
 #[test]
+fn tl_fan_addresses_follow_two_separate_side_arcs() {
+    let mut registry = ComponentRegistry::new();
+    registry.load_builtins().expect("load built-ins");
+    let template = registry.get("lian-li-tl-fan").expect("TL fan template");
+    let LedTopology::Custom { positions } = &template.topology else {
+        panic!("TL lighting uses two side arcs, not a continuous ring");
+    };
+    assert!(template.led_mapping.is_none());
+    let expected: [(u8, u8); 26] = [
+        (0, 9),
+        (1, 10),
+        (2, 11),
+        (3, 12),
+        (4, 12),
+        (5, 12),
+        (6, 12),
+        (7, 12),
+        (8, 12),
+        (9, 12),
+        (10, 11),
+        (11, 10),
+        (12, 9),
+        (0, 3),
+        (1, 2),
+        (2, 1),
+        (3, 0),
+        (4, 0),
+        (5, 0),
+        (6, 0),
+        (7, 0),
+        (8, 0),
+        (9, 0),
+        (10, 1),
+        (11, 2),
+        (12, 3),
+    ];
+    assert_eq!(positions.len(), expected.len());
+    for (position, (x, y)) in positions.iter().zip(expected) {
+        assert!((position.x - f32::from(x) / 12.0).abs() < 0.000_001);
+        assert!((position.y - f32::from(y) / 12.0).abs() < 0.000_001);
+    }
+}
+
+#[test]
 fn load_builtins_embeds_generated_catalog() {
     let mut registry = ComponentRegistry::new();
     let loaded = registry.load_builtins().expect("load built-ins");

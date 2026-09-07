@@ -27,6 +27,7 @@ const UNITS_ROOT: &str = "/home/test/.local/lib/hypercolor/units";
 
 #[derive(Debug, Clone)]
 struct FakeExecutor {
+    launcher_discovery: Option<fn(&mut FakeSystemd)>,
     active_path: PathBuf,
     launcher: LinuxExactEntry,
     launcher_bytes: Vec<u8>,
@@ -76,6 +77,7 @@ struct FakeSystemd {
 impl FakeExecutor {
     fn absent(active_path: PathBuf, daemon_digest: String) -> Self {
         Self {
+            launcher_discovery: None,
             active_path,
             launcher: LinuxExactEntry::Absent,
             launcher_bytes: Vec::new(),
@@ -335,6 +337,14 @@ impl LinuxInstallExecutor for FakeExecutor {
             self.launcher = LinuxExactEntry::Absent;
             self.launcher_bytes.clear();
         }
+        if let Some(discover) = self.launcher_discovery
+            && !matches!(self.launcher, LinuxExactEntry::Absent)
+        {
+            self.systemd.load = "loaded";
+            FRAGMENT.clone_into(&mut self.systemd.fragment);
+            self.systemd.exec_start = launcher_exec(&self.launcher_bytes);
+            discover(&mut self.systemd);
+        }
         Self::finish_effect(fail_after)
     }
 
@@ -464,8 +474,8 @@ impl LinuxInstallExecutor for FakeExecutor {
             .map_or(VERSION, String::as_str);
         let value = match path {
             "/health" => json!({"status":"healthy","version":version}),
-            "/api/v1/server" => {
-                json!({"data":{"instance_id":"local","instance_name":"Hypercolor","version":version}})
+            "/api/v1/system" => {
+                json!({"data":{"identity":{"instance_id":"local","instance_name":"Hypercolor","version":version},"status":null}})
             }
             _ => unreachable!("fixed proof endpoint"),
         };
@@ -667,6 +677,63 @@ fn first_install_enables_starts_and_proves_exact_owner() {
             executor.layout[&item],
             LinuxExactEntry::Symlink { .. }
         ));
+    }
+}
+
+#[test]
+fn first_install_accepts_exact_lazy_launcher_discovery_and_still_reloads() {
+    let fixture = Fixture::new();
+    let mut executor =
+        FakeExecutor::absent(fixture.store.active_path(), fixture.daemon_digest.clone());
+    executor.launcher_discovery = Some(|_| {});
+    let mut platform =
+        LinuxInstallPlatform::new(executor, config(), []).expect("lazy discovery platform");
+    let mut lock = fixture.store.acquire_lock().expect("install lock");
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .install_with_lock(
+            fixture.request(InstallTargetPolicy::EnableOnFirstInstall),
+            &mut lock,
+        )
+        .expect("query-discovered inactive candidate is an exact launcher checkpoint");
+    assert!(format!("{outcome:?}").contains("Committed"));
+    let executor = platform.into_executor();
+    assert!(executor.effects.contains(&"manager".to_owned()));
+    assert!(executor.systemd.active);
+    assert!(executor.systemd.enabled);
+    assert_eq!(executor.http_calls, 2);
+}
+
+#[test]
+fn lazy_launcher_discovery_rejects_foreign_or_running_manager_state() {
+    let mutations: [fn(&mut FakeSystemd); 5] = [
+        |state| state.fragment = "/foreign.service".to_owned(),
+        |state| state.exec_start = "/foreign-daemon".to_owned(),
+        |state| {
+            state.active = true;
+            state.pid = 99;
+        },
+        |state| state.pid = 99,
+        |state| state.enabled = true,
+    ];
+    for mutate in mutations {
+        let fixture = Fixture::new();
+        let mut executor =
+            FakeExecutor::absent(fixture.store.active_path(), fixture.daemon_digest.clone());
+        executor.launcher_discovery = Some(mutate);
+        let mut platform =
+            LinuxInstallPlatform::new(executor, config(), []).expect("foreign discovery platform");
+        let mut lock = fixture.store.acquire_lock().expect("install lock");
+        assert!(
+            InstallCoordinator::new(&fixture.store, &mut platform)
+                .install_with_lock(
+                    fixture.request(InstallTargetPolicy::EnableOnFirstInstall),
+                    &mut lock
+                )
+                .is_err()
+        );
+        let executor = platform.into_executor();
+        assert!(!executor.effects.contains(&"manager".to_owned()));
+        assert_eq!(executor.http_calls, 0);
     }
 }
 

@@ -16,6 +16,7 @@ use crate::components::device_card::{
 };
 use crate::components::device_driver_controls::DeviceDriverControls;
 use crate::components::device_pairing_modal::needs_pairing;
+use crate::components::mounting_select::MountingSelect;
 use crate::icons::*;
 use crate::toasts;
 use crate::vendors::{VendorMark, VendorMarkSize};
@@ -71,6 +72,7 @@ pub fn DeviceDetail(
                 name: Some(next_name.clone()),
                 enabled: None,
                 brightness: None,
+                display_rotation: None,
             };
             if api::update_device(&id, &req).await.is_ok()
                 && let Ok(mut layout) = api::fetch_active_layout().await
@@ -110,6 +112,7 @@ pub fn DeviceDetail(
                 name: None,
                 enabled: Some(!currently_active),
                 brightness: None,
+                display_rotation: None,
             };
             match api::update_device(&id, &req).await {
                 Ok(_) => {
@@ -137,6 +140,7 @@ pub fn DeviceDetail(
                     name: None,
                     enabled: None,
                     brightness: Some(brightness),
+                    display_rotation: None,
                 };
                 if let Err(error) = api::update_device(&id, &req).await {
                     toasts::toast_error(&format!("Brightness failed: {error}"));
@@ -203,6 +207,8 @@ pub fn DeviceDetail(
                 let last_error = dev.auth.as_ref().and_then(|a| a.last_error.clone());
                 let dev_name_for_edit = dev.name.clone();
                 let push_brightness = push_brightness.clone();
+                let mount_device_id = dev.id.clone();
+                let mount_rotation = dev.display_rotation;
                 let hero_bg = format!(
                     "background: \
                      radial-gradient(ellipse at 15% 0%, rgba({rgb_for_border}, 0.32) 0%, transparent 55%), \
@@ -450,6 +456,13 @@ pub fn DeviceDetail(
                                     {move || format!("{}%", device_brightness.get())}
                                 </span>
                             </div>
+
+                            // ── Mounting (display-capable devices only) ────────
+                            <MountingSelect
+                                device_id=Signal::derive(move || Some(mount_device_id.clone()))
+                                rotation=Signal::derive(move || mount_rotation)
+                                class="flex-1 border border-edge-subtle bg-surface-sunken/55 px-2.5 py-1.5 text-[11px] text-fg-primary"
+                            />
                         </div>
 
                         <div class="relative px-4 py-2 bg-surface-overlay/10 border-t border-edge-subtle flex items-center gap-2">

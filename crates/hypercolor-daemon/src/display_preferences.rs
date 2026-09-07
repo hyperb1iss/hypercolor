@@ -14,7 +14,6 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::BlendMode;
-use hypercolor_types::scene::DisplayRotation;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
@@ -44,9 +43,6 @@ pub struct DisplayPreference {
     pub blend_mode: BlendMode,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
-    /// How the screen is mounted.
-    #[serde(default)]
-    pub rotation: DisplayRotation,
 }
 
 /// JSON-file-backed store of per-display default faces.
@@ -577,7 +573,6 @@ mod tests {
             controls: HashMap::new(),
             blend_mode: BlendMode::Alpha,
             opacity: 1.0,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
         }
     }
 
@@ -637,7 +632,6 @@ mod tests {
                     controls: HashMap::new(),
                     blend_mode: BlendMode::Alpha,
                     opacity: 1.0,
-                    rotation: hypercolor_types::scene::DisplayRotation::default(),
                 },
             )
             .expect("preference should persist");

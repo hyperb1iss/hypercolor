@@ -151,7 +151,6 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                     device_id: display_target.device_id,
                     blend_mode: display_target.blend_mode,
                     opacity: display_target.opacity,
-                    rotation: display_target.rotation,
                     finalized: true,
                 },
             });
@@ -455,7 +454,6 @@ mod tests {
                 device_id,
                 blend_mode: BlendMode::Replace,
                 opacity: 1.0,
-                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
             empty_direct_shell: false,
         };
@@ -465,7 +463,6 @@ mod tests {
                 device_id,
                 blend_mode: BlendMode::Alpha,
                 opacity: 0.88,
-                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
             empty_direct_shell: false,
         };
@@ -487,7 +484,6 @@ mod tests {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
         };
         let route = display_route(device_id, 1.0);
         let mut other_route = route.clone();
@@ -771,7 +767,6 @@ mod tests {
                 device_id: display_target.device_id,
                 blend_mode: display_target.blend_mode,
                 opacity: display_target.opacity,
-                rotation: hypercolor_types::scene::DisplayRotation::default(),
                 finalized,
             },
         }

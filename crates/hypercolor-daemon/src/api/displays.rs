@@ -69,6 +69,7 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
             width: surface.width,
             height: surface.height,
             circular: surface.circular,
+            rotation: tracked.user_settings.display_rotation,
             descriptor,
         });
     }
@@ -208,18 +209,11 @@ pub async fn set_display_face(
     };
 
     let composition_explicit = body.blend_mode.is_some() || body.opacity.is_some();
-    // A face change does not move the screen: an omitted rotation keeps the
-    // one stored with the display.
-    let rotation = match body.rotation {
-        Some(rotation) => rotation,
-        None => state.domains.display.default_face_rotation(device_id).await,
-    };
     // Without an explicit composition the face blends over the live effect
     // instead of replacing it.
     let display_target = normalize_display_face_target(DisplayFaceTarget {
         blend_mode: body.blend_mode.unwrap_or(BlendMode::Alpha),
         device_id,
-        rotation,
         opacity: body.opacity.unwrap_or(1.0),
     });
 
@@ -300,11 +294,9 @@ pub async fn patch_display_face_composition(
         Err(error) => return error.into_response(),
     };
 
-    if body.blend_mode.is_none() && body.opacity.is_none() && body.rotation.is_none() {
-        return DomainError::validation(
-            "composition payload must include blend_mode, opacity, or rotation",
-        )
-        .into_response();
+    if body.blend_mode.is_none() && body.opacity.is_none() {
+        return DomainError::validation("composition payload must include blend_mode or opacity")
+            .into_response();
     }
 
     let layers = state.domains.display.face_layers(device_id).await;
@@ -312,7 +304,7 @@ pub async fn patch_display_face_composition(
         if let Err(error) = state
             .domains
             .display
-            .patch_default_composition(device_id, body.blend_mode, body.opacity, body.rotation)
+            .patch_default_composition(device_id, body.blend_mode, body.opacity)
             .await
         {
             return error.into_response();
@@ -334,7 +326,6 @@ pub async fn patch_display_face_composition(
             zone_id: zone.id,
             blend_mode: body.blend_mode,
             opacity: body.opacity,
-            rotation: body.rotation,
         },
     )
     .await
@@ -371,7 +362,14 @@ pub async fn delete_display_face(
 ) -> Response {
     let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
-        Err(error) => return error.into_response(),
+        // A stored default outlives its display (re-fingerprinted, or a
+        // simulator since removed). A bare id that still keys the
+        // preference store clears cleanly rather than leaving an orphan
+        // no client can reach.
+        Err(error) => match orphaned_default_face_id(&state, &device, query.scope).await {
+            Some(id) => id,
+            None => return error.into_response(),
+        },
     };
 
     if query.scope == DisplayFaceScope::Default {
@@ -593,6 +591,25 @@ async fn resolve_display_device_id_or_error(
         )));
     }
     Ok(device_id)
+}
+
+/// The device id behind a default-scope delete whose display is no
+/// longer registered, when the preference store still holds it.
+async fn orphaned_default_face_id(
+    state: &AppState,
+    raw: &str,
+    scope: DisplayFaceScope,
+) -> Option<DeviceId> {
+    if scope != DisplayFaceScope::Default {
+        return None;
+    }
+    let device_id = raw.trim().parse::<DeviceId>().ok()?;
+    state
+        .domains
+        .display
+        .has_default_face(device_id)
+        .await
+        .then_some(device_id)
 }
 
 async fn current_display_face_assignment(

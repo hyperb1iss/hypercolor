@@ -347,8 +347,23 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
             expected.autostart_enabled,
         )
         .is_ok_and(|prior| systemd_equivalent(&inspection.systemd, &prior));
+        // Querying a newly published unit can load it before daemon-reload.
+        // Its exact inactive candidate identity is valid only after publication.
+        let discovered_candidate_launcher = checkpoint == PlatformCheckpoint::CandidateLauncher
+            && expected.running_unit.is_none()
+            && record.candidate_launcher.is_some()
+            && systemd_equivalent(
+                &inspection.systemd,
+                &candidate_systemd(
+                    &record,
+                    &self.config.direct_fragment_path,
+                    false,
+                    expected.autostart_enabled,
+                ),
+            );
         if !systemd_equivalent(&inspection.systemd, &expected_systemd)
             && !early_rollback_prior_manager
+            && !discovered_candidate_launcher
         {
             return Ok(false);
         }

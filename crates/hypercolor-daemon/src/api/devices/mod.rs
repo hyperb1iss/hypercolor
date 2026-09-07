@@ -160,7 +160,7 @@ pub async fn list_devices(
             &state,
             &tracked.info,
             &tracked.state,
-            tracked.user_settings.brightness,
+            &tracked.user_settings,
             layout_device_id,
             metadata.as_ref(),
         )
@@ -230,7 +230,7 @@ pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         &state,
         &tracked.info,
         &tracked.state,
-        tracked.user_settings.brightness,
+        &tracked.user_settings,
         layout_device_id,
         metadata.as_ref(),
     )
@@ -252,11 +252,28 @@ pub async fn update_device(
         Err(error) => return error.into_response(),
     };
 
-    if body.name.is_none() && body.enabled.is_none() && body.brightness.is_none() {
+    if body.name.is_none()
+        && body.enabled.is_none()
+        && body.brightness.is_none()
+        && body.display_rotation.is_none()
+    {
         return DomainError::validation(
-            "At least one field must be provided: name, enabled, or brightness",
+            "At least one field must be provided: name, enabled, brightness, or display_rotation",
         )
         .into_response();
+    }
+    if body.display_rotation.is_some() {
+        let is_display = state
+            .device_registry
+            .get(&device_id)
+            .await
+            .is_some_and(|tracked| tracked.info.display_surface().is_some());
+        if !is_display {
+            return DomainError::validation(
+                "display_rotation applies only to display-capable devices",
+            )
+            .into_response();
+        }
     }
 
     let normalized_name = match body.name {
@@ -301,6 +318,7 @@ pub async fn update_device(
             normalized_name,
             body.enabled,
             normalized_brightness,
+            body.display_rotation,
         )
         .await
     else {
@@ -348,7 +366,7 @@ pub async fn update_device(
         &state,
         &updated.info,
         &updated.state,
-        updated.user_settings.brightness,
+        &updated.user_settings,
         layout_device_id,
         metadata.as_ref(),
     )
@@ -833,7 +851,7 @@ pub(super) async fn summarize_device_for_response(
     state: &AppState,
     info: &DeviceInfo,
     device_state: &DeviceState,
-    brightness: f32,
+    settings: &DeviceUserSettings,
     layout_device_id: String,
     metadata: Option<&HashMap<String, String>>,
 ) -> Result<DeviceSummary, hypercolor_driver_api::DriverError> {
@@ -844,7 +862,11 @@ pub(super) async fn summarize_device_for_response(
         origin: info.origin.clone(),
         presentation: crate::network::device_presentation(state.driver_registry().as_ref(), info),
         status: device_state.variant_name().to_lowercase(),
-        brightness: brightness_percent(brightness),
+        brightness: brightness_percent(settings.brightness),
+        display_rotation: info
+            .display_surface()
+            .is_some()
+            .then_some(settings.display_rotation),
         firmware_version: info.firmware_version.clone(),
         connection: device_connection_summary(info, metadata),
         total_leds: info.total_led_count(),
@@ -880,7 +902,7 @@ pub(super) async fn refreshed_device_summary(
             state,
             &tracked.info,
             &tracked.state,
-            tracked.user_settings.brightness,
+            &tracked.user_settings,
             layout_device_id,
             metadata.as_ref(),
         )
@@ -970,6 +992,7 @@ pub(crate) async fn persist_device_settings_for(
                 name: settings.name.clone(),
                 disabled: !settings.enabled,
                 brightness: settings.brightness,
+                rotation: settings.display_rotation,
             },
         )
         .await

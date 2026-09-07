@@ -70,6 +70,7 @@ fn sample_device_summary(name: &str, segments: Vec<api::SegmentSummary>) -> api:
         },
         status: "connected".to_owned(),
         brightness: 100,
+        display_rotation: None,
         firmware_version: None,
         connection: api::DeviceConnectionSummary {
             transport: "usb".to_owned(),

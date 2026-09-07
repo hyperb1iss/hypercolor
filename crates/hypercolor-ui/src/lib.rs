@@ -26,6 +26,7 @@ pub mod control_value_json;
 pub mod device_event_logic;
 pub mod device_metrics;
 pub mod display_preview_state;
+pub mod display_rotation;
 pub mod display_utils;
 pub mod driver_settings;
 pub mod effect_search;
@@ -67,6 +68,7 @@ pub use extensions::{
     UiViewBuilder, parent_route, ui_route,
 };
 pub use nav::{NavEntry, NavExtensionItems, nav_model, nav_shortcut_path};
+pub use route_ui::UiMount;
 
 // Re-export the shared HTTP client helpers (envelope unwrap + auth + Trunk
 // dev-proxy) so an embedder can call the daemon's local API through the same

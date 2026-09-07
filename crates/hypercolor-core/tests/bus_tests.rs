@@ -471,7 +471,6 @@ fn retain_zone_canvases_prunes_stale_streams() {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -481,7 +480,6 @@ fn retain_zone_canvases_prunes_stale_streams() {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -513,7 +511,6 @@ fn retain_zone_canvases_and_collect_senders_reuses_kept_streams() {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -523,7 +520,6 @@ fn retain_zone_canvases_and_collect_senders_reuses_kept_streams() {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -554,7 +550,6 @@ fn display_zone_targets_roundtrip_and_revision() {
             device_id,
             blend_mode: BlendMode::Screen,
             opacity: 0.6,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -568,7 +563,6 @@ fn display_zone_targets_roundtrip_and_revision() {
             device_id,
             blend_mode: BlendMode::Screen,
             opacity: 0.6,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         })
     );
@@ -605,7 +599,6 @@ fn retain_display_zone_targets_prunes_stale_routes() {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -615,7 +608,6 @@ fn retain_display_zone_targets_prunes_stale_routes() {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );

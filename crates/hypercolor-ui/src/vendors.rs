@@ -605,7 +605,7 @@ pub fn VendorMark(
                     when=move || image_failed.get()
                     fallback=move || view! {
                         <img
-                            src=image_path
+                            src=crate::route_ui::asset_href(image_path)
                             alt=display_name
                             style=img_style.clone()
                             on:error=move |_| image_failed.set(true)

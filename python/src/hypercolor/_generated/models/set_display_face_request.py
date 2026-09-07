@@ -8,7 +8,6 @@ from attrs import field as _attrs_field
 
 from ..models.blend_mode import BlendMode
 from ..models.display_face_scope import DisplayFaceScope
-from ..models.display_rotation import DisplayRotation
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -27,7 +26,6 @@ class SetDisplayFaceRequest:
         blend_mode (BlendMode | None | Unset):
         controls (SetDisplayFaceRequestControls | Unset):
         opacity (float | None | Unset):
-        rotation (DisplayRotation | None | Unset):
         scope (DisplayFaceScope | Unset): Which assignment layer a face operation targets (spec 69 §3.6).
 
             `default` persists across scenes (the display's own face); `scene`
@@ -39,7 +37,6 @@ class SetDisplayFaceRequest:
     blend_mode: BlendMode | None | Unset = UNSET
     controls: SetDisplayFaceRequestControls | Unset = UNSET
     opacity: float | None | Unset = UNSET
-    rotation: DisplayRotation | None | Unset = UNSET
     scope: DisplayFaceScope | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -64,14 +61,6 @@ class SetDisplayFaceRequest:
         else:
             opacity = self.opacity
 
-        rotation: None | str | Unset
-        if isinstance(self.rotation, Unset):
-            rotation = UNSET
-        elif isinstance(self.rotation, DisplayRotation):
-            rotation = self.rotation.value
-        else:
-            rotation = self.rotation
-
         scope: str | Unset = UNSET
         if not isinstance(self.scope, Unset):
             scope = self.scope.value
@@ -89,8 +78,6 @@ class SetDisplayFaceRequest:
             field_dict["controls"] = controls
         if opacity is not UNSET:
             field_dict["opacity"] = opacity
-        if rotation is not UNSET:
-            field_dict["rotation"] = rotation
         if scope is not UNSET:
             field_dict["scope"] = scope
 
@@ -138,23 +125,6 @@ class SetDisplayFaceRequest:
 
         opacity = _parse_opacity(d.pop("opacity", UNSET))
 
-        def _parse_rotation(data: object) -> DisplayRotation | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                rotation_type_1 = DisplayRotation(data)
-
-                return rotation_type_1
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            return cast(DisplayRotation | None | Unset, data)
-
-        rotation = _parse_rotation(d.pop("rotation", UNSET))
-
         _scope = d.pop("scope", UNSET)
         scope: DisplayFaceScope | Unset
         if isinstance(_scope, Unset):
@@ -167,7 +137,6 @@ class SetDisplayFaceRequest:
             blend_mode=blend_mode,
             controls=controls,
             opacity=opacity,
-            rotation=rotation,
             scope=scope,
         )
 

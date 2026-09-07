@@ -24,6 +24,7 @@ use crate::api::zones::ZoneOutcome;
 use crate::app::{CapabilitiesContext, DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::layout_builder::{LayoutEditorContext, LayoutWorkspace, ZoneCanvasActions};
+use crate::components::mounting_select::MountingSelect;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::display_preview_state::use_display_preview_subscription;
@@ -32,7 +33,9 @@ use crate::icons::*;
 use crate::toasts;
 use crate::ws::messages::zone_has_degraded_layer;
 
-use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_zones};
+use super::surface::{
+    Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, now_playing, surfaces_from_zones,
+};
 use super::zone_controls::unassigned_behavior_label;
 use super::{StudioContext, hidden_outputs_storage_key};
 
@@ -202,6 +205,11 @@ fn SurfaceStage() -> impl IntoView {
             .map(|display| format!("{}×{}", display.width, display.height))
             .unwrap_or_else(|| "—".to_owned())
     });
+    // The screen's mount is a device setting, surfaced here so a panel
+    // installed upside down is fixed where its preview is visible.
+    let mount_device_id = Signal::derive(move || selected_display.get().map(|display| display.id));
+    let mount_rotation =
+        Signal::derive(move || selected_display.get().map(|display| display.rotation));
 
     view! {
         <div class="flex h-full flex-col bg-surface-sunken/20">
@@ -211,6 +219,11 @@ fn SurfaceStage() -> impl IntoView {
                     if is_screen.get() {
                         view! {
                             <div class="flex items-center gap-2">
+                                <MountingSelect
+                                    device_id=mount_device_id
+                                    rotation=mount_rotation
+                                    class="border border-edge-subtle/60 bg-surface-overlay/40 px-2.5 py-1 text-[11px] text-fg-secondary"
+                                />
                                 <span class=label_class(
                                     LabelSize::Micro,
                                     LabelTone::Default,
@@ -221,7 +234,7 @@ fn SurfaceStage() -> impl IntoView {
                                         .map(|display| {
                                             view! {
                                                 <a
-                                                    href=display_preview_shell_url(&display.id)
+                                                    href=crate::route_ui::route_href(&display_preview_shell_url(&display.id))
                                                     target="_blank"
                                                     rel="noopener"
                                                     class="rounded-md p-1 text-fg-tertiary transition-colors hover:text-fg-primary"
@@ -418,12 +431,19 @@ fn ZoneCanvasBar() -> impl IntoView {
 #[component]
 fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
-    let label = move || {
-        surface
+    // A Screen painting its stored default names that face; the pill
+    // says it is the display's default rather than a layer of this scene.
+    let playing = Memo::new(move |_| {
+        let surface = surface.get();
+        let default_face = studio
+            .screen_face
             .get()
-            .and_then(|surface| surface.top_layer)
-            .unwrap_or_else(|| "No layers".to_owned())
-    };
+            .filter(|face| face.live_scope == api::DisplayFaceScope::Default)
+            .map(|face| face.effect.name);
+        now_playing(surface.as_ref(), default_face.as_deref())
+    });
+    let label = move || playing.get().label;
+    let is_default_face = move || playing.get().is_default_face;
     view! {
         <button
             type="button"
@@ -440,6 +460,15 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
             <span class="max-w-[200px] truncate text-[12px] font-medium text-fg-secondary group-hover:text-fg-primary">
                 {label}
             </span>
+            <Show when=is_default_face>
+                <span
+                    class="rounded-full border px-1.5 py-px text-[9px] font-semibold uppercase tracking-[0.14em]"
+                    style="border-color: rgba(225, 53, 255, 0.35); color: rgba(225, 53, 255, 0.85)"
+                    title="The display's default face, shown in every scene without its own face layer"
+                >
+                    "Default"
+                </span>
+            </Show>
             <Icon
                 icon=LuChevronRight
                 width="12px"

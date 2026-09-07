@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.display_rotation import DisplayRotation
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ class DeviceSummary:
         attachments (DeviceComponentsResponse | None | Unset):
         auth (DeviceAuthSummary | None | Unset):
         connection (DeviceConnectionSummary | Unset): Transport details for one device.
+        display_rotation (DisplayRotation | None | Unset):
         firmware_version (None | str | Unset):
         segments (list[SegmentSummary] | Unset):
     """
@@ -51,6 +53,7 @@ class DeviceSummary:
     attachments: DeviceComponentsResponse | None | Unset = UNSET
     auth: DeviceAuthSummary | None | Unset = UNSET
     connection: DeviceConnectionSummary | Unset = UNSET
+    display_rotation: DisplayRotation | None | Unset = UNSET
     firmware_version: None | str | Unset = UNSET
     segments: list[SegmentSummary] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -95,6 +98,14 @@ class DeviceSummary:
         if not isinstance(self.connection, Unset):
             connection = self.connection.to_dict()
 
+        display_rotation: None | str | Unset
+        if isinstance(self.display_rotation, Unset):
+            display_rotation = UNSET
+        elif isinstance(self.display_rotation, DisplayRotation):
+            display_rotation = self.display_rotation.value
+        else:
+            display_rotation = self.display_rotation
+
         firmware_version: None | str | Unset
         if isinstance(self.firmware_version, Unset):
             firmware_version = UNSET
@@ -128,6 +139,8 @@ class DeviceSummary:
             field_dict["auth"] = auth
         if connection is not UNSET:
             field_dict["connection"] = connection
+        if display_rotation is not UNSET:
+            field_dict["display_rotation"] = display_rotation
         if firmware_version is not UNSET:
             field_dict["firmware_version"] = firmware_version
         if segments is not UNSET:
@@ -202,6 +215,23 @@ class DeviceSummary:
         else:
             connection = DeviceConnectionSummary.from_dict(_connection)
 
+        def _parse_display_rotation(data: object) -> DisplayRotation | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                display_rotation_type_1 = DisplayRotation(data)
+
+                return display_rotation_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(DisplayRotation | None | Unset, data)
+
+        display_rotation = _parse_display_rotation(d.pop("display_rotation", UNSET))
+
         def _parse_firmware_version(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -232,6 +262,7 @@ class DeviceSummary:
             attachments=attachments,
             auth=auth,
             connection=connection,
+            display_rotation=display_rotation,
             firmware_version=firmware_version,
             segments=segments,
         )

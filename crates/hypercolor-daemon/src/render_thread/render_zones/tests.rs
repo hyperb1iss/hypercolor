@@ -314,7 +314,6 @@ fn sample_display_zone(width: u32, height: u32) -> Zone {
         device_id: hypercolor_types::device::DeviceId::new(),
         blend_mode: hypercolor_types::layer::BlendMode::Replace,
         opacity: 1.0,
-        rotation: hypercolor_types::scene::DisplayRotation::default(),
     });
     zone.role = ZoneRole::Display;
     zone
@@ -330,7 +329,6 @@ fn sample_zone_canvas_frame(
             device_id: display_target.device_id,
             blend_mode: display_target.blend_mode,
             opacity: display_target.opacity,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized,
         },
     }

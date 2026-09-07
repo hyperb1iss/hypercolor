@@ -6,6 +6,9 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.display_rotation import DisplayRotation
+from ..types import UNSET, Unset
+
 if TYPE_CHECKING:
     from ..models.display_descriptor import DisplayDescriptor
 
@@ -26,6 +29,9 @@ class DisplaySummary:
         name (str):
         vendor (str):
         width (int):
+        rotation (DisplayRotation | Unset): Quarter turns applied to everything drawn on a display. A mounting
+            fact about the panel, stored with the device's user settings so it
+            holds across scenes, faces, and media layers alike.
     """
 
     circular: bool
@@ -36,6 +42,7 @@ class DisplaySummary:
     name: str
     vendor: str
     width: int
+    rotation: DisplayRotation | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -55,6 +62,10 @@ class DisplaySummary:
 
         width = self.width
 
+        rotation: str | Unset = UNSET
+        if not isinstance(self.rotation, Unset):
+            rotation = self.rotation.value
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -69,6 +80,8 @@ class DisplaySummary:
                 "width": width,
             }
         )
+        if rotation is not UNSET:
+            field_dict["rotation"] = rotation
 
         return field_dict
 
@@ -93,6 +106,13 @@ class DisplaySummary:
 
         width = d.pop("width")
 
+        _rotation = d.pop("rotation", UNSET)
+        rotation: DisplayRotation | Unset
+        if isinstance(_rotation, Unset):
+            rotation = UNSET
+        else:
+            rotation = DisplayRotation(_rotation)
+
         display_summary = cls(
             circular=circular,
             descriptor=descriptor,
@@ -102,6 +122,7 @@ class DisplaySummary:
             name=name,
             vendor=vendor,
             width=width,
+            rotation=rotation,
         )
 
         display_summary.additional_properties = d

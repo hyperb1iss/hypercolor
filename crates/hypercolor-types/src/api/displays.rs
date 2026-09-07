@@ -47,6 +47,9 @@ pub struct DisplaySummary {
     pub width: u32,
     pub height: u32,
     pub circular: bool,
+    /// How the panel is mounted; everything drawn on it turns to match.
+    #[serde(default)]
+    pub rotation: DisplayRotation,
     /// Full surface description (shape, safe area, fps, pixel format) —
     /// the same descriptor injected into face pages.
     pub descriptor: DisplayDescriptor,
@@ -84,9 +87,6 @@ pub struct SetDisplayFaceRequest {
     pub blend_mode: Option<BlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
-    /// How the screen is mounted; omitted keeps the display's stored rotation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rotation: Option<DisplayRotation>,
     #[serde(default)]
     pub scope: DisplayFaceScope,
 }
@@ -119,7 +119,4 @@ pub struct UpdateDisplayFaceCompositionRequest {
     pub blend_mode: Option<BlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
-    /// How the screen is mounted; the face turns to match.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rotation: Option<DisplayRotation>,
 }

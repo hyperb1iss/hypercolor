@@ -11,6 +11,7 @@ use anyhow::Context;
 use hypercolor_core::device::DeviceRegistry;
 use hypercolor_types::controls::ControlValueMap;
 use hypercolor_types::device::DeviceId;
+use hypercolor_types::scene::DisplayRotation;
 use serde::{Deserialize, Serialize};
 use tokio::sync::OwnedRwLockWriteGuard;
 use tokio::sync::RwLock;
@@ -51,6 +52,9 @@ pub struct StoredDeviceSettings {
     pub disabled: bool,
     #[serde(default = "default_brightness")]
     pub brightness: f32,
+    /// How a display-capable device's panel is mounted.
+    #[serde(default, skip_serializing_if = "DisplayRotation::is_upright")]
+    pub rotation: DisplayRotation,
 }
 
 impl Default for StoredDeviceSettings {
@@ -59,6 +63,7 @@ impl Default for StoredDeviceSettings {
             name: None,
             disabled: false,
             brightness: default_brightness(),
+            rotation: DisplayRotation::default(),
         }
     }
 }
@@ -76,7 +81,10 @@ impl StoredDeviceSettings {
 
     #[must_use]
     pub fn is_default(&self) -> bool {
-        self.name.is_none() && !self.disabled && self.brightness >= 0.999
+        self.name.is_none()
+            && !self.disabled
+            && self.brightness >= 0.999
+            && self.rotation.is_upright()
     }
 }
 
@@ -965,6 +973,7 @@ mod tests {
                 name: Some("Shelf".to_owned()),
                 disabled: false,
                 brightness: 0.5,
+                rotation: DisplayRotation::default(),
             },
         );
         seeded.save().expect("seed saves");
@@ -1082,6 +1091,7 @@ mod tests {
                 name: Some("Canonical".to_owned()),
                 disabled: false,
                 brightness: 0.7,
+                rotation: DisplayRotation::default(),
             },
         );
         store.set_device_settings(
@@ -1090,6 +1100,7 @@ mod tests {
                 name: Some("Legacy".to_owned()),
                 disabled: false,
                 brightness: 0.3,
+                rotation: DisplayRotation::default(),
             },
         );
 

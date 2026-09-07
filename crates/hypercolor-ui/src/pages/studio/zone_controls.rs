@@ -90,7 +90,16 @@ pub fn ZoneControls(surface: Surface) -> impl IntoView {
                                         }
                                     }
                                 }
+                                // Closing the field unmounts the input, and
+                                // Chromium fires blur on a removed element.
+                                // Only commit while the draft is still open,
+                                // so Enter cannot double-submit (the second
+                                // PATCH carries a stale revision) and Escape
+                                // really discards.
                                 on:blur=move |ev| {
+                                    if !renaming.get_untracked() {
+                                        return;
+                                    }
                                     let value = event_target_value(&ev);
                                     commit_zone_rename(studio, &zone_id, &value);
                                     stop_renaming();
@@ -235,7 +244,13 @@ pub fn NewZoneControl() -> impl IntoView {
                         }
                         // Blur commits a typed name, like the scene and rename
                         // fields; only Escape (or an empty field) discards.
+                        // Enter and Escape close the field first, and the
+                        // unmount blur must not submit again: a second POST
+                        // carries the pre-create revision and comes back 412.
                         on:blur=move |ev| {
+                            if !creating.get_untracked() {
+                                return;
+                            }
                             let value = event_target_value(&ev);
                             if value.trim().is_empty() || create_zone_from(studio, &value) {
                                 creating.set(false);

@@ -172,7 +172,6 @@ async fn seed_effect_identity_stores(
                 controls: HashMap::new(),
                 blend_mode: BlendMode::Alpha,
                 opacity: 1.0,
-                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         )
         .expect("display identity should persist");

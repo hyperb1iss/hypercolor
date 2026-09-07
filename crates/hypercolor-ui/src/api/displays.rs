@@ -3,7 +3,7 @@
 //! Covers display discovery, face assignment, face control updates, and the
 //! preview JPEG URL.
 
-use hypercolor_types::layer::BlendMode;
+use hypercolor_types::layer::{BlendMode, LayerSource};
 use std::collections::{BTreeMap, HashMap};
 
 use super::{ApiResult, client};
@@ -42,10 +42,35 @@ pub async fn set_display_face(
         // composition panel for face-only looks.
         blend_mode: Some(BlendMode::Alpha),
         opacity: Some(1.0),
-        // The screen's mounting rotation is a display property; assigning
-        // a face keeps whatever the display already has.
-        rotation: None,
         scope,
+    };
+    client::put_json::<SetDisplayFaceRequest, DisplayFaceResponse>(&url, &body).await
+}
+
+/// Copy a display's live default face into the active scene as that
+/// screen's own layer, carrying the default's controls and composition so
+/// the screen looks the same the moment it becomes scene-editable.
+pub async fn promote_default_face(
+    display_id: &str,
+    face: &DisplayFaceResponse,
+) -> ApiResult<DisplayFaceResponse> {
+    let url = format!("/api/v1/displays/{display_id}/face");
+    let controls = face
+        .zone
+        .layers
+        .iter()
+        .find_map(|layer| match &layer.source {
+            LayerSource::Effect { controls, .. } => Some(controls.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let target = face.zone.display_target.as_ref();
+    let body = SetDisplayFaceRequest {
+        effect_id: face.effect.id.to_string(),
+        controls,
+        blend_mode: Some(target.map_or(BlendMode::Alpha, |target| target.blend_mode)),
+        opacity: Some(target.map_or(1.0, |target| target.opacity)),
+        scope: DisplayFaceScope::Scene,
     };
     client::put_json::<SetDisplayFaceRequest, DisplayFaceResponse>(&url, &body).await
 }
@@ -82,7 +107,6 @@ pub async fn update_display_face_composition(
     let body = UpdateDisplayFaceCompositionRequest {
         blend_mode,
         opacity,
-        rotation: None,
     };
     client::patch_json::<UpdateDisplayFaceCompositionRequest, DisplayFaceResponse>(&url, &body)
         .await
