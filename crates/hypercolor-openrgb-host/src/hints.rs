@@ -24,15 +24,18 @@ For SMBus devices (motherboard headers, DRAM) also run `sudo modprobe i2c-dev` p
 `i2c-i801` (Intel) or `i2c-piix4` (AMD), and persist them in /etc/modules-load.d/i2c.conf. \
 Some Gigabyte boards need the kernel parameter acpi_enforce_resources=lax.";
 
-const LINUX_SELF_INSTALLED_UDEV_NOTE: &str = "Generate the udev rules yourself: \
-`sudo <openrgb> --generate-udev-rules /etc/udev/rules.d/60-openrgb.rules`, then \
-`sudo udevadm control --reload-rules && sudo udevadm trigger`. For SMBus devices also load \
-i2c-dev plus i2c-i801 (Intel) or i2c-piix4 (AMD).";
+const LINUX_SELF_INSTALLED_UDEV_NOTE: &str = "Install the udev rules yourself: `sudo curl -fsSL \
+-o /etc/udev/rules.d/60-openrgb.rules \
+https://gitlab.com/CalcProgrammer1/OpenRGB/-/raw/release_candidate_1.0rc3.1/60-openrgb.rules` \
+(or copy 60-openrgb.rules from the OpenRGB source or AppImage contents), then `sudo udevadm \
+control --reload-rules && sudo udevadm trigger`. For SMBus devices also load i2c-dev plus \
+i2c-i801 (Intel) or i2c-piix4 (AMD).";
 
-const FLATPAK_NOTE: &str = "Runs as `flatpak run org.openrgb.OpenRGB`. Install the udev rules \
-with `sudo sh -c 'flatpak run org.openrgb.OpenRGB --print-udev-rules > \
-/etc/udev/rules.d/60-openrgb.rules'`, then `sudo udevadm control --reload-rules && sudo \
-udevadm trigger`. SMBus devices also need i2c-dev plus i2c-i801 (Intel) or i2c-piix4 (AMD).";
+const FLATPAK_NOTE: &str = "Runs as `flatpak run org.openrgb.OpenRGB`. The Flatpak cannot \
+install udev rules: `sudo curl -fsSL -o /etc/udev/rules.d/60-openrgb.rules \
+https://gitlab.com/CalcProgrammer1/OpenRGB/-/raw/release_candidate_1.0rc3.1/60-openrgb.rules`, \
+then `sudo udevadm control --reload-rules && sudo udevadm trigger`. SMBus devices also need \
+i2c-dev plus i2c-i801 (Intel) or i2c-piix4 (AMD).";
 
 const WINDOWS_NOTE: &str = "HID devices work without elevation. SMBus devices (motherboard \
 headers, DRAM) need the PawnIO driver, which OpenRGB 1.0rc2+ uses instead of WinRing0, and \

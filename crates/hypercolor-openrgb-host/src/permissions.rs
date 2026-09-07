@@ -9,8 +9,7 @@
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
-use crate::detect::FLATPAK_APP_ID;
-use crate::types::{BinaryKind, OpenRgbBinary, PermissionCheck};
+use crate::types::PermissionCheck;
 
 /// Check id: an OpenRGB udev rules file is installed.
 pub const CHECK_UDEV_RULES: &str = "udev_rules";
@@ -29,6 +28,10 @@ pub const UDEV_RULES_PATHS: [&str; 3] = [
 ];
 
 const UDEV_RULES_TARGET: &str = "/etc/udev/rules.d/60-openrgb.rules";
+
+/// The rules file as shipped with the current OpenRGB release tag.
+pub const UDEV_RULES_URL: &str =
+    "https://gitlab.com/CalcProgrammer1/OpenRGB/-/raw/release_candidate_1.0rc3.1/60-openrgb.rules";
 const UDEV_RELOAD: &str = "sudo udevadm control --reload-rules && sudo udevadm trigger";
 
 /// Permission checks for the current host.
@@ -37,14 +40,13 @@ const UDEV_RELOAD: &str = "sudo udevadm control --reload-rules && sudo udevadm t
 /// device-node story for OpenRGB (Windows elevation and PawnIO are covered
 /// by the install hints).
 #[must_use]
-pub fn permission_checks(binary: Option<&OpenRgbBinary>) -> Vec<PermissionCheck> {
+pub fn permission_checks() -> Vec<PermissionCheck> {
     #[cfg(target_os = "linux")]
     {
-        linux_permission_checks_at(Path::new("/"), binary)
+        linux_permission_checks_at(Path::new("/"))
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = binary;
         Vec::new()
     }
 }
@@ -54,11 +56,8 @@ pub fn permission_checks(binary: Option<&OpenRgbBinary>) -> Vec<PermissionCheck>
 /// Available on every target so the logic stays testable; only
 /// [`permission_checks`] decides whether the host has anything to inspect.
 #[must_use]
-pub fn linux_permission_checks_at(
-    root: &Path,
-    binary: Option<&OpenRgbBinary>,
-) -> Vec<PermissionCheck> {
-    let udev_remedy = udev_rules_remedy(binary);
+pub fn linux_permission_checks_at(root: &Path) -> Vec<PermissionCheck> {
+    let udev_remedy = udev_rules_remedy();
     vec![
         udev_rules_check(root, &udev_remedy),
         i2c_dev_module_check(root),
@@ -79,19 +78,14 @@ pub fn linux_permission_checks_at(
     ]
 }
 
-/// The command that installs OpenRGB's udev rules for this binary.
+/// The command that installs OpenRGB's udev rules on a released build.
+///
+/// Released OpenRGB (1.0rc3 and earlier) ships no `--generate-udev-rules`
+/// flag; that exists only on master. The portable remedy is to install the
+/// rules file from the release tag and reload udev.
 #[must_use]
-pub fn udev_rules_remedy(binary: Option<&OpenRgbBinary>) -> String {
-    match binary {
-        Some(binary) if binary.kind == BinaryKind::Flatpak => format!(
-            "sudo sh -c 'flatpak run {FLATPAK_APP_ID} --print-udev-rules > {UDEV_RULES_TARGET}' && {UDEV_RELOAD}"
-        ),
-        Some(binary) => format!(
-            "sudo {} --generate-udev-rules {UDEV_RULES_TARGET} && {UDEV_RELOAD}",
-            binary.path.display()
-        ),
-        None => format!("sudo openrgb --generate-udev-rules {UDEV_RULES_TARGET} && {UDEV_RELOAD}"),
-    }
+pub fn udev_rules_remedy() -> String {
+    format!("sudo curl -fsSL -o {UDEV_RULES_TARGET} {UDEV_RULES_URL} && {UDEV_RELOAD}")
 }
 
 fn udev_rules_check(root: &Path, remedy: &str) -> PermissionCheck {
