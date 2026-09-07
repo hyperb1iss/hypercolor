@@ -120,19 +120,21 @@ pub fn managed_config_dir(base_data_dir: &Path) -> ManagedConfigDir {
 /// every detector listed in the embedded families. For each name:
 ///
 /// 1. a match on `disabled_prefixes` writes `false`;
-/// 2. otherwise a match on any embedded family prefix writes `true`, so a
-///    family Hypercolor stops claiming is handed back to OpenRGB;
-/// 3. otherwise the existing value is preserved, defaulting to `true`.
+/// 2. otherwise a match on `re_enable_prefixes` writes `true`, which is how a
+///    caller hands a family back to OpenRGB once Hypercolor stops claiming
+///    it;
+/// 3. otherwise the existing value is preserved, defaulting to `true` for
+///    names the file has never seen.
+///
+/// Nothing flips an existing `false` to `true` unless its prefix is listed
+/// in `re_enable_prefixes`, so a user's own detector toggles survive.
 #[must_use]
-pub fn partition_detectors<S: AsRef<str>>(
+pub fn partition_detectors<S: AsRef<str>, R: AsRef<str>>(
     existing: &Map<String, Value>,
     disabled_prefixes: &[S],
+    re_enable_prefixes: &[R],
     seed_names: Option<&[String]>,
 ) -> BTreeMap<String, bool> {
-    let managed_prefixes: Vec<&str> = detector_families()
-        .iter()
-        .flat_map(|family| family.prefixes.iter().map(String::as_str))
-        .collect();
     let mut universe: BTreeSet<&str> = existing.keys().map(String::as_str).collect();
     universe.extend(seed_names.into_iter().flatten().map(String::as_str));
     universe.extend(
@@ -146,7 +148,7 @@ pub fn partition_detectors<S: AsRef<str>>(
         .map(|name| {
             let enabled = if matches_prefix(name, disabled_prefixes) {
                 false
-            } else if matches_prefix(name, &managed_prefixes) {
+            } else if matches_prefix(name, re_enable_prefixes) {
                 true
             } else {
                 existing.get(name).and_then(Value::as_bool).unwrap_or(true)
@@ -159,13 +161,18 @@ pub fn partition_detectors<S: AsRef<str>>(
 /// Write `OpenRGB.json` in `dir` with `Detectors.detectors` partitioned.
 ///
 /// Detector names matching `disabled_prefixes` (case-insensitive) become
-/// `false`; see [`partition_detectors`] for the full rule. `known_detectors`
+/// `false` and names matching `re_enable_prefixes` become `true`; see
+/// [`partition_detectors`] for the full rule. Callers typically pass the
+/// prefixes of every native driver that is enabled with at least one device
+/// as `disabled_prefixes`, and the prefixes of families they previously
+/// disabled but no longer claim as `re_enable_prefixes`. `known_detectors`
 /// seeds names OpenRGB has not written yet (for example a list obtained from
 /// a running server). Any other key in an existing file is preserved, and the
 /// file is replaced durably.
-pub fn write_detector_partition<S: AsRef<str>>(
+pub fn write_detector_partition<S: AsRef<str>, R: AsRef<str>>(
     dir: &ManagedConfigDir,
     disabled_prefixes: &[S],
+    re_enable_prefixes: &[R],
     known_detectors: Option<&[String]>,
 ) -> Result<DetectorPartition> {
     std::fs::create_dir_all(&dir.root).map_err(|source| HostError::Io {
@@ -195,7 +202,12 @@ pub fn write_detector_partition<S: AsRef<str>>(
         }
     };
 
-    let partition = partition_detectors(&existing_map, disabled_prefixes, known_detectors);
+    let partition = partition_detectors(
+        &existing_map,
+        disabled_prefixes,
+        re_enable_prefixes,
+        known_detectors,
+    );
     let mut report = DetectorPartition::default();
     let mut map = Map::new();
     for (name, enabled) in partition {
