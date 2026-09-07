@@ -2,9 +2,38 @@ use std::path::Path;
 
 use hypercolor_openrgb_host::{
     CHECK_HIDRAW_NODES, CHECK_I2C_DEV_MODULE, CHECK_I2C_NODES, CHECK_UDEV_RULES, PermissionCheck,
-    UDEV_RULES_PATHS, UDEV_RULES_URL, linux_permission_checks_at, permission_checks,
-    udev_rules_remedy,
+    UDEV_RULES_PATHS, UDEV_RULES_URL, linux_permission_checks_at, parse_hid_id,
+    parse_rules_device_ids, permission_checks, udev_rules_remedy,
 };
+
+const RULES_FIXTURE: &str = r#"#---------------------------------------------------------------#
+#  OpenRGB udev rules - Git Commit:                     #
+#---------------------------------------------------------------#
+KERNEL=="i2c-[0-99]*", TAG+="uaccess"
+
+# SUBSYSTEMS=="usb|hidraw", ATTRS{idVendor}=="dead", ATTRS{idProduct}=="beef", TAG+="uaccess"
+SUBSYSTEMS=="usb|hidraw", ATTRS{idVendor}=="0CF2", ATTRS{idProduct}=="A100", TAG+="uaccess", TAG+="Lian_Li_Uni_Hub"
+SUBSYSTEMS=="usb|hidraw", ATTRS{idVendor}=="1532", ATTRS{idProduct}=="0226", TAG+="uaccess", TAG+="Razer_Huntsman"
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="1b1c", TAG+="uaccess"
+"#;
+
+fn stage_hidraw(root: &Path, index: u32, hid_id: &str, writable: bool) {
+    let node = root.join(format!("dev/hidraw{index}"));
+    if writable {
+        touch(&node);
+    } else {
+        // A directory cannot be opened for writing regardless of privileges,
+        // so it stands in for a root-only device node.
+        std::fs::create_dir_all(&node).expect("mkdir node");
+    }
+    let uevent = root.join(format!("sys/class/hidraw/hidraw{index}/device/uevent"));
+    std::fs::create_dir_all(uevent.parent().expect("parent")).expect("mkdir sysfs");
+    std::fs::write(
+        uevent,
+        format!("DRIVER=hid-generic\nHID_ID={hid_id}\nHID_NAME=Fixture\nHID_PHYS=usb-0000:00:14.0-2/input0\n"),
+    )
+    .expect("write uevent");
+}
 
 fn check<'a>(checks: &'a [PermissionCheck], id: &str) -> &'a PermissionCheck {
     checks
@@ -117,31 +146,93 @@ fn i2c_dev_module_is_detected_via_sysfs_or_procfs() {
 }
 
 #[test]
-fn device_nodes_report_writable_and_unwritable_entries() {
+fn i2c_nodes_report_writable_entries_and_ignore_non_nodes() {
     let root = tempfile::tempdir().expect("tempdir");
     touch(&root.path().join("dev/i2c-0"));
     touch(&root.path().join("dev/i2c-1"));
     touch(&root.path().join("dev/i2c-dev-not-a-node"));
-    touch(&root.path().join("dev/hidraw3"));
-    // A directory cannot be opened for writing regardless of privileges, so it
-    // stands in for a device node the current user may not write.
-    std::fs::create_dir_all(root.path().join("dev/hidraw0")).expect("mkdir");
-
     let checks = linux_permission_checks_at(root.path());
-
     let i2c = check(&checks, CHECK_I2C_NODES);
     assert!(i2c.ok);
     assert_eq!(i2c.detail, "2 /dev/i2c-* node(s) writable");
 
+    std::fs::create_dir_all(root.path().join("dev/i2c-2")).expect("mkdir unwritable node");
+    let checks = linux_permission_checks_at(root.path());
+    let i2c = check(&checks, CHECK_I2C_NODES);
+    assert!(!i2c.ok);
+    assert!(i2c.detail.contains("/dev/i2c-2"));
+    assert_eq!(i2c.remedy.as_deref(), Some(udev_rules_remedy().as_str()));
+}
+
+#[test]
+fn rules_parser_collects_vid_pid_pairs_lowercase_and_skips_comments() {
+    let ids = parse_rules_device_ids(RULES_FIXTURE);
+    assert_eq!(
+        ids.len(),
+        2,
+        "vendor-only and commented lines are ignored: {ids:?}"
+    );
+    assert!(ids.contains(&("0cf2".to_owned(), "a100".to_owned())));
+    assert!(ids.contains(&("1532".to_owned(), "0226".to_owned())));
+}
+
+#[test]
+fn hid_id_parser_reads_the_kernel_uevent_shape() {
+    assert_eq!(
+        parse_hid_id("DRIVER=hid-generic\nHID_ID=0003:00001A86:00002107\nHID_NAME=LIANLI SLV3H\n"),
+        Some(("1a86".to_owned(), "2107".to_owned()))
+    );
+    assert_eq!(parse_hid_id("DRIVER=hid-generic\n"), None);
+    assert_eq!(parse_hid_id("HID_ID=0003:zzzz:0001"), None);
+}
+
+#[test]
+fn hidraw_check_only_judges_nodes_covered_by_the_rules_file() {
+    let root = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(root.path().join("etc/udev/rules.d")).expect("mkdir");
+    std::fs::write(
+        root.path().join("etc/udev/rules.d/60-openrgb.rules"),
+        RULES_FIXTURE,
+    )
+    .expect("write rules");
+    // Covered and writable: the happy path.
+    stage_hidraw(root.path(), 0, "0003:00000CF2:0000A100", true);
+    // Not covered (LIANLI SLV3H 1a86:2107, root-only on the live host): informational.
+    stage_hidraw(root.path(), 14, "0003:00001A86:00002107", false);
+    // Not covered, no sysfs entry at all: informational.
+    touch(&root.path().join("dev/hidraw3"));
+
+    let checks = linux_permission_checks_at(root.path());
+    let hidraw = check(&checks, CHECK_HIDRAW_NODES);
+    assert!(hidraw.ok, "{}", hidraw.detail);
+    assert_eq!(
+        hidraw.detail,
+        "1 node(s) covered by OpenRGB rules writable; 2 not covered by OpenRGB rules"
+    );
+    assert!(hidraw.remedy.is_none());
+
+    // Covered but root-only: the one case that fails.
+    stage_hidraw(root.path(), 5, "0003:00001532:00000226", false);
+    let checks = linux_permission_checks_at(root.path());
     let hidraw = check(&checks, CHECK_HIDRAW_NODES);
     assert!(!hidraw.ok);
-    assert!(hidraw.detail.contains("/dev/hidraw0"));
-    assert!(!hidraw.detail.contains("/dev/hidraw3"));
-    assert_eq!(
-        hidraw.remedy.as_deref(),
-        Some(
-            "sudo curl -fsSL -o /etc/udev/rules.d/60-openrgb.rules https://gitlab.com/CalcProgrammer1/OpenRGB/-/raw/release_candidate_1.0rc3.1/60-openrgb.rules && sudo udevadm control --reload-rules && sudo udevadm trigger"
-        )
+    assert!(hidraw.detail.contains("/dev/hidraw5 (1532:0226)"));
+    assert!(!hidraw.detail.contains("hidraw14"));
+    assert!(hidraw.detail.contains("2 other node(s) not covered"));
+    assert_eq!(hidraw.remedy.as_deref(), Some(udev_rules_remedy().as_str()));
+}
+
+#[test]
+fn hidraw_check_without_rules_file_is_informational() {
+    let root = tempfile::tempdir().expect("tempdir");
+    stage_hidraw(root.path(), 0, "0003:00000CF2:0000A100", false);
+    let checks = linux_permission_checks_at(root.path());
+    let hidraw = check(&checks, CHECK_HIDRAW_NODES);
+    assert!(hidraw.ok);
+    assert!(hidraw.detail.contains("no OpenRGB rules file installed"));
+    assert!(
+        !check(&checks, CHECK_UDEV_RULES).ok,
+        "the rules check carries the remedy"
     );
 }
 

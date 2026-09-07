@@ -5,7 +5,13 @@
 //! filesystem inspection is written against an injectable root so tests can
 //! stage a fake tree; [`permission_checks`] runs it against `/` on Linux and
 //! returns nothing elsewhere.
+//!
+//! The hidraw check only judges nodes whose USB VID:PID appears in the
+//! installed OpenRGB rules file: every other HID device (root-only keyboards,
+//! audio controls, hubs OpenRGB has no rule for) is normal and reported as
+//! informational rather than as a failure.
 
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
@@ -17,7 +23,8 @@ pub const CHECK_UDEV_RULES: &str = "udev_rules";
 pub const CHECK_I2C_DEV_MODULE: &str = "i2c_dev_module";
 /// Check id: every `/dev/i2c-*` node is writable by the current user.
 pub const CHECK_I2C_NODES: &str = "i2c_nodes_writable";
-/// Check id: every `/dev/hidraw*` node is writable by the current user.
+/// Check id: every `/dev/hidraw*` node covered by the OpenRGB rules file is
+/// writable by the current user.
 pub const CHECK_HIDRAW_NODES: &str = "hidraw_nodes_writable";
 
 /// Where OpenRGB's own instructions and the distro packages put the rules.
@@ -68,14 +75,143 @@ pub fn linux_permission_checks_at(root: &Path) -> Vec<PermissionCheck> {
             "SMBus adapters",
             &udev_remedy,
         ),
-        device_nodes_check(
-            root,
-            CHECK_HIDRAW_NODES,
-            "hidraw",
-            "HID devices",
-            &udev_remedy,
-        ),
+        hidraw_nodes_check(root, &udev_remedy),
     ]
+}
+
+/// Collect the USB `(idVendor, idProduct)` pairs an OpenRGB udev rules file
+/// grants access to, as lowercase four-digit hex strings.
+///
+/// The file pairs `ATTRS{idVendor}=="xxxx"` with `ATTRS{idProduct}=="yyyy"`
+/// on one line per device; lines without both are ignored.
+#[must_use]
+pub fn parse_rules_device_ids(rules: &str) -> BTreeSet<(String, String)> {
+    rules
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter_map(|line| {
+            let vendor = quoted_attr(line, "idVendor")?;
+            let product = quoted_attr(line, "idProduct")?;
+            Some((vendor, product))
+        })
+        .collect()
+}
+
+fn quoted_attr(line: &str, attr: &str) -> Option<String> {
+    let marker = format!("{attr}}}==\"");
+    let start = line.find(&marker)? + marker.len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    let value = rest[..end].trim().to_ascii_lowercase();
+    (value.len() == 4 && value.chars().all(|c| c.is_ascii_hexdigit())).then_some(value)
+}
+
+/// Parse a hidraw `uevent` file's `HID_ID=0003:0000XXXX:0000YYYY` line into
+/// lowercase `(vid, pid)`.
+#[must_use]
+pub fn parse_hid_id(uevent: &str) -> Option<(String, String)> {
+    let hid_id = uevent
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("HID_ID="))?;
+    let mut fields = hid_id.split(':');
+    let _bus = fields.next()?;
+    let vendor = fields.next()?;
+    let product = fields.next()?;
+    let tail = |field: &str| -> Option<String> {
+        let field = field.trim();
+        (field.len() >= 4 && field.chars().all(|c| c.is_ascii_hexdigit()))
+            .then(|| field[field.len() - 4..].to_ascii_lowercase())
+    };
+    Some((tail(vendor)?, tail(product)?))
+}
+
+fn installed_rules_path(root: &Path) -> Option<PathBuf> {
+    UDEV_RULES_PATHS
+        .iter()
+        .map(|relative| root.join(relative))
+        .find(|path| path.is_file())
+}
+
+fn hidraw_nodes_check(root: &Path, udev_remedy: &str) -> PermissionCheck {
+    let mut nodes = list_device_nodes(&root.join("dev"), "hidraw");
+    nodes.sort();
+    if nodes.is_empty() {
+        return PermissionCheck {
+            id: CHECK_HIDRAW_NODES.to_owned(),
+            ok: true,
+            detail: "no /dev/hidraw* nodes present (HID devices not exposed yet)".to_owned(),
+            remedy: None,
+        };
+    }
+
+    let Some(rules_path) = installed_rules_path(root) else {
+        return PermissionCheck {
+            id: CHECK_HIDRAW_NODES.to_owned(),
+            ok: true,
+            detail: format!(
+                "{} /dev/hidraw* node(s) present; no OpenRGB rules file installed, so coverage is \
+                 unknown (see {CHECK_UDEV_RULES})",
+                nodes.len()
+            ),
+            remedy: None,
+        };
+    };
+    let covered_ids = std::fs::read_to_string(&rules_path)
+        .map(|rules| parse_rules_device_ids(&rules))
+        .unwrap_or_default();
+
+    let mut covered_writable = 0_usize;
+    let mut uncovered = 0_usize;
+    let mut failures: Vec<String> = Vec::new();
+    for node in &nodes {
+        let name = node
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let ids = std::fs::read_to_string(
+            root.join("sys/class/hidraw")
+                .join(name)
+                .join("device/uevent"),
+        )
+        .ok()
+        .and_then(|uevent| parse_hid_id(&uevent));
+        match ids {
+            Some((vendor, product)) if covered_ids.contains(&(vendor.clone(), product.clone())) => {
+                if is_writable(node) {
+                    covered_writable += 1;
+                } else {
+                    failures.push(format!(
+                        "{} ({vendor}:{product})",
+                        display_from_root(root, node)
+                    ));
+                }
+            }
+            _ => uncovered += 1,
+        }
+    }
+
+    if failures.is_empty() {
+        PermissionCheck {
+            id: CHECK_HIDRAW_NODES.to_owned(),
+            ok: true,
+            detail: format!(
+                "{covered_writable} node(s) covered by OpenRGB rules writable; {uncovered} not \
+                 covered by OpenRGB rules"
+            ),
+            remedy: None,
+        }
+    } else {
+        PermissionCheck {
+            id: CHECK_HIDRAW_NODES.to_owned(),
+            ok: false,
+            detail: format!(
+                "covered by OpenRGB rules but not writable by the current user: {}; reinstall the \
+                 rules, then replug or reboot ({uncovered} other node(s) not covered)",
+                failures.join(", ")
+            ),
+            remedy: Some(udev_remedy.to_owned()),
+        }
+    }
 }
 
 /// The command that installs OpenRGB's udev rules on a released build.
