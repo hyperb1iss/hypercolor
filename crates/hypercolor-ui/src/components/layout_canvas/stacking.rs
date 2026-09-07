@@ -3,9 +3,9 @@
 //! Boxes overlap constantly on a real rig (a fan ring over a strip, a pump
 //! cap inside an AIO block), so the order has to be one a user can predict:
 //! big boxes sit low so everything inside their footprint stays clickable,
-//! anything lifted by selection or hover rises above the rest, the box under
-//! the pointer rises above those, and the box that was actually clicked is
-//! always on top of its own compound.
+//! selected boxes rise above the rest, and the box that was actually clicked
+//! stays on top of its own compound. Hover preserves the order so a large
+//! background box cannot cover smaller targets as the pointer enters it.
 
 use std::collections::HashMap;
 
@@ -17,15 +17,12 @@ use hypercolor_types::spatial::Output;
 pub struct Tier {
     /// The box the pointer last pressed on.
     pub primary: bool,
-    /// The box under the pointer on the canvas itself.
-    pub under_pointer: bool,
-    /// Selected, or previewed from the zone tree.
+    /// Selected for editing.
     pub lifted: bool,
 }
 
 const BASE: usize = 10;
 const LIFTED: usize = 10_000;
-const UNDER_POINTER: usize = 20_000;
 const PRIMARY: usize = 30_000;
 
 /// CSS `z-index` for a box. `rank` is its area rank from [`rank_by_area`].
@@ -33,8 +30,6 @@ const PRIMARY: usize = 30_000;
 pub fn z_index(tier: Tier, rank: usize) -> usize {
     let floor = if tier.primary {
         PRIMARY
-    } else if tier.under_pointer {
-        UNDER_POINTER
     } else if tier.lifted {
         LIFTED
     } else {
@@ -127,13 +122,6 @@ mod tests {
             },
             0,
         );
-        let small_pointer = z_index(
-            Tier {
-                under_pointer: true,
-                ..Tier::default()
-            },
-            50,
-        );
         let small_lifted = z_index(
             Tier {
                 lifted: true,
@@ -142,8 +130,7 @@ mod tests {
             50,
         );
         let small_base = z_index(Tier::default(), 50);
-        assert!(big_primary > small_pointer);
-        assert!(small_pointer > small_lifted);
+        assert!(big_primary > small_lifted);
         assert!(small_lifted > small_base);
     }
 }
