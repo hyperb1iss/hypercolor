@@ -32,9 +32,13 @@ Use these before changing anything, in this order:
 | an output shows the wrong colour | identify with `#0000FF` | blue → the effect or the zone's canvas position; another colour → channel order in the driver segment |
 | a fan lights but in the wrong place | identify the slot with `binding_index` and `instance: n` | tells you which physical fan is chain position n (`instance` is zero-based; `binding_index` is zero-based and defaults to 0, so pass it whenever a slot carries more than one binding) |
 | a strimer is dark but its sibling on the same controller works | check the ribbon seating | narrow ribbons in wide sockets only work at the keyed end |
+| a bridged device is dark though frames "succeed" (sent, 0 failed) | `hypercolor devices coverage`, then the device's `bridge.disabled_reason`, then LED counts in `GET /devices/{id}` or `openrgb --list-devices`, then identify | output disabled with a reason → the conflict guard or ownership mode; a 0-LED zone → size it (`hypercolor openrgb resize`, `bridge.zone_sizes`); counts right and no flash → the OpenRGB server itself |
+| a bridged strimer row lights in the wrong slot of the cable | identify the zone by name, one row at a time | rows are separate zones, so the fix is the order of `segments` in the `bridge_rows` block, not a flip flag |
 
 Identify goes through the device path and skips the layout, which is exactly why it
-separates "we mapped it wrong" from "the LEDs are not getting our frames".
+separates "we mapped it wrong" from "the LEDs are not getting our frames". It works on
+bridged devices even while they show `known` (temporary connect), so flash before you
+place them.
 
 ## Hardware realities worth saying out loud
 
@@ -53,6 +57,13 @@ separates "we mapped it wrong" from "the LEDs are not getting our frames".
   display zone centred on the ring with a size matching the visible screen (about 60 mm
   for a 1.6-inch panel); the receiver order in the device list is an assumption until the
   screens show something distinguishable.
+- Through the OpenRGB bridge, a hub's zone sizes are Hypercolor's to keep: OpenRGB
+  profiles do not restore them, and the `openrgb -d N -z Z -sz S` CLI exits nonzero even
+  when the resize worked. Check the LED count on the device, not the exit status, and
+  record the sizes in the rig spec's `bridge.zone_sizes`.
+- Never run OpenRGB detection (`openrgb --list-devices` without a server, or a fresh
+  server start) while a native SMBus driver is live. ENE DRAM sticks came back as 35 and
+  3 LEDs instead of 8 and 8 from two probes sharing one bus.
 
 ## Wrapping a round
 
