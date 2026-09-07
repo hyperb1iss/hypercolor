@@ -105,6 +105,8 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
     assert_eq!(discovered.metadata["detector_class"], "hid");
     assert_eq!(discovered.metadata["identity_confidence"], "high");
     assert_eq!(discovered.metadata["output_enabled"], "true");
+    assert_eq!(discovered.metadata["serial"], "SER123");
+    assert_eq!(discovered.metadata["location"], "hidraw0");
     assert_eq!(discovered.info.name, "Acme Board");
     assert_eq!(discovered.info.capabilities.led_count, 2);
     assert_eq!(discovered.info.capabilities.max_fps, 45);

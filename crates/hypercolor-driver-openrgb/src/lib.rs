@@ -70,6 +70,12 @@ const METADATA_DETECTOR_CLASS: &str = "detector_class";
 const METADATA_OUTPUT_ENABLED: &str = "output_enabled";
 const METADATA_DISABLED_REASON: &str = "disabled_reason";
 const METADATA_PROTOCOL_VERSION: &str = "protocol_version";
+/// OpenRGB's location string, verbatim (a hidraw node, an i2c bus, a USB
+/// path). Published so the daemon can label the connection.
+const METADATA_LOCATION: &str = "location";
+/// OpenRGB's serial string, verbatim. The daemon already reads `serial` for
+/// connection summaries.
+const METADATA_SERIAL: &str = "serial";
 
 const DEFAULT_OPENRGB_PORT: u16 = 6742;
 const DEFAULT_TIMEOUT_MS: u64 = 750;
@@ -458,6 +464,16 @@ impl DeviceBackend for OpenRgbBackend {
             previous_mode: None,
             info: discovered.info.clone(),
             protocol_version,
+            serial: discovered
+                .metadata
+                .get(METADATA_SERIAL)
+                .cloned()
+                .unwrap_or_default(),
+            location: discovered
+                .metadata
+                .get(METADATA_LOCATION)
+                .cloned()
+                .unwrap_or_default(),
         };
         self.discovered
             .write()
@@ -1712,6 +1728,8 @@ struct ControllerRoute {
     auto_connect: bool,
     info: DeviceInfo,
     protocol_version: u32,
+    serial: String,
+    location: String,
 }
 
 impl From<ControllerRoute> for DiscoveredDevice {
@@ -1742,6 +1760,12 @@ impl From<ControllerRoute> for DiscoveredDevice {
         ]);
         if let Some(reason) = &route.disabled_reason {
             metadata.insert(METADATA_DISABLED_REASON.to_owned(), reason.clone());
+        }
+        if !route.serial.trim().is_empty() {
+            metadata.insert(METADATA_SERIAL.to_owned(), route.serial);
+        }
+        if !route.location.trim().is_empty() {
+            metadata.insert(METADATA_LOCATION.to_owned(), route.location);
         }
         Self {
             fingerprint: route.fingerprint,
@@ -2105,6 +2129,8 @@ fn build_route(
         auto_connect: config.auto_connect,
         info,
         protocol_version,
+        serial: controller.serial,
+        location: controller.location,
     }
 }
 
@@ -2920,6 +2946,49 @@ mod tests {
                 .expect("mismatched topology should disable output")
                 .contains("does not match controller LED list")
         );
+    }
+
+    #[test]
+    fn discovery_metadata_publishes_identity_strings_verbatim() {
+        let config = OpenRgbConfig {
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::OpenRgbOwned,
+                ..OpenRgbOwnership::default()
+            },
+            ..OpenRgbConfig::default()
+        };
+        let mut controller = sample_controller();
+        controller.location = "/dev/hidraw7 ".to_owned();
+        let route = build_route(default_endpoints()[0], 0, 5, controller, &config);
+        let discovered = DiscoveredDevice::from(route);
+        assert_eq!(discovered.metadata["serial"], "SER123");
+        assert_eq!(discovered.metadata["location"], "/dev/hidraw7 ");
+        assert_eq!(
+            discovered.metadata["endpoint"],
+            default_endpoints()[0].to_string()
+        );
+
+        let mut anonymous = sample_controller();
+        anonymous.serial.clear();
+        anonymous.location = "   ".to_owned();
+        let route = build_route(default_endpoints()[0], 0, 5, anonymous, &config);
+        let discovered = DiscoveredDevice::from(route);
+        assert!(!discovered.metadata.contains_key("serial"));
+        assert!(!discovered.metadata.contains_key("location"));
+
+        let backend = OpenRgbBackend::new(config).expect("config should validate");
+        let mut controller = sample_controller();
+        controller.location = "hidraw0".to_owned();
+        let route = build_route(default_endpoints()[0], 0, 5, controller, &backend.config);
+        let id = route.info.id;
+        backend
+            .adopt_device(&DiscoveredDevice::from(route))
+            .expect("backend should adopt its own discovery result");
+        let adopted = backend
+            .discovered_route(&id)
+            .expect("adopted route should be tracked");
+        assert_eq!(adopted.serial, "SER123");
+        assert_eq!(adopted.location, "hidraw0");
     }
 
     #[test]
