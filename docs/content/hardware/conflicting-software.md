@@ -99,14 +99,28 @@ the hardware; run `hypercolor devices discover`.
 
 ### OpenRGB
 
-OpenRGB talks to many of the same USB devices Hypercolor supports. If OpenRGB has already
-connected to a device, Hypercolor's scan will fail to open the same interface. Close
-OpenRGB entirely before starting Hypercolor.
+OpenRGB is a conflict only when it detects hardware a native Hypercolor driver owns. The
+server Hypercolor manages for its [OpenRGB fallback](@/hardware/openrgb-fallback.md)
+never does: `hypercolor openrgb partition` writes a detector partition into a
+Hypercolor-owned config directory that disables OpenRGB's detectors for every enabled
+native driver, and `hypercolor openrgb start` launches the server against that
+directory. Native drivers keep their devices, the bridge drives the rest, and a conflict
+guard output-disables any bridge route that still lands on natively owned silicon.
 
-If you want to use OpenRGB for hardware Hypercolor does not yet support natively, configure
-it as a bridge rather than a parallel controller. The [OpenRGB fallback driver](@/hardware/openrgb-fallback.md)
-lets Hypercolor route output through a running OpenRGB SDK server on port 6742, with
-explicit ownership partitioning so both tools target different controllers.
+The OpenRGB GUI launched from a desktop menu, or a server you started by hand without
+`--config`, uses your own `~/.config/OpenRGB` and detects everything. Whichever process
+opens a device first wins. Either stop that instance and let Hypercolor run the server, or
+point yours at the managed config:
+
+```bash
+openrgb --server --server-host 127.0.0.1 --noautoconnect \
+        --config ~/.local/share/hypercolor/openrgb
+```
+
+To have OpenRGB drive a device Hypercolor also supports natively, disable that device on
+the Devices page (or the whole driver in config) so the native driver releases it, then
+rewrite the partition and rescan. The conflict guard's reason string,
+`native driver owns this device (<driver_id>)`, tells you which driver to disable.
 
 ### ASUS Aura Sync / Armoury Crate
 
@@ -261,7 +275,7 @@ Close the application completely. On Linux, some apps keep a background process 
 after the window closes:
 
 ```bash
-pkill openrgb
+pkill openrgb        # an OpenRGB you started yourself; the managed server stops with `hypercolor openrgb stop`
 pkill ArmouryCrate
 ```
 
@@ -277,10 +291,11 @@ hypercolor devices discover
 Or via the web UI: open the Devices panel and click Scan.
 
 {% <callout type="tip"> %}
-If you want to keep OpenRGB available for hardware Hypercolor does not natively support,
-configure it as a bridge rather than a parallel controller. The OpenRGB fallback driver
-lets Hypercolor route output through a running OpenRGB SDK server on port 6742, with
-explicit ownership partitioning. See [OpenRGB fallback](@/hardware/openrgb-fallback.md).
+You do not have to give up OpenRGB for hardware Hypercolor lacks a driver for. Let
+Hypercolor run it: `hypercolor openrgb partition` then `hypercolor openrgb start` brings
+up a loopback SDK server that skips natively owned devices, and the bridge drives what
+remains. `hypercolor devices coverage` shows which stack owns each device. See
+[OpenRGB fallback](@/hardware/openrgb-fallback.md).
 {% </callout> %}
 
 ## SMBus and I2C conflicts ⚡
@@ -303,9 +318,13 @@ Check what is accessing your i2c nodes:
 lsof /dev/i2c-* 2>/dev/null
 ```
 
-If you are running OpenRGB alongside Hypercolor and both are configured to control ASUS
-Aura hardware, disable SMBus scanning in one of them before enabling SMBus access in
-Hypercolor. See [SMBus and I2C devices](@/hardware/smbus-i2c.md) for setup details.
+The managed OpenRGB server disables the `ASUS Aura` and `ENE SMBus DRAM` detectors
+whenever Hypercolor's own SMBus drivers are enabled, so the two never probe the same
+bus. A hand-run `openrgb` still can, and the symptom is specific: DRAM LED counts come
+back wrong, or sticks flicker, after OpenRGB detection ran while the daemon was up. Never
+run `openrgb --list-devices` or the OpenRGB GUI while native SMBus drivers are enabled;
+use `hypercolor openrgb start` instead, or disable the native SMBus drivers first. See
+[SMBus and I2C devices](@/hardware/smbus-i2c.md) for setup details.
 
 ## Preventing conflicts on startup
 
@@ -349,6 +368,7 @@ If you have stopped all competing software and the device still does not appear:
 
 - [USB devices](@/hardware/usb-devices.md): udev rules, hidraw vs hidapi, permissions
 - [SMBus and I2C devices](@/hardware/smbus-i2c.md): ASUS Aura motherboard and DRAM setup
-- [OpenRGB fallback bridge](@/hardware/openrgb-fallback.md): co-existing with OpenRGB via the SDK bridge
+- [OpenRGB fallback bridge](@/hardware/openrgb-fallback.md): the managed server, detector partition, and conflict guard
+- [My device isn't supported](@/hardware/unsupported-devices.md): what to do when neither stack lights a device
 - [Devices not found](@/troubleshooting/devices-not-found.md): per-transport diagnosis when discovery returns nothing
 - [Debugging and diagnostics](@/contributing/debugging.md): RUST_LOG targets and the diagnose endpoint
