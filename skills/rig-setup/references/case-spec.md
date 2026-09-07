@@ -87,3 +87,12 @@ that each output sits where the eye sees it through the glass.
 
 Record every assumption in the spec's `notes` or per-mount `chain_order` strings so a
 later identify pass knows what to check.
+
+## Relation to Spec 70 rig templates
+
+`docs/specs/70-agent-rig-setup.md` plans daemon-side `RigTemplate`s: mounts in normalized
+front-view canvas coordinates, loaded from `data/rigs/` and searchable over MCP. A case
+spec is the research artifact one layer below that: millimetres plus a view flag, so a
+single file serves both a standard and a reversed build of the same case. When the
+daemon-side registry lands, the generator's `Geometry` class is the export path (case spec
+plus view → normalized mounts); until then the skill carries the geometry itself.
