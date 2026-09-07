@@ -36,7 +36,8 @@ $policyVariables = @(
     'HYPERCOLOR_NO_FAST_LINK', 'CARGO_TARGET_DIR', 'MOZBUILD_STATE_PATH',
     'SCCACHE_DIR', 'SCCACHE_CACHE_SIZE', 'CMAKE_TOOLCHAIN_FILE',
     'CMAKE_C_COMPILER_LAUNCHER', 'CMAKE_CXX_COMPILER_LAUNCHER', 'CC', 'CXX',
-    'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER'
+    'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER', 'RUNNER_OS',
+    'HYPERCOLOR_TEST_ARGUMENT_CAPTURE'
 )
 $originalEnvironment = @{}
 foreach ($name in $policyVariables) {
@@ -64,6 +65,90 @@ function Assert-Mode {
     }
 }
 
+function Assert-WorkflowArguments {
+    # Execute the real workflow's PowerShell command text at a script boundary.
+    # Bare -- is consumed by PowerShell before the wrapper can inspect $args.
+    $capture = $syntax.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left.Extent.Text -eq '$CommandArgs'
+    }, $false)
+    if ($null -eq $capture) {
+        throw 'Cargo argument capture was not found'
+    }
+    $fixtureScripts = Join-Path $fixtureRoot 'scripts'
+    New-Item -ItemType Directory -Force $fixtureScripts | Out-Null
+    $captureScript = $capture.Extent.Text + @'
+
+ConvertTo-Json -Compress -InputObject $CommandArgs |
+    Add-Content -LiteralPath $env:HYPERCOLOR_TEST_ARGUMENT_CAPTURE
+exit 0
+'@
+    Set-Content -LiteralPath (Join-Path $fixtureScripts 'cargo-cache-build.ps1') $captureScript
+    $env:HYPERCOLOR_TEST_ARGUMENT_CAPTURE = Join-Path $fixtureRoot 'arguments.jsonl'
+    $env:RUNNER_OS = 'Windows'
+
+    $workflow = Get-Content (Join-Path $PSScriptRoot '../../.github/workflows/ci.yml')
+    $commands = @()
+    for ($i = 0; $i -lt $workflow.Count; $i += 1) {
+        if ($workflow[$i] -notmatch '^        run: (.+)$') { continue }
+        $value = $Matches[1]
+        if ($value -match '^[>|]-?$') {
+            $separator = if ($value.StartsWith('>')) { ' ' } else { "`n" }
+            $body = @()
+            while (($i + 1) -lt $workflow.Count -and
+                ($workflow[$i + 1] -match '^          ' -or $workflow[$i + 1] -eq '')) {
+                $i += 1
+                $body += $workflow[$i] -replace '^          ', ''
+            }
+            $value = $body -join $separator
+        }
+        if ($value.Contains('./scripts/cargo-cache-build.ps1')) {
+            $commands += $value.Replace('${{ env.RUST_WINDOWS_WORKSPACE_ARGS }}',
+                '--workspace --exclude hypercolor-daemon --exclude hypercolor-app --exclude hypercolor-cli')
+        }
+    }
+    $previousLocation = Get-Location
+    try {
+        Set-Location $fixtureRoot
+        foreach ($command in $commands) {
+            & ([scriptblock]::Create($command))
+        }
+    } finally {
+        Set-Location $previousLocation
+    }
+
+    $invocations = @(Get-Content $env:HYPERCOLOR_TEST_ARGUMENT_CAPTURE |
+        ForEach-Object { ,(ConvertFrom-Json $_) })
+    if ($invocations.Count -ne 12) {
+        throw "Expected 12 Windows Cargo invocations, captured $($invocations.Count)"
+    }
+    foreach ($invocation in $invocations) {
+        if ($invocation[0] -ne 'cargo') { throw 'Lost the Cargo executable argument' }
+        switch ($invocation[1]) {
+            'clippy' {
+                if (($invocation[-3..-1] -join ' ') -ne '-- -D warnings') {
+                    throw "Clippy lost its compiler argument separator: $invocation"
+                }
+            }
+            'test' {
+                if (($invocation[-2..-1] -join ' ') -ne '-- --test-threads=1') {
+                    throw "Allocation test lost its harness arguments: $invocation"
+                }
+            }
+            'nextest' {
+                $filterIndex = [array]::IndexOf($invocation, '-E')
+                if ($invocation -contains 'windows-capture-fixtures' -and
+                    ($filterIndex -lt 0 -or $invocation[$filterIndex + 1] -ne
+                        'test(screen::windows) | binary(windows_host_input_fixture_tests) | binary(windows_capture_fixture_tests)')) {
+                    throw "Nextest filter was split into separate arguments: $invocation"
+                }
+            }
+        }
+    }
+    Write-Host 'Windows workflow argument tests: PASS'
+}
+
 try {
     foreach ($command in @('build', 'test', 'run', 'check', 'clippy')) {
         Assert-Mode @($command) @{} '1' $false
@@ -79,6 +164,7 @@ try {
     Assert-Mode @('test') @{ CARGO_INCREMENTAL = '1'; HYPERCOLOR_FORCE_SCCACHE = '1' } '1' $false
     Assert-Mode @('build') @{ RUSTC_WRAPPER = 'sccache.exe' } '1' $false
     Write-Host 'Cargo cache mode tests: PASS'
+    Assert-WorkflowArguments
 } finally {
     foreach ($name in $policyVariables) {
         [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name])

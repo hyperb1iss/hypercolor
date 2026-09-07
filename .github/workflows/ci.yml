@@ -209,6 +209,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Install compiler cache for lifecycle tests
+        uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
+        with:
+          version: v0.17.0
+          disable_annotations: "true"
       - name: Test build cache contracts
         run: node --test .github/actions/rust-build-cache/*.test.mjs
 
@@ -805,12 +810,12 @@ jobs:
       - name: Clippy shared crates
         run: >-
           ./scripts/cargo-cache-build.ps1 cargo clippy --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }} --all-targets
-          -- -D warnings
+          '--' -D warnings
 
       - name: Clippy Windows capture fixtures
         run: >-
           ./scripts/cargo-cache-build.ps1 cargo clippy --locked -p hypercolor-core
-          --features windows-capture-fixtures --all-targets -- -D warnings
+          --features windows-capture-fixtures --all-targets '--' -D warnings
 
       - name: Run shared crate tests
         run: ./scripts/cargo-cache-build.ps1 cargo nextest run --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }}
@@ -827,9 +832,9 @@ jobs:
       - name: Run allocation contracts serially
         shell: pwsh
         run: |
-          ./scripts/cargo-cache-build.ps1 cargo test --locked -p hypercolor-core --no-default-features --features allocation-contract-tests --test alloc_contract_tests --test media_input_allocation_tests --test screen_cpu_fanout_allocation_tests --test spatial_area_reuse_tests -- --test-threads=1
+          ./scripts/cargo-cache-build.ps1 cargo test --locked -p hypercolor-core --no-default-features --features allocation-contract-tests --test alloc_contract_tests --test media_input_allocation_tests --test screen_cpu_fanout_allocation_tests --test spatial_area_reuse_tests '--' --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          ./scripts/cargo-cache-build.ps1 cargo test --locked -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
+          ./scripts/cargo-cache-build.ps1 cargo test --locked -p hypercolor-windows-input --test alloc_contract_tests '--' --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Clippy allocation contract
@@ -839,7 +844,7 @@ jobs:
           --test alloc_contract_tests --test media_input_allocation_tests
           --test screen_cpu_fanout_allocation_tests
           --test spatial_area_reuse_tests
-          -- -D warnings
+          '--' -D warnings
 
       - name: Seed effect cover fixture
         shell: pwsh

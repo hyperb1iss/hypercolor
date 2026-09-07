@@ -54,6 +54,8 @@ runs:
       uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
       with:
         version: v0.17.0
+        # The finalizer reports stats before shutdown; post-job stats would be empty.
+        disable_annotations: "true"
 
     - name: Restore Cargo downloads
       if: inputs.phase == 'restore'
@@ -78,14 +80,19 @@ runs:
         CACHE_ACTION_PATH: ${{ github.action_path }}
       run: node "$CACHE_ACTION_PATH/source-mtimes.mjs" restore
 
-    - name: Report and flush compiler cache
-      if: always() && inputs.phase == 'save' && env.HYPERCOLOR_BUILD_CACHE_KEY != ''
+    - name: Start compiler cache server
+      if: inputs.phase == 'restore'
       shell: bash
-      run: |
-        if command -v sccache >/dev/null 2>&1; then
-          sccache --show-stats
-          sccache --stop-server
-        fi
+      env:
+        CACHE_ACTION_PATH: ${{ github.action_path }}
+      run: node "$CACHE_ACTION_PATH/sccache-lifecycle.mjs" start
+
+    - name: Report and flush compiler cache
+      if: always() && inputs.phase == 'save' && env.HYPERCOLOR_SCCACHE_STARTED == 'true'
+      shell: bash
+      env:
+        CACHE_ACTION_PATH: ${{ github.action_path }}
+      run: node "$CACHE_ACTION_PATH/sccache-lifecycle.mjs" stop
 
     # Composite actions have no post hook. The caller's always() finalizer
     # keeps cache writes ordered after compilation, including failed checks.
