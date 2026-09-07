@@ -38,7 +38,8 @@ pub use error::{HostError, Result};
 pub use hints::{RELEASES_URL, detect_package_managers, install_hints, install_hints_for};
 pub use permissions::{
     CHECK_HIDRAW_NODES, CHECK_I2C_DEV_MODULE, CHECK_I2C_NODES, CHECK_UDEV_RULES, UDEV_RULES_PATHS,
-    UDEV_RULES_URL, linux_permission_checks_at, permission_checks, udev_rules_remedy,
+    UDEV_RULES_URL, linux_permission_checks_at, parse_hid_id, parse_rules_device_ids,
+    permission_checks, udev_rules_remedy,
 };
 pub use probe::{DEFAULT_SERVER_PORT, PROBE_CLIENT_NAME, probe_server};
 pub use process::{LOOPBACK_HOST, SERVER_LOG_LEVEL, server_args, server_command};
