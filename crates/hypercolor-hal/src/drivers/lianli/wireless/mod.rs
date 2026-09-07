@@ -26,7 +26,7 @@ use std::time::Duration;
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint, SegmentInfo,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
@@ -69,7 +69,7 @@ const MAX_FPS: u32 = 30;
 /// reference sends for stills.
 const LIVE_TOTAL_FRAMES: u16 = 1;
 const LIVE_INTERVAL_MS: u16 = 5000;
-/// Frames are traced this often at debug level.
+/// Frames are traced this often at trace level.
 const FRAME_TRACE_EVERY: u32 = 100;
 /// The transfer header goes out twice, this far apart, so one lost packet
 /// does not cost the whole frame; the data envelopes go once.
@@ -521,7 +521,7 @@ impl Protocol for WirelessControllerProtocol {
                 &raw,
             );
             if frame_number.is_multiple_of(FRAME_TRACE_EVERY) {
-                debug!(
+                trace!(
                     frame_number,
                     mac = %format_mac(cluster.mac),
                     led_count,
