@@ -16,6 +16,7 @@
 
 mod detect;
 mod error;
+mod probe;
 mod types;
 pub use detect::{
     FLATPAK_APP_ID, SUBPROCESS_TIMEOUT, appimage_search_dirs, classify_binary, detect_binary,
@@ -24,6 +25,7 @@ pub use detect::{
     read_version,
 };
 pub use error::{HostError, Result};
+pub use probe::{DEFAULT_SERVER_PORT, PROBE_CLIENT_NAME, probe_server};
 pub use types::{
     BinaryKind, InstallHint, InstallMethod, ManagedConfigDir, OpenRgbBinary, PermissionCheck,
     Platform, ProcessSpec, ServerProbe,
