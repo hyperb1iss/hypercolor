@@ -34,7 +34,10 @@ mod child;
 mod plan;
 
 pub(crate) use child::PlatformGuard;
-pub use plan::{HoldReason, LauncherPlan, LauncherProbe, OwnerPreference, launcher_plan};
+pub use plan::{
+    HoldReason, LauncherPlan, LauncherProbe, OpenRgbHoldReason, OpenRgbPlan, OpenRgbPlanInputs,
+    OwnerPreference, launcher_plan, openrgb_plan,
+};
 
 /// Default daemon bind address used by the app-spawned daemon.
 pub const DEFAULT_DAEMON_BIND: &str = "127.0.0.1:9420";
