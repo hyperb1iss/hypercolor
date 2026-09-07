@@ -1,70 +1,127 @@
 name: Rust build cache
-description: Configure Hypercolor's Cargo, Servo, and compiler caches.
+description: Restore Cargo artifacts and compiler caches, then save with phase=save.
 
 inputs:
+  phase:
+    description: Restore before building; save in an always() step after building.
+    default: restore
   key:
     description: Additional cache key segment for this build shape.
-    required: false
     default: ""
   shared-key:
-    description: Stable cache key segment shared by compatible Rust jobs.
-    required: false
-    default: "workspace"
+    description: Stable cache owner shared by compatible Rust jobs.
+    default: workspace
   workspaces:
-    description: Swatinem/rust-cache workspace mapping.
-    required: false
+    description: Workspace-to-target mappings, one root -> target pair per line.
     default: ". -> .cache/hypercolor/target"
   save-if:
-    description: >-
-      Whether to save cache entries after the job. "auto" saves only on the
-      default branch so PR and tag runs restore without competing for the
-      repo's 10GB cache quota.
-    required: false
-    default: "auto"
-  cache-all-crates:
-    description: Cache all crates, including CI tooling crates.
-    required: false
-    default: "false"
-  cache-workspace-crates:
-    description: Cache workspace crate artifacts as well as dependencies.
-    required: false
-    default: "false"
+    description: Auto writes on the default branch; false makes a consumer read-only.
+    default: auto
   cache-directories:
     description: Additional build-state directories owned by this cache shape.
-    required: false
     default: ""
   cache-on-failure:
-    description: Whether to save Rust cache entries after failed jobs.
-    required: false
+    description: Save completed compilation work even when a later check fails.
     default: "true"
 
 runs:
   using: composite
   steps:
-    - name: Enable compiler cache
+    - name: Validate cache phase
+      if: inputs.phase != 'restore' && inputs.phase != 'save'
       shell: bash
       run: |
-        {
-          echo "CARGO_INCREMENTAL=0"
-          echo "CCACHE_COMPRESS=true"
-          echo "CCACHE_MAXSIZE=500M"
-          echo "CARGO_PROFILE_DEV_DEBUG=0"
-          echo "CARGO_PROFILE_TEST_DEBUG=0"
-          echo "CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG=0"
-          echo "CARGO_PROFILE_TEST_BUILD_OVERRIDE_DEBUG=0"
-        } >> "$GITHUB_ENV"
+        echo "::error::Cache phase must be restore or save"
+        exit 1
 
-    - name: Restore Rust and Servo caches
-      uses: Swatinem/rust-cache@v2
+    - name: Configure build cache
+      if: inputs.phase == 'restore'
+      id: config
+      shell: bash
+      env:
+        CACHE_ACTION_PATH: ${{ github.action_path }}
+        CACHE_SHAPE: ${{ inputs.shared-key }}
+        CACHE_VARIANT: ${{ inputs.key }}
+        CACHE_WORKSPACES: ${{ inputs.workspaces }}
+        CACHE_DIRECTORIES: ${{ inputs.cache-directories }}
+        CACHE_SAVE_IF: ${{ inputs.save-if }}
+        CACHE_ON_FAILURE_INPUT: ${{ inputs.cache-on-failure }}
+        CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: node "$CACHE_ACTION_PATH/configure.mjs"
+
+    - name: Install compiler cache
+      if: inputs.phase == 'restore'
+      uses: mozilla-actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
       with:
-        prefix-key: hypercolor-rust
-        shared-key: ${{ inputs.shared-key }}
-        key: ${{ inputs.key }}
-        workspaces: ${{ inputs.workspaces }}
-        cache-directories: ${{ inputs.cache-directories }}
-        cache-all-crates: ${{ inputs.cache-all-crates }}
-        cache-workspace-crates: ${{ inputs.cache-workspace-crates }}
-        cache-on-failure: ${{ inputs.cache-on-failure }}
-        save-if: >-
-          ${{ inputs.save-if == 'true' ||
-              (inputs.save-if == 'auto' && github.ref == 'refs/heads/main') }}
+        version: v0.17.0
+        # The finalizer reports stats before shutdown; post-job stats would be empty.
+        disable_annotations: "true"
+
+    - name: Restore Cargo downloads
+      if: inputs.phase == 'restore'
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ${{ env.HYPERCOLOR_REGISTRY_CACHE_PATHS }}
+        key: ${{ env.HYPERCOLOR_REGISTRY_CACHE_KEY }}
+        restore-keys: ${{ env.HYPERCOLOR_REGISTRY_CACHE_PREFIX }}
+
+    - name: Restore build artifacts and compiler cache
+      if: inputs.phase == 'restore'
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ${{ env.HYPERCOLOR_BUILD_CACHE_PATHS }}
+        key: ${{ env.HYPERCOLOR_BUILD_CACHE_KEY }}
+        restore-keys: ${{ env.HYPERCOLOR_BUILD_CACHE_PREFIX }}
+
+    - name: Restore unchanged source timestamps
+      if: inputs.phase == 'restore'
+      shell: bash
+      env:
+        CACHE_ACTION_PATH: ${{ github.action_path }}
+      run: node "$CACHE_ACTION_PATH/source-mtimes.mjs" restore
+
+    - name: Start compiler cache server
+      if: inputs.phase == 'restore'
+      shell: bash
+      env:
+        CACHE_ACTION_PATH: ${{ github.action_path }}
+      run: node "$CACHE_ACTION_PATH/sccache-lifecycle.mjs" start
+
+    - name: Report and flush compiler cache
+      if: always() && inputs.phase == 'save' && env.HYPERCOLOR_SCCACHE_STARTED == 'true'
+      shell: bash
+      env:
+        CACHE_ACTION_PATH: ${{ github.action_path }}
+      run: node "$CACHE_ACTION_PATH/sccache-lifecycle.mjs" stop
+
+    # Composite actions have no post hook. The caller's always() finalizer
+    # keeps cache writes ordered after compilation, including failed checks.
+    - name: Save Cargo downloads
+      if: >-
+        always() && inputs.phase == 'save' &&
+        env.HYPERCOLOR_CACHE_WRITE == 'true' &&
+        (job.status == 'success' || env.HYPERCOLOR_CACHE_SAVE_FAILURE == 'true')
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ${{ env.HYPERCOLOR_REGISTRY_CACHE_PATHS }}
+        key: ${{ env.HYPERCOLOR_REGISTRY_CACHE_KEY }}
+
+    - name: Capture source timestamps with content fingerprints
+      if: >-
+        always() && inputs.phase == 'save' &&
+        env.HYPERCOLOR_CACHE_WRITE == 'true' &&
+        (job.status == 'success' || env.HYPERCOLOR_CACHE_SAVE_FAILURE == 'true')
+      shell: bash
+      env:
+        CACHE_ACTION_PATH: ${{ github.action_path }}
+      run: node "$CACHE_ACTION_PATH/source-mtimes.mjs" capture
+
+    - name: Save build artifacts and compiler cache
+      if: >-
+        always() && inputs.phase == 'save' &&
+        env.HYPERCOLOR_CACHE_WRITE == 'true' &&
+        (job.status == 'success' || env.HYPERCOLOR_CACHE_SAVE_FAILURE == 'true')
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ${{ env.HYPERCOLOR_BUILD_CACHE_PATHS }}
+        key: ${{ env.HYPERCOLOR_BUILD_CACHE_KEY }}

@@ -20,6 +20,7 @@ ASSET_ROOTS = {
     "bundled_effect_files": "share/hypercolor/effects/bundled",
     "docs_files": "share/hypercolor/docs",
     "skill_files": "share/hypercolor/agents/skills",
+    "user_skill_files": "share/hypercolor/skills",
     "agent_files": "share/hypercolor/agents/agents",
     "site_files": "share/hypercolor/site",
 }
@@ -39,7 +40,10 @@ class ReleaseArtifactTests(unittest.TestCase):
         shutil.copytree(SOURCE / "udev", fixture / "udev")
         for name in ("LICENSE", "NOTICE", "README.md"):
             shutil.copy2(SOURCE / name, fixture / name)
-        for path in (".agents/skills/probe/SKILL.md", ".agents/agents/probe.md"):
+        for path in (
+            ".agents/skills/probe/SKILL.md", ".agents/agents/probe.md",
+            "skills/probe/SKILL.md",
+        ):
             file = fixture / path
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_text("Packaging fixture only.\n")
@@ -89,7 +93,7 @@ class ReleaseArtifactTests(unittest.TestCase):
             capture_output=True, text=True, check=False,
         )
 
-    def test_producer_emits_all_six_declared_roots_including_empty_docs_and_site(self):
+    def test_producer_emits_all_declared_roots_including_empty_docs_and_site(self):
         manifest = self.manifest()
         for field, relative in ASSET_ROOTS.items():
             self.assertTrue((self.payload / relative).is_dir(), relative)

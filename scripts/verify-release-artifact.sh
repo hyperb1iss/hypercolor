@@ -344,11 +344,12 @@ asset_roots = {
     "bundled_effect_files": "share/hypercolor/effects/bundled",
     "docs_files": "share/hypercolor/docs",
     "skill_files": "share/hypercolor/agents/skills",
+    "user_skill_files": "share/hypercolor/skills",
     "agent_files": "share/hypercolor/agents/agents",
     "site_files": "share/hypercolor/site",
 }
 if not isinstance(assets, dict) or set(assets) != set(asset_roots):
-    raise SystemExit("manifest assets must be an object")
+    raise SystemExit("manifest assets must declare every packaged asset root")
 for key, relative_root in asset_roots.items():
     value = assets.get(key)
     minimum = 0 if key in {"docs_files", "site_files"} else 1

@@ -125,6 +125,12 @@ impl DragRuntime {
                 rotation,
                 keep_aspect_ratio,
             } => {
+                // Reconstructing an unchanged rotated/aspect-locked footprint
+                // can introduce float drift. A press alone is not an edit.
+                if !self.moved.get() && mouse == *start_mouse {
+                    self.current_zones = working.zones;
+                    return false;
+                }
                 let Some(zone) = working.zones.iter_mut().find(|z| z.id == *zone_id) else {
                     self.current_zones = working.zones;
                     return false;

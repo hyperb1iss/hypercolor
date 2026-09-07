@@ -155,7 +155,7 @@ If a type is needed in more than one crate, it belongs in `hypercolor-types`.
 
 ## Agent skills 🔮
 
-Domain-specific authoring knowledge lives in `.agents/skills/`. Each skill's `SKILL.md` is the primary reference for its domain; the `references/` subdirectory holds deeper detail.
+Domain-specific authoring knowledge lives in `.agents/skills/`. Each skill's `SKILL.md` is the primary reference for its domain; the `references/` subdirectory holds deeper detail. Skills meant for people running Hypercolor rather than developing it (`hypercolor-control`, `rig-setup`) live in the top-level `skills/` directory, ship in the release bundle, and are symlinked from `.agents/skills/` so they stay discoverable in a checkout.
 
 | Skill | When to use it |
 |---|---|
