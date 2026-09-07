@@ -20,7 +20,9 @@ mod error;
 mod hints;
 mod permissions;
 mod probe;
+mod process;
 mod types;
+
 pub use config_dir::{
     DETECTORS_MAP, DETECTORS_SECTION, DetectorFamily, DetectorPartition, MANAGED_DIR_NAME,
     detector_families, detector_prefixes_for_drivers, managed_config_dir, matches_prefix,
@@ -39,6 +41,7 @@ pub use permissions::{
     linux_permission_checks_at, permission_checks, udev_rules_remedy,
 };
 pub use probe::{DEFAULT_SERVER_PORT, PROBE_CLIENT_NAME, probe_server};
+pub use process::{LOOPBACK_HOST, SERVER_LOG_LEVEL, server_args, server_command};
 pub use types::{
     BinaryKind, InstallHint, InstallMethod, ManagedConfigDir, OpenRgbBinary, PermissionCheck,
     Platform, ProcessSpec, ServerProbe,
