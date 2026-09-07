@@ -29,10 +29,10 @@ pub use config_dir::{
     parse_detector_table, partition_detectors, write_detector_partition,
 };
 pub use detect::{
-    FLATPAK_APP_ID, SUBPROCESS_TIMEOUT, appimage_search_dirs, classify_binary, detect_binary,
-    executable_names, find_appimage_in, find_in_path, find_native_binary, flatpak_app_version,
-    is_executable_file, known_locations, parse_flatpak_info_version, parse_version_output,
-    read_version,
+    FLATPAK_APP_ID, SUBPROCESS_TIMEOUT, appimage_search_dirs, appimage_version_key,
+    classify_binary, detect_binary, executable_names, find_appimage_in, find_in_path,
+    find_native_binary, flatpak_app_version, is_executable_file, known_locations,
+    parse_flatpak_info_version, parse_version_output, read_version,
 };
 pub use error::{HostError, Result};
 pub use hints::{RELEASES_URL, detect_package_managers, install_hints, install_hints_for};

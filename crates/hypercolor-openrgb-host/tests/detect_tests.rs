@@ -2,8 +2,8 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use hypercolor_openrgb_host::{
-    BinaryKind, classify_binary, executable_names, find_appimage_in, find_in_path,
-    is_executable_file, parse_flatpak_info_version, parse_version_output, read_version,
+    BinaryKind, appimage_version_key, classify_binary, executable_names, find_appimage_in,
+    find_in_path, is_executable_file, parse_flatpak_info_version, parse_version_output,
 };
 
 fn write_executable(path: &Path, body: &str) {
@@ -94,15 +94,40 @@ fn classify_recognises_appimages_case_insensitively() {
 }
 
 #[test]
-fn find_appimage_in_picks_the_newest_named_openrgb_appimage() {
+fn find_appimage_in_picks_the_newest_version_regardless_of_case() {
     let dir = tempfile::tempdir().expect("tempdir");
-    write_executable(&dir.path().join("OpenRGB_0.9_x86_64.AppImage"), "");
+    write_executable(&dir.path().join("openrgb_0.9_x86_64.appimage"), "");
     write_executable(&dir.path().join("OpenRGB_1.0rc3_x86_64.AppImage"), "");
+    write_executable(&dir.path().join("OpenRGB_1.0rc2_x86_64.AppImage"), "");
     write_executable(&dir.path().join("Other_2.0.AppImage"), "");
     std::fs::write(dir.path().join("OpenRGB_notes.txt"), "").expect("write");
     let found = find_appimage_in(dir.path()).expect("appimage found");
     assert_eq!(found, dir.path().join("OpenRGB_1.0rc3_x86_64.AppImage"));
     assert_eq!(find_appimage_in(&dir.path().join("missing")), None);
+}
+
+#[test]
+fn find_appimage_in_prefers_versioned_names_over_unversioned() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_executable(&dir.path().join("zzz-openrgb.appimage"), "");
+    write_executable(&dir.path().join("OpenRGB.AppImage"), "");
+    write_executable(&dir.path().join("OpenRGB_0.9_x86_64.AppImage"), "");
+    let found = find_appimage_in(dir.path()).expect("appimage found");
+    assert_eq!(found, dir.path().join("OpenRGB_0.9_x86_64.AppImage"));
+}
+
+#[test]
+fn appimage_version_key_parses_release_segments() {
+    assert_eq!(
+        appimage_version_key("openrgb_1.0rc3_x86_64.appimage"),
+        Some(vec![1, 0, 3])
+    );
+    assert_eq!(
+        appimage_version_key("openrgb-0.9-x86_64.appimage"),
+        Some(vec![0, 9])
+    );
+    assert_eq!(appimage_version_key("openrgb.appimage"), None);
+    assert_eq!(appimage_version_key("openrgb_x86_64.appimage"), None);
 }
 
 const RC3_BANNER: &str = "OpenRGB 0.9+ (1.0rc3), for controlling RGB lighting.\n  Version:\t\t 0.9+ (1.0rc3)\n  Build Date\t\t Thu, 13 Aug 2026 11:06:45 +0000\n  Git Commit ID\t\t \n  Git Commit Date\t \n";
@@ -142,6 +167,8 @@ fn flatpak_info_version_parsing() {
 #[cfg(unix)]
 #[tokio::test]
 async fn read_version_runs_the_binary_and_tolerates_failures() {
+    use hypercolor_openrgb_host::read_version;
+
     let dir = tempfile::tempdir().expect("tempdir");
     let good = dir.path().join("openrgb-good");
     write_executable(
