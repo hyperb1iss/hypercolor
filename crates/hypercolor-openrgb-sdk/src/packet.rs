@@ -78,11 +78,43 @@ impl PacketId {
         }
     }
 
-    /// Whether Hypercolor clients are forbidden from emitting this packet.
+    /// Whether Hypercolor clients are forbidden from emitting this packet
+    /// under the default (most restrictive) client policy.
+    ///
+    /// `SAVEMODE` writes device NVRAM and is forbidden unconditionally.
+    /// `RESIZEZONE` is forbidden by default and only permitted when a
+    /// [`ClientPacketPolicy`] explicitly allows zone resizes.
     #[must_use]
     pub const fn forbidden_for_client(self) -> bool {
-        matches!(self, Self::ResizeZone | Self::SaveMode)
+        !self.permitted_for_client(ClientPacketPolicy::DEFAULT)
     }
+
+    /// Whether a client operating under `policy` may emit this packet.
+    #[must_use]
+    pub const fn permitted_for_client(self, policy: ClientPacketPolicy) -> bool {
+        match self {
+            Self::SaveMode => false,
+            Self::ResizeZone => policy.allow_zone_resize,
+            _ => true,
+        }
+    }
+}
+
+/// Opt-in gates for client packets that mutate server-side device state.
+///
+/// The default policy forbids every gated opcode. `SAVEMODE` has no gate and
+/// is refused regardless of policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClientPacketPolicy {
+    /// Permit `RESIZEZONE`, which changes a zone's LED count on the server.
+    pub allow_zone_resize: bool,
+}
+
+impl ClientPacketPolicy {
+    /// The most restrictive policy: no gated opcodes are permitted.
+    pub const DEFAULT: Self = Self {
+        allow_zone_resize: false,
+    };
 }
 
 /// Decoded SDK packet header.
@@ -246,7 +278,8 @@ impl PacketDecoder {
     }
 }
 
-/// Encode a client packet while enforcing Hypercolor's forbidden opcode list.
+/// Encode a client packet while enforcing Hypercolor's forbidden opcode list
+/// under the default [`ClientPacketPolicy`].
 ///
 /// # Errors
 ///
@@ -256,7 +289,28 @@ pub fn encode_client_packet(
     packet_id: PacketId,
     payload: Vec<u8>,
 ) -> Result<Vec<u8>> {
-    if packet_id.forbidden_for_client() {
+    encode_client_packet_with_policy(
+        device_index,
+        packet_id,
+        payload,
+        ClientPacketPolicy::DEFAULT,
+    )
+}
+
+/// Encode a client packet while enforcing the forbidden opcode list under an
+/// explicit [`ClientPacketPolicy`].
+///
+/// # Errors
+///
+/// Returns an error for packets the policy does not permit or for oversized
+/// payloads.
+pub fn encode_client_packet_with_policy(
+    device_index: u32,
+    packet_id: PacketId,
+    payload: Vec<u8>,
+    policy: ClientPacketPolicy,
+) -> Result<Vec<u8>> {
+    if !packet_id.permitted_for_client(policy) {
         return Err(OpenRgbError::ForbiddenPacket(packet_id));
     }
     if payload.len() > MAX_PACKET_PAYLOAD_SIZE {
@@ -371,6 +425,18 @@ pub fn update_zone_leds_payload(zone_index: u32, colors: &[RgbColor]) -> Result<
         payload.extend_from_slice(&color.to_wire_bytes());
     }
     Ok(payload)
+}
+
+/// Build the payload for `RESIZEZONE`: the zone index followed by the new
+/// LED count, both little-endian 32-bit integers. The controller index
+/// travels in the packet header and the server sends no response; it
+/// re-announces the device list instead.
+#[must_use]
+pub fn resize_zone_payload(zone_index: u32, new_size: u32) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(8);
+    payload.extend_from_slice(&zone_index.to_le_bytes());
+    payload.extend_from_slice(&new_size.to_le_bytes());
+    payload
 }
 
 /// Build the payload for `UPDATEMODE`.

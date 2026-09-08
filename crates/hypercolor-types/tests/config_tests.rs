@@ -726,18 +726,27 @@ schema_version = 5
 
 [drivers.openrgb]
 enabled = false
-socket = "/run/openrgb.sock"
-zones = ["keyboard", "mouse"]
+endpoints = ["127.0.0.1:6742"]
+
+[drivers.openrgb.ownership]
+mode = "detector_partitioned"
+allowed_detector_classes = ["hid", "virtual"]
 "#,
     )
     .expect("deserialize driver registry config");
 
     let openrgb = &config.drivers["openrgb"];
     assert!(!openrgb.enabled);
-    assert_eq!(openrgb.settings["socket"], "/run/openrgb.sock");
     assert_eq!(
-        openrgb.settings["zones"],
-        serde_json::json!(["keyboard", "mouse"])
+        openrgb.settings["endpoints"],
+        serde_json::json!(["127.0.0.1:6742"])
+    );
+    assert_eq!(
+        openrgb.settings["ownership"],
+        serde_json::json!({
+            "mode": "detector_partitioned",
+            "allowed_detector_classes": ["hid", "virtual"]
+        })
     );
 }
 

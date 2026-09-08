@@ -50,6 +50,14 @@ pub enum OpenRgbError {
     #[error("OpenRGB packet {0:?} is forbidden for Hypercolor clients")]
     ForbiddenPacket(PacketId),
 
+    /// A zone index was not present on the controller.
+    #[error("OpenRGB zone {zone_index} does not exist; controller reports {zone_count} zones")]
+    ZoneIndexOutOfRange { zone_index: u32, zone_count: usize },
+
+    /// The zone's type or advertised bounds do not allow a resize.
+    #[error("OpenRGB zone {zone_index} is not resizable")]
+    ZoneNotResizable { zone_index: u32 },
+
     /// A request received a different packet ID than expected.
     #[error("unexpected OpenRGB packet: expected {expected:?}, got {actual:?}")]
     UnexpectedPacket {

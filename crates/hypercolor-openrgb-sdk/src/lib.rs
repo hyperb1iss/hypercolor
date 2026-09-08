@@ -12,9 +12,10 @@ pub mod types;
 pub use client::{OpenRgbClient, OpenRgbClientConfig};
 pub use error::{OpenRgbError, Result};
 pub use packet::{
-    CLIENT_MAX_PROTOCOL_VERSION, HEADER_LEN, MAGIC, MAX_PACKET_PAYLOAD_SIZE, MIN_PROTOCOL_VERSION,
-    Packet, PacketDecoder, PacketHeader, PacketId, REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION,
-    encode_client_packet,
+    CLIENT_MAX_PROTOCOL_VERSION, ClientPacketPolicy, HEADER_LEN, MAGIC, MAX_PACKET_PAYLOAD_SIZE,
+    MIN_PROTOCOL_VERSION, Packet, PacketDecoder, PacketHeader, PacketId,
+    REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION, encode_client_packet,
+    encode_client_packet_with_policy, resize_zone_payload,
 };
 pub use parser::parse_controller_data;
 pub use types::{
