@@ -99,7 +99,11 @@ fn default_endpoints() -> Vec<SocketAddr> {
 }
 
 fn timeout_setting(millis: Option<u64>) -> Duration {
-    Duration::from_millis(millis.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1, MAX_TIMEOUT_MS))
+    Duration::from_millis(
+        millis
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .clamp(1, MAX_TIMEOUT_MS),
+    )
 }
 
 /// How one endpoint answered the probe.
@@ -186,13 +190,13 @@ async fn probe_endpoint(endpoint: SocketAddr, config: &OpenRgbProbeConfig) -> Op
 }
 
 #[cfg(not(feature = "builtin-drivers"))]
-async fn probe_endpoint(
+fn probe_endpoint(
     _endpoint: SocketAddr,
     _config: &OpenRgbProbeConfig,
-) -> OpenRgbProbeOutcome {
-    OpenRgbProbeOutcome::Unreachable {
+) -> std::future::Ready<OpenRgbProbeOutcome> {
+    std::future::ready(OpenRgbProbeOutcome::Unreachable {
         error: "the OpenRGB SDK is not compiled into this daemon".to_owned(),
-    }
+    })
 }
 
 /// Bridge routes the daemon will not write through, with their reasons.

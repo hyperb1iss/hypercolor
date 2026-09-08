@@ -1,6 +1,8 @@
 //! The `openrgb` diagnose check (Spec 81 §2.4) against a fake OpenRGB SDK
 //! server.
 
+#![cfg(feature = "builtin-drivers")]
+
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{LazyLock, Mutex};
