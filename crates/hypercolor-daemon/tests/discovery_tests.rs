@@ -96,6 +96,160 @@ struct CountingBackend {
     disconnect_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+struct RefreshedTopologyBackend {
+    info: Arc<StdMutex<DeviceInfo>>,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for RefreshedTopologyBackend {
+    fn adopt_device(&self, _discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "mock".into(),
+            name: "Topology".into(),
+            description: "Topology refresh fixture".into(),
+        }
+    }
+
+    async fn connected_device_info(
+        &self,
+        _id: &DeviceId,
+    ) -> Result<Option<DeviceInfo>, DeviceError> {
+        Ok(Some(self.info.lock().expect("topology lock").clone()))
+    }
+
+    async fn connect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+        panic!("a connected device must refresh without reconnecting")
+    }
+
+    async fn disconnect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+        panic!("a topology refresh must preserve the connection")
+    }
+
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "discovery fixture verifies registry, logical route, and layout together"
+)]
+async fn rediscovery_reconciles_live_topology_over_scanner_metadata() {
+    let mut info = smbus_device_info("Topology fixture");
+    info.origin.backend_id = "mock".into();
+    info.segments[0].led_count = 3;
+    info.capabilities.led_count = 3;
+    let fingerprint = DeviceFingerprint::from_persisted("smbus:asus:topology");
+    let layout_id = DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+    let device_id = info.id;
+    let registry = DeviceRegistry::new();
+    registry
+        .add_with_fingerprint(info.clone(), fingerprint.clone())
+        .await;
+    registry.set_state(&device_id, DeviceState::Connected).await;
+    let lifecycle = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    {
+        let mut lifecycle = lifecycle.lock().await;
+        let _ = lifecycle.on_discovered(device_id, &info, Some(&fingerprint));
+        lifecycle
+            .on_connected(device_id)
+            .expect("connected fixture");
+    }
+    let live_info = Arc::new(StdMutex::new(info.clone()));
+    let mut scanned_info = info;
+    scanned_info.segments[0].led_count = 5;
+    scanned_info.capabilities.led_count = 5;
+    let mut drivers = DriverModuleRegistry::new();
+    drivers
+        .register(StaticAsusDiscoveryDriver {
+            device: DiscoveredDevice {
+                info: scanned_info,
+                fingerprint,
+                connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+                metadata: HashMap::new(),
+                claim: None,
+            },
+        })
+        .expect("register discovery");
+    let temp = tempfile::tempdir().expect("temp directory");
+    let mut layout = layout_with_device(&layout_id);
+    layout.zones[0].id = format!("auto-{}-main", layout_id.replace(':', "-"));
+    layout.zones[0].zone_name = Some("Main".into());
+    let runtime = make_runtime_with_registry_and_layout(
+        registry,
+        lifecycle,
+        temp.path().join("layouts.json"),
+        temp.path().join("runtime-state.json"),
+        Some(drivers),
+        None,
+        layout,
+        HashSet::new(),
+    );
+    runtime
+        .backend_manager
+        .lock()
+        .await
+        .register_backend(Arc::new(RefreshedTopologyBackend {
+            info: Arc::clone(&live_info),
+        }));
+
+    for expected in [3, 5] {
+        {
+            let mut info = live_info.lock().expect("topology lock");
+            info.segments[0].led_count = expected;
+            info.capabilities.led_count = expected;
+        }
+        let scan = execute_discovery_scan(
+            runtime.runtime.clone(),
+            Arc::clone(&runtime.driver_registry),
+            Arc::clone(&runtime.driver_host),
+            Arc::new(HypercolorConfig::default()),
+            vec![DiscoveryTarget::driver("asus")],
+            Duration::from_millis(50),
+        );
+        tokio::pin!(scan);
+        let renderer = runtime.layout.layout_publication_test_executor();
+        timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    _ = &mut scan => break,
+                    () = tokio::time::sleep(Duration::from_millis(1)) => {
+                        renderer.execute_next_layout_publication().await.expect("publish layout");
+                    }
+                }
+            }
+        })
+        .await
+        .expect("scan completes");
+        let tracked = runtime
+            .device_registry
+            .get(&device_id)
+            .await
+            .expect("tracked device");
+        assert_eq!(tracked.info.total_led_count(), expected);
+        assert_eq!(tracked.state, DeviceState::Connected);
+        assert_eq!(
+            runtime
+                .logical_devices
+                .read()
+                .await
+                .get(&layout_id)
+                .expect("logical route")
+                .led_count,
+            expected
+        );
+        assert_eq!(
+            runtime.layout.current().zones[0].topology.led_count(),
+            expected
+        );
+    }
+}
+
 struct CachePrimingBackend {
     expected_device_id: DeviceId,
     expected_fingerprint: DeviceFingerprint,

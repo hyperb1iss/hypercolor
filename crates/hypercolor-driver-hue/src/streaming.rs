@@ -30,6 +30,19 @@ pub struct HueStreamSession {
 }
 
 impl HueStreamSession {
+    pub(crate) fn update_channels(&mut self, channels: Vec<HueChannel>) -> Result<()> {
+        // Validate before replacing the map used by the live session.
+        encode_packet_into(
+            &mut Vec::new(),
+            &self.config_id,
+            self.sequence,
+            &channels,
+            &[],
+        )?;
+        self.channels = channels;
+        Ok(())
+    }
+
     /// Establish a DTLS connection to a Hue bridge entertainment endpoint.
     ///
     /// # Errors
@@ -117,6 +130,26 @@ impl HueStreamSession {
             self.channels.as_slice(),
             colors,
         )?;
+        self.send_encoded_frame().await
+    }
+
+    /// Send one RGB frame without host-side CIE color conversion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when packet encoding fails or the DTLS write times out.
+    pub async fn send_rgb_frame(&mut self, colors: &[[u8; 3]]) -> Result<()> {
+        encode_rgb_packet_into(
+            &mut self.packet_buf,
+            &self.config_id,
+            self.sequence,
+            self.channels.as_slice(),
+            colors,
+        )?;
+        self.send_encoded_frame().await
+    }
+
+    async fn send_encoded_frame(&mut self) -> Result<()> {
         self.conn
             .write(self.packet_buf.as_slice(), Some(HUE_STREAM_WRITE_TIMEOUT))
             .await?;
@@ -148,6 +181,50 @@ pub fn encode_packet_into(
     channels: &[HueChannel],
     colors: &[CieXyb],
 ) -> Result<()> {
+    encode_channel_packet_into(packet_buf, config_id, sequence, channels, 0x01, |index| {
+        colors.get(index).map_or([0; 3], |color| {
+            [
+                encode_unit_u16(color.x),
+                encode_unit_u16(color.y),
+                encode_unit_u16(color.brightness),
+            ]
+        })
+    })
+}
+
+/// Encode one RGB `HueStream` v2 packet into a reusable buffer.
+///
+/// Expands each 8-bit RGB channel across the full 16-bit wire range. Missing
+/// colors are black, and colors beyond the entertainment channel map are ignored.
+///
+/// # Errors
+///
+/// Returns an error when the entertainment config ID is not a 36-byte ASCII
+/// UUID string or the packet would exceed the Hue channel limit.
+pub fn encode_rgb_packet_into(
+    packet_buf: &mut Vec<u8>,
+    config_id: &str,
+    sequence: u8,
+    channels: &[HueChannel],
+    colors: &[[u8; 3]],
+) -> Result<()> {
+    encode_channel_packet_into(packet_buf, config_id, sequence, channels, 0x00, |index| {
+        colors
+            .get(index)
+            .copied()
+            .unwrap_or([0; 3])
+            .map(|channel| u16::from(channel) * 257)
+    })
+}
+
+fn encode_channel_packet_into(
+    packet_buf: &mut Vec<u8>,
+    config_id: &str,
+    sequence: u8,
+    channels: &[HueChannel],
+    color_space: u8,
+    color_at: impl Fn(usize) -> [u16; 3],
+) -> Result<()> {
     if !config_id.is_ascii() || config_id.len() != 36 {
         bail!("Hue entertainment config ID must be a 36-byte ASCII UUID");
     }
@@ -164,23 +241,18 @@ pub fn encode_packet_into(
     packet_buf[11] = sequence;
     packet_buf[12] = 0x00;
     packet_buf[13] = 0x00;
-    packet_buf[14] = 0x01;
+    packet_buf[14] = color_space;
     packet_buf[15] = 0x00;
     packet_buf[16..52].copy_from_slice(config_id.as_bytes());
 
     for (index, channel) in channels.iter().enumerate() {
-        let color = colors.get(index).copied().unwrap_or(CieXyb {
-            x: 0.0,
-            y: 0.0,
-            brightness: 0.0,
-        });
         let offset = HUESTREAM_HEADER_SIZE + index * CHANNEL_BYTES;
 
         packet_buf[offset] = channel.id;
-        packet_buf[offset + 1..offset + 3].copy_from_slice(&encode_unit_u16(color.x).to_be_bytes());
-        packet_buf[offset + 3..offset + 5].copy_from_slice(&encode_unit_u16(color.y).to_be_bytes());
-        packet_buf[offset + 5..offset + 7]
-            .copy_from_slice(&encode_unit_u16(color.brightness).to_be_bytes());
+        for (component, value) in color_at(index).into_iter().enumerate() {
+            let start = offset + 1 + component * 2;
+            packet_buf[start..start + 2].copy_from_slice(&value.to_be_bytes());
+        }
     }
 
     Ok(())
