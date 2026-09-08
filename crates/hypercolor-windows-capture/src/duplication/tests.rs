@@ -894,7 +894,10 @@ fn abandoned_exact_gpu_surfaces_reclaim_under_sustained_pressure() {
     fixture.outcomes.clear();
 
     for sequence in 42..74 {
-        let publication = (0..64)
+        // A busy slot crosses at most two GPU boundaries: producer readiness,
+        // then the abandoned release. Observe those fences before retrying so
+        // concurrent WARP scheduling cannot consume an arbitrary polling budget.
+        let publication = (0..3)
             .find_map(|_| {
                 let outcomes = super::gpu_surface::fixture::republish(&mut fixture, sequence)
                     .expect("abandoned slots remain safely reclaimable");
@@ -903,7 +906,8 @@ fn abandoned_exact_gpu_surfaces_reclaim_under_sustained_pressure() {
                     crate::GpuSurfacePublishOutcome::Busy(_) => None,
                 });
                 if publication.is_none() {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    super::gpu_surface::fixture::wait_for_surface_progress(&fixture.plan)
+                        .expect("queued native work completes before retrying publication");
                 }
                 publication
             })

@@ -2609,6 +2609,45 @@ pub(super) mod fixture {
         publication.shared.texture_handle.borrowed().as_raw()
     }
 
+    pub(crate) fn wait_for_surface_progress(plan: &PreparedGpuSurfacePlan) -> CaptureResult<()> {
+        use windows::Win32::Foundation::WAIT_OBJECT_0;
+        use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+
+        for slot in plan.routes.iter().flat_map(|route| &route.slots) {
+            let value = match slot.publication.state.load(Ordering::Acquire) {
+                USE_UNCLAIMED => slot.publication.synchronization.producer_ready_value,
+                USE_RELEASE_QUEUED => slot.publication.synchronization.consumer_release_value,
+                _ => continue,
+            };
+            // SAFETY: default security and no name create a private auto-reset event.
+            let event = OwnedHandle::new(
+                unsafe { CreateEventW(None, false, false, None) }
+                    .map_err(|error| CaptureError::windows("create fixture fence event", error))?,
+            )?;
+            // SAFETY: the plan owns the fence and event remains live through the wait.
+            unsafe {
+                slot.publication
+                    .shared
+                    .fence
+                    .SetEventOnCompletion(value, event.0)
+            }
+            .map_err(|error| CaptureError::windows("arm fixture fence event", error))?;
+            // SAFETY: event is a valid owned handle. The bound diagnoses a stalled
+            // native queue; it is not a publication cadence or polling budget.
+            let result = unsafe { WaitForSingleObject(event.0, 10_000) };
+            if result != WAIT_OBJECT_0 {
+                return Err(CaptureError::windows(
+                    "wait for fixture GPU progress",
+                    format!(
+                        "fence {value}, wait {result:?}, slots {:?}",
+                        slot_diagnostics(plan)
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn slot_diagnostics(
         plan: &PreparedGpuSurfacePlan,
     ) -> Vec<(usize, u8, u64, Option<u64>)> {
