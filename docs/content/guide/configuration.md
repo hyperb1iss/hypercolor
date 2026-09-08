@@ -124,7 +124,7 @@ json_response       = false   # Use JSON responses instead of SSE framing
 sse_keep_alive_secs = 15      # SSE heartbeat interval
 ```
 
-Once enabled, the MCP server exposes 17 tools, 5 resources, and 3 prompts at `http://localhost:9420/mcp`.
+Once enabled, the MCP server exposes 18 tools, 5 resources, and 4 prompts at `http://localhost:9420/mcp`.
 
 ---
 

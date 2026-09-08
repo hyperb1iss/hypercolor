@@ -1,6 +1,6 @@
 +++
 title = "MCP server"
-description = "Hypercolor's Model Context Protocol server: 17 tools, 5 resources, 3 prompts over Streamable HTTP. Canonical docs live in Agents."
+description = "Hypercolor's Model Context Protocol server: 18 tools, 5 resources, 4 prompts over Streamable HTTP. Canonical docs live in Agents."
 weight = 80
 +++
 
@@ -16,9 +16,9 @@ shapes, and the prompt templates) lives in the **Agents** section. Start there:
 
 - [Agents & MCP overview](@/agents/_index.md): MCP vs CLI and the three primitives
 - [MCP setup](@/agents/mcp-setup.md): Claude Code / Desktop / Cursor / Zed config
-- [Tools reference](@/agents/tools-reference.md): all 17 tools, full JSON schema
+- [Tools reference](@/agents/tools-reference.md): all 18 tools, full JSON schema
 - [Resources reference](@/agents/resources-reference.md): the 5 `hypercolor://` resources
-- [Prompt templates](@/agents/prompt-templates.md): the 3 shipped prompts
+- [Prompt templates](@/agents/prompt-templates.md): the 4 shipped prompts
   {% </callout> %}
 
 ## The transport at a glance
@@ -31,9 +31,9 @@ HTTP with optional Server-Sent Events for streaming.
 | ------------- | ------------------------------------------------------- |
 | Transport     | Streamable HTTP (`streamable-http`)                     |
 | Default URL   | `http://localhost:9420/mcp`                             |
-| Tools         | 17                                                      |
+| Tools         | 18                                                      |
 | Resources     | 5 (`state`, `devices`, `effects`, `audio`, `scenes`)    |
-| Prompts       | 3 (`mood_lighting`, `troubleshoot`, `setup_automation`) |
+| Prompts       | 4 (`mood_lighting`, `troubleshoot`, `setup_automation`, `openrgb_setup`) |
 | Default state | **disabled**                                            |
 
 The server advertises tools, resources, and prompts in its capabilities and ships
@@ -90,16 +90,16 @@ The three MCP primitives map cleanly onto Hypercolor's engine.
 
 {% <mermaid> %}
 graph TD
-A[MCP client] -->|tools| T[17 tools: set_effect, get_status, ...]
+A[MCP client] -->|tools| T[18 tools: set_effect, get_status, ...]
 A -->|resources| R[5 resources: hypercolor://state, devices, ...]
-A -->|prompts| P[3 prompts: mood_lighting, troubleshoot, setup_automation]
+A -->|prompts| P[4 prompts: mood_lighting, troubleshoot, setup_automation, openrgb_setup]
 T --> E[Daemon engine + event bus]
 R --> E
 {% </mermaid> %}
 
-**Tools** are actions and reads. Eight are listed as `read_only` (`list_effects`,
+**Tools** are actions and reads. Nine are listed as `read_only` (`list_effects`,
 `get_devices`, `get_status`, `list_scenes`, `get_audio_state`, `get_sensor_data`,
-`get_layout`, `diagnose`), and the mutating ones carry `idempotent` annotations so
+`get_layout`, `diagnose`, `openrgb_status`), and the mutating ones carry `idempotent` annotations so
 agents can reason about retries. `set_effect`, `set_color`, `create_scene`, and
 `set_display_face` are non-idempotent because repeated calls replace or add state.
 
@@ -109,7 +109,8 @@ per render frame) so it is a summary surface, not a spectrum stream.
 
 **Prompts** are guided workflows: `mood_lighting` (vibe to effect), `troubleshoot`
 (diagnostics-driven fixes, the only prompt with a required argument: `issue`), and
-`setup_automation` (scenes for external automation).
+`setup_automation` (scenes for external automation), and `openrgb_setup`
+(native-first hardware coverage).
 
 ### Tool catalog
 
@@ -138,6 +139,7 @@ input schemas, defaults, enums, and a worked call plus response for each tool.
 | `set_display_face` | No        | Yes         | No         |
 | `get_layout`       | Yes       | No          | Yes        |
 | `diagnose`         | Yes       | No          | Yes        |
+| `openrgb_status`   | Yes       | No          | Yes        |
 
 `set_effect` resolves an effect by exact ID, exact case-insensitive name, or a
 unique case-insensitive name substring. Scene, zone, layer, device, and display

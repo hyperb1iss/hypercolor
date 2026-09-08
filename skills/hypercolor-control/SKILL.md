@@ -13,7 +13,7 @@ description: >-
 
 Hypercolor exposes three control surfaces. Choose the right one before acting.
 
-- **MCP tools** are the canonical agent surface: seventeen typed tools the daemon serves directly, reachable in Claude Code as `mcp__hypercolor__<tool>`. Prefer them when they are connected.
+- **MCP tools** are the canonical agent surface: eighteen typed tools the daemon serves directly, reachable in Claude Code as `mcp__hypercolor__<tool>`. Prefer them when they are connected.
 - **Bare `hypercolor`** is the Rust system CLI for the daemon on `localhost:9420`. It covers everything MCP does not: devices, driver and device control surfaces, layouts, library, audio, permissions, config, and daemon lifecycle.
 - **`bunx hypercolor`** inside an effect workspace is the Bun authoring CLI for building, validating, and installing HTML effects.
 
@@ -23,7 +23,7 @@ The daemon mounts its MCP server over Streamable HTTP at `/mcp`, and only when t
 daemon config carries `[mcp] enabled = true`. Until that flag is set the endpoint 404s
 and the CLI is the only route in.
 
-Seventeen tools, five resources, three prompt templates. Selector arguments (`query`,
+Eighteen tools, five resources, four prompt templates. Selector arguments (`query`,
 `name`, `zone`, `layer`, `device`, `effect_id`) all resolve in one fixed order: exact
 serialized ID, then exact case-insensitive name, then a unique case-insensitive name
 substring. An ambiguous substring fails with the candidate list instead of guessing.
@@ -38,6 +38,7 @@ Read-only:
 - `get_audio_state` (no arguments): levels, beat detection, spectrum
 - `get_sensor_data` (`label` optional): CPU, GPU, memory, raw component temperatures
 - `diagnose` (no arguments): canonical checks, summary counts, captured status snapshot
+- `openrgb_status` (no arguments): host installation, SDK probes, permissions, ownership, and native-first coverage
 
 Mutating, not destructive:
 
@@ -58,7 +59,7 @@ before calling them:
 
 Resources: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`,
 `hypercolor://scenes`, `hypercolor://audio`. Prompt templates: `mood_lighting`,
-`troubleshoot`, `setup_automation`.
+`troubleshoot`, `setup_automation`, `openrgb_setup`.
 
 ### Control values have two wire forms
 
@@ -201,6 +202,19 @@ Beyond effects, scenes, and brightness, the CLI also carries `devices`, `control
 `config`, `diagnose`, `completions`, and `tui`. Run `hypercolor <command> --help` before
 guessing at a subcommand or flag.
 
+### OpenRGB fallback setup
+
+Call `openrgb_status` or use the `openrgb_setup` prompt before recommending the
+bridge. The CLI exposes `hypercolor openrgb status`, `hints`, `partition`,
+`start`, `stop`, and `resize <device> <zone> <size>`. Native drivers retain
+ownership until the user disables them. Ask for hub LED counts before resizing.
+
+Partition, start, and stop verify the daemon instance on the local filesystem;
+a forwarded remote daemon cannot authorize local process control. Resize saves
+a single zone without overwriting concurrent updates to other zones. A saved
+change may await bridge reconciliation; do not report physical output as
+verified until it has been checked.
+
 ### Host-input and screen-capture permissions
 
 Screen-reactive and keyboard-reactive effects need OS-level authorization that the
@@ -310,7 +324,7 @@ will pick up on boot or via `hypercolor effects rescan`.
 ## Behavioral guidance
 
 - Inspect first. Do not guess the active scene, its zones, or brightness.
-- Reach for the MCP tools when they are connected, and the CLI when they are not or when the work is outside their seventeen.
+- Reach for the MCP tools when they are connected, and the CLI when they are not or when the work is outside their eighteen.
 - Prefer targeted actions over restarting the daemon.
 - Prefer `pause` over `stop`, and `clear_zone` over a whole-scene clear, whenever the narrower action does the job.
 - Validate HTML artifacts before installing them.
