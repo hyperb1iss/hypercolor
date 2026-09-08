@@ -26,8 +26,9 @@ worked example (three controllers, four LCDs, two AIO rings, DRAM, strips, strim
 }
 ```
 
-`references/rigs/o11d-evo-rgb-reversed-bridge-example.json` is the same rig with the
-Nollie, the DRAM, and the motherboard driven through the OpenRGB bridge.
+`references/rigs/o11d-evo-rgb-reversed-bridge-example.json` is an older test snapshot with
+the Nollie, DRAM, and motherboard driven through the OpenRGB bridge. Its Corsair
+rings and radiator ordering predate the native example's geometry corrections.
 
 ## Controllers and bindings
 
@@ -78,8 +79,16 @@ directly from their segment:
 
 `kind` is one of `display` (matrix sized to the panel, `lcd-display` preset), `ring`
 (`count`, optional `start_angle`, `direction`), `vstrip` / `hstrip` (`count`, optional
-`direction`), or `point`. `segment` must be the device segment name exactly as
+`direction`), `custom` (explicit LED positions), or `point`. `segment` must be the device segment name exactly as
 `GET /devices/{id}` reports it. `mirror`, `mirror_y`, and `rot` work here too.
+
+Custom zones require a positive integer `count` and exactly that many `positions`
+(`{"x": 0.0, "y": 1.0}`), in device LED order. Each coordinate must be a finite
+number in `[0, 1]`. Use `circular: true` for a ring-shaped footprint; the default
+footprint is rectangular. The generator preserves position order and applies
+`mirror` and `mirror_y` before the placement rotation. Raw-zone `rot` is the final
+canvas rotation in radians, including for board anchors; it does not inherit the
+board flip. Keep the map's source URL with the rig when using measured coordinates.
 
 ## Bridged hubs
 
@@ -159,3 +168,9 @@ When the user reports what they see, translate it before touching the file:
 
 A 180° rotation reverses both axes of a matrix. If the user says "still wrong" after a
 π rotation, the real fix was a single axis; revert and use `mirror` or `mirror_y`.
+
+## Generator regression checks
+
+From the repository root, run `uv run python -m unittest discover -s skills/rig-setup/tests -v`.
+The tests check generated geometry and SVG placement; they do not establish physical
+fan identity or confirm the pending Corsair mount rotation.

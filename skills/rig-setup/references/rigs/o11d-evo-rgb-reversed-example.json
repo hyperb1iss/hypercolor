@@ -130,14 +130,14 @@
           "slot": "uni-fan-tl-wireless-lcd-1-fan-1",
           "template": "lian-li-tl-fan",
           "place": "side",
-          "index": 0,
+          "index": 1,
           "mirror": true
         },
         {
           "slot": "uni-fan-tl-wireless-lcd-1-fan-2",
           "template": "lian-li-tl-fan",
           "place": "side",
-          "index": 1,
+          "index": 0,
           "mirror": true
         },
         {
@@ -187,7 +187,7 @@
         60
       ],
       "place": "side",
-      "index": 0
+      "index": 1
     },
     {
       "layout_device_id": "lianli:1cbe:0006:0bf39ac27b1e0a66",
@@ -204,7 +204,7 @@
         60
       ],
       "place": "side",
-      "index": 1
+      "index": 0
     },
     {
       "layout_device_id": "lianli:1cbe:0006:315a32c2531e0a66",
@@ -243,25 +243,209 @@
       "layout_device_id": "corsair:1b1c:0c3f:cbf399381f573250bbce889a5773c5ea",
       "segment": "iCUE LINK Cooler Pump LCD (4E0CEB473C47F06BCC50D33B)",
       "name": "Corsair Pump Ring",
-      "kind": "ring",
+      "kind": "custom",
       "count": 24,
       "size_mm": [
         66,
         66
       ],
-      "anchor": "cpu_socket"
+      "anchor": "cpu_socket",
+      "positions": [
+        {
+          "x": 0.375,
+          "y": 1.0
+        },
+        {
+          "x": 0.25,
+          "y": 0.9375
+        },
+        {
+          "x": 0.125,
+          "y": 0.875
+        },
+        {
+          "x": 0.0625,
+          "y": 0.75
+        },
+        {
+          "x": 0.0,
+          "y": 0.625
+        },
+        {
+          "x": 0.0,
+          "y": 0.5
+        },
+        {
+          "x": 0.0,
+          "y": 0.375
+        },
+        {
+          "x": 0.0625,
+          "y": 0.25
+        },
+        {
+          "x": 0.125,
+          "y": 0.125
+        },
+        {
+          "x": 0.25,
+          "y": 0.0625
+        },
+        {
+          "x": 0.375,
+          "y": 0.0
+        },
+        {
+          "x": 0.5,
+          "y": 0.0
+        },
+        {
+          "x": 0.625,
+          "y": 0.0
+        },
+        {
+          "x": 0.75,
+          "y": 0.0625
+        },
+        {
+          "x": 0.875,
+          "y": 0.125
+        },
+        {
+          "x": 0.9375,
+          "y": 0.25
+        },
+        {
+          "x": 1.0,
+          "y": 0.375
+        },
+        {
+          "x": 1.0,
+          "y": 0.5
+        },
+        {
+          "x": 1.0,
+          "y": 0.625
+        },
+        {
+          "x": 0.9375,
+          "y": 0.75
+        },
+        {
+          "x": 0.875,
+          "y": 0.875
+        },
+        {
+          "x": 0.75,
+          "y": 0.9375
+        },
+        {
+          "x": 0.625,
+          "y": 1.0
+        },
+        {
+          "x": 0.5,
+          "y": 1.0
+        }
+      ],
+      "rot": 1.5707963267948966,
+      "circular": true
     },
     {
       "layout_device_id": "corsair:1b1c:0c3f:cbf399381f573250bbce889a5773c5ea",
       "segment": "iCUE LINK H-Series AIO (0242EC0E0018B364036A7A0100)",
       "name": "Corsair AIO Ring",
-      "kind": "ring",
+      "kind": "custom",
       "count": 20,
       "size_mm": [
         80,
         80
       ],
-      "anchor": "cpu_socket"
+      "anchor": "cpu_socket",
+      "positions": [
+        {
+          "x": 1.0,
+          "y": 0.6666666666666666
+        },
+        {
+          "x": 0.8333333333333334,
+          "y": 0.8333333333333334
+        },
+        {
+          "x": 0.6666666666666666,
+          "y": 1.0
+        },
+        {
+          "x": 0.5,
+          "y": 1.0
+        },
+        {
+          "x": 0.3333333333333333,
+          "y": 1.0
+        },
+        {
+          "x": 0.16666666666666666,
+          "y": 0.8333333333333334
+        },
+        {
+          "x": 0.0,
+          "y": 0.6666666666666666
+        },
+        {
+          "x": 0.0,
+          "y": 0.5
+        },
+        {
+          "x": 0.0,
+          "y": 0.3333333333333333
+        },
+        {
+          "x": 0.16666666666666666,
+          "y": 0.16666666666666666
+        },
+        {
+          "x": 0.3333333333333333,
+          "y": 0.0
+        },
+        {
+          "x": 0.5,
+          "y": 0.0
+        },
+        {
+          "x": 0.6666666666666666,
+          "y": 0.0
+        },
+        {
+          "x": 0.8333333333333334,
+          "y": 0.16666666666666666
+        },
+        {
+          "x": 1.0,
+          "y": 0.3333333333333333
+        },
+        {
+          "x": 1.0,
+          "y": 0.5
+        },
+        {
+          "x": 0.5,
+          "y": 0.3333333333333333
+        },
+        {
+          "x": 0.6666666666666666,
+          "y": 0.5
+        },
+        {
+          "x": 0.5,
+          "y": 0.6666666666666666
+        },
+        {
+          "x": 0.3333333333333333,
+          "y": 0.5
+        }
+      ],
+      "rot": 1.5707963267948966,
+      "circular": true
     },
     {
       "layout_device_id": "asus:dev-i2c-9:71",
@@ -306,7 +490,14 @@
     "2026-09-06: TL LCD fan rings wind counter-clockwise as seen from the glass in this mount"
   ],
   "unverified": [
-    "TL fan 1 is the top of the side column and the LCD receivers are listed in the same order",
-    "DRAM 0x71 is the stick nearer the CPU"
+    "TL fan LEDs share the named LCD centers: fan/LCD 1 middle, 2 top, 3 bottom on the side radiator. Physical receiver-to-fan identity still needs a hardware check.",
+    "DRAM 0x71 is the stick nearer the CPU",
+    "2026-09-07: Corsair LED zones rotated +pi/2 after a horizontal sweep traveled top to bottom; direction awaits visual confirmation."
+  ],
+  "geometry_sources": [
+    {
+      "url": "https://gitlab.com/signalrgb/signal-plugins/-/blob/091e3f149cbc06ab4ea0f575cb537a7ddb01df17/Plugins/Corsair/Modern_Corsair/Corsair_ICUE_Link_Hub.js",
+      "notes": "LINK H150i positions divided by 6 (16 perimeter LEDs then 4 inner LEDs); LINK LCD positions divided by 16 (24 LEDs). Both maps retain device LED order. Placement rotation is specific to this rig. These SignalRGB maps differ from the auto-layout hints in crates/hypercolor-hal/src/drivers/corsair/types.rs: the HAL AIO perimeter starts at the rightmost point and its inner group starts right, while SignalRGB starts the perimeter below right and the inner group at the top. The HAL LCD ring starts right, while SignalRGB starts near bottom left (its LED 17 is rightmost). Hardware reconciliation remains unverified; this rig overrides those hints."
+    }
   ]
 }
