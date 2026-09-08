@@ -31,6 +31,21 @@ pub struct DaemonClient {
 }
 
 impl DaemonClient {
+    /// Whether local host operations target a loopback daemon.
+    #[must_use]
+    pub fn is_loopback(&self) -> bool {
+        reqwest::Url::parse(&self.base_url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .is_some_and(|host| {
+                host == "localhost"
+                    || host
+                        .trim_matches(['[', ']'])
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            })
+    }
+
     /// Create a new client targeting the given host and port.
     #[must_use]
     pub fn new(host: &str, port: u16, api_key: Option<&str>) -> Self {
