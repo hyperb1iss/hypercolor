@@ -31,6 +31,25 @@ pub struct DaemonClient {
 }
 
 impl DaemonClient {
+    /// Resolve a local daemon's data directory and verify its persisted identity.
+    ///
+    /// # Errors
+    /// Rejects remote targets, unavailable private status, and forwarded servers
+    /// whose instance identity does not match the local filesystem.
+    pub async fn local_data_dir(&self) -> Result<std::path::PathBuf> {
+        anyhow::ensure!(
+            self.is_loopback(),
+            "Run this host operation on the daemon's machine"
+        );
+        let system: hypercolor_types::api::system::SystemResource = self.get("/system").await?;
+        let status = system
+            .status
+            .context("Authorized daemon status is required for local host operations")?;
+        let path = std::path::PathBuf::from(status.data_dir);
+        verify_local_instance(&path, &system.identity.instance_id)?;
+        Ok(path)
+    }
+
     /// Whether local host operations target a loopback daemon.
     #[must_use]
     pub fn is_loopback(&self) -> bool {
@@ -453,6 +472,16 @@ fn describe_error_body(status: reqwest::StatusCode, body: &str) -> String {
         Some(details) => format!("Daemon returned {status} ({code}): {message} [{details}]"),
         None => format!("Daemon returned {status} ({code}): {message}"),
     }
+}
+
+/// Check that a daemon-advertised data directory belongs to that local instance.
+///
+/// # Errors
+/// Rejects missing or mismatched identities, including a loopback SSH tunnel
+/// to a remote machine whose paths happen to exist locally.
+pub fn verify_local_instance(data_dir: &std::path::Path, instance_id: &str) -> Result<()> {
+    hypercolor_openrgb_host::verify_instance_directory(data_dir, instance_id)
+        .context("Cannot verify the daemon on this filesystem; run the command on its host")
 }
 
 #[cfg(test)]
