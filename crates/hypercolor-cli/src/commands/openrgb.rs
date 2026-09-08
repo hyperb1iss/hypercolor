@@ -29,6 +29,10 @@ pub enum OpenRgbCommand {
     Hints,
     /// Write the local managed detector partition from daemon coverage.
     Partition,
+    /// Start or adopt a local SDK server through its managed owner.
+    Start,
+    /// Stop servers started by Hypercolor on this daemon's host.
+    Stop,
     /// Persist an explicitly chosen zone LED count and apply it live.
     Resize {
         /// Bridge device ID.
@@ -46,6 +50,19 @@ pub enum OpenRgbCommand {
 /// Returns errors from host inspection, configuration validation, or the daemon.
 pub async fn execute(args: &OpenRgbArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     match &args.command {
+        OpenRgbCommand::Start | OpenRgbCommand::Stop => {
+            let stopping = matches!(args.command, OpenRgbCommand::Stop);
+            let reply = if stopping {
+                super::openrgb_lifecycle::execute_stop(client).await?
+            } else {
+                super::openrgb_lifecycle::execute_start(client).await?
+            };
+            if ctx.format == OutputFormat::Json {
+                ctx.print_json(&reply.status)?;
+            } else {
+                println!("{}", lifecycle_status_message(&reply.status, stopping));
+            }
+        }
         OpenRgbCommand::Hints => {
             let hints = match client.get::<OpenRgbStatus>("/system/openrgb").await {
                 Ok(status) => status.install_hints,
@@ -140,6 +157,39 @@ pub async fn execute(args: &OpenRgbArgs, client: &DaemonClient, ctx: &OutputCont
         }
     }
     Ok(())
+}
+
+/// Describe a lifecycle result without claiming readiness during startup.
+#[must_use]
+pub fn lifecycle_status_message(status: &serde_json::Value, stopping: bool) -> String {
+    if stopping {
+        return if status.get("stopped").and_then(serde_json::Value::as_bool) == Some(true) {
+            "Stopped the Hypercolor-managed OpenRGB server".to_owned()
+        } else {
+            "No Hypercolor-managed OpenRGB server was running".to_owned()
+        };
+    }
+    if let Some(message) = status
+        .get("last_error")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| status.get("message").and_then(serde_json::Value::as_str))
+    {
+        return message.to_owned();
+    }
+    if status
+        .get("probe")
+        .and_then(|probe| probe.get("reachable"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        if status.get("adopted").and_then(serde_json::Value::as_bool) == Some(true) {
+            "Using the existing OpenRGB SDK server".to_owned()
+        } else {
+            "The managed OpenRGB SDK server is ready".to_owned()
+        }
+    } else {
+        "OpenRGB startup is in progress".to_owned()
+    }
 }
 
 /// Build a merge patch containing only the explicitly selected zone.

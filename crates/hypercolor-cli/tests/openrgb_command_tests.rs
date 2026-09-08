@@ -1,7 +1,7 @@
 //! Guided setup CLI parsing and configuration preservation.
 
-use clap::Parser;
-use hypercolor_cli::commands::openrgb::{OpenRgbCommand, resize_patch};
+use clap::{CommandFactory, Parser};
+use hypercolor_cli::commands::openrgb::{OpenRgbCommand, lifecycle_status_message, resize_patch};
 use hypercolor_cli::{Cli, Commands};
 
 #[test]
@@ -45,4 +45,52 @@ fn resize_patch_contains_only_the_requested_zone() {
     );
     assert!(resize_patch("", "Fan", 20).is_err());
     assert!(resize_patch(fingerprint, "", 20).is_err());
+}
+
+#[test]
+fn managed_lifecycle_commands_parse_and_owner_stays_hidden() {
+    for verb in ["start", "stop"] {
+        let cli = Cli::try_parse_from(["hypercolor", "openrgb", verb]).expect("lifecycle verb");
+        assert!(matches!(cli.command, Commands::Openrgb(_)));
+    }
+    let cli = Cli::try_parse_from([
+        "hypercolor",
+        "openrgb-owner",
+        "--data-dir",
+        "/tmp/test-owner",
+    ])
+    .expect("hidden owner invocation");
+    assert!(matches!(cli.command, Commands::OpenrgbOwner { .. }));
+    assert!(
+        !Cli::command()
+            .render_long_help()
+            .to_string()
+            .contains("openrgb-owner")
+    );
+}
+
+#[test]
+fn lifecycle_output_distinguishes_starting_ready_and_unowned_stop() {
+    assert_eq!(
+        lifecycle_status_message(&serde_json::json!({"managed_pid": 42}), false),
+        "OpenRGB startup is in progress"
+    );
+    assert_eq!(
+        lifecycle_status_message(
+            &serde_json::json!({"probe": {"reachable": true}, "adopted": true}),
+            false
+        ),
+        "Using the existing OpenRGB SDK server"
+    );
+    assert_eq!(
+        lifecycle_status_message(&serde_json::json!({"stopped": false}), true),
+        "No Hypercolor-managed OpenRGB server was running"
+    );
+    assert_eq!(
+        lifecycle_status_message(
+            &serde_json::json!({"last_error": "Still enumerating"}),
+            false
+        ),
+        "Still enumerating"
+    );
 }

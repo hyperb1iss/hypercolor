@@ -168,6 +168,13 @@ pub enum Commands {
     #[command(display_order = 16)]
     Openrgb(commands::openrgb::OpenRgbArgs),
 
+    /// Retain the explicitly started OpenRGB child and its control channel
+    #[command(hide = true)]
+    OpenrgbOwner {
+        #[arg(long)]
+        data_dir: std::path::PathBuf,
+    },
+
     /// Spatial LED layout configuration
     #[command(display_order = 13)]
     Layouts(commands::layouts::LayoutsArgs),
@@ -287,6 +294,11 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
             .get_matches(),
     )?;
 
+    if let Commands::OpenrgbOwner { data_dir } = &cli.command {
+        init_tracing(cli.verbose);
+        return commands::openrgb_lifecycle::run_owner(data_dir.clone()).await;
+    }
+
     // TUI takes over the terminal and routes tracing to a file instead of
     // stderr, so dispatch before CLI tracing initialization.
     #[cfg(feature = "tui")]
@@ -334,6 +346,9 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
         Commands::Controls(args) => commands::controls::execute(args, &client, &ctx).await,
         Commands::Drivers(args) => commands::drivers::execute(args, &client, &ctx).await,
         Commands::Openrgb(args) => commands::openrgb::execute(args, &client, &ctx).await,
+        Commands::OpenrgbOwner { data_dir } => {
+            commands::openrgb_lifecycle::run_owner(data_dir.clone()).await
+        }
         Commands::Effects(args) => commands::effects::execute(args, &client, &ctx).await,
         Commands::Scenes(args) => commands::scenes::execute(args, &client, &ctx).await,
         Commands::Library(args) => commands::library::execute(args, &client, &ctx).await,
@@ -395,6 +410,7 @@ fn init_tracing(verbosity: u8) {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level));
 
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(filter)
         .with_target(false)
         .init();
