@@ -9,6 +9,7 @@ mod composition_panel;
 pub mod device_assignment;
 mod device_card;
 mod face_composition;
+mod offline_device_card;
 mod scene_selector;
 mod stage;
 pub use crate::zones::surface;

@@ -721,6 +721,52 @@ impl SceneContext {
         self.runtime_session.save().await;
     }
 
+    /// Remove explicitly forgotten controller outputs from every saved scene and layout.
+    pub(crate) async fn forget_layout_targets(
+        &self,
+        targets: std::collections::HashSet<String>,
+        reference: &str,
+    ) -> Result<(), DomainError> {
+        let changed_scenes = self
+            .commit_retrying(|mutation| {
+                let scenes: Vec<_> = mutation.scenes().list().into_iter().cloned().collect();
+                let mut changed = Vec::new();
+                for mut scene in scenes {
+                    let previous = scene.zones.clone();
+                    for zone in &mut scene.zones {
+                        zone.layout
+                            .zones
+                            .retain(|output| !targets.contains(&output.device_id));
+                    }
+                    if previous != scene.zones {
+                        changed.push((scene.id, previous, scene.zones.clone()));
+                        mutation.update_scene(scene)?;
+                    }
+                }
+                Ok((!changed.is_empty()).then_some(changed))
+            })
+            .await?;
+        if let Some((changed_scenes, _)) = changed_scenes {
+            for (scene_id, previous, updated) in changed_scenes {
+                self.layout
+                    .reconcile_zone_auto_exclusions(scene_id, &previous, &updated)
+                    .await;
+            }
+        }
+        self.layout.prune_targets(targets, reference).await?;
+        let outcome = self
+            .runtime_session
+            .persist_snapshot()
+            .await
+            .map_err(|error| DomainError::Internal(anyhow::anyhow!(error)))?;
+        if outcome == AtomicWriteOutcome::Superseded {
+            return Err(DomainError::conflict(
+                "device removal runtime snapshot was superseded",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn begin_runtime_effect_id_migration(
         &self,
     ) -> RuntimeSessionEffectIdMigrationAdmission {

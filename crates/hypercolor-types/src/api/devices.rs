@@ -138,6 +138,13 @@ pub struct DeleteDeviceResponse {
     pub removed: bool,
 }
 
+/// Forget saved controller content by its stable layout binding, even offline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct ForgetDeviceRequest {
+    pub layout_device_id: String,
+}
+
 /// Request body for `POST /api/v1/devices/{id}/identify`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

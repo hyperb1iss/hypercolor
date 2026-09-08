@@ -79,6 +79,9 @@ pub struct DiscoveryRuntime {
     /// Logical device segmentation store.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
 
+    /// Persisted controller ownership and user segmentation.
+    pub logical_devices_path: PathBuf,
+
     /// Attachment template registry used to derive dynamic hardware topology.
     pub attachment_registry: Arc<RwLock<ComponentRegistry>>,
 

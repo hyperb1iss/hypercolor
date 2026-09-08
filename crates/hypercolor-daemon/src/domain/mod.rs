@@ -31,6 +31,7 @@
 pub mod commit;
 pub mod context;
 pub(crate) mod device_binding;
+pub(crate) mod device_removal;
 #[doc(hidden)]
 pub use device_binding::DeviceBindingMigrationContext;
 pub mod diagnostics;

@@ -93,6 +93,8 @@ pub struct WsContext {
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
     pub output_paused: ReadSignal<bool>,
+    /// Invalidation edge for saved and active layout changes.
+    pub layout_generation: ReadSignal<u64>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
@@ -565,6 +567,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         backpressure_notice: ws.backpressure_notice,
         active_effect: ws.active_effect,
         output_paused: ws.output_paused,
+        layout_generation: ws.layout_generation,
         last_device_event: ws.last_device_event,
         last_scene_event: ws.last_scene_event,
         last_effect_error: ws.last_effect_error,
@@ -793,7 +796,10 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
 
     // Global devices + layouts state
     let devices_resource = api::daemon_resource(api::fetch_devices);
-    let layouts_resource = api::daemon_resource(api::fetch_layouts);
+    let layouts_resource = api::daemon_resource(move || {
+        let _ = ws_ctx.layout_generation.get();
+        async move { api::fetch_layouts().await }
+    });
     let displays_resource = api::daemon_resource(api::fetch_displays);
     provide_context(DevicesContext {
         devices_resource,

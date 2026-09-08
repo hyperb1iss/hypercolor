@@ -257,13 +257,16 @@ pub(super) async fn ensure_default_logical_for_device(
     led_count: u32,
 ) {
     let mut logical_store = runtime.logical_devices.write().await;
-    logical_devices::ensure_default_logical_device(
+    if let Err(error) = logical_devices::ensure_persisted_default(
+        &runtime.logical_devices_path,
         &mut logical_store,
         device_id,
         physical_layout_id,
         device_name,
         led_count,
-    );
+    ) {
+        tracing::warn!(%error, %device_id, "Failed to persist controller identity");
+    }
 }
 
 pub(super) async fn sync_logical_mappings_for_device(

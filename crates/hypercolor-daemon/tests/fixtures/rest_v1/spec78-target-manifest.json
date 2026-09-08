@@ -34,6 +34,18 @@
       ]
     },
     {
+      "path": "/api/v1/capture/authorize",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/media/authorize",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
       "path": "/api/v1/output",
       "methods": [
         "GET",
@@ -98,6 +110,12 @@
     },
     {
       "path": "/api/v1/devices/discover",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/devices/forget",
       "methods": [
         "POST"
       ]
@@ -510,18 +528,6 @@
       "path": "/api/v1/capture/monitors",
       "methods": [
         "GET"
-      ]
-    },
-    {
-      "path": "/api/v1/capture/authorize",
-      "methods": [
-        "POST"
-      ]
-    },
-    {
-      "path": "/api/v1/media/authorize",
-      "methods": [
-        "POST"
       ]
     },
     {

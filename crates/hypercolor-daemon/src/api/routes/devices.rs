@@ -8,6 +8,13 @@ use crate::app_state::AppState;
 pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(openapi::documented_route(
+            "/devices/forget",
+            axum::routing::post(devices::forget_device),
+            [OperationDoc::post::<hypercolor_types::api::devices::DeleteDeviceResponse>(
+                "forget_device", "devices", "Forget saved controller content",
+            ).body::<hypercolor_types::api::devices::ForgetDeviceRequest>()],
+        ))
+        .routes(openapi::documented_route(
             "/devices",
             axum::routing::get(devices::list_devices),
             [OperationDoc::get_list::<hypercolor_types::api::devices::DeviceSummary>(

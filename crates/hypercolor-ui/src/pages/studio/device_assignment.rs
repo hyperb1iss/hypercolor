@@ -13,6 +13,7 @@
 use std::collections::HashSet;
 
 use crate::api::ZoneResource;
+use hypercolor_types::spatial::Output;
 
 /// Device-registry metadata the grouping needs. The caller builds this
 /// from `DeviceSummary`, keeping this module free of `crate::` paths.
@@ -113,6 +114,46 @@ pub fn unassigned_device_rows(
             resolved: true,
         })
         .collect()
+}
+
+/// Saved layout controllers absent from both the registry and scene tree.
+/// Preserve offline placements while making their owners removable in Studio.
+#[must_use]
+pub fn saved_only_device_rows(
+    zones: &[ZoneResource],
+    devices: &[DeviceMeta],
+    outputs: &[Output],
+) -> Vec<ZoneDeviceRow> {
+    let represented: HashSet<&str> = devices
+        .iter()
+        .map(|device| device.layout_device_id.as_str())
+        .chain(
+            zones
+                .iter()
+                .flat_map(|zone| zone.members.iter())
+                .map(|member| member.device_id.as_str()),
+        )
+        .collect();
+    let mut rows: Vec<ZoneDeviceRow> = Vec::new();
+    for output in outputs {
+        if represented.contains(output.device_id.as_str()) {
+            continue;
+        }
+        if let Some(row) = rows
+            .iter_mut()
+            .find(|row| row.device_id == output.device_id)
+        {
+            row.member_count += 1;
+            row.led_count = row.led_count.saturating_add(output.topology.led_count());
+        } else {
+            rows.push(resolve_row(
+                &output.device_id,
+                output.topology.led_count(),
+                devices,
+            ));
+        }
+    }
+    rows
 }
 
 /// Build a fresh row for a device's first member, resolving its id against
