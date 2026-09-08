@@ -75,6 +75,14 @@ fn main() -> anyhow::Result<()> {
         }))
         .plugin(autostart_plugin())
         .setup(move |app| {
+            let control_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) =
+                    hypercolor_app::supervisor::openrgb_control::serve(control_app).await
+                {
+                    tracing::warn!(%error, "OpenRGB CLI control unavailable");
+                }
+            });
             let url: url::Url = daemon_url
                 .parse()
                 .expect("HYPERCOLOR_URL must be a valid URL");

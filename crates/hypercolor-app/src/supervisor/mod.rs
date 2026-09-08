@@ -3089,3 +3089,5 @@ pub fn spawn_daemon(command: &DaemonCommand) -> Result<ManagedDaemon> {
 fn daemon_log_file() -> std::io::Result<std::fs::File> {
     child::supervised_log_file(DAEMON_LOG_FILE_NAME)
 }
+
+pub mod openrgb_control;

@@ -16,6 +16,7 @@ use std::{
     ffi::OsStr,
     fs::File,
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::PathBuf,
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
@@ -24,14 +25,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
-use hypercolor_core::config::paths::data_dir;
+use anyhow::{Context, Result, ensure};
 use hypercolor_openrgb_host::{
     DEFAULT_SERVER_PORT, DetectorPartition, InstallHint, ManagedConfigDir, OpenRgbBinary,
-    PermissionCheck, ProcessSpec, ServerProbe, detect_binary, detector_prefixes_for_drivers,
-    install_hints, managed_config_dir, permission_checks, probe_server, server_command,
-    write_detector_partition,
+    PermissionCheck, ProcessSpec, ServerClaim, ServerProbe, detect_binary,
+    detector_prefixes_for_drivers, install_hints, managed_config_dir, permission_checks,
+    probe_server, server_command_at, write_detector_partition,
 };
+use hypercolor_types::api::{drivers::DriverConfigResponse, envelope::ApiResponse};
 use serde::Serialize;
 
 use super::child::{self, PlatformGuard};
@@ -83,6 +84,27 @@ pub enum OpenRgbPlanSummary {
     HoldBridgeDisabled,
     HoldPortOwnedByUnknown,
     HoldStarting,
+    HoldOtherOwner,
+}
+
+impl OpenRgbPlanSummary {
+    /// An actionable failure for holds that need user intervention.
+    #[must_use]
+    pub const fn hold_message(self) -> Option<&'static str> {
+        match self {
+            Self::HoldNotInstalled => Some("Install OpenRGB before starting its server"),
+            Self::HoldPermissionsMissing => Some(
+                "OpenRGB requires host permissions; inspect the permission checks and remedies",
+            ),
+            Self::HoldBridgeDisabled => {
+                Some("Enable the OpenRGB bridge driver before starting its server")
+            }
+            Self::HoldPortOwnedByUnknown => {
+                Some("The configured OpenRGB port belongs to another service")
+            }
+            Self::Adopt | Self::Spawn | Self::HoldStarting | Self::HoldOtherOwner => None,
+        }
+    }
 }
 
 /// Collapse a plan to its summary label.
@@ -222,9 +244,9 @@ pub fn apply_headless_env(spec: &mut ProcessSpec, headless: bool, inherited: Opt
 pub fn launch_spec(
     binary: &OpenRgbBinary,
     config_dir: &ManagedConfigDir,
-    port: u16,
+    endpoint: SocketAddr,
 ) -> hypercolor_openrgb_host::Result<ProcessSpec> {
-    let mut spec = server_command(binary, config_dir, port)?;
+    let mut spec = server_command_at(binary, config_dir, endpoint)?;
     let headless = needs_offscreen_qt(
         cfg!(target_os = "linux"),
         std::env::var_os("DISPLAY").as_deref(),
@@ -251,6 +273,8 @@ pub struct OpenRgbInspection {
     /// Which detector families to disable and which to hand back.
     pub partition_plan: DetectorPartitionPlan,
     pub config_dir: ManagedConfigDir,
+    /// Verified daemon data directory used for both configuration and logs.
+    pub data_dir: PathBuf,
     /// The launch spec built from `binary`, when one was detected.
     pub spawn: Option<ProcessSpec>,
     /// Pid of the server this app already spawned, when it is still alive.
@@ -283,7 +307,7 @@ pub async fn tcp_port_open(addr: SocketAddr, timeout: Duration) -> bool {
     )
 }
 
-/// Gather the host facts and the daemon's driver and device view for `addr`.
+/// Gather host facts and the daemon's configured SDK endpoint and device view.
 ///
 /// `managed_pid` is the child this app already holds, if any, so the plan
 /// can tell a server that is still starting from a foreign listener.
@@ -295,15 +319,23 @@ pub async fn tcp_port_open(addr: SocketAddr, timeout: Duration) -> bool {
 /// either would risk spawning a server nothing consumes or one that fights
 /// native drivers for hardware), or when the managed config path cannot be
 /// passed to the detected binary.
-pub async fn inspect(
-    daemon_base_url: &str,
-    addr: SocketAddr,
-    managed_pid: Option<u32>,
-) -> Result<OpenRgbInspection> {
+pub async fn inspect(daemon_base_url: &str, managed_pid: Option<u32>) -> Result<OpenRgbInspection> {
     let http = reqwest::Client::builder()
         .timeout(DAEMON_HTTP_TIMEOUT)
         .build()
         .context("failed to build the daemon HTTP client")?;
+    let directory = super::openrgb_control::local_directory(&http, daemon_base_url).await?;
+    let config: ApiResponse<DriverConfigResponse> = http
+        .get(format!(
+            "{}/api/v1/drivers/openrgb/config",
+            daemon_base_url.trim_end_matches('/')
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let addr = hypercolor_openrgb_host::configured_endpoint(&config.data.current)?;
     let drivers: Vec<DriverFacts> =
         crate::daemon_client::fetch_driver_summaries(&http, daemon_base_url)
             .await
@@ -324,10 +356,10 @@ pub async fn inspect(
     let port_open = probe.reachable || tcp_port_open(addr, OPENRGB_PROBE_TIMEOUT).await;
     let checks = permission_checks();
     let hints = install_hints();
-    let config_dir = managed_config_dir(&data_dir());
+    let config_dir = managed_config_dir(&directory);
     let spawn = binary
         .as_ref()
-        .map(|binary| launch_spec(binary, &config_dir, addr.port()))
+        .map(|binary| launch_spec(binary, &config_dir, addr))
         .transpose()
         .context("cannot launch OpenRGB from the managed config directory")?;
 
@@ -341,6 +373,7 @@ pub async fn inspect(
         checks,
         hints,
         config_dir,
+        data_dir: directory,
         spawn,
         managed_pid,
     })
@@ -366,6 +399,9 @@ pub struct ManagedOpenRgb {
     #[allow(dead_code)]
     platform_guard: PlatformGuard,
     pid: u32,
+    /// Drop after the platform guard so the full process tree has exited
+    /// before another supervisor can acquire authority.
+    ownership: Option<ServerClaim>,
 }
 
 impl ManagedOpenRgb {
@@ -392,9 +428,34 @@ impl ManagedOpenRgb {
         let pid = child.id();
         Ok(Self {
             child: Some(child),
+            ownership: None,
             platform_guard,
             pid,
         })
+    }
+
+    /// Spawn while retaining the caller's exclusive server claim until the
+    /// child's process tree and its platform lifetime guard are released.
+    pub fn spawn_claimed(spec: &ProcessSpec, log: File, ownership: ServerClaim) -> Result<Self> {
+        let mut managed = Self::spawn(spec, log)?;
+        managed.ownership = Some(ownership);
+        Ok(managed)
+    }
+
+    /// Open the log off-thread, then fork on the caller's persistent runtime
+    /// thread. Linux binds parent-death signals to the thread that forks.
+    pub async fn spawn_logged(
+        spec: ProcessSpec,
+        directory: PathBuf,
+        ownership: ServerClaim,
+    ) -> Result<Self> {
+        let log = tokio::task::spawn_blocking(move || {
+            child::supervised_log_file_in(&directory, OPENRGB_LOG_FILE_NAME)
+                .context("failed to open the OpenRGB log file")
+        })
+        .await
+        .context("OpenRGB log task failed")??;
+        Self::spawn_claimed(&spec, log, ownership)
     }
 
     /// The pid this child was spawned with.
@@ -408,7 +469,7 @@ impl ManagedOpenRgb {
         let Some(child) = self.child.as_mut() else {
             return true;
         };
-        match child.try_wait() {
+        match hypercolor_openrgb_host::reap_owned_server(child) {
             Ok(Some(status)) => {
                 tracing::info!(pid = self.pid, ?status, "managed OpenRGB server exited");
                 self.child = None;
@@ -424,17 +485,29 @@ impl ManagedOpenRgb {
 
     /// Stop the child: graceful request, `grace` to comply, then kill.
     pub fn stop(&mut self, grace: Duration) -> Option<ExitStatus> {
-        let mut child = self.child.take()?;
-        let status = child::stop_child(&mut child, grace);
-        tracing::info!(pid = self.pid, ?status, "managed OpenRGB server stopped");
-        status
+        let child = self.child.as_mut()?;
+        match hypercolor_openrgb_host::stop_owned_server(child, grace) {
+            Ok(status) => {
+                self.child = None;
+                tracing::info!(pid = self.pid, ?status, "managed OpenRGB server stopped");
+                Some(status)
+            }
+            Err(error) => {
+                tracing::warn!(pid = self.pid, %error, "managed OpenRGB stop failed; retaining child");
+                None
+            }
+        }
     }
 }
 
 impl Drop for ManagedOpenRgb {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            child::kill_tree_unless_exited(&mut child);
+        if let Some(mut child) = self.child.take()
+            && let Err(error) =
+                hypercolor_openrgb_host::stop_owned_server(&mut child, Duration::ZERO)
+        {
+            tracing::warn!(pid = self.pid, %error, "managed OpenRGB final stop failed");
+            child::kill_unless_exited(&mut child);
         }
     }
 }
@@ -489,8 +562,8 @@ impl OpenRgbSupervisor {
     ///
     /// Returns an error when the daemon driver list cannot be read.
     pub async fn detect(&self, daemon_base_url: &str) -> Result<OpenRgbStatus> {
-        let addr = self.status_guard().addr;
-        let inspection = inspect(daemon_base_url, addr, self.managed_pid()).await?;
+        let inspection = inspect(daemon_base_url, self.managed_pid()).await?;
+        self.check_managed_endpoint(inspection.addr)?;
         let plan = inspection.plan();
         self.record_inspection(&inspection, &plan);
         Ok(self.status())
@@ -506,12 +579,34 @@ impl OpenRgbSupervisor {
     /// budget is kept running and reported through `last_error`. A call that
     /// overlaps another `start` returns the current status without acting.
     pub async fn start(&self, daemon_base_url: &str) -> Result<OpenRgbStatus> {
+        self.start_requested(daemon_base_url, None).await
+    }
+
+    /// Start only if the CLI's endpoint still matches the daemon configuration.
+    pub async fn start_for_endpoint(
+        &self,
+        daemon_base_url: &str,
+        endpoint: SocketAddr,
+    ) -> Result<OpenRgbStatus> {
+        self.start_requested(daemon_base_url, Some(endpoint)).await
+    }
+
+    async fn start_requested(
+        &self,
+        daemon_base_url: &str,
+        requested: Option<SocketAddr>,
+    ) -> Result<OpenRgbStatus> {
         let Some(_in_flight) = StartGuard::acquire(&self.start_in_flight) else {
             tracing::info!("OpenRGB start already in progress; ignoring the overlapping call");
             return Ok(self.status());
         };
-        let addr = self.status_guard().addr;
-        let inspection = inspect(daemon_base_url, addr, self.managed_pid()).await?;
+        let inspection = inspect(daemon_base_url, self.managed_pid()).await?;
+        let addr = inspection.addr;
+        ensure!(
+            requested.is_none_or(|endpoint| endpoint == addr),
+            "OpenRGB endpoint changed in the daemon configuration; retry start"
+        );
+        self.check_managed_endpoint(addr)?;
         let plan = inspection.plan();
         self.record_inspection(&inspection, &plan);
 
@@ -528,6 +623,22 @@ impl OpenRgbSupervisor {
                     );
                     return Ok(self.status());
                 }
+                let directory = inspection.data_dir.clone();
+                let ownership = tokio::task::spawn_blocking(move || {
+                    hypercolor_openrgb_host::try_claim_server(&directory, addr)
+                })
+                .await
+                .context("OpenRGB ownership task failed")??;
+                let Some(ownership) = ownership else {
+                    self.update_status(|status| {
+                        status.plan_summary = Some(OpenRgbPlanSummary::HoldOtherOwner);
+                        status.last_error = Some(
+                            "another Hypercolor process owns the OpenRGB server or is starting it"
+                                .to_owned(),
+                        );
+                    });
+                    return Ok(self.status());
+                };
                 // The partition must land before the launch: the Flatpak
                 // `--filesystem=` grant needs the directory to exist.
                 let disabled =
@@ -548,13 +659,8 @@ impl OpenRgbSupervisor {
                 );
                 self.update_status(|status| status.partition = Some(partition));
 
-                let managed = tokio::task::spawn_blocking(move || {
-                    let log = child::supervised_log_file(OPENRGB_LOG_FILE_NAME)
-                        .context("failed to open the OpenRGB log file")?;
-                    ManagedOpenRgb::spawn(&spec, log)
-                })
-                .await
-                .context("OpenRGB spawn task failed")??;
+                let managed =
+                    ManagedOpenRgb::spawn_logged(spec, inspection.data_dir, ownership).await?;
                 let pid = managed.pid();
                 tracing::info!(pid, %addr, "spawned the managed OpenRGB server");
                 *self.managed_guard() = Some(managed);
@@ -610,6 +716,14 @@ impl OpenRgbSupervisor {
     fn record_inspection(&self, inspection: &OpenRgbInspection, plan: &OpenRgbPlan) {
         let managed_pid = self.managed_pid();
         self.update_status(|status| status.apply_inspection(inspection, plan, managed_pid));
+    }
+
+    fn check_managed_endpoint(&self, endpoint: SocketAddr) -> Result<()> {
+        ensure!(
+            self.managed_pid().is_none() || self.status_guard().addr == endpoint,
+            "stop the managed OpenRGB server before changing its endpoint"
+        );
+        Ok(())
     }
 
     /// Drop a child that exited on its own and clear its pid. Returns
