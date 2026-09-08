@@ -110,6 +110,12 @@
       ]
     },
     {
+      "path": "/api/v1/devices/forget",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
       "path": "/api/v1/devices/unclaimed",
       "methods": [
         "GET"

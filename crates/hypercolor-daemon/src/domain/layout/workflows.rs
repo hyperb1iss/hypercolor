@@ -549,11 +549,10 @@ impl LayoutContext {
         )
         .await;
         let guard = self.acquire_update_guard().await;
-        let active_layout_id = self.current().id;
+        let previous_layouts = self.catalog.entries().read().await.clone();
         let mut pruned_layout_ids = Vec::new();
-        let active_layout = {
+        {
             let mut layouts = self.catalog.entries().write().await;
-            let mut updated_active = None;
             for layout in layouts.values_mut() {
                 let zone_count = layout.zones.len();
                 layout
@@ -563,18 +562,44 @@ impl LayoutContext {
                     continue;
                 }
                 pruned_layout_ids.push(layout.id.clone());
-                if layout.id == active_layout_id {
-                    updated_active = Some(layout.clone());
-                }
             }
-            updated_active
-        };
+        }
         self.wait_test_hook(
             LayoutMutationTestPoint::AfterMemoryMutation,
             LayoutMutationTestOperation::SimulatorPrune,
             mutation_reference,
         )
         .await;
+        if let Err(error) = self.catalog.persist().await {
+            *self.catalog.entries().write().await = previous_layouts;
+            return Err(layout_store_persistence_error("device removal", error, []));
+        }
+        for layout_id in &pruned_layout_ids {
+            let updated = self.catalog.entries().read().await.get(layout_id).cloned();
+            if let (Some(previous), Some(updated)) = (previous_layouts.get(layout_id), updated) {
+                self.exclusions
+                    .reconcile_layout(layout_id, &previous.zones, &updated.zones)
+                    .await;
+            }
+        }
+        let active_layout = {
+            let mut active = self.current();
+            let previous = active.zones.clone();
+            let before = active.zones.len();
+            active
+                .zones
+                .retain(|output| !target_ids.contains(&output.device_id));
+            if before != active.zones.len() {
+                self.exclusions
+                    .reconcile_layout(&active.id, &previous, &active.zones)
+                    .await;
+            }
+            (before != active.zones.len()).then_some(active)
+        };
+        self.exclusions
+            .persist_durable()
+            .await
+            .map_err(DomainError::Internal)?;
         let active_layout_error = if let Some(layout) = active_layout {
             self.publication
                 .apply_prepared_under_guard(&guard, layout)
@@ -584,7 +609,6 @@ impl LayoutContext {
         } else {
             None
         };
-        self.persist_catalog_best_effort().await;
         for layout_id in pruned_layout_ids {
             self.publish_layout_changed(None, layout_id);
         }

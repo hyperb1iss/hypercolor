@@ -164,6 +164,16 @@ impl LayoutExclusions {
     }
 
     async fn persist(&self) {
+        if let Err(error) = self.persist_durable().await {
+            tracing::warn!(
+                path = %self.persistence.path.display(),
+                %error,
+                "Failed to persist layout auto-exclusion store"
+            );
+        }
+    }
+
+    pub(super) async fn persist_durable(&self) -> anyhow::Result<()> {
         let pending = {
             let entries = self.entries.read().await;
             self.persistence.reserve_snapshot(&entries)
@@ -175,13 +185,11 @@ impl LayoutExclusions {
                 .and_then(|result| result),
             Err(error) => Err(error),
         };
-        if let Err(error) = result {
-            tracing::warn!(
-                path = %self.persistence.path.display(),
-                %error,
-                "Failed to persist layout auto-exclusion store"
-            );
-        }
+        anyhow::ensure!(
+            result? != AtomicWriteOutcome::Superseded,
+            "layout auto-exclusion save was superseded"
+        );
+        Ok(())
     }
 
     pub(super) async fn prepare_binding_migration(

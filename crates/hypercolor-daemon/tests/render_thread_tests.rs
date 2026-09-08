@@ -166,6 +166,7 @@ fn test_discovery_runtime(
             state_dir.join("device-binding-migration.json"),
         )),
         logical_devices,
+        logical_devices_path: state_dir.join("logical-devices.json"),
         attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
         attachment_profiles,
         device_settings,

@@ -62,6 +62,15 @@ fn resync_required_is_only_recognized_as_an_event() {
 }
 
 #[test]
+fn layout_changes_invalidate_layout_resources_without_control_chatter() {
+    use hypercolor_ui::ws::messages::LAYOUT_EVENTS;
+
+    assert!(LAYOUT_EVENTS.contains(&"layout_changed"));
+    assert!(!LAYOUT_EVENTS.contains(&"effect_control_changed"));
+    assert!(!LAYOUT_EVENTS.contains(&"device_state_changed"));
+}
+
+#[test]
 fn control_changes_are_authoritative_scene_refresh_hints() {
     assert!(SCENE_EVENTS.contains(&"effect_control_changed"));
     let hint = extract_scene_event_hint(

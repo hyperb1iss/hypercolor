@@ -244,6 +244,32 @@ pub fn ensure_default_logical_device(
     entry
 }
 
+/// Retain a controller's layout identity so its saved content remains removable offline.
+pub fn ensure_persisted_default(
+    path: &Path,
+    store: &mut HashMap<String, LogicalDevice>,
+    physical_device_id: DeviceId,
+    physical_layout_id: &str,
+    physical_name: &str,
+    physical_led_count: u32,
+) -> anyhow::Result<LogicalDevice> {
+    let mut candidate = store.clone();
+    let entry = ensure_default_logical_device(
+        &mut candidate,
+        physical_device_id,
+        physical_layout_id,
+        physical_name,
+        physical_led_count,
+    );
+    if candidate == *store {
+        kick_pending(path)?;
+    } else {
+        save_reserved_segments(reserve_save_segments(path, &candidate)?)?;
+        *store = candidate;
+    }
+    Ok(entry)
+}
+
 /// Return logical devices for one physical controller, sorted by start index.
 #[must_use]
 pub fn list_for_physical(
@@ -279,19 +305,24 @@ struct PersistedLogicalDevice {
 
 impl PersistedLogicalDevice {
     fn into_runtime(self) -> Option<LogicalDevice> {
-        (self.kind == "segment").then_some(LogicalDevice {
+        let kind = match self.kind.as_str() {
+            "default" => LogicalDeviceKind::Default,
+            "segment" => LogicalDeviceKind::Segment,
+            _ => return None,
+        };
+        Some(LogicalDevice {
             id: self.id,
             physical_device_id: self.physical_device_id,
             name: self.name,
             led_start: self.led_start,
             led_count: self.led_count,
             enabled: self.enabled,
-            kind: LogicalDeviceKind::Segment,
+            kind,
         })
     }
 }
 
-/// Load persisted user-defined logical segment devices from disk.
+/// Load persisted controller identities and user-defined logical segments from disk.
 ///
 /// Missing files return an empty store.
 pub fn load_segments(path: &Path) -> anyhow::Result<HashMap<String, LogicalDevice>> {
@@ -314,7 +345,7 @@ pub fn load_segments(path: &Path) -> anyhow::Result<HashMap<String, LogicalDevic
 
 /// Reserve a logical-device snapshot before releasing its mutation lock.
 ///
-/// Default logical devices are ephemeral and are not persisted.
+/// Default mappings retain physical ownership while a controller is disconnected.
 pub fn reserve_save_segments(
     path: &Path,
     store: &HashMap<String, LogicalDevice>,
@@ -327,11 +358,7 @@ pub fn reserve_save_segments(
 }
 
 fn serialize_segments(store: &HashMap<String, LogicalDevice>) -> anyhow::Result<Vec<u8>> {
-    let mut entries: Vec<LogicalDevice> = store
-        .values()
-        .filter(|entry| entry.kind == LogicalDeviceKind::Segment)
-        .cloned()
-        .collect();
+    let mut entries: Vec<LogicalDevice> = store.values().cloned().collect();
     entries.sort_by(|left, right| left.id.cmp(&right.id));
     let payload =
         serialize_json_pretty(&entries).context("failed to serialize logical device store")?;
@@ -440,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn save_and_load_preserves_segments_but_not_live_defaults() {
+    fn save_and_load_preserves_segments_and_controller_ownership() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("logical-devices.json");
         let physical_device_id = DeviceId::new();
@@ -478,13 +505,13 @@ mod tests {
 
         assert!(loaded.contains_key("driver:canonical:left"));
         assert!(
-            !loaded.contains_key("driver:canonical"),
-            "live canonical defaults should still be rebuilt at runtime"
+            loaded.contains_key("driver:canonical"),
+            "offline controllers must retain their physical ownership"
         );
     }
 
     #[test]
-    fn load_segments_ignores_non_segment_entries() {
+    fn load_segments_restores_default_ownership() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("logical-devices.json");
         let physical_device_id = DeviceId::new();
@@ -514,7 +541,11 @@ mod tests {
 
         let loaded = load_segments(&path).expect("load logical device store");
 
-        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(
+            loaded["driver:default"].physical_device_id,
+            physical_device_id
+        );
         assert!(loaded.contains_key("driver:left"));
     }
 }

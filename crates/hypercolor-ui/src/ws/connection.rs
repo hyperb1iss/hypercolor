@@ -208,6 +208,7 @@ pub struct WsManager {
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
     pub output_paused: ReadSignal<bool>,
+    pub layout_generation: ReadSignal<u64>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
@@ -287,6 +288,7 @@ impl WsManager {
         let (active_effect, set_active_effect) = signal(None::<String>);
         let (output_paused, set_output_paused) = signal(false);
         let output_power_reconciler = StoredValue::new(OutputPowerReconciler::default());
+        let (layout_generation, set_layout_generation) = signal(0_u64);
         let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
         let (last_extension_event, set_last_extension_event) = signal(None::<ExtensionEventHint>);
         let (last_input_source_status_event, set_last_input_source_status_event) =
@@ -636,6 +638,7 @@ impl WsManager {
                             &set_sensors,
                             backpressure_notice,
                             &set_backpressure_notice,
+                            &set_layout_generation,
                             &set_last_device_event,
                             &set_last_scene_event,
                             &set_last_effect_error,
@@ -1022,6 +1025,7 @@ impl WsManager {
             backpressure_notice,
             active_effect,
             output_paused,
+            layout_generation,
             last_device_event,
             last_scene_event,
             last_effect_error,

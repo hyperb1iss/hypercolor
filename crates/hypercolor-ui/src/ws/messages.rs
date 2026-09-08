@@ -53,6 +53,8 @@ impl std::fmt::Display for ConnectionState {
 pub const EFFECT_STARTED_EVENTS: &[&str] = &["effect_started"];
 pub const EFFECT_STOPPED_EVENTS: &[&str] = &["effect_stopped"];
 pub const EFFECT_ERROR_EVENTS: &[&str] = &["effect_error"];
+/// Events that invalidate the layout catalog and active layout.
+pub const LAYOUT_EVENTS: &[&str] = &["layout_changed"];
 pub const SCENE_EVENTS: &[&str] = &[
     "active_scene_changed",
     "effect_control_changed",
@@ -906,6 +908,7 @@ pub(super) fn handle_json_message(
     set_sensors: &WriteSignal<Option<SystemSnapshot>>,
     backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     set_backpressure_notice: &WriteSignal<Option<BackpressureNotice>>,
+    set_layout_generation: &WriteSignal<u64>,
     set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
     set_last_scene_event: &WriteSignal<Option<SceneEventHint>>,
     set_last_effect_error: &WriteSignal<Option<EffectErrorHint>>,
@@ -1058,6 +1061,9 @@ pub(super) fn handle_json_message(
                             beat: data.get("beat").and_then(|v| v.as_bool()).unwrap_or(false),
                         });
                     }
+                } else if LAYOUT_EVENTS.contains(&event_type) {
+                    set_layout_generation
+                        .update(|generation| *generation = generation.wrapping_add(1));
                 } else if SCENE_EVENTS.contains(&event_type) {
                     let scene_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
                     update_scene_event_hint(set_last_scene_event, event_type, scene_data);
