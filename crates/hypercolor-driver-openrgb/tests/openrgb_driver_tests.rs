@@ -1356,13 +1356,22 @@ async fn handle_counting_connection(
 
 #[tokio::test]
 async fn connect_applies_configured_zone_sizes_and_republishes_shape() {
+    assert_configured_zone_resize(2).await;
+}
+
+#[tokio::test]
+async fn connect_restores_configured_zone_sizes_from_zero_leds() {
+    assert_configured_zone_resize(0).await;
+}
+
+async fn assert_configured_zone_resize(initial_led_count: u32) {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("fake OpenRGB server should bind");
     let endpoint = listener
         .local_addr()
         .expect("fake OpenRGB server should expose local addr");
-    let server = tokio::spawn(run_zone_resize_server(listener));
+    let server = tokio::spawn(run_zone_resize_server(listener, initial_led_count));
     let base_config = OpenRgbConfig {
         endpoints: vec![endpoint],
         ownership: OpenRgbOwnership {
@@ -1385,7 +1394,7 @@ async fn connect_applies_configured_zone_sizes_and_republishes_shape() {
         .expect("backend construction should succeed");
     let devices = discover_and_adopt(&module, &probe, &host, base_view).await;
     let discovered = &devices[0];
-    assert_eq!(discovered.info.capabilities.led_count, 2);
+    assert_eq!(discovered.info.capabilities.led_count, initial_led_count);
     let fingerprint = discovered.metadata["fingerprint"].clone();
     assert!(fingerprint.starts_with("bridge:openrgb:"), "{fingerprint}");
     drop(probe);
@@ -1405,9 +1414,12 @@ async fn connect_applies_configured_zone_sizes_and_republishes_shape() {
     let backend = module
         .build(&host, sized_view)
         .expect("backend with zone sizes should build");
-    backend
-        .adopt_device(discovered)
-        .expect("backend should adopt the discovered controller");
+    let devices = discover_and_adopt(&module, &backend, &host, sized_view).await;
+    let discovered = &devices[0];
+    assert_eq!(
+        discovered.connect_behavior,
+        DiscoveryConnectBehavior::AutoConnect
+    );
     let device_id = discovered.info.id;
 
     backend
@@ -1445,8 +1457,7 @@ async fn connect_applies_configured_zone_sizes_and_republishes_shape() {
 
 /// Serves one resizable controller. A RESIZEZONE changes the reported LED
 /// count and is answered with DEVICE_LIST_UPDATED, like OpenRGB does.
-async fn run_zone_resize_server(listener: TcpListener) -> (Packet, Packet) {
-    let mut led_count = 2_u32;
+async fn run_zone_resize_server(listener: TcpListener, mut led_count: u32) -> (Packet, Packet) {
     let mut resize = None;
     loop {
         let (mut stream, _) = listener
@@ -1728,6 +1739,88 @@ async fn device_list_update_with_new_shape_disables_output_until_rescan() {
         .await
         .expect("backend should disconnect the disabled controller");
     assert!(server.await.expect("server task should join"));
+}
+
+#[tokio::test]
+async fn idle_shape_change_requests_lifecycle_reconnect_without_a_frame() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind");
+    let endpoint = listener.local_addr().expect("address");
+    let server = tokio::spawn(run_shape_change_server(listener));
+    let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let host = ReconnectHost(Arc::new(ReconnectRuntime(requests)));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let module = OpenRgbDriverModule;
+    let backend = module.build(&host, view).expect("build");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let id = devices[0].info.id;
+    backend.connect(&id).await.expect("connect");
+    let request = tokio::time::timeout(Duration::from_secs(3), received.recv())
+        .await
+        .expect("idle shape update should request reconnect")
+        .expect("request");
+    assert_eq!(request, (id, DESCRIPTOR.id.to_owned()));
+    backend.disconnect(&id).await.expect("disconnect");
+    assert!(server.await.expect("server"));
+}
+
+struct ReconnectHost(Arc<ReconnectRuntime>);
+
+struct ReconnectRuntime(tokio::sync::mpsc::UnboundedSender<(DeviceId, String)>);
+
+#[async_trait]
+impl DriverRuntimeActions for ReconnectRuntime {
+    async fn request_reconnect(
+        &self,
+        id: DeviceId,
+        backend: &str,
+        updated: Option<DiscoveredDevice>,
+    ) -> Result<bool> {
+        let updated = updated.expect("reconnect publishes refreshed shape and metadata");
+        assert_eq!(updated.info.id, id);
+        assert_eq!(updated.info.capabilities.led_count, 3);
+        assert_eq!(updated.metadata["output_enabled"], "false");
+        assert!(updated.metadata["disabled_reason"].contains("zone shape changed"));
+        self.0.send((id, backend.to_owned()))?;
+        Ok(true)
+    }
+
+    async fn activate_device(&self, _: DeviceId, _: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    async fn disconnect_device(&self, _: DeviceId, _: &str, _: bool) -> Result<bool> {
+        panic!("reconnect must use an explicit lifecycle request")
+    }
+}
+
+impl DriverHost for ReconnectHost {
+    fn credentials(&self) -> &dyn DriverCredentialStore {
+        &NullHost
+    }
+    fn runtime(&self) -> &dyn DriverRuntimeActions {
+        self.0.as_ref()
+    }
+    fn runtime_handle(&self) -> Option<Arc<dyn DriverRuntimeActions>> {
+        Some(self.0.clone())
+    }
+    fn discovery_state(&self) -> &dyn DriverDiscoveryState {
+        &NullHost
+    }
 }
 
 async fn run_collect_updates_server(listener: TcpListener, expected: usize) -> Vec<Packet> {

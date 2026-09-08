@@ -16,7 +16,7 @@ use hypercolor_driver_api::{
     DeviceDeliveryObserver, DeviceFrameSink, DiscoveredDevice, DiscoveryCapability,
     DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
     DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
-    OutputBinding,
+    DriverRuntimeActions, OutputBinding,
 };
 use hypercolor_openrgb_sdk::{
     ControllerData, ControllerMode, ControllerZone, DeviceType, ModeFlagPolicy, OpenRgbClient,
@@ -81,6 +81,7 @@ const METADATA_SERIAL: &str = "serial";
 const DEFAULT_OPENRGB_PORT: u16 = 6742;
 const DEFAULT_TIMEOUT_MS: u64 = 750;
 const DEFAULT_TARGET_FPS: u32 = 30;
+const ZERO_LEDS_REASON: &str = "OpenRGB controller reports zero LEDs";
 /// Frame interval of the native SMBus protocols (`hypercolor-hal` ASUS Aura /
 /// ENE at 16 ms). The bridge's `smbus` detector class paces to the same
 /// cadence the native backend derives from it, so a DRAM stick behind
@@ -290,11 +291,13 @@ impl DriverModule for OpenRgbDriverModule {
 impl DeviceBackendFactory for OpenRgbDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        host: &dyn DriverHost,
         config: DriverConfigView<'_>,
     ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let config = config.parse_settings::<OpenRgbConfig>()?;
-        Ok(Arc::new(OpenRgbBackend::new(config)?))
+        let mut backend = OpenRgbBackend::new(config)?;
+        backend.runtime = host.runtime_handle();
+        Ok(Arc::new(backend))
     }
 }
 
@@ -354,6 +357,7 @@ impl DiscoveryCapability for OpenRgbDriverModule {
 /// routes and the per-controller writer tasks layered on top of it.
 pub struct OpenRgbBackend {
     config: OpenRgbConfig,
+    runtime: Option<Arc<dyn DriverRuntimeActions>>,
     discovered: StdRwLock<HashMap<DeviceId, ControllerRoute>>,
     connected: StdRwLock<HashMap<DeviceId, Arc<ConnectedOutput>>>,
 }
@@ -368,6 +372,7 @@ impl OpenRgbBackend {
         validate_openrgb_config(&config)?;
         Ok(Self {
             config,
+            runtime: None,
             discovered: StdRwLock::new(HashMap::new()),
             connected: StdRwLock::new(HashMap::new()),
         })
@@ -510,7 +515,9 @@ impl DeviceBackend for OpenRgbBackend {
         let route = self
             .discovered_route(id)
             .ok_or(DeviceError::NotAdopted { device_id: *id })?;
-        if let Some(reason) = &route.disabled_reason {
+        if let Some(reason) = &route.disabled_reason
+            && !can_restore_zero_led_zones(&route, &self.config)
+        {
             return Err(DeviceError::connection(id, reason));
         }
 
@@ -518,7 +525,8 @@ impl DeviceBackend for OpenRgbBackend {
         let endpoint = pool.acquire(route.endpoint, &self.config);
         let connected = connect_controller(&endpoint, &route, &self.config).await;
         let result = match connected {
-            Ok(controller) => {
+            Ok(mut controller) => {
+                controller.runtime.clone_from(&self.runtime);
                 let target_fps = controller.route.target_fps;
                 let controller = Arc::new(Mutex::new(controller));
                 endpoint.register_controller(*id, Arc::clone(&controller));
@@ -1605,9 +1613,9 @@ async fn run_endpoint_task(endpoint: Arc<EndpointConnection>) {
 /// Re-enumerate the endpoint and remap every connected controller.
 ///
 /// Index changes are applied silently. A shape change or a vanished
-/// fingerprint disables the route with a reason; the next frame then fails
-/// with that reason and the daemon's comm-error path reconnects the device,
-/// after which `connected_device_info` republishes the new shape.
+/// fingerprint disables the route and requests a lifecycle reconnect even
+/// when no frames are being submitted. The callback runs outside endpoint
+/// and controller locks because disconnect itself needs both locks.
 async fn reenumerate_controllers(endpoint: &EndpointConnection, link: &mut EndpointLink) {
     let Some(client) = link.client.as_mut() else {
         return;
@@ -1646,9 +1654,11 @@ async fn reenumerate_controllers(endpoint: &EndpointConnection, link: &mut Endpo
                 "OpenRGB controller disappeared after a device list update; rescan".to_owned(),
             );
             controller.route.info.capabilities.supports_direct = false;
+            request_route_reconnect(id, &mut controller);
             continue;
         };
         let mut route = route.clone();
+        let shape_changed = route_shape_differs(&controller.route, &route);
         apply_shape_change(&controller.route, &mut route);
         if route.controller_index != controller.route.controller_index {
             debug!(
@@ -1659,6 +1669,9 @@ async fn reenumerate_controllers(endpoint: &EndpointConnection, link: &mut Endpo
             );
         }
         controller.route = route;
+        if shape_changed {
+            request_route_reconnect(id, &mut controller);
+        }
         if let Some(reason) = &controller.route.disabled_reason {
             warn!(device_id = %id, reason = %reason, "OpenRGB controller output disabled");
             continue;
@@ -1710,7 +1723,9 @@ async fn connect_controller(
             return Err(error);
         }
     };
-    ensure_route_output_enabled(&route)?;
+    if !can_restore_zero_led_zones(&route, config) {
+        ensure_route_output_enabled(&route)?;
+    }
     let Some(client) = link.client.as_mut() else {
         bail!("OpenRGB endpoint {} is reconnecting", endpoint.endpoint);
     };
@@ -1734,6 +1749,8 @@ async fn connect_controller(
     }
     Ok(ConnectedController {
         previous_mode: route.previous_mode.clone(),
+        runtime: None,
+        reconnect_requested: false,
         route,
         accepting_frames: true,
         shape_warning_logged: false,
@@ -1771,6 +1788,23 @@ fn configured_zone_sizes<'a>(
         );
     }
     Ok(Some(sizes))
+}
+
+/// Permit setup for an owned, writable controller whose only output blocker
+/// is an empty LED array and whose named zones have approved nonzero sizes.
+/// Frame output remains disabled until the resize has been verified.
+fn can_restore_zero_led_zones(route: &ControllerRoute, config: &OpenRgbConfig) -> bool {
+    route.disabled_reason.as_deref() == Some(ZERO_LEDS_REASON)
+        && configured_zone_sizes(config, route)
+            .ok()
+            .flatten()
+            .is_some_and(|sizes| {
+                route
+                    .info
+                    .segments
+                    .iter()
+                    .any(|segment| sizes.get(&segment.name).is_some_and(|size| *size > 0))
+            })
 }
 
 /// Resize every configured zone whose reported LED count differs, wait for
@@ -1861,10 +1895,31 @@ fn is_transport_error(error: &Error) -> bool {
 }
 
 struct ConnectedController {
+    runtime: Option<Arc<dyn DriverRuntimeActions>>,
+    reconnect_requested: bool,
     previous_mode: Option<(u32, ControllerMode)>,
     route: ControllerRoute,
     accepting_frames: bool,
     shape_warning_logged: bool,
+}
+
+fn request_route_reconnect(id: DeviceId, controller: &mut ConnectedController) {
+    if controller.reconnect_requested {
+        return;
+    }
+    let Some(runtime) = controller.runtime.clone() else {
+        return;
+    };
+    controller.reconnect_requested = true;
+    let updated = DiscoveredDevice::from(controller.route.clone());
+    tokio::spawn(async move {
+        if let Err(error) = runtime
+            .request_reconnect(id, DESCRIPTOR.id, Some(updated))
+            .await
+        {
+            warn!(device_id = %id, error = %error, "OpenRGB lifecycle reconnect request failed");
+        }
+    });
 }
 
 #[derive(Debug, Clone)]
@@ -1922,7 +1977,7 @@ impl From<ControllerRoute> for DiscoveredDevice {
         }
         Self {
             fingerprint: route.fingerprint,
-            connect_behavior: if route.disabled_reason.is_none() && route.auto_connect {
+            connect_behavior: if route.auto_connect {
                 DiscoveryConnectBehavior::AutoConnect
             } else {
                 DiscoveryConnectBehavior::Deferred
@@ -2269,7 +2324,7 @@ fn build_route(
         disabled_reason.is_none(),
     );
 
-    ControllerRoute {
+    let mut route = ControllerRoute {
         endpoint,
         controller_index,
         fingerprint,
@@ -2284,7 +2339,10 @@ fn build_route(
         protocol_version,
         serial: controller.serial,
         location: controller.location,
-    }
+    };
+    route.auto_connect &=
+        route.disabled_reason.is_none() || can_restore_zero_led_zones(&route, config);
+    route
 }
 
 /// Classify controller identity confidence.
@@ -2416,7 +2474,7 @@ fn topology_disabled_reason(controller: &ControllerData) -> Option<String> {
         return Some("OpenRGB controller LED list count overflowed".to_owned());
     };
     if reported_controller_led_count == 0 {
-        return Some("OpenRGB controller reports zero LEDs".to_owned());
+        return Some(ZERO_LEDS_REASON.to_owned());
     }
     if reported_zone_led_count != reported_controller_led_count {
         return Some(format!(
