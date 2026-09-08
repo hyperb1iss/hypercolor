@@ -505,7 +505,8 @@ pub trait DeviceBackend: Send + Sync {
 
     /// Return the complete current driver discovery metadata after connect.
     /// Hosts replace prior driver metadata so cleared disabled reasons do not
-    /// survive a successful recovery. Other host-owned metadata is preserved.
+    /// survive a successful recovery. This complete snapshot replaces the
+    /// previously published discovery metadata.
     ///
     /// # Errors
     ///

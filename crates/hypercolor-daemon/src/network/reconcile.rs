@@ -65,6 +65,7 @@ pub async fn reconcile_driver_output_backends(
     registry: &DriverModuleRegistry,
     host: &dyn DriverHost,
     config: &HypercolorConfig,
+    previous: Option<&HypercolorConfig>,
 ) -> Result<DriverBackendReconcileReport> {
     let mut report = DriverBackendReconcileReport::default();
     let enabled_driver_ids = super::enabled_driver_module_ids(registry, config);
@@ -88,9 +89,23 @@ pub async fn reconcile_driver_output_backends(
 
     // Devices lose their route when their backend goes away or when their
     // own driver is disabled while a shared provider keeps running.
+    let changed_backends: BTreeSet<String> = desired
+        .iter()
+        .filter_map(|provider| {
+            let previous = previous?;
+            let driver_id = provider.driver_id();
+            let changed = super::driver_config_entry(previous, driver_id)
+                != super::driver_config_entry(config, driver_id);
+            (changed && registered_ids.contains(provider.backend_id().as_str()))
+                .then(|| provider.backend_id().to_string())
+        })
+        .collect();
     let retiring_backends: BTreeSet<String> = registered_ids
         .iter()
-        .filter(|id| driver_owned_ids.contains(*id) && !desired_ids.contains(*id))
+        .filter(|id| {
+            driver_owned_ids.contains(*id)
+                && (!desired_ids.contains(*id) || changed_backends.contains(*id))
+        })
         .cloned()
         .collect();
     let registered_driver_ids: HashSet<String> = registry.ids().into_iter().collect();
@@ -99,6 +114,29 @@ pub async fn reconcile_driver_output_backends(
         .filter(|id| !enabled_driver_ids.contains(*id))
         .cloned()
         .collect();
+    // Construct replacements before retiring any working output routes.
+    let mut prepared = Vec::new();
+    for provider in desired {
+        let backend_id = provider.backend_id().to_string();
+        if registered_ids.contains(&backend_id) && !changed_backends.contains(&backend_id) {
+            continue;
+        }
+        let provider_driver_id = provider.driver_id();
+        let config_entry = super::driver_config_entry(config, provider_driver_id);
+        let backend = provider
+            .build(
+                host,
+                DriverConfigView {
+                    driver_id: provider_driver_id,
+                    entry: &config_entry,
+                },
+            )
+            .with_context(|| {
+                format!("failed to build output backend for driver '{provider_driver_id}'")
+            })?;
+        prepared.push((backend_id, provider_driver_id.to_owned(), backend));
+    }
+
     let stranded_devices: Vec<DeviceId> = runtime
         .device_registry
         .list()
@@ -148,36 +186,16 @@ pub async fn reconcile_driver_output_backends(
                 report.unregistered.push(backend_id.clone());
             }
         }
-        for provider in desired {
-            let backend_id = provider.backend_id().to_string();
-            if registered_ids.contains(&backend_id) {
-                continue;
-            }
-            let provider_driver_id = provider.driver_id();
-            let config_entry = super::driver_config_entry(config, provider_driver_id);
-            let backend = provider
-                .build(
-                    host,
-                    DriverConfigView {
-                        driver_id: provider_driver_id,
-                        entry: &config_entry,
-                    },
-                )
-                .with_context(|| {
-                    format!("failed to build output backend for driver '{provider_driver_id}'")
-                })?;
+        for (backend_id, provider_driver_id, backend) in prepared {
             manager.register_backend(backend);
-            info!(
-                backend_id = %backend_id,
-                driver_id = %provider_driver_id,
-                "registered output backend for enabled driver"
-            );
+            info!(backend_id = %backend_id, driver_id = %provider_driver_id,
+                "registered output backend for enabled driver");
             report.registered.push(backend_id);
-            report
-                .registered_driver_ids
-                .push(provider_driver_id.to_owned());
+            report.registered_driver_ids.push(provider_driver_id);
         }
     }
+
+    crate::discovery::release_disabled_driver_ownership(runtime, &disabled_driver_ids).await;
 
     runtime
         .unclaimed_devices

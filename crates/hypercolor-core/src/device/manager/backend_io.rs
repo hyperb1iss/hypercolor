@@ -90,6 +90,18 @@ impl BackendIo {
         self.backend.connected_device_info(&device_id).await
     }
 
+    /// Fetch the complete driver metadata snapshot for a connected device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot retrieve its metadata.
+    pub async fn connected_device_metadata(
+        &self,
+        device_id: DeviceId,
+    ) -> Result<Option<std::collections::HashMap<String, String>>, DeviceError> {
+        self.backend.connected_device_metadata(&device_id).await
+    }
+
     /// Clone the hot-path frame sink for a connected device, if the backend exposes one.
     pub fn frame_sink(&self, device_id: DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
         self.backend.frame_sink(&device_id)

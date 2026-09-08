@@ -34,6 +34,7 @@ use crate::domain::layout::LayoutContext;
 use crate::logical_devices::LogicalDevice;
 
 pub use conflict_guard::GuardDecision;
+pub(crate) use conflict_guard::release_disabled_driver_ownership;
 pub use conflict_guard::{
     BridgeOutputLock, BridgeOutputLocks, ConflictGuardReport, NATIVE_OWNER_REASON_PREFIX,
     enforce_native_ownership, enforce_native_ownership_for_device, native_owner_reason,
@@ -364,7 +365,9 @@ pub fn resolve_targets(
             }
             continue;
         }
-        if !active_discovery_ids.contains(driver_id) {
+        // USB enumeration feeds the unclaimed inventory even when no native
+        // family is enabled. Scan results still use the enabled-driver filter.
+        if !active_discovery_ids.contains(driver_id) && driver_id != "usb" {
             if explicit_request {
                 let has_explicit_config = config.drivers.contains_key(driver_id);
                 let is_output_provider = driver_registry.get(driver_id).is_some_and(|driver| {
@@ -866,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_targets_rejects_usb_when_only_smbus_hal_modules_are_enabled() {
+    fn resolve_targets_keeps_usb_inventory_without_enabled_usb_families() {
         let mut registry = DriverModuleRegistry::new();
         registry
             .register(TestDriverModule::default_disabled(&USB_PROVIDER_DESCRIPTOR))
@@ -882,10 +885,11 @@ mod tests {
         let cfg = HypercolorConfig::default();
         let requested = vec!["usb".to_owned()];
 
-        let error = resolve_targets(Some(&requested), &cfg, &registry)
-            .expect_err("usb must fail when no USB-family HAL modules are enabled");
-
-        assert!(error.contains("no enabled driver selects its output provider"));
+        let targets = resolve_targets(Some(&requested), &cfg, &registry)
+            .expect("USB inventory remains available without a native output provider");
+        assert_eq!(super::target_names(&targets), vec!["usb"]);
+        let defaults = resolve_targets(None, &cfg, &registry).expect("default inventory targets");
+        assert!(defaults.contains(&DiscoveryTarget::usb()));
     }
 
     #[test]

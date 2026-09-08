@@ -740,6 +740,7 @@ impl DaemonState {
         let config_manager = Arc::clone(&self.config_manager);
         let mut event_rx = self.event_bus.subscribe_all();
 
+        let mut applied_config = Arc::clone(&config_manager.get());
         self.driver_reconcile_task = Some(tokio::spawn(async move {
             loop {
                 let key = match event_rx.recv().await {
@@ -763,6 +764,7 @@ impl DaemonState {
                     driver_registry.as_ref(),
                     driver_host.as_ref(),
                     &config,
+                    Some(&applied_config),
                 )
                 .await
                 {
@@ -772,6 +774,7 @@ impl DaemonState {
                         continue;
                     }
                 };
+                applied_config = Arc::clone(&config);
                 if report.is_empty() {
                     continue;
                 }
@@ -945,7 +948,8 @@ impl DaemonState {
         let driver_registry = Arc::clone(&self.driver_registry);
 
         self.discovery_task = Some(tokio::spawn(async move {
-            let hotplug_monitor = UsbHotplugMonitor::new(256);
+            let hotplug_monitor = UsbHotplugMonitor::new(256)
+                .with_unclaimed_store(worker.discovery.unclaimed_devices.clone());
             let mut hotplug_rx = hotplug_monitor.subscribe();
             let mut hotplug_task = match hotplug_monitor.start() {
                 Ok(task) => {
@@ -984,7 +988,7 @@ impl DaemonState {
                                     let driver_id = descriptor.driver_id();
                                     if crate::network::module_enabled_by_id(
                                         driver_registry.as_ref(),
-                                        &config,
+                                        &worker.config_manager.get(),
                                         driver_id.as_ref(),
                                     ) {
                                         info!(

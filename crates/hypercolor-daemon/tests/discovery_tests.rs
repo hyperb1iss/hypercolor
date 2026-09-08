@@ -662,11 +662,13 @@ fn make_runtime_with_registry_and_layout(
         )])
     };
     let scene_manager = SceneService::in_memory(scene_manager_inner, Arc::clone(&event_bus));
+    let unclaimed_devices = hypercolor_core::device::UnclaimedDeviceStore::default();
     let driver_registry = Arc::new(driver_registry.unwrap_or_else(|| {
         network::build_builtin_driver_module_registry(
             &HypercolorConfig::default(),
             Arc::clone(&credential_store),
             usb_protocol_configs.clone(),
+            unclaimed_devices.clone(),
         )
         .expect("test driver registry")
     }));
@@ -681,6 +683,9 @@ fn make_runtime_with_registry_and_layout(
         runtime_state_path.clone(),
     );
     let runtime = DiscoveryRuntime {
+        unclaimed_devices,
+        bridge_output_locks: hypercolor_daemon::discovery::BridgeOutputLocks::default(),
+        probe_serializer: Arc::default(),
         device_registry: device_registry.clone(),
         backend_manager: Arc::clone(&backend_manager),
         lifecycle_manager: Arc::clone(&lifecycle_manager),

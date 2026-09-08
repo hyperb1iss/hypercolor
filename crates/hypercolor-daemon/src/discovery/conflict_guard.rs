@@ -21,7 +21,7 @@ use hypercolor_types::event::HypercolorEvent;
 use tracing::{info, warn};
 
 use super::DiscoveryRuntime;
-use super::coverage::{JoinedCoverageRow, collect_device_coverage, is_openrgb_bridge_device};
+use super::coverage::{JoinedCoverageRow, collect_device_coverage};
 use super::device_helpers::sync_registry_state;
 use super::lifecycle::execute_lifecycle_actions;
 
@@ -159,25 +159,29 @@ pub async fn enforce_native_ownership(runtime: &DiscoveryRuntime) -> ConflictGua
     apply_guard_decisions(runtime, decisions).await
 }
 
-/// Run the guard when one device changed, skipping the pass entirely for
-/// native devices: only a bridge route connecting can create a conflict
-/// the discovery-pass guard has not already seen.
+/// Re-evaluate ownership when either side of a physical device changes.
 pub async fn enforce_native_ownership_for_device(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
 ) -> ConflictGuardReport {
-    let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+    let Some(_) = runtime.device_registry.get(&device_id).await else {
         return ConflictGuardReport::default();
     };
-    let metadata = runtime
-        .device_registry
-        .metadata_for_id(&device_id)
-        .await
-        .unwrap_or_default();
-    if !is_openrgb_bridge_device(&tracked.info, &metadata) {
-        return ConflictGuardReport::default();
-    }
     enforce_native_ownership(runtime).await
+}
+
+pub(crate) async fn release_disabled_driver_ownership(
+    runtime: &DiscoveryRuntime,
+    disabled_driver_ids: &std::collections::HashSet<String>,
+) {
+    let decisions = runtime
+        .bridge_output_locks
+        .snapshot()
+        .into_iter()
+        .filter(|(_, lock)| disabled_driver_ids.contains(&lock.native_driver_id))
+        .map(|(bridge_device_id, _)| GuardDecision::Unlock { bridge_device_id })
+        .collect();
+    apply_guard_decisions(runtime, decisions).await;
 }
 
 async fn apply_guard_decisions(
@@ -193,28 +197,31 @@ async fn apply_guard_decisions(
                 native_driver_id,
             } => {
                 let reason = native_owner_reason(&native_driver_id);
-                runtime.bridge_output_locks.insert(
-                    bridge_device_id,
-                    BridgeOutputLock {
-                        reason: reason.clone(),
-                        native_device_id,
-                        native_driver_id: native_driver_id.clone(),
-                    },
-                );
                 let actions = {
                     let mut lifecycle = runtime.lifecycle_manager.lock().await;
                     lifecycle.on_user_disable(bridge_device_id)
                 };
                 match actions {
                     Ok(actions) => {
+                        runtime.bridge_output_locks.insert(
+                            bridge_device_id,
+                            BridgeOutputLock {
+                                reason: reason.clone(),
+                                native_device_id,
+                                native_driver_id: native_driver_id.clone(),
+                            },
+                        );
                         execute_lifecycle_actions(runtime.clone(), actions).await;
                         sync_registry_state(runtime, bridge_device_id).await;
                     }
-                    Err(error) => warn!(
+                    Err(error) => {
+                        warn!(
                         device_id = %bridge_device_id,
                         error = %error,
                         "conflict guard could not disable the bridge route through lifecycle"
-                    ),
+                        );
+                        continue;
+                    }
                 }
                 publish_output_lock_change(runtime, bridge_device_id, Some(&reason));
                 info!(

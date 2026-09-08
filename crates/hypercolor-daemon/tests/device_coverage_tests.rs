@@ -15,12 +15,14 @@ use hypercolor_daemon::discovery::{
     enforce_native_ownership, join_coverage_sources, native_owner_reason, parse_openrgb_location,
     plan_conflict_guard,
 };
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior, DriverHost,
+};
 use hypercolor_types::api::devices::{CoverageActive, CoverageIdentityKind};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-    DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, DriverTransportKind,
-    FingerprintNamespace, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    DriverTransportKind, FingerprintNamespace, SegmentInfo,
 };
 use hypercolor_types::event::HypercolorEvent;
 use tower::ServiceExt;
@@ -364,6 +366,88 @@ async fn track(
     id
 }
 
+struct NativeFixtureBackend;
+
+#[async_trait::async_trait]
+impl DeviceBackend for NativeFixtureBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "usb".to_owned(),
+            name: "Fixture".to_owned(),
+            description: "Native activation fixture".to_owned(),
+        }
+    }
+    fn adopt_device(&self, _discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        Ok(())
+    }
+    async fn connect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+        Ok(())
+    }
+    async fn disconnect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+        Ok(())
+    }
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn native_state_change_and_reconnect_guard_bridge_without_discovery() {
+    for reconnect in [false, true] {
+        let (state, _tmp) = isolated_state();
+        let runtime = state.driver_host().discovery_runtime();
+        runtime
+            .backend_manager
+            .lock()
+            .await
+            .register_backend(Arc::new(NativeFixtureBackend));
+        let native_id = track(
+            &runtime,
+            native_device("late-native"),
+            DeviceState::Connected,
+        )
+        .await;
+        let bridge_id = track(&runtime, bridge_device("late-native"), DeviceState::Known).await;
+        if reconnect {
+            state
+                .driver_host()
+                .runtime()
+                .request_reconnect(native_id, "usb", None)
+                .await
+                .expect("native reconnect");
+        } else {
+            hypercolor_daemon::discovery::enforce_native_ownership_for_device(&runtime, native_id)
+                .await;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !runtime.bridge_output_locks.is_locked(&bridge_id) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("native connection must disable conflicting bridge without a discovery pass");
+    }
+}
+
+#[tokio::test]
+async fn conflict_guard_does_not_publish_a_lock_when_lifecycle_device_is_missing() {
+    let (state, _tmp) = isolated_state();
+    let runtime = state.driver_host().discovery_runtime();
+    track(
+        &runtime,
+        native_device("missing-lifecycle"),
+        DeviceState::Connected,
+    )
+    .await;
+    let bridge_id = runtime
+        .device_registry
+        .add_discovered(bridge_device("missing-lifecycle"))
+        .await;
+    let report = enforce_native_ownership(&runtime).await;
+    assert!(report.locked.is_empty());
+    assert!(!runtime.bridge_output_locks.is_locked(&bridge_id));
+}
+
 #[tokio::test]
 async fn the_guard_disables_a_shadowed_bridge_route_and_lifts_it_when_native_is_disabled() {
     let (state, _tmp) = isolated_state();
@@ -461,19 +545,9 @@ async fn the_guard_disables_a_shadowed_bridge_route_and_lifts_it_when_native_is_
         serde_json::json!("127.0.0.1:6742")
     );
 
-    // The user disables native: the guard releases its lock.
-    {
-        let mut lifecycle = runtime.lifecycle_manager.lock().await;
-        lifecycle
-            .on_user_disable(native_id)
-            .expect("native fixture should disable");
-    }
-    runtime
-        .device_registry
-        .set_state(&native_id, DeviceState::Disabled)
-        .await;
-    let report = enforce_native_ownership(&runtime).await;
-    assert_eq!(report.unlocked, vec![bridge_id]);
+    hypercolor_daemon::discovery::apply_user_enabled_state(&runtime, native_id, false)
+        .await
+        .expect("native user disable");
     assert!(!runtime.bridge_output_locks.is_locked(&bridge_id));
     let bridge = runtime
         .device_registry

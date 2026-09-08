@@ -60,12 +60,38 @@ pub(super) async fn refresh_connected_device_info(
     backend_id: &str,
     device_id: DeviceId,
 ) -> anyhow::Result<()> {
-    let maybe_info = backend_io(runtime, backend_id)
-        .await?
-        .connected_device_info(device_id)
-        .await?;
+    let io = backend_io(runtime, backend_id).await?;
+    let maybe_info = io.connected_device_info(device_id).await?;
+    let metadata = io.connected_device_metadata(device_id).await?;
 
-    if let Some(info) = maybe_info {
+    if let Some(metadata) = metadata {
+        let tracked = runtime
+            .device_registry
+            .get(&device_id)
+            .await
+            .context("connected device is no longer tracked")?;
+        let fingerprint = runtime
+            .device_registry
+            .fingerprint_for_id(&device_id)
+            .await
+            .context("connected device has no registered fingerprint")?;
+        let mut info = maybe_info.unwrap_or(tracked.info);
+        info.id = device_id;
+        runtime
+            .device_registry
+            .refresh_discovered(
+                &device_id,
+                DiscoveredDevice {
+                    info,
+                    fingerprint,
+                    metadata,
+                    connect_behavior: tracked.connect_behavior,
+                    claim: None,
+                },
+            )
+            .await
+            .context("connected device identity changed during metadata refresh")?;
+    } else if let Some(info) = maybe_info {
         let _ = runtime.device_registry.update_info(&device_id, info).await;
     }
 
