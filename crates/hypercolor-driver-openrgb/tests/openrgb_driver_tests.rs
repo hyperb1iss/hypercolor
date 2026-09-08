@@ -3328,3 +3328,97 @@ async fn rejected_lifecycle_requests_retry_on_unchanged_enumeration() {
     server.await.expect("server");
     assert_eq!(runtime.calls.load(Ordering::SeqCst), 3);
 }
+
+#[tokio::test]
+async fn cancelling_connect_does_not_pin_the_previous_resize_policy() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind");
+    let endpoint = listener.local_addr().expect("address");
+    let (stalled, handshake) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("discovery");
+        let mut decoder = PacketDecoder::new();
+        while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+            answer_standard_client_packet(
+                &mut stream,
+                packet.header.packet_id,
+                &packet,
+                &controller_payload_v5_resizable(2),
+            )
+            .await;
+        }
+        let (mut stream, _) = listener.accept().await.expect("cancelled connection");
+        let mut decoder = PacketDecoder::new();
+        let packet = read_next_packet(&mut stream, &mut decoder)
+            .await
+            .expect("handshake");
+        assert_eq!(packet.header.packet_id, PacketId::RequestProtocolVersion);
+        stalled.send(()).expect("waiting client");
+        assert!(
+            read_next_packet(&mut stream, &mut decoder).await.is_none(),
+            "cancelled handshake socket must close"
+        );
+        run_zone_resize_server(listener, 2).await
+    });
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let module = OpenRgbDriverModule;
+    let backend = module.build(&NullHost, view).expect("build");
+    let devices = discover_and_adopt(&module, &backend, &NullHost, view).await;
+    let discovered = &devices[0];
+    let id = discovered.info.id;
+    let mut connecting = Box::pin(backend.connect(&id));
+    tokio::select! {
+        result = &mut connecting => panic!("handshake must remain pending: {result:?}"),
+        ready = handshake => ready.expect("server stalled handshake"),
+    }
+    drop(connecting);
+    let resized = OpenRgbConfig {
+        zone_sizes: BTreeMap::from([(
+            discovered.metadata["fingerprint"].clone(),
+            BTreeMap::from([("Main".to_owned(), 4)]),
+        )]),
+        ..config
+    };
+    let resized_entry = config_entry(&resized);
+    let replacement = module
+        .build(
+            &NullHost,
+            DriverConfigView {
+                driver_id: DESCRIPTOR.id,
+                entry: &resized_entry,
+            },
+        )
+        .expect("replacement");
+    replacement
+        .adopt_device(discovered)
+        .expect("adopt existing route");
+    tokio::time::timeout(Duration::from_secs(3), replacement.connect(&id))
+        .await
+        .expect("replacement deadline")
+        .expect("new resize policy after cancellation");
+    replacement
+        .write_colors(&id, &[[1, 2, 3]; 4])
+        .await
+        .expect("resized output");
+    let (resize, update) = tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .expect("server deadline")
+        .expect("server");
+    assert_eq!(resize.header.packet_id, PacketId::ResizeZone);
+    assert_eq!(&update.payload[4..6], &4_u16.to_le_bytes());
+    replacement.disconnect(&id).await.expect("disconnect");
+}

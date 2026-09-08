@@ -534,7 +534,8 @@ impl DeviceBackend for OpenRgbBackend {
         }
 
         let pool = endpoint_pool();
-        let endpoint = pool.acquire(route.endpoint, &self.config).await;
+        let pin = pool.acquire(route.endpoint, &self.config).await;
+        let endpoint = Arc::clone(&pin.connection);
         let connected = connect_controller(&endpoint, &route, &self.config).await;
         let result = match connected {
             Ok(mut controller) => {
@@ -563,7 +564,7 @@ impl DeviceBackend for OpenRgbBackend {
                 OpenRgbDeviceOperation::Connect,
             )),
         };
-        pool.unpin(&endpoint).await;
+        pin.release().await;
         result
     }
 
@@ -1340,19 +1341,51 @@ fn endpoint_pool() -> &'static EndpointPool {
     &POOL
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct EndpointPool {
-    endpoints: StdMutex<HashMap<SocketAddr, Arc<EndpointConnection>>>,
+    endpoints: Arc<StdMutex<HashMap<SocketAddr, Arc<EndpointConnection>>>>,
+}
+
+/// Own one acquisition pin across every await in connect, including teardown
+/// of an older endpoint generation. Cancellation releases the pin immediately.
+struct EndpointPin {
+    pool: EndpointPool,
+    connection: Arc<EndpointConnection>,
+    released: bool,
+}
+
+impl EndpointPin {
+    fn release_pin(&mut self) {
+        self.connection.pins.fetch_sub(1, Ordering::AcqRel);
+        self.released = true;
+    }
+
+    async fn release(mut self) {
+        self.release_pin();
+        self.pool.release_if_idle(&self.connection).await;
+    }
+}
+
+impl Drop for EndpointPin {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        self.release_pin();
+        let pool = self.pool.clone();
+        let connection = Arc::clone(&self.connection);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                pool.release_if_idle(&connection).await;
+            });
+        }
+    }
 }
 
 impl EndpointPool {
     /// Fetch or create the connection for `endpoint`, pinned so a concurrent
     /// release cannot close it before the caller registers a controller.
-    async fn acquire(
-        &self,
-        endpoint: SocketAddr,
-        config: &OpenRgbConfig,
-    ) -> Arc<EndpointConnection> {
+    async fn acquire(&self, endpoint: SocketAddr, config: &OpenRgbConfig) -> EndpointPin {
         let connection = {
             let mut endpoints = self
                 .endpoints
@@ -1376,8 +1409,13 @@ impl EndpointPool {
             connection.pins.fetch_add(1, Ordering::AcqRel);
             Arc::clone(connection)
         };
-        connection.close_predecessor().await;
-        connection
+        let pin = EndpointPin {
+            pool: self.clone(),
+            connection,
+            released: false,
+        };
+        pin.connection.close_predecessor().await;
+        pin
     }
 
     /// The connection for `endpoint` if one is pooled, without pinning it.
@@ -1387,11 +1425,6 @@ impl EndpointPool {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&endpoint)
             .cloned()
-    }
-
-    async fn unpin(&self, connection: &Arc<EndpointConnection>) {
-        connection.pins.fetch_sub(1, Ordering::AcqRel);
-        self.release_if_idle(connection).await;
     }
 
     /// Close and forget a connection nobody pins and no controller uses.
