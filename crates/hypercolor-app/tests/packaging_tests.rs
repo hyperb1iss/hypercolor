@@ -413,23 +413,43 @@ fn macos_launchers_identify_their_daemon_topology() {
         ]
     );
 
-    let (_, homebrew_service) = HOMEBREW_FORMULA
-        .split_once("  service do\n")
-        .expect("Homebrew formula should declare a service");
-    let (homebrew_service, _) = homebrew_service
-        .split_once("\n  end")
-        .expect("Homebrew service block should close");
+    let (_, homebrew_macos_service) = HOMEBREW_FORMULA
+        .split_once("  on_macos do\n    service do\n")
+        .expect("Homebrew formula should declare a macOS service");
+    let (homebrew_macos_service, _) = homebrew_macos_service
+        .split_once("\n    end\n  end")
+        .expect("Homebrew macOS service block should close");
     assert_eq!(
-        homebrew_service,
+        homebrew_macos_service,
         concat!(
-            "    run [opt_bin/\"hypercolor-daemon\", \"--macos-owner\", \"homebrew\", ",
+            "      run [opt_bin/\"hypercolor-daemon\", \"--macos-owner\", \"homebrew\", ",
             "\"--ui-dir\", share/\"hypercolor/ui\"]\n",
-            "    keep_alive successful_exit: false\n",
-            "    log_path var/\"log/hypercolor/hypercolor.log\"\n",
-            "    error_log_path var/\"log/hypercolor/hypercolor.log\"\n",
-            "    environment_variables HYPERCOLOR_LOG: \"info\", ",
+            "      keep_alive successful_exit: false\n",
+            "      log_path var/\"log/hypercolor/hypercolor.log\"\n",
+            "      error_log_path var/\"log/hypercolor/hypercolor.log\"\n",
+            "      environment_variables HYPERCOLOR_LOG: \"info\", ",
             "HYPERCOLOR_MACOS_OWNER: \"homebrew\", ",
             "HYPERCOLOR_SERVICE_IDENTITY: \"user_service:homebrew:homebrew.mxcl.hypercolor\"",
+        )
+    );
+
+    // The daemon only defines --macos-owner on macOS, and a claim naming the
+    // homebrew manager is only corroborated by launchd, so the Linux service
+    // carries neither and lets the systemd evidence resolve the identity.
+    let (_, homebrew_linux_service) = HOMEBREW_FORMULA
+        .split_once("  on_linux do\n    service do\n")
+        .expect("Homebrew formula should declare a Linux service");
+    let (homebrew_linux_service, _) = homebrew_linux_service
+        .split_once("\n    end\n  end")
+        .expect("Homebrew Linux service block should close");
+    assert_eq!(
+        homebrew_linux_service,
+        concat!(
+            "      run [opt_bin/\"hypercolor-daemon\", \"--ui-dir\", share/\"hypercolor/ui\"]\n",
+            "      keep_alive successful_exit: false\n",
+            "      log_path var/\"log/hypercolor/hypercolor.log\"\n",
+            "      error_log_path var/\"log/hypercolor/hypercolor.log\"\n",
+            "      environment_variables HYPERCOLOR_LOG: \"info\"",
         )
     );
 }
@@ -1465,10 +1485,38 @@ with tarfile.open(archive_path, "w:gz") as output:
 }
 
 #[test]
-fn public_ci_leaves_homebrew_promotion_to_the_proprietary_release_pipeline() {
-    assert!(!CI_WORKFLOW.contains("update-homebrew:"));
-    assert!(!CI_WORKFLOW.contains("HOMEBREW_TAP_TOKEN"));
+fn public_ci_updates_linux_homebrew_stanzas_and_leaves_macos_promotion_to_the_signed_pipeline() {
+    let (_, update_homebrew) = CI_WORKFLOW
+        .split_once("\n  update-homebrew:\n")
+        .expect("public CI should update the Homebrew tap on stable tags");
+    let job_body = update_homebrew
+        .split_once("\n  update-")
+        .map_or(update_homebrew, |(job_body, _)| job_body);
+    assert!(job_body.contains("!contains(github.ref_name, '-')"));
+    assert!(job_body.contains("scripts/homebrew-formula.mjs"));
+    assert!(job_body.contains("--current homebrew-tap/Formula/hypercolor.rb"));
+    assert!(
+        job_body.contains("gh api repos/hyperb1iss/homebrew-tap --jq '.permissions.push // false'")
+    );
+
+    // The public lane never publishes a macOS build: it downloads only the
+    // Linux tarballs, never touches the cask, and the generator carries the
+    // macOS stanzas forward from the tap until the signed lane replaces them.
+    assert!(job_body.contains("for platform in linux-amd64 linux-arm64; do"));
+    for forbidden in [
+        "macos-arm64",
+        "macos-amd64",
+        ".dmg",
+        "Casks",
+        "hypercolor-app.rb",
+    ] {
+        assert!(
+            !job_body.contains(forbidden),
+            "update-homebrew must not publish macOS artifacts: found {forbidden}"
+        );
+    }
     assert!(!CI_WORKFLOW.contains("tap/Casks"));
+    assert!(HOMEBREW_FORMULA.contains("MACOS_VERSION_PLACEHOLDER"));
     assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_ARM64"));
     assert!(HOMEBREW_CASK.contains("SHA256_MACOS_APP_ARM64"));
 }

@@ -1,9 +1,21 @@
 # 30 -- ROLI Blocks Backend (blocksd Bridge)
 
-> IPC bridge to blocksd for driving ROLI Lightpad, LUMI Keys, and Seaboard Blocks as pixel-addressable RGB surfaces. The first out-of-process device backend.
+> IPC bridge to blocksd for Lightpad grids and LUMI key lighting.
 
-**Status:** Implemented (status corrected 2026-08-25). `BlocksBackend` ships exactly
-where this spec places it, at `crates/hypercolor-core/src/device/blocks/backend.rs`.
+**Status:** The lighting bridge is implemented. The current supported contract is
+15×15 Lightpad grids over binary frames and 24 LUMI key colors over JSON
+`key_frame` messages. Discovery requires matching model and dimensions; LUMI
+also requires an advertised `key_count` of 24. Older Lightpad discovery responses
+without `key_count` remain supported.
+
+The sections below retain historical architecture sketches, including proposed
+input handling and performance budgets. Those sketches are not acceptance
+results or a description of every shipped API. Use the
+[current hardware guide](../content/hardware/roli-blocks.md) and executable tests
+in `crates/hypercolor-core/tests/blocks_backend_tests.rs` for the supported
+lighting contract. Musical input and full scene-compositor acceptance remain
+separate hardware checks.
+
 **Crate:** `hypercolor-core`
 **Module path:** `hypercolor_core::device::blocks`
 **Author:** Nova
@@ -33,31 +45,20 @@ where this spec places it, at `crates/hypercolor-core/src/device/blocks/backend.
 
 ## 1. Overview
 
-ROLI Blocks are modular music controllers (Lightpad Block, LUMI Keys, Seaboard Block, and others)
-that snap together magnetically via a DNA mesh topology. Each block contains a **15×15 RGB LED
-grid** (225 pixels) driven via MIDI SysEx over USB. The protocol is non-trivial: 7-bit-safe payload
-packing, diff-based heap writes with ACK tracking, and on-device LittleFoot bytecode programs that
-repaint the grid at ~25 Hz.
-
-Rather than rewriting this protocol stack in Rust, Hypercolor delegates hardware interaction to
-**blocksd** — a dedicated Python daemon that already implements the full ROLI protocol with 275+
-tests. Hypercolor communicates with blocksd over a local **Unix domain socket**, making this the
-first `ConnectionType::Bridge` backend in the system.
+ROLI Blocks are modular music controllers connected through USB and DNA links.
+Hypercolor delegates the MIDI SysEx transport and LittleFoot renderer lifecycle
+to the Python blocksd daemon over a Unix domain socket.
 
 ### Supported Hardware
 
-| Device           | Serial Prefix | USB PID  | LED Grid | Heap Size | Surface                   |
-| ---------------- | ------------- | -------- | -------- | --------- | ------------------------- |
-| Lightpad Block   | LPB           | `0x0900` | 15×15    | 7200 B    | Pressure-sensitive XY pad |
-| Lightpad Block M | LPM           | `0x0900` | 15×15    | 7200 B    | Same as LPB               |
-| LUMI Keys Block  | LKB           | `0x0E00` | 15×15    | 7200 B    | 24-key mini keyboard      |
-| Seaboard Block   | SBB           | `0x0700` | 15×15    | 7200 B    | Continuous pitch surface  |
-| Live Block       | LIC           | `0x0B00` | 15×15    | 3000 B    | Button matrix             |
-| Loop Block       | LOC           | `0x0C00` | 15×15    | 3000 B    | Looper controls           |
-| Touch Block      | TCB           | `0x0D00` | 15×15    | 3000 B    | Blank touch surface       |
+| Device | Advertised capability | Hypercolor topology | Frame transport |
+| --- | --- | --- | --- |
+| Lightpad Block / Block M | 15×15 grid, no keys | 225-pixel matrix | Binary RGB888 |
+| LUMI Keys Block | No grid, 24 keys | 24-pixel strip | JSON `key_frame`, RGB888 |
 
-All devices share the same 15×15 LED grid and RGB565 color encoding. The ROLI USB vendor ID is
-`0x2AF4`.
+Other models and inconsistent dimensions are excluded from lighting discovery.
+LUMI has individually addressable key colors, not a Lightpad pixel grid. The
+linear strip follows key index; it does not model black and white key heights.
 
 ### Relationship to Other Specs
 
@@ -1484,12 +1485,15 @@ For implementors working on blocksd's API server — key protocol constants:
 | DNA Ping Interval    | 1666 ms          | Keepalive for connected blocks |
 | Ping Timeout         | 5000 ms          | Disconnect threshold           |
 
-## Appendix C: LUMI Keys Key-to-Pixel Mapping
+## Appendix C: LUMI Keys Lighting
 
-The LUMI Keys Block uses the same 15×15 grid as the Lightpad, but the physical layout maps keys
-to specific pixel regions. The 24 keys occupy rows 8–14 of the grid (the lower portion), with the
-upper rows available for status indicators or custom visuals.
+LUMI exposes 24 key colors through blocksd's `key_frame` API. Hypercolor sends
+exactly 72 RGB888 bytes as base64 JSON with the full unsigned 64-bit device UID.
+A response must be a `key_frame_ack` for that UID with a boolean `accepted` field.
+Acceptance confirms queuing by blocksd, not physical display completion.
 
-A future enhancement could provide a `LumiKeysLayout` that maps MIDI note numbers to pixel
-coordinates, enabling per-key illumination that matches the musical keyboard layout. This would
-require blocksd to expose MIDI note events alongside touch events.
+The daemon owns firmware compatibility and conversion to the on-device color
+format. LUMI discovery must advertise `key_count: 24`; a zero-size grid alone
+does not identify a usable lighting surface. The current layout is a strip in
+key-index order. Physical keyboard geometry and note-reactive input are separate
+extensions.

@@ -17,7 +17,7 @@ use hypercolor_types::device::{
 };
 
 use super::connection::{self, BlocksConnection};
-use super::types::{BlocksDeviceResponse, RoliBlockType};
+use super::types::{BlocksDeviceResponse, BlocksSurface, RoliBlockType};
 
 /// Discovery source for ROLI Blocks devices exposed by blocksd.
 pub struct BlocksScanner {
@@ -53,7 +53,9 @@ impl BlocksScanner {
 
         let mut discovered = Vec::with_capacity(response.devices.len());
         for dev in &response.devices {
-            discovered.push(build_discovered_device(dev));
+            if let Some(device) = build_discovered_device(dev) {
+                discovered.push(device);
+            }
         }
 
         debug!(count = discovered.len(), "blocksd scan complete");
@@ -61,7 +63,8 @@ impl BlocksScanner {
     }
 }
 
-fn build_discovered_device(dev: &BlocksDeviceResponse) -> DiscoveredDevice {
+fn build_discovered_device(dev: &BlocksDeviceResponse) -> Option<DiscoveredDevice> {
+    let surface = BlocksSurface::from_device(dev)?;
     let block_type = RoliBlockType::from_api(&dev.block_type);
     let serial_short = if dev.serial.len() >= 6 {
         &dev.serial[..6]
@@ -73,9 +76,14 @@ fn build_discovered_device(dev: &BlocksDeviceResponse) -> DiscoveredDevice {
         DeviceFingerprint::mint(FingerprintNamespace::Bridge, "roli", &dev.uid.to_string());
     let device_id = fingerprint.stable_device_id();
 
-    let rows = dev.grid_height;
-    let cols = dev.grid_width;
-    let led_count = rows * cols;
+    let (segment_name, led_count, topology) = match surface {
+        BlocksSurface::Grid => (
+            "Grid",
+            225,
+            DeviceTopologyHint::Matrix { rows: 15, cols: 15 },
+        ),
+        BlocksSurface::Keys => ("Keys", 24, DeviceTopologyHint::Strip),
+    };
 
     let info = DeviceInfo {
         id: device_id,
@@ -86,9 +94,9 @@ fn build_discovered_device(dev: &BlocksDeviceResponse) -> DiscoveredDevice {
         connection_type: ConnectionType::Bridge,
         origin: DeviceOrigin::native("roli", BLOCKS_OUTPUT_BACKEND_ID, ConnectionType::Bridge),
         segments: vec![SegmentInfo {
-            name: "Grid".to_owned(),
+            name: segment_name.to_owned(),
             led_count,
-            topology: DeviceTopologyHint::Matrix { rows, cols },
+            topology,
             color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
         }],
@@ -110,7 +118,9 @@ fn build_discovered_device(dev: &BlocksDeviceResponse) -> DiscoveredDevice {
     metadata.insert("serial".to_owned(), dev.serial.clone());
     metadata.insert("block_type".to_owned(), dev.block_type.clone());
 
-    DiscoveredDevice {
+    metadata.insert("surface".to_owned(), surface.metadata_value().to_owned());
+
+    Some(DiscoveredDevice {
         fingerprint,
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info,
@@ -118,5 +128,5 @@ fn build_discovered_device(dev: &BlocksDeviceResponse) -> DiscoveredDevice {
         // Deliberate refusal: blocksd owns these devices, and its uid and
         // serial semantics have not been reviewed as cross-OS identities.
         claim: None,
-    }
+    })
 }

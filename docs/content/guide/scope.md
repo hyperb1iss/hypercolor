@@ -37,8 +37,8 @@ Hypercolor drives hardware through two transport layers.
 
 | Bridge | Protocol | Enable with |
 |---|---|---|
-| OpenRGB SDK | TCP to the Hypercolor-managed OpenRGB server on `127.0.0.1:6742` | `hypercolor config set drivers.openrgb.enabled true` after `hypercolor openrgb start` ([OpenRGB fallback](@/hardware/openrgb-fallback.md)) |
-| ROLI Blocks | Unix socket to `blocksd` (Lightpad, LUMI Keys, Seaboard) | `discovery.blocks_scan`; Unix only |
+| OpenRGB SDK | TCP to the Hypercolor-managed OpenRGB server on `127.0.0.1:6742` | Enable `drivers.openrgb.enabled`, then run `hypercolor openrgb start` ([OpenRGB fallback](@/hardware/openrgb-fallback.md)) |
+| ROLI Blocks | Unix socket to `blocksd` (Lightpad grids and LUMI key colors) | `discovery.blocks_scan`; Unix only |
 
 `hypercolor devices coverage` shows, per physical device, whether the native driver, the bridge, or nothing is active. For the full list with every supported PID and device note, see the [compatibility matrix](@/hardware/compatibility.md).
 
