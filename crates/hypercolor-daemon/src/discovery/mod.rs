@@ -34,6 +34,7 @@ use crate::domain::layout::LayoutContext;
 use crate::logical_devices::LogicalDevice;
 
 pub use conflict_guard::GuardDecision;
+pub(crate) use conflict_guard::release_disabled_driver_ownership;
 pub use conflict_guard::{
     BridgeOutputLock, BridgeOutputLocks, ConflictGuardReport, NATIVE_OWNER_REASON_PREFIX,
     enforce_native_ownership, enforce_native_ownership_for_device, native_owner_reason,

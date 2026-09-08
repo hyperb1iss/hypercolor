@@ -740,6 +740,7 @@ impl DaemonState {
         let config_manager = Arc::clone(&self.config_manager);
         let mut event_rx = self.event_bus.subscribe_all();
 
+        let mut applied_config = Arc::clone(&config_manager.get());
         self.driver_reconcile_task = Some(tokio::spawn(async move {
             loop {
                 let key = match event_rx.recv().await {
@@ -763,6 +764,7 @@ impl DaemonState {
                     driver_registry.as_ref(),
                     driver_host.as_ref(),
                     &config,
+                    Some(&applied_config),
                 )
                 .await
                 {
@@ -772,6 +774,7 @@ impl DaemonState {
                         continue;
                     }
                 };
+                applied_config = Arc::clone(&config);
                 if report.is_empty() {
                     continue;
                 }

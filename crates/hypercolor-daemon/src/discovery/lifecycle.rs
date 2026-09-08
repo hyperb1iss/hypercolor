@@ -89,6 +89,11 @@ pub async fn apply_user_enabled_state(
             .await;
     }
 
+    Box::pin(super::enforce_native_ownership_for_device(
+        runtime, device_id,
+    ))
+    .await;
+
     Ok(UserEnabledStateResult::Applied)
 }
 
@@ -187,6 +192,10 @@ pub async fn activate_pairable_device(
         .sync_active_layout_for_renderable_devices(runtime.clone(), Some(activated_only))
         .await;
     publish_device_connected(runtime, backend_id, device_id).await;
+    Box::pin(super::conflict_guard::enforce_native_ownership_for_device(
+        runtime, device_id,
+    ))
+    .await;
     Ok(true)
 }
 
@@ -787,6 +796,11 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
                         )
                         .await;
                     publish_device_connected(&runtime_for_task, &backend_id, device_id).await;
+                    Box::pin(super::conflict_guard::enforce_native_ownership_for_device(
+                        &runtime_for_task,
+                        device_id,
+                    ))
+                    .await;
                 }
             }
             Err(error) => {

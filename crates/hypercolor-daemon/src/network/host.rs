@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_driver_api::{
-    BackendRebindActions, DeviceControlStore, DriverConfigView, DriverControlHost,
-    DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverHost,
+    BackendRebindActions, DeviceControlStore, DiscoveredDevice, DriverConfigView,
+    DriverControlHost, DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverHost,
     DriverLifecycleActions, DriverRuntimeActions, DriverTrackedDevice,
 };
 use hypercolor_driver_support::CredentialStore;
@@ -24,7 +24,7 @@ use crate::driver_inventory::DriverInventoryStore;
 /// Daemon-owned host adapter passed to built-in drivers.
 #[derive(Clone)]
 pub struct DaemonDriverHost {
-    runtime: DiscoveryRuntime,
+    runtime: Arc<DiscoveryRuntime>,
     driver_inventory: Arc<DriverInventoryStore>,
     driver_registry: Arc<DriverModuleRegistry>,
     config_manager: Option<Arc<ConfigManager>>,
@@ -39,7 +39,7 @@ impl DaemonDriverHost {
         config_manager: Option<Arc<ConfigManager>>,
     ) -> Self {
         Self {
-            runtime,
+            runtime: Arc::new(runtime),
             driver_inventory,
             driver_registry,
             config_manager,
@@ -48,7 +48,7 @@ impl DaemonDriverHost {
 
     #[must_use]
     pub fn discovery_runtime(&self) -> DiscoveryRuntime {
-        self.runtime.clone()
+        self.runtime.as_ref().clone()
     }
 
     #[must_use]
@@ -139,6 +139,117 @@ impl DriverRuntimeActions for DaemonDriverHost {
         )
         .await
     }
+
+    async fn request_reconnect(
+        &self,
+        device_id: DeviceId,
+        backend_id: &str,
+        updated: Option<DiscoveredDevice>,
+    ) -> Result<bool> {
+        request_device_reconnect(&self.runtime, device_id, backend_id, updated).await
+    }
+}
+
+/// Drivers retain a weak runtime so the backend graph cannot keep itself alive.
+struct RetainedDriverRuntime {
+    runtime: Weak<DiscoveryRuntime>,
+}
+
+impl RetainedDriverRuntime {
+    fn upgrade(&self) -> Result<Arc<DiscoveryRuntime>> {
+        self.runtime.upgrade().context("daemon driver host stopped")
+    }
+}
+
+#[async_trait]
+impl DriverRuntimeActions for RetainedDriverRuntime {
+    async fn activate_device(&self, device_id: DeviceId, backend_id: &str) -> Result<bool> {
+        let runtime = self.upgrade()?;
+        discovery::activate_pairable_device(&runtime, device_id, backend_id).await
+    }
+
+    async fn disconnect_device(
+        &self,
+        device_id: DeviceId,
+        _backend_id: &str,
+        will_retry: bool,
+    ) -> Result<bool> {
+        let runtime = self.upgrade()?;
+        discovery::disconnect_tracked_device(
+            &runtime,
+            device_id,
+            DisconnectReason::User,
+            will_retry,
+        )
+        .await
+    }
+
+    async fn request_reconnect(
+        &self,
+        device_id: DeviceId,
+        backend_id: &str,
+        updated: Option<DiscoveredDevice>,
+    ) -> Result<bool> {
+        let runtime = self.upgrade()?;
+        request_device_reconnect(&runtime, device_id, backend_id, updated).await
+    }
+}
+
+async fn request_device_reconnect(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+    backend_id: &str,
+    updated: Option<DiscoveredDevice>,
+) -> Result<bool> {
+    let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+        return Ok(false);
+    };
+    if tracked.info.output_backend_id() != backend_id {
+        bail!("device {device_id} does not belong to backend '{backend_id}'");
+    }
+    if let Some(updated) = updated {
+        if let Some(refreshed) = runtime
+            .device_registry
+            .refresh_discovered(&device_id, updated)
+            .await
+        {
+            runtime
+                .event_bus
+                .publish(HypercolorEvent::DeviceStateChanged {
+                    device_id: device_id.to_string(),
+                    changes: std::collections::HashMap::from([(
+                        "info".to_owned(),
+                        serde_json::to_value(refreshed.info)?,
+                    )]),
+                });
+        } else {
+            warn!(%device_id, backend_id, "refreshed identity does not match; reconnecting without replacing discovery");
+        }
+    }
+    let actions = {
+        let mut lifecycle = runtime.lifecycle_manager.lock().await;
+        if !lifecycle
+            .state(device_id)
+            .is_some_and(|state| state.is_renderable())
+        {
+            return Ok(false);
+        }
+        lifecycle.on_comm_error(device_id)?
+    };
+    discovery::execute_lifecycle_actions(runtime.clone(), actions).await;
+    discovery::sync_registry_state(runtime, device_id).await;
+    runtime
+        .layout
+        .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+        .await;
+    runtime
+        .event_bus
+        .publish(HypercolorEvent::DeviceDisconnected {
+            device_id: device_id.to_string(),
+            reason: DisconnectReason::Error,
+            will_retry: true,
+        });
+    Ok(true)
 }
 
 #[async_trait]
@@ -185,6 +296,12 @@ impl DriverHost for DaemonDriverHost {
 
     fn runtime(&self) -> &dyn DriverRuntimeActions {
         self
+    }
+
+    fn runtime_handle(&self) -> Option<Arc<dyn DriverRuntimeActions>> {
+        Some(Arc::new(RetainedDriverRuntime {
+            runtime: Arc::downgrade(&self.runtime),
+        }))
     }
 
     fn discovery_state(&self) -> &dyn DriverDiscoveryState {
