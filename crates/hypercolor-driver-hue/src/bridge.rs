@@ -1,6 +1,6 @@
 //! Hue bridge discovery and CLIP API client.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -315,16 +315,16 @@ impl HueBridgeClient {
     ) -> Result<reqwest::Response> {
         let secure_client = hue_https_client()?;
         let fallback_client = hue_http_client()?;
-        let schemes: [(&str, &reqwest::Client); 2] =
-            if self.ip.is_loopback() || self.api_port != DEFAULT_HUE_API_PORT {
-                [("http", fallback_client), ("https", secure_client)]
-            } else {
-                [("https", secure_client), ("http", fallback_client)]
-            };
+        let schemes: [(&str, &reqwest::Client); 2] = if self.ip.is_loopback() {
+            [("http", fallback_client), ("https", secure_client)]
+        } else {
+            [("https", secure_client), ("http", fallback_client)]
+        };
 
         let mut last_error = None;
         for (scheme, client) in schemes {
-            let url = format!("{scheme}://{}:{}{path}", self.ip, self.api_port);
+            let authority = SocketAddr::new(self.ip, self.api_port);
+            let url = format!("{scheme}://{authority}{path}");
             let mut request = client.request(method.clone(), &url);
             if authenticated {
                 let api_key = self

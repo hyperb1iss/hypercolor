@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hypercolor_driver_api::DeviceBackend;
@@ -12,20 +13,13 @@ use hypercolor_driver_hue::{
 use hypercolor_driver_support::CredentialStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 use webrtc_dtls::cipher_suite::CipherSuiteId;
 use webrtc_dtls::config::Config as DtlsConfig;
 use webrtc_dtls::conn::DTLSConn;
 use webrtc_util::conn::Listener;
 
-static HUE_STREAM_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
-
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-fn hue_stream_lock() -> &'static AsyncMutex<()> {
-    HUE_STREAM_LOCK.get_or_init(|| AsyncMutex::new(()))
-}
 
 #[tokio::test]
 async fn backend_connects_streams_and_disconnects() -> TestResult {
@@ -44,9 +38,15 @@ async fn rgb_backend_connects_streams_and_refreshes_topology() -> TestResult {
     reason = "mock HTTP and DTLS exercise topology and output together"
 )]
 async fn backend_refreshes_topology(use_cie_xy: bool) -> TestResult {
-    let _guard = hue_stream_lock().lock().await;
-
-    let http_listener = TcpListener::bind("127.0.0.1:0").await?;
+    // Separate address families keep the fixed Hue port isolated under nextest.
+    let bridge_ip = if use_cie_xy {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else {
+        IpAddr::V6(Ipv6Addr::LOCALHOST)
+    };
+    let http_listener = TcpListener::bind(SocketAddr::new(bridge_ip, 0)).await?;
+    let dtls_listener =
+        webrtc_util::conn::conn_udp_listener::listen(SocketAddr::new(bridge_ip, 2_100)).await?;
     let api_port = http_listener.local_addr()?.port();
     let actions = Arc::new(Mutex::new(Vec::<String>::new()));
     let actions_for_server = Arc::clone(&actions);
@@ -110,10 +110,10 @@ async fn backend_refreshes_topology(use_cie_xy: bool) -> TestResult {
 
     let (packets_tx, mut packets_rx) = tokio::sync::mpsc::channel(4);
     let dtls_task = tokio::spawn(async move {
-        let listener = webrtc_util::conn::conn_udp_listener::listen("127.0.0.1:2100")
+        let (conn, _) = dtls_listener
+            .accept()
             .await
-            .expect("bind DTLS listener");
-        let (conn, _) = listener.accept().await.expect("accept DTLS connection");
+            .expect("accept DTLS connection");
         let psk = Arc::new(hex_decode("00112233445566778899aabbccddeeff"));
         let config = DtlsConfig {
             psk: Some(Arc::new(move |_| Ok(psk.as_ref().clone()))),
@@ -159,7 +159,7 @@ async fn backend_refreshes_topology(use_cie_xy: bool) -> TestResult {
     );
     let discovered = HueDiscoveredBridge {
         bridge_id: "test-bridge".to_owned(),
-        ip: "127.0.0.1".parse()?,
+        ip: bridge_ip,
         api_port,
         info: build_device_info(
             "test-bridge",
@@ -174,7 +174,7 @@ async fn backend_refreshes_topology(use_cie_xy: bool) -> TestResult {
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         metadata: HashMap::from([
             ("bridge_id".to_owned(), "test-bridge".to_owned()),
-            ("ip".to_owned(), "127.0.0.1".to_owned()),
+            ("ip".to_owned(), bridge_ip.to_string()),
             ("api_port".to_owned(), api_port.to_string()),
         ]),
     };
