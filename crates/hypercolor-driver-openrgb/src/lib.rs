@@ -511,6 +511,18 @@ impl DeviceBackend for OpenRgbBackend {
         Ok(Some(controller.route.info.clone()))
     }
 
+    async fn connected_device_metadata(
+        &self,
+        id: &DeviceId,
+    ) -> std::result::Result<Option<HashMap<String, String>>, DeviceError> {
+        let Some(output) = self.connected_output(id) else {
+            return Ok(None);
+        };
+        let controller = output.controller.lock().await;
+        let discovered = DiscoveredDevice::from(controller.route.clone());
+        Ok(Some(discovered.metadata))
+    }
+
     async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let route = self
             .discovered_route(id)

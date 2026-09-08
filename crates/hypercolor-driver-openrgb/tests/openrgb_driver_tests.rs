@@ -1436,6 +1436,13 @@ async fn assert_configured_zone_resize(initial_led_count: u32) {
     assert_eq!(refreshed.segments[0].name, "Main");
     assert_eq!(refreshed.segments[0].led_count, 4);
     assert!(refreshed.capabilities.supports_direct);
+    let metadata = backend
+        .connected_device_metadata(&device_id)
+        .await
+        .expect("metadata lookup")
+        .expect("connected metadata");
+    assert_eq!(metadata["output_enabled"], "true");
+    assert!(!metadata.contains_key("disabled_reason"));
 
     backend
         .write_colors(&device_id, &[[1, 1, 1], [2, 2, 2], [3, 3, 3], [4, 4, 4]])
