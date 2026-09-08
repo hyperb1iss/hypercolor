@@ -534,7 +534,8 @@ impl DeviceBackend for OpenRgbBackend {
         }
 
         let pool = endpoint_pool();
-        let endpoint = pool.acquire(route.endpoint, &self.config);
+        let pin = pool.acquire(route.endpoint, &self.config).await;
+        let endpoint = Arc::clone(&pin.connection);
         let connected = connect_controller(&endpoint, &route, &self.config).await;
         let result = match connected {
             Ok(mut controller) => {
@@ -563,7 +564,7 @@ impl DeviceBackend for OpenRgbBackend {
                 OpenRgbDeviceOperation::Connect,
             )),
         };
-        pool.unpin(&endpoint).await;
+        pin.release().await;
         result
     }
 
@@ -595,7 +596,7 @@ impl DeviceBackend for OpenRgbBackend {
                         error = %error,
                         "OpenRGB teardown failed during disconnect"
                     );
-                    if is_transport_error(&error) {
+                    if is_link_error(&error) {
                         endpoint.fail_link(&mut link, &error).await;
                     }
                 }
@@ -1208,7 +1209,7 @@ async fn write_controller_colors(
                     Ok(()) => Ok(()),
                     Err(error) => {
                         let error = Error::new(error).context("OpenRGB update_leds failed");
-                        if is_transport_error(&error) {
+                        if is_link_error(&error) {
                             endpoint.fail_link(&mut link, &error).await;
                         }
                         Err(error)
@@ -1340,24 +1341,81 @@ fn endpoint_pool() -> &'static EndpointPool {
     &POOL
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct EndpointPool {
-    endpoints: StdMutex<HashMap<SocketAddr, Arc<EndpointConnection>>>,
+    endpoints: Arc<StdMutex<HashMap<SocketAddr, Arc<EndpointConnection>>>>,
+}
+
+/// Own one acquisition pin across every await in connect, including teardown
+/// of an older endpoint generation. Cancellation releases the pin immediately.
+struct EndpointPin {
+    pool: EndpointPool,
+    connection: Arc<EndpointConnection>,
+    released: bool,
+}
+
+impl EndpointPin {
+    fn release_pin(&mut self) {
+        self.connection.pins.fetch_sub(1, Ordering::AcqRel);
+        self.released = true;
+    }
+
+    async fn release(mut self) {
+        self.release_pin();
+        self.pool.release_if_idle(&self.connection).await;
+    }
+}
+
+impl Drop for EndpointPin {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        self.release_pin();
+        let pool = self.pool.clone();
+        let connection = Arc::clone(&self.connection);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                pool.release_if_idle(&connection).await;
+            });
+        }
+    }
 }
 
 impl EndpointPool {
     /// Fetch or create the connection for `endpoint`, pinned so a concurrent
     /// release cannot close it before the caller registers a controller.
-    fn acquire(&self, endpoint: SocketAddr, config: &OpenRgbConfig) -> Arc<EndpointConnection> {
-        let mut endpoints = self
-            .endpoints
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let connection = endpoints
-            .entry(endpoint)
-            .or_insert_with(|| Arc::new(EndpointConnection::new(endpoint, config.clone())));
-        connection.pins.fetch_add(1, Ordering::AcqRel);
-        Arc::clone(connection)
+    async fn acquire(&self, endpoint: SocketAddr, config: &OpenRgbConfig) -> EndpointPin {
+        let connection = {
+            let mut endpoints = self
+                .endpoints
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let replace = endpoints.get(&endpoint).is_some_and(|connection| {
+                connection.config != *config
+                    && connection.pins.load(Ordering::Acquire) == 0
+                    && connection
+                        .controllers
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .is_empty()
+            });
+            // A dropped backend unregisters controllers before its asynchronous
+            // cleanup runs. Do not let that idle generation retain old policy.
+            let retired = replace.then(|| endpoints.remove(&endpoint)).flatten();
+            let connection = endpoints.entry(endpoint).or_insert_with(|| {
+                Arc::new(EndpointConnection::new(endpoint, config.clone(), retired))
+            });
+            connection.pins.fetch_add(1, Ordering::AcqRel);
+            Arc::clone(connection)
+        };
+        let pin = EndpointPin {
+            pool: self.clone(),
+            connection,
+            released: false,
+        };
+        pin.connection.close_predecessor().await;
+        pin
     }
 
     /// The connection for `endpoint` if one is pooled, without pinning it.
@@ -1367,11 +1425,6 @@ impl EndpointPool {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&endpoint)
             .cloned()
-    }
-
-    async fn unpin(&self, connection: &Arc<EndpointConnection>) {
-        connection.pins.fetch_sub(1, Ordering::AcqRel);
-        self.release_if_idle(connection).await;
     }
 
     /// Close and forget a connection nobody pins and no controller uses.
@@ -1407,6 +1460,7 @@ impl EndpointPool {
 struct EndpointConnection {
     endpoint: SocketAddr,
     config: OpenRgbConfig,
+    predecessor: Mutex<Option<Arc<Self>>>,
     link: Mutex<EndpointLink>,
     controllers: StdMutex<HashMap<DeviceId, Arc<Mutex<ConnectedController>>>>,
     pins: AtomicUsize,
@@ -1428,10 +1482,11 @@ struct EndpointLink {
 }
 
 impl EndpointConnection {
-    fn new(endpoint: SocketAddr, config: OpenRgbConfig) -> Self {
+    fn new(endpoint: SocketAddr, config: OpenRgbConfig, predecessor: Option<Arc<Self>>) -> Self {
         Self {
             endpoint,
             config,
+            predecessor: Mutex::new(predecessor),
             link: Mutex::new(EndpointLink {
                 client: None,
                 failures: 0,
@@ -1444,6 +1499,16 @@ impl EndpointConnection {
             enumeration: watch::Sender::new(0),
             task: StdMutex::new(None),
         }
+    }
+
+    /// Every acquirer waits for the previous idle generation to close before
+    /// using the new connection, including callers racing the first acquirer.
+    async fn close_predecessor(&self) {
+        let mut predecessor = self.predecessor.lock().await;
+        if let Some(previous) = predecessor.as_ref() {
+            previous.shutdown().await;
+        }
+        *predecessor = None;
     }
 
     fn register_controller(&self, id: DeviceId, controller: Arc<Mutex<ConnectedController>>) {
@@ -1487,8 +1552,10 @@ impl EndpointConnection {
         if let Some(task) = task {
             task.abort();
         }
-        let client = self.link.lock().await.client.take();
-        if let Some(client) = client
+        // Keep retirement ordered across deferred cleanup and replacement
+        // acquisition, including the socket's asynchronous close.
+        let mut link = self.link.lock().await;
+        if let Some(client) = link.client.take()
             && let Err(error) = client.close().await
         {
             debug!(endpoint = %self.endpoint, error = %error, "OpenRGB endpoint close failed");
@@ -1635,15 +1702,9 @@ async fn reenumerate_controllers(endpoint: &EndpointConnection, link: &mut Endpo
     let routes = match enumerate_routes(client, endpoint.endpoint, &endpoint.config).await {
         Ok(routes) => routes,
         Err(error) => {
-            if is_transport_error(&error) {
-                endpoint.fail_link(link, &error).await;
-            } else {
-                debug!(
-                    endpoint = %endpoint.endpoint,
-                    error = %error,
-                    "OpenRGB re-enumeration failed; will retry on the next notification"
-                );
-            }
+            // Enumeration can fail after consuming an unexpected packet or a
+            // malformed count. The stream is no longer a valid request session.
+            endpoint.fail_link(link, &error).await;
             return;
         }
     };
@@ -1680,8 +1741,14 @@ async fn reenumerate_controllers(endpoint: &EndpointConnection, link: &mut Endpo
                 "OpenRGB controller index remapped"
             );
         }
+        if controller.reconnect_required && route.disabled_reason.is_none() {
+            route
+                .disabled_reason
+                .clone_from(&controller.route.disabled_reason);
+            route.info.capabilities.supports_direct = false;
+        }
         controller.route = route;
-        if shape_changed {
+        if shape_changed || controller.reconnect_required {
             request_route_reconnect(id, &mut controller);
         }
         if let Some(reason) = &controller.route.disabled_reason {
@@ -1691,7 +1758,7 @@ async fn reenumerate_controllers(endpoint: &EndpointConnection, link: &mut Endpo
         if let Err(error) =
             configure_controller_output(client, &controller.route, &endpoint.config).await
         {
-            if is_transport_error(&error) {
+            if is_link_error(&error) {
                 drop(controller);
                 endpoint.fail_link(link, &error).await;
                 break;
@@ -1729,7 +1796,7 @@ async fn connect_controller(
     {
         Ok(route) => route,
         Err(error) => {
-            if is_transport_error(&error) {
+            if is_link_error(&error) {
                 endpoint.fail_link(&mut link, &error).await;
             }
             return Err(error);
@@ -1744,7 +1811,7 @@ async fn connect_controller(
     let route = match apply_configured_zone_sizes(client, endpoint.endpoint, route, config).await {
         Ok(route) => route,
         Err(error) => {
-            if is_transport_error(&error) {
+            if is_link_error(&error) {
                 endpoint.fail_link(&mut link, &error).await;
             }
             return Err(error);
@@ -1754,7 +1821,7 @@ async fn connect_controller(
         bail!("OpenRGB endpoint {} is reconnecting", endpoint.endpoint);
     };
     if let Err(error) = configure_controller_output(client, &route, config).await {
-        if is_transport_error(&error) {
+        if is_link_error(&error) {
             endpoint.fail_link(&mut link, &error).await;
         }
         return Err(error);
@@ -1762,7 +1829,8 @@ async fn connect_controller(
     Ok(ConnectedController {
         previous_mode: route.previous_mode.clone(),
         runtime: None,
-        reconnect_requested: false,
+        reconnect_requested: Arc::new(AtomicBool::new(false)),
+        reconnect_required: false,
         route,
         accepting_frames: true,
         shape_warning_logged: false,
@@ -1899,16 +1967,27 @@ async fn apply_configured_zone_sizes(
     Ok(refreshed)
 }
 
-fn is_transport_error(error: &Error) -> bool {
+fn is_openrgb_link_failure(error: &OpenRgbError) -> bool {
+    is_openrgb_transport_failure(error)
+        || matches!(
+            error,
+            OpenRgbError::InvalidMagic(_)
+                | OpenRgbError::PacketTooLarge { .. }
+                | OpenRgbError::UnexpectedPacket { .. }
+        )
+}
+
+fn is_link_error(error: &Error) -> bool {
     error
         .chain()
         .find_map(|cause| cause.downcast_ref::<OpenRgbError>())
-        .is_some_and(is_openrgb_transport_failure)
+        .is_some_and(is_openrgb_link_failure)
 }
 
 struct ConnectedController {
     runtime: Option<Arc<dyn DriverRuntimeActions>>,
-    reconnect_requested: bool,
+    reconnect_requested: Arc<AtomicBool>,
+    reconnect_required: bool,
     previous_mode: Option<(u32, ControllerMode)>,
     route: ControllerRoute,
     accepting_frames: bool,
@@ -1916,20 +1995,27 @@ struct ConnectedController {
 }
 
 fn request_route_reconnect(id: DeviceId, controller: &mut ConnectedController) {
-    if controller.reconnect_requested {
-        return;
-    }
+    controller.reconnect_required = true;
     let Some(runtime) = controller.runtime.clone() else {
         return;
     };
-    controller.reconnect_requested = true;
+    if controller.reconnect_requested.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let requested = Arc::clone(&controller.reconnect_requested);
     let updated = DiscoveredDevice::from(controller.route.clone());
     tokio::spawn(async move {
-        if let Err(error) = runtime
+        match runtime
             .request_reconnect(id, DESCRIPTOR.id, Some(updated))
             .await
         {
-            warn!(device_id = %id, error = %error, "OpenRGB lifecycle reconnect request failed");
+            Ok(true) => {}
+            result => {
+                requested.store(false, Ordering::Release);
+                if let Err(error) = result {
+                    warn!(device_id = %id, error = %error, "OpenRGB lifecycle reconnect request failed");
+                }
+            }
         }
     });
 }
@@ -2032,7 +2118,7 @@ async fn discover_endpoint(
         if let Some(client) = link.client.as_mut() {
             match enumerate_routes(client, endpoint, config).await {
                 Ok(routes) => return Ok(routes),
-                Err(error) if is_transport_error(&error) => {
+                Err(error) if is_link_error(&error) => {
                     // The shared link is dead; let the endpoint task reconnect
                     // it and report the live server state from a fresh probe.
                     connection.fail_link(&mut link, &error).await;
@@ -2076,7 +2162,7 @@ async fn enumerate_routes(
     for controller_index in 0..count {
         let controller = match client.controller_data(controller_index).await {
             Ok(controller) => controller,
-            Err(error) if is_openrgb_transport_failure(&error) => {
+            Err(error) if is_openrgb_link_failure(&error) => {
                 return Err(Error::new(error).context(format!(
                     "OpenRGB controller {controller_index} enumeration failed at {endpoint}"
                 )));
@@ -3719,3 +3805,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod recovery_tests;
