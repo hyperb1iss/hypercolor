@@ -5273,6 +5273,7 @@ version = "0.4.0"
 dependencies = [
  "hypercolor-openrgb-sdk",
  "hypercolor-persistence",
+ "hypercolor-types",
  "serde",
  "serde_json",
  "tempfile",

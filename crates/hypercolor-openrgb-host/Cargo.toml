@@ -12,6 +12,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+hypercolor-types = { workspace = true }
 hypercolor-openrgb-sdk = { workspace = true }
 hypercolor-persistence = { workspace = true }
 serde = { workspace = true }
