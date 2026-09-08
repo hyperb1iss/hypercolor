@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod openrgb;
+pub use openrgb::*;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SystemStatus {
