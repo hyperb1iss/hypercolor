@@ -5,7 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DeviceState};
 
-use crate::DriverControlHost;
+use crate::{DiscoveredDevice, DriverControlHost};
 
 /// Read-only tracked-device view passed into pairing and auth-summary logic.
 #[derive(Debug, Clone, Copy)]
@@ -53,12 +53,17 @@ pub trait DriverCredentialStore: Send + Sync {
 /// Narrow lifecycle actions exposed to drivers.
 #[async_trait]
 pub trait DriverRuntimeActions: Send + Sync {
-    /// Schedule a reconnect so refreshed device capabilities reach the host.
+    /// Publish an optional refreshed discovery snapshot and schedule a reconnect.
     ///
     /// # Errors
     ///
     /// Returns an error if the host cannot schedule a reconnect.
-    async fn request_reconnect(&self, _device_id: DeviceId, _backend_id: &str) -> Result<bool> {
+    async fn request_reconnect(
+        &self,
+        _device_id: DeviceId,
+        _backend_id: &str,
+        _updated: Option<DiscoveredDevice>,
+    ) -> Result<bool> {
         anyhow::bail!("host does not support driver-requested reconnects")
     }
 
