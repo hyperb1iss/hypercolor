@@ -1,0 +1,352 @@
+{
+  "schema": "hypercolor-rig-spec/1",
+  "name": "O11D EVO RGB (inverted, OpenRGB bridge)",
+  "case": "lian-li-o11d-evo-rgb",
+  "view": "reversed",
+  "canvas": {
+    "width": 640,
+    "height": 630
+  },
+  "description": "Lian Li O11 Dynamic EVO RGB in reversed mode with the Nollie 32, both ENE DRAM sticks, and the ASUS Z790 driven through the OpenRGB bridge; TL wireless fans, Corsair pump, and Prism S stay native. Derived from o11d-evo-rgb-reversed-example.json.",
+  "effect_id": "08d75535-1bd9-48e1-a970-2ef5406bf561",
+  "custom_templates": [
+    {
+      "id": "bliss-gpu-light-bar-10",
+      "name": "GPU Light Bar - 10 LED",
+      "leds": 10,
+      "description": "Horizontal ARGB bar resting on the GPU",
+      "physical_size_mm": [
+        270,
+        12
+      ],
+      "tags": [
+        "strip",
+        "gpu"
+      ]
+    }
+  ],
+  "controllers": {
+    "nollie": {
+      "device": "385b5ca8-1bdc-8e71-9b9c-00c0c0c70aa8",
+      "layout_device_id": "openrgb:127-0-0-1:6742:serial:0994fa72ab3cae43",
+      "bindings": [
+        {
+          "slot": "channel-1",
+          "template": "lian-li-sl-infinity-fan",
+          "instances": 1,
+          "place": "rear"
+        },
+        {
+          "slot": "channel-2",
+          "template": "lian-li-sl-infinity-fan",
+          "instances": 3,
+          "place": "bottom",
+          "chain": "rear_to_front",
+          "rotate": 0.0
+        },
+        {
+          "slot": "channel-3",
+          "template": "lian-li-sl-infinity-fan",
+          "instances": 3,
+          "place": "top",
+          "chain": "rear_to_front",
+          "rotate": 3.141592653589793
+        },
+        {
+          "slot": "channel-4",
+          "template": "formulamod-atx-backplate",
+          "instances": 1,
+          "place": "motherboard"
+        },
+        {
+          "slot": "channel-5",
+          "template": "bliss-gpu-light-bar-10",
+          "instances": 1,
+          "label": "gpu bar",
+          "board": {
+            "u": 165,
+            "v": 322,
+            "w": 270,
+            "hgt": 12,
+            "rot": 0
+          }
+        },
+        {
+          "slot": "channel-6",
+          "template": "lian-li-o11d-evo-rgb-l-strip-strip_top",
+          "instances": 1,
+          "led_offset": 0,
+          "place": "strip_top"
+        },
+        {
+          "slot": "channel-6",
+          "template": "lian-li-o11d-evo-rgb-l-strip-strip_bottom",
+          "instances": 1,
+          "led_offset": 68,
+          "place": "strip_bottom"
+        }
+      ]
+    },
+    "lwireless": {
+      "device": "5cc9004b-c42c-8bdb-b3ee-54873078235c",
+      "layout_device_id": "lianli:0416:8040:001-13-3-4-3",
+      "bindings": [
+        {
+          "slot": "uni-fan-tl-wireless-lcd-1-fan-1",
+          "template": "lian-li-tl-fan",
+          "place": "side",
+          "index": 0,
+          "mirror": true
+        },
+        {
+          "slot": "uni-fan-tl-wireless-lcd-1-fan-2",
+          "template": "lian-li-tl-fan",
+          "place": "side",
+          "index": 1,
+          "mirror": true
+        },
+        {
+          "slot": "uni-fan-tl-wireless-lcd-1-fan-3",
+          "template": "lian-li-tl-fan",
+          "place": "side",
+          "index": 2,
+          "mirror": true
+        }
+      ]
+    },
+    "prism_s": {
+      "device": "c4e60dcd-8e7a-8ec1-aee6-41ca33580f38",
+      "layout_device_id": "prismrgb:16d0:1294:a04328385154315431202020ff01332e",
+      "bindings": [
+        {
+          "slot": "gpu-strimer",
+          "template": "lian-li-gpu-strimer-4x27",
+          "instances": 1,
+          "label": "GPU strimer",
+          "board": {
+            "u": 160,
+            "v": 210,
+            "w": 125,
+            "hgt": 30,
+            "rot": 1.5707963267948966
+          },
+          "rotate": 3.141592653589793,
+          "led_start_override": 0
+        }
+      ]
+    }
+  },
+  "raw_zones": [
+    {
+      "layout_device_id": "lianli:1cbe:0006:5972f881731e0a66",
+      "segment": "Display",
+      "name": "TL LCD 1",
+      "kind": "display",
+      "px": [
+        400,
+        400
+      ],
+      "circular": true,
+      "size_mm": [
+        60,
+        60
+      ],
+      "place": "side",
+      "index": 0
+    },
+    {
+      "layout_device_id": "lianli:1cbe:0006:0bf39ac27b1e0a66",
+      "segment": "Display",
+      "name": "TL LCD 2",
+      "kind": "display",
+      "px": [
+        400,
+        400
+      ],
+      "circular": true,
+      "size_mm": [
+        60,
+        60
+      ],
+      "place": "side",
+      "index": 1
+    },
+    {
+      "layout_device_id": "lianli:1cbe:0006:315a32c2531e0a66",
+      "segment": "Display",
+      "name": "TL LCD 3",
+      "kind": "display",
+      "px": [
+        400,
+        400
+      ],
+      "circular": true,
+      "size_mm": [
+        60,
+        60
+      ],
+      "place": "side",
+      "index": 2
+    },
+    {
+      "layout_device_id": "corsair:1b1c:0c4e:a6b9t350013k7t",
+      "segment": "Display",
+      "name": "Corsair Pump LCD",
+      "kind": "display",
+      "px": [
+        480,
+        480
+      ],
+      "circular": true,
+      "size_mm": [
+        55,
+        55
+      ],
+      "anchor": "cpu_socket"
+    },
+    {
+      "layout_device_id": "corsair:1b1c:0c3f:cbf399381f573250bbce889a5773c5ea",
+      "segment": "iCUE LINK Cooler Pump LCD (4E0CEB473C47F06BCC50D33B)",
+      "name": "Corsair Pump Ring",
+      "kind": "ring",
+      "count": 24,
+      "size_mm": [
+        66,
+        66
+      ],
+      "anchor": "cpu_socket"
+    },
+    {
+      "layout_device_id": "corsair:1b1c:0c3f:cbf399381f573250bbce889a5773c5ea",
+      "segment": "iCUE LINK H-Series AIO (0242EC0E0018B364036A7A0100)",
+      "name": "Corsair AIO Ring",
+      "kind": "ring",
+      "count": 20,
+      "size_mm": [
+        80,
+        80
+      ],
+      "anchor": "cpu_socket"
+    },
+    {
+      "layout_device_id": "openrgb:127-0-0-1:6742:location:i2c:-smbus-i801-adapter-at-0000:00:1f-4-dev-i2c-9-address-0x71",
+      "segment": "DRAM",
+      "name": "DRAM 0x71",
+      "kind": "vstrip",
+      "count": 8,
+      "size_mm": [
+        8,
+        133
+      ],
+      "anchor": "dimm_slot_2"
+    },
+    {
+      "layout_device_id": "openrgb:127-0-0-1:6742:location:i2c:-smbus-i801-adapter-at-0000:00:1f-4-dev-i2c-9-address-0x73",
+      "segment": "DRAM",
+      "name": "DRAM 0x73",
+      "kind": "vstrip",
+      "count": 8,
+      "size_mm": [
+        8,
+        133
+      ],
+      "anchor": "dimm_slot_4"
+    },
+    {
+      "layout_device_id": "openrgb:127-0-0-1:6742:serial:9876543210",
+      "segment": "Aura Mainboard",
+      "name": "ASUS I/O Accent",
+      "kind": "point",
+      "size_mm": [
+        30,
+        30
+      ],
+      "anchor": "io_shroud_accent"
+    }
+  ],
+  "verified": [
+    "2026-09-06: fan rows chain rear to front with the SL-Infinity template rotated pi on both rows",
+    "2026-09-06: GPU bar LED 0 at the rear; Prism S GPU strimer rotated 180 from the naive placement",
+    "2026-09-06: TL LCD fan rings wind counter-clockwise as seen from the glass in this mount",
+    "2026-09-07: Nollie 32 via OpenRGB exposes 32 zones at 0 LEDs; sized per zone (openrgb -d N -z Z -sz S), sizes kept in bridge.zone_sizes because OpenRGB profiles do not restore them",
+    "2026-09-07: strimers through the bridge are one 20-LED (ATX) or 27-LED (GPU) zone per row; the 120-LED strimer templates cannot bind, so they are bridge_rows",
+    "2026-09-07: ENE DRAM reads 8 LEDs per stick only when no native SMBus scan runs at the same time"
+  ],
+  "unverified": [
+    "TL fan 1 is the top of the side column and the LCD receivers are listed in the same order",
+    "DRAM at 0x71 is the stick nearer the CPU",
+    "Channel ATX 1 is the strip nearest the 24-pin connector's keyed edge"
+  ],
+  "bridge_rows": [
+    {
+      "layout_device_id": "openrgb:127-0-0-1:6742:serial:0994fa72ab3cae43",
+      "name": "24-pin strimer row",
+      "segments": [
+        "Channel ATX 1",
+        "Channel ATX 2",
+        "Channel ATX 3",
+        "Channel ATX 4",
+        "Channel ATX 5",
+        "Channel ATX 6"
+      ],
+      "kind": "hstrip",
+      "count": 20,
+      "anchor": "atx24_header",
+      "offset": {
+        "du": 45,
+        "dv": -18.75
+      },
+      "pitch_mm": 7.5,
+      "size_mm": [
+        90,
+        7
+      ],
+      "rot": 3.141592653589793
+    },
+    {
+      "layout_device_id": "openrgb:127-0-0-1:6742:serial:0994fa72ab3cae43",
+      "name": "EPS strimer row",
+      "segments": [
+        "Channel GPU 1",
+        "Channel GPU 2",
+        "Channel GPU 3",
+        "Channel GPU 4"
+      ],
+      "kind": "hstrip",
+      "count": 27,
+      "anchor": "eps_header",
+      "offset": {
+        "du": -13.25,
+        "dv": -17
+      },
+      "pitch_mm": 7.5,
+      "size_mm": [
+        70,
+        7
+      ],
+      "rot": 4.71238898038469
+    }
+  ],
+  "bridge": {
+    "zone_sizes": {
+      "bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43": {
+        "Channel 1": 20,
+        "Channel 2": 60,
+        "Channel 3": 60,
+        "Channel 4": 120,
+        "Channel 5": 10,
+        "Channel 6": 136,
+        "Channel ATX 1": 20,
+        "Channel ATX 2": 20,
+        "Channel ATX 3": 20,
+        "Channel ATX 4": 20,
+        "Channel ATX 5": 20,
+        "Channel ATX 6": 20,
+        "Channel GPU 1": 27,
+        "Channel GPU 2": 27,
+        "Channel GPU 3": 27,
+        "Channel GPU 4": 27
+      }
+    }
+  }
+}

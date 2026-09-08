@@ -11,8 +11,13 @@ description: >-
   why a device animates backwards or upside down, wants to add a new controller or case
   to an existing layout, or mentions a case model (O11D, Hyte Y70, NZXT H9, Lancool,
   Torrent), a hub (Nollie, Uni Hub, iCUE LINK, L-Connect), or Strimer cables together
-  with layout or positioning. Works with the REST API, the MCP tools, and the
-  `hypercolor` CLI; it never needs the source tree.
+  with layout or positioning. Also use it when a device is missing from Hypercolor:
+  "unsupported device", "device not found", "not detected", "nothing drives my X",
+  anything about OpenRGB (install it, bridge a device through it, "OpenRGB sees it but
+  Hypercolor doesn't"), or a request to "request support" for hardware. The coverage
+  phase decides native driver, OpenRGB bridge, or a prefilled support request per device.
+  Works with the REST API, the MCP tools, and the `hypercolor` CLI; it never needs the
+  source tree.
 ---
 
 # Rig setup
@@ -31,6 +36,9 @@ one script turns them into daemon state:
   profiles, the layout, and a scene. It is idempotent, so the whole dial-in loop is
   "edit rig, apply, look".
 
+`scripts/coverage.py` (who drives each device) and `scripts/request_support.py` (an
+unclaimed device becomes a prefilled support request) serve the coverage phase.
+
 The daemon stays the authority on template geometry: the generator asks it for the
 suggested zones of each binding and only places them. Read `references/daemon-api.md`
 for the surfaces and their sharp edges before the first write.
@@ -39,9 +47,11 @@ for the surfaces and their sharp edges before the first write.
 
 A daemon on `localhost:9420` with the devices connected. Check with the `get_status` and
 `get_devices` MCP tools, `hypercolor status` / `hypercolor devices list`, or
-`curl localhost:9420/api/v1/devices`. A device in state `known` rather than `connected`
-cannot be placed meaningfully; sort that out first (pairing, power, USB) or leave it out
-and say so. Python 3 is the only tool the generator needs; `rsvg-convert` makes a PNG of
+`curl localhost:9420/api/v1/devices`. A native device in state `known` rather than
+`connected` cannot be placed meaningfully; sort that out first (pairing, power, USB) or
+leave it out and say so. Devices reached through the OpenRGB bridge are the exception:
+they sit at `known` until the active layout targets them, by design, and identify still
+flashes them. Python 3 is the only tool the scripts need; `rsvg-convert` makes a PNG of
 the preview when present.
 
 ## Phase 1: inventory
@@ -60,6 +70,43 @@ Build the picture before asking the owner anything, so your questions are specif
    templates and chain orders the owner already validated).
 
 Keep a scratch table: device → segments → slot → what the owner says is attached.
+
+## Phase 1b: coverage
+
+Inventory shows what the daemon drives. Coverage shows what it does not, and that gap
+alone decides whether OpenRGB enters the picture. Run `python3 scripts/coverage.py`
+(or `hypercolor devices coverage` and `hypercolor devices unclaimed`, or
+`GET /devices/coverage` and `GET /devices/unclaimed`; the script falls back to the host's
+USB list against `GET /drivers` on daemons without those routes). Every physical device
+lands in one group: native, bridge, unclaimed, or conflict.
+
+The rule is native first. Hypercolor drives everything it has a driver for, the bridge
+drives only what native cannot, and OpenRGB gets installed only when an unclaimed device
+needs it. Never treat OpenRGB as a prerequisite, and never run its detection while a
+native SMBus driver is live (two probes on one bus corrupt DRAM LED counts).
+
+For each unclaimed device, take the first row that fits:
+
+1. **A native driver knows it but is disabled** (`claimable_by` names it). Offer to
+   enable: `hypercolor config set drivers.<id>.enabled true`, then
+   `hypercolor devices discover`. Native output, no OpenRGB.
+2. **OpenRGB covers it.** Climb the guided ladder in `references/coverage.md`:
+   `hypercolor openrgb hints` → install → permissions → `hypercolor openrgb partition` →
+   `hypercolor config set drivers.openrgb.enabled true` plus the ownership mode →
+   `hypercolor openrgb start` → `hypercolor devices discover --target openrgb` → size hub
+   zones with `hypercolor openrgb resize` and copy the sizes into the rig's
+   `bridge.zone_sizes`. Each rung has a check; stop at the first one that fails.
+3. **Neither.** `python3 scripts/request_support.py --vid-pid VVVV:PPPP` builds the
+   prefilled device-support issue (or files it with `gh`) and points at an existing
+   issue instead of filing twice. Tell the owner, then continue: a layout that covers
+   what is drivable today is a finished layout.
+
+Conflict rows mean both stacks reached the same silicon. Native keeps driving and the
+bridge route is output-disabled with a `disabled_reason` naming the owner. Leave it,
+unless the owner wants OpenRGB for that one device, in which case they hand it over by
+disabling it natively (`PUT /devices/{id}` with `{"enabled": false}`); native never
+yields on its own. Bridged devices join the scratch table like any other controller,
+with their `openrgb:` layout id.
 
 ## Phase 2: interview
 
@@ -131,6 +178,14 @@ Sanity checks worth running on `layout.json`: every position and size inside `[0
 no two attachment zones on the same slot with overlapping LED windows, LED totals per
 slot at or under the slot capacity.
 
+Bridged hubs bind fans through their generic per-channel slots exactly like native ones.
+Strimers through a hub are one zone per row, and the strimer templates cannot bind to a
+20-LED zone, so they go in a `bridge_rows` block (`references/rig-spec.md`) that expands
+to one raw strip per row; `references/rigs/o11d-evo-rgb-reversed-bridge-example.json` is
+the shipped example's bridged twin. `plan` warns about any bridged zone still at 0 LEDs,
+because frames into an unsized zone succeed and light nothing. `plan --offline` (with a
+saved template catalog) checks specs and geometry when no daemon is reachable.
+
 ## Phase 5: apply and activate
 
 ```bash
@@ -170,7 +225,10 @@ When the owner says it looks right:
 - Write dated entries into the rig spec's `verified` list for each fact the hardware
   confirmed, and leave the honest `unverified` list for what you assumed.
 - Give them the rig spec path and the exact `apply` command so they can re-run it after
-  a controller swap or a daemon reinstall.
+  a controller swap or a daemon reinstall. With hubs on the bridge, `apply` also restores
+  the hub's zone sizes from `bridge.zone_sizes`, which OpenRGB itself never saves.
+- If a device went the support-request route, leave them the issue link and the words
+  "re-run coverage after the next Hypercolor update".
 - If the case spec was new, offer to add it to `references/cases/` so the next owner of
   that case starts from a finished template.
 - Mention the follow-ups that live outside the layout: the effect palette if one output
@@ -189,3 +247,7 @@ off lit hardware. Separating the case spec (knowable, reusable) from the rig spe
 dial-in is a handful of one-flag edits. The identify flash matters because a wrong colour
 or a dark output has three unrelated causes (effect, mapping, hardware) that look
 identical from the chair; identify collapses them to one in six seconds.
+
+Coverage sits between inventory and interview because ownership has to be settled before
+anyone is asked where a device lives: a device nobody drives has no slot to describe, and
+a device two stacks fight over lights unpredictably wherever it is placed.
