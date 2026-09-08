@@ -41,6 +41,14 @@ pub async fn discover_devices() -> ApiResult<()> {
     client::post_empty("/api/v1/devices/discover").await
 }
 
+/// Delete a controller's attachments, layout outputs, and scene assignments.
+pub async fn forget_saved_device(layout_device_id: &str) -> ApiResult<()> {
+    let request = hypercolor_types::api::devices::ForgetDeviceRequest {
+        layout_device_id: layout_device_id.to_owned(),
+    };
+    client::post_json_discard("/api/v1/devices/forget", &request).await
+}
+
 /// Update a device (name, enabled, brightness).
 pub async fn update_device(id: &str, req: &UpdateDeviceRequest) -> ApiResult<DeviceSummary> {
     client::put_json(&format!("/api/v1/devices/{id}"), req).await

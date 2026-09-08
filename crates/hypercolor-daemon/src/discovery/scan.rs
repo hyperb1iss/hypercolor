@@ -13,7 +13,8 @@ use tracing::{debug, info, warn};
 
 use super::device_helpers::{
     apply_persisted_device_settings, desired_connect_behavior, device_log_label,
-    device_ref_for_tracked, lifecycle_policy_for_device_info, sync_registry_state,
+    device_ref_for_tracked, lifecycle_policy_for_device_info, refresh_connected_device_info,
+    sync_logical_mappings_for_device, sync_registry_state,
 };
 use super::lifecycle::execute_lifecycle_actions;
 use super::{DiscoveryRuntime, DiscoveryScanResult, DiscoveryScannerResult, DiscoveryTarget};
@@ -745,6 +746,22 @@ async fn process_discovered_device(
         }
     }
     let had_actions = !actions.is_empty();
+    if was_renderable && !had_actions {
+        let backend_id = tracked_before.info.output_backend_id();
+        match refresh_connected_device_info(runtime, backend_id, device_id).await {
+            Ok(()) => {
+                let layout_id =
+                    hypercolor_core::device::DeviceLifecycleManager::canonical_layout_device_id(
+                        &tracked_before.info,
+                        fingerprint.as_ref(),
+                    );
+                sync_logical_mappings_for_device(runtime, device_id, backend_id, &layout_id).await;
+            }
+            Err(error) => {
+                warn!(%device_id, %error, "failed to refresh rediscovered device topology");
+            }
+        }
+    }
     if should_run_lifecycle_actions_in_background(runtime, &tracked_before.info, &actions).await {
         debug!(
             device = %tracked_before.info.name,

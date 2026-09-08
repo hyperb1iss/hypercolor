@@ -20,7 +20,8 @@ use crate::ws::messages::zone_has_degraded_layer;
 
 use super::StudioContext;
 use super::device_assignment::{
-    DeviceMeta, ZoneDeviceRow, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
+    DeviceMeta, ZoneDeviceRow, device_rows_for_zone, saved_only_device_rows, sort_device_rows,
+    unassigned_device_rows,
 };
 use super::device_card::{CardMode, StudioDeviceCard};
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_zones};
@@ -57,6 +58,28 @@ pub fn ZoneTree() -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let caps = expect_context::<CapabilitiesContext>();
     let devices = expect_context::<DevicesContext>();
+    let ws = expect_context::<WsContext>();
+    let scene_members = Memo::new(move |_| {
+        studio.active_scene.get().map(|scene| {
+            (
+                scene.id,
+                scene
+                    .zones
+                    .into_iter()
+                    .map(|zone| (zone.id, zone.members))
+                    .collect::<Vec<_>>(),
+            )
+        })
+    });
+    let saved_layout = crate::api::daemon_resource(move || {
+        let _ = scene_members.get();
+        let _ = ws.layout_generation.get();
+        let _ = ws.last_device_event.get();
+        async move { crate::api::fetch_active_layout().await }
+    });
+    provide_context(super::offline_device_card::SavedControllersRefresh(
+        Callback::new(move |()| saved_layout.refetch()),
+    ));
 
     let surfaces = Memo::new(move |_| {
         studio
@@ -153,6 +176,18 @@ pub fn ZoneTree() -> impl IntoView {
         let by_id = device_by_id.get();
         let search = studio.device_search.get().trim().to_lowercase();
         let mut base_rows = unassigned_device_rows(&scene.zones, &device_metas.get());
+        let known_devices = devices
+            .devices_resource
+            .get()
+            .and_then(Result::ok)
+            .map(|_| device_metas.get());
+        if let Some(Ok(layout)) = saved_layout.get() {
+            base_rows.extend(saved_only_device_rows(
+                &scene.zones,
+                known_devices.as_deref(),
+                &layout.zones,
+            ));
+        }
         sort_device_rows(&mut base_rows);
         retain_by_search(&mut base_rows, &search);
         base_rows

@@ -85,60 +85,8 @@ pub fn StudioDeviceCard(
     let row_device_id = row.device_id.clone();
 
     let Some(device) = device else {
-        // Offline or removed: still placed in the layout, but the device
-        // registry has no entry — a muted row, no brand identity. Its raw
-        // backend id must never reach the user (§4), so it reads as a
-        // plain vendor word with an offline tag. It can still be removed
-        // from the zone; it cannot be identified.
-        let vendor = friendly_offline_label(&row.device_id);
-        let leds = led_label(row.led_count);
-        let select_body = select.clone();
         return view! {
-            <div
-                class="flex w-full items-center rounded-lg border border-dashed border-edge-subtle/45 transition-colors duration-150"
-                title="Offline — placed in the layout but not currently connected"
-            >
-                <button
-                    type="button"
-                    class="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left"
-                    on:click=move |_| studio.selected_surface_id.set(Some(select_body.clone()))
-                >
-                    <Icon
-                        icon=LuCpu
-                        width="12px"
-                        height="12px"
-                        style="color: rgba(139, 133, 160, 0.5)"
-                    />
-                    <span class="min-w-0 flex-1 truncate text-[11px] text-fg-tertiary/65">
-                        {vendor}
-                    </span>
-                    <span class="shrink-0 rounded bg-surface-sunken/70 px-1 py-[1px] text-[8px] font-medium uppercase tracking-wide text-fg-tertiary/50">
-                        "Offline"
-                    </span>
-                    <span class="shrink-0 font-mono text-[9px] tabular-nums text-fg-tertiary/45">
-                        {leds}
-                    </span>
-                </button>
-                {matches!(mode, CardMode::Placed)
-                    .then(|| {
-                        let select = select.clone();
-                        let device_id = row_device_id.clone();
-                        view! {
-                            <button
-                                type="button"
-                                class="btn-press mr-1.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors"
-                                style="color: rgba(255, 99, 99, 0.5)"
-                                title="Remove from this zone"
-                                on:click=move |ev: web_sys::MouseEvent| {
-                                    ev.stop_propagation();
-                                    remove_device_from_zone(studio, select.clone(), device_id.clone());
-                                }
-                            >
-                                <Icon icon=LuTrash2 width="12px" height="12px" />
-                            </button>
-                        }
-                    })}
-            </div>
+            <super::offline_device_card::OfflineDeviceCard row=row select=select placed=matches!(mode, CardMode::Placed) />
         }
         .into_any();
     };
@@ -1102,7 +1050,7 @@ fn identify_device_now(device_id: &str, set_identifying: WriteSignal<bool>) {
 /// sequence because each one bumps the scene revision; threading the new
 /// revision into the next call lets a multi-output controller leave the
 /// zone in a single user action.
-fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: String) {
+pub(super) fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: String) {
     let Some(scene) = studio.active_scene.get_untracked() else {
         toasts::toast_error("No active scene is available");
         return;
@@ -1175,7 +1123,7 @@ fn display_resolution(device: &DeviceSummary) -> Option<(u32, u32)> {
 /// absent from the registry. The raw backend id (`razer:1532:…`) is never
 /// shown (§4); this maps its leading backend token to a vendor name, or
 /// the neutral "Device" when the token is unrecognized.
-fn friendly_offline_label(device_id: &str) -> &'static str {
+pub(super) fn friendly_offline_label(device_id: &str) -> &'static str {
     let token = device_id.split(':').next().unwrap_or("");
     match token.to_ascii_lowercase().as_str() {
         "razer" => "Razer",

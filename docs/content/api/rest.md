@@ -464,7 +464,17 @@ answers 422.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="DELETE" path="/api/v1/devices/{id}"> %}
-Remove a device from tracking.
+Remove a device from tracking and delete its saved outputs, attachments, and
+logical segments from all layouts and scenes, including the default scene.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="POST" path="/api/v1/devices/forget"> %}
+Delete a saved controller by its layout identity, even when the hardware is
+absent from device tracking. Send `{ "layout_device_id": "..." }`. Removal
+clears its outputs from all layouts and scenes, including the default scene.
+When retained ownership identifies the physical controller, removal also clears
+its attachments and logical segments. An empty identity returns 422; repeating
+a completed removal succeeds. Temporary disconnection preserves saved content.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="POST" path="/api/v1/devices/discover"> %}

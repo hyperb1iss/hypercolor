@@ -7,6 +7,7 @@ mod attachments;
 mod discovery;
 mod inventory;
 mod pairing;
+mod removal;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,6 +43,7 @@ pub use attachments::{
 pub use discovery::{DiscoverRequest, discover_devices};
 pub use inventory::{get_device_coverage, list_unclaimed_devices};
 pub use pairing::{DeletePairingResponse, PairDeviceResponse, delete_pairing, pair_device};
+pub use removal::forget_device;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -402,6 +404,12 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
         return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
     let driver_id = tracked.info.driver_id().to_owned();
+    let layout_device_id = ensure_default_logical_entry(&state, &tracked.info).await;
+    if let Err(error) =
+        removal::forget_saved_content(&state, &layout_device_id, Some(device_id)).await
+    {
+        return error.into_response();
+    }
     let removed = if let Some(driver) = state.driver_registry().get(&driver_id)
         && let Some(provider) = driver.runtime_cache()
     {
@@ -851,14 +859,20 @@ pub(super) async fn ensure_default_logical_entry(
         .await;
 
     let mut store = state.logical_devices.write().await;
-    let default = crate::logical_devices::ensure_default_logical_device(
+    match crate::logical_devices::ensure_persisted_default(
+        &state.logical_devices_path,
         &mut store,
         device_info.id,
         &fallback_layout_id,
         &device_info.name,
         device_info.total_led_count(),
-    );
-    default.id
+    ) {
+        Ok(default) => default.id,
+        Err(error) => {
+            tracing::warn!(%error, device_id = %device_info.id, "Failed to persist controller identity");
+            fallback_layout_id
+        }
+    }
 }
 
 pub(super) async fn summarize_device_for_response(
