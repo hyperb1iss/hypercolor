@@ -2,10 +2,12 @@
 
 mod body;
 mod cancellation;
+mod multipart;
 mod stream;
 
 pub use body::{HttpBody, HttpBodySink, HttpBodySource};
 pub use cancellation::{HttpCancellation, HttpCancelled};
+pub use multipart::{HttpMultipartField, HttpMultipartSource, HttpMultipartValue};
 pub use stream::{HttpStreamError, HttpStreamFuture, HttpStreamRequest, HttpStreamResponse};
 
 use std::future::Future;
