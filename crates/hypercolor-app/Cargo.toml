@@ -24,6 +24,7 @@ unwrap_used = "deny"
 hypercolor-core = { workspace = true }
 hypercolor-types = { workspace = true }
 hypercolor-macos-owner = { workspace = true }
+hypercolor-openrgb-host = { workspace = true }
 tauri = { version = "2", features = ["devtools", "tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
@@ -53,6 +54,9 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Power",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 hypercolor-linux-session = { workspace = true }
