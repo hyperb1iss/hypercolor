@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -52,6 +53,15 @@ pub trait DriverCredentialStore: Send + Sync {
 /// Narrow lifecycle actions exposed to drivers.
 #[async_trait]
 pub trait DriverRuntimeActions: Send + Sync {
+    /// Schedule a reconnect so refreshed device capabilities reach the host.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the host cannot schedule a reconnect.
+    async fn request_reconnect(&self, _device_id: DeviceId, _backend_id: &str) -> Result<bool> {
+        anyhow::bail!("host does not support driver-requested reconnects")
+    }
+
     /// Best-effort immediate activation after pairing.
     ///
     /// # Errors
@@ -93,6 +103,12 @@ pub trait DriverHost: Send + Sync {
 
     /// Access limited runtime lifecycle actions.
     fn runtime(&self) -> &dyn DriverRuntimeActions;
+
+    /// Retain runtime actions for asynchronous device lifecycle notifications.
+    /// Hosts without background lifecycle support may leave this unavailable.
+    fn runtime_handle(&self) -> Option<Arc<dyn DriverRuntimeActions>> {
+        None
+    }
 
     /// Access discovery-oriented tracked state and caches.
     fn discovery_state(&self) -> &dyn DriverDiscoveryState;
