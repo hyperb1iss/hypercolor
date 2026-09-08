@@ -29,6 +29,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
             "/config/keys/{key}",
             axum::routing::get(config::get_config_key)
                 .put(config::put_config_key)
+                .patch(config::patch_config_key)
                 .delete(config::delete_config_key),
             [
                 OperationDoc::get::<config::ConfigKeyResponse>(
@@ -49,6 +50,13 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "Restore one daemon config key to its default",
                 )
                 .query::<hypercolor_types::api::config::ConfigApplyQuery>(),
+                OperationDoc::patch::<config::ConfigMutationResponse>(
+                    "patch_config_key",
+                    "config",
+                    "Merge an object into a daemon config key",
+                )
+                .query::<hypercolor_types::api::config::ConfigApplyQuery>()
+                .body::<serde_json::Value>(),
             ],
         ))
         .routes(openapi::documented_route(

@@ -13398,3 +13398,119 @@ async fn display_face_response_shape_matches_the_shared_fixture() {
          decode test that reads it"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn config_object_patches_preserve_concurrent_zone_updates() {
+    let (state, manager, _directory) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(state);
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut writers = Vec::new();
+    for index in 0..8 {
+        let app = app.clone();
+        let barrier = Arc::clone(&barrier);
+        writers.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let zone = format!("Zone.{index}");
+            let request = Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config/keys/drivers.openrgb.zone_sizes?live=false")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"bridge:127.0.0.1:6742:serial:a": {zone: index + 1}})
+                        .to_string(),
+                ))
+                .expect("patch request");
+            let response = app.oneshot(request).await.expect("config route");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{}",
+                body_json(response).await
+            );
+        }));
+    }
+    for writer in writers {
+        writer.await.expect("concurrent writer");
+    }
+    let config = manager.get();
+    let zones = &config.drivers["openrgb"].settings["zone_sizes"]["bridge:127.0.0.1:6742:serial:a"];
+    assert_eq!(zones.as_object().expect("zone map").len(), 8);
+    for index in 0..8 {
+        assert_eq!(zones[format!("Zone.{index}")], index + 1);
+    }
+}
+
+#[tokio::test]
+async fn config_object_patch_deletes_one_entry_and_put_still_replaces() {
+    let (state, manager, _directory) = test_state_with_temp_config_manager();
+    let app = test_app_with_state(state);
+    for (method, body) in [
+        (
+            "PUT",
+            serde_json::json!({"controller": {"Fan": 20, "Strip": 60}}),
+        ),
+        ("PATCH", serde_json::json!({"controller": {"Fan": null}})),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/api/v1/config/keys/drivers.openrgb.zone_sizes?live=false")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("route");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{}",
+            body_json(response).await
+        );
+    }
+    assert_eq!(
+        manager.get().drivers["openrgb"].settings["zone_sizes"],
+        serde_json::json!({"controller": {"Strip": 60}})
+    );
+    let replacement = serde_json::json!({"other": {"RAM": 8}});
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/config/keys/drivers.openrgb.zone_sizes?live=false")
+                .header("content-type", "application/json")
+                .body(Body::from(replacement.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("route");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        manager.get().drivers["openrgb"].settings["zone_sizes"],
+        replacement
+    );
+}
+
+#[tokio::test]
+async fn config_object_patch_rejects_scalar_without_mutation() {
+    let (state, manager, _directory) = test_state_with_temp_config_manager();
+    let before = serde_json::to_value(&**manager.get()).expect("config serializes");
+    let response = test_app_with_state(state)
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config/keys/drivers.openrgb.zone_sizes?live=false")
+                .header("content-type", "application/json")
+                .body(Body::from("42"))
+                .expect("request"),
+        )
+        .await
+        .expect("route");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        serde_json::to_value(&**manager.get()).expect("config serializes"),
+        before
+    );
+}

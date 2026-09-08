@@ -130,7 +130,74 @@ pub(crate) async fn put_config_key(
         return rejection;
     }
 
-    write_config_key(&state, &key, value, apply.live).await
+    write_config_key(&state, &key, value, apply.live, ConfigWriteMode::Replace).await
+}
+
+/// Merge an object patch into a config key without replacing sibling entries.
+pub(crate) async fn patch_config_key(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+    Query(apply): Query<ConfigApplyQuery>,
+    Extension(auth_context): Extension<RequestAuthContext>,
+    Json(value): Json<serde_json::Value>,
+) -> Response {
+    if !config_registry::is_valid_key(&key) {
+        return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
+    }
+    if hypercolor_types::config_registry::requires_protected_control(&key)
+        && let Some(rejection) = protected_control_rejection(auth_context)
+    {
+        return rejection;
+    }
+    if !value.is_object() {
+        return DomainError::validation("Config merge patches must be JSON objects")
+            .into_response();
+    }
+    write_config_key(&state, &key, value, apply.live, ConfigWriteMode::Merge).await
+}
+
+#[derive(Clone, Copy)]
+enum ConfigWriteMode {
+    Replace,
+    Merge,
+}
+
+impl ConfigWriteMode {
+    fn value(
+        self,
+        current: Option<&serde_json::Value>,
+        update: &serde_json::Value,
+    ) -> serde_json::Value {
+        if matches!(self, Self::Replace) {
+            return update.clone();
+        }
+        let mut merged = current.cloned().unwrap_or(serde_json::Value::Null);
+        merge_config_object(&mut merged, update);
+        merged
+    }
+}
+
+fn merge_config_object(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    let Some(patch) = patch.as_object() else {
+        *target = patch.clone();
+        return;
+    };
+    if !target.is_object() {
+        *target = serde_json::json!({});
+    }
+    let target = target
+        .as_object_mut()
+        .expect("target was initialized as an object");
+    for (key, value) in patch {
+        if value.is_null() {
+            target.remove(key);
+        } else {
+            merge_config_object(
+                target.entry(key.clone()).or_insert(serde_json::Value::Null),
+                value,
+            );
+        }
+    }
 }
 
 /// `DELETE /api/v1/config/keys/{key}` — restore one key to its default.
@@ -172,6 +239,7 @@ async fn write_config_key(
     raw_key: &str,
     value: serde_json::Value,
     live_requested: bool,
+    mode: ConfigWriteMode,
 ) -> Response {
     let Some(manager) = state.config_manager.as_ref() else {
         return internal_config_error("Config manager unavailable in this runtime").into_response();
@@ -188,7 +256,8 @@ async fn write_config_key(
     };
 
     let key = raw_key.to_owned();
-    let parsed_value = canonicalize_config_value(&key, value);
+    let update = canonicalize_config_value(&key, value);
+    let parsed_value = mode.value(get_json_path(&root, &key), &update);
     let sections = live_sections_for(Some(&key));
     let apply_capture = sections.capture && live_requested;
 
@@ -289,14 +358,36 @@ async fn write_config_key(
     // manager's write lock, so a concurrent targeted writer (e.g. the
     // capture restore-token sink) is not clobbered by this handler's
     // earlier snapshot.
+    let mut rejected = None;
     manager.modify(|config| {
-        let reapplied = serde_json::to_value(&*config).ok().and_then(|mut root| {
-            set_json_path(&mut root, &key, parsed_value.clone())
-                .then(|| serde_json::from_value::<HypercolorConfig>(root).ok())
-                .flatten()
-        });
-        *config = reapplied.unwrap_or_else(|| updated.clone());
+        let candidate = (|| {
+            let mut root = serde_json::to_value(&*config).map_err(|error| {
+                internal_config_error(format!("Failed to serialize config: {error}"))
+            })?;
+            let value = mode.value(get_json_path(&root, &key), &update);
+            if !set_json_path(&mut root, &key, value) {
+                return Err(DomainError::validation(format!(
+                    "Invalid config key path: {key}"
+                )));
+            }
+            let candidate: HypercolorConfig = serde_json::from_value(root)
+                .map_err(|error| rejected_value(&key, "type validation", &error.to_string()))?;
+            validate_driver_config_scope(state, Some(&key), &candidate)
+                .map_err(|error| rejected_value(&error.key, "driver validation", &error.detail))?;
+            candidate
+                .capture
+                .validate()
+                .map_err(|error| DomainError::validation(error.to_string()))?;
+            Ok(candidate)
+        })();
+        match candidate {
+            Ok(candidate) => *config = candidate,
+            Err(error) => rejected = Some(error),
+        }
     });
+    if let Some(error) = rejected {
+        return error.into_response();
+    }
     if let Err(e) = manager.save() {
         return internal_config_error(format!("Failed to persist config: {e}")).into_response();
     }
