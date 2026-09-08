@@ -204,6 +204,7 @@ jobs:
               - '.github/actions/**'
               - 'scripts/homebrew-formula.mjs'
               - 'scripts/tests/homebrew-formula.test.mjs'
+              - 'scripts/tests/macos-ci-coverage.test.mjs'
               - 'packaging/homebrew/hypercolor.rb'
 
   # ── Workflow Lint ─────────────────────────────────────────────
@@ -221,6 +222,8 @@ jobs:
           disable_annotations: "true"
       - name: Test build cache contracts
         run: node --test .github/actions/rust-build-cache/*.test.mjs
+      - name: Test macOS job coverage
+        run: node --test scripts/tests/macos-ci-coverage.test.mjs
       - name: Test Homebrew formula rendering
         run: node --test scripts/tests/homebrew-formula.test.mjs
 
@@ -293,7 +296,7 @@ jobs:
           phase: save
 
   rust-check-macos:
-    name: Rust macOS / ${{ matrix.label }}
+    name: Rust macOS / ${{ matrix.label }} / ${{ matrix.lane }}
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
@@ -305,11 +308,21 @@ jobs:
           - label: Apple Silicon
             os: macos-26
             expected-arch: arm64
+            lane: workspace
+          - label: Apple Silicon
+            os: macos-26
+            expected-arch: arm64
+            lane: capabilities
           - label: Intel
             os: macos-26-intel
             expected-arch: x86_64
+            lane: workspace
+          - label: Intel
+            os: macos-26-intel
+            expected-arch: x86_64
+            lane: capabilities
     env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-macos
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-macos-${{ matrix.lane }}
     steps:
       - uses: actions/checkout@v7
 
@@ -337,17 +350,18 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
-          shared-key: rust-check-macos-${{ matrix.expected-arch }}
-          workspaces: . -> .cache/hypercolor/target/rust-check-macos
+          shared-key: rust-check-macos-${{ matrix.expected-arch }}-${{ matrix.lane }}
+          workspaces: . -> .cache/hypercolor/target/rust-check-macos-${{ matrix.lane }}
           cache-on-failure: "false"
 
       - name: Install nextest
+        if: matrix.lane == 'capabilities'
         uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
         with:
           tool: cargo-nextest
 
       - name: Qualify Intel Metal fixture
-        if: matrix.expected-arch == 'x86_64'
+        if: matrix.lane == 'capabilities' && matrix.expected-arch == 'x86_64'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked -p hypercolor-macos-gpu-interop
@@ -355,17 +369,20 @@ jobs:
           -E 'test(intel_runner_qualification_requires_native_device_and_both_import_candidates)'
 
       - name: Seed native app frontend fixture
+        if: matrix.lane == 'workspace'
         run: |
           mkdir -p crates/hypercolor-ui/dist
           printf '<!doctype html><title>Hypercolor test fixture</title>' \
             > crates/hypercolor-ui/dist/index.html
 
       - name: Check macOS workspace
+        if: matrix.lane == 'workspace'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo check --workspace --locked
 
       - name: Clippy macOS interop
+        if: matrix.lane == 'capabilities'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked -p hypercolor-macos-gpu-interop --features screen-capture
@@ -373,6 +390,7 @@ jobs:
           -- -D warnings
 
       - name: Clippy macOS capture fixtures
+        if: matrix.lane == 'capabilities'
         run: |
           ./scripts/cargo-cache-build.sh \
             cargo clippy --locked \
@@ -385,6 +403,7 @@ jobs:
             -- -D warnings
 
       - name: Clippy macOS host input and ownership
+        if: matrix.lane == 'capabilities'
         run: |
           ./scripts/cargo-cache-build.sh \
             cargo clippy --locked \
@@ -401,12 +420,14 @@ jobs:
             -- -D warnings
 
       - name: Run macOS interop fixtures
+        if: matrix.lane == 'capabilities'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked -p hypercolor-macos-gpu-interop
           --features screen-capture
 
       - name: Run macOS capture fixtures
+        if: matrix.lane == 'capabilities'
         run: |
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
@@ -418,6 +439,7 @@ jobs:
             -E 'test(screen::macos) | binary(macos_screen_capture_tests)'
 
       - name: Run macOS host input and ownership fixtures
+        if: matrix.lane == 'capabilities'
         run: |
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
@@ -443,6 +465,7 @@ jobs:
             -E 'test(/(launchd_managed_contenders_exit_zero_without_respawn|held_guard_applies_topology_policy_without_an_owner_record|malformed_diagnostics_never_override_held_guard_policy)/)'
 
       - name: Run macOS status API fixtures
+        if: matrix.lane == 'capabilities'
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked
@@ -450,6 +473,7 @@ jobs:
           -E 'test(/api::system::tests::(input_source_status|macos_)/)'
 
       - name: Build deployment and Sequoia availability fixtures
+        if: matrix.lane == 'workspace'
         run: |
           ./scripts/cargo-cache-build.sh \
             cargo build --locked -p hypercolor-cli --bin hypercolor
@@ -458,12 +482,14 @@ jobs:
             --features wgpu,screen-capture --bin hypercolor-daemon
 
       - name: Verify deployment target
+        if: matrix.lane == 'workspace'
         run: |
           ./scripts/verify-macos-deployment-target.sh \
             "${CARGO_TARGET_DIR}/debug/hypercolor" \
             "${CARGO_TARGET_DIR}/debug/hypercolor-daemon"
 
       - name: Reject unguarded Tahoe symbols in the Sequoia artifact
+        if: matrix.lane == 'workspace'
         run: |
           set -euo pipefail
           artifact="${CARGO_TARGET_DIR}/debug/hypercolor-daemon"
