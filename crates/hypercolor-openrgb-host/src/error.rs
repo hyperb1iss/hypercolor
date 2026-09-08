@@ -10,6 +10,10 @@ pub type Result<T> = std::result::Result<T, HostError>;
 /// Failures while inspecting or preparing the OpenRGB host environment.
 #[derive(Debug, Error)]
 pub enum HostError {
+    /// A managed SDK server must bind only a loopback address.
+    #[error("managed OpenRGB endpoint must be loopback: {0}")]
+    UnsupportedEndpoint(std::net::SocketAddr),
+
     /// Reading or creating a path under the managed config directory failed.
     #[error("openrgb host I/O failure at {path}: {source}")]
     Io {

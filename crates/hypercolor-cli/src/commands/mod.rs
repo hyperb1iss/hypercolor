@@ -20,3 +20,5 @@ pub mod service;
 pub mod status;
 #[cfg(feature = "tui")]
 pub mod tui;
+
+pub mod openrgb_lifecycle;

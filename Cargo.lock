@@ -4711,6 +4711,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "toml 1.1.2+spec-1.1.0",
+ "tracing",
  "tracing-subscriber",
  "unicode-width",
  "zbus",
@@ -5274,9 +5275,12 @@ dependencies = [
 name = "hypercolor-openrgb-host"
 version = "0.4.0"
 dependencies = [
+ "hypercolor-linux-session",
  "hypercolor-openrgb-sdk",
  "hypercolor-persistence",
  "hypercolor-types",
+ "nix 0.30.1",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -5284,6 +5288,8 @@ dependencies = [
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
+ "uuid",
+ "win32job",
 ]
 
 [[package]]

@@ -148,3 +148,35 @@ fn non_utf8_config_paths_are_rejected() {
         HostError::UnsupportedConfigPath { reason, .. } if reason.contains("UTF-8")
     ));
 }
+
+#[test]
+fn configured_loopback_address_reaches_launch_arguments() {
+    let binary = OpenRgbBinary {
+        path: "openrgb".into(),
+        kind: BinaryKind::Native,
+        version: None,
+    };
+    for endpoint in ["[::1]:6789", "127.0.0.2:6789"] {
+        let endpoint = endpoint.parse::<std::net::SocketAddr>().expect("endpoint");
+        let spec = hypercolor_openrgb_host::server_command_at(&binary, &config_dir(), endpoint)
+            .expect("loopback launch");
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|args| args == ["--server-host", &endpoint.ip().to_string()])
+        );
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|args| args == ["--server-port", "6789"])
+        );
+    }
+    assert!(
+        hypercolor_openrgb_host::server_command_at(
+            &binary,
+            &config_dir(),
+            "192.0.2.1:6742".parse().expect("remote")
+        )
+        .is_err()
+    );
+}

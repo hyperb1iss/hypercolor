@@ -4,7 +4,7 @@ use crate::detect::FLATPAK_APP_ID;
 use crate::error::{HostError, Result};
 use crate::types::{BinaryKind, ManagedConfigDir, OpenRgbBinary, ProcessSpec};
 
-/// The only host the managed server may bind. The SDK has no authentication,
+/// The default host the managed server binds. The SDK has no authentication,
 /// so OpenRGB's `0.0.0.0` default (still the default in 1.0rc3) is never
 /// acceptable; the host is always passed explicitly.
 pub const LOOPBACK_HOST: &str = "127.0.0.1";
@@ -33,6 +33,21 @@ pub fn server_command(
     config_dir: &ManagedConfigDir,
     port: u16,
 ) -> Result<ProcessSpec> {
+    server_command_at(binary, config_dir, ([127, 0, 0, 1], port).into())
+}
+
+/// Build a launch command for the exact configured loopback endpoint.
+///
+/// # Errors
+/// Rejects non-loopback endpoints and unsupported configuration paths.
+pub fn server_command_at(
+    binary: &OpenRgbBinary,
+    config_dir: &ManagedConfigDir,
+    endpoint: std::net::SocketAddr,
+) -> Result<ProcessSpec> {
+    if !endpoint.ip().is_loopback() {
+        return Err(HostError::UnsupportedEndpoint(endpoint));
+    }
     let Some(config_path) = config_dir.root.to_str() else {
         return Err(HostError::UnsupportedConfigPath {
             path: config_dir.root.clone(),
@@ -51,7 +66,9 @@ pub fn server_command(
         args.push(format!("--filesystem={config_path}"));
         args.push(FLATPAK_APP_ID.to_owned());
     }
-    args.extend(server_args(config_path, port));
+    let mut server = server_args(config_path, endpoint.port());
+    server[2] = endpoint.ip().to_string();
+    args.extend(server);
     Ok(ProcessSpec {
         program: binary.path.clone(),
         args,

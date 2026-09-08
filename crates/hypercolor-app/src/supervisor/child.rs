@@ -11,19 +11,20 @@ use std::{
     fs::{File, OpenOptions},
     io,
     path::Path,
-    process::{Child, Command, ExitStatus},
-    time::{Duration, Instant},
+    process::{Child, Command},
 };
 
 use anyhow::{Context, Result};
 use hypercolor_core::config::paths::data_dir;
 
-/// Poll cadence while waiting for a child to honor a termination request.
-const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
 /// Open (append) a supervised child's log file under `<data>/logs`.
 pub(crate) fn supervised_log_file(file_name: &str) -> io::Result<File> {
-    let log_dir = data_dir().join("logs");
+    supervised_log_file_in(&data_dir(), file_name)
+}
+
+/// Open a child log alongside the configuration of its verified daemon.
+pub(crate) fn supervised_log_file_in(directory: &Path, file_name: &str) -> io::Result<File> {
+    let log_dir = directory.join("logs");
     std::fs::create_dir_all(&log_dir)?;
     OpenOptions::new()
         .create(true)
@@ -66,93 +67,6 @@ pub(crate) fn kill_unless_exited(child: &mut Child) {
         let _ = child.kill();
         let _ = child.wait();
     }
-}
-
-/// Deliver `signal` to the child's whole process group, falling back to the
-/// child pid alone when the group cannot be signalled.
-///
-/// Every supervised child is spawned with `process_group(0)`, so its pgid is
-/// its own pid and `killpg` reaches the forks an AppImage or Flatpak runtime
-/// leaves between us and the real OpenRGB process.
-#[cfg(unix)]
-fn signal_child_group(child: &Child, signal: libc::c_int) -> io::Result<()> {
-    let pid = libc::pid_t::try_from(child.id())
-        .map_err(|_| io::Error::other("child pid exceeds the platform process range"))?;
-    // SAFETY: `killpg` and `kill` take a pid/pgid and a signal number and
-    // have no memory-safety preconditions; the pid belongs to a child this
-    // process spawned and has not reaped, so it cannot have been recycled.
-    let group = unsafe { libc::killpg(pid, signal) };
-    if group == 0 {
-        return Ok(());
-    }
-    let group_error = io::Error::last_os_error();
-    // SAFETY: as above; the direct-pid path is the fallback for a child that
-    // changed its own process group.
-    let direct = unsafe { libc::kill(pid, signal) };
-    if direct == 0 {
-        return Ok(());
-    }
-    Err(group_error)
-}
-
-/// Ask a child to terminate gracefully.
-///
-/// Unix delivers `SIGTERM` to the child's process group; Windows has no
-/// graceful console signal for a GUI child, so the request is a
-/// `TerminateProcess` there.
-pub(crate) fn request_graceful_termination(child: &mut Child) -> io::Result<()> {
-    if child.try_wait()?.is_some() {
-        return Ok(());
-    }
-    #[cfg(unix)]
-    {
-        signal_child_group(child, libc::SIGTERM)
-    }
-    #[cfg(not(unix))]
-    {
-        child.kill()
-    }
-}
-
-/// Kill a child and, on Unix, its whole process group, unless it has
-/// provably exited. The tree variant of [`kill_unless_exited`] for children
-/// whose runtime forks (AppImage, Flatpak).
-pub(crate) fn kill_tree_unless_exited(child: &mut Child) {
-    if matches!(child.try_wait(), Ok(Some(_))) {
-        return;
-    }
-    #[cfg(unix)]
-    let _ = signal_child_group(child, libc::SIGKILL);
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-/// Stop a child: request graceful termination, wait up to `grace`, then kill.
-///
-/// Returns the exit status when the child was reaped.
-pub(crate) fn stop_child(child: &mut Child, grace: Duration) -> Option<ExitStatus> {
-    if let Err(error) = request_graceful_termination(child) {
-        tracing::warn!(pid = child.id(), %error, "graceful termination request failed");
-    }
-    let deadline = Instant::now() + grace;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(pid = child.id(), %error, "child wait failed while stopping");
-                break;
-            }
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(EXIT_POLL_INTERVAL);
-    }
-    #[cfg(unix)]
-    let _ = signal_child_group(child, libc::SIGKILL);
-    let _ = child.kill();
-    child.wait().ok()
 }
 
 #[cfg(target_os = "windows")]
@@ -198,4 +112,21 @@ fn configure_platform_command(command: &mut Command) {
 )]
 fn attach_platform_guard(_child: &Child) -> Result<PlatformGuard> {
     Ok(PlatformGuard)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::supervised_log_file_in;
+    use std::io::Write;
+
+    #[test]
+    fn custom_daemon_directory_owns_the_child_log() {
+        let directory = tempfile::tempdir().expect("temporary daemon directory");
+        let mut log = supervised_log_file_in(directory.path(), "openrgb.log").expect("open log");
+        log.write_all(b"custom daemon log\n").expect("write log");
+        assert_eq!(
+            std::fs::read(directory.path().join("logs/openrgb.log")).expect("read log"),
+            b"custom daemon log\n"
+        );
+    }
 }

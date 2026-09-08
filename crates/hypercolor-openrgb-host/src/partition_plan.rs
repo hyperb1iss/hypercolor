@@ -6,7 +6,7 @@ use hypercolor_types::api::drivers::DriverSummary;
 use hypercolor_types::device::DriverModuleKind;
 
 /// The slice of a daemon driver summary the partition decision needs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DriverFacts {
     /// Stable driver id (`razer`, `openrgb`, ...).
     pub id: String,
@@ -27,7 +27,7 @@ impl From<&DriverSummary> for DriverFacts {
 }
 
 /// The slice of a daemon device summary the partition decision needs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeviceFacts {
     /// Driver module that owns the device.
     pub driver_id: String,

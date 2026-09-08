@@ -258,7 +258,12 @@ fn launch_spec_binds_loopback_and_the_managed_config_dir() {
         root: PathBuf::from("/tmp/hypercolor-test/openrgb"),
     };
 
-    let spec = launch_spec(&binary, &config_dir, 6799).expect("utf-8 config path launches");
+    let spec = launch_spec(
+        &binary,
+        &config_dir,
+        "127.0.0.1:6799".parse().expect("endpoint"),
+    )
+    .expect("utf-8 config path launches");
 
     assert_eq!(spec.program, binary.path);
     let host_index = spec
@@ -336,6 +341,7 @@ fn inspection(probe: ServerProbe, managed_pid: Option<u32>) -> OpenRgbInspection
         config_dir: ManagedConfigDir {
             root: PathBuf::from("/tmp/hypercolor-test/openrgb"),
         },
+        data_dir: PathBuf::from("/tmp/hypercolor-test"),
         spawn: None,
         managed_pid,
     }
@@ -499,6 +505,55 @@ mod managed_child {
             assert!(Instant::now() < deadline, "child should exit promptly");
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn a_claimed_child_excludes_another_supervisor_until_its_tree_is_gone() {
+        let directory = tempfile::tempdir().expect("managed directory");
+        let endpoint = "127.0.0.1:6799".parse().expect("endpoint");
+        let claim = hypercolor_openrgb_host::try_claim_server(directory.path(), endpoint)
+            .expect("claim")
+            .expect("first owner");
+        let managed = ManagedOpenRgb::spawn_claimed(&sleeper(), log_file(), claim)
+            .expect("spawn claimed child");
+        assert!(
+            hypercolor_openrgb_host::try_claim_server(directory.path(), endpoint)
+                .expect("second claim")
+                .is_none()
+        );
+        drop(managed);
+        assert!(
+            hypercolor_openrgb_host::try_claim_server(directory.path(), endpoint)
+                .expect("released claim")
+                .is_some()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_server_outlives_idle_blocking_pool_threads() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_keep_alive(Duration::from_millis(20))
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let directory = tempfile::tempdir().expect("managed directory");
+            let endpoint = "127.0.0.1:6799".parse().expect("endpoint");
+            let claim = hypercolor_openrgb_host::try_claim_server(directory.path(), endpoint)
+                .expect("claim")
+                .expect("first owner");
+            let mut managed =
+                ManagedOpenRgb::spawn_logged(sleeper(), directory.path().to_owned(), claim)
+                    .await
+                    .expect("spawn logged child");
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            assert!(
+                !managed.has_exited(),
+                "temporary log worker exit must not terminate the server"
+            );
+        });
     }
 
     #[test]

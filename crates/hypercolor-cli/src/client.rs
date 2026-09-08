@@ -480,17 +480,8 @@ fn describe_error_body(status: reqwest::StatusCode, body: &str) -> String {
 /// Rejects missing or mismatched identities, including a loopback SSH tunnel
 /// to a remote machine whose paths happen to exist locally.
 pub fn verify_local_instance(data_dir: &std::path::Path, instance_id: &str) -> Result<()> {
-    anyhow::ensure!(
-        data_dir.is_absolute() && !instance_id.trim().is_empty(),
-        "Daemon returned an invalid local instance identity"
-    );
-    let local = std::fs::read_to_string(data_dir.join("instance_id"))
-        .context("Cannot verify the daemon on this filesystem; run the command on its host")?;
-    anyhow::ensure!(
-        local.trim() == instance_id.trim(),
-        "Daemon identity differs from the local instance; a forwarded connection cannot control local OpenRGB"
-    );
-    Ok(())
+    hypercolor_openrgb_host::verify_instance_directory(data_dir, instance_id)
+        .context("Cannot verify the daemon on this filesystem; run the command on its host")
 }
 
 #[cfg(test)]

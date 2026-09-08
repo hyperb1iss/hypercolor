@@ -43,7 +43,9 @@ pub use permissions::{
     permission_checks, udev_rules_remedy,
 };
 pub use probe::{DEFAULT_SERVER_PORT, PROBE_CLIENT_NAME, probe_server};
-pub use process::{LOOPBACK_HOST, SERVER_LOG_LEVEL, server_args, server_command};
+pub use process::{
+    LOOPBACK_HOST, SERVER_LOG_LEVEL, server_args, server_command, server_command_at,
+};
 pub use types::{
     BinaryKind, InstallHint, InstallMethod, ManagedConfigDir, OpenRgbBinary, PermissionCheck,
     Platform, ProcessSpec, ServerProbe,
@@ -53,3 +55,23 @@ pub use partition_plan::{
     DetectorPartitionPlan, DeviceFacts, DriverFacts, bridge_enabled, known_detector_driver_ids,
     partition_driver_ids,
 };
+
+mod control;
+mod launch_plan;
+pub use control::{
+    APP_CONTROL, ControlReply, ControlRequest, ControlServer, OWNER_CONTROL, PendingControl,
+    ServerClaim, send_control, try_claim_server,
+};
+pub use launch_plan::{OpenRgbHoldReason, OpenRgbPlan, OpenRgbPlanInputs, openrgb_plan};
+
+mod owner;
+pub use owner::{OpenRgbOwner, StartFacts, spawn_owner};
+
+mod local_identity;
+pub use local_identity::verify_instance_directory;
+
+mod endpoint;
+pub use endpoint::configured_endpoint;
+
+mod child_process;
+pub use child_process::{reap_owned_server, stop_owned_server};
