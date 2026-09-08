@@ -372,6 +372,8 @@ from .effect_summary_list_response import EffectSummaryListResponse
 from .favorite_summary import FavoriteSummary
 from .favorite_summary_list_response import FavoriteSummaryListResponse
 from .fit_mode import FitMode
+from .forget_device_request import ForgetDeviceRequest
+from .forget_device_response_200 import ForgetDeviceResponse200
 from .full_frame_copy_session_status import FullFrameCopySessionStatus
 from .get_active_layout_response_200 import GetActiveLayoutResponse200
 from .get_active_playlist_response_200 import GetActivePlaylistResponse200
@@ -975,6 +977,8 @@ __all__ = (
     "FavoriteSummary",
     "FavoriteSummaryListResponse",
     "FitMode",
+    "ForgetDeviceRequest",
+    "ForgetDeviceResponse200",
     "FullFrameCopySessionStatus",
     "GetActiveLayoutResponse200",
     "GetActivePlaylistResponse200",
