@@ -104,6 +104,8 @@ export function configure(env = process.env, compilerVersion) {
     HYPERCOLOR_REGISTRY_CACHE_PATHS: ['registry', 'git'].map((directory) => path.join(cargoHome, directory)).join('\n'),
     HYPERCOLOR_CACHE_WRITE: String(cacheWriter(env.CACHE_SAVE_IF || 'auto', env.GITHUB_REF, env.CACHE_DEFAULT_BRANCH, env.GITHUB_EVENT_NAME)),
     HYPERCOLOR_CACHE_SAVE_FAILURE: env.CACHE_ON_FAILURE_INPUT === 'true' ? 'true' : 'false',
+    HYPERCOLOR_REGISTRY_CACHE_EXACT_HIT: 'false',
+    HYPERCOLOR_BUILD_CACHE_EXACT_HIT: 'false',
   };
   exportEnvironment(values, env.GITHUB_ENV);
   console.log(`Build cache: ${keys.key}\nCompatible restore prefix: ${keys.prefix}\nCache writer: ${values.HYPERCOLOR_CACHE_WRITE}`);

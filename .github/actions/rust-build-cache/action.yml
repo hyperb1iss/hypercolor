@@ -59,6 +59,7 @@ runs:
 
     - name: Restore Cargo downloads
       if: inputs.phase == 'restore'
+      id: registry-restore
       uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ${{ env.HYPERCOLOR_REGISTRY_CACHE_PATHS }}
@@ -67,11 +68,21 @@ runs:
 
     - name: Restore build artifacts and compiler cache
       if: inputs.phase == 'restore'
+      id: build-restore
       uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ${{ env.HYPERCOLOR_BUILD_CACHE_PATHS }}
         key: ${{ env.HYPERCOLOR_BUILD_CACHE_KEY }}
         restore-keys: ${{ env.HYPERCOLOR_BUILD_CACHE_PREFIX }}
+
+    - name: Persist cache restore outcomes
+      if: always() && inputs.phase == 'restore'
+      shell: bash
+      env:
+        CACHE_ACTION_PATH: ${{ github.action_path }}
+        CACHE_REGISTRY_EXACT_HIT: ${{ steps.registry-restore.outputs.cache-hit }}
+        CACHE_BUILD_EXACT_HIT: ${{ steps.build-restore.outputs.cache-hit }}
+      run: node "$CACHE_ACTION_PATH/restore-state.mjs"
 
     - name: Restore unchanged source timestamps
       if: inputs.phase == 'restore'
@@ -100,6 +111,7 @@ runs:
       if: >-
         always() && inputs.phase == 'save' &&
         env.HYPERCOLOR_CACHE_WRITE == 'true' &&
+        env.HYPERCOLOR_REGISTRY_CACHE_EXACT_HIT != 'true' &&
         (job.status == 'success' || env.HYPERCOLOR_CACHE_SAVE_FAILURE == 'true')
       uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
@@ -110,6 +122,7 @@ runs:
       if: >-
         always() && inputs.phase == 'save' &&
         env.HYPERCOLOR_CACHE_WRITE == 'true' &&
+        env.HYPERCOLOR_BUILD_CACHE_EXACT_HIT != 'true' &&
         (job.status == 'success' || env.HYPERCOLOR_CACHE_SAVE_FAILURE == 'true')
       shell: bash
       env:
@@ -120,6 +133,7 @@ runs:
       if: >-
         always() && inputs.phase == 'save' &&
         env.HYPERCOLOR_CACHE_WRITE == 'true' &&
+        env.HYPERCOLOR_BUILD_CACHE_EXACT_HIT != 'true' &&
         (job.status == 'success' || env.HYPERCOLOR_CACHE_SAVE_FAILURE == 'true')
       uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
