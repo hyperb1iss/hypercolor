@@ -580,6 +580,10 @@ flow as this page: coverage, install hints, partition, enable, discover, zone si
 layout. The shipped `rig-setup` skill runs that coverage phase between its inventory and
 interview steps.
 
+For a guided setup of the whole PC, follow [agent rig setup](@/agents/rig-setup.md).
+The agent checks coverage before asking about wiring, saves bridged hub zone sizes in
+your rig spec, and places native and bridged devices in the same spatial layout.
+
 ---
 
 ## Troubleshooting
