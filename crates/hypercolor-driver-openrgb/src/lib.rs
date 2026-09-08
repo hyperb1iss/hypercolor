@@ -1519,8 +1519,10 @@ impl EndpointConnection {
         if let Some(task) = task {
             task.abort();
         }
-        let client = self.link.lock().await.client.take();
-        if let Some(client) = client
+        // Keep retirement ordered across deferred cleanup and replacement
+        // acquisition, including the socket's asynchronous close.
+        let mut link = self.link.lock().await;
+        if let Some(client) = link.client.take()
             && let Err(error) = client.close().await
         {
             debug!(endpoint = %self.endpoint, error = %error, "OpenRGB endpoint close failed");
