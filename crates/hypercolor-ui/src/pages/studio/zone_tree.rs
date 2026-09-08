@@ -176,10 +176,15 @@ pub fn ZoneTree() -> impl IntoView {
         let by_id = device_by_id.get();
         let search = studio.device_search.get().trim().to_lowercase();
         let mut base_rows = unassigned_device_rows(&scene.zones, &device_metas.get());
+        let known_devices = devices
+            .devices_resource
+            .get()
+            .and_then(Result::ok)
+            .map(|_| device_metas.get());
         if let Some(Ok(layout)) = saved_layout.get() {
             base_rows.extend(saved_only_device_rows(
                 &scene.zones,
-                &device_metas.get(),
+                known_devices.as_deref(),
                 &layout.zones,
             ));
         }

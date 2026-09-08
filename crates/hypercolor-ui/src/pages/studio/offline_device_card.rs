@@ -21,6 +21,13 @@ pub(super) struct SavedControllersRefresh(pub Callback<()>);
 pub(super) fn OfflineDeviceCard(row: ZoneDeviceRow, select: String, placed: bool) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let devices = expect_context::<DevicesContext>();
+    let registry_available =
+        Memo::new(move |_| matches!(devices.devices_resource.get(), Some(Ok(_))));
+    let registry_status = move || match devices.devices_resource.get() {
+        Some(Ok(_)) => "Offline",
+        Some(Err(_)) => "Unavailable",
+        None => "Loading",
+    };
     let refresh = expect_context::<SavedControllersRefresh>();
     let select_body = select.clone();
     let confirming = RwSignal::new(false);
@@ -33,7 +40,7 @@ pub(super) fn OfflineDeviceCard(row: ZoneDeviceRow, select: String, placed: bool
         }
     });
     let remove = Callback::new(move |()| {
-        if submitting.get_untracked() {
+        if submitting.get_untracked() || !registry_available.get_untracked() {
             return;
         }
         submitting.set(true);
@@ -59,12 +66,12 @@ pub(super) fn OfflineDeviceCard(row: ZoneDeviceRow, select: String, placed: bool
             <button
                 type="button"
                 class="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left text-fg-tertiary"
-                title="Saved placement. Controller is not connected."
+                title=move || if registry_available.get() { "Saved placement. Controller is not connected." } else { "Device connection status is unavailable." }
                 on:click=move |_| studio.selected_surface_id.set(Some(select_body.clone()))
             >
                 <Icon icon=LuCpu width="12px" height="12px" />
                 <span class="min-w-0 flex-1 truncate text-[11px]">{label}</span>
-                <span class="shrink-0 rounded bg-surface-sunken/70 px-1 text-[9px] font-medium">"Offline"</span>
+                <span class="shrink-0 rounded bg-surface-sunken/70 px-1 text-[9px] font-medium">{registry_status}</span>
                 <span class="shrink-0 font-mono text-[9px]">{format!("{} LEDs", row.led_count)}</span>
             </button>
             {placed.then(|| view! {
@@ -74,17 +81,19 @@ pub(super) fn OfflineDeviceCard(row: ZoneDeviceRow, select: String, placed: bool
                     <Icon icon=LuX width="13px" height="13px" />
                 </button>
             })}
-            <button
-                type="button"
-                class="btn-press mr-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-status-error hover:bg-status-error/10"
-                title="Delete saved controller"
-                aria-label="Delete saved controller"
-                on:click=move |_| confirming.set(true)
-            >
-                <Icon icon=LuTrash2 width="13px" height="13px" />
-            </button>
+            <Show when=move || registry_available.get()>
+                <button
+                    type="button"
+                    class="btn-press mr-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-status-error hover:bg-status-error/10"
+                    title="Delete saved controller"
+                    aria-label="Delete saved controller"
+                    on:click=move |_| confirming.set(true)
+                >
+                    <Icon icon=LuTrash2 width="13px" height="13px" />
+                </button>
+            </Show>
         </div>
-        <Show when=move || confirming.get()>
+        <Show when=move || confirming.get() && registry_available.get()>
             <ModalBackdrop on_close=close label="Delete saved controller">
                 <h2 class="mb-2 text-sm font-medium text-fg-primary">"Delete saved controller?"</h2>
                 <p class="mb-2 text-xs text-fg-secondary">{label}</p>

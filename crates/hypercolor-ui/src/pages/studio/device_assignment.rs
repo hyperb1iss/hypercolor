@@ -118,12 +118,16 @@ pub fn unassigned_device_rows(
 
 /// Saved layout controllers absent from both the registry and scene tree.
 /// Preserve offline placements while making their owners removable in Studio.
+/// An unavailable registry is not evidence that a controller is offline.
 #[must_use]
 pub fn saved_only_device_rows(
     zones: &[ZoneResource],
-    devices: &[DeviceMeta],
+    devices: Option<&[DeviceMeta]>,
     outputs: &[Output],
 ) -> Vec<ZoneDeviceRow> {
+    let Some(devices) = devices else {
+        return Vec::new();
+    };
     let represented: HashSet<&str> = devices
         .iter()
         .map(|device| device.layout_device_id.as_str())

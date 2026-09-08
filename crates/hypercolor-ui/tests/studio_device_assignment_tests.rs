@@ -48,13 +48,13 @@ fn saved_only_controllers_are_grouped_without_duplicating_scene_or_registry_devi
         output("prismrgb:old", Some("1"), 8),
         output("prismrgb:old", Some("2"), 12),
     ];
-    let rows = saved_only_device_rows(&zones, &devices, &outputs);
+    let rows = saved_only_device_rows(&zones, Some(&devices), &outputs);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].device_id, "prismrgb:old");
     assert_eq!(rows[0].led_count, 20);
     assert_eq!(rows[0].member_count, 2);
     assert!(!rows[0].resolved);
-    assert!(saved_only_device_rows(&zones, &devices, &[]).is_empty());
+    assert!(saved_only_device_rows(&zones, Some(&devices), &[]).is_empty());
 }
 
 fn meta(layout_device_id: &str, name: &str, total_leds: u32) -> DeviceMeta {
@@ -192,4 +192,14 @@ fn unassigned_rows_empty_when_every_device_is_placed() {
     ])];
     let devices = vec![meta("a", "A", 10), meta("b", "B", 10)];
     assert!(unassigned_device_rows(&zones, &devices).is_empty());
+}
+
+#[test]
+fn saved_only_controllers_require_a_successful_registry_read() {
+    let outputs = vec![output("prismrgb:old", None, 8)];
+    assert!(saved_only_device_rows(&[], None, &outputs).is_empty());
+    let rows = saved_only_device_rows(&[], Some(&[]), &outputs);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].device_id, "prismrgb:old");
+    assert!(!rows[0].resolved);
 }
