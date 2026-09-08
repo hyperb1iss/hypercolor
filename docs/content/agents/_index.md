@@ -12,6 +12,14 @@ Hypercolor is built to be driven by AI agents. Point an assistant at the daemon 
 Hypercolor exposes the same engine through every interface. Whether an agent calls an MCP tool, runs a CLI command, or hits the REST API, it operates on one shared state through the event bus, so a change made one way is instantly visible everywhere.
 {% </callout> %}
 
+## Map your PC with an agent
+
+The shipped **rig-setup** skill turns your case dimensions and controller wiring into
+a spatial layout and scene, with a preview and a guided check on the real LEDs.
+The **hypercolor-control** skill handles daily lighting changes and diagnostics.
+Start with [agent rig setup](@/agents/rig-setup.md) for installation, an example prompt,
+and the files to keep for your next hardware change.
+
 ## Two surfaces, one engine 🔮
 
 There are two ways to put an agent in control. They are not competitors. Most real workflows cross between them.

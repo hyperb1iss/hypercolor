@@ -137,6 +137,22 @@ Hypercolor tracks **418 devices** across **32 vendors** in `data/drivers/vendors
 New drivers land often. Full matrix: [docs/content/hardware/compatibility.md](docs/content/hardware/compatibility.md). If you own hardware Hypercolor doesn't support yet, see [CONTRIBUTING.md](CONTRIBUTING.md).
 <!-- END COMPAT -->
 
+### 🌉 OpenRGB Fallback
+
+Hardware without a native Hypercolor driver can join the same effects and spatial layout
+through the **OpenRGB bridge**. Hypercolor renders the colors; a separately installed
+OpenRGB SDK server delivers them to supported controllers. Native drivers keep ownership
+of the devices they already support.
+
+Run `hypercolor devices coverage` to see where the bridge would help, then
+`hypercolor openrgb hints` for installation guidance. Hypercolor can configure a managed
+OpenRGB server and start it with the overlapping detectors disabled. The bridge is opt-in;
+OpenRGB is not required for native hardware and its binaries are not bundled.
+
+See the [OpenRGB fallback guide](docs/content/hardware/openrgb-fallback.md) for setup,
+hub LED counts, and troubleshooting. The agent rig-setup workflow below includes this
+coverage check.
+
 ### 🖥️ Dual Render Path
 
 - **Servo:** an embedded browser rendering HTML Canvas, WebGL, and GLSL shaders headless at
@@ -390,6 +406,34 @@ hypercolor devices list
 # Or drop into the interactive terminal dashboard (auto-starts a local daemon)
 hypercolor tui
 ```
+
+### 🪄 Set Up Your Rig with an Agent
+
+Tell your agent which case you own and where the fans, strips, and controllers sit.
+Hypercolor's **rig-setup** skill reads the connected hardware, researches the case's
+dimensions, asks about your wiring, and generates a spatial layout and scene. You check
+the preview together, then watch the real LEDs to dial in chain order and orientation.
+A wave can sweep from the bottom fans to the top strip because the layout knows where
+each LED lives.
+
+Use an agent that can read local skills and run commands, with Hypercolor running and
+Python 3 installed. Copy the complete `rig-setup` and `hypercolor-control` folders from
+the release bundle's `share/hypercolor/skills/` into your agent's skill directory, or
+get them from [skills/](skills/). Keep their scripts and references alongside `SKILL.md`.
+Then ask:
+
+> Use rig-setup to map my PC in Hypercolor. I have an O11D EVO RGB with three
+> bottom fans, three side fans, and a top radiator. Check device coverage, ask me
+> what is plugged into each controller port, and show me the layout before applying it.
+
+The skill saves your wiring and verified orientation in a reusable rig spec, so a
+controller swap does not mean rebuilding the layout by hand. The **hypercolor-control**
+skill handles everyday requests such as saving a scene, adjusting an effect, or
+diagnosing a dark strip. Agents can use the CLI and REST API directly; MCP is an
+optional connection for structured lighting tools.
+
+Start with [agent rig setup](docs/content/agents/rig-setup.md), browse the
+[user skills](skills/README.md), or follow [MCP setup](docs/content/agents/mcp-setup.md).
 
 ### Development
 
