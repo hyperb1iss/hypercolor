@@ -449,6 +449,68 @@ async fn registry_add_with_fingerprint_reuses_existing_device() {
     assert_eq!(tracked.info.name, "Desk Strip Updated");
 }
 
+#[tokio::test]
+async fn registry_authoritative_refresh_preserves_identity_settings_and_zero_shape() {
+    let registry = DeviceRegistry::new();
+    let original = DiscoveredDevice {
+        fingerprint: DeviceFingerprint::from_persisted("bridge:fixture:one".to_owned()),
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+        info: mock_device_info("Controller"),
+        metadata: HashMap::from([("output_enabled".to_owned(), "true".to_owned())]),
+        claim: None,
+    };
+    let id = registry.add_discovered(original.clone()).await;
+    registry.set_state(&id, DeviceState::Connected).await;
+    registry
+        .update_user_settings(&id, Some("My hub".to_owned()), None, None, None)
+        .await;
+    let mut updated = original;
+    updated.info.id = id;
+    updated.info.segments[0].led_count = 0;
+    updated
+        .metadata
+        .insert("output_enabled".to_owned(), "false".to_owned());
+    let before = registry.get(&id).await.expect("tracked device");
+
+    let mut wrong_id = updated.clone();
+    wrong_id.info.id = DeviceId::new();
+    assert!(registry.refresh_discovered(&id, wrong_id).await.is_none());
+    let mut wrong_fingerprint = updated.clone();
+    wrong_fingerprint.fingerprint = DeviceFingerprint::from_persisted("bridge:other".to_owned());
+    assert!(
+        registry
+            .refresh_discovered(&id, wrong_fingerprint)
+            .await
+            .is_none()
+    );
+    let mut wrong_backend = updated.clone();
+    wrong_backend.info.origin = DeviceOrigin::native("other", "other", ConnectionType::Network);
+    assert!(
+        registry
+            .refresh_discovered(&id, wrong_backend)
+            .await
+            .is_none()
+    );
+    assert_eq!(
+        registry.get(&id).await.expect("unchanged device").revision,
+        before.revision
+    );
+
+    let refreshed = registry
+        .refresh_discovered(&id, updated)
+        .await
+        .expect("authoritative refresh");
+    assert_eq!(refreshed.info.id, id);
+    assert_eq!(refreshed.info.name, "My hub");
+    assert_eq!(refreshed.info.total_led_count(), 0);
+    assert_eq!(refreshed.state, DeviceState::Connected);
+    assert!(refreshed.revision > before.revision);
+    assert_eq!(
+        registry.metadata_for_id(&id).await.expect("metadata")["output_enabled"],
+        "false"
+    );
+}
+
 /// Build a claimed network discovery for portable-identity tests.
 fn discovered_with_mac(
     name: &str,
