@@ -1356,15 +1356,20 @@ async fn handle_counting_connection(
 
 #[tokio::test]
 async fn connect_applies_configured_zone_sizes_and_republishes_shape() {
-    assert_configured_zone_resize(2).await;
+    assert_configured_zone_resize(2, false).await;
 }
 
 #[tokio::test]
 async fn connect_restores_configured_zone_sizes_from_zero_leds() {
-    assert_configured_zone_resize(0).await;
+    assert_configured_zone_resize(0, false).await;
 }
 
-async fn assert_configured_zone_resize(initial_led_count: u32) {
+#[tokio::test]
+async fn rebuilding_a_connected_backend_applies_new_resize_policy_before_drop_cleanup() {
+    assert_configured_zone_resize(2, true).await;
+}
+
+async fn assert_configured_zone_resize(initial_led_count: u32, rebound: bool) {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("fake OpenRGB server should bind");
@@ -1397,7 +1402,12 @@ async fn assert_configured_zone_resize(initial_led_count: u32) {
     assert_eq!(discovered.info.capabilities.led_count, initial_led_count);
     let fingerprint = discovered.metadata["fingerprint"].clone();
     assert!(fingerprint.starts_with("bridge:openrgb:"), "{fingerprint}");
-    drop(probe);
+    if rebound {
+        probe
+            .connect(&discovered.info.id)
+            .await
+            .expect("connect original policy");
+    }
 
     let sized_config = OpenRgbConfig {
         zone_sizes: BTreeMap::from([(
@@ -1414,7 +1424,17 @@ async fn assert_configured_zone_resize(initial_led_count: u32) {
     let backend = module
         .build(&host, sized_view)
         .expect("backend with zone sizes should build");
-    let devices = discover_and_adopt(&module, &backend, &host, sized_view).await;
+    let devices = if rebound {
+        backend
+            .adopt_device(&devices[0])
+            .expect("adopt existing route");
+        devices
+    } else {
+        discover_and_adopt(&module, &backend, &host, sized_view).await
+    };
+    // No yield between dropping the old backend and acquiring the new link:
+    // asynchronous pool cleanup has not run when connect sees the old entry.
+    drop(probe);
     let discovered = &devices[0];
     assert_eq!(
         discovered.connect_behavior,
@@ -1785,7 +1805,7 @@ async fn idle_shape_change_requests_lifecycle_reconnect_without_a_frame() {
     assert!(server.await.expect("server"));
 }
 
-struct ReconnectHost(Arc<ReconnectRuntime>);
+struct ReconnectHost<R: DriverRuntimeActions>(Arc<R>);
 
 struct ReconnectRuntime(tokio::sync::mpsc::UnboundedSender<(DeviceId, String)>);
 
@@ -1815,7 +1835,7 @@ impl DriverRuntimeActions for ReconnectRuntime {
     }
 }
 
-impl DriverHost for ReconnectHost {
+impl<R: DriverRuntimeActions + 'static> DriverHost for ReconnectHost<R> {
     fn credentials(&self) -> &dyn DriverCredentialStore {
         &NullHost
     }
@@ -3071,4 +3091,240 @@ impl DriverHost for NullHost {
     fn discovery_state(&self) -> &dyn DriverDiscoveryState {
         self
     }
+}
+
+#[tokio::test]
+async fn malformed_enumeration_replaces_the_invalid_session() {
+    for response in [
+        (PacketId::RequestControllerCount, vec![0]),
+        (PacketId::RequestControllerData, vec![1, 0, 0, 0]),
+    ] {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind");
+        let endpoint = listener.local_addr().expect("address");
+        let (ready, reconnected) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("discovery");
+            assert!(handle_output_connection(stream, false).await.is_none());
+            let (mut stream, _) = listener.accept().await.expect("first output session");
+            let mut decoder = PacketDecoder::new();
+            let mut notified = false;
+            while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+                if packet.header.packet_id == PacketId::UpdateMode {
+                    notified = true;
+                    send_packet(&mut stream, PacketId::DeviceListUpdated, 0, Vec::new()).await;
+                } else if notified && packet.header.packet_id == PacketId::RequestControllerCount {
+                    send_packet(&mut stream, response.0, 0, response.1.clone()).await;
+                    assert!(
+                        tokio::time::timeout(
+                            Duration::from_secs(2),
+                            read_next_packet(&mut stream, &mut decoder)
+                        )
+                        .await
+                        .expect("invalid session must close")
+                        .is_none(),
+                        "enumeration must not issue another request on a desynchronized stream"
+                    );
+                    break;
+                } else {
+                    answer_standard_client_packet(
+                        &mut stream,
+                        packet.header.packet_id,
+                        &packet,
+                        &controller_payload_v5("Board", "SER123", "hidraw0"),
+                    )
+                    .await;
+                }
+            }
+            let (mut stream, _) = listener.accept().await.expect("replacement session");
+            let mut decoder = PacketDecoder::new();
+            let mut ready = Some(ready);
+            let mut negotiated = false;
+            while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+                match packet.header.packet_id {
+                    PacketId::UpdateLeds => return packet,
+                    PacketId::UpdateMode => {
+                        assert!(negotiated, "replacement must negotiate protocol");
+                        ready
+                            .take()
+                            .expect("setup once")
+                            .send(())
+                            .expect("waiting client");
+                    }
+                    other => {
+                        negotiated |= other == PacketId::RequestProtocolVersion;
+                        answer_standard_client_packet(
+                            &mut stream,
+                            other,
+                            &packet,
+                            &controller_payload_v5("Board", "SER123", "hidraw0"),
+                        )
+                        .await;
+                    }
+                }
+            }
+            panic!("replacement session ended before output");
+        });
+        let config = OpenRgbConfig {
+            endpoints: vec![endpoint],
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::OpenRgbOwned,
+                ..OpenRgbOwnership::default()
+            },
+            teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+            ..OpenRgbConfig::default()
+        };
+        let entry = config_entry(&config);
+        let view = DriverConfigView {
+            driver_id: DESCRIPTOR.id,
+            entry: &entry,
+        };
+        let module = OpenRgbDriverModule;
+        let backend = module.build(&NullHost, view).expect("build");
+        let devices = discover_and_adopt(&module, &backend, &NullHost, view).await;
+        let id = devices[0].info.id;
+        backend.connect(&id).await.expect("connect");
+        tokio::time::timeout(Duration::from_secs(5), reconnected)
+            .await
+            .expect("reconnect deadline")
+            .expect("replacement ready");
+        backend
+            .write_colors(&id, &[[1, 2, 3]; 2])
+            .await
+            .expect("write recovered route");
+        let packet = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("output deadline")
+            .expect("server");
+        assert_eq!(packet.header.packet_id, PacketId::UpdateLeds);
+        backend.disconnect(&id).await.expect("disconnect");
+    }
+}
+
+struct RetryReconnectRuntime {
+    calls: AtomicUsize,
+    requests: tokio::sync::mpsc::UnboundedSender<usize>,
+}
+
+#[async_trait]
+impl DriverRuntimeActions for RetryReconnectRuntime {
+    async fn request_reconnect(
+        &self,
+        _: DeviceId,
+        _: &str,
+        updated: Option<DiscoveredDevice>,
+    ) -> Result<bool> {
+        let updated = updated.expect("updated discovery");
+        assert_eq!(updated.info.capabilities.led_count, 3);
+        assert_eq!(updated.metadata["output_enabled"], "false");
+        assert!(updated.metadata["disabled_reason"].contains("zone shape changed"));
+        let attempt = self.calls.fetch_add(1, Ordering::SeqCst);
+        self.requests.send(attempt)?;
+        match attempt {
+            0 => anyhow::bail!("host temporarily unavailable"),
+            1 => Ok(false),
+            _ => Ok(true),
+        }
+    }
+    async fn activate_device(&self, _: DeviceId, _: &str) -> Result<bool> {
+        Ok(false)
+    }
+    async fn disconnect_device(&self, _: DeviceId, _: &str, _: bool) -> Result<bool> {
+        Ok(false)
+    }
+}
+
+#[tokio::test]
+async fn rejected_lifecycle_requests_retry_on_unchanged_enumeration() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind");
+    let endpoint = listener.local_addr().expect("address");
+    let (notify, mut notifications) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("discovery");
+        assert!(handle_output_connection(stream, false).await.is_none());
+        let (mut stream, _) = listener.accept().await.expect("output");
+        let mut decoder = PacketDecoder::new();
+        let mut changed = false;
+        loop {
+            let packet = tokio::select! {
+                packet = read_next_packet(&mut stream, &mut decoder) => packet,
+                Some(()) = notifications.recv() => {
+                    send_packet(&mut stream, PacketId::DeviceListUpdated, 0, Vec::new()).await;
+                    continue;
+                }
+            };
+            let Some(packet) = packet else {
+                break;
+            };
+            match packet.header.packet_id {
+                PacketId::UpdateMode => {
+                    assert!(
+                        !changed,
+                        "pending lifecycle recovery must not re-arm output"
+                    );
+                    changed = true;
+                    send_packet(&mut stream, PacketId::DeviceListUpdated, 0, Vec::new()).await;
+                }
+                PacketId::UpdateLeds => panic!("pending lifecycle recovery must not write output"),
+                other => {
+                    let count = if changed { 3 } else { 2 };
+                    answer_standard_client_packet(
+                        &mut stream,
+                        other,
+                        &packet,
+                        &controller_payload_v5_with_led_count("Board", "SER123", "hidraw0", count),
+                    )
+                    .await;
+                }
+            }
+        }
+    });
+    let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let runtime = Arc::new(RetryReconnectRuntime {
+        calls: AtomicUsize::new(0),
+        requests,
+    });
+    let host = ReconnectHost(Arc::clone(&runtime));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let module = OpenRgbDriverModule;
+    let backend = module.build(&host, view).expect("build");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let id = devices[0].info.id;
+    backend.connect(&id).await.expect("connect");
+    for attempt in 0..3 {
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), received.recv())
+                .await
+                .expect("callback deadline"),
+            Some(attempt)
+        );
+        let metadata = backend
+            .connected_device_metadata(&id)
+            .await
+            .expect("metadata")
+            .expect("connected");
+        assert_eq!(metadata["output_enabled"], "false");
+        if attempt < 2 {
+            notify.send(()).expect("same-shape notification");
+        }
+    }
+    backend.disconnect(&id).await.expect("disconnect");
+    server.await.expect("server");
+    assert_eq!(runtime.calls.load(Ordering::SeqCst), 3);
 }
