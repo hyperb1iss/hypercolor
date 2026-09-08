@@ -1,7 +1,7 @@
 //! ScreenCaptureKit core worker fixture contracts.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -182,6 +182,41 @@ fn diagnostics_payload(snapshot: &SourceStatus) -> &serde_json::Value {
     diagnostics.payload()
 }
 
+// A live capture source keeps delivering after an individual frame expires.
+// Stop and join each producer before reconfiguration so it cannot submit new
+// frames across the worker generation boundary.
+fn with_fixture_stream<S: InputSource, T>(
+    source: &mut S,
+    fixture: &MacosScreenCaptureFixture,
+    mut frame: MacosCaptureFrame,
+    observe: impl FnOnce(&mut S) -> T,
+) -> (T, Vec<Instant>) {
+    thread::scope(|scope| {
+        let (stop, stopped) = mpsc::channel::<()>();
+        let producer = scope.spawn(move || {
+            let mut capture_times = Vec::new();
+            loop {
+                let captured_at = Instant::now();
+                capture_times.push(captured_at);
+                fixture.publish_at(frame.clone(), captured_at);
+                frame.sequence = frame
+                    .sequence
+                    .checked_add(1)
+                    .expect("fixture sequence fits");
+                match stopped.recv_timeout(Duration::from_nanos(1_000_000_000 / 60)) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            capture_times
+        });
+        let result = observe(source);
+        drop(stop);
+        let capture_times = producer.join().expect("fixture producer completes");
+        (result, capture_times)
+    })
+}
+
 fn wait_for_screen(source: &mut impl InputSource) -> hypercolor_core::input::ScreenData {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -190,7 +225,12 @@ fn wait_for_screen(source: &mut impl InputSource) -> hypercolor_core::input::Scr
             InputData::None if Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(1));
             }
-            InputData::None => panic!("fixture worker did not publish before the deadline"),
+            InputData::None => panic!(
+                "fixture worker did not publish before the deadline: {:?}",
+                source
+                    .source_status_handle()
+                    .map(|status| status.snapshot())
+            ),
             _ => panic!("macOS fixture published the wrong input kind"),
         }
     }
@@ -199,11 +239,14 @@ fn wait_for_screen(source: &mut impl InputSource) -> hypercolor_core::input::Scr
 fn wait_for_grid_width(
     source: &mut impl InputSource,
     grid_width: u32,
+    matches_frame: impl Fn(&hypercolor_core::input::ScreenData) -> bool,
 ) -> hypercolor_core::input::ScreenData {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         match source.sample().expect("fixture sample succeeds") {
-            InputData::Screen(data) if data.grid_width == grid_width => return data,
+            InputData::Screen(data) if data.grid_width == grid_width && matches_frame(&data) => {
+                return data;
+            }
             InputData::Screen(_) | InputData::None if Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(1));
             }
@@ -267,8 +310,12 @@ fn native_refresh_hdr_and_cursor_demand_reaches_capture_and_screen_cast() {
     fixture.set_selection(MacosCaptureSelection::Display {
         source_id: Arc::from("display:hdr-effect-fixture"),
     });
-    fixture.publish(fixture_hdr_frame(1, [0x00, 0x3c, 0, 0, 0, 0, 0x00, 0x3c]));
-    let screen = wait_for_screen(&mut source);
+    let (screen, _) = with_fixture_stream(
+        &mut source,
+        &fixture,
+        fixture_hdr_frame(1, [0x00, 0x3c, 0, 0, 0, 0, 0x00, 0x3c]),
+        wait_for_screen,
+    );
     let reference = screen
         .canvas_downscale
         .as_ref()
@@ -394,16 +441,19 @@ fn fixture_capture_activates_only_for_live_demand() {
         hdr_capture: true,
         dual_range_screenshots: false,
     }));
-    let captured_at = Instant::now();
-    fixture.publish_at(fixture_frame(1, [0, 0, 255, 255]), captured_at);
-    let data = wait_for_screen(&mut source);
+    let (data, capture_times) = with_fixture_stream(
+        &mut source,
+        &fixture,
+        fixture_frame(1, [0, 0, 255, 255]),
+        wait_for_screen,
+    );
     assert_eq!(data.grid_width, 2);
     assert_eq!(data.grid_height, 1);
     assert_eq!(data.source_width, 4);
     assert_eq!(data.source_height, 2);
     assert_eq!(data.zone_colors.len(), 2);
     let live = status.snapshot();
-    assert_eq!(live.last_sample_at, Some(captured_at));
+    assert!(capture_times.contains(&live.last_sample_at.expect("live sample has capture time")));
     let platform = diagnostics_payload(&live);
     assert_eq!(platform["state"], "live");
     assert_eq!(platform["stream_state"], "active");
@@ -513,8 +563,13 @@ fn rejected_demand_request_preserves_the_committed_worker_and_demand() {
     assert_eq!(source.screen_capture_demand(), committed);
     assert_eq!(fixture.stream_request(), request);
     assert!(fixture.is_active());
-    fixture.publish(fixture_frame(1, [0, 0, 255, 255]));
-    assert_eq!(wait_for_screen(&mut source).grid_width, 2);
+    let (screen, _) = with_fixture_stream(
+        &mut source,
+        &fixture,
+        fixture_frame(1, [0, 0, 255, 255]),
+        wait_for_screen,
+    );
+    assert_eq!(screen.grid_width, 2);
 }
 
 #[test]
@@ -544,8 +599,13 @@ fn rejected_reconfiguration_request_preserves_the_committed_worker_config() {
 
     assert_eq!(fixture.stream_request(), request);
     assert!(fixture.is_active());
-    fixture.publish(fixture_frame(1, [0, 255, 0, 255]));
-    assert_eq!(wait_for_screen(&mut source).grid_width, 2);
+    let (screen, _) = with_fixture_stream(
+        &mut source,
+        &fixture,
+        fixture_frame(1, [0, 255, 0, 255]),
+        wait_for_screen,
+    );
+    assert_eq!(screen.grid_width, 2);
 }
 
 #[test]
@@ -589,8 +649,13 @@ fn asynchronous_demand_request_failure_preserves_the_committed_worker_and_demand
     assert!(format!("{error:#}").contains("failed asynchronously"));
     assert_eq!(source.screen_capture_demand(), committed);
     assert_eq!(fixture.stream_request(), request);
-    fixture.publish(fixture_frame(1, [0, 0, 255, 255]));
-    assert_eq!(wait_for_screen(&mut source).grid_width, 2);
+    let (screen, _) = with_fixture_stream(
+        &mut source,
+        &fixture,
+        fixture_frame(1, [0, 0, 255, 255]),
+        wait_for_screen,
+    );
+    assert_eq!(screen.grid_width, 2);
 }
 
 #[test]
@@ -634,8 +699,13 @@ fn asynchronous_reconfiguration_commits_after_native_activation() {
             .expect("native activation commits reconfiguration");
     });
 
-    fixture.publish(fixture_frame(1, [0, 255, 0, 255]));
-    assert_eq!(wait_for_screen(&mut source).grid_width, 1);
+    let (screen, _) = with_fixture_stream(
+        &mut source,
+        &fixture,
+        fixture_frame(1, [0, 255, 0, 255]),
+        wait_for_screen,
+    );
+    assert_eq!(screen.grid_width, 1);
 }
 
 #[test]
@@ -653,8 +723,13 @@ fn processing_reconfiguration_changes_legacy_hdr_bytes_at_a_frame_boundary() {
         .set_screen_capture_demand(ScreenCaptureDemand::active())
         .expect("fixture demand activates");
     let encoded = [0x00, 0x38, 0x00, 0x3c, 0x00, 0x40, 0x00, 0x3c];
-    fixture.publish(fixture_hdr_frame(1, encoded));
-    let before = canvas_bytes(&wait_for_screen(&mut source));
+    let (screen, _) = with_fixture_stream(
+        &mut source,
+        &fixture,
+        fixture_hdr_frame(1, encoded),
+        wait_for_screen,
+    );
+    let before = canvas_bytes(&screen);
 
     source
         .reconfigure_screen_processing(&CaptureConfig {
@@ -662,8 +737,13 @@ fn processing_reconfiguration_changes_legacy_hdr_bytes_at_a_frame_boundary() {
             ..config
         })
         .expect("valid processing calibration commits on the worker");
-    fixture.publish(fixture_hdr_frame(2, encoded));
-    let after = canvas_bytes(&wait_for_canvas_change(&mut source, &before));
+    let (screen, _) = with_fixture_stream(
+        &mut source,
+        &fixture,
+        fixture_hdr_frame(2, encoded),
+        |source| wait_for_canvas_change(source, &before),
+    );
+    let after = canvas_bytes(&screen);
 
     assert_ne!(&after[..4], &before[..4]);
     assert!(after[0] < before[0]);
@@ -706,6 +786,25 @@ fn stale_native_frame_never_enters_the_legacy_cpu_publication() {
         assert!(Instant::now() < deadline, "stale frame was not observed");
         thread::sleep(Duration::from_millis(1));
     }
+
+    let (screen, _) = with_fixture_stream(
+        &mut source,
+        &fixture,
+        fixture_frame(2, [0, 255, 0, 255]),
+        wait_for_screen,
+    );
+    assert!(
+        canvas_bytes(&screen)
+            .chunks_exact(4)
+            .all(|pixel| pixel[1] > pixel[0])
+    );
+    let recovered = status.snapshot();
+    assert!(
+        diagnostics_payload(&recovered)["frames_stale"]
+            .as_u64()
+            .expect("stale count is numeric")
+            >= 1
+    );
 }
 
 #[test]
@@ -722,8 +821,13 @@ fn reconfiguration_fences_the_previous_worker_generation() {
     source
         .set_screen_capture_demand(ScreenCaptureDemand::active())
         .expect("fixture demand activates");
-    fixture.publish(fixture_frame(1, [255, 0, 0, 255]));
-    assert_eq!(wait_for_screen(&mut source).zone_colors.len(), 2);
+    let (screen, _) = with_fixture_stream(
+        &mut source,
+        &fixture,
+        fixture_frame(1, [255, 0, 0, 255]),
+        wait_for_screen,
+    );
+    assert_eq!(screen.zone_colors.len(), 2);
 
     source
         .reconfigure_screen_capture(&CaptureConfig {
@@ -746,8 +850,18 @@ fn reconfiguration_fences_the_previous_worker_generation() {
     };
     assert_eq!(retained.grid_width, 2);
 
-    fixture.publish(fixture_frame(2, [0, 255, 0, 255]));
-    let data = wait_for_grid_width(&mut source, 1);
+    let (data, _) = with_fixture_stream(
+        &mut source,
+        &fixture,
+        fixture_frame(2, [0, 255, 0, 255]),
+        |source| {
+            wait_for_grid_width(source, 1, |data| {
+                canvas_bytes(data)
+                    .chunks_exact(4)
+                    .all(|pixel| pixel[1] > pixel[0] && pixel[1] > pixel[2])
+            })
+        },
+    );
     assert_eq!(data.grid_width, 1);
     assert_eq!(data.grid_height, 1);
     assert_eq!(data.zone_colors.len(), 1);
