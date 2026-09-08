@@ -124,3 +124,267 @@ async fn blocks_backend_treats_binary_rejection_as_retryable() -> TestResult {
     server_task.await??;
     Ok(())
 }
+
+fn lumi_device() -> serde_json::Value {
+    serde_json::json!({
+        "uid": TEST_UID - 1,
+        "serial": "LKBC9PZSOH978HOE",
+        "block_type": "lumi_keys",
+        "name": "LUMI Keys",
+        "battery_level": 90,
+        "battery_charging": false,
+        "grid_width": 0,
+        "grid_height": 0,
+        "key_count": 24,
+        "firmware_version": "1.3.9"
+    })
+}
+
+async fn serve_discovery(listener: &UnixListener, devices: &[serde_json::Value]) -> TestResult {
+    let (stream, _) = listener.accept().await?;
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).await?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&line)?["type"],
+        "discover"
+    );
+    let response = serde_json::json!({"type": "discover_response", "devices": devices});
+    reader
+        .get_mut()
+        .write_all(response.to_string().as_bytes())
+        .await?;
+    reader.get_mut().write_all(b"\n").await?;
+    Ok(())
+}
+
+async fn serve_ping(listener: &UnixListener) -> TestResult<BufReader<tokio::net::UnixStream>> {
+    let (stream, _) = listener.accept().await?;
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).await?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&line)?["type"],
+        "ping"
+    );
+    reader
+        .get_mut()
+        .write_all(
+            b"{\"type\":\"pong\",\"version\":\"0.5.0\",\"uptime_seconds\":1,\"device_count\":2}\n",
+        )
+        .await?;
+    Ok(reader)
+}
+
+async fn assert_key_request(reader: &mut BufReader<tokio::net::UnixStream>) -> TestResult {
+    use base64::Engine;
+    let mut line = String::new();
+    reader.read_line(&mut line).await?;
+    let request: serde_json::Value = serde_json::from_str(&line)?;
+    assert_eq!(request["type"], "key_frame");
+    assert_eq!(request["uid"].as_u64(), Some(TEST_UID - 1));
+    let pixels = base64::engine::general_purpose::STANDARD
+        .decode(request["pixels"].as_str().ok_or("missing pixels")?)?;
+    assert_eq!(pixels, key_colors().as_flattened());
+    Ok(())
+}
+
+fn key_colors() -> [[u8; 3]; 24] {
+    let mut colors = [[0; 3]; 24];
+    for (index, color) in (0_u8..24).zip(&mut colors) {
+        *color = [index, 80 + index, 200 + index];
+    }
+    colors
+}
+
+fn key_ack(accepted: bool) -> String {
+    serde_json::json!({"type": "key_frame_ack", "uid": TEST_UID - 1, "accepted": accepted})
+        .to_string()
+        + "\n"
+}
+
+#[tokio::test]
+async fn blocks_discovery_filters_unsupported_and_invalid_surfaces() -> TestResult {
+    use hypercolor_types::device::DeviceTopologyHint;
+    let tempdir = tempdir()?;
+    let socket_path = tempdir.path().join("blocksd.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let legacy: serde_json::Value = serde_json::from_str(&discover_response(TEST_UID))?;
+    let grid = legacy["devices"][0].clone();
+    let keys = lumi_device();
+    let mut devices = vec![grid.clone(), keys.clone()];
+    for (field, value) in [
+        ("key_count", serde_json::json!(0)),
+        ("key_count", serde_json::json!(23)),
+        ("grid_width", serde_json::json!(15)),
+        ("block_type", serde_json::json!("seaboard")),
+        ("block_type", serde_json::json!("unknown")),
+    ] {
+        let mut invalid = keys.clone();
+        invalid[field] = value;
+        devices.push(invalid);
+    }
+    let mut legacy_keys = keys.clone();
+    legacy_keys
+        .as_object_mut()
+        .ok_or("device is not an object")?
+        .remove("key_count");
+    devices.push(legacy_keys);
+    for (width, height) in [(0, 0), (14, 15), (u32::MAX, u32::MAX)] {
+        let mut invalid = grid.clone();
+        invalid["grid_width"] = width.into();
+        invalid["grid_height"] = height.into();
+        devices.push(invalid);
+    }
+    let task = tokio::spawn(async move { serve_discovery(&listener, &devices).await });
+    let discovered = BlocksScanner::new(socket_path).scan().await?;
+    assert_eq!(discovered.len(), 2);
+    assert_eq!(discovered[0].info.capabilities.led_count, 225);
+    assert_eq!(
+        discovered[0].info.segments[0].topology,
+        DeviceTopologyHint::Matrix { rows: 15, cols: 15 }
+    );
+    assert_eq!(discovered[1].info.capabilities.led_count, 24);
+    assert_eq!(
+        discovered[1].info.segments[0].topology,
+        DeviceTopologyHint::Strip
+    );
+    assert_eq!(discovered[1].metadata["uid"], (TEST_UID - 1).to_string());
+    task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocks_backend_interleaves_key_json_and_grid_binary_frames() -> TestResult {
+    let tempdir = tempdir()?;
+    let socket_path = tempdir.path().join("blocksd.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let task = tokio::spawn(async move {
+        let legacy: serde_json::Value = serde_json::from_str(&discover_response(TEST_UID))?;
+        serve_discovery(&listener, &[legacy["devices"][0].clone(), lumi_device()]).await?;
+        let mut reader = serve_ping(&listener).await?;
+        assert_key_request(&mut reader).await?;
+        // Split the JSON response across writes to exercise buffered framing.
+        let ack = key_ack(true);
+        reader.get_mut().write_all(&ack.as_bytes()[..7]).await?;
+        reader.get_mut().write_all(&ack.as_bytes()[7..]).await?;
+        let mut frame = [0_u8; 685];
+        reader.read_exact(&mut frame).await?;
+        assert_eq!(&frame[..2], &[0xBD, 0x01]);
+        assert_eq!(u64::from_le_bytes(frame[2..10].try_into()?), TEST_UID);
+        assert_eq!(&frame[10..13], &[10, 20, 30]);
+        reader.get_mut().write_all(&[1]).await?;
+        assert_key_request(&mut reader).await?;
+        reader.get_mut().write_all(key_ack(true).as_bytes()).await?;
+        TestResult::Ok(())
+    });
+    let discovered = BlocksScanner::new(socket_path.clone()).scan().await?;
+    let backend = BlocksBackend::new(socket_path);
+    for device in &discovered {
+        backend.adopt_device(device)?;
+        backend.connect(&device.info.id).await?;
+    }
+    backend
+        .write_colors(&discovered[1].info.id, &key_colors())
+        .await?;
+    backend
+        .write_colors(&discovered[0].info.id, &[[10, 20, 30]; 225])
+        .await?;
+    backend
+        .write_colors(&discovered[1].info.id, &key_colors())
+        .await?;
+    task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocks_backend_retries_rejected_key_frame_on_same_connection() -> TestResult {
+    let tempdir = tempdir()?;
+    let socket_path = tempdir.path().join("blocksd.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let task = tokio::spawn(async move {
+        serve_discovery(&listener, &[lumi_device()]).await?;
+        let mut reader = serve_ping(&listener).await?;
+        for accepted in [false, true] {
+            assert_key_request(&mut reader).await?;
+            reader
+                .get_mut()
+                .write_all(key_ack(accepted).as_bytes())
+                .await?;
+        }
+        TestResult::Ok(())
+    });
+    let discovered = BlocksScanner::new(socket_path.clone()).scan().await?;
+    let backend = BlocksBackend::new(socket_path);
+    let device = &discovered[0];
+    backend.adopt_device(device)?;
+    backend.connect(&device.info.id).await?;
+    for colors in [vec![], vec![[1, 2, 3]; 23], vec![[1, 2, 3]; 25]] {
+        assert!(
+            backend
+                .write_colors(&device.info.id, &colors)
+                .await
+                .is_err()
+        );
+    }
+    backend.write_colors(&device.info.id, &key_colors()).await?;
+    backend.write_colors(&device.info.id, &key_colors()).await?;
+    task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocks_backend_rejects_malformed_key_acks_and_reconnects() -> TestResult {
+    let valid: serde_json::Value = serde_json::from_str(&key_ack(true))?;
+    let mut responses = vec!["not json\n".to_owned(), "\n".to_owned()];
+    for (field, value) in [
+        ("type", serde_json::json!("frame_ack")),
+        ("uid", serde_json::json!(TEST_UID)),
+        ("uid", serde_json::json!((TEST_UID - 1).to_string())),
+        ("accepted", serde_json::json!("true")),
+        ("accepted", serde_json::Value::Null),
+    ] {
+        let mut response = valid.clone();
+        response[field] = value;
+        responses.push(response.to_string() + "\n");
+    }
+    for field in ["type", "uid", "accepted"] {
+        let mut response = valid.clone();
+        response
+            .as_object_mut()
+            .ok_or("ack is not an object")?
+            .remove(field);
+        responses.push(response.to_string() + "\n");
+    }
+    for response in responses {
+        let tempdir = tempdir()?;
+        let socket_path = tempdir.path().join("blocksd.sock");
+        let listener = UnixListener::bind(&socket_path)?;
+        let task = tokio::spawn(async move {
+            serve_discovery(&listener, &[lumi_device()]).await?;
+            let mut reader = serve_ping(&listener).await?;
+            assert_key_request(&mut reader).await?;
+            reader.get_mut().write_all(response.as_bytes()).await?;
+            drop(reader);
+            let mut reader = serve_ping(&listener).await?;
+            assert_key_request(&mut reader).await?;
+            reader.get_mut().write_all(key_ack(true).as_bytes()).await?;
+            TestResult::Ok(())
+        });
+        let discovered = BlocksScanner::new(socket_path.clone()).scan().await?;
+        let backend = BlocksBackend::new(socket_path);
+        let device = &discovered[0];
+        backend.adopt_device(device)?;
+        backend.connect(&device.info.id).await?;
+        assert!(
+            backend
+                .write_colors(&device.info.id, &key_colors())
+                .await
+                .is_err()
+        );
+        backend.connect(&device.info.id).await?;
+        backend.write_colors(&device.info.id, &key_colors()).await?;
+        task.await??;
+    }
+    Ok(())
+}

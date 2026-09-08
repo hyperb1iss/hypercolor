@@ -12,6 +12,7 @@ use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveredDevice};
 use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId, DeviceInfo};
 
 use super::connection::{self, BlocksConnection};
+use super::types::BlocksSurface;
 
 /// Device backend that bridges to blocksd for ROLI Blocks hardware.
 pub struct BlocksBackend {
@@ -25,6 +26,7 @@ pub struct BlocksBackend {
 #[derive(Clone)]
 struct PendingBlocksDevice {
     uid: u64,
+    surface: BlocksSurface,
     info: DeviceInfo,
 }
 
@@ -40,6 +42,7 @@ struct BlocksBackendState {
 
 struct BlocksDevice {
     uid: u64,
+    surface: BlocksSurface,
     info: DeviceInfo,
     connected: bool,
     frames_sent: u64,
@@ -110,7 +113,7 @@ impl DeviceBackend for BlocksBackend {
         BackendInfo {
             id: BLOCKS_OUTPUT_BACKEND_ID.to_owned(),
             name: "ROLI Blocks (blocksd)".to_owned(),
-            description: "ROLI Lightpad, LUMI Keys, and Seaboard via blocksd daemon".to_owned(),
+            description: "ROLI Lightpad and LUMI Keys via blocksd daemon".to_owned(),
         }
     }
 
@@ -122,6 +125,13 @@ impl DeviceBackend for BlocksBackend {
             .ok_or(DeviceError::NotAdopted {
                 device_id: discovered.info.id,
             })?;
+        let surface = discovered
+            .metadata
+            .get("surface")
+            .and_then(|value| BlocksSurface::from_metadata(value))
+            .ok_or(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })?;
         self.pending
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -129,6 +139,7 @@ impl DeviceBackend for BlocksBackend {
                 discovered.info.id,
                 PendingBlocksDevice {
                     uid,
+                    surface,
                     info: discovered.info.clone(),
                 },
             );
@@ -171,6 +182,7 @@ impl DeviceBackend for BlocksBackend {
         state.uid_map.insert(pending.uid, *id);
         let device = state.devices.entry(*id).or_insert_with(|| BlocksDevice {
             uid: pending.uid,
+            surface: pending.surface,
             info: pending.info,
             connected: false,
             frames_sent: 0,
@@ -199,6 +211,7 @@ impl DeviceBackend for BlocksBackend {
         }
 
         let uid = device.uid;
+        let surface = device.surface;
 
         let conn = state
             .connection
@@ -207,7 +220,16 @@ impl DeviceBackend for BlocksBackend {
                 device: id.to_string(),
             })?;
 
-        match conn.write_frame_binary(uid, colors).await {
+        let result = match surface {
+            BlocksSurface::Grid => conn.write_frame_binary(uid, colors).await,
+            BlocksSurface::Keys => {
+                let keys = colors.try_into().map_err(|_| {
+                    DeviceError::write(id, "LUMI key frames require exactly 24 colors")
+                })?;
+                conn.write_key_frame(uid, keys).await
+            }
+        };
+        match result {
             Ok(accepted) => {
                 if accepted {
                     if let Some(device) = state.devices.get_mut(id) {

@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::timeout;
@@ -126,6 +129,23 @@ impl BlocksConnection {
         Ok(response[0] == 0x01)
     }
 
+    /// Write the 24 LUMI key colors in ascending key order.
+    /// A negative acknowledgement is retryable, as on the binary grid path.
+    pub async fn write_key_frame(&mut self, uid: u64, colors: &[[u8; 3]; 24]) -> Result<bool> {
+        let request = serde_json::json!({
+            "type": "key_frame",
+            "uid": uid,
+            "pixels": STANDARD.encode(colors.as_flattened()),
+        });
+        let response = self.json_request(&request.to_string()).await?;
+        let ack: KeyFrameAck = serde_json::from_str(&response)
+            .context("failed to parse blocksd key frame acknowledgement")?;
+        if ack.message_type != "key_frame_ack" || ack.uid != uid {
+            bail!("unexpected blocksd key frame acknowledgement: {response}");
+        }
+        Ok(ack.accepted)
+    }
+
     // ── Internal ────────────────────────────────────────────────────────
 
     /// Send a JSON request and read the response line.
@@ -168,4 +188,12 @@ pub fn default_socket_path() -> PathBuf {
     } else {
         PathBuf::from("/tmp/blocksd/blocksd.sock")
     }
+}
+
+#[derive(Deserialize)]
+struct KeyFrameAck {
+    #[serde(rename = "type")]
+    message_type: String,
+    uid: u64,
+    accepted: bool,
 }
