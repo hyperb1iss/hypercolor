@@ -3,6 +3,7 @@
 use hypercolor_types::api::system::{
     OpenRgbEndpointStatus, OpenRgbInstallHint, OpenRgbPermissionStatus, OpenRgbStatus,
 };
+use hypercolor_types::config::DriverConfigEntry;
 
 #[test]
 fn setup_status_preserves_unreachable_endpoint_and_actionable_remedies() {
@@ -12,7 +13,7 @@ fn setup_status_preserves_unreachable_endpoint_and_actionable_remedies() {
         platform: "linux".into(),
         binary_path: None,
         binary_version: None,
-        bridge_config: Default::default(),
+        bridge_config: DriverConfigEntry::default(),
         probes: vec![OpenRgbEndpointStatus {
             endpoint: "127.0.0.1:6742".into(),
             reachable: false,
