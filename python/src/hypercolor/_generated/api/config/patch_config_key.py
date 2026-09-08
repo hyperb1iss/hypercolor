@@ -7,26 +7,33 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
-from ...models.update_device_request import UpdateDeviceRequest
-from ...models.update_device_response_200 import UpdateDeviceResponse200
-from ...types import Response
+from ...models.patch_config_key_response_200 import PatchConfigKeyResponse200
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
-    id: str,
+    key: str,
     *,
-    body: UpdateDeviceRequest,
+    body: Any,
+    live: bool | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
+    params: dict[str, Any] = {}
+
+    params["live"] = live
+
+    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
+
     _kwargs: dict[str, Any] = {
-        "method": "put",
-        "url": "/api/v1/devices/{id}".format(
-            id=quote(str(id), safe=""),
+        "method": "patch",
+        "url": "/api/v1/config/keys/{key}".format(
+            key=quote(str(key), safe=""),
         ),
+        "params": params,
     }
 
-    _kwargs["json"] = body.to_dict()
+    _kwargs["json"] = body
 
     headers["Content-Type"] = "application/json"
 
@@ -36,9 +43,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorBody | UpdateDeviceResponse200 | None:
+) -> ApiErrorBody | PatchConfigKeyResponse200 | None:
     if response.status_code == 200:
-        response_200 = UpdateDeviceResponse200.from_dict(response.json())
+        response_200 = PatchConfigKeyResponse200.from_dict(response.json())
 
         return response_200
 
@@ -95,7 +102,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorBody | UpdateDeviceResponse200]:
+) -> Response[ApiErrorBody | PatchConfigKeyResponse200]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -105,28 +112,31 @@ def _build_response(
 
 
 def sync_detailed(
-    id: str,
+    key: str,
     *,
     client: AuthenticatedClient | Client,
-    body: UpdateDeviceRequest,
-) -> Response[ApiErrorBody | UpdateDeviceResponse200]:
-    """Update one device
+    body: Any,
+    live: bool | Unset = UNSET,
+) -> Response[ApiErrorBody | PatchConfigKeyResponse200]:
+    """Merge an object into a daemon config key
 
     Args:
-        id (str):
-        body (UpdateDeviceRequest): Request body for `PUT /api/v1/devices/{id}`.
+        key (str):
+        live (bool | Unset):
+        body (Any):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | UpdateDeviceResponse200]
+        Response[ApiErrorBody | PatchConfigKeyResponse200]
     """
 
     kwargs = _get_kwargs(
-        id=id,
+        key=key,
         body=body,
+        live=live,
     )
 
     response = client.get_httpx_client().request(
@@ -137,55 +147,61 @@ def sync_detailed(
 
 
 def sync(
-    id: str,
+    key: str,
     *,
     client: AuthenticatedClient | Client,
-    body: UpdateDeviceRequest,
-) -> ApiErrorBody | UpdateDeviceResponse200 | None:
-    """Update one device
+    body: Any,
+    live: bool | Unset = UNSET,
+) -> ApiErrorBody | PatchConfigKeyResponse200 | None:
+    """Merge an object into a daemon config key
 
     Args:
-        id (str):
-        body (UpdateDeviceRequest): Request body for `PUT /api/v1/devices/{id}`.
+        key (str):
+        live (bool | Unset):
+        body (Any):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | UpdateDeviceResponse200
+        ApiErrorBody | PatchConfigKeyResponse200
     """
 
     return sync_detailed(
-        id=id,
+        key=key,
         client=client,
         body=body,
+        live=live,
     ).parsed
 
 
 async def asyncio_detailed(
-    id: str,
+    key: str,
     *,
     client: AuthenticatedClient | Client,
-    body: UpdateDeviceRequest,
-) -> Response[ApiErrorBody | UpdateDeviceResponse200]:
-    """Update one device
+    body: Any,
+    live: bool | Unset = UNSET,
+) -> Response[ApiErrorBody | PatchConfigKeyResponse200]:
+    """Merge an object into a daemon config key
 
     Args:
-        id (str):
-        body (UpdateDeviceRequest): Request body for `PUT /api/v1/devices/{id}`.
+        key (str):
+        live (bool | Unset):
+        body (Any):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody | UpdateDeviceResponse200]
+        Response[ApiErrorBody | PatchConfigKeyResponse200]
     """
 
     kwargs = _get_kwargs(
-        id=id,
+        key=key,
         body=body,
+        live=live,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -194,29 +210,32 @@ async def asyncio_detailed(
 
 
 async def asyncio(
-    id: str,
+    key: str,
     *,
     client: AuthenticatedClient | Client,
-    body: UpdateDeviceRequest,
-) -> ApiErrorBody | UpdateDeviceResponse200 | None:
-    """Update one device
+    body: Any,
+    live: bool | Unset = UNSET,
+) -> ApiErrorBody | PatchConfigKeyResponse200 | None:
+    """Merge an object into a daemon config key
 
     Args:
-        id (str):
-        body (UpdateDeviceRequest): Request body for `PUT /api/v1/devices/{id}`.
+        key (str):
+        live (bool | Unset):
+        body (Any):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody | UpdateDeviceResponse200
+        ApiErrorBody | PatchConfigKeyResponse200
     """
 
     return (
         await asyncio_detailed(
-            id=id,
+            key=key,
             client=client,
             body=body,
+            live=live,
         )
     ).parsed

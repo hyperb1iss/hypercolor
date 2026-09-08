@@ -10,6 +10,7 @@ from ..models.display_rotation import DisplayRotation
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.bridge_device_summary import BridgeDeviceSummary
     from ..models.device_auth_summary import DeviceAuthSummary
     from ..models.device_components_response import DeviceComponentsResponse
     from ..models.device_connection_summary import DeviceConnectionSummary
@@ -36,6 +37,7 @@ class DeviceSummary:
         total_leds (int):
         attachments (DeviceComponentsResponse | None | Unset):
         auth (DeviceAuthSummary | None | Unset):
+        bridge (BridgeDeviceSummary | None | Unset):
         connection (DeviceConnectionSummary | Unset): Transport details for one device.
         display_rotation (DisplayRotation | None | Unset):
         firmware_version (None | str | Unset):
@@ -52,6 +54,7 @@ class DeviceSummary:
     total_leds: int
     attachments: DeviceComponentsResponse | None | Unset = UNSET
     auth: DeviceAuthSummary | None | Unset = UNSET
+    bridge: BridgeDeviceSummary | None | Unset = UNSET
     connection: DeviceConnectionSummary | Unset = UNSET
     display_rotation: DisplayRotation | None | Unset = UNSET
     firmware_version: None | str | Unset = UNSET
@@ -59,6 +62,7 @@ class DeviceSummary:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.bridge_device_summary import BridgeDeviceSummary
         from ..models.device_auth_summary import DeviceAuthSummary
         from ..models.device_components_response import DeviceComponentsResponse
 
@@ -93,6 +97,14 @@ class DeviceSummary:
             auth = self.auth.to_dict()
         else:
             auth = self.auth
+
+        bridge: dict[str, Any] | None | Unset
+        if isinstance(self.bridge, Unset):
+            bridge = UNSET
+        elif isinstance(self.bridge, BridgeDeviceSummary):
+            bridge = self.bridge.to_dict()
+        else:
+            bridge = self.bridge
 
         connection: dict[str, Any] | Unset = UNSET
         if not isinstance(self.connection, Unset):
@@ -137,6 +149,8 @@ class DeviceSummary:
             field_dict["attachments"] = attachments
         if auth is not UNSET:
             field_dict["auth"] = auth
+        if bridge is not UNSET:
+            field_dict["bridge"] = bridge
         if connection is not UNSET:
             field_dict["connection"] = connection
         if display_rotation is not UNSET:
@@ -150,6 +164,7 @@ class DeviceSummary:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.bridge_device_summary import BridgeDeviceSummary
         from ..models.device_auth_summary import DeviceAuthSummary
         from ..models.device_components_response import DeviceComponentsResponse
         from ..models.device_connection_summary import DeviceConnectionSummary
@@ -208,6 +223,23 @@ class DeviceSummary:
 
         auth = _parse_auth(d.pop("auth", UNSET))
 
+        def _parse_bridge(data: object) -> BridgeDeviceSummary | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                bridge_type_1 = BridgeDeviceSummary.from_dict(data)
+
+                return bridge_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(BridgeDeviceSummary | None | Unset, data)
+
+        bridge = _parse_bridge(d.pop("bridge", UNSET))
+
         _connection = d.pop("connection", UNSET)
         connection: DeviceConnectionSummary | Unset
         if isinstance(_connection, Unset):
@@ -261,6 +293,7 @@ class DeviceSummary:
             total_leds=total_leds,
             attachments=attachments,
             auth=auth,
+            bridge=bridge,
             connection=connection,
             display_rotation=display_rotation,
             firmware_version=firmware_version,
