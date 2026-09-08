@@ -71,6 +71,7 @@ test('nested workspace configuration exports actual paths and tracks both reposi
       GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'push', CACHE_DEFAULT_BRANCH: 'main',
       RUNNER_OS: 'Linux', RUNNER_ARCH: 'X64', CACHE_WORKSPACES: 'oss -> .cache/target',
       CACHE_SHAPE: 'native-servo', CACHE_DIRECTORIES: 'oss/.cache/mozbuild', CACHE_ON_FAILURE_INPUT: 'true',
+      HYPERCOLOR_REGISTRY_CACHE_EXACT_HIT: 'true', HYPERCOLOR_BUILD_CACHE_EXACT_HIT: 'true',
     };
     const first = configure(env, 'rustc test fixture');
     assert.ok(first.HYPERCOLOR_BUILD_CACHE_PATHS.includes(path.join(nested, '.cache/target')));
@@ -79,6 +80,8 @@ test('nested workspace configuration exports actual paths and tracks both reposi
     assert.equal(first.SCCACHE_CACHE_SIZE, '3G');
     assert.equal(first.HYPERCOLOR_CACHE_WRITE, 'true');
     assert.equal(first.HYPERCOLOR_CACHE_SAVE_FAILURE, 'true');
+    assert.equal(first.HYPERCOLOR_REGISTRY_CACHE_EXACT_HIT, 'false');
+    assert.equal(first.HYPERCOLOR_BUILD_CACHE_EXACT_HIT, 'false');
     assert.match(readFileSync(env.GITHUB_ENV, 'utf8'), /HYPERCOLOR_BUILD_CACHE_KEY<</);
     assert.notEqual(configure({ ...env, GITHUB_SHA: 'outer-b' }, 'rustc test fixture').HYPERCOLOR_BUILD_CACHE_KEY, first.HYPERCOLOR_BUILD_CACHE_KEY);
     writeFileSync(path.join(nested, 'source.rs'), '// new source\n');

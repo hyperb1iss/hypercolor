@@ -477,6 +477,23 @@ def expand_bridge_rows(rig: dict) -> list[dict]:
     return rows
 
 
+def custom_topology(raw: dict) -> dict:
+    """Validate normalized positions in device LED order before applying transforms."""
+    label = raw.get("name", "custom raw zone")
+    positions, count = raw.get("positions"), raw.get("count")
+    if type(count) is not int or count <= 0:
+        raise SystemExit(f"{label}: custom count must be a positive integer")
+    if not isinstance(positions, list) or len(positions) != count:
+        raise SystemExit(f"{label}: custom positions must contain exactly {count} LEDs")
+    for index, point in enumerate(positions):
+        if not isinstance(point, dict) or set(point) != {"x", "y"}:
+            raise SystemExit(f"{label}: position {index} must contain x and y only")
+        for axis, value in point.items():
+            if type(value) not in (int, float) or not 0 <= value <= 1:
+                raise SystemExit(f"{label}: position {index}.{axis} must be a finite number in [0, 1]")
+    return {"type": "custom", "positions": copy.deepcopy(positions)}
+
+
 def raw_zones(geo: Geometry, rig: dict) -> list[dict]:
     out = []
     for raw in list(rig.get("raw_zones", [])) + expand_bridge_rows(rig):
@@ -491,6 +508,10 @@ def raw_zones(geo: Geometry, rig: dict) -> list[dict]:
             topo = {"type": "ring", "count": raw["count"], "start_angle": float(raw.get("start_angle", -PI / 2)),
                     "direction": raw.get("direction", "clockwise")}
             shape, preset, orient = {"shape_type": "ring"}, None, "radial"
+        elif kind == "custom":
+            topo = custom_topology(raw)
+            shape = {"shape_type": "ring" if raw.get("circular", False) else "rectangle"}
+            preset, orient = None, None
         elif kind in ("vstrip", "hstrip"):
             if kind == "vstrip":
                 direction = raw.get("direction", "top_to_bottom" if geo.reversed else "bottom_to_top")
@@ -578,7 +599,7 @@ def write_preview(geo: Geometry, rig: dict, zones: list[dict], path: Path) -> No
     for z in zones:
         cx, cy = z["position"]["x"] * W, z["position"]["y"] * Hh
         w, h = z["size"]["x"] * W, z["size"]["y"] * Hh
-        rot_deg = -math.degrees(z["rotation"])
+        rot_deg = math.degrees(z["rotation"])
         kind = "display" if z.get("shape_preset") == "lcd-display" else z["topology"]["type"]
         color = palette.get(kind, "#e8e6f5")
         els.append(f'<g transform="translate({cx:.1f},{cy:.1f}) rotate({rot_deg:.1f})">')

@@ -61,6 +61,8 @@ export function configure(env = process.env, compilerVersion) {
   if (!mappings.length) throw new Error('At least one workspace mapping is required');
   const cacheRoot = env.HYPERCOLOR_CACHE_DIR || path.join(workspace, '.cache/hypercolor');
   const compilerCache = path.join(cacheRoot, 'sccache');
+  const nativeCache = env.RUNNER_OS === 'macOS'
+    ? path.resolve(workspace, env.CCACHE_DIR || path.join(cacheRoot, 'ccache')) : undefined;
   const sourceTimes = path.join(cacheRoot, 'source-mtimes.json');
   const profile = {
     CARGO_INCREMENTAL: '0',
@@ -88,22 +90,29 @@ export function configure(env = process.env, compilerVersion) {
     workspaces: mappings, revisions, locks,
   });
   const cargoHome = env.CARGO_HOME || path.join(homedir(), '.cargo');
+  const buildPaths = new Set([
+    ...mappings.map(([root, target]) => path.resolve(workspace, root, target)), compilerCache, sourceTimes,
+    ...(nativeCache ? [nativeCache] : []),
+    ...lines(env.CACHE_DIRECTORIES).map((directory) => path.resolve(workspace, directory)),
+  ]);
   const values = {
     ...profile,
     CCACHE_COMPRESS: 'true', CCACHE_MAXSIZE: '500M',
+    ...(nativeCache ? { CCACHE_DIR: nativeCache } : {}),
     SCCACHE_DIR: compilerCache, SCCACHE_CACHE_SIZE: '3G',
     ...(env.RUNNER_OS === 'Windows' ? {} : { SCCACHE_SERVER_UDS: path.join(cacheRoot, 'sccache.sock') }),
     HYPERCOLOR_CACHE_SOURCE_ROOTS: JSON.stringify(mappings.map(([root]) => path.resolve(workspace, root))),
     HYPERCOLOR_CACHE_SOURCE_TIMES: sourceTimes,
     HYPERCOLOR_BUILD_CACHE_KEY: keys.key,
     HYPERCOLOR_BUILD_CACHE_PREFIX: keys.prefix,
-    HYPERCOLOR_BUILD_CACHE_PATHS: [...mappings.map(([root, target]) => path.resolve(workspace, root, target)), compilerCache, sourceTimes,
-      ...lines(env.CACHE_DIRECTORIES).map((directory) => path.resolve(workspace, directory))].join('\n'),
+    HYPERCOLOR_BUILD_CACHE_PATHS: [...buildPaths].join('\n'),
     HYPERCOLOR_REGISTRY_CACHE_KEY: keys.registryKey,
     HYPERCOLOR_REGISTRY_CACHE_PREFIX: keys.registryPrefix,
     HYPERCOLOR_REGISTRY_CACHE_PATHS: ['registry', 'git'].map((directory) => path.join(cargoHome, directory)).join('\n'),
     HYPERCOLOR_CACHE_WRITE: String(cacheWriter(env.CACHE_SAVE_IF || 'auto', env.GITHUB_REF, env.CACHE_DEFAULT_BRANCH, env.GITHUB_EVENT_NAME)),
     HYPERCOLOR_CACHE_SAVE_FAILURE: env.CACHE_ON_FAILURE_INPUT === 'true' ? 'true' : 'false',
+    HYPERCOLOR_REGISTRY_CACHE_EXACT_HIT: 'false',
+    HYPERCOLOR_BUILD_CACHE_EXACT_HIT: 'false',
   };
   exportEnvironment(values, env.GITHUB_ENV);
   console.log(`Build cache: ${keys.key}\nCompatible restore prefix: ${keys.prefix}\nCache writer: ${values.HYPERCOLOR_CACHE_WRITE}`);
