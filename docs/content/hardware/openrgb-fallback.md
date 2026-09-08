@@ -157,19 +157,22 @@ appears through the bridge there. The third-party macUSPCIO driver is not recomm
 
 ---
 
-## Step 3: let Hypercolor run the server
+## Step 3: configure and start the server
 
 Hypercolor starts OpenRGB with its own configuration directory under the Hypercolor data
 directory (`~/.local/share/hypercolor/openrgb` on Linux). Your personal
 `~/.config/OpenRGB` is never read or written.
 
 ```bash
+# Enable the bridge before requesting its managed server
+hypercolor config set drivers.openrgb.enabled true
+hypercolor config set drivers.openrgb.ownership.mode open_rgb_owned
+
 # Write the detector partition from the current coverage view
 hypercolor openrgb partition
 
-# Start the managed server (or stop it)
+# Start the managed server
 hypercolor openrgb start
-hypercolor openrgb stop
 
 # Detected binary, server probe, bridge config, and coverage rows that involve the bridge
 hypercolor openrgb status
@@ -189,10 +192,11 @@ Loopback is deliberate: OpenRGB's default bind is `0.0.0.0` and the SDK protocol
 authentication. `--noautoconnect` stops OpenRGB from trying to reach another SDK server
 on startup.
 
-The desktop app supervises the server the same way its supervisor runs the daemon
-(job object or parent-death guard, killed on exit). An OpenRGB exit is treated as your
-intent: nothing restarts it until you ask again. `hypercolor openrgb start` drives the
-app supervisor when the app is running and spawns the process directly otherwise.
+The desktop app retains the server process and stops it on normal exit. Without
+the app, the CLI starts a background owner that retains the child after the
+foreground command exits. Run `hypercolor openrgb stop` to stop a server that
+Hypercolor started. An externally started server is adopted and remains under
+its original owner's control. Nothing restarts an exited server until you ask.
 
 ### Running OpenRGB yourself
 
@@ -221,15 +225,13 @@ garbage DRAM LED counts.
 
 ---
 
-## Step 4: enable the bridge
+## Step 4: discover bridge devices
 
 ```bash
-hypercolor config set drivers.openrgb.enabled true
-hypercolor config set drivers.openrgb.ownership.mode open_rgb_owned
 hypercolor devices discover --target openrgb
 ```
 
-Or edit the config file directly:
+The driver configuration created in the previous step is equivalent to:
 
 ```toml
 [drivers.openrgb]
@@ -268,13 +270,18 @@ you need, for example), disable it natively first:
 - **REST**: `PUT /api/v1/devices/{id}` with `{"enabled": false}`.
 - **Whole driver**: `hypercolor config set drivers.<driver_id>.enabled false`.
 
-Disabling releases the HID or SMBus handle. Then rewrite the partition and rescan so
-OpenRGB picks the device up:
+Disabling releases the HID or SMBus handle. Restart the managed server with the
+new detector partition, then discover its controllers:
 
 ```bash
+hypercolor openrgb stop
 hypercolor openrgb partition
+hypercolor openrgb start
 hypercolor devices discover --target openrgb
 ```
+
+If you started OpenRGB yourself, stop and restart that process with the managed
+configuration instead. Hypercolor will not stop an adopted server.
 
 Re-enabling the native device flips the conflict guard back: the bridge route is
 output-disabled again with "native driver owns this device".
