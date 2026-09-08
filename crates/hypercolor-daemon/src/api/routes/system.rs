@@ -10,6 +10,17 @@ use crate::app_state::AppState;
 pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(openapi::documented_route(
+            "/system/openrgb",
+            axum::routing::get(system::get_openrgb_status),
+            [OperationDoc::get::<
+                hypercolor_types::api::system::OpenRgbStatus,
+            >(
+                "get_openrgb_status",
+                "system",
+                "Inspect OpenRGB installation and device coverage",
+            )],
+        ))
+        .routes(openapi::documented_route(
             "/system",
             axum::routing::get(system::get_system),
             [OperationDoc::get::<SystemResource>(

@@ -29,9 +29,15 @@ pub struct PromptArgument {
     pub required: bool,
 }
 
-/// Build all 3 MCP prompt template definitions.
+/// Build MCP prompt template definitions.
 pub fn build_prompt_definitions() -> Vec<PromptDefinition> {
     vec![
+        PromptDefinition {
+            name: "openrgb_setup".into(),
+            title: "Set Up OpenRGB Fallback".into(),
+            description: "Cover devices unsupported by native drivers with a guided OpenRGB setup.".into(),
+            arguments: vec![],
+        },
         PromptDefinition {
             name: "mood_lighting".into(),
             title: "Mood Lighting Setup".into(),
@@ -81,6 +87,7 @@ pub fn build_prompt_definitions() -> Vec<PromptDefinition> {
 /// Returns `None` if the prompt name is not recognized.
 pub fn get_prompt_messages(name: &str, arguments: &Value) -> Option<Value> {
     match name {
+        "openrgb_setup" => Some(build_openrgb_setup_messages()),
         "mood_lighting" => Some(build_mood_lighting_messages(arguments)),
         "troubleshoot" => Some(build_troubleshoot_messages(arguments)),
         "setup_automation" => Some(build_setup_automation_messages(arguments)),
@@ -90,7 +97,23 @@ pub fn get_prompt_messages(name: &str, arguments: &Value) -> Option<Value> {
 
 /// Check whether a prompt name is recognized.
 pub fn is_valid_prompt(name: &str) -> bool {
-    matches!(name, "mood_lighting" | "troubleshoot" | "setup_automation")
+    matches!(
+        name,
+        "mood_lighting" | "troubleshoot" | "setup_automation" | "openrgb_setup"
+    )
+}
+
+fn build_openrgb_setup_messages() -> Value {
+    json!({
+        "description": "Configure native-first OpenRGB fallback coverage",
+        "messages": [{
+            "role": "user",
+            "content": {
+                "type": "text",
+                "text": "Help me cover unsupported lighting hardware with OpenRGB. First call openrgb_status and inspect coverage; keep native drivers in charge of every enabled native device. Only recommend installing OpenRGB when coverage shows a real gap, using the returned host-specific install hints and permission remedies. With a shell, use hypercolor openrgb hints and partition to prepare the managed detector configuration; do not alter my personal OpenRGB configuration. Enable drivers.openrgb through the normal config API, start the SDK server on loopback, then discover and check coverage again. Ask me for each hub channel's LED count before saving zone_sizes with hypercolor openrgb resize; never infer sizes or save modes to device NVRAM. Confirm output and zone-size recovery before building the layout. For hardware neither stack covers, prepare a device-support issue with its VID:PID, model, host platform, and existing-support facts. Submit an issue only when I ask. If shell or config access is unavailable, show the concrete next command rather than claiming it ran."
+            }
+        }]
+    })
 }
 
 // ── Prompt Builders ───────────────────────────────────────────────────────

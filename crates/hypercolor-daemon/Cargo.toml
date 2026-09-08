@@ -87,6 +87,7 @@ servo = ["hypercolor-core/servo"]
 hypercolor-color = { workspace = true }
 hypercolor-gpu-frame = { workspace = true }
 hypercolor-types = { workspace = true, features = ["schema"] }
+hypercolor-openrgb-host = { workspace = true }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-platform-fs = { workspace = true }
 hypercolor-linux-session = { workspace = true }

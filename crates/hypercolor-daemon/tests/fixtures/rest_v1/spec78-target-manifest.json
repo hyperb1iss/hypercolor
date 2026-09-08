@@ -1,8 +1,14 @@
 {
-  "_source": "docs/specs/78-api-resource-model.md Appendix A (LOCKED rev 8), amended by the Spec 76/77 and Design 72 E3 protected-authorization contracts and the Spec 81 Layer 2 device inventory routes",
+  "_source": "docs/specs/78-api-resource-model.md Appendix A (LOCKED rev 8), amended by the Spec 76/77 and Design 72 E3 protected-authorization contracts and the Spec 81 device inventory and guided status routes",
   "_regenerate": "parse the appendix table, then preserve the input, capture, and media authorization actions required by Specs 76 and 77 and Design 72 E3",
   "_scope": "the /api/v1 surface (JSON routes plus the /ws upgrade, matched by path only) and /health; document routes excluded",
   "paths": [
+    {
+      "path": "/api/v1/system/openrgb",
+      "methods": [
+        "GET"
+      ]
+    },
     {
       "path": "/health",
       "methods": [
@@ -57,6 +63,7 @@
       "methods": [
         "GET",
         "PUT",
+        "PATCH",
         "DELETE"
       ]
     },

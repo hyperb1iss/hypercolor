@@ -11,3 +11,15 @@ fn local_host_operations_reject_remote_targets() {
         assert!(!DaemonClient::new(host, 9420, None).is_loopback(), "{host}");
     }
 }
+
+#[test]
+fn local_identity_uses_advertised_directory_and_rejects_forwarded_instances() {
+    use hypercolor_cli::client::verify_local_instance;
+    let directory = tempfile::tempdir().expect("instance directory");
+    assert!(verify_local_instance(directory.path(), "local-id").is_err());
+    std::fs::write(directory.path().join("instance_id"), "local-id\n").expect("instance identity");
+    assert!(verify_local_instance(directory.path(), "local-id").is_ok());
+    assert!(verify_local_instance(directory.path(), "remote-id").is_err());
+    assert!(verify_local_instance(directory.path(), "").is_err());
+    assert!(verify_local_instance(std::path::Path::new("relative"), "local-id").is_err());
+}

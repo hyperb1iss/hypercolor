@@ -99,7 +99,11 @@ fn default_endpoints() -> Vec<SocketAddr> {
 }
 
 fn timeout_setting(millis: Option<u64>) -> Duration {
-    Duration::from_millis(millis.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(1, MAX_TIMEOUT_MS))
+    Duration::from_millis(
+        millis
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .clamp(1, MAX_TIMEOUT_MS),
+    )
 }
 
 /// How one endpoint answered the probe.

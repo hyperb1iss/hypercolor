@@ -268,6 +268,9 @@ conflict table on Windows so the existing conflict UI names it.
 involve the bridge. `partition` writes the managed detector config from the
 daemon's coverage view. `resize <device> <zone> <size>` writes
 `drivers.openrgb.zone_sizes` through the config API and triggers reconnect.
+The CLI sends a single-zone object merge to
+`PATCH /config/keys/drivers.openrgb.zone_sizes`; the config manager merges
+under its existing write lock so concurrent clients preserve sibling zones.
 `start` and `stop` drive the app supervisor when it is running and fall
 back to spawning the process directly when it is not.
 
@@ -277,6 +280,12 @@ Prompt `openrgb_setup` (not `setup_rig`, which Spec 70 reserves) walks an
 agent through: coverage, install hints, partition, enable bridge, discover,
 zone sizes, layout. Tool `openrgb_status` returns the same payload as the
 CLI `status` for agents that cannot shell out.
+
+The shared status payload is also available at
+`GET /api/v1/system/openrgb`. The CLI, MCP tool, and browser use the same
+typed response for host platform, installation, endpoint probes, permission
+checks, install hints, coverage, and output-disabled count. Probes run even
+when bridge output is disabled so setup can inspect readiness first.
 
 ### 3.5 Docs
 

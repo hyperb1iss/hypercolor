@@ -20,6 +20,7 @@ default = ["tui"]
 tui = ["dep:hypercolor-tui"]
 
 [dependencies]
+hypercolor-openrgb-host = { workspace = true }
 hypercolor-color = { workspace = true }
 hypercolor-core = { workspace = true }
 hypercolor-platform-fs = { workspace = true }

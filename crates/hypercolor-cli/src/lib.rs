@@ -164,6 +164,10 @@ pub enum Commands {
     #[command(display_order = 12)]
     Drivers(commands::drivers::DriversArgs),
 
+    /// Guided installation and setup of the optional OpenRGB bridge
+    #[command(display_order = 16)]
+    Openrgb(commands::openrgb::OpenRgbArgs),
+
     /// Spatial LED layout configuration
     #[command(display_order = 13)]
     Layouts(commands::layouts::LayoutsArgs),
@@ -329,6 +333,7 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
         Commands::Devices(args) => commands::devices::execute(args, &client, &ctx).await,
         Commands::Controls(args) => commands::controls::execute(args, &client, &ctx).await,
         Commands::Drivers(args) => commands::drivers::execute(args, &client, &ctx).await,
+        Commands::Openrgb(args) => commands::openrgb::execute(args, &client, &ctx).await,
         Commands::Effects(args) => commands::effects::execute(args, &client, &ctx).await,
         Commands::Scenes(args) => commands::scenes::execute(args, &client, &ctx).await,
         Commands::Library(args) => commands::library::execute(args, &client, &ctx).await,

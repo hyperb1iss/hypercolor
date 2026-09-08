@@ -248,3 +248,47 @@ async fn the_default_check_set_reports_the_bridge_as_disabled() {
     assert_eq!(check.status, "pass");
     assert_eq!(check.detail, "bridge disabled");
 }
+
+#[tokio::test]
+async fn guided_status_probes_disabled_bridge_and_preserves_host_guidance() {
+    use hypercolor_daemon::app_state::AppStateBuilder;
+    use hypercolor_daemon::domain::openrgb_setup::openrgb_status;
+    use hypercolor_types::config::HypercolorConfig;
+    use std::sync::Arc;
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind SDK fixture");
+    let endpoint = listener.local_addr().expect("SDK endpoint");
+    let server = tokio::spawn(run_fake_server(listener, CLIENT_MAX_PROTOCOL_VERSION, 4));
+    let temp = tempfile::tempdir().expect("state directory");
+    let mut config = HypercolorConfig::default();
+    config.drivers.insert(
+        "openrgb".into(),
+        DriverConfigEntry::disabled(BTreeMap::from([(
+            "endpoints".into(),
+            serde_json::json!([endpoint.to_string()]),
+        )])),
+    );
+    let manager = Arc::new(ConfigManager::from_config_unchecked(
+        temp.path().join("config.toml"),
+        config,
+    ));
+    let state = AppStateBuilder::new(temp.path().join("data"))
+        .with_config_manager(manager)
+        .build();
+    let status = openrgb_status(&state.domains.devices).await;
+    assert!(status.compiled);
+    assert!(!status.enabled);
+    assert_eq!(status.platform, std::env::consts::OS);
+    assert_eq!(status.probes.len(), 1);
+    assert_eq!(status.probes[0].endpoint, endpoint.to_string());
+    assert_eq!(status.probes[0].controller_count, Some(4));
+    assert!(status.probes[0].reachable);
+    assert!(!status.install_hints.is_empty());
+    let decoded: hypercolor_types::api::system::OpenRgbStatus =
+        serde_json::from_value(serde_json::to_value(&status).expect("status JSON"))
+            .expect("shared contract");
+    assert_eq!(decoded, status);
+    server.await.expect("SDK fixture completed");
+}
