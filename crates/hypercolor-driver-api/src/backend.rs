@@ -1,5 +1,6 @@
 //! Native device backend boundary shared by core and built-in drivers.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -499,6 +500,20 @@ pub trait DeviceBackend: Send + Sync {
         id: &DeviceId,
     ) -> Result<Option<DeviceInfo>, DeviceError> {
         let _ = id;
+        Ok(None)
+    }
+
+    /// Return the complete current driver discovery metadata after connect.
+    /// Hosts replace prior driver metadata so cleared disabled reasons do not
+    /// survive a successful recovery. Other host-owned metadata is preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata retrieval fails for a connected device.
+    async fn connected_device_metadata(
+        &self,
+        _id: &DeviceId,
+    ) -> Result<Option<HashMap<String, String>>, DeviceError> {
         Ok(None)
     }
 
