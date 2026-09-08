@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -27,20 +28,33 @@ fn hue_stream_lock() -> &'static AsyncMutex<()> {
 }
 
 #[tokio::test]
+async fn backend_connects_streams_and_disconnects() -> TestResult {
+    let config = HueConfig::default();
+    assert!(config.use_cie_xy);
+    backend_refreshes_topology(config.use_cie_xy).await
+}
+
+#[tokio::test]
+async fn rgb_backend_connects_streams_and_refreshes_topology() -> TestResult {
+    backend_refreshes_topology(false).await
+}
+
 #[expect(
     clippy::too_many_lines,
-    reason = "the integration test inlines the mock bridge, DTLS server, and assertions for readability"
+    reason = "mock HTTP and DTLS exercise topology and output together"
 )]
-async fn backend_connects_streams_and_disconnects() -> TestResult {
+async fn backend_refreshes_topology(use_cie_xy: bool) -> TestResult {
     let _guard = hue_stream_lock().lock().await;
 
     let http_listener = TcpListener::bind("127.0.0.1:0").await?;
     let api_port = http_listener.local_addr()?.port();
     let actions = Arc::new(Mutex::new(Vec::<String>::new()));
     let actions_for_server = Arc::clone(&actions);
+    let topology = Arc::new(AtomicU8::new(0));
+    let topology_for_server = Arc::clone(&topology);
     let config_id = "12345678-1234-1234-1234-123456789abc";
     let http_task = tokio::spawn(async move {
-        for _ in 0..5 {
+        loop {
             let (mut stream, _) = http_listener.accept().await.expect("accept request");
             let request = read_http_request(&mut stream)
                 .await
@@ -56,9 +70,18 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
             } else if request
                 .starts_with("GET /clip/v2/resource/entertainment_configuration HTTP/1.1")
             {
-                json_response(&format!(
-                    r#"{{"data":[{{"id":"{config_id}","metadata":{{"name":"Living Room"}},"configuration_type":"screen","channels":[{{"channel_id":1,"position":{{"x":-0.5,"y":0.0,"z":0.0}},"members":[{{"service":{{"rid":"light-left","rtype":"light"}}}}]}},{{"channel_id":2,"position":{{"x":0.5,"y":0.0,"z":0.0}},"members":[{{"service":{{"rid":"light-right","rtype":"light"}}}}]}}]}}]}}"#
-                ))
+                match topology_for_server.load(Ordering::Acquire) {
+                    1 => json_response(&format!(
+                        r#"{{"data":[{{"id":"{config_id}","metadata":{{"name":"Living Room"}},"configuration_type":"screen","channels":[{{"channel_id":7,"members":[{{"service":{{"rid":"light-right","rtype":"light"}}}}]}},{{"channel_id":3,"members":[{{"service":{{"rid":"light-left","rtype":"light"}}}}]}},{{"channel_id":9,"members":[{{"service":{{"rid":"light-right","rtype":"light"}}}}]}}]}}]}}"#
+                    )),
+                    2 => json_response(&format!(
+                        r#"{{"data":[{{"id":"{config_id}","metadata":{{"name":"Living Room"}},"configuration_type":"screen","channels":[{{"channel_id":3,"members":[{{"service":{{"rid":"light-left","rtype":"light"}}}}]}}]}}]}}"#
+                    )),
+                    3 => json_response(r#"{"data":[]}"#),
+                    _ => json_response(&format!(
+                        r#"{{"data":[{{"id":"{config_id}","metadata":{{"name":"Living Room"}},"configuration_type":"screen","channels":[{{"channel_id":1,"position":{{"x":-0.5,"y":0.0,"z":0.0}},"members":[{{"service":{{"rid":"light-left","rtype":"light"}}}}]}},{{"channel_id":2,"position":{{"x":0.5,"y":0.0,"z":0.0}},"members":[{{"service":{{"rid":"light-right","rtype":"light"}}}}]}}]}}]}}"#
+                    )),
+                }
             } else if request.starts_with(&format!(
                 "PUT /clip/v2/resource/entertainment_configuration/{config_id} HTTP/1.1"
             )) {
@@ -85,6 +108,7 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
         }
     });
 
+    let (packets_tx, mut packets_rx) = tokio::sync::mpsc::channel(4);
     let dtls_task = tokio::spawn(async move {
         let listener = webrtc_util::conn::conn_udp_listener::listen("127.0.0.1:2100")
             .await
@@ -100,12 +124,17 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
             .await
             .expect("handshake DTLS");
         let mut buf = [0_u8; 256];
-        let len = dtls
-            .read(&mut buf, Some(Duration::from_secs(5)))
-            .await
-            .expect("read HueStream packet");
+        for _ in 0..4 {
+            let len = dtls
+                .read(&mut buf, Some(Duration::from_secs(5)))
+                .await
+                .expect("read HueStream packet");
+            packets_tx
+                .send(buf[..len].to_vec())
+                .await
+                .expect("send packet");
+        }
         dtls.close().await.expect("close DTLS server");
-        buf[..len].to_vec()
     });
 
     let tempdir = tempfile::tempdir()?;
@@ -121,7 +150,13 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
         )
         .await?;
 
-    let backend = HueBackend::new(HueConfig::default(), Arc::clone(&store));
+    let backend = HueBackend::new(
+        HueConfig {
+            use_cie_xy,
+            ..HueConfig::default()
+        },
+        Arc::clone(&store),
+    );
     let discovered = HueDiscoveredBridge {
         bridge_id: "test-bridge".to_owned(),
         ip: "127.0.0.1".parse()?,
@@ -158,31 +193,95 @@ async fn backend_connects_streams_and_disconnects() -> TestResult {
         .write_colors(&device_id, &[[255, 0, 0], [0, 0, 255]])
         .await?;
 
-    let packet = timeout(Duration::from_secs(10), dtls_task).await??;
+    let packet = timeout(Duration::from_secs(10), packets_rx.recv())
+        .await?
+        .expect("initial packet");
     assert_eq!(&packet[..9], b"HueStream");
     assert_eq!(packet[9], 0x02);
     assert_eq!(packet[10], 0x00);
     assert_eq!(packet[11], 0);
     assert_eq!(&packet[16..52], config_id.as_bytes());
+    assert_eq!(packet[14], u8::from(use_cie_xy));
 
     let red = rgb_to_cie_xyb(255, 0, 0, &GAMUT_C);
     let blue = rgb_to_cie_xyb(0, 0, 255, &GAMUT_C);
     assert_eq!(packet[52], 1);
-    assert_eq!(&packet[53..55], &encode_unit(red.x).to_be_bytes());
-    assert_eq!(&packet[55..57], &encode_unit(red.y).to_be_bytes());
-    assert_eq!(&packet[57..59], &encode_unit(red.brightness).to_be_bytes());
-    assert_eq!(packet[59], 2);
-    assert_eq!(&packet[60..62], &encode_unit(blue.x).to_be_bytes());
-    assert_eq!(&packet[62..64], &encode_unit(blue.y).to_be_bytes());
-    assert_eq!(&packet[64..66], &encode_unit(blue.brightness).to_be_bytes());
+    if use_cie_xy {
+        assert_eq!(&packet[53..55], &encode_unit(red.x).to_be_bytes());
+        assert_eq!(&packet[55..57], &encode_unit(red.y).to_be_bytes());
+        assert_eq!(&packet[57..59], &encode_unit(red.brightness).to_be_bytes());
+        assert_eq!(packet[59], 2);
+        assert_eq!(&packet[60..62], &encode_unit(blue.x).to_be_bytes());
+        assert_eq!(&packet[62..64], &encode_unit(blue.y).to_be_bytes());
+        assert_eq!(&packet[64..66], &encode_unit(blue.brightness).to_be_bytes());
+    } else {
+        assert_eq!(&packet[53..59], &[255, 255, 0, 0, 0, 0]);
+        assert_eq!(&packet[60..66], &[0, 0, 0, 0, 255, 255]);
+    }
 
+    topology.store(1, Ordering::Release);
+    let info = backend
+        .connected_device_info(&device_id)
+        .await?
+        .expect("refreshed info");
+    assert_eq!(info.total_led_count(), 3);
+    // A frame already queued before refresh must pad new channels without panicking.
+    backend
+        .write_colors(&device_id, &[[0, 0, 255], [255, 0, 0]])
+        .await?;
+    let packet = timeout(Duration::from_secs(10), packets_rx.recv())
+        .await?
+        .expect("expanded packet");
+    assert_eq!(packet.len(), 73);
+    assert_eq!([packet[52], packet[59], packet[66]], [7, 3, 9]);
+    if use_cie_xy {
+        assert_eq!(&packet[53..55], &encode_unit(blue.x).to_be_bytes());
+        assert_eq!(&packet[60..62], &encode_unit(red.x).to_be_bytes());
+    } else {
+        assert_eq!(&packet[53..59], &[0, 0, 0, 0, 255, 255]);
+        assert_eq!(&packet[60..66], &[255, 255, 0, 0, 0, 0]);
+    }
+    assert_eq!(&packet[71..73], &[0, 0]);
+
+    topology.store(2, Ordering::Release);
+    assert_eq!(
+        backend
+            .connected_device_info(&device_id)
+            .await?
+            .expect("shrunk info")
+            .total_led_count(),
+        1
+    );
+    backend.write_colors(&device_id, &[[255, 0, 0]]).await?;
+    let packet = timeout(Duration::from_secs(10), packets_rx.recv())
+        .await?
+        .expect("shrunk packet");
+    assert_eq!(packet.len(), 59);
+    assert_eq!(packet[52], 3);
+
+    topology.store(3, Ordering::Release);
+    assert_eq!(
+        backend
+            .connected_device_info(&device_id)
+            .await?
+            .expect("retained info")
+            .total_led_count(),
+        1
+    );
+    backend.write_colors(&device_id, &[[255, 0, 0]]).await?;
+    let packet = timeout(Duration::from_secs(10), packets_rx.recv())
+        .await?
+        .expect("retained packet");
+    assert_eq!(packet.len(), 59);
+    assert_eq!(packet[52], 3);
+    timeout(Duration::from_secs(10), dtls_task).await??;
     backend.disconnect(&device_id).await?;
     assert_eq!(
         actions.lock().expect("lock actions").as_slice(),
         &["start".to_owned(), "stop".to_owned()]
     );
 
-    http_task.await?;
+    http_task.abort();
     Ok(())
 }
 
