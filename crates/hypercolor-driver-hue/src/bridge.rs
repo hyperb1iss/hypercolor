@@ -47,6 +47,7 @@ pub struct HueNupnpBridge {
 }
 
 /// CLIP bridge client with automatic HTTPS → HTTP fallback.
+#[derive(Clone)]
 pub struct HueBridgeClient {
     ip: IpAddr,
     api_port: u16,

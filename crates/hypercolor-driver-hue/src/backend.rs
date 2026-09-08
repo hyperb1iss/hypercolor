@@ -93,6 +93,7 @@ struct HueBridgeState {
     channel_gamuts: Vec<ColorGamut>,
     info: DeviceInfo,
     brightness: u8,
+    use_cie_xy: bool,
     last_size_mismatch_warn_at: Option<Instant>,
 }
 
@@ -138,6 +139,12 @@ impl HueBackend {
             colors,
             bridge.brightness,
         );
+        if !bridge.use_cie_xy {
+            if let Some((id, observer)) = delivery {
+                observer.transport_started(id);
+            }
+            return bridge.stream.send_rgb_frame(&collapsed).await;
+        }
         let cie_colors = collapsed
             .iter()
             .zip(bridge.channel_gamuts.iter().copied())
@@ -257,7 +264,49 @@ impl DeviceBackend for HueBackend {
         let Some(bridge) = bridge else {
             return Ok(None);
         };
-        Ok(Some(bridge.lock().await.info.clone()))
+        let (client, config_id) = {
+            let bridge = bridge.lock().await;
+            (
+                bridge.client.clone(),
+                bridge.entertainment_config.id.clone(),
+            )
+        };
+        // Discovery can wait on HTTP without blocking the frame sink's DTLS writes.
+        let refreshed = async {
+            let (lights, configs) =
+                tokio::try_join!(client.lights(), client.entertainment_configs())?;
+            let config = configs
+                .into_iter()
+                .find(|config| config.id == config_id)
+                .context("active Hue entertainment configuration is missing")?;
+            Ok::<_, anyhow::Error>((lights, config))
+        }
+        .await;
+        let mut bridge = bridge.lock().await;
+        match refreshed {
+            Ok((lights, config)) => {
+                let gamuts = resolve_channel_gamuts(&config.channels, &lights);
+                let info = build_device_info(
+                    &bridge.bridge_id,
+                    &bridge.info.name,
+                    bridge.info.model.as_deref(),
+                    bridge.info.firmware_version.as_deref(),
+                    Some(&config),
+                    &lights,
+                );
+                if let Err(error) = bridge.stream.update_channels(config.channels.clone()) {
+                    warn!(device_id = %id, %error, "retaining Hue topology after invalid refresh");
+                } else {
+                    bridge.entertainment_config = config;
+                    bridge.channel_gamuts = gamuts;
+                    bridge.info = info;
+                }
+            }
+            Err(error) => {
+                warn!(device_id = %id, %error, "retaining Hue topology after failed refresh");
+            }
+        }
+        Ok(Some(bridge.info.clone()))
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
@@ -403,6 +452,7 @@ impl DeviceBackend for HueBackend {
             channel_gamuts,
             info,
             brightness: u8::MAX,
+            use_cie_xy: self.config.use_cie_xy,
             last_size_mismatch_warn_at: None,
         };
         self.bridges
@@ -570,7 +620,7 @@ fn collapse_channel_colors(
     for channel in channels {
         let segment_count = usize::try_from(channel.segment_count.max(1)).unwrap_or(usize::MAX);
         let channel_slice_end = colors.len().min(offset.saturating_add(segment_count));
-        let channel_slice = &colors[offset..channel_slice_end];
+        let channel_slice = &colors[offset.min(colors.len())..channel_slice_end];
         let averaged = average_colors(channel_slice);
         collapsed.push(scale_color(averaged, brightness));
         offset = offset.saturating_add(segment_count);
