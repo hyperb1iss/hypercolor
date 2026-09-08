@@ -13,7 +13,7 @@ This release productizes the **OpenRGB fallback** into a managed, native-first b
 
 - ✨ Add the `hypercolor-openrgb-host` crate: binary detection, SDK server probe, per-platform install hints, Linux permission checks, managed detector partition, and a headless launch spec (`58ae245`, `bdd1148`)
 - ✨ Supervise a loopback OpenRGB server from the desktop app with a pure planning function and coordinated local lifecycle ownership (`84573d9`, `b0aab8f`)
-- ✨ Add guided OpenRGB setup and diagnostics over REST, MCP, and CLI, including the `openrgb diagnose` check and managed server lifecycle commands (`b623b45`, `85aaa02`, `ea5b654`)
+- Add guided OpenRGB setup and diagnostics over REST, MCP, and CLI, including `hypercolor diagnose --check openrgb` and managed server lifecycle commands (`b623b45`, `85aaa02`, `ea5b654`)
 - ✨ Record unclaimed USB devices from the scanner and hotplug, and serve them alongside a device coverage join through new API contracts and `devices unclaimed` / `devices coverage` subcommands (`101b8f2`, `29eb89c`, `a0b006a`)
 - ✨ Add the wired Uni Fan TL LCD panel driver, the Lian Li L-Wireless controller, the wireless LCD receivers, and a pure-Rust **tinyuz** codec for wireless RGB payloads (`cadf4d1`, `555be27`, `6cec46e`, `820a1e0`)
 - ✨ Add the shared display encoding layer in `crates/hypercolor-hal/src/display/` with repack and keepalive support, plus companion USB command routing (`d09df01`, `8cac475`)
@@ -67,7 +67,7 @@ This release productizes the **OpenRGB fallback** into a managed, native-first b
 ### Breaking Changes
 
 - **`hypercolor-driver-api`: `DeviceBackend` display writes collapse to one method.** `write_display_frame` and `write_display_frame_owned` were removed, leaving `write_display_payload_owned(&self, id, Arc<OwnedDisplayFramePayload>)` as the single display write. The old JPEG-only fallback that dispatched from the owned payload is gone.
-  - Out-of-tree backends that implemented either removed method must override `write_display_payload_owned` instead and branch on `payload.format` themselves. The default implementation now returns `DeviceError::Unsupported`, so a backend that only implemented the old methods will compile but silently stop driving its display.
+  - Out-of-tree backends must remove implementations of the retired trait methods and implement `write_display_payload_owned`, branching on `payload.format` themselves. Keeping the retired methods in a trait implementation causes a compile error. A backend that leaves the replacement method at its default returns `DeviceError::Unsupported` for display writes.
   - The reconnect and metadata additions in the same release (`connected_device_metadata`, `DriverRuntimeActions::request_reconnect`, `DriverHost::runtime_handle`) are **opt-in**: all three ship with default implementations (`Ok(None)`, `anyhow::bail!`, and `None` respectively), so nothing must be implemented to keep compiling.
 
 - **Display geometry and payload format move into the display segment (Rust consumers only).** `DeviceColorFormat::Jpeg` was removed and `DeviceTopologyHint::Display` gained a `format: DisplayFrameFormat` field (`e341366`).

@@ -25,6 +25,53 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+struct FixtureClock {
+    stop: std::sync::mpsc::Sender<()>,
+    watchdog: tokio::sync::oneshot::Receiver<()>,
+    guard: tokio::task::JoinHandle<()>,
+}
+
+impl FixtureClock {
+    fn pause() -> Self {
+        // A blocking task inhibits idle auto-advance while real socket I/O runs.
+        // Dropping the sender also releases the task if an assertion unwinds.
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let (expired, watchdog) = tokio::sync::oneshot::channel();
+        let guard = tokio::task::spawn_blocking(move || {
+            if stopped.recv_timeout(Duration::from_secs(5))
+                == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            {
+                let _ = expired.send(());
+            }
+        });
+        tokio::time::pause();
+        Self {
+            stop,
+            watchdog,
+            guard,
+        }
+    }
+
+    async fn wait<T>(
+        &mut self,
+        operation: impl std::future::Future<Output = T>,
+        context: &str,
+    ) -> T {
+        // This real-time watchdog catches deadlocks. Timing assertions use only
+        // the explicitly advanced Tokio clock.
+        tokio::select! {
+            result = operation => result,
+            _ = &mut self.watchdog => panic!("fixture stalled waiting for {context}"),
+        }
+    }
+
+    async fn resume(self) {
+        tokio::time::resume();
+        drop(self.stop);
+        self.guard.await.expect("clock guard should finish");
+    }
+}
+
 async fn discover_and_adopt(
     module: &OpenRgbDriverModule,
     backend: &Arc<dyn DeviceBackend>,
@@ -351,7 +398,9 @@ async fn connect_handshake_timeout_preserves_configured_deadline() {
     let endpoint = listener
         .local_addr()
         .expect("fake OpenRGB server should expose local addr");
-    let server = tokio::spawn(run_connect_handshake_timeout_server(listener));
+    let (handshake_tx, handshake_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(run_connect_handshake_timeout_server(listener, handshake_tx));
+    let mut clock = FixtureClock::pause();
     let read_timeout = Duration::from_millis(20);
     let config = OpenRgbConfig {
         endpoints: vec![endpoint],
@@ -373,11 +422,47 @@ async fn connect_handshake_timeout_preserves_configured_deadline() {
     let backend = module
         .build(&host, view)
         .expect("backend construction should succeed");
-    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let devices = clock
+        .wait(
+            discover_and_adopt(&module, &backend, &host, view),
+            "discovery",
+        )
+        .await;
+    assert_eq!(
+        devices.len(),
+        1,
+        "discovery should finish before timeout testing"
+    );
     let device_id = devices[0].info.id;
 
-    let error = backend
-        .connect(&device_id)
+    let connecting = backend.connect(&device_id);
+    tokio::pin!(connecting);
+    tokio::select! {
+        result = &mut connecting => panic!("connect finished before the server observed negotiation: {result:?}"),
+        ready = clock.wait(handshake_rx, "protocol negotiation") => ready.expect("server should signal negotiation"),
+    }
+    // Poll after the server receipt so the read deadline is armed before time moves.
+    tokio::select! {
+        biased;
+        result = &mut connecting => panic!("silent handshake completed without advancing time: {result:?}"),
+        () = tokio::task::yield_now() => {}
+    }
+    tokio::time::advance(
+        read_timeout
+            .checked_sub(Duration::from_millis(1))
+            .expect("configured deadline exceeds one millisecond"),
+    )
+    .await;
+    tokio::select! {
+        biased;
+        result = &mut connecting => panic!("handshake timed out before its configured deadline: {result:?}"),
+        () = tokio::task::yield_now() => {}
+    }
+    // Tokio rounds timer deadlines up to milliseconds; cross that boundary
+    // while leaving the configured timeout and returned duration at 20 ms.
+    tokio::time::advance(Duration::from_millis(2)).await;
+    let error = clock
+        .wait(&mut connecting, "configured handshake timeout")
         .await
         .expect_err("silent handshake should reach the configured read timeout");
 
@@ -387,7 +472,11 @@ async fn connect_handshake_timeout_preserves_configured_deadline() {
             after: read_timeout
         }
     );
-    server.await.expect("server task should join");
+    clock
+        .wait(server, "server EOF cleanup")
+        .await
+        .expect("server task should join");
+    clock.resume().await;
 }
 
 #[tokio::test]
@@ -1187,7 +1276,8 @@ async fn slow_controller_cadence_does_not_throttle_fast_controller() {
         controller_payload_v5_typed(5, "Board", "SER123", "hidraw0", false, 0, 2, 100),
         controller_payload_v5_typed(1, "Stick", "SER999", "i2c-0", false, 0, 2, 100),
     ];
-    let server = tokio::spawn(run_counting_server(listener, payloads, 1));
+    let (observed_tx, mut observed_rx) = tokio::sync::mpsc::unbounded_channel();
+    let server = tokio::spawn(run_counting_server(listener, payloads, 1, observed_tx));
     let config = OpenRgbConfig {
         endpoints: vec![endpoint],
         ownership: OpenRgbOwnership {
@@ -1234,19 +1324,46 @@ async fn slow_controller_cadence_does_not_throttle_fast_controller() {
         .frame_sink(&slow.info.id)
         .expect("slow controller should expose a frame sink");
 
+    let mut clock = FixtureClock::pause();
     let started = tokio::time::Instant::now();
-    let mut tick = 0_u8;
-    while started.elapsed() < Duration::from_millis(300) {
-        tick = tick.wrapping_add(1);
-        let _ = fast_sink
-            .write_colors_shared(Arc::new(vec![[tick, 0, 0], [tick, 0, 0]]))
-            .await;
-        let _ = slow_sink
-            .write_colors_shared(Arc::new(vec![[0, tick, 0], [0, tick, 0]]))
-            .await;
-        tokio::time::sleep(Duration::from_millis(5)).await;
+    let mut observations: HashMap<u32, Vec<tokio::time::Instant>> = HashMap::new();
+    for millis in 0_u16..300 {
+        if millis % 5 == 0 {
+            let tick = u8::try_from(millis / 5).expect("fixture tick fits");
+            fast_sink
+                .write_colors_shared(Arc::new(vec![[tick, 0, 0], [tick, 0, 0]]))
+                .await
+                .expect("fast frame should queue");
+            slow_sink
+                .write_colors_shared(Arc::new(vec![[0, tick, 0], [0, tick, 0]]))
+                .await
+                .expect("slow frame should queue");
+        }
+        // Tokio rounds timer deadlines to milliseconds. Observe each 10 ms
+        // fast slot after that rounding boundary, without changing either rate.
+        if millis % 11 == 0 || millis == 201 {
+            let expected_fast = usize::from(millis / 11) + 1;
+            let expected_slow = usize::from(millis >= 201) + 1;
+            while observations.get(&0).map_or(0, Vec::len) < expected_fast
+                || observations.get(&1).map_or(0, Vec::len) < expected_slow
+            {
+                let context = format!(
+                    "controller update at {:?}: expected fast={expected_fast}, slow={expected_slow}; observed {observations:?}",
+                    started.elapsed()
+                );
+                let (index, observed_at) = clock
+                    .wait(observed_rx.recv(), &context)
+                    .await
+                    .expect("server should observe the due controller update");
+                observations.entry(index).or_default().push(observed_at);
+            }
+        }
+        tokio::time::advance(Duration::from_millis(1)).await;
     }
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(started.elapsed(), Duration::from_millis(300));
+    let fast_observations = observations.get(&0).expect("fast frames were observed");
+    let fast_frames = fast_observations.len();
+    clock.resume().await;
     for device in [fast, slow] {
         backend
             .disconnect(&device.info.id)
@@ -1255,7 +1372,7 @@ async fn slow_controller_cadence_does_not_throttle_fast_controller() {
     }
 
     let counts = server.await.expect("server task should join");
-    let fast_frames = counts.get(&0).copied().unwrap_or_default();
+    assert!(counts.get(&0).copied().unwrap_or_default() >= fast_frames);
     let slow_frames = counts.get(&1).copied().unwrap_or_default();
     assert!(
         fast_frames >= 15,
@@ -1271,6 +1388,7 @@ async fn run_counting_server(
     listener: TcpListener,
     payloads: Vec<Vec<u8>>,
     output_connections: usize,
+    observed: tokio::sync::mpsc::UnboundedSender<(u32, tokio::time::Instant)>,
 ) -> HashMap<u32, usize> {
     let payloads = Arc::new(payloads);
     let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1284,8 +1402,9 @@ async fn run_counting_server(
                     .expect("fake OpenRGB server should accept client");
                 let payloads = Arc::clone(&payloads);
                 let done_tx = done_tx.clone();
+                let observed = observed.clone();
                 tokio::spawn(async move {
-                    let result = handle_counting_connection(stream, &payloads).await;
+                    let result = handle_counting_connection(stream, &payloads, observed).await;
                     let _ = done_tx.send(result);
                 });
             }
@@ -1312,6 +1431,7 @@ async fn run_counting_server(
 async fn handle_counting_connection(
     mut stream: TcpStream,
     payloads: &[Vec<u8>],
+    observed: tokio::sync::mpsc::UnboundedSender<(u32, tokio::time::Instant)>,
 ) -> (bool, HashMap<u32, usize>) {
     let mut decoder = PacketDecoder::new();
     let mut counts = HashMap::new();
@@ -1347,6 +1467,9 @@ async fn handle_counting_connection(
             PacketId::UpdateMode => saw_setup = true,
             PacketId::UpdateLeds => {
                 *counts.entry(packet.header.device_index).or_insert(0) += 1;
+                observed
+                    .send((packet.header.device_index, tokio::time::Instant::now()))
+                    .expect("test should observe controller updates");
             }
             other => panic!("unexpected OpenRGB client packet: {other:?}"),
         }
@@ -2091,7 +2214,10 @@ async fn run_connect_missing_server(listener: TcpListener) {
     }
 }
 
-async fn run_connect_handshake_timeout_server(listener: TcpListener) {
+async fn run_connect_handshake_timeout_server(
+    listener: TcpListener,
+    handshake: tokio::sync::oneshot::Sender<()>,
+) {
     let (stream, _) = listener
         .accept()
         .await
@@ -2111,7 +2237,13 @@ async fn run_connect_handshake_timeout_server(listener: TcpListener) {
         .await
         .expect("connect client should send protocol negotiation");
     assert_eq!(packet.header.packet_id, PacketId::RequestProtocolVersion);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    handshake
+        .send(())
+        .expect("test should observe the handshake");
+    assert!(
+        read_next_packet(&mut stream, &mut decoder).await.is_none(),
+        "timed-out client should close the silent handshake socket"
+    );
 }
 
 async fn handle_connect_missing_connection(mut stream: TcpStream, connection_index: u32) -> bool {
