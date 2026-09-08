@@ -5,6 +5,84 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-08
+
+This release productizes the **OpenRGB fallback** into a managed, native-first bridge with its own host crate, guided setup, and coverage reporting, and lands the **Lian Li TL LCD and L-Wireless** driver family on a new shared display encoding layer. The UI gains browser-neutral HTTP and WebSocket transports, and user-facing agent skills now ship in the release bundle.
+
+### Added
+
+- ✨ Add the `hypercolor-openrgb-host` crate: binary detection, SDK server probe, per-platform install hints, Linux permission checks, managed detector partition, and a headless launch spec (`58ae245`, `bdd1148`)
+- ✨ Supervise a loopback OpenRGB server from the desktop app with a pure planning function and coordinated local lifecycle ownership (`84573d9`, `b0aab8f`)
+- ✨ Add guided OpenRGB setup and diagnostics over REST, MCP, and CLI, including the `openrgb diagnose` check and managed server lifecycle commands (`b623b45`, `85aaa02`, `ea5b654`)
+- ✨ Record unclaimed USB devices from the scanner and hotplug, and serve them alongside a device coverage join through new API contracts and `devices unclaimed` / `devices coverage` subcommands (`101b8f2`, `29eb89c`, `a0b006a`)
+- ✨ Add the wired Uni Fan TL LCD panel driver, the Lian Li L-Wireless controller, the wireless LCD receivers, and a pure-Rust **tinyuz** codec for wireless RGB payloads (`cadf4d1`, `555be27`, `6cec46e`, `820a1e0`)
+- ✨ Add the shared display encoding layer in `crates/hypercolor-hal/src/display/` with repack and keepalive support, plus companion USB command routing (`d09df01`, `8cac475`)
+- ✨ Make display mounting a device setting and turn faces with the screen's mounting rotation, exposed in device detail and Studio (`1ca37f1`, `4b94fb9`, `755e263`)
+- ✨ Inject browser-neutral HTTP and WebSocket transports in `hypercolor-ui`, with cancellable incremental requests, bounded multipart, and browser `Blob` sources (`cc562f6`, `8ee6415`, `714e465`)
+- ✨ Add the `rig-setup` user skill: case and rig specs, `gen_layout.py`, `coverage.py`, `request_support.py`, and an O11D example rig routed through the bridge (`754e631`, `b39e6c6`, `8fd9f1e`)
+- ✨ Publish `ConfigChanged` from the config manager and `LayoutChanged` from the layout domain, repair, and binding migration (`0ce5bcd`, `5c63202`)
+- ✨ Add LUMI key lighting to the blocksd bridge (`ed50c81`)
+- ✨ Surface a screen's default face in Studio (`0c511a5`)
+- ✨ Add optional driver-host hooks: `DeviceBackend::connected_device_metadata`, `DriverRuntimeActions::request_reconnect`, and `DriverHost::runtime_handle`, all with default implementations so existing drivers are unaffected (`4f39bf1`, `a23eb12`, `92e56ac`)
+
+### Changed
+
+- 🔄 Move `hypercolor-control` from `.agents/skills/` to top-level `skills/` next to `rig-setup`, splitting contributor skills from user skills. Relative symlinks at `.agents/skills/hypercolor-control` and `.agents/skills/rig-setup` were left in place, so hosts scanning `.agents/skills` keep resolving the old paths from a checkout (`aef328e`). Both user skills ship in the release tarball under `share/hypercolor/skills` (`ab02881`)
+- ♻️ Make the display segment the one source of display truth: the `Display` topology hint now carries its payload format, `DeviceInfo::display_surface` is the single accessor, and `sync_display_capabilities` rewrites the capability summary from the segment so the two cannot disagree (`e341366`)
+- ♻️ Move Corsair LCD framing and Push 2 display encoding onto the shared display engine, then sweep dead and duplicated code from the display stack (`43f6129`, `62dbcd9`, `b51e708`)
+- ♻️ Share one OpenRGB SDK link per endpoint through a reconnecting task, pace writers to `target_fps` with a detector-class table, and apply user-approved zone sizes on connect (`3eca248`, `21b218a`, `c777fb7`)
+- 🔄 Guard native ownership against bridge routes and reconcile driver output backends on config changes (`54a539e`, `f0cd560`)
+- 🔄 Merge object patches against current settings on config PATCH (`fac1a68`)
+- 🔄 Carry a per-command response plan with a tolerance through the USB actor, and let descriptors declare a placeholder serial quirk (`6369d31`, `3a614e7`, `f3af71a`)
+- 👷 Rework the Rust build cache action: retained workspace builds, source-mtime invalidation, owned sccache lifecycle, and partitioned macOS workspace and capability checks (`0f4d7f7`, `3ff3bcb`, `98953bc`)
+- 👷 Bump the rust group across 77 crates plus `wgpu` 30 and `toml` 1 on every target, the `ui-rust` group (14), `sdk-bun` (3), `e2e-npm` (2), and the `github-actions` group (5) (`863097b`, `5f6af1d`, `c49f265`)
+- 📝 Rewrite the OpenRGB fallback docs around native-first coverage, distinguish hand-run OpenRGB from the managed server, and add Spec 80 (Lian Li TL LCD/wireless) and Spec 81 (OpenRGB productization) (`fc02e18`, `4721604`, `e0952fe`)
+- ⚡️ Keep dense Studio canvas interactions smooth (`62102a0`)
+
+### Fixed
+
+- 🐛 Recover invalid OpenRGB sessions, refresh idle endpoint policy, restore empty zones, release endpoint pins when connection attempts cancel, and order endpoint retirement through socket closure (`cc6b6b3`, `51f4fc9`, `f27309c`, `9ecb3c3`)
+- 🐛 Honor Hue RGB streaming and refresh live entertainment channel topology, merging brightness correctly (`6705a4f`, `08761d8`)
+- 🐛 Remove saved controllers without leaving layout ghosts, and require registry evidence before Studio deletes a saved device (`3eac4d1`, `6397966`)
+- 🐛 Refuse to guess between indistinguishable HID panels, counting devices by path (`d199401`, `e47a9db`)
+- 🐛 Arm wireless streaming once and stream fans at 30 fps, and send the wireless RGB transfer the way the receivers read it (`75d3a6e`, `4f08969`)
+- 🐛 Keep a device's resolved shape across shapeless rescans, keep identical rediscovery revision-neutral, and keep primary-zone members across restarts (`52fa22b`, `6d0353d`, `47a11d8`)
+- 🐛 Drain a retried command's leftover response reports (`7b3a3f3`)
+- 🐛 Preserve declared roots and user service ownership in packaging, support independent application and asset mounts, and validate the new user skill asset root (`fa36364`, `a3ec3e5`, `6e45354`)
+- 🐛 Correct Linux installer detection: absent systemd service properties, retained directories, managed icons, lazy launcher discovery, and identity through the current system resource (`231ef82`, `0a9c84b`, `d0e4d5f`, `d02a2a5`, `1dc6937`)
+- 🐛 Preserve WebSocket frame and lifecycle semantics, buffered event order, and closed cleanup after socket errors; reject browser-normalized remote paths (`c52a40d`, `6363a5b`, `a24a5ce`, `673f6e0`)
+- 🐛 Preserve TL fan geometry in physical LED order, and let bridged strip slots accept fan and ring templates (`92347cd`, `d049fe7`)
+- 🐛 Stop Studio inline fields from committing twice on close and preserve output stacking during hover (`825f088`, `ce1ea36`)
+- 🐛 Keep unclaimed USB inventory current on hotplug and scope shared-bus exclusion (`8cfffb3`, `c98e8ed`)
+- 🐛 Serialize SMBus discovery with live output (`d863fa3`)
+- 🐛 Let default-face deletes reach orphaned preferences, refetch devices when a known device reconnects, and keep zero-LED attachment slot ids unique (`eeb1016`, `312bfca`, `74889c9`)
+- 🐛 Support diagnostics builds without builtin drivers (`f346e81`)
+
+### Removed
+
+- 🔥 Remove `DeviceColorFormat::Jpeg`; JPEG never described an LED byte order and now lives in the display segment's `format` field (`e341366`)
+- 🔥 Remove `DeviceBackend::write_display_frame` and `write_display_frame_owned` (`4f39bf1`)
+- 🔥 Drop the unwired display settings hook and the unvalidatable static-image path from the TL LCD (`9f58df5`, `3f9ab58`)
+
+### Breaking Changes
+
+- **`hypercolor-driver-api`: `DeviceBackend` display writes collapse to one method.** `write_display_frame` and `write_display_frame_owned` were removed, leaving `write_display_payload_owned(&self, id, Arc<OwnedDisplayFramePayload>)` as the single display write. The old JPEG-only fallback that dispatched from the owned payload is gone.
+  - Out-of-tree backends that implemented either removed method must override `write_display_payload_owned` instead and branch on `payload.format` themselves. The default implementation now returns `DeviceError::Unsupported`, so a backend that only implemented the old methods will compile but silently stop driving its display.
+  - The reconnect and metadata additions in the same release (`connected_device_metadata`, `DriverRuntimeActions::request_reconnect`, `DriverHost::runtime_handle`) are **opt-in**: all three ship with default implementations (`Ok(None)`, `anyhow::bail!`, and `None` respectively), so nothing must be implemented to keep compiling.
+
+- **Display geometry and payload format move into the display segment (Rust consumers only).** `DeviceColorFormat::Jpeg` was removed and `DeviceTopologyHint::Display` gained a `format: DisplayFrameFormat` field (`e341366`).
+  - Rust code matching on `DeviceColorFormat::Jpeg` or constructing `DeviceTopologyHint::Display` must be updated; read geometry and format through `DeviceInfo::display_surface` rather than reconstructing them.
+  - Wire clients are unaffected: the new hint field serde-defaults to JPEG so stored layouts and older clients keep deserializing, `DeviceCapabilities::has_display` and `display_resolution` remain as the API's summary (rewritten from the segment by `sync_display_capabilities`), and `SegmentTopologySummary` is unchanged.
+  - Display rotation and mounting are **new** surfaces, not relocated ones. Clients that want them should regenerate against the current schema (`87b785c`, `ac00431`).
+
+### Metrics
+
+- Total Commits: 254
+- Files Changed: 552
+- Insertions: +60,071
+- Deletions: -11,679
+<!-- -------------------------------------------------------------- -->
+
 ## [0.4.0] - 2026-09-01
 
 macOS becomes a first-class capture and input platform, the REST surface collapses onto a canonical resource model rooted at `/api/v1/system` and `/api/v1/scene`, and the workspace splits platform code into dedicated crates. Installation, code signing, and daemon ownership are now transactional and attested on both macOS and Linux.
