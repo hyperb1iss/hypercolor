@@ -61,3 +61,5 @@ pub use scenes::*;
 pub use system::*;
 // Zone mutations stay under `api::zones` so their revision precondition is
 // visible at call sites.
+
+pub mod openrgb;

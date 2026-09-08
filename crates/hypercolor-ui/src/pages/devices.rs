@@ -502,6 +502,7 @@ pub fn DevicesPage() -> impl IntoView {
                                 }
                             }}
                         </Suspense>
+                        <crate::components::unclaimed_hardware::UnclaimedHardware />
                     </div>
 
                     // Detail is an overlay drawer at every width: the grid

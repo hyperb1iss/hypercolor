@@ -47,3 +47,6 @@ pub mod status_pill;
 pub mod viewport_designer;
 pub mod welcome_overlay;
 pub mod zone_now_playing;
+
+pub mod bridge_status;
+pub mod unclaimed_hardware;

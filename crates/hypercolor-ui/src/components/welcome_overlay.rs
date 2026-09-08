@@ -37,6 +37,27 @@ pub fn WelcomeOverlay() -> impl IntoView {
     // toggle in two clicks or change it later in Settings → Session.
     let (autostart_enabled, set_autostart_enabled) = signal(true);
     let navigate = use_navigate();
+    let unclaimed = crate::api::daemon_resource(move || {
+        let first_run = !dismissed.get() && matches!(pending.get(), Some(Ok(Some(true))));
+        async move {
+            if first_run {
+                crate::api::fetch_unclaimed_devices().await
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    });
+    let device_hint = expect_context::<crate::app::WsContext>().last_device_event;
+    Effect::new(move |_| {
+        if !dismissed.get()
+            && matches!(pending.get(), Some(Ok(Some(true))))
+            && device_hint
+                .get()
+                .is_some_and(|hint| hint.event_type == "unclaimed_devices_changed")
+        {
+            unclaimed.refetch();
+        }
+    });
 
     let show = Signal::derive(move || {
         if dismissed.get() {
@@ -142,6 +163,14 @@ pub fn WelcomeOverlay() -> impl IntoView {
                             description="On Windows, Settings → Device Discovery can install motherboard SMBus access."
                         />
                     </div>
+
+                    <Show when=move || unclaimed.get().is_some_and(|result| result.is_ok_and(|devices| !devices.is_empty()))>
+                        <div class="mt-4 rounded-lg border border-edge-subtle bg-surface-overlay p-3">
+                            <p class="text-sm text-fg-primary">"Some hardware needs another driver"</p>
+                            <p class="mt-1 text-xs text-fg-secondary">"OpenRGB can fill gaps in native support. Check coverage before installing it."</p>
+                            <button type="button" class="mt-2 text-sm text-accent-purple disabled:opacity-50" disabled=move || dismissing.get() on:click=move |_| dismiss_to_settings.run(())>"Explore OpenRGB setup"</button>
+                        </div>
+                    </Show>
 
                     <AutostartRow
                         enabled=Signal::derive(move || autostart_enabled.get())
