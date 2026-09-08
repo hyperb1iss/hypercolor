@@ -945,7 +945,8 @@ impl DaemonState {
         let driver_registry = Arc::clone(&self.driver_registry);
 
         self.discovery_task = Some(tokio::spawn(async move {
-            let hotplug_monitor = UsbHotplugMonitor::new(256);
+            let hotplug_monitor = UsbHotplugMonitor::new(256)
+                .with_unclaimed_store(worker.discovery.unclaimed_devices.clone());
             let mut hotplug_rx = hotplug_monitor.subscribe();
             let mut hotplug_task = match hotplug_monitor.start() {
                 Ok(task) => {
@@ -984,7 +985,7 @@ impl DaemonState {
                                     let driver_id = descriptor.driver_id();
                                     if crate::network::module_enabled_by_id(
                                         driver_registry.as_ref(),
-                                        &config,
+                                        &worker.config_manager.get(),
                                         driver_id.as_ref(),
                                     ) {
                                         info!(

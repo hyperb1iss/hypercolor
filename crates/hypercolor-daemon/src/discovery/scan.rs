@@ -296,7 +296,7 @@ pub async fn execute_discovery_scan(
             continue;
         }
         let display_name = driver.descriptor().display_name.to_owned();
-        let serialize_probe = probes_shared_buses(&driver.descriptor().transport);
+        let serialize_probe = probes_shared_buses(&driver_id, &driver.descriptor().transport);
         let probe_serializer = Arc::clone(&runtime.probe_serializer);
         let driver_config = network::driver_config_entry(&config, &driver_id);
         let host = Arc::clone(&driver_host);
@@ -580,11 +580,8 @@ pub async fn execute_discovery_scan(
 ///
 /// Native SMBus scanning and out-of-process bridges (OpenRGB) both open the
 /// I2C adapters directly, so their discovery runs take turns.
-fn probes_shared_buses(transport: &DriverTransportKind) -> bool {
-    matches!(
-        transport,
-        DriverTransportKind::Smbus | DriverTransportKind::Bridge
-    )
+fn probes_shared_buses(driver_id: &str, transport: &DriverTransportKind) -> bool {
+    matches!(transport, DriverTransportKind::Smbus) || driver_id == super::OPENRGB_DRIVER_ID
 }
 
 fn complete_target_set(requested: &[DiscoveryTarget], expected: &[DiscoveryTarget]) -> bool {
@@ -899,6 +896,27 @@ fn map_scanner_reports(reports: &[ScannerScanReport]) -> Vec<DiscoveryScannerRes
 #[cfg(test)]
 mod tests {
     use super::{DiscoveryTarget, complete_target_set};
+
+    #[test]
+    fn only_native_smbus_and_openrgb_probes_share_the_bus_gate() {
+        use hypercolor_types::device::DriverTransportKind;
+        assert!(super::probes_shared_buses(
+            "smbus",
+            &DriverTransportKind::Smbus
+        ));
+        assert!(super::probes_shared_buses(
+            "openrgb",
+            &DriverTransportKind::Bridge
+        ));
+        assert!(!super::probes_shared_buses(
+            "blocks",
+            &DriverTransportKind::Bridge
+        ));
+        assert!(!super::probes_shared_buses(
+            "usb",
+            &DriverTransportKind::Usb
+        ));
+    }
 
     #[test]
     fn binding_migration_refuses_partial_discovery_target_sets() {
