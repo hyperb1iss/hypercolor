@@ -550,41 +550,44 @@ fn stop_request_keeps_new_owner_publication_outside_the_validated_window() {
     let prior = store
         .publish_owner(MacosDaemonOwner::DirectLaunchd, identity("direct-old", 101))
         .expect("initial owner should publish");
-    let publisher_store = store.clone();
-    let (start_tx, start_rx) = mpsc::sync_channel(0);
-    let (attempt_tx, attempt_rx) = mpsc::sync_channel(0);
-    let (published_tx, published_rx) = mpsc::sync_channel(0);
-    let publisher = std::thread::spawn(move || {
-        start_rx.recv().expect("publisher should be released");
-        attempt_tx.send(()).expect("attempt should be visible");
-        let replacement = publisher_store
-            .publish_owner(MacosDaemonOwner::DirectLaunchd, identity("direct-new", 202))
-            .expect("replacement should publish after the stop request");
-        published_tx
-            .send(replacement)
-            .expect("replacement should be observable");
+    let replacement = std::thread::scope(|scope| {
+        let publisher_store = store.clone();
+        let (start_tx, start_rx) = mpsc::sync_channel(0);
+        let (attempt_tx, attempt_rx) = mpsc::sync_channel(0);
+        let (published_tx, published_rx) = mpsc::sync_channel(1);
+        let publisher = scope.spawn(move || {
+            start_rx.recv().expect("publisher should be released");
+            attempt_tx.send(()).expect("attempt should be visible");
+            let replacement = publisher_store
+                .publish_owner(MacosDaemonOwner::DirectLaunchd, identity("direct-new", 202))
+                .expect("replacement should publish after the stop request");
+            published_tx
+                .send(())
+                .expect("replacement should be observable");
+            replacement
+        });
+
+        store
+            .request_stop_if_current(&prior.incarnation(), || {
+                start_tx.send(()).expect("publisher should start");
+                attempt_rx
+                    .recv()
+                    .expect("publisher should attempt publication");
+                assert!(
+                    matches!(
+                        published_rx.recv_timeout(Duration::from_millis(50)),
+                        Err(mpsc::RecvTimeoutError::Timeout)
+                    ),
+                    "publication must remain blocked while the stop request is active"
+                );
+                Ok(())
+            })
+            .expect("exact stop request should run");
+
+        // Completion follows lock release; filesystem latency has no deadline.
+        // The scope also keeps the temporary store alive when an assertion fails.
+        publisher.join().expect("publisher should finish")
     });
-
-    store
-        .request_stop_if_current(&prior.incarnation(), || {
-            start_tx.send(()).expect("publisher should start");
-            attempt_rx
-                .recv()
-                .expect("publisher should attempt publication");
-            assert!(
-                published_rx
-                    .recv_timeout(Duration::from_millis(50))
-                    .is_err(),
-                "publication must remain blocked while the stop request is active"
-            );
-            Ok(())
-        })
-        .expect("exact stop request should run");
-
-    let replacement = published_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("publication should complete after the stop request");
-    publisher.join().expect("publisher should finish");
     assert!(replacement.owner_epoch > prior.owner_epoch);
 }
 

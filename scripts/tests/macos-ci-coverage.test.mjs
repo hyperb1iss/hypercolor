@@ -54,11 +54,12 @@ test('cache ownership and restored target directories agree across lanes', () =>
   assert.equal(condition('Save Rust build caches'), 'always()');
 });
 
-test('both release builders still require the entire macOS matrix', () => {
+test('both release builders require the macOS matrix and Windows tests', () => {
   for (const id of ['build-release', 'build-native-app']) {
     const body = workflow.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:)`, 'm'))?.[1];
     assert.ok(body, `missing release builder: ${id}`);
     const needs = body.match(/^    needs: \[(.+)\]$/m)?.[1].split(', ').map((value) => value.trim());
     assert.ok(needs?.includes('rust-check-macos'), `${id} must wait for both lanes on both architectures`);
+    assert.ok(needs?.includes('rust-windows'), `${id} must wait for Windows tests before producing release artifacts`);
   }
 });
