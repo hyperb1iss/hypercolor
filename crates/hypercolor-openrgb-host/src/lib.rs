@@ -18,6 +18,7 @@ mod config_dir;
 mod detect;
 mod error;
 mod hints;
+mod partition_plan;
 mod permissions;
 mod probe;
 mod process;
@@ -46,4 +47,9 @@ pub use process::{LOOPBACK_HOST, SERVER_LOG_LEVEL, server_args, server_command};
 pub use types::{
     BinaryKind, InstallHint, InstallMethod, ManagedConfigDir, OpenRgbBinary, PermissionCheck,
     Platform, ProcessSpec, ServerProbe,
+};
+
+pub use partition_plan::{
+    DetectorPartitionPlan, DeviceFacts, DriverFacts, bridge_enabled, known_detector_driver_ids,
+    partition_driver_ids,
 };
