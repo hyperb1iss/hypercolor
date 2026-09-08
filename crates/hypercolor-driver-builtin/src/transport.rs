@@ -6,7 +6,8 @@ use async_trait::async_trait;
 #[cfg(unix)]
 use hypercolor_core::device::{BlocksBackend, BlocksScanner};
 use hypercolor_core::device::{
-    SmBusBackend, SmBusScanner, UsbBackend, UsbProtocolConfigStore, UsbScanner,
+    SmBusBackend, SmBusScanner, UnclaimedDeviceStore, UsbBackend, UsbProtocolConfigStore,
+    UsbScanner,
 };
 use hypercolor_driver_api::{
     DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability, DiscoveryRequest,
@@ -46,11 +47,18 @@ static BLOCKS_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
 
 pub struct UsbTransportDriverModule {
     protocol_configs: UsbProtocolConfigStore,
+    unclaimed_devices: UnclaimedDeviceStore,
 }
 
 impl UsbTransportDriverModule {
-    pub fn new(protocol_configs: UsbProtocolConfigStore) -> Self {
-        Self { protocol_configs }
+    pub fn new(
+        protocol_configs: UsbProtocolConfigStore,
+        unclaimed_devices: UnclaimedDeviceStore,
+    ) -> Self {
+        Self {
+            protocol_configs,
+            unclaimed_devices,
+        }
     }
 }
 
@@ -98,6 +106,7 @@ impl DiscoveryCapability for UsbTransportDriverModule {
         _config: DriverConfigView<'_>,
     ) -> Result<Vec<DiscoveredDevice>, DriverError> {
         UsbScanner::new()
+            .with_unclaimed_store(self.unclaimed_devices.clone())
             .scan()
             .await
             .map_err(DriverError::discovery)

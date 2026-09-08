@@ -27,7 +27,7 @@ hypercolor status
 You should see daemon version, uptime, and a device count. If you get a connection error, check that port 9420 is not in use by another process.
 
 {% <callout type="warning"> %}
-If you have OpenRGB, Aura Sync, or another RGB manager running, it may be holding your USB devices. Stop those tools first; two apps cannot share the same HID device.
+If Aura Sync, iCUE, openrazer, or another RGB manager is running, it may be holding your USB devices. Stop those tools first; two apps cannot share the same HID device. OpenRGB is different: Hypercolor can run it as a bridge for hardware it has no native driver for, with a configuration that keeps it away from devices Hypercolor drives itself. Do not start OpenRGB by hand; if you want it, follow the [OpenRGB fallback](@/hardware/openrgb-fallback.md) flow once your native devices are up.
 {% </callout> %}
 
 ---

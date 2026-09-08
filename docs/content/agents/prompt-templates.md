@@ -1,11 +1,11 @@
 +++
 title = "Prompt templates"
-description = "The three shipped Hypercolor MCP prompts: mood_lighting, troubleshoot, and setup_automation, with arguments, message flows, and when to reach for each."
+description = "The four shipped Hypercolor MCP prompts: mood_lighting, troubleshoot, setup_automation, and openrgb_setup, with arguments, message flows, and when to reach for each."
 weight = 40
 template = "page.html"
 +++
 
-The Hypercolor MCP server ships **three prompt templates**: `mood_lighting`, `troubleshoot`, and `setup_automation`. A prompt is the third MCP primitive alongside [tools](@/agents/tools-reference.md) and [resources](@/agents/resources-reference.md). Where a tool is a verb the agent calls and a resource is ambient state it reads, a prompt is a pre-built conversation flow: a sequence of messages that already pulls the right resources and lines up the right tool calls so an assistant lands on a good result without improvising the whole interaction.
+The Hypercolor MCP server ships **four prompt templates**: `mood_lighting`, `troubleshoot`, `setup_automation`, and `openrgb_setup`. A prompt is the third MCP primitive alongside [tools](@/agents/tools-reference.md) and [resources](@/agents/resources-reference.md). Where a tool is a verb the agent calls and a resource is ambient state it reads, a prompt is a pre-built conversation flow: a sequence of messages that already pulls the right resources and lines up the right tool calls so an assistant lands on a good result without improvising the whole interaction.
 
 Most clients surface prompts as slash commands. In Claude Code, `mood_lighting` shows up as `/mood_lighting`; pick it, fill in the arguments, and the assistant replays the template's message sequence with your values substituted in. Everything on this page is pulled from `crates/hypercolor-daemon/src/mcp/prompts.rs`, not paraphrased.
 
@@ -15,17 +15,18 @@ The MCP server is **off by default**. Until you enable it in config, no prompt r
 
 ## How prompts work 🔮
 
-The daemon advertises prompts as an MCP capability (`enable_prompts()` in the server builder), so any compliant client lists all three and can request one by name. When a client requests a prompt, the daemon substitutes the arguments you provide into a fixed message sequence and returns the rendered conversation. The assistant then runs that conversation: it reads the embedded resources, reasons over them, and calls tools to act.
+The daemon advertises prompts as an MCP capability (`enable_prompts()` in the server builder), so any compliant client lists all four and can request one by name. When a client requests a prompt, the daemon substitutes the arguments you provide into a fixed message sequence and returns the rendered conversation. The assistant then runs that conversation: it reads the embedded resources, reasons over them, and calls tools to act.
 
-Each template encodes the same read-then-act discipline the server's own instructions ask for. Every prompt opens by pulling `hypercolor://state` and other relevant resources before recommending or changing anything, so the assistant is always working from the live picture rather than a guess.
+Each template encodes the same read-then-act discipline the server's own instructions ask for. Each prompt starts with live status or relevant resources before recommending or changing anything, so the assistant is always working from the live picture rather than a guess.
 
 | Prompt             | Slash command       | Required args | Optional args            |
 | ------------------ | ------------------- | ------------- | ------------------------ |
 | `mood_lighting`    | `/mood_lighting`    | none          | `mood`, `audio_reactive` |
 | `troubleshoot`     | `/troubleshoot`     | `issue`       | none                     |
 | `setup_automation` | `/setup_automation` | none          | `description`            |
+| `openrgb_setup`    | `/openrgb_setup`    | none          | none                     |
 
-Only `troubleshoot` has a required argument. The other two run fine with no arguments at all, falling back to a sensible default (`mood_lighting` assumes "a cozy vibe", `setup_automation` opens an open-ended automation conversation) and asking follow-up questions from there.
+Only `troubleshoot` has a required argument. The other three run fine with no arguments at all, falling back to a sensible default (`mood_lighting` assumes "a cozy vibe", `setup_automation` opens an open-ended automation conversation) and asking follow-up questions from there.
 
 ## mood_lighting
 
@@ -74,12 +75,25 @@ Hypercolor does not schedule or trigger scenes. The `create_scene` tool accepts 
 
 Remember that scenes are whole-rig configurations. Zones are the flexible canvas partitions inside a scene, and scheduling belongs to the external automation system.
 
+## OpenRGB fallback setup
+
+Request `openrgb_setup` with no arguments. The prompt starts with
+`openrgb_status` and checks whether native coverage leaves a real gap. It then
+uses host-specific installation guidance, prepares the managed detector
+partition, enables and starts the bridge, and checks discovery again.
+
+Hub LED counts come from the owner before a resize is saved. The flow verifies
+output and size restoration before building a layout. Hardware neither stack
+supports becomes a prepared support request; the agent submits it only when
+asked. An agent without shell or config access gives the next command instead
+of claiming to have run it.
+
 ## Using prompts from an agent
 
-Prompts are a convenience layer, not a separate API. Everything a prompt does, an agent can do by hand with the underlying tools and resources, so reach for a prompt when you want a known-good flow and call tools directly when you need precise control. The three templates map cleanly onto the most common agent jobs: set a vibe, fix a problem, or prepare a scene for an external scheduler.
+Prompts are a convenience layer, not a separate API. Everything a prompt does, an agent can do by hand with the underlying tools and resources, so reach for a prompt when you want a known-good flow and call tools directly when you need precise control. The templates cover choosing lighting, diagnosing problems, preparing scenes for an external scheduler, and setting up fallback hardware coverage.
 
-If you are wiring an assistant up for the first time, the natural path is to enable the server in [MCP setup](@/agents/mcp-setup.md), skim the [tools reference](@/agents/tools-reference.md) to learn the verbs, and let the prompts orchestrate the common cases. For hand-built CLI and MCP playbooks that go beyond the three shipped prompts, the agent-scripting pages in this section walk through complete automation against the daemon.
+If you are wiring an assistant up for the first time, the natural path is to enable the server in [MCP setup](@/agents/mcp-setup.md), skim the [tools reference](@/agents/tools-reference.md) to learn the verbs, and let the prompts orchestrate the common cases. For hand-built CLI and MCP playbooks that go beyond the four shipped prompts, the agent-scripting pages in this section walk through complete automation against the daemon.
 
 {% <callout type="success"> %}
-All three prompts open by reading state. That is the single most useful habit to copy when you write your own flows: orient from `hypercolor://state` before you act, and your tool calls land predictably.
+All four prompts open by reading live state. That is the single most useful habit to copy when you write your own flows: orient from `hypercolor://state` before you act, and your tool calls land predictably.
 {% </callout> %}

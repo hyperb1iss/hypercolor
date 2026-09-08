@@ -673,6 +673,13 @@ pub enum HypercolorEvent {
         duration_ms: u64,
     },
 
+    /// The unclaimed USB inventory changed; re-read
+    /// `GET /api/v1/devices/unclaimed`.
+    UnclaimedDevicesChanged {
+        /// How many devices the inventory now lists.
+        count: usize,
+    },
+
     // ── Effect Events ───────────────────────────────────────────────
     /// A new effect has been loaded and rendering has begun.
     EffectStarted {
@@ -1106,7 +1113,8 @@ impl HypercolorEvent {
             | Self::DeviceStateChanged { .. }
             | Self::DeviceSettingsChanged { .. }
             | Self::DeviceDiscoveryStarted { .. }
-            | Self::DeviceDiscoveryCompleted { .. } => EventCategory::Device,
+            | Self::DeviceDiscoveryCompleted { .. }
+            | Self::UnclaimedDevicesChanged { .. } => EventCategory::Device,
 
             Self::EffectStarted { .. }
             | Self::EffectStopped { .. }

@@ -43,6 +43,11 @@ use crate::domain::input_status::input_source_status;
 mod tests;
 
 const DEFAULT_CONFIG_FILE_NAME: &str = "hypercolor.toml";
+
+/// Read OpenRGB installation, endpoint, and device coverage state.
+pub async fn get_openrgb_status(State(state): State<Arc<AppState>>) -> Response {
+    envelope::ok(crate::domain::openrgb_setup::openrgb_status(&state.domains.devices).await)
+}
 const MULTI_ZONE_CAPABILITIES: &[&str] = &[
     "multi-zone-sampling",
     "zone-crud",

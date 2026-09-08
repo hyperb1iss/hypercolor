@@ -17,6 +17,7 @@ pub mod smbus_backend;
 pub mod smbus_scanner;
 mod state_machine;
 mod transport_error;
+pub mod unclaimed;
 pub mod usb_backend;
 pub mod usb_hotplug;
 pub mod usb_scanner;
@@ -37,6 +38,7 @@ pub use state_machine::{
     DeviceStateMachine, DeviceStateMachineDebugSnapshot, ReconnectPolicy, ReconnectStatus,
     StateTransitionRecord,
 };
+pub use unclaimed::{UnclaimedDeviceStore, UsbObservation};
 pub use usb_backend::{
     UsbActorMetricsSnapshot, UsbBackend, UsbProtocolConfigStore, usb_actor_metrics_snapshot,
 };

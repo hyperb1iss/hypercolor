@@ -165,10 +165,15 @@ pub struct DaemonLauncherStatus {
 /// Returns a stringified Tauri path error when the app resource directory cannot
 /// be queried. The command still succeeds when the resource directory is absent.
 #[tauri::command]
-pub fn detect_pawnio_support(app: AppHandle) -> Result<PawnIoSupportStatus, String> {
+pub fn detect_pawnio_support(
+    app: AppHandle,
+    openrgb: tauri::State<'_, crate::supervisor::openrgb::OpenRgbSupervisor>,
+) -> Result<PawnIoSupportStatus, String> {
     let resource_dir = app.path().resource_dir().ok();
-    Ok(detect_pawnio_support_from_resource_dir(
+    let excluded: Vec<u32> = openrgb.managed_pid().into_iter().collect();
+    Ok(detect_pawnio_support_with_exclusions(
         resource_dir.as_deref(),
+        &excluded,
     ))
 }
 
@@ -236,6 +241,17 @@ pub async fn repair_smbus_service(
 /// Detect PawnIO and SMBus support status from an optional Tauri resource root.
 #[must_use]
 pub fn detect_pawnio_support_from_resource_dir(resource_dir: Option<&Path>) -> PawnIoSupportStatus {
+    detect_pawnio_support_with_exclusions(resource_dir, &[])
+}
+
+/// Detect PawnIO and SMBus support status, leaving processes in
+/// `excluded_pids` out of the conflicting-tool report. The app passes the
+/// OpenRGB server it spawned itself: a managed server is ours, not a rival.
+#[must_use]
+pub fn detect_pawnio_support_with_exclusions(
+    resource_dir: Option<&Path>,
+    excluded_pids: &[u32],
+) -> PawnIoSupportStatus {
     let tools_dir = resource_dir.map(tools_dir);
     let asset_root = tools_dir.as_deref().map(pawnio_asset_root);
     let helper_script = tools_dir.as_deref().map(hardware_support_script_path);
@@ -269,7 +285,7 @@ pub fn detect_pawnio_support_from_resource_dir(resource_dir: Option<&Path>) -> P
             && bundled_installer_available
             && bundled_modules_available,
         motherboard: hypercolor_core::system::motherboard_info(),
-        conflicting_rgb_tools: detect_conflicting_rgb_tools(),
+        conflicting_rgb_tools: detect_conflicting_rgb_tools(excluded_pids),
     }
 }
 
@@ -496,9 +512,69 @@ const KNOWN_RGB_CONFLICTS: &[(&str, &str)] = &[
     ("Razer Synapse", "Razer Synapse Service"),
 ];
 
+/// Image name of a running OpenRGB on Windows. OpenRGB ships as a plain
+/// desktop executable (MSI, portable zip, winget) and registers no Windows
+/// service, so the conflict check looks for the process instead of asking
+/// the Service Control Manager.
+pub const OPENRGB_PROCESS_IMAGE: &str = "OpenRGB.exe";
+
+/// Display name used for a foreign OpenRGB in the conflict report.
+pub const OPENRGB_CONFLICT_NAME: &str = "OpenRGB";
+
+/// Competing tools that run as user processes rather than services.
 #[cfg(target_os = "windows")]
-fn detect_conflicting_rgb_tools() -> Vec<ConflictingRgbTool> {
-    KNOWN_RGB_CONFLICTS
+const KNOWN_RGB_PROCESS_CONFLICTS: &[(&str, &str)] = &[
+    // (display name, process image name)
+    (OPENRGB_CONFLICT_NAME, OPENRGB_PROCESS_IMAGE),
+];
+
+/// Extract the pids of `image_name` from `tasklist /FO CSV /NH` output.
+///
+/// Each row is `"Image Name","PID","Session Name","Session#","Mem Usage"`.
+/// The image comparison ignores ASCII case, and rows that are not CSV (the
+/// `INFO: No tasks are running...` message) contribute nothing.
+#[must_use]
+pub fn parse_tasklist_pids(output: &str, image_name: &str) -> Vec<u32> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line
+                .trim()
+                .split("\",\"")
+                .map(|field| field.trim_matches('"'));
+            let image = fields.next()?;
+            let pid = fields.next()?;
+            if !image.eq_ignore_ascii_case(image_name) {
+                return None;
+            }
+            pid.trim().parse::<u32>().ok()
+        })
+        .collect()
+}
+
+/// Build the conflict row for a process-detected tool, or `None` when every
+/// matching pid belongs to `excluded_pids` (a child this app spawned).
+///
+/// Process detection only sees running instances, so a returned row is
+/// always `running: true`; an installed-but-idle OpenRGB is not a conflict.
+#[must_use]
+pub fn process_conflict(
+    name: &str,
+    image_name: &str,
+    pids: &[u32],
+    excluded_pids: &[u32],
+) -> Option<ConflictingRgbTool> {
+    let foreign = pids.iter().any(|pid| !excluded_pids.contains(pid));
+    foreign.then(|| ConflictingRgbTool {
+        name: name.to_owned(),
+        identifier: image_name.to_owned(),
+        running: true,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn detect_conflicting_rgb_tools(excluded_pids: &[u32]) -> Vec<ConflictingRgbTool> {
+    let mut conflicts: Vec<ConflictingRgbTool> = KNOWN_RGB_CONFLICTS
         .iter()
         .filter_map(|(name, service_name)| {
             let status = query_service_status(service_name);
@@ -511,12 +587,42 @@ fn detect_conflicting_rgb_tools() -> Vec<ConflictingRgbTool> {
                 running: status.state.as_deref() == Some("RUNNING"),
             })
         })
-        .collect()
+        .collect();
+    conflicts.extend(
+        KNOWN_RGB_PROCESS_CONFLICTS
+            .iter()
+            .filter_map(|(name, image_name)| {
+                let pids = query_process_pids(image_name);
+                process_conflict(name, image_name, &pids, excluded_pids)
+            }),
+    );
+    conflicts
 }
 
 #[cfg(not(target_os = "windows"))]
-fn detect_conflicting_rgb_tools() -> Vec<ConflictingRgbTool> {
+fn detect_conflicting_rgb_tools(_excluded_pids: &[u32]) -> Vec<ConflictingRgbTool> {
     Vec::new()
+}
+
+/// Pids of every running `image_name`, via `tasklist`.
+#[cfg(target_os = "windows")]
+fn query_process_pids(image_name: &str) -> Vec<u32> {
+    let mut child = Command::new("tasklist.exe");
+    child.args([
+        "/FI",
+        &format!("IMAGENAME eq {image_name}"),
+        "/FO",
+        "CSV",
+        "/NH",
+    ]);
+    crate::process_ext::hide_console_window(&mut child);
+    let Ok(output) = child.output() else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    parse_tasklist_pids(&String::from_utf8_lossy(&output.stdout), image_name)
 }
 
 #[cfg(target_os = "windows")]

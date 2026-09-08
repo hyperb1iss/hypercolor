@@ -257,6 +257,14 @@ List available audio capture devices for reactive effects. Pick the **monitor**
 of your output, not a microphone, if you want lights to follow what's playing.
 {% </api_endpoint> %}
 
+{% <api_endpoint method="GET" path="/api/v1/system/openrgb"> %}
+Inspect OpenRGB on the daemon host: installation path and version, configured
+SDK endpoints, negotiated protocol versions, controller counts, permission
+checks, and installation hints. The response includes native and bridge
+coverage plus the output-disabled route count. Endpoints are probed even when
+the bridge is disabled, so setup can check readiness before enabling output.
+{% </api_endpoint> %}
+
 ## Media
 
 {% <api_endpoint method="POST" path="/api/v1/media/authorize"> %}
@@ -383,6 +391,22 @@ layer id embedded in that document, and clear the show through
 effects do not carry layout associations.
 
 ## Devices
+
+{% <api_endpoint method="GET" path="/api/v1/devices/unclaimed"> %}
+List USB hardware no enabled native driver claims. Each item includes vendor
+and product IDs, identifying strings, bus path, interface classes, and a
+`claimable_by` driver when native support exists but is disabled. The response
+uses `items` and `total` without pagination. Subscribe to
+`unclaimed_devices_changed` to refresh after arrivals and removals.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="GET" path="/api/v1/devices/coverage"> %}
+Join native devices, OpenRGB routes, and unclaimed hardware by physical
+identity. Each row reports its native and bridge matches and active owner:
+`native`, `bridge`, `none`, or `conflict`. A bridge match includes its effective
+output state and disabled reason. The response uses `items` and `total`
+without pagination.
+{% </api_endpoint> %}
 
 {{< img path="img/ui/ui-devices.webp" alt="The devices panel in the web UI" />}}
 
@@ -1067,6 +1091,14 @@ daemon; the default re-applies every live-classified key.
 The response carries the effective value, whether the daemon applied it live,
 whether the key is boot-frozen (`requires_restart`), and which sections are
 currently waiting on a restart (`pending_restart`).
+{% </api_endpoint> %}
+
+{% <api_endpoint method="PATCH" path="/api/v1/config/keys/{key}"> %}
+Merge a JSON object into a configuration value. Unmentioned entries survive;
+`null` removes an entry. The daemon merges and validates against the current
+config under its write lock, so concurrent patches to different OpenRGB
+controllers or zones preserve each other's sizes. The response and `?live=`
+option match PUT.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="DELETE" path="/api/v1/config/keys/{key}"> %}

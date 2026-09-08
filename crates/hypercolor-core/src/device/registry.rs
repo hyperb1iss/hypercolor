@@ -433,6 +433,39 @@ impl DeviceRegistry {
         Some(entry.clone())
     }
 
+    /// Refresh an existing device from an authoritative driver observation.
+    ///
+    /// Unlike a discovery hint, this replaces zero-sized topology too. Identity,
+    /// lifecycle state, and user settings remain unchanged. A mismatched ID,
+    /// fingerprint, or output backend rejects the update without mutation.
+    pub async fn refresh_discovered(
+        &self,
+        id: &DeviceId,
+        discovered: DiscoveredDevice,
+    ) -> Option<TrackedDevice> {
+        let mut inner = self.inner.write().await;
+        if discovered.info.id != *id
+            || inner.id_to_fingerprint.get(id) != Some(&discovered.fingerprint)
+        {
+            return None;
+        }
+        let entry = inner.devices.get_mut(id)?;
+        if entry.info.output_backend_id() != discovered.info.output_backend_id()
+            || entry.info.driver_id() != discovered.info.driver_id()
+        {
+            return None;
+        }
+        let mut info = discovered.info;
+        apply_user_settings_to_info(&mut info, &entry.user_settings);
+        entry.info = info;
+        entry.connect_behavior = discovered.connect_behavior;
+        bump_device_revision(entry);
+        let updated = entry.clone();
+        inner.metadata_by_id.insert(*id, discovered.metadata);
+        self.bump_generation();
+        Some(updated)
+    }
+
     /// Update user-facing mutable settings for a tracked device.
     ///
     /// Supported updates:

@@ -237,3 +237,16 @@ pub(super) async fn handle_diagnose_with_state(
 ) -> Result<Value, ToolError> {
     serialize_result(state.domains.diagnostics.collect_default().await)
 }
+
+pub(super) fn build_openrgb_status() -> ToolDefinition {
+    ToolDefinition {
+        name: "openrgb_status".into(),
+        title: "OpenRGB Setup Status".into(),
+        description: "Inspect the daemon host's OpenRGB installation, SDK endpoints, install hints, permissions, and native-first device coverage. Read this before proposing the fallback bridge.".into(),
+        input_schema: json!({"type": "object", "additionalProperties": false}),
+        output_schema: output_schema::<hypercolor_types::api::system::OpenRgbStatus>(),
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+    }
+}

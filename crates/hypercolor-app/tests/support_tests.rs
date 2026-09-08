@@ -4,9 +4,10 @@ use std::{
 };
 
 use hypercolor_app::support::{
-    PawnIoHelperOptions, ServiceSupportStatus, build_pawnio_helper_command,
-    daemon_launcher_status_from_query, detect_pawnio_support_from_resource_dir,
-    parse_sc_query_state,
+    OPENRGB_CONFLICT_NAME, OPENRGB_PROCESS_IMAGE, PawnIoHelperOptions, ServiceSupportStatus,
+    build_pawnio_helper_command, daemon_launcher_status_from_query,
+    detect_pawnio_support_from_resource_dir, detect_pawnio_support_with_exclusions,
+    parse_sc_query_state, parse_tasklist_pids, process_conflict,
 };
 use hypercolor_types::service::ServiceIdentity;
 
@@ -227,4 +228,73 @@ fn service_status(installed: bool, state: Option<&str>) -> ServiceSupportStatus 
 
 fn normalized(path: &str) -> String {
     path.replace('\\', "/")
+}
+
+#[test]
+fn tasklist_csv_yields_matching_pids_case_insensitively() {
+    let output = concat!(
+        "\"OpenRGB.exe\",\"4242\",\"Console\",\"1\",\"58,116 K\"\r\n",
+        "\"openrgb.exe\",\"4343\",\"Console\",\"1\",\"12,000 K\"\r\n",
+        "\"SignalRgb.exe\",\"9000\",\"Console\",\"1\",\"400,000 K\"\r\n",
+    );
+
+    assert_eq!(
+        parse_tasklist_pids(output, OPENRGB_PROCESS_IMAGE),
+        vec![4242, 4343]
+    );
+}
+
+#[test]
+fn tasklist_no_tasks_message_yields_nothing() {
+    let output = "INFO: No tasks are running which match the specified criteria.\r\n";
+
+    assert!(parse_tasklist_pids(output, OPENRGB_PROCESS_IMAGE).is_empty());
+    assert!(parse_tasklist_pids("", OPENRGB_PROCESS_IMAGE).is_empty());
+}
+
+#[test]
+fn managed_openrgb_pid_is_not_reported_as_a_conflict() {
+    let managed = [4242];
+
+    assert_eq!(
+        process_conflict(
+            OPENRGB_CONFLICT_NAME,
+            OPENRGB_PROCESS_IMAGE,
+            &[4242],
+            &managed
+        ),
+        None
+    );
+    assert_eq!(
+        process_conflict(OPENRGB_CONFLICT_NAME, OPENRGB_PROCESS_IMAGE, &[], &[]),
+        None
+    );
+}
+
+#[test]
+fn a_foreign_openrgb_beside_the_managed_one_is_still_a_conflict() {
+    let conflict = process_conflict(
+        OPENRGB_CONFLICT_NAME,
+        OPENRGB_PROCESS_IMAGE,
+        &[4242, 5151],
+        &[4242],
+    )
+    .expect("foreign pid should surface");
+
+    assert_eq!(conflict.name, "OpenRGB");
+    assert_eq!(conflict.identifier, "OpenRGB.exe");
+    assert!(conflict.running);
+}
+
+#[test]
+fn detect_with_exclusions_matches_the_plain_detector_off_windows() {
+    let resource_dir = temp_resource_dir("exclusions-parity");
+    create_bundled_payload(&resource_dir);
+
+    let plain = detect_pawnio_support_from_resource_dir(Some(&resource_dir));
+    let excluded = detect_pawnio_support_with_exclusions(Some(&resource_dir), &[4242]);
+
+    assert_eq!(plain.conflicting_rgb_tools, excluded.conflicting_rgb_tools);
+    assert_eq!(plain.install_available, excluded.install_available);
+    cleanup_temp_resource_dir(&resource_dir);
 }

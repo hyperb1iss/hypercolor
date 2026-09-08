@@ -17,7 +17,10 @@ Something is not working. Find your symptom in the table below and follow the li
 | Device is plugged in but does not appear in Hypercolor | [Devices not found](@/troubleshooting/devices-not-found.md) |
 | Device shows up but will not connect or light up | [Devices not found: connection failures](@/troubleshooting/devices-not-found.md) |
 | `Permission denied` on USB device | [Devices not found: udev rules](@/troubleshooting/devices-not-found.md) |
-| Another RGB tool (OpenRGB, Aura Sync, openrazer) is holding the device | [Devices not found: conflicting software](@/troubleshooting/devices-not-found.md) |
+| Another RGB tool (Aura Sync, openrazer, a hand-run OpenRGB) is holding the device | [Devices not found: conflicting software](@/troubleshooting/devices-not-found.md) |
+| OpenRGB is installed but Hypercolor cannot reach it | [Devices not found: OpenRGB](@/troubleshooting/devices-not-found.md#openrgb-is-installed-but-hypercolor-cannot-reach-it) |
+| Device is visible to the OS but no Hypercolor driver claims it | [My device isn't supported](@/hardware/unsupported-devices.md) |
+| Bridged device shows "native driver owns this device" | [OpenRGB fallback: conflict guard](@/hardware/openrgb-fallback.md#hand-a-device-to-the-bridge) |
 | Lian Li Uni Hub AL detected but not controlling correctly | [Devices not found: firmware split](@/troubleshooting/devices-not-found.md) |
 | PrismRGB Prism 8 shows as "Nollie 8 v2" in the device list | [Devices not found: known rebrands](@/troubleshooting/devices-not-found.md) |
 | Audio-reactive effects are static (no reaction to music) | [Audio not reacting](@/troubleshooting/audio-not-reacting.md) |
@@ -61,6 +64,9 @@ hypercolor diagnose --check devices
 # Check render pipeline only
 hypercolor diagnose --check render
 
+# Reach the OpenRGB server and list output-disabled bridge routes
+hypercolor diagnose --check openrgb
+
 # Full report to file; attach to bug reports
 hypercolor diagnose --report ~/hypercolor-diag.json --system
 ```
@@ -93,7 +99,7 @@ Each page below is organized by symptom, not by subsystem. If your symptom does 
 
 ### [Devices not found](@/troubleshooting/devices-not-found.md)
 
-USB devices that are visible in `lsusb` but do not appear in Hypercolor, permission failures, conflicting software holding the HID device, and firmware-split or rebrand quirks for Lian Li and PrismRGB hardware.
+USB devices that are visible in `lsusb` but do not appear in Hypercolor, permission failures, conflicting software holding the HID device, an OpenRGB server the bridge cannot reach, unclaimed hardware, and firmware-split or rebrand quirks for Lian Li and PrismRGB hardware.
 
 ### [Audio not reacting](@/troubleshooting/audio-not-reacting.md)
 

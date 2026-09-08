@@ -67,6 +67,8 @@ pub const DEVICE_LIFECYCLE_EVENTS: &[&str] = &[
     "device_disconnected",
     "device_state_changed",
     "device_discovery_completed",
+    "unclaimed_devices_changed",
+    "config_changed",
 ];
 pub const LAYER_HEALTH_EVENTS: &[&str] = &["layer_health_changed"];
 

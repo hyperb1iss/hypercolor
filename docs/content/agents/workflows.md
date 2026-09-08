@@ -14,7 +14,7 @@ The MCP server ships this exact instruction to every client: start with `get_sta
 
 ## Before you start
 
-Two surfaces drive Hypercolor, and a complete workflow often uses both. The [MCP server](@/agents/mcp-setup.md) gives a model 17 structured tools, 5 browsable resources, and 3 prompts over Streamable HTTP at `http://127.0.0.1:9420/mcp`. The [`hypercolor` CLI](@/agents/cli-scripting.md) gives any agent that can run a shell command a machine-readable contract through `--json` output and exit codes. Local agents need no credentials, since loopback requests bypass auth entirely.
+Two surfaces drive Hypercolor, and a complete workflow often uses both. The [MCP server](@/agents/mcp-setup.md) gives a model 18 structured tools, 5 browsable resources, and 4 prompts over Streamable HTTP at `http://127.0.0.1:9420/mcp`. The [`hypercolor` CLI](@/agents/cli-scripting.md) gives any agent that can run a shell command a machine-readable contract through `--json` output and exit codes. Local agents need no credentials, since loopback requests bypass auth entirely.
 
 One thing trips agents up constantly, so fix it in your head now. There are two different `hypercolor` command-line tools:
 

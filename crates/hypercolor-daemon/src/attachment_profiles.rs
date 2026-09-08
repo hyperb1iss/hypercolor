@@ -1,6 +1,6 @@
 //! Persisted device attachment profile store.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -256,24 +256,54 @@ fn remap_string_keys<T>(
     migrated
 }
 
+/// Carry stored slot ids onto freshly derived slots so bindings survive a
+/// segment rename.
+///
+/// A slot is matched by its LED range when that range is unique among the
+/// stored slots. Zero-LED segments all share one `(start, 0)` range, so
+/// they are matched by name instead; an id that would collide with one
+/// already handed out keeps the derived id rather than merging two slots.
 fn merge_slots_preserving_ids(
     stored_slots: &[ComponentSlot],
     current_slots: &[ComponentSlot],
 ) -> Vec<ComponentSlot> {
-    let stored_by_range = stored_slots
-        .iter()
-        .map(|slot| ((slot.led_start, slot.led_count), slot))
-        .collect::<HashMap<_, _>>();
+    let mut stored_by_range: HashMap<(u32, u32), Vec<&ComponentSlot>> = HashMap::new();
+    for slot in stored_slots {
+        stored_by_range
+            .entry((slot.led_start, slot.led_count))
+            .or_default()
+            .push(slot);
+    }
 
+    let mut taken_ids: HashSet<String> = HashSet::new();
     current_slots
         .iter()
         .map(|slot| {
-            let Some(previous_slot) = stored_by_range.get(&(slot.led_start, slot.led_count)) else {
-                return slot.clone();
+            let previous_slot = match stored_by_range
+                .get(&(slot.led_start, slot.led_count))
+                .map(Vec::as_slice)
+            {
+                Some([only]) => Some(*only),
+                Some(candidates) => candidates
+                    .iter()
+                    .copied()
+                    .find(|candidate| candidate.name == slot.name)
+                    .or_else(|| {
+                        candidates
+                            .iter()
+                            .copied()
+                            .find(|candidate| candidate.id == slot.id)
+                    }),
+                None => None,
             };
 
             let mut merged = slot.clone();
-            merged.id.clone_from(&previous_slot.id);
+            if let Some(previous_slot) = previous_slot
+                && !taken_ids.contains(&previous_slot.id)
+            {
+                merged.id.clone_from(&previous_slot.id);
+            }
+            taken_ids.insert(merged.id.clone());
             merged
         })
         .collect()
@@ -372,5 +402,86 @@ mod tests {
                 .iter()
                 .any(|slot| slot.id == resolved.bindings[0].slot_id)
         );
+    }
+
+    fn channel_device(led_counts: &[u32]) -> DeviceInfo {
+        DeviceInfo {
+            id: DeviceId::new(),
+            name: "Nollie 32".to_owned(),
+            vendor: "Nollie".to_owned(),
+            family: DeviceFamily::new_static("nollie", "Nollie"),
+            model: None,
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb),
+            segments: led_counts
+                .iter()
+                .enumerate()
+                .map(|(index, led_count)| SegmentInfo {
+                    name: format!("Channel {}", index + 1),
+                    led_count: *led_count,
+                    topology: DeviceTopologyHint::Strip,
+                    color_format: DeviceColorFormat::Rgb,
+                    layout_hint: None,
+                })
+                .collect(),
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }
+    }
+
+    /// Several zero-LED channels share one `(led_start, 0)` range; merging a
+    /// stored profile back onto them must not collapse their ids onto the
+    /// last stored slot.
+    #[test]
+    fn get_or_default_keeps_zero_led_slot_ids_unique() {
+        let device = channel_device(&[30, 30, 0, 0, 0, 0]);
+        let default_ids = device
+            .default_attachment_profile()
+            .slots
+            .iter()
+            .map(|slot| slot.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            default_ids,
+            vec![
+                "channel-1",
+                "channel-2",
+                "channel-3",
+                "channel-4",
+                "channel-5",
+                "channel-6"
+            ]
+        );
+
+        let mut store = ComponentProfileStore::new(PathBuf::from("/tmp/unused.json"));
+        store.update(&device.id.to_string(), device.default_attachment_profile());
+
+        let merged_ids = store
+            .get_or_default(&device)
+            .slots
+            .iter()
+            .map(|slot| slot.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(merged_ids, default_ids, "zero-LED slots keep their own ids");
+
+        let unique: std::collections::HashSet<_> = merged_ids.iter().collect();
+        assert_eq!(unique.len(), merged_ids.len(), "slot ids must be unique");
+    }
+
+    /// The legitimate case the range merge exists for: a renamed zero-LED
+    /// segment still maps to its stored slot when the range is unique.
+    #[test]
+    fn merge_preserves_a_unique_zero_led_slot_id_across_a_rename() {
+        let stored = channel_device(&[30, 0]);
+        let mut renamed = stored.clone();
+        renamed.segments[1].name = "Rear Fans".to_owned();
+
+        let mut store = ComponentProfileStore::new(PathBuf::from("/tmp/unused.json"));
+        store.update(&stored.id.to_string(), stored.default_attachment_profile());
+        renamed.id = stored.id;
+
+        let merged = store.get_or_default(&renamed);
+        assert_eq!(merged.slots[1].id, "channel-2");
+        assert_eq!(merged.slots[1].name, "Rear Fans");
     }
 }

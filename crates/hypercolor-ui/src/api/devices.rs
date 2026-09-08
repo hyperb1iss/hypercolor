@@ -146,3 +146,23 @@ pub async fn unpair_device(id: &str) -> ApiResult<DeletePairingResponse> {
 pub async fn delete_simulated_display(id: &str) -> ApiResult<()> {
     client::delete_empty(&format!("/api/v1/simulators/displays/{id}")).await
 }
+
+/// USB inventory not claimed by an enabled native driver.
+pub async fn fetch_unclaimed_devices()
+-> ApiResult<Vec<hypercolor_types::api::devices::UnclaimedDevice>> {
+    client::fetch_json::<hypercolor_types::api::devices::UnclaimedDeviceListResponse>(
+        "/api/v1/devices/unclaimed",
+    )
+    .await
+    .map(|response| response.items)
+}
+
+/// Native and bridge ownership joined by physical identity.
+pub async fn fetch_device_coverage()
+-> ApiResult<Vec<hypercolor_types::api::devices::DeviceCoverageRow>> {
+    client::fetch_json::<hypercolor_types::api::devices::DeviceCoverageListResponse>(
+        "/api/v1/devices/coverage",
+    )
+    .await
+    .map(|response| response.items)
+}

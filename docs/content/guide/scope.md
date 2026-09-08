@@ -33,27 +33,27 @@ Hypercolor drives hardware through two transport layers.
 | `wled` | DDP / E1.31 sACN | mDNS (`_wled._tcp`) |
 | `govee` | Govee LAN UDP | UDP multicast scan (LAN control must be enabled in the Govee Home app first) |
 
-**Bridged devices** reach Hypercolor through another process rather than a driver of its own. The OpenRGB bridge is off by default. ROLI Blocks discovery is on by default (`discovery.blocks_scan = true`) but stays inert unless `blocksd` is running:
+**Bridged devices** reach Hypercolor through another process rather than a driver of its own. The OpenRGB bridge is off by default and, once on, drives only hardware no enabled native driver covers: Hypercolor runs the OpenRGB server itself with a detector partition that skips natively owned devices, and a conflict guard disables any bridge route that lands on one anyway. ROLI Blocks discovery is on by default (`discovery.blocks_scan = true`) but stays inert unless `blocksd` is running:
 
 | Bridge | Protocol | Enable with |
 |---|---|---|
-| OpenRGB SDK | TCP to a running OpenRGB server | the OpenRGB driver's config entry ([OpenRGB fallback](@/hardware/openrgb-fallback.md)) |
+| OpenRGB SDK | TCP to the Hypercolor-managed OpenRGB server on `127.0.0.1:6742` | Enable `drivers.openrgb.enabled`, then run `hypercolor openrgb start` ([OpenRGB fallback](@/hardware/openrgb-fallback.md)) |
 | ROLI Blocks | Unix socket to `blocksd` (Lightpad grids and LUMI key colors) | `discovery.blocks_scan`; Unix only |
 
-For the full list with every supported PID and device note, see the [compatibility matrix](@/hardware/compatibility.md).
+`hypercolor devices coverage` shows, per physical device, whether the native driver, the bridge, or nothing is active. For the full list with every supported PID and device note, see the [compatibility matrix](@/hardware/compatibility.md).
 
 ## What Hypercolor does NOT control (yet)
 
 ### RAM RGB (non-ASUS)
 
-ASUS Aura DRAM DIMMs are already supported: the `asus_aura_smbus_dram` driver ships today and drives them over SMBus on both Linux (via `i2c-dev`) and Windows (via PawnIO). Other DIMM vendors are not there yet. Corsair RAM (Dominator, Dominator Titanium) is researched and in the database with the wire protocol documented, but no driver has shipped, so non-ASUS DRAM lighting remains outside Hypercolor's scope for now.
+ASUS Aura DRAM DIMMs are already supported: the `asus_aura_smbus_dram` driver ships today and drives them over SMBus on both Linux (via `i2c-dev`) and Windows (via PawnIO). Other DIMM vendors are not there yet. Corsair RAM (Dominator, Dominator Titanium) is researched and in the database with the wire protocol documented, but no driver has shipped, so non-ASUS DRAM lighting has no native driver for now. OpenRGB drives most of these DIMMs, and the [OpenRGB bridge](@/hardware/openrgb-fallback.md) brings them into Hypercolor on Linux and Windows until a native driver lands.
 
 ### GPU RGB
 
-GPU RGB via SMBus is researched for several families (ASUS Aura GPU via ENE SMBus, EVGA Pascal/Turing/Ampere, Gigabyte GPU across four generations, and MSI Lovelace), with ASRock AMD GPUs further back at the Known stage. None have a shipping driver. The SMBus transport exists in the codebase; the per-vendor protocol implementations do not. Your GPU will not appear in `hypercolor devices list`.
+GPU RGB via SMBus is researched for several families (ASUS Aura GPU via ENE SMBus, EVGA Pascal/Turing/Ampere, Gigabyte GPU across four generations, and MSI Lovelace), with ASRock AMD GPUs further back at the Known stage. None have a shipping driver. The SMBus transport exists in the codebase; the per-vendor protocol implementations do not. Your GPU will not appear in `hypercolor devices list` natively. If OpenRGB lists it, the [OpenRGB bridge](@/hardware/openrgb-fallback.md) drives it; a GPU whose PCI subsystem id OpenRGB does not know is a request for the OpenRGB project.
 
 {% <callout type="info"> %}
-SMBus access has its own plumbing per platform. On Linux, SMBus devices need the `i2c-dev` kernel module and i2c group membership, which the install hooks set up. On Windows, the installer's hardware setup (PawnIO plus the HypercolorSmBus broker) provides it. macOS has no SMBus path, and GPU SMBus probing is Linux-only today. Watch the compatibility matrix for status changes.
+SMBus access has its own plumbing per platform. On Linux, SMBus devices need the `i2c-dev` kernel module and i2c group membership, which the install hooks set up. On Windows, the installer's hardware setup (PawnIO plus the HypercolorSmBus broker) provides it, and OpenRGB 1.0rc2 and later share the same PawnIO driver. macOS has no SMBus path for either stack, and GPU SMBus probing is Linux-only today. Watch the compatibility matrix for status changes.
 {% </callout> %}
 
 ### Blocked devices: Dygma Defy
@@ -76,7 +76,7 @@ If your device is Researched or Known, it is a candidate for a contributed drive
 
 ### Devices controlled by another RGB manager
 
-If openrazer daemon, OpenRGB, Aura Sync, iCUE, or any other tool has the USB device open, Hypercolor's USB driver will not be able to connect to it. This is a kernel-level exclusion: only one process can hold a HID device at a time. If a device appears in `lsusb` but not in `hypercolor devices list`, check whether another RGB tool is running and holding it.
+If openrazer daemon, Aura Sync, iCUE, a hand-run OpenRGB, or any other tool has the USB device open, Hypercolor's USB driver will not be able to connect to it. This is a kernel-level exclusion: only one process can hold a HID device at a time. If a device appears in `lsusb` but not in `hypercolor devices list`, check whether another RGB tool is running and holding it. The OpenRGB server Hypercolor manages is the exception: it is configured to skip every device a native driver owns.
 
 ```bash
 # Check which process holds your Razer device (adjust VID:PID as needed)
@@ -101,5 +101,7 @@ hypercolor diagnose
 ```
 
 If a USB device is missing, confirm udev rules are installed (`just udev-install` on a source build, or check your package's post-install instructions), then re-plug the device. Network devices that are not discovered usually need their LAN control enabled in their companion app before mDNS broadcasting starts.
+
+If a USB device is visible to the OS but no driver claims it, `hypercolor devices unclaimed` lists it with its VID:PID, and [My device isn't supported](@/hardware/unsupported-devices.md) walks from there to the OpenRGB bridge or a prefilled device-support request.
 
 For a step-by-step device setup walkthrough, see [finding devices](@/guide/finding-devices.md).

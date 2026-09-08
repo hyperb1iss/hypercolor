@@ -1182,3 +1182,20 @@ mod tests {
         }
     }
 }
+
+/// Installation guidance from the desktop host, when the app owns the session.
+#[cfg(target_arch = "wasm32")]
+pub async fn openrgb_install_hints()
+-> Result<Option<Vec<hypercolor_types::api::system::OpenRgbInstallHint>>, String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Ok(None);
+    };
+    let value = invoke_command(&invoke, "openrgb_install_hints", None).await?;
+    serde_json_from_js_value(value).map(Some)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn openrgb_install_hints()
+-> Result<Option<Vec<hypercolor_types::api::system::OpenRgbInstallHint>>, String> {
+    Ok(None)
+}

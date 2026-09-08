@@ -46,7 +46,7 @@ Network drivers live in separate crates behind the `hypercolor-driver-api` trait
 | Nanoleaf | HTTP pairing + UDP External Control | mDNS `_nanoleafapi._tcp.local.` | Hold power button 5-7 s to enter pairing mode |
 | WLED | DDP (default) or E1.31/sACN | mDNS `_wled._tcp.local.` | No authentication needed |
 | Govee | LAN UDP + optional cloud API | UDP multicast `239.255.255.250:4001` | LAN control must be enabled in the Govee Home app first |
-| OpenRGB bridge | OpenRGB SDK over TCP | Connects on demand to `127.0.0.1:6742` | Fallback bridge; ships compiled in but disabled by default |
+| OpenRGB bridge | OpenRGB SDK over TCP | Connects on demand to the Hypercolor-managed server on `127.0.0.1:6742` | Fallback bridge; drives only hardware no enabled native driver covers; disabled by default |
 
 The ROLI Blocks bridge is a fifth registered driver module, but it speaks to a local `blocksd` Unix socket rather than the network. Both bridges are covered further down this page.
 
@@ -58,7 +58,7 @@ Some hardware carries a small LCD or display panel that Hypercolor can drive alo
 
 ### OpenRGB bridge
 
-For hardware that Hypercolor does not yet support natively, the OpenRGB fallback bridge connects to a user-managed OpenRGB SDK server (default port 6742) and routes frames through it. This lets you bring nearly any device into the render pipeline while native support is in progress. See [OpenRGB fallback](@/hardware/openrgb-fallback.md) for configuration and caveats around device ownership.
+For hardware that Hypercolor does not yet support natively, the OpenRGB fallback bridge routes frames through an OpenRGB SDK server on `127.0.0.1:6742`. Hypercolor runs that server itself (`hypercolor openrgb start`) against a config directory it owns, with a detector partition that keeps OpenRGB away from every device a native driver drives; a conflict guard output-disables any bridge route that still lands on natively owned silicon. An OpenRGB you start by hand from its own config is a different thing: it detects everything and competes with native drivers, so treat it as [conflicting software](@/hardware/conflicting-software.md). `hypercolor devices coverage` shows which stack owns each device. See [OpenRGB fallback](@/hardware/openrgb-fallback.md) for the install matrix, managed server, zone sizes, and the hand-off flow, and [My device isn't supported](@/hardware/unsupported-devices.md) for hardware neither stack lights.
 
 ---
 
@@ -113,10 +113,10 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | **[ROLI Blocks bridge](@/hardware/roli-blocks.md)** | Unix socket / blocksd | Lightpad grids and 24 LUMI key colors | Supported with matching blocksd capabilities (Unix only) |
 | **Dygma Defy** | USB Serial | Driver ready; lighting gated by firmware, not yet enabled | Blocked |
 
-Neither bridge is counted among the 12 driver families with shipping device support. The OpenRGB bridge ships compiled in but its config entry is minted disabled, so enable it per [OpenRGB fallback](@/hardware/openrgb-fallback.md). The ROLI Blocks bridge scans by default (`discovery.blocks_scan = true`) and finds devices only when a `blocksd` socket is present; set `discovery.blocks_socket_path` if yours is not in the default location. Dygma is the thirteenth family implemented in the tree; it is excluded from the twelve because no Dygma device lights up yet.
+Neither bridge is counted among the 12 driver families with shipping device support. The OpenRGB bridge ships compiled in but its config entry is minted disabled; run `hypercolor devices coverage` first and enable it per [OpenRGB fallback](@/hardware/openrgb-fallback.md) only when a device reads `unclaimed` or `none`. The ROLI Blocks bridge scans by default (`discovery.blocks_scan = true`) and finds devices only when a `blocksd` socket is present; set `discovery.blocks_socket_path` if yours is not in the default location. Dygma is the thirteenth family implemented in the tree; it is excluded from the twelve because no Dygma device lights up yet.
 
 {% <callout type="warning"> %}
-If another RGB manager (OpenRGB, Aura Sync, openrazer daemon, iCUE via Wine) has a USB device open, Hypercolor cannot claim it. The device will appear in `lsusb` but not in `hypercolor devices list`. Close or disable the conflicting tool first. See [conflicting software](@/hardware/conflicting-software.md).
+If another RGB manager (Aura Sync, openrazer daemon, iCUE via Wine, or an OpenRGB you started yourself) has a USB device open, Hypercolor cannot claim it. The device will appear in `lsusb` but not in `hypercolor devices list`. Close or disable the conflicting tool first. The OpenRGB server Hypercolor manages is exempt: it is configured to skip natively owned devices. See [conflicting software](@/hardware/conflicting-software.md).
 {% </callout> %}
 
 ---
@@ -157,9 +157,10 @@ Each transport path has its own setup page because the failure modes are differe
 - [Nanoleaf](@/hardware/nanoleaf.md): power-button pairing, panel layout
 - [WLED](@/hardware/wled.md): DDP vs E1.31, RGB vs RGBW
 - [Govee](@/hardware/govee.md): LAN control setup, Razer-streaming SKUs, cloud API key
-- [OpenRGB fallback](@/hardware/openrgb-fallback.md): bridge config, ownership modes
+- [OpenRGB fallback](@/hardware/openrgb-fallback.md): coverage view, per-platform install, the managed server and detector partition, zone sizes
+- [My device isn't supported](@/hardware/unsupported-devices.md): native status, unclaimed hardware, the bridge, and a prefilled device-support request
 - [Device quirks](@/hardware/device-quirks.md): rebrands, firmware splits, known edge cases
-- [Conflicting software](@/hardware/conflicting-software.md): openrazer, OpenRGB, Aura Sync, iCUE
+- [Conflicting software](@/hardware/conflicting-software.md): openrazer, hand-run OpenRGB, Aura Sync, iCUE
 
 ---
 

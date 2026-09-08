@@ -311,6 +311,7 @@ pub fn DeviceCard(
     let device_class = classify_device(&device);
     let icon = device_class_icon(&device_class);
     let type_label = device_class_label(&device_class);
+    let bridge_device = device.clone();
     let device_name = device.name.clone();
     let zone_count = device.segments.len();
     let total_leds = device.total_leds;
@@ -475,6 +476,7 @@ pub fn DeviceCard(
                                 title=status
                             />
                         </div>
+                        <crate::components::bridge_status::BridgeStatus device=bridge_device />
                         // Driver · type · connection — single meta line
                         <div class="flex items-center gap-1.5 mt-1">
                             {move || {

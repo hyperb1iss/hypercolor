@@ -41,6 +41,8 @@ pub mod layer;
 pub mod layout;
 #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
 mod macos_screen_parity;
+pub mod openrgb_diagnostics;
+pub mod openrgb_setup;
 pub mod output;
 pub mod scene;
 pub mod scene_tree;

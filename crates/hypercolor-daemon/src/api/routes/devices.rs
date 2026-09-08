@@ -27,6 +27,24 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
             ).optional_body::<hypercolor_types::api::devices::DiscoverRequest>().also_status("202")],
         ))
         .routes(openapi::documented_route(
+            "/devices/unclaimed",
+            axum::routing::get(devices::list_unclaimed_devices),
+            [OperationDoc::get_list::<hypercolor_types::api::devices::UnclaimedDevice>(
+                "list_unclaimed_devices",
+                "devices",
+                "List USB devices no enabled native driver claims",
+            )],
+        ))
+        .routes(openapi::documented_route(
+            "/devices/coverage",
+            axum::routing::get(devices::get_device_coverage),
+            [OperationDoc::get_list::<hypercolor_types::api::devices::DeviceCoverageRow>(
+                "get_device_coverage",
+                "devices",
+                "Join native, bridge, and unclaimed views per physical device",
+            )],
+        ))
+        .routes(openapi::documented_route(
             "/devices/{id}",
             axum::routing::get(devices::get_device)
                 .put(devices::update_device)

@@ -1868,3 +1868,59 @@ async fn config_get_prints_the_daemon_key_value() -> Result<()> {
 
     Ok(())
 }
+#[tokio::test]
+async fn openrgb_verbose_json_keeps_diagnostics_on_stderr() -> Result<()> {
+    use hypercolor_types::api::system::OpenRgbStatus;
+    let fixture = OpenRgbStatus {
+        compiled: true,
+        enabled: false,
+        platform: "fixture".to_owned(),
+        binary_path: None,
+        binary_version: None,
+        bridge_config: hypercolor_types::config::DriverConfigEntry::default(),
+        probes: Vec::new(),
+        install_hints: Vec::new(),
+        permission_checks: Vec::new(),
+        coverage: Vec::new(),
+        output_disabled_count: 0,
+    };
+    let expected = serde_json::to_value(&fixture)?;
+    let router = Router::new().route(
+        "/api/v1/system/openrgb",
+        get(move || {
+            let fixture = fixture.clone();
+            async move { Json(serde_json::json!({"data": fixture})) }
+        }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_hypercolor"));
+    cmd.kill_on_drop(true)
+        .env("RUST_LOG", "hyper_util=debug")
+        .env_remove("HYPERCOLOR_PROFILE")
+        .env_remove("HYPERCOLOR_API_KEY")
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
+        .args(["-vv", "--json", "openrgb", "status"]);
+    let result = tokio::time::timeout(Duration::from_secs(10), cmd.output()).await;
+    let _ = shutdown_tx.send(());
+    task.await.context("fake server shutdown")?;
+    let output = result.context("CLI timeout")?.context("CLI spawn")?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .context("verbose stdout must contain exactly one JSON document")?,
+        expected
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("connecting to"),
+        "expected connection diagnostic on stderr: {stderr}"
+    );
+    Ok(())
+}

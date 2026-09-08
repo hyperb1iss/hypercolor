@@ -53,7 +53,11 @@ workspace = true
 
 [features]
 allocation-contract-tests = []
-builtin-drivers = ["dep:hypercolor-driver-builtin", "hypercolor-driver-builtin/default"]
+builtin-drivers = [
+    "dep:hypercolor-driver-builtin",
+    "hypercolor-driver-builtin/default",
+    "dep:hypercolor-openrgb-sdk",
+]
 media-lottie = ["hypercolor-core/media-lottie"]
 media-video = ["hypercolor-core/media-video"]
 macos-tcc-canary = ["screen-capture"]
@@ -83,6 +87,7 @@ servo = ["hypercolor-core/servo"]
 hypercolor-color = { workspace = true }
 hypercolor-gpu-frame = { workspace = true }
 hypercolor-types = { workspace = true, features = ["schema"] }
+hypercolor-openrgb-host = { workspace = true }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-platform-fs = { workspace = true }
 hypercolor-linux-session = { workspace = true }
@@ -91,6 +96,7 @@ hypercolor-driver-api = { workspace = true }
 hypercolor-driver-support = { workspace = true }
 hypercolor-driver-builtin = { workspace = true, default-features = false, optional = true }
 hypercolor-network = { workspace = true }
+hypercolor-openrgb-sdk = { workspace = true, optional = true }
 hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["ws-core", "axum"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }

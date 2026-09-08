@@ -868,6 +868,26 @@ impl DeviceContext {
         self.driver_host.discovery_runtime().device_registry
     }
 
+    /// The full discovery runtime, for readers that need more than the
+    /// registry (bridge output locks, the unclaimed inventory).
+    pub(crate) fn discovery_runtime(&self) -> discovery::DiscoveryRuntime {
+        self.driver_host.discovery_runtime()
+    }
+
+    /// The compiled driver module registry.
+    pub(crate) fn driver_registry(&self) -> &Arc<DriverModuleRegistry> {
+        &self.driver_registry
+    }
+
+    /// The live config snapshot, when a manager is attached.
+    pub(crate) fn config_snapshot(
+        &self,
+    ) -> Option<Arc<hypercolor_types::config::HypercolorConfig>> {
+        self.config_manager
+            .as_ref()
+            .map(|manager| Arc::clone(&manager.get()))
+    }
+
     /// Schedule discovery after released output ownership becomes available.
     pub fn schedule_output_reconnect(&self, network_only: bool) {
         let Some(config_manager) = self.config_manager.as_ref() else {

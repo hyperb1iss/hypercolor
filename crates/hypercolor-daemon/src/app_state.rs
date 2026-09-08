@@ -18,7 +18,8 @@ use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, UnclaimedDeviceStore,
+    UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
@@ -34,6 +35,7 @@ use hypercolor_types::server::ServerIdentity;
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::{DeviceSettingsAccess, DeviceSettingsStore};
+use crate::discovery::BridgeOutputLocks;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::context::DomainContexts;
@@ -526,12 +528,15 @@ impl AppState {
             DriverInventoryStore::open(state_dir.join(DRIVER_INVENTORY_FILENAME))
                 .expect("default app state should open driver inventory"),
         );
+        let unclaimed_devices = UnclaimedDeviceStore::new().with_event_bus(Arc::clone(&event_bus));
+        let bridge_output_locks = BridgeOutputLocks::default();
         let driver_registry = driver_registry.unwrap_or_else(|| {
             Arc::new(
                 network::build_builtin_driver_module_registry(
                     &config,
                     Arc::clone(&credential_store),
                     usb_protocol_configs.clone(),
+                    unclaimed_devices.clone(),
                 )
                 .expect("default app state should build driver module registry"),
             )
@@ -612,6 +617,9 @@ impl AppState {
                     runtime_state_path: runtime_state_path.clone(),
                     device_aliases_path,
                     usb_protocol_configs: usb_protocol_configs.clone(),
+                    unclaimed_devices: unclaimed_devices.clone(),
+                    bridge_output_locks: bridge_output_locks.clone(),
+                    probe_serializer: Arc::default(),
                     credential_store: Arc::clone(&credential_store),
                     in_progress: Arc::clone(&discovery_in_progress),
                     pending_scans: Arc::default(),

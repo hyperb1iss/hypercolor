@@ -71,6 +71,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         displays::build_set_display_face(),
         system::build_get_layout(),
         system::build_diagnose(),
+        system::build_openrgb_status(),
     ]
 }
 
@@ -467,6 +468,9 @@ pub async fn execute_tool_with_state(
         "set_display_face" => displays::handle_set_display_face_with_state(&params, state).await,
         "get_layout" => system::handle_get_layout_with_state(state).await,
         "diagnose" => system::handle_diagnose_with_state(&params, state).await,
+        "openrgb_status" => serialize_result(
+            crate::domain::openrgb_setup::openrgb_status(&state.domains.devices).await,
+        ),
         _ => Err(ToolError::NotFound(name.to_owned())),
     }?;
     validate_result(name, &result)?;

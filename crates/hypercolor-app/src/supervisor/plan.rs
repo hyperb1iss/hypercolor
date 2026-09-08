@@ -6,6 +6,10 @@
 //! preference into a payload-bearing [`LauncherPlan`] arm. Nothing here
 //! touches the OS: the arms are executed by the supervisor's platform
 //! composition.
+//!
+//! The same file holds the OpenRGB fallback-server plan (Spec 81 §3.2): the
+//! supervisor gathers the binary, the SDK probe, the permission checks, and
+//! the bridge config, and [`openrgb_plan`] decides adopt, spawn, or hold.
 
 use hypercolor_types::service::ServiceIdentity;
 use url::Url;
@@ -167,3 +171,7 @@ pub fn launcher_plan(
         }
     }
 }
+
+pub use hypercolor_openrgb_host::{
+    OpenRgbHoldReason, OpenRgbPlan, OpenRgbPlanInputs, openrgb_plan,
+};

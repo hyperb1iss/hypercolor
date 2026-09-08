@@ -1310,3 +1310,27 @@ fn timed_input_event_rejects_an_absent_sequence() {
     let json = r#"{"event":{"kind":"key","source_id":"s","key":"a","state":"pressed"},"at_ms":5,"repeat_count":1}"#;
     serde_json::from_str::<TimedInputEvent>(json).expect_err("seq must be present");
 }
+
+#[test]
+fn unclaimed_devices_changed_is_a_device_event_on_the_wire() {
+    let event = HypercolorEvent::UnclaimedDevicesChanged { count: 3 };
+    assert_eq!(event.category(), EventCategory::Device);
+    assert_eq!(event.priority(), EventPriority::Normal);
+
+    let value = serde_json::to_value(&event).expect("serialize event");
+    assert_eq!(
+        value,
+        serde_json::json!({ "type": "UnclaimedDevicesChanged", "data": { "count": 3 } })
+    );
+    let decoded: HypercolorEvent = serde_json::from_value(value).expect("deserialize event");
+    assert!(matches!(
+        decoded,
+        HypercolorEvent::UnclaimedDevicesChanged { count: 3 }
+    ));
+    assert!(
+        hypercolor_types::event::event_vocabulary()
+            .iter()
+            .any(|name| name == "unclaimed_devices_changed"),
+        "the ws vocabulary must advertise the new event"
+    );
+}

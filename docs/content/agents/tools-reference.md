@@ -1,11 +1,11 @@
 +++
 title = "Tools reference"
-description = "All 17 Hypercolor MCP tools: arguments, defaults, enums, read-only and idempotency flags, and a worked call for each."
+description = "All 18 Hypercolor MCP tools: arguments, defaults, enums, read-only and idempotency flags, and a worked call for each."
 weight = 20
 template = "page.html"
 +++
 
-The Hypercolor MCP server exposes **17 tools**, the verbs an agent uses to read and reshape the lighting state. This page is the authoritative reference: every tool's arguments, defaults, enums, annotations, and a worked call. All facts here are pulled from the daemon source in `crates/hypercolor-daemon/src/mcp/tools/`, not paraphrased.
+The Hypercolor MCP server exposes **18 tools**, the verbs an agent uses to read and reshape the lighting state. This page is the authoritative reference: every tool's arguments, defaults, enums, annotations, and a worked call. All facts here are pulled from the daemon source in `crates/hypercolor-daemon/src/mcp/tools/`, not paraphrased.
 
 {% <callout type="warning"> %}
 The MCP server is **off by default**. Until you enable it in config, `http://127.0.0.1:9420/mcp` returns 404. Turn it on first in [MCP setup](@/agents/mcp-setup.md), then come back here.
@@ -24,7 +24,7 @@ Every tool carries four annotations the daemon reports to MCP clients.
 | `destructive` | The tool overwrites state you cannot get back. Reported per tool, not as a blanket value.                      |
 | `open_world`  | Always `false`; the tool set is closed and known.                                                              |
 
-Of the 17 tools, **8 are read-only**: `get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, and `diagnose`. The other 9 mutate state. Four tools are non-idempotent: `set_effect` and `set_color` mint fresh layer identities, `create_scene` mints a scene, and `set_display_face` replaces an assignment.
+Of the 18 tools, **9 are read-only**: `get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, `diagnose`, and `openrgb_status`. The other 9 mutate state. Four tools are non-idempotent: `set_effect` and `set_color` mint fresh layer identities, `create_scene` mints a scene, and `set_display_face` replaces an assignment.
 
 Five of the nine mutating tools are destructive: `set_effect`, `set_color`, `clear_zone`, `activate_scene`, and `set_display_face` each discard state the caller did not supply and cannot recover. The other four are not: `set_brightness` and `set_output_power` are reversible value writes, `adjust_controls` patches named values and bindings, and `create_scene` only adds.
 
@@ -358,6 +358,22 @@ Run the canonical safe system diagnostic pass. Read-only and idempotent. The too
 The response is the canonical REST data object: `checks[]` entries carry `category`, `name`, `status`, and `detail`; `summary` counts passed, warning, and failed checks; `snapshot` carries `input`, `render`, `usb`, `display_output`, and `device_output`. MCP always runs the safe default checks: `daemon`, `render`, `devices`, `config`, `input`, and `memory`. It does not expose the protected `macos_screen_parity` check. This is the backbone of the diagnose flow in [agent workflows](@/agents/workflows.md).
 
 ---
+
+### OpenRGB setup status (`openrgb_status`)
+
+Inspect OpenRGB on the daemon host before recommending fallback hardware support.
+Read-only and idempotent; takes no arguments.
+
+```json
+{ "name": "openrgb_status", "arguments": {} }
+```
+
+The response includes the compiled and enabled bridge state, ownership settings,
+host platform, installation path and version, SDK endpoint probes, permission
+checks and remedies, install hints, coverage rows, and output-disabled count.
+Endpoint probes run even when bridge output is disabled. The CLI command
+`hypercolor openrgb status` and `GET /api/v1/system/openrgb` use the same typed
+payload. The `openrgb_setup` prompt guides the next steps.
 
 ## Displays
 

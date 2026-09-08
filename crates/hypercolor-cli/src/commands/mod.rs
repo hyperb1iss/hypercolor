@@ -12,6 +12,7 @@ pub mod drivers;
 pub mod effects;
 pub mod layouts;
 pub mod library;
+pub mod openrgb;
 pub mod scenes;
 pub mod server;
 pub mod servers;
@@ -19,3 +20,5 @@ pub mod service;
 pub mod status;
 #[cfg(feature = "tui")]
 pub mod tui;
+
+pub mod openrgb_lifecycle;

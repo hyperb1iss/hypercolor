@@ -32,6 +32,9 @@ pub fn DiscoverySection(
         <section id="section-discovery" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Device Discovery" icon=LuRadar />
             <HardwareSupportPanel />
+            <Show when=move || driver_modules.get().iter().any(|driver| driver.descriptor.id == "openrgb")>
+                <super::openrgb::OpenRgbCard on_change=on_change />
+            </Show>
             <SettingToggle
                 label="mDNS Discovery"
                 description="Use multicast DNS to find devices on the local network"

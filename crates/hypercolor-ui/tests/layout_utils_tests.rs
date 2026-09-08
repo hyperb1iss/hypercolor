@@ -83,6 +83,7 @@ fn sample_device_summary(name: &str, segments: Vec<api::SegmentSummary>) -> api:
         auth: None,
         segments,
         attachments: None,
+        bridge: None,
     }
 }
 

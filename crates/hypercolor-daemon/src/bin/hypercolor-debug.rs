@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
-    DeviceRegistry, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport, UsbHotplugEvent,
-    UsbHotplugMonitor, UsbProtocolConfigStore,
+    DeviceRegistry, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport,
+    UnclaimedDeviceStore, UsbHotplugEvent, UsbHotplugMonitor, UsbProtocolConfigStore,
 };
 use hypercolor_driver_api::{
     DiscoveryRequest, DriverConfigView, DriverCredentialStore, DriverDiscoveryState, DriverHost,
@@ -107,6 +107,7 @@ async fn run_detect(args: DetectArgs) -> Result<()> {
         &config,
         credential_store,
         UsbProtocolConfigStore::new(),
+        UnclaimedDeviceStore::new(),
     )
     .context("failed to build debug driver registry")?;
     let driver_host = Arc::new(DebugDriverHost);

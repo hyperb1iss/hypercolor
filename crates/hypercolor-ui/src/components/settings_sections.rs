@@ -26,6 +26,7 @@ mod audio;
 mod developer;
 mod discovery;
 mod input;
+mod openrgb;
 mod session;
 
 use input::MacosSystemSettingsButton;

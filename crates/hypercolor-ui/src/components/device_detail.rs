@@ -205,6 +205,7 @@ pub fn DeviceDetail(
                 let dev_id_for_forget = dev.id.clone();
                 let descriptor = dev.auth.as_ref().and_then(|a| a.descriptor.clone());
                 let last_error = dev.auth.as_ref().and_then(|a| a.last_error.clone());
+                let bridge_device = dev.clone();
                 let dev_name_for_edit = dev.name.clone();
                 let push_brightness = push_brightness.clone();
                 let mount_device_id = dev.id.clone();
@@ -306,6 +307,7 @@ pub fn DeviceDetail(
                                 })}
                             </div>
 
+                            <crate::components::bridge_status::BridgeStatus device=bridge_device />
                             // ── Stats chips: LEDs · channels · connection ──
                             <div class="flex items-center gap-1.5 flex-wrap mb-3">
                                 <span class="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded-md"

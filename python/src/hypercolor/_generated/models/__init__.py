@@ -153,6 +153,7 @@ from .binding_source_type_2_kind import BindingSourceType2Kind
 from .binding_source_type_3 import BindingSourceType3
 from .binding_source_type_3_kind import BindingSourceType3Kind
 from .blend_mode import BlendMode
+from .bridge_device_summary import BridgeDeviceSummary
 from .capture_authorization_response import CaptureAuthorizationResponse
 from .capture_monitor import CaptureMonitor
 from .capture_monitor_list_item import CaptureMonitorListItem
@@ -230,6 +231,11 @@ from .control_value import ControlValue
 from .control_value_kind import ControlValueKind
 from .control_visibility import ControlVisibility
 from .corner import Corner
+from .coverage_active import CoverageActive
+from .coverage_bridge_device import CoverageBridgeDevice
+from .coverage_identity import CoverageIdentity
+from .coverage_identity_kind import CoverageIdentityKind
+from .coverage_native_device import CoverageNativeDevice
 from .create_layer_request import CreateLayerRequest
 from .create_layout_request import CreateLayoutRequest
 from .create_layout_response_201 import CreateLayoutResponse201
@@ -277,6 +283,8 @@ from .device_class_hint import DeviceClassHint
 from .device_components_response import DeviceComponentsResponse
 from .device_components_update_response import DeviceComponentsUpdateResponse
 from .device_connection_summary import DeviceConnectionSummary
+from .device_coverage_row import DeviceCoverageRow
+from .device_coverage_row_list_response import DeviceCoverageRowListResponse
 from .device_origin import DeviceOrigin
 from .device_ref import DeviceRef
 from .device_summary import DeviceSummary
@@ -373,6 +381,7 @@ from .get_config_key_response_200 import GetConfigKeyResponse200
 from .get_config_schema_response_200 import GetConfigSchemaResponse200
 from .get_control_surface_response_200 import GetControlSurfaceResponse200
 from .get_device_control_surface_response_200 import GetDeviceControlSurfaceResponse200
+from .get_device_coverage_response_200 import GetDeviceCoverageResponse200
 from .get_device_response_200 import GetDeviceResponse200
 from .get_display_face_response_200 import GetDisplayFaceResponse200
 from .get_driver_config_response_200 import GetDriverConfigResponse200
@@ -381,6 +390,7 @@ from .get_effect_response_200 import GetEffectResponse200
 from .get_layout_response_200 import GetLayoutResponse200
 from .get_live_scene_response_200 import GetLiveSceneResponse200
 from .get_live_zone_response_200 import GetLiveZoneResponse200
+from .get_openrgb_status_response_200 import GetOpenrgbStatusResponse200
 from .get_output_response_200 import GetOutputResponse200
 from .get_playlist_response_200 import GetPlaylistResponse200
 from .get_preset_response_200 import GetPresetResponse200
@@ -452,6 +462,7 @@ from .list_presets_response_200 import ListPresetsResponse200
 from .list_scenes_response_200 import ListScenesResponse200
 from .list_simulated_displays_response_200 import ListSimulatedDisplaysResponse200
 from .list_templates_response_200 import ListTemplatesResponse200
+from .list_unclaimed_devices_response_200 import ListUnclaimedDevicesResponse200
 from .live_section import LiveSection
 from .loop_mode import LoopMode
 from .macos_capability_owner import MacosCapabilityOwner
@@ -470,6 +481,10 @@ from .media_playback import MediaPlayback
 from .member_placement import MemberPlacement
 from .normalized_position import NormalizedPosition
 from .normalized_rect import NormalizedRect
+from .open_rgb_endpoint_status import OpenRgbEndpointStatus
+from .open_rgb_install_hint import OpenRgbInstallHint
+from .open_rgb_permission_status import OpenRgbPermissionStatus
+from .open_rgb_status import OpenRgbStatus
 from .orientation import Orientation
 from .output import Output
 from .output_component import OutputComponent
@@ -482,6 +497,7 @@ from .pair_device_response_200 import PairDeviceResponse200
 from .pairing_descriptor import PairingDescriptor
 from .pairing_field_descriptor import PairingFieldDescriptor
 from .pairing_flow_kind import PairingFlowKind
+from .patch_config_key_response_200 import PatchConfigKeyResponse200
 from .patch_controls_request import PatchControlsRequest
 from .patch_controls_request_values import PatchControlsRequestValues
 from .patch_display_face_composition_response_200 import (
@@ -605,6 +621,8 @@ from .time_wave import TimeWave
 from .transition_type_type_0 import TransitionTypeType0
 from .transition_type_type_0_type import TransitionTypeType0Type
 from .unassign_live_zone_member_response_200 import UnassignLiveZoneMemberResponse200
+from .unclaimed_device import UnclaimedDevice
+from .unclaimed_device_list_response import UnclaimedDeviceListResponse
 from .update_asset_response_200 import UpdateAssetResponse200
 from .update_attachments_request import UpdateAttachmentsRequest
 from .update_attachments_response_200 import UpdateAttachmentsResponse200
@@ -708,6 +726,7 @@ __all__ = (
     "BindingSourceType3",
     "BindingSourceType3Kind",
     "BlendMode",
+    "BridgeDeviceSummary",
     "BTreeMap",
     "BTreeMapAdditionalPropertyType0",
     "BTreeMapAdditionalPropertyType0Kind",
@@ -819,6 +838,11 @@ __all__ = (
     "ControlValueKind",
     "ControlVisibility",
     "Corner",
+    "CoverageActive",
+    "CoverageBridgeDevice",
+    "CoverageIdentity",
+    "CoverageIdentityKind",
+    "CoverageNativeDevice",
     "CreateLayerRequest",
     "CreateLayoutRequest",
     "CreateLayoutResponse201",
@@ -866,6 +890,8 @@ __all__ = (
     "DeviceComponentsResponse",
     "DeviceComponentsUpdateResponse",
     "DeviceConnectionSummary",
+    "DeviceCoverageRow",
+    "DeviceCoverageRowListResponse",
     "DeviceOrigin",
     "DeviceRef",
     "DeviceSummary",
@@ -958,6 +984,7 @@ __all__ = (
     "GetConfigSchemaResponse200",
     "GetControlSurfaceResponse200",
     "GetDeviceControlSurfaceResponse200",
+    "GetDeviceCoverageResponse200",
     "GetDeviceResponse200",
     "GetDisplayFaceResponse200",
     "GetDriverConfigResponse200",
@@ -966,6 +993,7 @@ __all__ = (
     "GetLayoutResponse200",
     "GetLiveSceneResponse200",
     "GetLiveZoneResponse200",
+    "GetOpenrgbStatusResponse200",
     "GetOutputResponse200",
     "GetPlaylistResponse200",
     "GetPresetResponse200",
@@ -1035,6 +1063,7 @@ __all__ = (
     "ListScenesResponse200",
     "ListSimulatedDisplaysResponse200",
     "ListTemplatesResponse200",
+    "ListUnclaimedDevicesResponse200",
     "LiveSection",
     "LoopMode",
     "MacosCapabilityOwner",
@@ -1051,6 +1080,10 @@ __all__ = (
     "MemberPlacement",
     "NormalizedPosition",
     "NormalizedRect",
+    "OpenRgbEndpointStatus",
+    "OpenRgbInstallHint",
+    "OpenRgbPermissionStatus",
+    "OpenRgbStatus",
     "Orientation",
     "Output",
     "OutputComponent",
@@ -1063,6 +1096,7 @@ __all__ = (
     "PairingDescriptor",
     "PairingFieldDescriptor",
     "PairingFlowKind",
+    "PatchConfigKeyResponse200",
     "PatchControlsRequest",
     "PatchControlsRequestValues",
     "PatchDisplayFaceCompositionResponse200",
@@ -1180,6 +1214,8 @@ __all__ = (
     "TransitionTypeType0",
     "TransitionTypeType0Type",
     "UnassignLiveZoneMemberResponse200",
+    "UnclaimedDevice",
+    "UnclaimedDeviceListResponse",
     "UpdateAssetResponse200",
     "UpdateAttachmentsRequest",
     "UpdateAttachmentsResponse200",

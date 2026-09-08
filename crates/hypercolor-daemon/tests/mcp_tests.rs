@@ -760,7 +760,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let tools = list_payload["result"]["tools"]
         .as_array()
         .expect("tools list array");
-    assert_eq!(tools.len(), 17);
+    assert_eq!(tools.len(), 18);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
     assert!(tools.iter().any(|tool| tool["name"] == "set_display_face"));
 
@@ -907,7 +907,7 @@ async fn mcp_http_resources_and_prompts_roundtrip() {
     let prompts = prompts_payload["result"]["prompts"]
         .as_array()
         .expect("prompt list array");
-    assert_eq!(prompts.len(), 3);
+    assert_eq!(prompts.len(), 4);
 
     let prompt_get_response = post_json(
         &client,
@@ -2257,7 +2257,7 @@ async fn read_only_tool_results_match_their_declared_schemas() {
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 17);
+    assert_eq!(tools.len(), 18);
     assert!(
         tools
             .iter()
@@ -2713,7 +2713,7 @@ async fn mcp_device_inventory_surfaces_are_exact_and_filterable() {
 #[test]
 fn prompt_definitions_and_messages_are_valid() {
     let prompts = build_prompt_definitions();
-    assert_eq!(prompts.len(), 3);
+    assert_eq!(prompts.len(), 4);
     assert!(is_valid_prompt("mood_lighting"));
     let messages = get_prompt_messages(
         "mood_lighting",
@@ -2925,4 +2925,18 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
             .get(display_id)
             .is_none()
     );
+}
+
+#[test]
+fn openrgb_setup_prompt_preserves_native_ownership_and_explicit_zone_sizes() {
+    use hypercolor_daemon::mcp::prompts::{get_prompt_messages, is_valid_prompt};
+    assert!(is_valid_prompt("openrgb_setup"));
+    let prompt =
+        get_prompt_messages("openrgb_setup", &serde_json::json!({})).expect("setup prompt");
+    let text = prompt["messages"][0]["content"]["text"]
+        .as_str()
+        .expect("prompt text");
+    assert!(text.contains("openrgb_status"));
+    assert!(text.contains("never infer sizes"));
+    assert!(text.contains("keep native drivers in charge"));
 }

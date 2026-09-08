@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 #[cfg(feature = "hal")]
-use hypercolor_core::device::UsbProtocolConfigStore;
+use hypercolor_core::device::{UnclaimedDeviceStore, UsbProtocolConfigStore};
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
@@ -38,6 +38,7 @@ pub fn build_driver_module_registry(
     config: &HypercolorConfig,
     credential_store: Arc<CredentialStore>,
     #[cfg(feature = "hal")] usb_protocol_configs: UsbProtocolConfigStore,
+    #[cfg(feature = "hal")] unclaimed_devices: UnclaimedDeviceStore,
 ) -> Result<DriverModuleRegistry> {
     let mut registry = DriverModuleRegistry::new();
     register_driver_modules(
@@ -46,6 +47,8 @@ pub fn build_driver_module_registry(
         credential_store,
         #[cfg(feature = "hal")]
         usb_protocol_configs,
+        #[cfg(feature = "hal")]
+        unclaimed_devices,
     )?;
     Ok(registry)
 }
@@ -60,6 +63,7 @@ pub fn register_driver_modules(
     config: &HypercolorConfig,
     credential_store: Arc<CredentialStore>,
     #[cfg(feature = "hal")] usb_protocol_configs: UsbProtocolConfigStore,
+    #[cfg(feature = "hal")] unclaimed_devices: UnclaimedDeviceStore,
 ) -> Result<()> {
     #[cfg(not(any(
         feature = "wled",
@@ -96,6 +100,7 @@ pub fn register_driver_modules(
     {
         registry.register(transport::UsbTransportDriverModule::new(
             usb_protocol_configs,
+            unclaimed_devices,
         ))?;
         registry.register(transport::SmBusTransportDriverModule)?;
         #[cfg(unix)]
