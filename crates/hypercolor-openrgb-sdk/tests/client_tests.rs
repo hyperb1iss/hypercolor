@@ -132,6 +132,192 @@ async fn client_read_timeout_preserves_configured_deadline() {
     server.abort();
 }
 
+#[tokio::test]
+async fn resize_zone_is_gated_clamped_and_rejects_single_zones() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_resize_server(listener));
+
+    let mut gated = OpenRgbClient::connect(addr, OpenRgbClientConfig::default())
+        .await
+        .expect("default client should connect");
+    assert_eq!(
+        gated.resize_zone(0, 1, 4).await,
+        Err(OpenRgbError::ForbiddenPacket(PacketId::ResizeZone)),
+        "default policy must refuse RESIZEZONE before any I/O"
+    );
+    gated
+        .close()
+        .await
+        .expect("gated client should close cleanly");
+
+    let config = OpenRgbClientConfig {
+        allow_zone_resize: true,
+        ..OpenRgbClientConfig::default()
+    };
+    let mut client = OpenRgbClient::connect(addr, config)
+        .await
+        .expect("permissive client should connect");
+    assert_eq!(
+        client.resize_zone(0, 0, 4).await,
+        Err(OpenRgbError::ZoneNotResizable { zone_index: 0 })
+    );
+    assert_eq!(
+        client.resize_zone(0, 9, 4).await,
+        Err(OpenRgbError::ZoneIndexOutOfRange {
+            zone_index: 9,
+            zone_count: 2,
+        })
+    );
+    assert_eq!(
+        client
+            .resize_zone(0, 1, 50)
+            .await
+            .expect("resizable zone should accept a clamped size"),
+        8
+    );
+    assert!(
+        client
+            .wait_for_device_list_update(Duration::from_secs(1))
+            .await
+            .expect("server re-announce should arrive"),
+        "resize should be followed by DEVICE_LIST_UPDATED"
+    );
+    assert!(
+        !client
+            .wait_for_device_list_update(Duration::from_millis(20))
+            .await
+            .expect("quiet socket should not error"),
+        "no second announcement is pending"
+    );
+    client.close().await.expect("client should close cleanly");
+
+    let (resize, saw_clean_close) = server.await.expect("server task should join");
+    assert_eq!(resize.header.device_index, 0);
+    assert_eq!(resize.header.packet_id, PacketId::ResizeZone);
+    assert_eq!(resize.payload, [1, 0, 0, 0, 8, 0, 0, 0]);
+    assert!(saw_clean_close, "close() should deliver an orderly EOF");
+}
+
+async fn run_resize_server(listener: TcpListener) -> (Packet, bool) {
+    let mut resize = None;
+    for _ in 0..2 {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        let mut decoder = PacketDecoder::new();
+        loop {
+            let Some(packet) = read_next_packet_or_eof(&mut stream, &mut decoder).await else {
+                break;
+            };
+            match packet.header.packet_id {
+                PacketId::RequestProtocolVersion => {
+                    send_packet(
+                        &mut stream,
+                        PacketId::RequestProtocolVersion,
+                        0,
+                        CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec(),
+                    )
+                    .await;
+                }
+                PacketId::SetClientName => {}
+                PacketId::RequestControllerData => {
+                    send_packet(
+                        &mut stream,
+                        PacketId::RequestControllerData,
+                        0,
+                        two_zone_controller_payload_v5(),
+                    )
+                    .await;
+                }
+                PacketId::ResizeZone => {
+                    resize = Some(packet);
+                    send_packet(&mut stream, PacketId::DeviceListUpdated, 0, Vec::new()).await;
+                }
+                other => panic!("unexpected client packet {other:?}"),
+            }
+        }
+    }
+    (
+        resize.expect("permissive client should send RESIZEZONE"),
+        true,
+    )
+}
+
+async fn read_next_packet_or_eof(
+    stream: &mut TcpStream,
+    decoder: &mut PacketDecoder,
+) -> Option<Packet> {
+    loop {
+        if let Some(packet) = decoder
+            .next_packet()
+            .expect("fake server should decode client packet")
+        {
+            return Some(packet);
+        }
+        let mut bytes = [0_u8; 1024];
+        let read = stream
+            .read(&mut bytes)
+            .await
+            .expect("fake server should read client packet");
+        if read == 0 {
+            return None;
+        }
+        decoder.push(&bytes[..read]);
+    }
+}
+
+fn two_zone_controller_payload_v5() -> Vec<u8> {
+    let mut body = Vec::new();
+    push_u32(&mut body, 0);
+    push_i32(&mut body, 4);
+    push_str(&mut body, "Strip Hub");
+    push_str(&mut body, "Acme");
+    push_str(&mut body, "ARGB hub");
+    push_str(&mut body, "1.0");
+    push_str(&mut body, "HUB001");
+    push_str(&mut body, "hidraw3");
+    push_u16(&mut body, 1);
+    push_i32(&mut body, 0);
+    push_mode(&mut body);
+    push_u16(&mut body, 2);
+    push_str(&mut body, "Logo");
+    push_i32(&mut body, 0);
+    push_u32(&mut body, 1);
+    push_u32(&mut body, 1);
+    push_u32(&mut body, 1);
+    push_u16(&mut body, 0);
+    push_u16(&mut body, 0);
+    push_u32(&mut body, 0);
+    push_str(&mut body, "Header 1");
+    push_i32(&mut body, 1);
+    push_u32(&mut body, 1);
+    push_u32(&mut body, 8);
+    push_u32(&mut body, 2);
+    push_u16(&mut body, 0);
+    push_u16(&mut body, 0);
+    push_u32(&mut body, 0);
+    push_u16(&mut body, 3);
+    for index in 0..3_u32 {
+        push_str(&mut body, &format!("LED {index}"));
+        push_u32(&mut body, index);
+    }
+    push_u16(&mut body, 3);
+    for _ in 0..3 {
+        body.extend_from_slice(&RgbColor::new(0, 0, 0).to_wire_bytes());
+    }
+    push_u16(&mut body, 0);
+    push_u32(&mut body, 0);
+    let size = u32::try_from(body.len()).expect("fixture should fit u32");
+    body[0..4].copy_from_slice(&size.to_le_bytes());
+    body
+}
+
 async fn run_client_server(listener: TcpListener) -> Packet {
     let (mut stream, _) = listener
         .accept()

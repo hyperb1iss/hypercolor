@@ -33,6 +33,14 @@ The SDK exposes a configurable persistent-mode mask, but the default mask stays
 empty until device-specific persisting behavior comes from a later approved
 source.
 
+`RESIZEZONE` (packet id 1000) is taken from the public SDK page: an 8-byte
+payload of zone index then new LED count, both little-endian 32-bit integers,
+with the controller index in the packet header and no direct response; the
+server re-announces via `DEVICE_LIST_UPDATED`. The client refuses to encode it
+unless `OpenRgbClientConfig::allow_zone_resize` is set, and `resize_zone`
+clamps requests to the zone's advertised `leds_min..=leds_max`. `SAVEMODE`
+(1102) has no gate and is never encoded.
+
 The active driver slice uses synthesized golden controller-data fixtures for
 supported protocol versions plus fake SDK server integration tests. A real
 captured packet corpus is a future compatibility-hardening gate, not a

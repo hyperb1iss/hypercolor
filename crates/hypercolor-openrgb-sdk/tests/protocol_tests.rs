@@ -4,10 +4,11 @@ use hypercolor_openrgb_sdk::packet::{
     update_zone_leds_payload, validate_protocol_version,
 };
 use hypercolor_openrgb_sdk::{
-    CLIENT_MAX_PROTOCOL_VERSION, ColorMode, ControllerMode, DeviceType, HEADER_LEN,
-    MAX_PACKET_PAYLOAD_SIZE, MIN_PROTOCOL_VERSION, ModeFlag, ModeFlagPolicy, OpenRgbError, Packet,
-    PacketDecoder, PacketHeader, PacketId as PublicPacketId,
-    REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION, RgbColor, ZoneType, parse_controller_data,
+    CLIENT_MAX_PROTOCOL_VERSION, ClientPacketPolicy, ColorMode, ControllerMode, DeviceType,
+    HEADER_LEN, MAX_PACKET_PAYLOAD_SIZE, MIN_PROTOCOL_VERSION, ModeFlag, ModeFlagPolicy,
+    OpenRgbError, Packet, PacketDecoder, PacketHeader, PacketId as PublicPacketId,
+    REQUEST_RESCAN_DEVICES_MIN_PROTOCOL_VERSION, RgbColor, ZoneType,
+    encode_client_packet_with_policy, parse_controller_data, resize_zone_payload,
 };
 
 #[test]
@@ -124,6 +125,44 @@ fn forbidden_packets_are_not_encoded_for_client_use() {
             Err(OpenRgbError::ForbiddenPacket(packet_id))
         );
     }
+}
+
+#[test]
+fn resize_zone_is_gated_by_client_policy_and_savemode_never_is() {
+    let permissive = ClientPacketPolicy {
+        allow_zone_resize: true,
+    };
+    let payload = resize_zone_payload(3, 12);
+    assert_eq!(payload, [3, 0, 0, 0, 12, 0, 0, 0]);
+
+    assert_eq!(
+        encode_client_packet_with_policy(
+            0,
+            PublicPacketId::ResizeZone,
+            payload.clone(),
+            ClientPacketPolicy::default()
+        ),
+        Err(OpenRgbError::ForbiddenPacket(PublicPacketId::ResizeZone))
+    );
+    let encoded = encode_client_packet_with_policy(
+        7,
+        PublicPacketId::ResizeZone,
+        payload.clone(),
+        permissive,
+    )
+    .expect("policy opt-in should permit RESIZEZONE");
+    let packet = Packet::decode(&encoded).expect("encoded packet should decode");
+    assert_eq!(packet.header.device_index, 7);
+    assert_eq!(packet.header.packet_id, PublicPacketId::ResizeZone);
+    assert_eq!(packet.payload, payload);
+
+    assert_eq!(
+        encode_client_packet_with_policy(0, PublicPacketId::SaveMode, Vec::new(), permissive),
+        Err(OpenRgbError::ForbiddenPacket(PublicPacketId::SaveMode))
+    );
+    assert!(PublicPacketId::SaveMode.forbidden_for_client());
+    assert!(PublicPacketId::ResizeZone.forbidden_for_client());
+    assert!(!PublicPacketId::UpdateLeds.forbidden_for_client());
 }
 
 #[test]

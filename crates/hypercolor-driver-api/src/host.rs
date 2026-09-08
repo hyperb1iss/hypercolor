@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DeviceState};
 
-use crate::DriverControlHost;
+use crate::{DiscoveredDevice, DriverControlHost};
 
 /// Read-only tracked-device view passed into pairing and auth-summary logic.
 #[derive(Debug, Clone, Copy)]
@@ -52,6 +53,20 @@ pub trait DriverCredentialStore: Send + Sync {
 /// Narrow lifecycle actions exposed to drivers.
 #[async_trait]
 pub trait DriverRuntimeActions: Send + Sync {
+    /// Publish an optional refreshed discovery snapshot and schedule a reconnect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the host cannot schedule a reconnect.
+    async fn request_reconnect(
+        &self,
+        _device_id: DeviceId,
+        _backend_id: &str,
+        _updated: Option<DiscoveredDevice>,
+    ) -> Result<bool> {
+        anyhow::bail!("host does not support driver-requested reconnects")
+    }
+
     /// Best-effort immediate activation after pairing.
     ///
     /// # Errors
@@ -93,6 +108,12 @@ pub trait DriverHost: Send + Sync {
 
     /// Access limited runtime lifecycle actions.
     fn runtime(&self) -> &dyn DriverRuntimeActions;
+
+    /// Retain runtime actions for asynchronous device lifecycle notifications.
+    /// Hosts without background lifecycle support may leave this unavailable.
+    fn runtime_handle(&self) -> Option<Arc<dyn DriverRuntimeActions>> {
+        None
+    }
 
     /// Access discovery-oriented tracked state and caches.
     fn discovery_state(&self) -> &dyn DriverDiscoveryState;
