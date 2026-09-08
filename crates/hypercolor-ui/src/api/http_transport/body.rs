@@ -1,5 +1,6 @@
 //! Incremental HTTP body ownership and bounded consumers.
 
+use std::any::Any;
 use std::future::{Future, poll_fn};
 use std::num::NonZeroUsize;
 use std::pin::Pin;
@@ -12,6 +13,14 @@ use super::stream::HttpStreamError;
 
 /// Single-consumer pull source. Implementations must not read ahead of demand.
 pub trait HttpBodySource {
+    /// Borrow this concrete source for an equivalent native representation.
+    /// Implementations return `Some(self)`, never independently supplied hint data.
+    /// Inspection must not consume bytes or start I/O. Transports inspect through
+    /// `HttpBody::source_hint`, which enforces the pristine single-consumer boundary.
+    fn source_hint(&self) -> Option<&dyn Any> {
+        None
+    }
+
     /// Exact encoded byte length when known, without materializing the body.
     fn exact_length(&self) -> Option<u64>;
 
@@ -34,6 +43,7 @@ pub struct HttpBody {
     exact_length: Option<u64>,
     consumed: u64,
     terminal: bool,
+    started: bool,
 }
 
 impl HttpBody {
@@ -46,6 +56,7 @@ impl HttpBody {
             exact_length,
             consumed: 0,
             terminal: false,
+            started: false,
         }
     }
 
@@ -57,6 +68,19 @@ impl HttpBody {
     #[must_use]
     pub fn cancellation(&self) -> HttpCancellation {
         self.cancellation.clone()
+    }
+
+    /// Inspect the owned source only before any read has been polled.
+    /// A native transport must own exchange cancellation (for example through
+    /// `HttpStreamFuture`) before cloning native handles and discarding this producer.
+    /// A native representation is an alternative consumption path, never a retry copy.
+    #[must_use]
+    pub fn source_hint(&self) -> Option<&dyn Any> {
+        if self.started || self.terminal || self.cancellation.is_cancelled() {
+            None
+        } else {
+            self.source.source_hint()
+        }
     }
 
     pub fn cancel(&mut self) {
@@ -99,6 +123,7 @@ impl HttpBody {
             if Pin::new(&mut cancelled).poll(context).is_ready() {
                 return Poll::Ready(Err(HttpStreamError::Cancelled));
             }
+            self.started = true;
             self.source.poll_chunk(context, maximum)
         })
         .await;
