@@ -1841,3 +1841,662 @@ async fn scene_settings_event_carries_the_candidate_revision() {
         } if revision == expected
     ));
 }
+
+#[tokio::test]
+async fn membership_edit_restores_offline_outputs_and_preserves_hidden_fields() {
+    use hypercolor_types::api::scene::{
+        EditMembersRequest, EditMembersResponse, MemberEdit, MemberState,
+    };
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let document = read_document(&app).await;
+    let scene_id = serde_json::from_value(document["data"]["id"].clone()).expect("scene id");
+    let zone_id = serde_json::from_value(primary_zone(&document)["id"].clone()).expect("zone id");
+    let mut projected_output = sample_output("out-a", Some("ch1"));
+    // The compact scene document intentionally does not expose these fields.
+    projected_output.sampling_mode = None;
+    projected_output.edge_behavior = None;
+    let request = EditMembersRequest {
+        assignment: None,
+        scene_id,
+        changes: vec![MemberEdit {
+            before: Some(MemberState {
+                zone_id,
+                output: projected_output,
+                index: 0,
+            }),
+            after: None,
+        }],
+    };
+    let revision = document["data"]["revision"].as_u64().expect("revision");
+    let removed = send(
+        &app,
+        if_match(
+            json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+            revision,
+        ),
+    )
+    .await;
+    assert_eq!(removed.status(), StatusCode::OK);
+    let removed: EditMembersResponse =
+        serde_json::from_value(body_json(removed).await["data"].clone()).expect("receipt");
+    assert_eq!(removed.document.revision, revision + 1);
+    let canonical = removed.changes[0]
+        .before
+        .as_ref()
+        .expect("canonical output");
+    assert_eq!(canonical.output.sampling_mode, Some(SamplingMode::Bilinear));
+    assert_eq!(canonical.output.edge_behavior, Some(EdgeBehavior::Clamp));
+    assert_eq!(removed.document.zones[0].members.len(), 1);
+    let restore = EditMembersRequest {
+        assignment: None,
+        scene_id,
+        changes: removed
+            .changes
+            .iter()
+            .map(|change| MemberEdit {
+                before: change.after.clone(),
+                after: change.before.clone(),
+            })
+            .collect(),
+    };
+    let restored = send(
+        &app,
+        if_match(
+            json_request("POST", "/api/v1/scene/members/edit".into(), json!(restore)),
+            removed.document.revision,
+        ),
+    )
+    .await;
+    assert_eq!(restored.status(), StatusCode::OK);
+    let restored: EditMembersResponse =
+        serde_json::from_value(body_json(restored).await["data"].clone()).expect("receipt");
+    assert_eq!(restored.document.zones[0].members[0].id.0, "out-a");
+    assert_eq!(restored.document.zones[0].members[1].id.0, "out-b");
+    assert_eq!(
+        restored.document.zones[0].layers,
+        removed.document.zones[0].layers
+    );
+    assert_eq!(restored.changes[0].after, removed.changes[0].before);
+}
+
+#[tokio::test]
+async fn membership_edit_rejects_stale_invalid_and_partial_batches() {
+    use hypercolor_types::api::scene::{EditMembersRequest, MemberEdit, MemberState};
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let document = read_document(&app).await;
+    let scene_id = serde_json::from_value(document["data"]["id"].clone()).expect("scene id");
+    let zone_id = serde_json::from_value(primary_zone(&document)["id"].clone()).expect("zone id");
+    let revision = document["data"]["revision"].as_u64().expect("revision");
+    let valid = MemberEdit {
+        before: Some(MemberState {
+            zone_id,
+            output: sample_output("out-a", Some("ch1")),
+            index: 0,
+        }),
+        after: None,
+    };
+    let mut invalid_output = sample_output("out-b", Some("ch2"));
+    invalid_output.position.x = 0.99;
+    let request = EditMembersRequest {
+        assignment: None,
+        scene_id,
+        changes: vec![
+            valid.clone(),
+            MemberEdit {
+                before: Some(MemberState {
+                    zone_id,
+                    output: invalid_output,
+                    index: 1,
+                }),
+                after: None,
+            },
+        ],
+    };
+    let rejected = send(
+        &app,
+        if_match(
+            json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+            revision,
+        ),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    let after = read_document(&app).await;
+    assert_eq!(
+        after["data"], document["data"],
+        "invalid second entry must leave first member intact"
+    );
+    let request = EditMembersRequest {
+        assignment: None,
+        scene_id,
+        changes: vec![valid],
+    };
+    let stale = send(
+        &app,
+        if_match(
+            json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+            revision - 1,
+        ),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+    let missing = send(
+        &app,
+        json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let mut wrong_scene = request;
+    wrong_scene.scene_id = hypercolor_types::scene::SceneId::new();
+    let rejected = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                "/api/v1/scene/members/edit".into(),
+                json!(wrong_scene),
+            ),
+            revision,
+        ),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    assert_eq!(read_document(&app).await["data"], document["data"]);
+}
+
+#[tokio::test]
+async fn membership_edit_moves_outputs_without_losing_unrelated_controls() {
+    use hypercolor_types::api::scene::{
+        EditMembersRequest, EditMembersResponse, MemberEdit, MemberState,
+    };
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let created = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/v1/scene/zones".into(),
+            json!({"name": "Desk"}),
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let desk_id =
+        serde_json::from_value(body_json(created).await["data"]["id"].clone()).expect("desk id");
+    let document = read_document(&app).await;
+    let scene_id = serde_json::from_value(document["data"]["id"].clone()).expect("scene id");
+    let zone_id = serde_json::from_value(primary_zone(&document)["id"].clone()).expect("zone id");
+    let before = MemberState {
+        zone_id,
+        output: sample_output("out-a", Some("ch1")),
+        index: 0,
+    };
+    let mut after = before.clone();
+    after.zone_id = desk_id;
+    after.output.position.x = 0.75;
+    after.output.sampling_mode = None;
+    after.output.edge_behavior = None;
+    let moved = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                "/api/v1/scene/members/edit".into(),
+                json!(EditMembersRequest {
+                    assignment: None,
+                    scene_id,
+                    changes: vec![MemberEdit {
+                        before: Some(before),
+                        after: Some(after)
+                    }],
+                }),
+            ),
+            document["data"]["revision"].as_u64().expect("revision"),
+        ),
+    )
+    .await;
+    assert_eq!(moved.status(), StatusCode::OK);
+    let moved: EditMembersResponse =
+        serde_json::from_value(body_json(moved).await["data"].clone()).expect("receipt");
+    let after = moved.changes[0].after.as_ref().expect("moved output");
+    assert_eq!(after.output.position.x, 0.75);
+    assert_eq!(after.output.sampling_mode, Some(SamplingMode::Bilinear));
+    let layer_id = moved.document.zones[0].layers[0].id;
+    let patched = send(
+        &app,
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{zone_id}/layers/{layer_id}/controls"),
+            json!({"values": {"speed": {"kind": "float", "value": 1.5}}}),
+        ),
+    )
+    .await;
+    assert_eq!(patched.status(), StatusCode::OK);
+    let patched = read_document(&app).await;
+    let undo = EditMembersRequest {
+        assignment: None,
+        scene_id,
+        changes: moved
+            .changes
+            .iter()
+            .map(|change| MemberEdit {
+                before: change.after.clone(),
+                after: change.before.clone(),
+            })
+            .collect(),
+    };
+    let restored = send(
+        &app,
+        if_match(
+            json_request("POST", "/api/v1/scene/members/edit".into(), json!(undo)),
+            patched["data"]["revision"].as_u64().expect("revision"),
+        ),
+    )
+    .await;
+    assert_eq!(restored.status(), StatusCode::OK);
+    let restored = body_json(restored).await;
+    assert_eq!(
+        restored["data"]["document"]["zones"][0]["layers"],
+        patched["data"]["zones"][0]["layers"]
+    );
+    assert_eq!(
+        restored["data"]["document"]["zones"][0]["members"][0]["id"],
+        "out-a"
+    );
+    assert_eq!(
+        restored["data"]["document"]["zones"][0]["layout"]["placements"][0]["position"],
+        document["data"]["zones"][0]["layout"]["placements"][0]["position"]
+    );
+}
+
+#[tokio::test]
+async fn membership_edit_rejects_duplicate_identities_geometry_and_display_targets() {
+    use hypercolor_types::api::scene::{EditMembersRequest, MemberEdit, MemberState};
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let effect = seed_tree(&state).await;
+    let display_id = seed_display_zone(&state, effect).await;
+    let document = read_document(&app).await;
+    let scene_id = serde_json::from_value(document["data"]["id"].clone()).expect("scene id");
+    let zone_id = serde_json::from_value(primary_zone(&document)["id"].clone()).expect("zone id");
+    let revision = document["data"]["revision"].as_u64().expect("revision");
+    let mut output = sample_output("new-output", Some("ch1"));
+    let duplicate = MemberState {
+        zone_id,
+        output: output.clone(),
+        index: 2,
+    };
+    output.zone_name = Some("ch3".into());
+    output.size.x = 0.0;
+    let invalid_geometry = MemberState {
+        zone_id,
+        output: output.clone(),
+        index: 2,
+    };
+    output.size.x = 0.2;
+    let display_target = MemberState {
+        zone_id: display_id,
+        output,
+        index: 0,
+    };
+    for targets in [
+        vec![duplicate.clone(), duplicate],
+        vec![invalid_geometry],
+        vec![display_target],
+    ] {
+        let request = EditMembersRequest {
+            assignment: None,
+            scene_id,
+            changes: targets
+                .into_iter()
+                .map(|after| MemberEdit {
+                    before: None,
+                    after: Some(after),
+                })
+                .collect(),
+        };
+        let rejected = send(
+            &app,
+            if_match(
+                json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+                revision,
+            ),
+        )
+        .await;
+        assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(read_document(&app).await["data"], document["data"]);
+    }
+}
+
+#[tokio::test]
+async fn membership_edit_preserves_multiple_attachment_instances_on_one_segment() {
+    use hypercolor_types::api::scene::{
+        EditMembersRequest, EditMembersResponse, MemberEdit, MemberState,
+    };
+    use hypercolor_types::spatial::OutputComponent;
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let created = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/v1/scene/zones".into(),
+            json!({"name": "Fans"}),
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let target_id =
+        serde_json::from_value(body_json(created).await["data"]["id"].clone()).expect("zone id");
+    let document = read_document(&app).await;
+    let scene_id = serde_json::from_value(document["data"]["id"].clone()).expect("scene id");
+    let source_id = serde_json::from_value(primary_zone(&document)["id"].clone()).expect("zone id");
+    // Three physical fans share one controller segment. Each attachment's
+    // own output identity and LED span must survive assignment and replay.
+    let changes = (0_u32..3)
+        .map(|instance| {
+            let mut output = sample_output(&format!("fan-{instance}"), Some("channel-2"));
+            output.device_id = "nollie:controller".into();
+            output.topology = LedTopology::Strip {
+                count: 20,
+                direction: StripDirection::LeftToRight,
+            };
+            output.attachment = Some(OutputComponent {
+                template_id: "lian-li-sl-infinity-fan".into(),
+                slot_id: "channel-2".into(),
+                instance,
+                led_start: Some(256 + instance * 20),
+                led_count: Some(20),
+                led_mapping: None,
+            });
+            MemberEdit {
+                before: None,
+                after: Some(MemberState {
+                    zone_id: source_id,
+                    output,
+                    index: 2 + instance as usize,
+                }),
+            }
+        })
+        .collect();
+    let added = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                "/api/v1/scene/members/edit".into(),
+                json!(EditMembersRequest {
+                    scene_id,
+                    changes,
+                    assignment: None
+                }),
+            ),
+            document["data"]["revision"].as_u64().expect("revision"),
+        ),
+    )
+    .await;
+    assert_eq!(added.status(), StatusCode::OK);
+    let added: EditMembersResponse =
+        serde_json::from_value(body_json(added).await["data"].clone()).expect("receipt");
+    // Even an unrelated removal must not revalidate the scene using a
+    // coarser device/segment key than the canonical output identity.
+    let removed = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                "/api/v1/scene/members/edit".into(),
+                json!(EditMembersRequest {
+                    assignment: None,
+                    scene_id,
+                    changes: vec![MemberEdit {
+                        before: Some(MemberState {
+                            zone_id: source_id,
+                            output: sample_output("out-a", Some("ch1")),
+                            index: 0
+                        }),
+                        after: None,
+                    }],
+                }),
+            ),
+            added.document.revision,
+        ),
+    )
+    .await;
+    assert_eq!(removed.status(), StatusCode::OK);
+    let removed: EditMembersResponse =
+        serde_json::from_value(body_json(removed).await["data"].clone()).expect("receipt");
+    let moved = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                "/api/v1/scene/members/edit".into(),
+                json!(EditMembersRequest {
+                    assignment: Some(hypercolor_types::api::scene::MemberAssignmentTarget {
+                        zone_id: target_id,
+                        device_id: "nollie:controller".into(),
+                        segments: Vec::new(),
+                        placements: Vec::new(),
+                    }),
+                    scene_id,
+                    changes: Vec::new(),
+                }),
+            ),
+            removed.document.revision,
+        ),
+    )
+    .await;
+    assert_eq!(moved.status(), StatusCode::OK);
+    let moved: EditMembersResponse =
+        serde_json::from_value(body_json(moved).await["data"].clone()).expect("receipt");
+    for (index, change) in moved.changes.iter().enumerate() {
+        let after = change.after.as_ref().expect("moved fan");
+        let attachment = after
+            .output
+            .attachment
+            .as_ref()
+            .expect("canonical attachment retained");
+        assert_eq!(attachment.instance as usize, index);
+        assert_eq!(attachment.led_start, Some(256 + attachment.instance * 20));
+        assert_eq!(after.zone_id, target_id);
+    }
+    let undo = EditMembersRequest {
+        assignment: None,
+        scene_id,
+        changes: moved
+            .changes
+            .iter()
+            .map(|change| MemberEdit {
+                before: change.after.clone(),
+                after: change.before.clone(),
+            })
+            .collect(),
+    };
+    let restored = send(
+        &app,
+        if_match(
+            json_request("POST", "/api/v1/scene/members/edit".into(), json!(undo)),
+            moved.document.revision,
+        ),
+    )
+    .await;
+    assert_eq!(restored.status(), StatusCode::OK);
+    let restored: EditMembersResponse =
+        serde_json::from_value(body_json(restored).await["data"].clone()).expect("receipt");
+    for (change, previous) in restored.changes.iter().zip(&moved.changes) {
+        assert_eq!(change.after, previous.before);
+    }
+}
+
+#[tokio::test]
+async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
+    use hypercolor_types::api::scene::{
+        EditMembersRequest, EditMembersResponse, MemberAssignmentTarget,
+    };
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+        DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo, SegmentLayoutHint,
+    };
+    use hypercolor_types::spatial::ZoneShape;
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let hint = SegmentLayoutHint::custom_grid(3, 2, &[(0, 0), (2, 1)])
+        .with_size(NormalizedPosition::new(0.3, 0.2))
+        .with_shape(ZoneShape::Rectangle);
+    let info = DeviceInfo {
+        id: DeviceId::new(),
+        name: "Custom-grid microphone".into(),
+        vendor: "TestVendor".into(),
+        family: DeviceFamily::named("test"),
+        model: None,
+        connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
+        segments: vec![
+            SegmentInfo {
+                name: "Lights".into(),
+                led_count: 2,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: Some(hint.clone()),
+            },
+            SegmentInfo {
+                name: "Display".into(),
+                led_count: 1,
+                topology: DeviceTopologyHint::Display {
+                    width: 1,
+                    height: 1,
+                    circular: false,
+                    format: hypercolor_types::device::DisplayFrameFormat::default(),
+                },
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            },
+        ],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: 2,
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: true,
+            display_resolution: Some((1, 1)),
+            max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let device_id =
+        hypercolor_core::device::DeviceLifecycleManager::canonical_layout_device_id(&info, None);
+    let _ = state.device_registry.add(info).await;
+    let document = read_document(&app).await;
+    let scene_id = serde_json::from_value(document["data"]["id"].clone()).expect("scene id");
+    let zone_id = serde_json::from_value(primary_zone(&document)["id"].clone()).expect("zone id");
+    let request = EditMembersRequest {
+        scene_id,
+        changes: Vec::new(),
+        assignment: Some(MemberAssignmentTarget {
+            zone_id,
+            device_id,
+            segments: Vec::new(),
+            placements: Vec::new(),
+        }),
+    };
+    let assigned = send(
+        &app,
+        if_match(
+            json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+            document["data"]["revision"].as_u64().expect("revision"),
+        ),
+    )
+    .await;
+    assert_eq!(assigned.status(), StatusCode::OK);
+    let assigned: EditMembersResponse =
+        serde_json::from_value(body_json(assigned).await["data"].clone()).expect("receipt");
+    assert_eq!(
+        assigned.changes.len(),
+        1,
+        "display segments never enter LED membership"
+    );
+    let output = &assigned.changes[0]
+        .after
+        .as_ref()
+        .expect("minted output")
+        .output;
+    assert_eq!(Some(output.topology.clone()), hint.topology);
+    assert_eq!(Some(output.size), hint.size);
+    assert_eq!(output.shape, hint.shape);
+    assert_eq!(output.zone_name.as_deref(), Some("Lights"));
+    let unchanged = send(
+        &app,
+        if_match(
+            json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+            assigned.document.revision,
+        ),
+    )
+    .await;
+    assert_eq!(unchanged.status(), StatusCode::OK);
+    let unchanged: EditMembersResponse =
+        serde_json::from_value(body_json(unchanged).await["data"].clone()).expect("receipt");
+    assert!(unchanged.changes.is_empty());
+    assert_eq!(unchanged.document.revision, assigned.document.revision);
+
+    let removed = send(
+        &app,
+        if_match(
+            json_request(
+                "POST",
+                "/api/v1/scene/members/edit".into(),
+                json!(EditMembersRequest {
+                    scene_id,
+                    assignment: None,
+                    changes: vec![hypercolor_types::api::scene::MemberEdit {
+                        before: assigned.changes[0].after.clone(),
+                        after: None,
+                    }],
+                }),
+            ),
+            assigned.document.revision,
+        ),
+    )
+    .await;
+    assert_eq!(removed.status(), StatusCode::OK);
+    let removed: EditMembersResponse =
+        serde_json::from_value(body_json(removed).await["data"].clone()).expect("receipt");
+    let mut seeded = request;
+    seeded.assignment.as_mut().expect("assignment").placements =
+        vec![hypercolor_types::api::scene::MemberPlacementHint {
+            segment: Some("Lights".into()),
+            position: NormalizedPosition::new(0.7, 0.6),
+            size: NormalizedPosition::new(0.15, 0.1),
+            rotation: 0.3,
+            scale: 1.2,
+            orientation: None,
+        }];
+    let seeded = send(
+        &app,
+        if_match(
+            json_request("POST", "/api/v1/scene/members/edit".into(), json!(seeded)),
+            removed.document.revision,
+        ),
+    )
+    .await;
+    assert_eq!(seeded.status(), StatusCode::OK);
+    let seeded: EditMembersResponse =
+        serde_json::from_value(body_json(seeded).await["data"].clone()).expect("receipt");
+    let output = &seeded.changes[0]
+        .after
+        .as_ref()
+        .expect("seeded output")
+        .output;
+    assert_eq!(Some(output.topology.clone()), hint.topology);
+    assert_eq!(output.shape, hint.shape);
+    assert_eq!(output.position, NormalizedPosition::new(0.7, 0.6));
+    assert_eq!(output.size, NormalizedPosition::new(0.15, 0.1));
+}

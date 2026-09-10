@@ -261,3 +261,42 @@ fn the_zone_layout_contract_speaks_placements_only() {
         "no device-internal vocabulary on the layout wire (Spec 78 §5.1)"
     );
 }
+
+#[test]
+fn membership_edit_contract_round_trips_offline_restore_receipts() {
+    use hypercolor_types::api::scene::{EditMembersRequest, EditMembersResponse};
+    let state = json!({
+        "zone_id": "0198c5b6-1111-7000-8000-000000000002",
+        "index": 1,
+        "output": {
+            "id": "out-desk-1", "device_id": "usb:controller-1", "name": "Desk Strip",
+            "zone_name": "ch1", "position": {"x": 0.25, "y": 0.5},
+            "size": {"x": 0.2, "y": 0.3}, "rotation": 0.0,
+            "orientation": null, "topology": {"type": "strip", "count": 4, "direction": "left_to_right"},
+            "sampling_mode": null, "edge_behavior": null, "shape": null, "shape_preset": null,
+            "led_mapping": [3, 2, 1, 0], "brightness": 0.7
+        }
+    });
+    let request = json!({
+        "scene_id": "0198c5b6-1111-7000-8000-000000000001",
+        "changes": [{"before": null, "after": state}]
+    });
+    let typed: EditMembersRequest =
+        serde_json::from_value(request.clone()).expect("restore request");
+    let after = typed.changes[0].after.as_ref().expect("restored state");
+    assert_eq!(after.index, 1);
+    assert_eq!(after.output.led_mapping, Some(vec![3, 2, 1, 0]));
+    assert_eq!(after.output.brightness, Some(0.7));
+    let response = EditMembersResponse {
+        document: serde_json::from_value(representative_document()).expect("scene"),
+        changes: typed.changes,
+    };
+    let encoded = serde_json::to_value(&response).expect("serialize receipt");
+    assert_eq!(
+        serde_json::from_value::<EditMembersResponse>(encoded).expect("read receipt"),
+        response
+    );
+    let mut unknown = request;
+    unknown["replace_layers"] = json!(true);
+    assert!(serde_json::from_value::<EditMembersRequest>(unknown).is_err());
+}

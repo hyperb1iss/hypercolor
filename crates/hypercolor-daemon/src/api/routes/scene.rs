@@ -97,6 +97,18 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
             ],
         ))
         .routes(openapi::documented_route(
+            "/scene/members/edit",
+            axum::routing::post(scene::edit_members),
+            [
+                OperationDoc::post::<hypercolor_types::api::scene::EditMembersResponse>(
+                    "edit_live_scene_members",
+                    "scenes",
+                    "Atomically edit live scene memberships",
+                )
+                .body::<hypercolor_types::api::scene::EditMembersRequest>(),
+            ],
+        ))
+        .routes(openapi::documented_route(
             "/scene/zones/{zone}/members",
             axum::routing::post(scene::assign_members),
             [
