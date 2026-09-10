@@ -14,7 +14,6 @@ use leptos_icons::Icon;
 
 use hypercolor_types::scene::ZoneRole;
 
-use crate::api::zones::ZoneOutcome;
 use crate::api::{self, DeviceSummary, SegmentTopologySummary};
 use crate::channel_names;
 use crate::components::device_card::{
@@ -566,6 +565,8 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                                     class="btn-press flex h-6 w-6 items-center justify-center rounded-md transition-colors"
                                     style="color: rgba(80, 250, 123, 0.78)"
                                     title="Add to this zone"
+                                    disabled=move || studio.history.busy.get()
+                                    class=("opacity-40", move || studio.history.busy.get())
                                     on:click=move |ev: web_sys::MouseEvent| {
                                         ev.stop_propagation();
                                         assign_device_to_zone(studio, device.clone(), select.clone());
@@ -587,6 +588,8 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                             class=("bg-surface-hover/40", move || ops_open.get())
                             style="color: rgba(80, 250, 123, 0.78)"
                             title="Add to a zone"
+                            disabled=move || studio.history.busy.get()
+                            class=("opacity-40", move || studio.history.busy.get())
                             on:click=move |ev: web_sys::MouseEvent| {
                                 ev.stop_propagation();
                                 ops_open.update(|open| *open = !*open);
@@ -643,6 +646,8 @@ fn unassigned_add_menu(
                                     ops_open.set(false);
                                     assign_device_to_zone(studio, device.get_value(), zone_id.clone());
                                 }
+                                disabled=move || studio.history.busy.get()
+                                class=("opacity-40", move || studio.history.busy.get())
                             >
                                 <Icon icon=LuPlus width="12px" height="12px" />
                                 <span>{format!("Add to {zone_name}")}</span>
@@ -725,6 +730,8 @@ fn card_ops_menu(
                                     ops_open.set(false);
                                     move_outputs_to_zone(studio, zone_id.clone(), ids.get_value());
                                 }
+                                disabled=move || studio.history.busy.get()
+                                class=("opacity-40", move || studio.history.busy.get())
                             >
                                 <Icon icon=LuArrowRightLeft width="12px" height="12px" />
                                 <span>{format!("Move to {zone_name}")}</span>
@@ -742,6 +749,8 @@ fn card_ops_menu(
                     ops_open.set(false);
                     remove_device_from_zone(studio, current.get_value(), remove_device_id.get_value());
                 }
+                disabled=move || studio.history.busy.get()
+                class=("opacity-40", move || studio.history.busy.get())
             >
                 <Icon icon=LuTrash2 width="12px" height="12px" />
                 <span>"Remove from zone"</span>
@@ -754,33 +763,41 @@ fn card_ops_menu(
 /// as existing outputs in one call. The daemon moves each output out of
 /// whatever zone currently holds it.
 fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_ids: Vec<String>) {
-    if output_ids.is_empty() {
-        return;
-    }
-    let Some(scene) = studio.active_scene.get_untracked() else {
-        toasts::toast_error("No active scene is available");
+    use hypercolor_types::api::scene::{MemberEdit, MemberState};
+    let history = studio.history;
+    let Some(scene) = history.current_scene() else {
         return;
     };
-    let count = output_ids.len();
-    let assignments = output_ids
-        .into_iter()
-        .map(|id| api::zones::OutputAssignment::Existing { id })
-        .collect::<Vec<_>>();
-    let revision = scene.revision;
-    spawn_local(async move {
-        match api::zones::assign_devices(&target_zone_id, assignments, false, revision).await {
-            Ok(ZoneOutcome::Applied(_)) => {
-                let suffix = if count == 1 { "" } else { "s" };
-                toasts::toast_success(&format!("Moved {count} output{suffix}"));
-                studio.refresh_scene.run(());
-            }
-            Ok(ZoneOutcome::Stale { .. }) => {
-                toasts::toast_error("Scene changed elsewhere \u{2014} reloaded, try again");
-                studio.refresh_scene.run(());
-            }
-            Err(error) => toasts::toast_error(&format!("Move failed: {error}")),
+    let Some(target) = scene
+        .zones
+        .iter()
+        .find(|zone| zone.id.to_string() == target_zone_id)
+    else {
+        return;
+    };
+    let mut changes = Vec::new();
+    for zone in &scene.zones {
+        if zone.id == target.id {
+            continue;
         }
-    });
+        for (index, output) in api::zone_outputs(zone).into_iter().enumerate() {
+            if output_ids.contains(&output.id) {
+                changes.push(MemberEdit {
+                    before: Some(MemberState {
+                        zone_id: zone.id,
+                        output: output.clone(),
+                        index,
+                    }),
+                    after: Some(MemberState {
+                        zone_id: target.id,
+                        output,
+                        index: target.members.len() + changes.len(),
+                    }),
+                });
+            }
+        }
+    }
+    history.edit_members(changes);
 }
 
 /// Render one per-channel row beneath the card body.
@@ -1051,45 +1068,32 @@ fn identify_device_now(device_id: &str, set_identifying: WriteSignal<bool>) {
 /// revision into the next call lets a multi-output controller leave the
 /// zone in a single user action.
 pub(super) fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: String) {
-    let Some(scene) = studio.active_scene.get_untracked() else {
-        toasts::toast_error("No active scene is available");
+    use hypercolor_types::api::scene::{MemberEdit, MemberState};
+    let history = studio.history;
+    let Some(scene) = history.current_scene() else {
         return;
     };
-    let output_ids: Vec<String> = scene
+    let Some(zone) = scene
         .zones
         .iter()
         .find(|zone| zone.id.to_string() == zone_id)
-        .map(|zone| {
-            zone.members
-                .iter()
-                .filter(|member| member.device_id == device_id)
-                .map(|member| member.id.to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-    if output_ids.is_empty() {
+    else {
         return;
-    }
-    let mut revision = scene.revision;
-    spawn_local(async move {
-        for output_id in output_ids {
-            match api::zones::unassign_device(&zone_id, &output_id, revision).await {
-                Ok(ZoneOutcome::Applied(next)) => revision = next,
-                Ok(ZoneOutcome::Stale { .. }) => {
-                    toasts::toast_error("Scene changed elsewhere — reloaded, try again");
-                    studio.refresh_scene.run(());
-                    return;
-                }
-                Err(error) => {
-                    toasts::toast_error(&format!("Remove failed: {error}"));
-                    studio.refresh_scene.run(());
-                    return;
-                }
-            }
-        }
-        toasts::toast_success("Device removed from zone");
-        studio.refresh_scene.run(());
-    });
+    };
+    let changes = api::zone_outputs(zone)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, output)| output.device_id == device_id)
+        .map(|(index, output)| MemberEdit {
+            before: Some(MemberState {
+                zone_id: zone.id,
+                output,
+                index,
+            }),
+            after: None,
+        })
+        .collect();
+    history.edit_members(changes);
 }
 
 /// Group a number's digits in threes: `230400` → `"230,400"`.

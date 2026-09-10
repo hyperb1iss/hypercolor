@@ -330,7 +330,9 @@ fn SurfaceStage() -> impl IntoView {
                             // a flex-1 child with no h-full, so a plain block
                             // here collapses the canvas to zero height.
                             <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-                                <LayoutWorkspace compact=true />
+                                <div class="contents" inert=move || studio.history.busy.get() aria-busy=move || studio.history.busy.get().to_string()>
+                                    <LayoutWorkspace compact=true />
+                                </div>
                             </div>
                         </div>
                     }
@@ -350,6 +352,7 @@ fn SurfaceStage() -> impl IntoView {
 fn ZoneCanvasBar() -> impl IntoView {
     let editor = expect_context::<LayoutEditorContext>();
     let actions = expect_context::<ZoneCanvasActions>();
+    let history = expect_context::<super::history::StudioHistory>();
     let write = editor.set_layout;
     let can_undo = editor.can_undo;
     let can_redo = editor.can_redo;
@@ -382,42 +385,29 @@ fn ZoneCanvasBar() -> impl IntoView {
 
                 <div class="mx-0.5 h-5 w-px bg-edge-subtle/40" />
 
-                // Revert / Save — Save doubles as the dirty indicator.
-                {move || {
-                    let dirty = is_dirty.get();
-                    let save_style = if dirty {
-                        "background: rgba(80, 250, 123, 0.14); border-color: rgba(80, 250, 123, 0.35); color: rgb(80, 250, 123); box-shadow: 0 0 12px rgba(80, 250, 123, 0.16)"
-                    } else {
-                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                    };
-                    let revert_style = if dirty {
-                        "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.25); color: rgb(241, 250, 140)"
-                    } else {
-                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                    };
-                    view! {
-                        <button
-                            type="button"
-                            class="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-all btn-press"
-                            style=revert_style
-                            on:click=move |_| revert.run(())
-                            disabled=move || !is_dirty.get()
-                        >
-                            <Icon icon=LuUndo2 width="12px" height="12px" />
-                            "Revert"
-                        </button>
-                        <button
-                            type="button"
-                            class="flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-all btn-press"
-                            style=save_style
-                            on:click=move |_| save.run(())
-                            disabled=move || !is_dirty.get()
-                        >
-                            <Icon icon=LuSave width="12px" height="12px" />
-                            "Save"
-                        </button>
-                    }
-                }}
+                <span role="status" class="text-[11px] text-fg-tertiary" title="Device assignments save automatically; layout changes save when you choose Save.">
+                    {move || if history.busy.get() { "Saving…" } else if is_dirty.get() { "Unsaved layout" } else { "Saved" }}
+                </span>
+                <button
+                    type="button"
+                    class="flex items-center gap-1 rounded-md border border-edge-subtle px-2 py-1 text-[11px] font-medium text-fg-secondary transition-colors hover:bg-surface-hover disabled:opacity-40 btn-press"
+                    title="Revert unsaved layout changes"
+                    on:click=move |_| revert.run(())
+                    disabled=move || !is_dirty.get() || history.busy.get()
+                >
+                    <Icon icon=LuUndo2 width="12px" height="12px" />
+                    "Revert"
+                </button>
+                <button
+                    type="button"
+                    class="flex items-center gap-1 rounded-md border border-accent-muted bg-accent-muted px-2 py-1 text-[11px] font-medium text-fg-primary transition-colors hover:bg-surface-hover disabled:opacity-40 btn-press"
+                    title="Save layout changes"
+                    on:click=move |_| save.run(())
+                    disabled=move || !is_dirty.get() || history.busy.get()
+                >
+                    <Icon icon=LuSave width="12px" height="12px" />
+                    "Save"
+                </button>
             </div>
         </Show>
     }

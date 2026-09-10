@@ -4,7 +4,7 @@ use hypercolor_types::spatial::Output;
 
 use crate::compound_selection::CompoundDepth;
 
-const MAX_HISTORY_DEPTH: usize = 100;
+pub(crate) const MAX_HISTORY_DEPTH: usize = 100;
 
 pub type RemovedOutputCache = HashMap<(String, Option<String>), Output>;
 

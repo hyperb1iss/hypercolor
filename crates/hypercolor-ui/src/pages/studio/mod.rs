@@ -9,6 +9,7 @@ mod composition_panel;
 pub mod device_assignment;
 mod device_card;
 mod face_composition;
+pub mod history;
 mod offline_device_card;
 mod scene_selector;
 mod stage;
@@ -85,6 +86,7 @@ fn empty_layer_stack() -> api::LayerStackResponse {
 /// provided to the columns so surface selection is one source of truth.
 #[derive(Clone, Copy)]
 pub struct StudioContext {
+    pub(crate) history: history::StudioHistory,
     pub selected_surface_id: RwSignal<Option<String>>,
     pub active_scene: Signal<Option<api::SceneDocument>>,
     /// Re-fetch the active scene. Zone mutations call this so the tree and
@@ -372,7 +374,11 @@ pub fn StudioPage() -> impl IntoView {
     let zone_rename_draft = RwSignal::new(None::<(String, String)>);
     let pointer_output_id = RwSignal::new(None::<String>);
 
+    let history = history::StudioHistory::new(active_scene, selected_surface_id, refresh_scene);
+    provide_context(history);
+
     provide_context(StudioContext {
+        history,
         selected_surface_id,
         active_scene,
         refresh_scene,
@@ -450,7 +456,6 @@ pub fn StudioPage() -> impl IntoView {
                 </div>
                 <div class="relative min-w-0 flex-1">
                     <ZoneLayoutProvider
-                        active_scene=active_scene
                         selected_zone_id=selected_surface_id
                         refresh_scene=refresh_scene
                     >
