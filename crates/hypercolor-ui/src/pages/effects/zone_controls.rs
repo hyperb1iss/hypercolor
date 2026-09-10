@@ -35,8 +35,9 @@ const ZONE_CONTROLS_DEBOUNCE_MS: f64 = 75.0;
 
 /// Control schemas cached per effect id. Zone values live in the scene,
 /// but the control *definitions* come from `fetch_effect_detail`; the
-/// cache keeps tab switches from refetching a schema already seen.
-pub type ZoneControlSchemaCache = StoredValue<HashMap<String, Vec<ControlDefinition>>>;
+/// cache keeps tab switches from refetching a schema already seen. Entries
+/// carry the connection epoch so reconnecting refreshes their definitions.
+pub type ZoneControlSchemaCache = StoredValue<HashMap<String, (u64, Vec<ControlDefinition>)>>;
 
 /// The controls-card body: an optional zone tab strip plus the panel
 /// for the selected zone. The primary tab renders the caller-supplied
@@ -80,6 +81,30 @@ pub fn ZoneScopedControls(
         fx.zone_effects
             .with(|zones| zones.iter().find(|state| state.zone.id == zone_id).cloned())
     });
+    // Only immutable write authority owns the panel lifetime. Values and
+    // revisions reconcile inside the existing session instead of remounting it.
+    let selected_target = Memo::new(move |_| {
+        let state = selected_state.get()?;
+        let effect_id = state.effect_id?;
+        zones_ctx.active_scene.with(|scene| {
+            let scene = scene.as_ref()?;
+            let zone = scene
+                .zones
+                .iter()
+                .find(|zone| zone.id.to_string() == state.zone.id)?;
+            let layer_id = zone
+                .layers
+                .iter()
+                .rev()
+                .find_map(|layer| match &layer.source {
+                    LayerSource::Effect {
+                        effect_id: current, ..
+                    } if current.to_string() == effect_id => Some(layer.id.to_string()),
+                    _ => None,
+                })?;
+            Some((scene.id.to_string(), state.zone.id, layer_id, effect_id))
+        })
+    });
 
     view! {
         <div class="space-y-2.5">
@@ -90,7 +115,7 @@ pub fn ZoneScopedControls(
                     .then(|| view! { <ZoneTabStrip selected_zone_id=selected_zone_id /> })
             }}
             {move || {
-                let Some(state) = selected_state.get() else {
+                let Some(_) = selected_zone_id.get() else {
                     // Primary tab — today's exact panel.
                     return view! {
                         <ControlPanel
@@ -102,7 +127,7 @@ pub fn ZoneScopedControls(
                     }
                         .into_any();
                 };
-                let Some(effect_id) = state.effect_id.clone() else {
+                let Some((_scene_id, zone_id, layer_id, effect_id)) = selected_target.get() else {
                     return view! {
                         <ZoneQuietNotice message="Nothing playing in this zone" />
                     }
@@ -111,7 +136,9 @@ pub fn ZoneScopedControls(
                 view! {
                     <ZoneControlsPanel
                         effect_id=effect_id
-                        state=state
+                        zone_id=zone_id
+                        layer_id=layer_id
+                        state=selected_state
                         schema_cache=schema_cache
                     />
                 }
@@ -197,63 +224,60 @@ fn ZoneTabStrip(selected_zone_id: Memo<Option<String>>) -> impl IntoView {
 /// Controls for one non-primary zone's directly-assigned effect. The
 /// schema comes from the (cached) effect detail; values seed from the
 /// zone's scene-stored controls; edits run through the shared patch
-/// session against the real layer returned by `/scene`. The host body
-/// re-mounts this panel whenever the zone or its effect changes, so the
-/// seeds are always fresh.
+/// session against the real layer returned by the scene. Only a change to
+/// scene, zone, layer, or effect identity retires the panel and its session.
 #[component]
 fn ZoneControlsPanel(
     effect_id: String,
-    state: ZoneEffectState,
+    zone_id: String,
+    layer_id: String,
+    state: Memo<Option<ZoneEffectState>>,
     schema_cache: ZoneControlSchemaCache,
 ) -> impl IntoView {
     let zones_ctx = expect_context::<ZonesContext>();
-    let zone_id = state.zone.id.clone();
-    let layer_id = zones_ctx.active_scene.with_untracked(|scene| {
-        scene
-            .as_ref()?
-            .zones
-            .iter()
-            .find(|zone| zone.id.to_string() == zone_id)?
-            .layers
-            .iter()
-            .rev()
-            .find_map(|layer| match &layer.source {
-                LayerSource::Effect {
-                    effect_id: current, ..
-                } if current.to_string() == effect_id => Some(layer.id.to_string()),
-                _ => None,
-            })
+    let ws = expect_context::<crate::app::WsContext>();
+    let accent_rgb = Signal::derive(move || {
+        let category = state
+            .get()
+            .and_then(|state| state.effect_category)
+            .unwrap_or_default();
+        category_accent_rgb(&category).to_string()
     });
-    let Some(layer_id) = layer_id else {
-        return view! { <ZoneQuietNotice message="The effect layer changed. Reloading…" /> }
-            .into_any();
-    };
-    let accent_rgb = {
-        let category = state.effect_category.clone().unwrap_or_default();
-        Signal::derive(move || category_accent_rgb(&category).to_string())
-    };
 
     let schema = api::daemon_resource({
         let effect_id = effect_id.clone();
         move || {
             let effect_id = effect_id.clone();
+            let generation = ws.connection_generation.get();
             async move {
-                if let Some(defs) = schema_cache.with_value(|cache| cache.get(&effect_id).cloned())
+                if let Some((epoch, defs)) =
+                    schema_cache.with_value(|cache| cache.get(&effect_id).cloned())
+                    && epoch == generation
                 {
                     return Ok(defs);
                 }
                 let detail = api::fetch_effect_detail(&effect_id).await?;
-                schema_cache.update_value(|cache| {
-                    cache.insert(effect_id, detail.controls.clone());
+                schema_cache.try_update_value(|cache| {
+                    cache.insert(effect_id, (generation, detail.controls.clone()));
                 });
                 Ok::<_, api::ApiError>(detail.controls)
             }
         }
     });
-    let defs = Signal::derive(move || schema.get().and_then(Result::ok).unwrap_or_default());
+    let schema_value = Signal::derive(move || {
+        schema.get().and_then(Result::ok).or_else(|| {
+            schema_cache.with_value(|cache| cache.get(&effect_id).map(|(_, defs)| defs.clone()))
+        })
+    });
+    let defs = Signal::derive(move || schema_value.get().unwrap_or_default());
 
     // Optimistic local values, seeded from the zone's scene state.
-    let (values, set_values) = signal(state.control_values.clone());
+    let (values, set_values) = signal(
+        state
+            .get_untracked()
+            .map(|state| state.control_values)
+            .unwrap_or_default(),
+    );
 
     // The layer id came from the live document. Replacement retires it, so
     // a stale control patch cannot land on a newer effect.
@@ -282,27 +306,35 @@ fn ZoneControlsPanel(
         on_error: Callback::new(|error: String| {
             toasts::toast_error(&format!("Zone controls failed: {error}"));
         }),
-        recover: zones_ctx.refresh,
+        recover: Callback::new(move |()| {
+            if let Some(state) = state.get_untracked() {
+                set_values.set(state.control_values);
+            }
+            zones_ctx.refresh.run(());
+        }),
         on_committed: None,
         flush_guard: None,
     });
 
+    Effect::new(move |_| {
+        if let Some(state) = state.get() {
+            session.reconcile_values.run(state.control_values);
+        }
+    });
+    let on_change = session.on_change;
+
     view! {
-        {move || {
-            if schema.get().is_none() {
-                view! { <ZoneQuietNotice message="Loading controls…" /> }.into_any()
-            } else {
-                view! {
-                    <ControlPanel
-                        controls=defs
-                        control_values=values
-                        accent_rgb=accent_rgb
-                        on_change=session.on_change
-                    />
-                }
-                    .into_any()
-            }
-        }}
+        <Show
+            when=move || schema_value.get().is_some()
+            fallback=move || view! { <ZoneQuietNotice message="Loading controls…" /> }
+        >
+            <ControlPanel
+                controls=defs
+                control_values=values
+                accent_rgb=accent_rgb
+                on_change=on_change
+            />
+        </Show>
     }
     .into_any()
 }
