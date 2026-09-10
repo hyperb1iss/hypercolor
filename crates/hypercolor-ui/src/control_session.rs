@@ -85,6 +85,8 @@ pub struct ControlPatchSession {
     pub flush_now: Callback<()>,
     /// Drop any queued-but-unsent edits.
     pub clear_pending: Callback<()>,
+    /// Adopt server values while preserving this target's unconfirmed edits.
+    pub reconcile_values: Callback<ControlValueMap>,
     /// Live version token echoed as `If-Match`; `None` for unversioned
     /// surfaces. Adopted from `Applied`/`Stale` outcomes automatically.
     pub version: RwSignal<Option<u64>>,
@@ -212,6 +214,7 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
                     }
                     let mut retried = false;
                     loop {
+                        optimistic.track_in_flight(&batch);
                         let outcome = patch(
                             batch.target.clone(),
                             batch.values.clone(),
@@ -304,11 +307,18 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
     let flush_now = Callback::new(move |()| flush_core());
     let clear_pending = Callback::new(move |()| optimistic.clear_pending());
 
+    let reconcile_values = Callback::new(move |values| {
+        if let Some(target) = target.get_untracked() {
+            set_values.set(optimistic.reconcile_values(&target, values));
+        }
+    });
+
     ControlPatchSession {
         on_change,
         on_changes,
         flush_now,
         clear_pending,
+        reconcile_values,
         version,
     }
 }

@@ -434,6 +434,13 @@ pub struct DeviceEventHint {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SceneEventHint {
     pub generation: u64,
+    /// Scene commits, excluding per-control notifications for the same commit.
+    pub scene_generation: u64,
+    /// Invalidation epochs survive later control hints in the same reactive turn.
+    pub structural_generation: u64,
+    pub active_effect_generation: u64,
+    /// Per-zone control epochs keep remote changes visible across batched hints.
+    pub control_generations: HashMap<String, u64>,
     pub event_type: String,
     pub scene_id: Option<String>,
     /// Zone (render zone) the event names, for zone-tagged events like
@@ -454,6 +461,29 @@ pub fn sequence_scene_event_hint(
     mut next: SceneEventHint,
 ) -> SceneEventHint {
     next.generation = previous.map_or(1, |hint| hint.generation.wrapping_add(1));
+    next.scene_generation = previous
+        .map_or(0, |hint| hint.scene_generation)
+        .wrapping_add(u64::from(next.event_type != "effect_control_changed"));
+    next.structural_generation = previous
+        .map_or(0, |hint| hint.structural_generation)
+        .wrapping_add(u64::from(!scene_event_is_control_change(&next)));
+    next.active_effect_generation = previous
+        .map_or(0, |hint| hint.active_effect_generation)
+        .wrapping_add(u64::from(scene_event_affects_active_effect(&next)));
+    if next.event_type != "active_scene_changed" {
+        next.control_generations = previous
+            .map(|hint| hint.control_generations.clone())
+            .unwrap_or_default();
+    }
+    if next.event_type == "zone_changed"
+        && next.zone_change_kind == Some(ZoneChangeKind::ControlsPatched)
+    {
+        let generation = next
+            .control_generations
+            .entry(next.zone_id.clone().unwrap_or_default())
+            .or_default();
+        *generation = generation.wrapping_add(1);
+    }
     next
 }
 
@@ -1281,6 +1311,10 @@ pub fn extract_scene_event_hint(
 
     SceneEventHint {
         generation: 0,
+        scene_generation: 0,
+        structural_generation: 0,
+        active_effect_generation: 0,
+        control_generations: HashMap::new(),
         event_type: event_type.to_owned(),
         scene_id: scene_data
             .get("current")
@@ -1341,6 +1375,9 @@ fn update_scene_event_hint(
 }
 
 pub fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
+    if scene_event_is_control_change(hint) {
+        return false;
+    }
     match hint.event_type.as_str() {
         // Library CRUD and scene-settings tweaks never change what's
         // rendering right now.
@@ -1348,6 +1385,28 @@ pub fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
         "zone_changed" => hint.zone_role != Some(ZoneRole::Display),
         _ => true,
     }
+}
+
+/// Control changes update the shared scene's values, not effect metadata or faces.
+pub fn scene_event_is_control_change(hint: &SceneEventHint) -> bool {
+    hint.event_type == "effect_control_changed"
+        || (hint.event_type == "zone_changed"
+            && hint.zone_change_kind == Some(ZoneChangeKind::ControlsPatched))
+}
+
+/// Whether the current effect needs metadata or authoritative controls refetched.
+pub fn scene_event_requires_effect_refresh(
+    previous: Option<&SceneEventHint>,
+    current: &SceneEventHint,
+    zone_id: Option<&str>,
+) -> bool {
+    current.active_effect_generation != previous.map_or(0, |hint| hint.active_effect_generation)
+        || current.control_generations.get("")
+            != previous.and_then(|hint| hint.control_generations.get(""))
+        || zone_id.is_some_and(|zone_id| {
+            current.control_generations.get(zone_id)
+                != previous.and_then(|hint| hint.control_generations.get(zone_id))
+        })
 }
 
 fn extract_device_event_hint(

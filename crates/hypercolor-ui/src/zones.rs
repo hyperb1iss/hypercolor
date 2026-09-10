@@ -290,10 +290,21 @@ pub fn provide_scene_contexts(
         });
     });
 
-    // WS-driven freshness: any scene event refreshes the active scene
-    // (except pure control patches — those arrive at slider-drag rate
-    // and don't change scene structure); activation and library CRUD
-    // also refresh the list.
+    // A zone commit includes every control value and the new scene revision.
+    // Its per-control notifications share that invalidation, so a compound
+    // edit fetches one authoritative snapshot instead of one per control.
+    let scene_generation = Memo::new(move |_| {
+        last_scene_event.with(|hint| hint.as_ref().map_or(0, |hint| hint.scene_generation))
+    });
+    Effect::new(move |previous: Option<u64>| {
+        let current = scene_generation.get();
+        if previous.unwrap_or_default() != current {
+            active_scene_resource.refetch();
+        }
+        current
+    });
+
+    // Activation and library CRUD also refresh the saved-scene list.
     Effect::new(move |previous: Option<Option<SceneEventHint>>| {
         let current = last_scene_event.get();
         if previous.as_ref() == Some(&current) {
@@ -303,12 +314,6 @@ pub fn provide_scene_contexts(
             return current;
         };
 
-        let controls_only = hint.event_type == "zone_changed"
-            && hint.zone_change_kind
-                == Some(hypercolor_types::event::ZoneChangeKind::ControlsPatched);
-        if !controls_only {
-            active_scene_resource.refetch();
-        }
         if matches!(
             hint.event_type.as_str(),
             "active_scene_changed" | "scene_library_changed"

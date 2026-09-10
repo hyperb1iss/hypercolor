@@ -51,6 +51,9 @@ use source::{
     resolve_add_layer_targets,
 };
 
+/// Effect schemas survive layer replacements; a reconnect invalidates their epoch.
+pub type LayerEffectCache = StoredValue<HashMap<String, (u64, api::effects::EffectDetailResponse)>>;
+
 /// Layer-stack editor for one zone. See the module docs for the
 /// mount contract.
 #[component]
@@ -66,6 +69,10 @@ pub fn LayerPanel(
     layers_resource: LocalResource<api::ApiResult<api::LayerStackResponse>>,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
+    let effect_cache = LayerEffectCache::new(HashMap::new());
+    // Disclosure preference belongs to a visible stack slot, independently of
+    // the fresh layer authority minted by a whole-layer replacement.
+    let disclosures = StoredValue::new(HashMap::<(String, String, usize), bool>::new());
     // Content selection is owned here, not driven by the host page — the
     // asset list backs both media-name resolution and the picker's Media tab.
     let assets_resource = api::daemon_resource(|| async { api::list_assets().await });
@@ -103,6 +110,31 @@ pub fn LayerPanel(
             .get()
             .and_then(Result::ok)
             .map(|stack| stack.revision)
+    });
+
+    let layers = Memo::new(move |_| {
+        layers_resource
+            .get()
+            .and_then(Result::ok)
+            .map(|stack| stack.items)
+            .unwrap_or_default()
+    });
+    let scene_id = Memo::new(move |_| {
+        active_scene
+            .get()
+            .map(|scene| scene.id.to_string())
+            .unwrap_or_default()
+    });
+    let revision = Signal::derive(move || scene_revision.get().unwrap_or_default());
+    let row_keys = Memo::new(move |_| {
+        let scene = scene_id.get();
+        let zone = selected_zone_id.get().unwrap_or_default();
+        layers
+            .get()
+            .into_iter()
+            .rev()
+            .map(|layer| (scene.clone(), zone.clone(), layer_mount_key(&layer)))
+            .collect::<Vec<_>>()
     });
 
     // Per-layer runtime health streams in over the WebSocket, independent
@@ -251,98 +283,62 @@ pub fn LayerPanel(
                     "Add layer"
                 </button>
 
-                <Suspense fallback=move || view! { <LayerLoadingSkeleton /> }>
-                    {move || match layers_resource.get() {
-                        None => view! { <LayerLoadingSkeleton /> }.into_any(),
-                        Some(Err(error)) => view! {
-                            <div class="rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-3 text-xs text-status-error">
-                                {error.to_string()}
-                            </div>
-                        }.into_any(),
-                        Some(Ok(stack)) if stack.items.is_empty() => {
-                            // A screen may still be painting its stored
-                            // default face; only the scene's own stack is
-                            // empty, and the card above the panel says so.
-                            let copy = if selected_zone_role.get() == Some(ZoneRole::Display) {
-                                "No scene layers on this screen"
-                            } else {
-                                "No layers in this zone"
-                            };
+                <Show when=move || layers_resource.get().is_none()>
+                    <LayerLoadingSkeleton />
+                </Show>
+                {move || layers_resource.get().and_then(Result::err).map(|error| view! {
+                    <div class="rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-3 text-xs text-status-error">{error.to_string()}</div>
+                })}
+                <Show when=move || layers_resource.get().is_some_and(|result| result.is_ok()) && layers.with(Vec::is_empty)>
+                    <div class="rounded-lg border border-edge-subtle bg-surface-sunken/45 px-3 py-8 text-center text-xs text-fg-tertiary">
+                        {move || if selected_zone_role.get() == Some(ZoneRole::Display) { "No scene layers on this screen" } else { "No layers in this zone" }}
+                    </div>
+                </Show>
+                <div class="space-y-2">
+                    <Show when=move || layers.with(|layers| layers.len() > 1)>
+                        <div class="text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/65">"Top"</div>
+                    </Show>
+                    <For
+                        each=move || row_keys.get()
+                        key=|key| key.clone()
+                        children=move |(scene_id, zone_id, (layer_id, _))| {
+                            let initial = layers.with_untracked(|layers| layers.iter().find(|layer| layer.id.to_string() == layer_id).cloned()).expect("keyed layer is present when mounted");
+                            let lookup_id = layer_id.clone();
+                            let current_layer = Memo::new(move |_| {
+                                layers.with(|layers| layers.iter().find(|layer| layer.id.to_string() == lookup_id).cloned()).unwrap_or_else(|| initial.clone())
+                            });
+                            let stack_index = Signal::derive(move || layers.with(|layers| layers.iter().position(|layer| layer.id.to_string() == layer_id).unwrap_or_default()));
+                            let disclosure_key = (scene_id.clone(), zone_id.clone(), stack_index.get_untracked());
+                            let expanded = disclosures.with_value(|states| states.get(&disclosure_key).copied().unwrap_or(false));
+                            let on_disclosure = Callback::new(move |open| {
+                                let mut key = disclosure_key.clone();
+                                key.2 = stack_index.get_untracked();
+                                disclosures.update_value(|states| { states.insert(key, open); });
+                            });
+                            let row_health_key = layer_health_key(&scene_id, &zone_id, &current_layer.get_untracked().id.to_string());
+                            let row_health = Signal::derive(move || layer_health.with(|map| map.get(&row_health_key).cloned()));
                             view! {
-                                <div class="rounded-lg border border-edge-subtle bg-surface-sunken/45 px-3 py-8 text-center text-xs text-fg-tertiary">
-                                    {copy}
-                                </div>
-                            }.into_any()
+                                <LayerRow
+                                    zone_id=zone_id
+                                    layer=current_layer.into()
+                                    stack_index=stack_index
+                                    stack=layers.into()
+                                    revision=revision
+                                    media_names=media_names
+                                    effect_names=effect_names
+                                    effect_cache=effect_cache
+                                    expanded=expanded
+                                    on_disclosure=on_disclosure
+                                    health=row_health
+                                    on_layers_mutated=on_layers_mutated
+                                />
+                            }
                         }
-                        Some(Ok(stack)) => {
-                            // `try_get`: Suspense can re-poll this closure after
-                            // the panel instance owning these memos is disposed
-                            // (host swapped the mounted view mid-fetch). A plain
-                            // `get` panics the whole reactive runtime there.
-                            let (Some(names), Some(effect_name_map)) =
-                                (media_names.try_get(), effect_names.try_get())
-                            else {
-                                return view! { <LayerLoadingSkeleton /> }.into_any();
-                            };
-                            let scene_id = active_scene
-                                .get()
-                                .map(|scene| scene.id.to_string())
-                                .unwrap_or_default();
-                            let zone_id = selected_zone_id.get().unwrap_or_default();
-                            let revision = stack.revision;
-                            let total = stack.items.len();
-                            let mut rows = stack
-                                .items
-                                .iter()
-                                .cloned()
-                                .enumerate()
-                                .collect::<Vec<_>>();
-                            rows.reverse();
-                            // The Top/Bottom stack markers orient a real
-                            // stack; with a single layer there is no
-                            // ordering to convey, so they stay hidden.
-                            let show_stack_markers = total > 1;
-                            view! {
-                                <div class="space-y-2">
-                                    {show_stack_markers.then(|| view! {
-                                        <div class="text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/65">
-                                            "Top"
-                                        </div>
-                                    })}
-                                    {rows.into_iter().map(|(stack_index, layer)| {
-                                        let row_health_key = layer_health_key(
-                                            &scene_id,
-                                            &zone_id,
-                                            &layer.id.to_string(),
-                                        );
-                                        let row_health = Signal::derive(move || {
-                                            layer_health.with(|map| map.get(&row_health_key).cloned())
-                                        });
-                                        view! {
-                                            <LayerRow
-                                                zone_id=zone_id.clone()
-                                                layer=layer
-                                                stack_index=stack_index
-                                                total_layers=total
-                                                stack=stack.items.clone()
-                                                revision=revision
-                                                media_names=names.clone()
-                                                effect_names=effect_name_map.clone()
-                                                health=row_health
-                                                on_layers_mutated=on_layers_mutated
-                                            />
-                                        }
-                                    }).collect_view()}
-                                    {show_stack_markers.then(|| view! {
-                                        <div class="text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/65">
-                                            "Bottom"
-                                        </div>
-                                    })}
-                                </div>
-                            }.into_any()
-                        }
-                    }}
-                </Suspense>
+                    />
+                    <Show when=move || layers.with(|layers| layers.len() > 1)>
+                        <div class="text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/65">"Bottom"</div>
+                    </Show>
+                </div>
             </div>
 
             <Show when=move || show_picker.get()>
@@ -435,4 +431,17 @@ fn reorder_layer(
             Err(error) => toasts::toast_error(&format!("Layer reorder failed: {error}")),
         }
     });
+}
+
+/// Keep editors mounted across value/revision changes, but retire a session
+/// when its layer or source identity changes.
+#[must_use]
+pub fn layer_mount_key(layer: &SceneLayer) -> (String, String) {
+    use hypercolor_types::layer::LayerSource;
+    let source = match &layer.source {
+        LayerSource::Effect { effect_id, .. } => format!("effect:{effect_id}"),
+        LayerSource::Media { asset_id, .. } => format!("media:{asset_id}"),
+        other => row::source_meta(other).2.to_owned(),
+    };
+    (layer.id.to_string(), source)
 }

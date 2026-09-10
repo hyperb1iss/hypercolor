@@ -38,7 +38,7 @@ use crate::preferences::PreferencesStore;
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::thumbnails::{self, ThumbnailStore};
 use crate::toasts;
-use crate::ws::messages::scene_event_affects_active_effect;
+use crate::ws::messages::scene_event_requires_effect_refresh;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
     EffectErrorHint, ExtensionEventHint, InputInjectEdge, InputSourceStatusEventHint,
@@ -934,10 +934,14 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                     .set_active_scene_mutation_mode
                     .set(Some(scene_mutation_mode));
             }
-            if current_scene_event
-                .as_ref()
-                .is_none_or(scene_event_affects_active_effect)
-            {
+            let target = effects_ctx.active_effect_target.get_untracked();
+            if current_scene_event.as_ref().is_none_or(|current| {
+                scene_event_requires_effect_refresh(
+                    previous_scene_event.as_ref().and_then(Option::as_ref),
+                    current,
+                    target.as_ref().map(|target| target.zone_id.as_str()),
+                )
+            }) {
                 effects_ctx.refresh_active_effect();
             }
 

@@ -26,6 +26,38 @@ use hypercolor_ui::components::layer_panel::source::{
 const SAMPLE_ID: &str = "0192f5a0-1234-7890-abcd-ef0123456789";
 
 #[test]
+fn layer_editor_identity_survives_values_but_retires_replaced_sources() {
+    use hypercolor_ui::components::layer_panel::layer_mount_key;
+    let mut layer = SceneLayer {
+        id: SceneLayerId::new(),
+        name: None,
+        source: effect_layer_source(SAMPLE_ID).expect("valid effect"),
+        blend: BlendMode::Screen,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    };
+    let original = layer_mount_key(&layer);
+    layer.opacity = 0.5;
+    layer.name = Some("Renamed".into());
+    if let LayerSource::Effect { controls, .. } = &mut layer.source {
+        controls.insert(
+            "speed".into(),
+            hypercolor_types::control::ControlValue::Float(0.8),
+        );
+    }
+    assert_eq!(layer_mount_key(&layer), original);
+    layer.source =
+        effect_layer_source("0192f5a0-1234-7890-abcd-ef0123456790").expect("valid effect");
+    assert_ne!(layer_mount_key(&layer), original);
+    layer.source = effect_layer_source(SAMPLE_ID).expect("valid effect");
+    layer.id = SceneLayerId::new();
+    assert_ne!(layer_mount_key(&layer), original);
+}
+
+#[test]
 fn layer_replacement_uses_the_canonical_creation_shape() {
     let layer = SceneLayer {
         id: SceneLayerId::new(),

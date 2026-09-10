@@ -37,35 +37,57 @@ const LAYER_CONTROLS_DEBOUNCE_MS: f64 = 120.0;
 #[component]
 pub fn EffectControlsSection(
     zone_id: String,
-    layer: SceneLayer,
+    layer: Signal<SceneLayer>,
+    effect_cache: super::LayerEffectCache,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
     let LayerSource::Effect {
         effect_id,
         controls,
         ..
-    } = layer.source.clone()
+    } = layer.get_untracked().source
     else {
         return ().into_any();
     };
 
     let effect_id_str = effect_id.to_string();
+    let ws = expect_context::<crate::app::WsContext>();
     let detail = api::daemon_resource({
         let effect_id_str = effect_id_str.clone();
         move || {
             let effect_id_str = effect_id_str.clone();
-            async move { api::fetch_effect_detail(&effect_id_str).await }
+            let generation = ws.connection_generation.get();
+            async move {
+                if let Some((epoch, detail)) =
+                    effect_cache.with_value(|cache| cache.get(&effect_id_str).cloned())
+                    && epoch == generation
+                {
+                    return Ok(detail);
+                }
+                let detail = api::fetch_effect_detail(&effect_id_str).await?;
+                effect_cache.try_update_value(|cache| {
+                    cache.insert(effect_id_str, (generation, detail.clone()));
+                });
+                Ok::<_, api::ApiError>(detail)
+            }
         }
     });
+    // A same-effect layer replacement retires its write session, but its
+    // controls need not collapse to a loading placeholder while it mounts.
+    let detail_value = Signal::derive(move || {
+        detail.get().and_then(Result::ok).or_else(|| {
+            effect_cache
+                .with_value(|cache| cache.get(&effect_id_str).map(|(_, detail)| detail.clone()))
+        })
+    });
     let defs = Signal::derive(move || {
-        detail
+        detail_value
             .get()
-            .and_then(Result::ok)
             .map(|detail| detail.controls)
             .unwrap_or_default()
     });
     let screen_reactive = Signal::derive(move || {
-        detail.get().and_then(Result::ok).is_some_and(|detail| {
+        detail_value.get().is_some_and(|detail| {
             detail
                 .tags
                 .iter()
@@ -76,7 +98,7 @@ pub fn EffectControlsSection(
     // Optimistic local control values. Layer identity fences stale patches,
     // so the canonical control route carries no revision token.
     let (values, set_values) = signal(controls);
-    let layer_id = layer.id.to_string();
+    let layer_id = layer.get_untracked().id.to_string();
 
     let session_target = Signal::stored(Some(format!("{zone_id}:{layer_id}")));
     let patch: ControlPatchFn = Arc::new({
@@ -103,39 +125,44 @@ pub fn EffectControlsSection(
         on_error: Callback::new(|error: String| {
             toasts::toast_error(&format!("Effect controls failed: {error}"));
         }),
-        recover: on_layers_mutated,
+        recover: Callback::new(move |()| {
+            // A rejected edit can leave the server snapshot unchanged, so
+            // memo equality will not trigger the normal reconciliation effect.
+            if let LayerSource::Effect { controls, .. } = layer.get_untracked().source {
+                set_values.set(controls);
+            }
+            on_layers_mutated.run(());
+        }),
         on_committed: None,
         flush_guard: None,
+    });
+    Effect::new(move |_| {
+        if let LayerSource::Effect { controls, .. } = layer.get().source {
+            session.reconcile_values.run(controls);
+        }
     });
     let on_change = session.on_change;
 
     view! {
         <div class="space-y-2">
             <span class=label_class(LabelSize::Micro, LabelTone::Default)>"Effect controls"</span>
-            {move || {
-                if detail.get().is_none() {
-                    view! {
-                        <div class="rounded-lg border border-edge-subtle/50 bg-surface-sunken/40 px-3 py-4 text-center text-[11px] text-fg-tertiary/55">
-                            "Loading controls…"
-                        </div>
-                    }
-                        .into_any()
-                } else {
-                    view! {
-                        <ControlPanel
-                            controls=defs
-                            control_values=values
-                            accent_rgb=Signal::derive(|| LAYER_ACCENT_RGB.to_owned())
-                            on_change=on_change
-                        />
-                        <CaptureSharedControls
-                            visible=screen_reactive
-                            accent_rgb=Signal::derive(|| LAYER_ACCENT_RGB.to_owned())
-                        />
-                    }
-                        .into_any()
+            <Show
+                when=move || detail_value.get().is_some()
+                fallback=move || view! {
+                    <div class="rounded-lg border border-edge-subtle/50 bg-surface-sunken/40 px-3 py-4 text-center text-[11px] text-fg-tertiary/55">"Loading controls…"</div>
                 }
-            }}
+            >
+                <ControlPanel
+                    controls=defs
+                    control_values=values
+                    accent_rgb=Signal::derive(|| LAYER_ACCENT_RGB.to_owned())
+                    on_change=on_change
+                />
+                <CaptureSharedControls
+                    visible=screen_reactive
+                    accent_rgb=Signal::derive(|| LAYER_ACCENT_RGB.to_owned())
+                />
+            </Show>
         </div>
     }
     .into_any()
@@ -147,26 +174,31 @@ pub fn EffectControlsSection(
 #[component]
 pub fn MediaPlaybackSection(
     zone_id: String,
-    layer: SceneLayer,
-    revision: u64,
+    layer: Signal<SceneLayer>,
+    revision: Signal<u64>,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
-    let LayerSource::Media { playback, .. } = layer.source.clone() else {
+    let LayerSource::Media { playback, .. } = layer.get_untracked().source else {
         return ().into_any();
     };
-    let speed = playback.speed;
-    let loop_mode = playback.loop_mode;
-    let auto_play = playback.auto_play;
+    let playback = Memo::new(move |_| match layer.get().source {
+        LayerSource::Media { playback, .. } => playback,
+        _ => playback.clone(),
+    });
 
     // Rebuild the layer with a mutated `MediaPlayback` and push it.
     let push = {
-        let layer = layer.clone();
         move |mutate: &dyn Fn(&mut hypercolor_types::layer::MediaPlayback)| {
-            let mut next = layer.clone();
+            let mut next = layer.get_untracked();
             if let LayerSource::Media { playback, .. } = &mut next.source {
                 mutate(playback);
             }
-            update_layer(zone_id.clone(), next, revision, on_layers_mutated);
+            update_layer(
+                zone_id.clone(),
+                next,
+                revision.get_untracked(),
+                on_layers_mutated,
+            );
         }
     };
     let push_speed = push.clone();
@@ -177,12 +209,14 @@ pub fn MediaPlaybackSection(
         ("ping_pong".to_owned(), "Ping-pong".to_owned()),
         ("none".to_owned(), "Play once".to_owned()),
     ];
-    let loop_value = match loop_mode {
-        LoopMode::Loop => "loop",
-        LoopMode::PingPong => "ping_pong",
-        LoopMode::None => "none",
-    }
-    .to_owned();
+    let loop_value = move || {
+        match playback.get().loop_mode {
+            LoopMode::Loop => "loop",
+            LoopMode::PingPong => "ping_pong",
+            LoopMode::None => "none",
+        }
+        .to_owned()
+    };
 
     view! {
         <div class="space-y-3">
@@ -195,17 +229,17 @@ pub fn MediaPlaybackSection(
                     max="4"
                     step="0.05"
                     class="w-full accent-accent"
-                    prop:value=format!("{speed:.2}")
+                    prop:value=move || format!("{:.2}", playback.get().speed)
                     on:change=move |event| {
                         if let Some(value) = Change::from_event(event).value::<f32>() {
                             push_speed(&|playback| playback.speed = value.clamp(0.1, 4.0));
                         }
                     }
                 />
-                <span class="text-right tabular-nums">{format!("{speed:.2}×")}</span>
+                <span class="text-right tabular-nums">{move || format!("{:.2}×", playback.get().speed)}</span>
             </label>
             <crate::components::silk_select::SilkSelect
-                value=Signal::derive(move || loop_value.clone())
+                value=Signal::derive(loop_value)
                 options=Signal::derive(move || loop_options.clone())
                 on_change=Callback::new(move |value: String| {
                     let mode = match value.as_str() {
@@ -223,31 +257,29 @@ pub fn MediaPlaybackSection(
                 type="button"
                 class="flex w-full items-center justify-between rounded-lg border border-edge-subtle/60 bg-surface-sunken/40 px-3 py-2 text-[11px] text-fg-secondary chip-interactive"
                 on:click=move |_| {
-                    push_auto(&|playback| playback.auto_play = !auto_play);
+                    push_auto(&|playback| playback.auto_play = !playback.auto_play);
                 }
             >
                 <span>"Auto-play"</span>
-                <LayerToggleTrack on=auto_play />
+                <LayerToggleTrack on=Signal::derive(move || playback.get().auto_play) />
             </button>
         </div>
     }
     .into_any()
 }
 
-/// A compact Luminary toggle track — the switch visual without its own
-/// label row, for embedding in a layer card. The card rebuilds on every
-/// layer change, so a plain `bool` tracks state without a signal.
+/// A compact toggle track that follows the current layer playback state.
 #[component]
-pub fn LayerToggleTrack(on: bool) -> impl IntoView {
+pub fn LayerToggleTrack(#[prop(into)] on: Signal<bool>) -> impl IntoView {
     view! {
         <span
             class="relative inline-block h-4 w-7 shrink-0 rounded-full transition-colors duration-200"
-            class=("bg-accent/55", on)
-            class=("bg-fg-tertiary/20", !on)
+            class=("bg-accent/55", move || on.get())
+            class=("bg-fg-tertiary/20", move || !on.get())
         >
             <span
                 class="absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white/85 transition-transform duration-200"
-                class=("translate-x-3", on)
+                class=("translate-x-3", move || on.get())
             />
         </span>
     }
