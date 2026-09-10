@@ -2330,6 +2330,7 @@ async fn membership_edit_preserves_multiple_attachment_instances_on_one_segment(
     assert_eq!(restored.status(), StatusCode::OK);
     let restored: EditMembersResponse =
         serde_json::from_value(body_json(restored).await["data"].clone()).expect("receipt");
+    assert_eq!(restored.changes.len(), moved.changes.len());
     for (change, previous) in restored.changes.iter().zip(&moved.changes) {
         assert_eq!(change.after, previous.before);
     }
@@ -2499,4 +2500,183 @@ async fn membership_edit_assignment_uses_canonical_device_layout_hints() {
     assert_eq!(output.shape, hint.shape);
     assert_eq!(output.position, NormalizedPosition::new(0.7, 0.6));
     assert_eq!(output.size, NormalizedPosition::new(0.15, 0.1));
+}
+
+#[tokio::test]
+async fn membership_edit_rejects_ambiguous_forms_and_overflowing_topologies_atomically() {
+    use hypercolor_types::api::scene::{
+        EditMembersRequest, MemberAssignmentTarget, MemberEdit, MemberState,
+    };
+    use hypercolor_types::spatial::{Corner, RingDef, Winding};
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let document = read_document(&app).await;
+    let scene_id = serde_json::from_value(document["data"]["id"].clone()).expect("scene id");
+    let zone_id = serde_json::from_value(primary_zone(&document)["id"].clone()).expect("zone id");
+    let revision = document["data"]["revision"].as_u64().expect("revision");
+    let remove = MemberEdit {
+        before: Some(MemberState {
+            zone_id,
+            output: sample_output("out-a", Some("ch1")),
+            index: 0,
+        }),
+        after: None,
+    };
+    let assignment = MemberAssignmentTarget {
+        zone_id,
+        device_id: "mock:controller".into(),
+        segments: Vec::new(),
+        placements: Vec::new(),
+    };
+    for request in [
+        EditMembersRequest {
+            scene_id,
+            changes: vec![remove.clone()],
+            assignment: Some(assignment),
+        },
+        EditMembersRequest {
+            scene_id,
+            changes: Vec::new(),
+            assignment: None,
+        },
+    ] {
+        let response = send(
+            &app,
+            if_match(
+                json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+                revision,
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(read_document(&app).await["data"], document["data"]);
+    }
+    let topologies = [
+        LedTopology::Matrix {
+            width: u32::MAX,
+            height: 2,
+            start_corner: Corner::TopLeft,
+            serpentine: false,
+        },
+        LedTopology::Matrix {
+            width: 0,
+            height: u32::MAX,
+            start_corner: Corner::TopLeft,
+            serpentine: false,
+        },
+        LedTopology::ConcentricRings {
+            rings: vec![
+                RingDef {
+                    count: u32::MAX,
+                    radius: 1.0,
+                    start_angle: 0.0,
+                    direction: Winding::Clockwise,
+                },
+                RingDef {
+                    count: 1,
+                    radius: 0.5,
+                    start_angle: 0.0,
+                    direction: Winding::Clockwise,
+                },
+            ],
+        },
+        LedTopology::PerimeterLoop {
+            top: u32::MAX,
+            right: 1,
+            bottom: 0,
+            left: 0,
+            start_corner: Corner::TopLeft,
+            direction: Winding::Clockwise,
+        },
+    ];
+    for topology in topologies {
+        let mut output = sample_output("restored-output", Some("ch3"));
+        output.topology = topology;
+        let request = EditMembersRequest {
+            scene_id,
+            assignment: None,
+            changes: vec![
+                remove.clone(),
+                MemberEdit {
+                    before: None,
+                    after: Some(MemberState {
+                        zone_id,
+                        output,
+                        index: 1,
+                    }),
+                },
+            ],
+        };
+        let response = send(
+            &app,
+            if_match(
+                json_request("POST", "/api/v1/scene/members/edit".into(), json!(request)),
+                revision,
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            read_document(&app).await["data"],
+            document["data"],
+            "invalid second change leaves the first member intact"
+        );
+    }
+}
+
+#[tokio::test]
+async fn membership_edit_domain_rejects_nonfinite_topology_coordinates() {
+    use hypercolor_types::api::scene::{EditMembersRequest, MemberEdit, MemberState};
+    use hypercolor_types::spatial::{RingDef, Winding};
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    seed_tree(&state).await;
+    let document = read_document(&app).await;
+    let scene_id = serde_json::from_value(document["data"]["id"].clone()).expect("scene id");
+    let zone_id = serde_json::from_value(primary_zone(&document)["id"].clone()).expect("zone id");
+    let revision = document["data"]["revision"].as_u64().expect("revision");
+    for topology in [
+        LedTopology::Ring {
+            count: 2,
+            start_angle: f32::NAN,
+            direction: Winding::Clockwise,
+        },
+        LedTopology::ConcentricRings {
+            rings: vec![RingDef {
+                count: 2,
+                radius: f32::INFINITY,
+                start_angle: 0.0,
+                direction: Winding::Clockwise,
+            }],
+        },
+        LedTopology::Custom {
+            positions: vec![NormalizedPosition::new(0.0, f32::NEG_INFINITY)],
+        },
+    ] {
+        let mut output = sample_output("restored-output", Some("ch3"));
+        output.topology = topology;
+        let result = hypercolor_daemon::domain::scene_tree::edit_members(
+            &state.domains.scene_tree,
+            EditMembersRequest {
+                scene_id,
+                assignment: None,
+                changes: vec![MemberEdit {
+                    before: None,
+                    after: Some(MemberState {
+                        zone_id,
+                        output,
+                        index: 2,
+                    }),
+                }],
+            },
+            revision,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(hypercolor_daemon::domain::DomainError::Validation { .. })
+        ));
+        assert_eq!(read_document(&app).await["data"], document["data"]);
+    }
 }

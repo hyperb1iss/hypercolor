@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use hypercolor_types::api::scene::{
     EditMembersRequest, EditMembersResponse, MemberAssignmentTarget, MemberEdit, MemberState,
 };
+use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
 use super::{
     AssignMembersRequest, DomainError, Output, OutputPlacement, ResourceKind, Scene,
@@ -248,7 +249,66 @@ fn validate_output(output: &Output) -> Result<(), DomainError> {
             "output placement must be finite with positive size and scale",
         ));
     }
+    validate_topology(&output.topology)?;
     super::super::layout::validate_output_sampling_radii(output)
+}
+
+fn validate_topology(topology: &LedTopology) -> Result<(), DomainError> {
+    let overflow = || DomainError::validation("topology LED count exceeds its addressable range");
+    let finite = |values: &[f32]| {
+        if values.iter().all(|value| value.is_finite()) {
+            Ok(())
+        } else {
+            Err(DomainError::validation(
+                "topology coordinates must be finite",
+            ))
+        }
+    };
+    let count = match topology {
+        LedTopology::Strip { count, .. } => *count,
+        LedTopology::Ring {
+            count, start_angle, ..
+        } => {
+            finite(&[*start_angle])?;
+            *count
+        }
+        LedTopology::Matrix { width, height, .. } => {
+            if *width == 0 || *height == 0 {
+                return Err(DomainError::validation(
+                    "matrix dimensions must be positive",
+                ));
+            }
+            width.checked_mul(*height).ok_or_else(overflow)?
+        }
+        LedTopology::ConcentricRings { rings } => rings.iter().try_fold(0_u32, |total, ring| {
+            finite(&[ring.radius, ring.start_angle])?;
+            total.checked_add(ring.count).ok_or_else(overflow)
+        })?,
+        LedTopology::PerimeterLoop {
+            top,
+            right,
+            bottom,
+            left,
+            ..
+        } => [*top, *right, *bottom, *left]
+            .into_iter()
+            .try_fold(0_u32, |total, count| {
+                total.checked_add(count).ok_or_else(overflow)
+            })?,
+        LedTopology::Point => 1,
+        LedTopology::Custom { positions } => {
+            for position in positions {
+                finite(&[position.x, position.y])?;
+            }
+            u32::try_from(positions.len()).map_err(|_| overflow())?
+        }
+    };
+    let bytes = usize::try_from(count)
+        .ok()
+        .and_then(|count| count.checked_mul(size_of::<NormalizedPosition>()))
+        .ok_or_else(overflow)?;
+    isize::try_from(bytes).map_err(|_| overflow())?;
+    Ok(())
 }
 
 fn assignment_changes(
