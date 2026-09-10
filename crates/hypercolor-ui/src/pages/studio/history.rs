@@ -173,6 +173,19 @@ impl StudioHistory {
         self.busy.set(false);
     }
 
+    pub fn layout_replay_for_zone(self, zone_id: Option<&str>) -> Option<LayoutReplay> {
+        let replay = self.pending_layout.get()?;
+        if zone_id == Some(replay.zone_id.as_str()) {
+            return Some(replay);
+        }
+        // Selection can change between the toolbar event and the provider's
+        // effect. Cancel the unapplied step without consuming its history.
+        self.pending_layout.set(None);
+        self.busy.set(false);
+        toasts::toast_info("Layout history cancelled after the selected zone changed");
+        None
+    }
+
     pub fn record_layout(
         self,
         zone_id: String,
@@ -282,7 +295,6 @@ impl StudioHistory {
 
     fn accept(self, response: EditMembersResponse) {
         self.latest.set(Some(response.document));
-        self.refresh.run(());
     }
 
     pub fn replay(self, redo: bool) {
@@ -441,4 +453,64 @@ pub fn prepare_members_replay(
             Ok(change)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    #[test]
+    fn changed_selection_cancels_pending_replay_without_consuming_history() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let snapshot = LayoutEditorSnapshot {
+                zones: Vec::new(),
+                selected_zone_ids: Default::default(),
+                compound_depth: crate::compound_selection::CompoundDepth::Root,
+                removed_zone_cache: Default::default(),
+            };
+            let journal = RwSignal::new(StudioJournal::default());
+            journal.update(|journal| {
+                journal.record(StudioEdit::Layout {
+                    zone_id: "one".into(),
+                    before: Box::new(snapshot.clone()),
+                    after: Box::new(snapshot.clone()),
+                })
+            });
+            let pending_layout = RwSignal::new(Some(LayoutReplay {
+                zone_id: "one".into(),
+                snapshot: snapshot.clone(),
+                previous: snapshot,
+                redo: false,
+            }));
+            let history = StudioHistory {
+                journal,
+                busy: RwSignal::new(true),
+                pending_layout,
+                can_undo: Signal::stored(true),
+                can_redo: Signal::stored(false),
+                scene: Signal::stored(None),
+                latest: RwSignal::new(None),
+                generation: RwSignal::new(1),
+                selected: RwSignal::new(Some("two".into())),
+                refresh: Callback::new(|()| {}),
+            };
+            assert!(history.layout_replay_for_zone(Some("one")).is_some());
+            assert!(history.busy.get_untracked());
+            assert!(history.layout_replay_for_zone(Some("two")).is_none());
+            assert!(!history.busy.get_untracked());
+            assert!(history.pending_layout.get_untracked().is_none());
+            assert!(
+                history
+                    .journal
+                    .with_untracked(|journal| journal.undo_edit().is_some())
+            );
+            assert!(
+                history
+                    .journal
+                    .with_untracked(|journal| journal.redo_edit().is_none())
+            );
+        });
+        owner.cleanup();
+    }
 }

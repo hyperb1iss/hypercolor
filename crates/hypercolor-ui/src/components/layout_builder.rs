@@ -556,7 +556,8 @@ pub(crate) fn ZoneLayoutProvider(
     >::new());
     Effect::new(move |_| {
         let next = canonical_zone.get();
-        let replay = studio_history.pending_layout.get();
+        let replay = studio_history
+            .layout_replay_for_zone(next.as_ref().map(|(_, zone_id, _)| zone_id.as_str()));
         // Capture the outgoing editor before changing the selected surface.
         if let (Some(key), Some(baseline), Some(snapshot)) = (
             loaded_key.get_value(),
@@ -596,11 +597,6 @@ pub(crate) fn ZoneLayoutProvider(
             set_layout.set(None);
             set_saved_layout.set(None);
             loaded_key.set_value(None);
-            if replay.is_some() {
-                studio_history.pending_layout.set(None);
-                studio_history.busy.set(false);
-                toasts::toast_error("The edited zone is no longer available");
-            }
             return;
         };
         let key = (scene_id, zone_id.clone());

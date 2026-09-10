@@ -301,3 +301,25 @@ test("Studio pending assignment disables open device menus and the add picker", 
   expect(fixture.writes).toHaveLength(1);
   expect(fixture.unexpected).toEqual([]);
 });
+
+test("Studio cancels an undo superseded by another zone selection without locking history", async ({ page }) => {
+  const fixture = await openHistory(page);
+  const anchor = page.locator('[data-zone-id="anchor-output"]');
+  const original = await anchor.evaluate(geometry);
+  await dragOutput(page, "anchor-output");
+  await expect.poll(() => anchor.evaluate(geometry)).not.toEqual(original);
+  await expect(fixture.undo).toBeEnabled();
+  const otherZone = page.getByRole("button", { name: "Accent lights 0 devices", exact: true });
+  // Both handlers run before the reactive provider consumes the queued replay.
+  await page.evaluate(({ undo, otherZone }) => { undo.click(); otherZone.click(); }, {
+    undo: await fixture.undo.elementHandle(), otherZone: await otherZone.elementHandle(),
+  });
+  await expect(fixture.undo).toBeEnabled();
+  await expect(page.getByRole("status").filter({ hasText: "Saving…" })).toHaveCount(0);
+  await expect(anchor).toHaveCount(0);
+  await fixture.undo.click();
+  await expect.poll(() => anchor.evaluate(geometry)).toEqual(original);
+  await expect(fixture.undo).toBeDisabled();
+  await expect(fixture.redo).toBeEnabled();
+  expect(fixture.unexpected).toEqual([]);
+});

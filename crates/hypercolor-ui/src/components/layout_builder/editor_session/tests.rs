@@ -93,6 +93,36 @@ fn clean_draft_accepts_canonical_placement_changes() {
 }
 
 #[test]
+fn brightness_draft_survives_refresh_and_replays_both_directions() {
+    let before = layout(vec![zone("one", 0.2)]);
+    let mut after = before.clone();
+    after.zones[0].brightness = Some(0.4);
+    let mut canonical = before.clone();
+    canonical.zones[0].position.x = 0.8;
+    let merged = merge_draft(
+        &canonical,
+        &ZoneDraft {
+            baseline: before.clone(),
+            snapshot: snapshot(&after, &["one"]),
+        },
+    );
+    assert_eq!(merged.zones[0].brightness, Some(0.4));
+    assert_eq!(merged.zones[0].position.x, 0.8);
+
+    canonical.zones = merged.zones;
+    let mut undo = snapshot(&before, &["one"]);
+    reconcile_replay(&canonical, &snapshot(&after, &[]), &mut undo);
+    assert_eq!(undo.zones[0].brightness, None);
+    assert_eq!(undo.zones[0].position.x, 0.8);
+
+    canonical.zones = undo.zones;
+    let mut redo = snapshot(&after, &["one"]);
+    reconcile_replay(&canonical, &snapshot(&before, &[]), &mut redo);
+    assert_eq!(redo.zones[0].brightness, Some(0.4));
+    assert_eq!(redo.zones[0].position.x, 0.8);
+}
+
+#[test]
 fn replay_preserves_current_membership_and_binding() {
     let old = layout(vec![
         zone("removed", 0.1),

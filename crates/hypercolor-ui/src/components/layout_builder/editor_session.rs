@@ -51,6 +51,9 @@ fn apply_placement_delta(
     if desired.display_order != previous.display_order {
         target.display_order = desired.display_order;
     }
+    if desired.brightness != previous.brightness {
+        target.brightness = desired.brightness;
+    }
 }
 
 pub(super) fn merge_draft(
