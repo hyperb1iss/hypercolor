@@ -310,15 +310,15 @@ fn runtime_document_exactly_matches_the_spec_78_target_manifest() {
     let live = documented_operations(&document);
     let target = target_operations();
 
-    assert_eq!(target.len(), 123, "target operation count drifted");
-    assert_eq!(live.len(), 123, "live operation count has not converged");
+    assert_eq!(target.len(), 124, "target operation count drifted");
+    assert_eq!(live.len(), 124, "live operation count has not converged");
     assert_eq!(
         target
             .iter()
             .map(|(_, path)| path)
             .collect::<BTreeSet<_>>()
             .len(),
-        87,
+        88,
         "target path count drifted"
     );
     assert_eq!(
@@ -326,7 +326,7 @@ fn runtime_document_exactly_matches_the_spec_78_target_manifest() {
             .map(|(_, path)| path)
             .collect::<BTreeSet<_>>()
             .len(),
-        87,
+        88,
         "live path count has not converged"
     );
     assert_eq!(
@@ -422,7 +422,7 @@ fn runtime_document_has_complete_operation_contracts() {
         }
     }
 
-    assert_eq!(operation_ids.len(), 123);
+    assert_eq!(operation_ids.len(), 124);
     let schemas = &document["components"]["schemas"];
     assert!(schemas["Vec"].is_null());
     assert!(schemas["ListResponse"].is_null());

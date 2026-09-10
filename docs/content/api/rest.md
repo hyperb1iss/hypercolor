@@ -146,6 +146,10 @@ returns it in the document and in the `ETag` header. Structural mutations may
 send that value as `If-Match`; a stale value returns `412 Precondition Failed`
 with the current revision instead of overwriting a concurrent edit.
 
+The atomic membership route, `POST /scene/members/edit`, requires a numeric
+`If-Match` revision. A quoted or bare integer is accepted; a missing header
+or `*` is rejected.
+
 Control-value patches never use `If-Match`. They address a real layer id read
 from the live document. Replacing a layer mints a fresh id, so a stale control
 write returns `404 layer_not_found` rather than landing on the replacement.
@@ -808,6 +812,28 @@ ids, which are the resource identities for later removal.
 
 {% <api_endpoint method="DELETE" path="/api/v1/scene/zones/{zone}/members/{member}"> %}
 Remove one membership by the member id returned in the live zone document.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="POST" path="/api/v1/scene/members/edit"> %}
+Add, move, or remove outputs in one atomic transaction. Supply the active
+`scene_id` and a numeric `If-Match` revision, then choose one request form:
+
+- **Explicit changes:** a `changes` array containing `before` and `after`
+  states. Each state contains `zone_id`, the complete `output`, and its ordered
+  `index`. A null `before` adds an output; a null `after` removes it.
+- **Device assignment:** an `assignment` object containing the target
+  `zone_id`, `device_id`, optional `segments`, and optional `placements`.
+  Leave `changes` empty. The daemon creates canonical outputs for the device;
+  placement hints preserve prepared geometry without choosing device bindings.
+
+All changes validate before committing. A failed request leaves membership
+unchanged. The response contains the committed `document` and canonical
+`changes` receipts with complete output snapshots for undo and redo. The
+committed revision is available in `document.revision` and the response `ETag`.
+
+Omitting `If-Match` or sending `*` is rejected. A stale revision returns `412`.
+Explicit edits also validate their `before` states, so rebasing requires fresh
+member states from the current document.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PUT" path="/api/v1/scene/zones/{zone}/layout"> %}
