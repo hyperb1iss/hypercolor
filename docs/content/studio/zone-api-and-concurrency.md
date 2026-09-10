@@ -10,7 +10,8 @@ Fine-grained writes stay under that same root. Stored scenes remain a collection
 under `/api/v1/scenes`, but they do not expose a second nested zone API.
 
 The live document also carries the only concurrency token on the REST wire:
-`revision`. Structural writes may guard themselves with `If-Match`. Control
+`revision`. Structural writes generally accept optional `If-Match`; atomic
+membership edits require a numeric revision. Control
 values are unguarded and target a real layer id from the document. A replaced
 layer has a new id, so a stale control write cannot reach the replacement.
 
@@ -101,13 +102,32 @@ The response carries minted member ids.
 Remove one membership by its member id. Segment names are not resource ids.
 {% </api_endpoint> %}
 
+{% <api_endpoint method="POST" path="/api/v1/scene/members/edit"> %}
+Apply an atomic set of membership changes, including moves between zones.
+The request contains the active `scene_id` and a `changes` array. Each change
+has `before` and `after` states: a state identifies its `zone_id`, complete
+`output`, and ordered `index`. Use a null `before` to add an output or a null
+`after` to remove one.
+
+To assign a device through the daemon's canonical output factory, send
+`assignment` with the target `zone_id`, `device_id`, optional `segments`, and
+optional `placements`, leaving `changes` empty. Studio uses this form when
+adding a device, preserving its prepared geometry when available.
+
+A numeric `If-Match` is required. Omitting it or sending `*` is rejected.
+All changes validate before any commit, so a failed transaction makes no
+partial assignment changes. The response contains the committed `document`
+and canonical `changes` receipts, with complete output snapshots for undo
+and redo. Studio uses this route for device add, move, and remove actions.
+{% </api_endpoint> %}
+
 {% <api_endpoint method="PUT" path="/api/v1/scene/zones/{zone}/layout"> %}
 Write a compact zone layout containing member placements. Every placement names
 a member id from the live zone document.
 {% </api_endpoint> %}
 
-All mutating routes in this section are structural. Each may carry the scene
-document's current `revision` in `If-Match`.
+All mutating routes in this section are structural. The atomic membership-edit
+route requires the current revision; the other routes accept it optionally.
 
 ### Layers
 
@@ -247,7 +267,7 @@ No resource-specific version counters exist on the REST wire. Internal
 bookkeeping may use more detail, but clients coordinate through the one
 document revision.
 
-### Structural writes use optional `If-Match`
+### Structural preconditions
 
 Send the last revision when overwriting a stale structure would be harmful:
 
@@ -259,9 +279,11 @@ Content-Type: application/json
 { "name": "Desk halo", "color": "#7c5cff" }
 ```
 
-The daemon accepts a quoted integer, a bare integer, or `*`. Omitting the
-header, or sending `*`, applies without a precondition. A stale integer returns
-the canonical `412 Precondition Failed` envelope:
+Most structural routes accept a quoted integer, a bare integer, or `*`.
+Omitting the header, or sending `*`, applies without a precondition on those
+routes. The exception is `POST /scene/members/edit`: it requires a quoted or
+bare numeric revision and rejects both missing headers and `*`. A stale
+integer returns the canonical `412 Precondition Failed` envelope:
 
 ```json
 {
@@ -282,7 +304,8 @@ Structural writes include scene metadata, zone create, patch, and delete, zone
 layout replacement, member assignment and removal, layer create, replace,
 delete, and reorder, scene clear, stored-scene replacement, and both effect
 apply forms. After a `412`, read `/scene`, rebase the intended edit, and retry
-with the new revision.
+with the new revision. Membership edits also validate their `before` states;
+rebuild those states from the current document when rebasing.
 
 ### Control values never use `If-Match`
 

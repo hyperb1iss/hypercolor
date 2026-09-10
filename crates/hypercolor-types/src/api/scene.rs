@@ -467,3 +467,84 @@ pub struct ApplyEffectResponse {
     /// The post-commit power-wake outcome.
     pub output: SideEffectOutcome,
 }
+
+/// One output's complete authored state for reversible membership edits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MemberState {
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
+    pub zone_id: ZoneId,
+    pub output: crate::spatial::Output,
+    /// Position in the owning zone's ordered output list.
+    pub index: usize,
+}
+
+/// An atomic add, move, placement change, or removal of one output.
+///
+/// Preconditions compare membership identity and public placement fields.
+/// The response replaces both sides with complete authoritative snapshots,
+/// preserving fields absent from the scene document for later restoration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MemberEdit {
+    pub before: Option<MemberState>,
+    pub after: Option<MemberState>,
+}
+
+/// `POST /scene/members/edit`: one revision-fenced membership transaction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct EditMembersRequest {
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
+    pub scene_id: SceneId,
+    #[serde(default)]
+    pub changes: Vec<MemberEdit>,
+    /// Resolve a forward assignment from canonical device layout metadata.
+    /// Mutually exclusive with explicit changes, which replay saved receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<MemberAssignmentTarget>,
+}
+
+/// Device segments to assign using daemon-owned layout construction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MemberAssignmentTarget {
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
+    pub zone_id: ZoneId,
+    pub device_id: String,
+    /// Empty selects every light segment, including all attachment instances.
+    #[serde(default)]
+    pub segments: Vec<String>,
+    /// Optional seeded geometry for newly minted outputs, keyed by segment.
+    #[serde(default)]
+    pub placements: Vec<MemberPlacementHint>,
+}
+
+/// Placement-only seed; device binding and topology remain daemon-owned.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MemberPlacementHint {
+    #[serde(default)]
+    pub segment: Option<String>,
+    pub position: NormalizedPosition,
+    pub size: NormalizedPosition,
+    #[serde(default)]
+    pub rotation: f32,
+    #[serde(default = "default_placement_scale")]
+    pub scale: f32,
+    #[serde(default)]
+    pub orientation: Option<Orientation>,
+}
+
+/// Committed scene and reversible, canonical membership changes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct EditMembersResponse {
+    pub document: SceneDocument,
+    pub changes: Vec<MemberEdit>,
+}

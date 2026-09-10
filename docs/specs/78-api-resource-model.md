@@ -308,7 +308,7 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 ---
 
-## Appendix A: Normative route inventory (87 paths, 123 operations)
+## Appendix A: Normative route inventory (88 paths, 124 operations)
 
 Scope: the `/api/v1` surface (JSON routes plus the one `/ws` upgrade endpoint, which the convergence test matches by path without asserting a JSON shape) and `/health`. Document routes are deliberately outside the inventory and the convergence test: `/` (SPA), `/api/v1/docs`, `/api/v1/openapi.json`, and the `/mcp` mount are served pages and protocol endpoints, not API resources (`/preview` was on this list until wave 3.2c deleted the page). Config rows landed via Spec 76 wave 4.3; logical-devices rows are intentionally absent pending the §8 downstream check (re-add via spec amendment if the check fails). `⚡` marks routes whose handler is new or substantially rewritten by this spec.
 
@@ -371,6 +371,7 @@ Scope: the `/api/v1` surface (JSON routes plus the one `/ws` upgrade endpoint, w
 | `/api/v1/scene/zones/{zone}` | GET, PATCH, DELETE | ⚡ |
 | `/api/v1/scene/zones/{zone}/layout` | PUT | ⚡ |
 | `/api/v1/scene/zones/{zone}/members` | POST | ⚡ |
+| `/api/v1/scene/members/edit` | POST | Atomic reversible assignments; numeric `If-Match` required |
 | `/api/v1/scene/zones/{zone}/members/{member}` | DELETE | ⚡ |
 | `/api/v1/scene/zones/{zone}/layers` | GET, POST | ⚡ |
 | `/api/v1/scene/zones/{zone}/layers/order` | PATCH | ⚡ |

@@ -996,7 +996,7 @@ pub(crate) fn validate_layout_sampling_radii(layout: &SpatialLayout) -> Result<(
     Ok(())
 }
 
-fn validate_output_sampling_radii(output: &Output) -> Result<(), DomainError> {
+pub(crate) fn validate_output_sampling_radii(output: &Output) -> Result<(), DomainError> {
     validate_output_sampling_radii_text(output).map_err(DomainError::validation)
 }
 

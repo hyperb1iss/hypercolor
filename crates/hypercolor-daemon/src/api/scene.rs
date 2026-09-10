@@ -318,6 +318,29 @@ pub async fn unassign_member(
 
 // ── Layers ───────────────────────────────────────────────────────────────
 
+/// `POST /api/v1/scene/members/edit` applies a reversible membership transaction.
+pub async fn edit_members(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<hypercolor_types::api::scene::EditMembersRequest>,
+) -> Response {
+    let expected = match parse_if_match(&headers) {
+        Ok(Some(expected)) => expected,
+        Ok(None) => {
+            return DomainError::validation("If-Match is required for membership edits")
+                .into_response();
+        }
+        Err(error) => return error.into_response(),
+    };
+    match scene_tree::edit_members(&state.domains.scene_tree, body, expected).await {
+        Ok(outcome) => {
+            let revision = outcome.document.revision;
+            with_revision(envelope::ok(outcome), revision)
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
 /// `GET /api/v1/scene/zones/{zone}/layers` — the zone's stack.
 pub async fn list_layers(State(state): State<Arc<AppState>>, Path(zone): Path<String>) -> Response {
     let zone_id = match parse_zone_id(&zone) {

@@ -15,7 +15,7 @@ use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
 use crate::layout_geometry;
-use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState, RemovedOutputCache};
+use crate::layout_history::{LayoutEditorSnapshot, RemovedOutputCache};
 use crate::storage;
 use crate::toasts;
 use hypercolor_leptos_ext::events::target_is_text_entry;
@@ -76,7 +76,9 @@ pub struct LayoutWriteHandle {
     set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
     removed_zone_cache: ReadSignal<RemovedOutputCache>,
     set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
-    history: RwSignal<LayoutHistoryState>,
+    studio_history: crate::pages::studio::history::StudioHistory,
+    selected_surface: Signal<Option<String>>,
+    interaction_start: RwSignal<Option<LayoutEditorSnapshot>>,
     set_dirty: WriteSignal<bool>,
 }
 
@@ -91,7 +93,7 @@ impl LayoutWriteHandle {
         })
     }
 
-    fn apply_snapshot(self, snapshot: LayoutEditorSnapshot) {
+    pub(crate) fn apply_snapshot(self, snapshot: LayoutEditorSnapshot) {
         let LayoutEditorSnapshot {
             zones,
             selected_zone_ids,
@@ -109,11 +111,13 @@ impl LayoutWriteHandle {
     }
 
     pub fn in_interaction(self) -> bool {
-        self.history
-            .with_untracked(LayoutHistoryState::is_interactive)
+        self.interaction_start.with_untracked(Option::is_some)
     }
 
     pub fn update(self, f: impl FnOnce(&mut Option<SpatialLayout>)) {
+        if self.studio_history.busy.get_untracked() {
+            return;
+        }
         // Skip history bookkeeping while a drag/resize interaction is in flight —
         // begin_interaction already captured the pre-drag snapshot, and
         // finish_interaction will record the single combined diff on release.
@@ -127,8 +131,9 @@ impl LayoutWriteHandle {
         let (Some(before), Some(after)) = (before, self.capture_snapshot()) else {
             return;
         };
-        self.history
-            .update(|state| state.record_edit(before, &after));
+        if let Some(zone_id) = self.selected_surface.get_untracked() {
+            self.studio_history.record_layout(zone_id, before, after);
+        }
     }
 
     pub fn update_without_history(self, f: impl FnOnce(&mut Option<SpatialLayout>)) {
@@ -136,7 +141,7 @@ impl LayoutWriteHandle {
     }
 
     pub fn set(self, value: Option<SpatialLayout>) {
-        self.history.update(LayoutHistoryState::discard_interaction);
+        self.interaction_start.set(None);
         self.set_layout.set(value);
         self.set_dirty.set(false);
     }
@@ -145,23 +150,24 @@ impl LayoutWriteHandle {
         self.set_dirty.set(false);
     }
 
-    pub fn reset_history(self) {
-        self.history.update(LayoutHistoryState::reset);
-    }
-
     pub fn begin_interaction(self) {
-        if let Some(snapshot) = self.capture_snapshot() {
-            self.history
-                .update(|state| state.begin_interaction(snapshot));
+        if self.studio_history.busy.get_untracked() {
+            return;
+        }
+        if self.interaction_start.with_untracked(Option::is_none) {
+            self.interaction_start.set(self.capture_snapshot());
         }
     }
 
     pub fn finish_interaction(self) {
-        if let Some(current) = self.capture_snapshot() {
-            self.history
-                .update(|state| state.finish_interaction(&current));
-        } else {
-            self.history.update(LayoutHistoryState::discard_interaction);
+        let before = self.interaction_start.get_untracked();
+        self.interaction_start.set(None);
+        if let (Some(before), Some(after), Some(zone_id)) = (
+            before,
+            self.capture_snapshot(),
+            self.selected_surface.get_untracked(),
+        ) {
+            self.studio_history.record_layout(zone_id, before, after);
         }
     }
 
@@ -171,6 +177,9 @@ impl LayoutWriteHandle {
     /// touches the layout signal, so this is the *only* moment the reactive
     /// graph sees the change. Returns true if zone state actually changed.
     pub fn commit_zones(self, zones: Vec<Output>) -> bool {
+        if self.studio_history.busy.get_untracked() {
+            return false;
+        }
         let unchanged = self
             .layout
             .with_untracked(|l| l.as_ref().is_some_and(|current| current.zones == zones));
@@ -196,38 +205,20 @@ impl LayoutWriteHandle {
     }
 
     pub fn undo(self) {
-        let Some(current) = self.capture_snapshot() else {
-            return;
-        };
-        let mut restored = None;
-        self.history.update(|state| {
-            restored = state.undo(current.clone());
-        });
-        if let Some(snapshot) = restored {
-            self.apply_snapshot(snapshot);
-            self.set_dirty.set(true);
-        }
+        self.studio_history.replay(false);
     }
 
     pub fn redo(self) {
-        let Some(current) = self.capture_snapshot() else {
-            return;
-        };
-        let mut restored = None;
-        self.history.update(|state| {
-            restored = state.redo(current.clone());
-        });
-        if let Some(snapshot) = restored {
-            self.apply_snapshot(snapshot);
-            self.set_dirty.set(true);
-        }
+        self.studio_history.replay(true);
     }
 }
 
 mod editor_session;
 
 pub(crate) use editor_session::{LayoutEditorContext, LayoutZoneDisplayContext};
-use editor_session::{LayoutEditorSession, embedded_attachment_profiles};
+use editor_session::{
+    LayoutEditorSession, ZoneDraft, embedded_attachment_profiles, merge_draft, reconcile_replay,
+};
 
 /// The layout editor body with its device palette, canvas viewport,
 /// zone-properties panel, and resizable-panel state. It consumes the
@@ -478,10 +469,6 @@ fn editor_layout_for_zone(zone: &api::ZoneResource) -> SpatialLayout {
 /// [`ZoneCanvasActions`].
 #[component]
 pub(crate) fn ZoneLayoutProvider(
-    /// The active scene — the source of the zone set and the
-    /// scene revision carried as each save's `If-Match` precondition.
-    #[prop(into)]
-    active_scene: Signal<Option<api::SceneDocument>>,
     /// The selected zone's id (a `Zone` id). `None`, an unknown
     /// id, or a Display zone leaves the canvas empty.
     #[prop(into)]
@@ -495,7 +482,8 @@ pub(crate) fn ZoneLayoutProvider(
     let ws_ctx = expect_context::<WsContext>();
     let render_canvas_size = crate::render_canvas::use_render_canvas_size();
 
-    let session = LayoutEditorSession::new(false);
+    let studio_history = expect_context::<crate::pages::studio::history::StudioHistory>();
+    let session = LayoutEditorSession::new(false, studio_history, selected_zone_id);
     let layout = session.layout;
     let saved_layout = session.saved_layout;
     let set_saved_layout = session.set_saved_layout;
@@ -507,7 +495,6 @@ pub(crate) fn ZoneLayoutProvider(
     // Previews are keyed by zone alone: the daemon applies them to the
     // live tree, so the scene is not the client's to choose.
     let active_preview_key = StoredValue::new(None::<String>);
-    let save_generation = StoredValue::new(0_u64);
     let push_preview = Callback::new(move |snapshot: SpatialLayout| {
         let Some(zone_id) = selected_zone_id.get_untracked() else {
             return;
@@ -540,64 +527,121 @@ pub(crate) fn ZoneLayoutProvider(
         attachment_profiles,
     });
 
-    // Reload the canvas when the zone changes, or when the selected
-    // zone's OUTPUT SET changes (a device assigned / removed elsewhere).
-    // A placement-only change — including this canvas's own saved edits —
-    // leaves the signature unchanged, so an unrelated scene refetch never
-    // clobbers in-flight canvas edits.
-    let zone_signature = Memo::new(move |_| {
+    // Canonical placement changes refresh clean fields while local drafts keep
+    // their edited fields. Layer control updates leave this memo unchanged.
+    let canonical_zone = Memo::new(move |_| {
         let zone_id = selected_zone_id.get()?;
-        active_scene.with(|scene| {
-            let zone = scene
-                .as_ref()?
-                .zones
-                .iter()
-                .find(|zone| zone.id.to_string() == zone_id)?;
-            if zone.role == ZoneRole::Display {
-                return None;
-            }
-            let mut output_ids: Vec<String> = zone
-                .members
-                .iter()
-                .map(|member| member.id.to_string())
-                .collect();
-            output_ids.sort();
-            Some((zone_id, output_ids))
-        })
+        let scene = studio_history.current_scene_tracked()?;
+        let zone = scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == zone_id)?;
+        if zone.role == ZoneRole::Display {
+            return None;
+        }
+        let mut canonical = editor_layout_for_zone(zone);
+        let (width, height) = render_canvas_size.get();
+        canonical.canvas_width = width;
+        canonical.canvas_height = height;
+        Some((
+            scene.id,
+            zone_id,
+            layout_geometry::normalize_layout_for_editor(canonical),
+        ))
     });
-
+    let loaded_key = StoredValue::new(None::<(hypercolor_types::scene::SceneId, String)>);
+    let drafts = StoredValue::new(std::collections::HashMap::<
+        (hypercolor_types::scene::SceneId, String),
+        ZoneDraft,
+    >::new());
     Effect::new(move |_| {
-        set_layout.reset_history();
-        set_selected_zone_ids.set(std::collections::HashSet::new());
-        set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
-
-        let Some((zone_id, _)) = zone_signature.get() else {
+        let next = canonical_zone.get();
+        let replay = studio_history
+            .layout_replay_for_zone(next.as_ref().map(|(_, zone_id, _)| zone_id.as_str()));
+        // Capture the outgoing editor before changing the selected surface.
+        if let (Some(key), Some(baseline), Some(snapshot)) = (
+            loaded_key.get_value(),
+            saved_layout.get_untracked(),
+            set_layout.capture_snapshot(),
+        ) {
+            drafts.update_value(|drafts| {
+                let mut next = ZoneDraft { baseline, snapshot };
+                if let Some(previous) = drafts.get(&key) {
+                    // Removed members can return through assignment Undo. Keep
+                    // their drafts without rendering them while unassigned.
+                    for output in &previous.snapshot.zones {
+                        if !next
+                            .snapshot
+                            .zones
+                            .iter()
+                            .any(|current| current.id == output.id)
+                        {
+                            next.snapshot.zones.push(output.clone());
+                        }
+                    }
+                    for output in &previous.baseline.zones {
+                        if !next
+                            .baseline
+                            .zones
+                            .iter()
+                            .any(|current| current.id == output.id)
+                        {
+                            next.baseline.zones.push(output.clone());
+                        }
+                    }
+                }
+                drafts.insert(key, next);
+            });
+        }
+        let Some((scene_id, zone_id, canonical)) = next else {
             set_layout.set(None);
             set_saved_layout.set(None);
+            loaded_key.set_value(None);
             return;
         };
-        let loaded = active_scene.with_untracked(|scene| {
-            scene.as_ref().and_then(|scene| {
-                scene
-                    .zones
-                    .iter()
-                    .find(|zone| zone.id.to_string() == zone_id)
-                    .map(editor_layout_for_zone)
-            })
+        let key = (scene_id, zone_id.clone());
+        // Drafts from an old scene cannot be revived by a later scene switch.
+        drafts.update_value(|drafts| drafts.retain(|(id, _), _| *id == scene_id));
+        let draft = drafts.with_value(|drafts| drafts.get(&key).cloned());
+        let snapshot = draft.as_ref().map(|draft| merge_draft(&canonical, draft));
+        set_saved_layout.set(Some(canonical.clone()));
+        set_layout.set(Some(canonical.clone()));
+        if let Some(snapshot) = snapshot {
+            set_layout.apply_snapshot(snapshot);
+        } else {
+            set_selected_zone_ids.set(std::collections::HashSet::new());
+            set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
+            session
+                .set_removed_zone_cache
+                .set(RemovedOutputCache::new());
+        }
+        loaded_key.set_value(Some(key));
+        let applied_replay = replay.filter(|replay| replay.zone_id == zone_id);
+        if let Some(replay) = applied_replay.as_ref() {
+            let mut snapshot = replay.snapshot.clone();
+            let current = layout
+                .get_untracked()
+                .expect("selected editor was initialized");
+            reconcile_replay(&current, &replay.previous, &mut snapshot);
+            set_layout.apply_snapshot(snapshot);
+        }
+        set_layout.update_without_history(|current| {
+            if let Some(layout) = current.take() {
+                *current = Some(layout_geometry::normalize_layout_for_editor(layout));
+            }
         });
-        match loaded {
-            Some(mut layout) => {
-                let (canvas_width, canvas_height) = render_canvas_size.get_untracked();
-                layout.canvas_width = canvas_width;
-                layout.canvas_height = canvas_height;
-                let layout = layout_geometry::normalize_layout_for_editor(layout);
-                set_saved_layout.set(Some(layout.clone()));
-                set_layout.set(Some(layout));
-            }
-            None => {
-                set_layout.set(None);
-                set_saved_layout.set(None);
-            }
+        let dirty = layout.with_untracked(|current| {
+            current
+                .as_ref()
+                .is_some_and(|current| current.zones != canonical.zones)
+        });
+        set_layout.set_dirty.set(dirty);
+        if !dirty && let Some(preview) = active_preview_key.get_value() {
+            ws_ctx.clear_zone_layout_preview.run(preview);
+            active_preview_key.set_value(None);
+        }
+        if let Some(replay) = applied_replay {
+            studio_history.complete_layout(replay.redo);
         }
     });
 
@@ -658,23 +702,43 @@ pub(crate) fn ZoneLayoutProvider(
         let Some(zone_id) = selected_zone_id.get_untracked() else {
             return;
         };
-        let Some(revision) = active_scene.get_untracked().map(|scene| scene.revision) else {
+        let Some(scene) = studio_history.current_scene() else {
             return;
         };
-        let generation = save_generation.get_value().wrapping_add(1);
-        save_generation.set_value(generation);
+        let revision = scene.revision;
+        let Some(generation) = studio_history.begin() else {
+            return;
+        };
         leptos::task::spawn_local(async move {
             match api::zones::update_zone_layout(&zone_id, &current, revision).await {
-                Ok(api::zones::ZoneOutcome::Applied(_)) => {
+                Ok(api::zones::ZoneOutcome::Applied(zone)) => {
+                    if !studio_history.is_current(generation) {
+                        return;
+                    }
+                    let mut acknowledged = editor_layout_for_zone(&zone);
+                    acknowledged.canvas_width = current.canvas_width;
+                    acknowledged.canvas_height = current.canvas_height;
+                    let acknowledged = layout_geometry::normalize_layout_for_editor(acknowledged);
+                    drafts.update_value(|drafts| {
+                        if let Some(draft) = drafts.get_mut(&(scene.id, zone_id.clone())) {
+                            draft.baseline = acknowledged.clone();
+                        }
+                    });
+                    studio_history.record_saved_zone(scene.id, zone, revision.saturating_add(1));
                     let completion = zone_save_completion(
                         selected_zone_id.get_untracked().as_deref(),
                         active_preview_key.get_value().as_deref(),
                         &zone_id,
-                        save_generation.get_value() == generation,
+                        studio_history.is_current(generation),
                     );
                     if completion.update_editor {
-                        set_saved_layout.set(Some(current));
-                        set_layout.mark_clean();
+                        let clean = layout.with_untracked(|layout| {
+                            layout
+                                .as_ref()
+                                .is_some_and(|layout| layout.zones == acknowledged.zones)
+                        });
+                        set_saved_layout.set(Some(acknowledged));
+                        set_layout.set_dirty.set(!clean);
                         toasts::toast_success("Zone layout saved");
                     }
                     if completion.clear_preview {
@@ -686,11 +750,14 @@ pub(crate) fn ZoneLayoutProvider(
                     refresh_scene.run(());
                 }
                 Ok(api::zones::ZoneOutcome::Stale { .. }) => {
+                    if !studio_history.is_current(generation) {
+                        return;
+                    }
                     let completion = zone_save_completion(
                         selected_zone_id.get_untracked().as_deref(),
                         active_preview_key.get_value().as_deref(),
                         &zone_id,
-                        save_generation.get_value() == generation,
+                        studio_history.is_current(generation),
                     );
                     if completion.clear_preview {
                         ws_ctx.clear_zone_layout_preview.run(zone_id.clone());
@@ -703,12 +770,20 @@ pub(crate) fn ZoneLayoutProvider(
                     }
                     refresh_scene.run(());
                 }
-                Err(error) => toasts::toast_error(&format!("Save failed: {error}")),
+                Err(error) => {
+                    if studio_history.is_current(generation) {
+                        toasts::toast_error(&format!("Save failed: {error}"));
+                    }
+                }
             }
+            studio_history.finish(generation);
         });
     });
 
     let revert = Callback::new(move |()| {
+        if studio_history.busy.get_untracked() {
+            return;
+        }
         let Some(saved) = saved_layout.get_untracked() else {
             return;
         };

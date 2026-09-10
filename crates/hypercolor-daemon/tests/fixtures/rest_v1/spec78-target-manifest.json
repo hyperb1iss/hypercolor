@@ -560,6 +560,12 @@
       "methods": [
         "GET"
       ]
+    },
+    {
+      "path": "/api/v1/scene/members/edit",
+      "methods": [
+        "POST"
+      ]
     }
   ]
 }

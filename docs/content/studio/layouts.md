@@ -83,14 +83,18 @@ When more than one output is selected, the properties panel switches to group co
 
 ## Undo, save, and revert
 
-The Stage header carries the canvas controls.
+The Stage header shows `Saved`, `Unsaved layout`, or `Saving…` alongside
+the editing controls.
 
-- **Undo / Redo** with the toolbar buttons or `Ctrl+Z` / `Ctrl+Shift+Z` (and `Ctrl+Y` for redo). The shortcuts are suppressed while you are typing in a text field.
-- **Save** writes the layout to the zone. The Save button doubles as the dirty indicator: it glows green when you have unsaved changes and dims when the layout is clean.
-- **Revert** discards every change since the last save and restores the canvas to its saved state.
+- **Undo / Redo** follows one chronological history of assignments and canvas edits. Use the toolbar or `Ctrl+Z` / `Ctrl+Shift+Z` (also `Ctrl+Y` for redo). Shortcuts are suppressed while you type in a text field. Assignment undo and redo save automatically; placement undo and redo update the local layout.
+- **Save** persists the selected zone's placement edits. Assigning, moving, or removing devices saves automatically and does not require this button.
+- **Revert** restores the selected zone's saved placement. It does not undo device assignments.
 
-{% <callout type="warning" title="Edits are not live until you save"> %}
-Dragging an output pushes a live preview to the daemon so you can see the result on your hardware immediately, but that preview is temporary. The placement is not persisted to the zone until you hit Save. If you switch zones or close Studio with the Save button still glowing, your arrangement is lost. Revert is the safety net while you experiment; Save is the commit.
+{% <callout type="warning" title="Placement previews still need Save"> %}
+Canvas edits preview immediately on the hardware, but only **Save** persists
+them. Switching zones preserves each zone's draft while Studio remains open.
+Leaving Studio, reloading the page, or switching scenes discards unsaved drafts
+and resets the undo history. Save each edited zone before leaving.
 {% </callout> %}
 
 If someone changes the same scene from another client or the CLI while you are editing, a save can come back stale. Studio reloads the scene and asks you to try again rather than clobbering the other change. Your in-flight edits to placement survive an unrelated refetch, so a device assigned elsewhere does not wipe the box you are dragging.

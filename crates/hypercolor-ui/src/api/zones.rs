@@ -15,6 +15,20 @@ use crate::control_surface_api::path_segment;
 
 pub type ZoneOutcome<T> = MutationOutcome<T>;
 
+/// Apply one reversible membership transaction against the active scene.
+pub async fn edit_members(
+    request: &hypercolor_types::api::scene::EditMembersRequest,
+    expected_revision: u64,
+) -> ApiResult<ZoneOutcome<hypercolor_types::api::scene::EditMembersResponse>> {
+    client::send_json_versioned(
+        HttpMethod::Post,
+        "/api/v1/scene/members/edit",
+        Some(request),
+        Some(expected_revision),
+    )
+    .await
+}
+
 pub use hypercolor_types::api::scene::PatchZoneRequest;
 
 #[derive(Debug, Clone, PartialEq)]

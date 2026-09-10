@@ -322,12 +322,13 @@ test("Studio preserves the inspector during control events and refreshes values 
   // Other app contexts may fetch their own primary-effect state; control
   // events must leave this inspector mounted while the user is editing.
   expect(await originalControl.evaluate((element) => element.isConnected)).toBe(true);
+  await expect(speed).toHaveValue("0.8");
   const before = fixture.sceneRequests();
   await page.getByRole("button", { name: "Fixture lights 80 devices", exact: true }).click();
   await expect(page.locator(outputSelector)).toHaveCount(OUTPUT_COUNT);
   await selectEmpty.click();
   await expect(speed).toHaveValue("0.8");
-  expect(fixture.sceneRequests()).toBeGreaterThan(before);
+  expect(fixture.sceneRequests()).toBe(before);
 
   // The write is aborted by openStudio's route before reaching the daemon;
   // inspecting it proves the refreshed revision reached mutation callbacks.

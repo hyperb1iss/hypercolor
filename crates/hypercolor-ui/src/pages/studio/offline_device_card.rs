@@ -77,6 +77,8 @@ pub(super) fn OfflineDeviceCard(row: ZoneDeviceRow, select: String, placed: bool
             {placed.then(|| view! {
                 <button type="button" class="btn-press flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-tertiary hover:bg-surface-hover"
                     title="Remove from this zone" aria-label="Remove from this zone"
+                    disabled=move || studio.history.busy.get()
+                    class=("opacity-40", move || studio.history.busy.get())
                     on:click=move |_| super::device_card::remove_device_from_zone(studio, select.clone(), device_id.get_value())>
                     <Icon icon=LuX width="13px" height="13px" />
                 </button>

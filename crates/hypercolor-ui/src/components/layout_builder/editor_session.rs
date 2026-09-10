@@ -4,10 +4,120 @@ use leptos::prelude::*;
 
 use crate::api;
 use crate::compound_selection::CompoundDepth;
-use crate::layout_history::{LayoutHistoryState, RemovedOutputCache};
+use crate::layout_history::RemovedOutputCache;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::LayoutWriteHandle;
+
+#[cfg(test)]
+mod tests;
+
+#[derive(Clone)]
+pub(super) struct ZoneDraft {
+    pub baseline: SpatialLayout,
+    pub snapshot: crate::layout_history::LayoutEditorSnapshot,
+}
+
+/// Apply an edit's placement delta without replacing fields changed elsewhere.
+fn apply_placement_delta(
+    target: &mut hypercolor_types::spatial::Output,
+    previous: &hypercolor_types::spatial::Output,
+    desired: &hypercolor_types::spatial::Output,
+) {
+    if desired.position.x != previous.position.x {
+        target.position.x = desired.position.x;
+    }
+    if desired.position.y != previous.position.y {
+        target.position.y = desired.position.y;
+    }
+    if desired.size.x != previous.size.x {
+        target.size.x = desired.size.x;
+    }
+    if desired.size.y != previous.size.y {
+        target.size.y = desired.size.y;
+    }
+    if desired.rotation != previous.rotation {
+        target.rotation = desired.rotation;
+    }
+    if desired.scale != previous.scale {
+        target.scale = desired.scale;
+    }
+    if desired.orientation != previous.orientation {
+        target.orientation = desired.orientation;
+    }
+    if desired.topology != previous.topology {
+        target.topology.clone_from(&desired.topology);
+    }
+    if desired.display_order != previous.display_order {
+        target.display_order = desired.display_order;
+    }
+    if desired.brightness != previous.brightness {
+        target.brightness = desired.brightness;
+    }
+}
+
+pub(super) fn merge_draft(
+    canonical: &SpatialLayout,
+    draft: &ZoneDraft,
+) -> crate::layout_history::LayoutEditorSnapshot {
+    let mut snapshot = draft.snapshot.clone();
+    snapshot.zones = canonical
+        .zones
+        .iter()
+        .map(|output| {
+            let mut merged = output.clone();
+            if let Some(local) = draft
+                .snapshot
+                .zones
+                .iter()
+                .find(|local| local.id == output.id)
+                && let Some(saved) = draft
+                    .baseline
+                    .zones
+                    .iter()
+                    .find(|saved| saved.id == output.id)
+                && local.device_id == output.device_id
+                && local.zone_name == output.zone_name
+            {
+                apply_placement_delta(&mut merged, saved, local);
+            }
+            merged
+        })
+        .collect();
+    snapshot
+        .selected_zone_ids
+        .retain(|id| snapshot.zones.iter().any(|output| &output.id == id));
+    snapshot
+}
+
+pub(super) fn reconcile_replay(
+    current: &SpatialLayout,
+    previous: &crate::layout_history::LayoutEditorSnapshot,
+    snapshot: &mut crate::layout_history::LayoutEditorSnapshot,
+) {
+    snapshot.zones = current
+        .zones
+        .iter()
+        .map(|output| {
+            let mut merged = output.clone();
+            if let Some(old) = snapshot.zones.iter().find(|old| {
+                old.id == output.id
+                    && old.device_id == output.device_id
+                    && old.zone_name == output.zone_name
+            }) && let Some(before) = previous.zones.iter().find(|before| {
+                before.id == output.id
+                    && before.device_id == output.device_id
+                    && before.zone_name == output.zone_name
+            }) {
+                apply_placement_delta(&mut merged, before, old);
+            }
+            merged
+        })
+        .collect();
+    snapshot
+        .selected_zone_ids
+        .retain(|id| snapshot.zones.iter().any(|output| &output.id == id));
+}
 
 /// Shared layout editor state — provided via context to palette, canvas, and zone properties.
 #[derive(Clone, Copy)]
@@ -92,7 +202,11 @@ pub(super) struct LayoutEditorSession {
 }
 
 impl LayoutEditorSession {
-    pub(super) fn new(keep_aspect_ratio_initial: bool) -> Self {
+    pub(super) fn new(
+        keep_aspect_ratio_initial: bool,
+        studio_history: crate::pages::studio::history::StudioHistory,
+        selected_surface: Signal<Option<String>>,
+    ) -> Self {
         let (layout, set_layout_signal) = signal(None::<SpatialLayout>);
         let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
         let (selected_zone_ids, set_selected_zone_ids) = signal(HashSet::<String>::new());
@@ -103,7 +217,6 @@ impl LayoutEditorSession {
         let (removed_zone_cache, set_removed_zone_cache) = signal(RemovedOutputCache::new());
         let (dirty, set_is_dirty) = signal(false);
         let pointer_zone_id = RwSignal::new(None::<String>);
-        let history = RwSignal::new(LayoutHistoryState::default());
         let write = LayoutWriteHandle {
             layout,
             set_layout: set_layout_signal,
@@ -113,7 +226,9 @@ impl LayoutEditorSession {
             set_compound_depth,
             removed_zone_cache,
             set_removed_zone_cache,
-            history,
+            studio_history,
+            selected_surface,
+            interaction_start: RwSignal::new(None),
             set_dirty: set_is_dirty,
         };
 
@@ -135,8 +250,8 @@ impl LayoutEditorSession {
             set_removed_zone_cache,
             write,
             layout_signal: Signal::derive(move || layout.get()),
-            can_undo: Signal::derive(move || history.get().can_undo()),
-            can_redo: Signal::derive(move || history.get().can_redo()),
+            can_undo: studio_history.can_undo,
+            can_redo: studio_history.can_redo,
             is_dirty: Signal::derive(move || dirty.get()),
             pointer_zone_id,
         }

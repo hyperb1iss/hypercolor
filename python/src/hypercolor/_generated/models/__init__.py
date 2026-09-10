@@ -351,6 +351,9 @@ from .driver_transport_kind_type_7 import DriverTransportKindType7
 from .edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
 from .edge_behavior_fade_to_black_value import EdgeBehaviorFadeToBlackValue
 from .edge_behavior_type_0 import EdgeBehaviorType0
+from .edit_live_scene_members_response_200 import EditLiveSceneMembersResponse200
+from .edit_members_request import EditMembersRequest
+from .edit_members_response import EditMembersResponse
 from .effect_capability_set import EffectCapabilitySet
 from .effect_category import EffectCategory
 from .effect_detail_response import EffectDetailResponse
@@ -480,7 +483,11 @@ from .media_authorization_adapter import MediaAuthorizationAdapter
 from .media_authorization_request import MediaAuthorizationRequest
 from .media_authorization_response import MediaAuthorizationResponse
 from .media_playback import MediaPlayback
+from .member_assignment_target import MemberAssignmentTarget
+from .member_edit import MemberEdit
 from .member_placement import MemberPlacement
+from .member_placement_hint import MemberPlacementHint
+from .member_state import MemberState
 from .normalized_position import NormalizedPosition
 from .normalized_rect import NormalizedRect
 from .open_rgb_endpoint_status import OpenRgbEndpointStatus
@@ -956,6 +963,9 @@ __all__ = (
     "EdgeBehaviorFadeToBlack",
     "EdgeBehaviorFadeToBlackValue",
     "EdgeBehaviorType0",
+    "EditLiveSceneMembersResponse200",
+    "EditMembersRequest",
+    "EditMembersResponse",
     "EffectCapabilitySet",
     "EffectCategory",
     "EffectDetailResponse",
@@ -1081,7 +1091,11 @@ __all__ = (
     "MediaAuthorizationRequest",
     "MediaAuthorizationResponse",
     "MediaPlayback",
+    "MemberAssignmentTarget",
+    "MemberEdit",
     "MemberPlacement",
+    "MemberPlacementHint",
+    "MemberState",
     "NormalizedPosition",
     "NormalizedRect",
     "OpenRgbEndpointStatus",

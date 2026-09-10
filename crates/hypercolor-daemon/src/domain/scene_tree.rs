@@ -37,6 +37,9 @@ use crate::domain::output::OutputContext;
 use crate::domain::scene::SceneMutation;
 use crate::domain::{DomainError, DomainErrorDetails, MutationContext, ResourceKind};
 
+mod member_edits;
+pub use member_edits::edit_members;
+
 /// Live scene-tree authority shared by REST and MCP adapters.
 #[derive(Clone)]
 pub struct SceneTreeContext {
