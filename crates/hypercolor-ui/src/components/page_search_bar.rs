@@ -34,7 +34,7 @@ pub fn PageSearchBar(
                 class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-1.5 \
                        text-sm text-fg-primary placeholder-fg-tertiary \
                        focus:outline-none focus:border-accent-muted \
-                       search-glow glow-ring transition-all duration-300"
+                       search-glow glow-ring transition-[color,background-color,border-color,box-shadow,opacity,transform] duration-300"
                 prop:value=move || value.get()
                 on:input=move |ev: ev::Event| {
                     let event = Input::from_event(ev);
