@@ -16,7 +16,7 @@ use hypercolor_hal::drivers::lianli::wireless::frame::{
     clock_sync_envelope, pwm_envelope, reverse_fan_order, rgb_transfer,
 };
 use hypercolor_hal::drivers::lianli::wireless::tinyuz;
-use hypercolor_hal::protocol::{Protocol, ResponseTolerance, TransferType};
+use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseTolerance, TransferType};
 use hypercolor_hal::registry::TransportType;
 use hypercolor_types::device::DeviceTopologyHint;
 
@@ -513,9 +513,134 @@ fn upkeep_does_not_restart_the_stream_once_it_is_armed() {
             .all(|command| command.data[..4] != TX_VIDEO_START),
         "no video start after the first frame"
     );
-    assert_eq!(commands.len(), 1 + 3 * 4, "poll, two PWM holds, one clock");
+    assert_eq!(
+        commands.len(),
+        1 + 3 * 4 + 2 * 3 * 4,
+        "poll, PWM, RGB, clock"
+    );
     let again = protocol.keepalive_commands();
-    assert_eq!(again.len(), 1 + 3 * 4);
+    assert_eq!(again.len(), commands.len());
+}
+
+/// All PWM envelopes precede recovery; unrelated upkeep must wait until the
+/// full RGB transfer (including every data packet and repeated header) is sent.
+fn assert_upkeep_restores_frame(
+    protocol: &WirelessControllerProtocol,
+    expected: &[ProtocolCommand],
+) {
+    let commands = protocol.keepalive_commands();
+    let pwm_end = 1 + protocol.clusters().len() * 4;
+    let rgb_end = pwm_end + expected.len();
+    assert_eq!(commands.len(), rgb_end + 4, "poll, PWM, RGB, clock only");
+    assert_eq!(commands[0].transfer_type, TransferType::Companion);
+    for pwm in commands[1..pwm_end].chunks_exact(4) {
+        assert_eq!(pwm[0].data[5], RfSubCommand::Pwm as u8);
+    }
+    for (actual, expected) in commands[pwm_end..rgb_end].iter().zip(expected) {
+        assert_eq!(
+            actual.data, expected.data,
+            "restore the complete latest frame"
+        );
+        assert_eq!(actual.post_delay, expected.post_delay);
+        assert_eq!(actual.transfer_type, expected.transfer_type);
+        assert_eq!(actual.expects_response, expected.expects_response);
+    }
+    assert_eq!(commands[rgb_end].data[5], RfSubCommand::ClockSync as u8);
+}
+
+#[test]
+fn upkeep_restores_the_latest_frame_before_clock_and_retains_it_while_idle() {
+    let protocol = discovered_protocol();
+    let _ = protocol.encode_frame(&[[255, 0, 0]; 5 * 26]);
+    let colors: Vec<_> = (0_u8..130)
+        .map(|index| [index, index.wrapping_mul(13), 255 - index])
+        .collect();
+    let latest = protocol.encode_frame(&colors);
+    assert_upkeep_restores_frame(&protocol, &latest);
+    // Idle delivery has no new encode calls, but PWM ticks still need recovery.
+    assert_upkeep_restores_frame(&protocol, &latest);
+    assert_eq!(protocol.capabilities().max_fps, 30);
+    assert_eq!(protocol.frame_interval(), Duration::from_millis(33));
+}
+
+#[test]
+fn upkeep_restores_pause_black_and_empty_frames_without_resurrecting_old_colors() {
+    let protocol = discovered_protocol();
+    let _ = protocol.encode_frame(&[[255, 0, 0]; 5 * 26]);
+    let black = protocol.encode_frame(&[[0, 0, 0]; 5 * 26]);
+    assert_upkeep_restores_frame(&protocol, &black);
+
+    let _ = protocol.encode_frame(&[[0, 255, 0]; 5 * 26]);
+    let empty = protocol.encode_frame(&[]);
+    assert_eq!(
+        empty
+            .iter()
+            .map(|command| &command.data)
+            .collect::<Vec<_>>(),
+        black
+            .iter()
+            .map(|command| &command.data)
+            .collect::<Vec<_>>(),
+        "an empty frame pads all known fans with black"
+    );
+    assert_upkeep_restores_frame(&protocol, &empty);
+}
+
+#[test]
+fn upkeep_preserves_right_attached_cluster_order_and_normalizes_input_lengths() {
+    let protocol = WirelessControllerProtocol::new();
+    protocol
+        .parse_response(&captured_master_reply())
+        .expect("master");
+    protocol
+        .parse_response(&table_with(&[
+            record([0x11; 6], 0, 12, 27),
+            record([0x22; 6], 0, 1, 27),
+        ]))
+        .expect("one right-attached cluster and one normal cluster");
+    let _ = protocol.keepalive_commands();
+    let colors: Vec<_> = (0_u8..100).map(|index| [index, 0, 0]).collect();
+    let exact = protocol.encode_frame(&colors[..78]);
+    let excess = protocol.encode_frame(&colors);
+    assert_eq!(
+        exact
+            .iter()
+            .map(|command| &command.data)
+            .collect::<Vec<_>>(),
+        excess
+            .iter()
+            .map(|command| &command.data)
+            .collect::<Vec<_>>(),
+        "pixels outside the physical topology are ignored"
+    );
+    assert_upkeep_restores_frame(&protocol, &excess);
+    let short = protocol.encode_frame(&colors[..10]);
+    assert_upkeep_restores_frame(&protocol, &short);
+}
+
+#[test]
+fn a_new_session_discards_cached_colors_before_rediscovery() {
+    let protocol = discovered_protocol();
+    let _ = protocol.encode_frame(&[[255, 0, 0]; 5 * 26]);
+    let _ = protocol.init_sequence();
+    protocol
+        .parse_response(&captured_master_reply())
+        .expect("controller rediscovered");
+    protocol
+        .parse_response(&table_with(&[record([0x33; 6], 0, 1, 27)]))
+        .expect("new cluster discovered");
+    let commands = protocol.keepalive_commands();
+    assert_eq!(
+        commands.len(),
+        1 + 2 + 4 + 4,
+        "no cached RGB in a new session"
+    );
+    assert_eq!(&commands[1].data[..4], &TX_VIDEO_START);
+    assert_eq!(commands[3].data[5], RfSubCommand::Pwm as u8);
+    assert_eq!(commands[7].data[5], RfSubCommand::ClockSync as u8);
+
+    let fresh = protocol.encode_frame(&[[1, 2, 3]; 26]);
+    assert_upkeep_restores_frame(&protocol, &fresh);
 }
 
 #[test]
