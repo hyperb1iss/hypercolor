@@ -5,6 +5,37 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-09-10
+
+Studio control edits retain panel state, device assignments gain automatic
+saving and shared undo/redo history, and wireless fan upkeep restores the
+latest RGB frame.
+
+### Added
+
+- Add atomic membership edits through `POST /api/v1/scene/members/edit`, with
+  a required numeric `If-Match` revision and canonical before/after receipts.
+- Add generated Python client bindings for membership transactions.
+- Add browser and daemon regression coverage for assignment history, pending
+  edits, navigation, offline output restoration, and control-widget stability.
+
+### Fixed
+
+- Preserve scroll position, focus, and disclosure state while Studio and
+  Effects controls receive value updates. Rejected edits restore server values
+  without rebuilding the widgets.
+- Save device assignments immediately and replay assignment and layout edits
+  in chronological undo/redo order. Placement drafts still require Save.
+- Cancel superseded history operations without leaving Studio stuck in Saving,
+  and preserve unrelated newer state during replay.
+- Preserve output metadata and attachment identity during atomic zone moves
+  and offline membership restoration.
+- Narrow resize-handle and search-field CSS transitions to avoid unnecessary
+  animation of inherited scrollbar colors.
+- Restore cached Lian Li wireless RGB after fan-speed upkeep, including black
+  frames from pause and stop. Packet and live transport checks pass; physical
+  confirmation of rainbow-flicker removal remains pending.
+
 ## [0.5.0] - 2026-09-08
 
 This release productizes the **OpenRGB fallback** into a managed, native-first bridge with its own host crate, guided setup, and coverage reporting, and lands the **Lian Li TL LCD and L-Wireless** driver family on a new shared display encoding layer. The UI gains browser-neutral HTTP and WebSocket transports, and user-facing agent skills now ship in the release bundle.
