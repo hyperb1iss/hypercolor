@@ -809,6 +809,18 @@ occasionally spikes RPM.
    and snapped to the newest frame each tick. The reference arms video
    mode once as well.
 
+PWM writes can interrupt direct RGB output and briefly expose the receiver's
+onboard rainbow effect. After writing the PWM batch, upkeep immediately
+re-sends each cluster's latest RGB frame through the normal transfer codec,
+before clock or pairing work. Recovery starts only after a frame has
+been encoded, preserves black frames, and never re-arms streaming mode.
+The cached frame belongs to the connection session and is cleared on init.
+The upstream driver documents the same interruption in
+[issue 83](https://github.com/sgtaziz/lian-li-linux/issues/83) and restores
+cached direct colors in [PR 149](https://github.com/sgtaziz/lian-li-linux/pull/149).
+Packet-level tests establish recovery ordering and payload fidelity;
+physical flicker removal still requires observation on the affected fans.
+
 This holds user-set speeds steady without making Hypercolor a fan-curve
 product. Exact clock-blob field values are validated on hardware before the
 descriptor ships enabled (§11). Both upkeep streams and the GetDev poll run

@@ -113,6 +113,9 @@ struct WirelessState {
     topology_frozen: bool,
     streaming_started: bool,
     clock_sent: bool,
+    /// The last submitted pixels, including black frames, retained across idle upkeep.
+    /// None means no lighting frame has arrived in this session.
+    latest_colors: Option<Vec<[u8; 3]>>,
 }
 
 impl WirelessState {
@@ -415,6 +418,75 @@ impl WirelessControllerProtocol {
             commands.push(Self::tx_command(stream_prep_packet(index, channel), false));
         }
     }
+
+    /// Encode live delivery and PWM recovery through the same per-cluster wire path.
+    fn push_rgb_frame(
+        state: &WirelessState,
+        colors: &[[u8; 3]],
+        frame_number: Option<u32>,
+        buffer: &mut CommandBuffer<'_>,
+    ) {
+        let master = Self::master_mac(state);
+        let mut offset = 0_usize;
+        for cluster in &state.table.clusters {
+            let leds_per_fan = usize::from(cluster.model.leds_per_fan());
+            let led_count = usize::from(cluster.fan_count) * leds_per_fan;
+            let mut raw = Vec::with_capacity(led_count * 3);
+            for led in 0..led_count {
+                let color = colors.get(offset + led).copied().unwrap_or([0, 0, 0]);
+                raw.extend_from_slice(&color);
+            }
+            offset += led_count;
+            if cluster.right_attach {
+                raw = reverse_fan_order(&raw, leds_per_fan, usize::from(cluster.fan_count));
+            }
+
+            let transfer = rgb_transfer(
+                cluster.mac,
+                master,
+                effect_index_for(&raw),
+                u8::try_from(led_count).unwrap_or(u8::MAX),
+                LIVE_TOTAL_FRAMES,
+                LIVE_INTERVAL_MS,
+                &raw,
+            );
+            if let Some(frame_number) = frame_number
+                && frame_number.is_multiple_of(FRAME_TRACE_EVERY)
+            {
+                trace!(
+                    frame_number,
+                    mac = %format_mac(cluster.mac),
+                    led_count,
+                    data_envelopes = transfer.data.len(),
+                    first_pixel = ?raw.get(..3),
+                    "wireless frame encoded"
+                );
+            }
+            for repeat in 0..HEADER_REPEATS {
+                let tail_delay = if repeat + 1 < HEADER_REPEATS {
+                    HEADER_REPEAT_GAP
+                } else {
+                    SLICE_PACING
+                };
+                Self::push_envelope(
+                    buffer,
+                    &transfer.header,
+                    cluster.channel,
+                    cluster.rx_type,
+                    tail_delay,
+                );
+            }
+            for envelope in &transfer.data {
+                Self::push_envelope(
+                    buffer,
+                    envelope,
+                    cluster.channel,
+                    cluster.rx_type,
+                    SLICE_PACING,
+                );
+            }
+        }
+    }
 }
 
 impl Protocol for WirelessControllerProtocol {
@@ -478,7 +550,17 @@ impl Protocol for WirelessControllerProtocol {
     fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         state.topology_frozen = true;
-        let master = Self::master_mac(&state);
+        let led_count = state
+            .table
+            .clusters
+            .iter()
+            .map(FanCluster::led_count)
+            .sum::<u32>();
+        let led_count = usize::try_from(led_count).unwrap_or(0);
+        let latest_colors = state.latest_colors.get_or_insert_with(Vec::new);
+        latest_colors.clear();
+        latest_colors.extend_from_slice(&colors[..colors.len().min(led_count)]);
+        latest_colors.resize(led_count, [0, 0, 0]);
         let mut buffer = CommandBuffer::new(commands);
 
         if !state.streaming_started {
@@ -497,64 +579,7 @@ impl Protocol for WirelessControllerProtocol {
         }
 
         let frame_number = self.frames_encoded.fetch_add(1, Ordering::Relaxed);
-        let mut offset = 0_usize;
-        for cluster in &state.table.clusters {
-            let leds_per_fan = usize::from(cluster.model.leds_per_fan());
-            let led_count = usize::from(cluster.fan_count) * leds_per_fan;
-            let mut raw = Vec::with_capacity(led_count * 3);
-            for led in 0..led_count {
-                let color = colors.get(offset + led).copied().unwrap_or([0, 0, 0]);
-                raw.extend_from_slice(&color);
-            }
-            offset += led_count;
-            if cluster.right_attach {
-                raw = reverse_fan_order(&raw, leds_per_fan, usize::from(cluster.fan_count));
-            }
-
-            let transfer = rgb_transfer(
-                cluster.mac,
-                master,
-                effect_index_for(&raw),
-                u8::try_from(led_count).unwrap_or(u8::MAX),
-                LIVE_TOTAL_FRAMES,
-                LIVE_INTERVAL_MS,
-                &raw,
-            );
-            if frame_number.is_multiple_of(FRAME_TRACE_EVERY) {
-                trace!(
-                    frame_number,
-                    mac = %format_mac(cluster.mac),
-                    led_count,
-                    data_envelopes = transfer.data.len(),
-                    first_pixel = ?raw.get(..3),
-                    "wireless frame encoded"
-                );
-            }
-            for repeat in 0..HEADER_REPEATS {
-                let tail_delay = if repeat + 1 < HEADER_REPEATS {
-                    HEADER_REPEAT_GAP
-                } else {
-                    SLICE_PACING
-                };
-                Self::push_envelope(
-                    &mut buffer,
-                    &transfer.header,
-                    cluster.channel,
-                    cluster.rx_type,
-                    tail_delay,
-                );
-            }
-            for envelope in &transfer.data {
-                Self::push_envelope(
-                    &mut buffer,
-                    envelope,
-                    cluster.channel,
-                    cluster.rx_type,
-                    SLICE_PACING,
-                );
-            }
-        }
-
+        Self::push_rgb_frame(&state, colors, Some(frame_number), &mut buffer);
         buffer.finish();
     }
 
@@ -566,7 +591,8 @@ impl Protocol for WirelessControllerProtocol {
     }
 
     /// The 1 Hz upkeep: refresh the table, hold every cluster at the PWM it
-    /// reported, and broadcast the clock. Streaming mode is armed here only
+    /// reported, restore the latest RGB frame, and broadcast the clock.
+    /// Streaming mode is armed here only
     /// when no frame has done it yet.
     fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
@@ -590,6 +616,16 @@ impl Protocol for WirelessControllerProtocol {
                 cluster.pwm,
             );
             Self::envelope_commands(&mut commands, &envelope, cluster.channel, cluster.rx_type);
+        }
+
+        // PWM traffic can interrupt the receiver's RGB playback. Restore the
+        // submitted frame before clock, pairing, or the next actor turn can delay it.
+        if let Some(colors) = &state.latest_colors {
+            let mut rgb_commands = Vec::new();
+            let mut buffer = CommandBuffer::new(&mut rgb_commands);
+            Self::push_rgb_frame(&state, colors, None, &mut buffer);
+            buffer.finish();
+            commands.extend(rgb_commands);
         }
 
         let payload = clock_payload(WallClock::now_local());
