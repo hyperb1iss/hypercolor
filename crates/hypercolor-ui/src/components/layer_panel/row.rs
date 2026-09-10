@@ -64,46 +64,34 @@ pub fn layer_title(
 #[component]
 pub fn LayerRow(
     zone_id: String,
-    layer: SceneLayer,
-    stack_index: usize,
-    total_layers: usize,
-    stack: Vec<SceneLayer>,
-    revision: u64,
-    media_names: HashMap<String, String>,
-    effect_names: HashMap<String, String>,
+    layer: Signal<SceneLayer>,
+    stack_index: Signal<usize>,
+    stack: Signal<Vec<SceneLayer>>,
+    revision: Signal<u64>,
+    media_names: Memo<HashMap<String, String>>,
+    effect_names: Memo<HashMap<String, String>>,
+    effect_cache: super::LayerEffectCache,
+    expanded: bool,
+    on_disclosure: Callback<bool>,
     #[prop(into)] health: Signal<Option<LayerHealth>>,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
-    let (icon, accent_rgb, kind_word) = source_meta(&layer.source);
-    let title = layer_title(&layer, &media_names, &effect_names, kind_word);
-    let layer_id = layer.id.to_string();
-    let is_effect = matches!(layer.source, LayerSource::Effect { .. });
-    let is_media = matches!(layer.source, LayerSource::Media { .. });
-    // A lone layer has nowhere to move; reorder appears only in a stack.
-    let show_reorder = total_layers > 1;
-    let can_move_up = stack_index + 1 < total_layers;
-    let can_move_down = stack_index > 0;
-    let opacity = layer.opacity;
-    let blend = layer.blend;
-    let fit = layer.transform.fit;
-    let brightness = layer.adjust.brightness;
-    let saturation = layer.adjust.saturation;
-    let tint_strength = layer.adjust.tint_strength;
-    let scale_x = layer.transform.scale[0];
-    let scale_y = layer.transform.scale[1];
-
-    let blend_layer = layer.clone();
-    let opacity_layer = layer.clone();
-    let fit_layer = layer.clone();
-    let brightness_layer = layer.clone();
-    let saturation_layer = layer.clone();
-    let tint_layer = layer.clone();
-    let scale_x_layer = layer.clone();
-    let scale_y_layer = layer.clone();
-    let effect_layer = layer.clone();
-    let media_layer = layer.clone();
-    let move_up_stack = stack.clone();
-    let move_down_stack = stack;
+    let initial = layer.get_untracked();
+    let (icon, accent_rgb, kind_word) = source_meta(&initial.source);
+    let title = move || {
+        layer_title(
+            &layer.get(),
+            &media_names.get(),
+            &effect_names.get(),
+            kind_word,
+        )
+    };
+    let layer_id = initial.id.to_string();
+    let is_effect = matches!(initial.source, LayerSource::Effect { .. });
+    let is_media = matches!(initial.source, LayerSource::Media { .. });
+    let show_reorder = move || stack.with(|layers| layers.len() > 1);
+    let can_move_up = move || stack_index.get() + 1 < stack.with(Vec::len);
+    let can_move_down = move || stack_index.get() > 0;
 
     let chip_style = format!("background: rgba({accent_rgb}, 0.14)");
     let icon_style = format!("color: rgb({accent_rgb})");
@@ -130,24 +118,24 @@ pub fn LayerRow(
                     </span>
                 </div>
                 <div class="flex shrink-0 items-center gap-1">
-                    {show_reorder
+                    {let zone_id = zone_id.clone(); move || show_reorder()
                         .then(|| {
                             let zone_up = zone_id.clone();
                             let zone_down = zone_id.clone();
-                            let up_stack = move_up_stack.clone();
-                            let down_stack = move_down_stack.clone();
+                            let up_stack = stack;
+                            let down_stack = stack;
                             view! {
                                 <button
                                     type="button"
                                     class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:text-fg-primary disabled:opacity-25"
-                                    disabled=!can_move_up
+                                    disabled=move || !can_move_up()
                                     title="Move layer up"
                                     on:click=move |_| reorder_layer(
                                         zone_up.clone(),
-                                        up_stack.clone(),
-                                        stack_index,
+                                        up_stack.get_untracked(),
+                                        stack_index.get_untracked(),
                                         1,
-                                        revision,
+                                        revision.get_untracked(),
                                         on_layers_mutated,
                                     )
                                 >
@@ -156,14 +144,14 @@ pub fn LayerRow(
                                 <button
                                     type="button"
                                     class="rounded-md p-1.5 text-fg-tertiary transition-colors hover:text-fg-primary disabled:opacity-25"
-                                    disabled=!can_move_down
+                                    disabled=move || !can_move_down()
                                     title="Move layer down"
                                     on:click=move |_| reorder_layer(
                                         zone_down.clone(),
-                                        down_stack.clone(),
-                                        stack_index,
+                                        down_stack.get_untracked(),
+                                        stack_index.get_untracked(),
                                         -1,
-                                        revision,
+                                        revision.get_untracked(),
                                         on_layers_mutated,
                                     )
                                 >
@@ -181,7 +169,7 @@ pub fn LayerRow(
                             move |_| delete_layer(
                                 zone_id.clone(),
                                 layer_id.clone(),
-                                revision,
+                                revision.get_untracked(),
                                 on_layers_mutated,
                             )
                         }
@@ -195,17 +183,17 @@ pub fn LayerRow(
                 // ── Blend ─────────────────────────────────────────────
                 <div class="min-w-0">
                         <SilkSelect
-                            value=Signal::derive(move || blend_value(blend).to_owned())
+                            value=Signal::derive(move || blend_value(layer.get().blend).to_owned())
                             options=Signal::derive(blend_options)
                             on_change=Callback::new({
                                 let zone_id = zone_id.clone();
                                 move |value: String| {
-                                    let mut next = blend_layer.clone();
+                                    let mut next = layer.get_untracked();
                                     next.blend = parse_blend(&value);
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision,
+                                        revision.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -230,17 +218,17 @@ pub fn LayerRow(
                         max="1"
                         step="0.01"
                         class="slider-silk min-w-0 flex-1 cursor-pointer"
-                        prop:value=format!("{opacity:.2}")
+                        prop:value=move || format!("{:.2}", layer.get().opacity)
                         on:change={
                             let zone_id = zone_id.clone();
                             move |event| {
                                 if let Some(value) = Change::from_event(event).value::<f32>() {
-                                    let mut next = opacity_layer.clone();
+                                    let mut next = layer.get_untracked();
                                     next.opacity = value.clamp(0.0, 1.0);
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision,
+                                        revision.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -251,7 +239,7 @@ pub fn LayerRow(
                         class="w-[40px] shrink-0 rounded px-1.5 py-0.5 text-right font-mono text-[10px] tabular-nums"
                         style="color: rgba(225, 53, 255, 0.85); background: rgba(225, 53, 255, 0.1)"
                     >
-                        {format!("{:.0}%", opacity * 100.0)}
+                        {move || format!("{:.0}%", layer.get().opacity * 100.0)}
                     </span>
                 </div>
 
@@ -262,7 +250,8 @@ pub fn LayerRow(
                             <div class="border-t border-edge-subtle/40 pt-3">
                                 <EffectControlsSection
                                     zone_id=zone_id.clone()
-                                    layer=effect_layer.clone()
+                                    layer=layer
+                                    effect_cache=effect_cache
                                     on_layers_mutated=on_layers_mutated
                                 />
                             </div>
@@ -274,7 +263,7 @@ pub fn LayerRow(
                             <div class="border-t border-edge-subtle/40 pt-3">
                                 <MediaPlaybackSection
                                     zone_id=zone_id.clone()
-                                    layer=media_layer.clone()
+                                    layer=layer
                                     revision=revision
                                     on_layers_mutated=on_layers_mutated
                                 />
@@ -283,24 +272,35 @@ pub fn LayerRow(
                     })}
 
                 // ── Transform & color disclosure ──────────────────────
-                <details class="rounded-lg border border-edge-subtle/55 bg-surface-overlay/25">
+                <details
+                    class="rounded-lg border border-edge-subtle/55 bg-surface-overlay/25"
+                    open=expanded
+                    on:toggle=move |event| {
+                        let element: web_sys::Element = event_target(&event);
+                        // Removal can dispatch a final toggle; it must not
+                        // overwrite the preference adopted by the new row.
+                        if element.is_connected() {
+                            on_disclosure.run(element.has_attribute("open"));
+                        }
+                    }
+                >
                     <summary class="flex cursor-pointer items-center gap-1.5 px-3 py-2 text-[11px] font-semibold text-fg-secondary">
                         <Icon icon=LuChevronRight width="12px" height="12px" />
                         "Transform & Color"
                     </summary>
                     <div class="space-y-3 border-t border-edge-subtle/45 px-3 py-3">
                         <SilkSelect
-                            value=Signal::derive(move || fit_value(fit).to_owned())
+                            value=Signal::derive(move || fit_value(layer.get().transform.fit).to_owned())
                             options=Signal::derive(fit_options)
                             on_change=Callback::new({
                                 let zone_id = zone_id.clone();
                                 move |value: String| {
-                                    let mut next = fit_layer.clone();
+                                    let mut next = layer.get_untracked();
                                     next.transform.fit = parse_fit(&value);
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision,
+                                        revision.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -311,19 +311,19 @@ pub fn LayerRow(
                         />
                         <LayerSlider
                             label="Brightness"
-                            value=brightness
+                            value=Signal::derive(move || layer.get().adjust.brightness)
                             min=0.0
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
                                 let zone_id = zone_id.clone();
                                 move |value: f32| {
-                                    let mut next = brightness_layer.clone();
+                                    let mut next = layer.get_untracked();
                                     next.adjust.brightness = value.clamp(0.0, 4.0);
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision,
+                                        revision.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -331,19 +331,19 @@ pub fn LayerRow(
                         />
                         <LayerSlider
                             label="Saturation"
-                            value=saturation
+                            value=Signal::derive(move || layer.get().adjust.saturation)
                             min=0.0
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
                                 let zone_id = zone_id.clone();
                                 move |value: f32| {
-                                    let mut next = saturation_layer.clone();
+                                    let mut next = layer.get_untracked();
                                     next.adjust.saturation = value.clamp(0.0, 4.0);
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision,
+                                        revision.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -351,19 +351,19 @@ pub fn LayerRow(
                         />
                         <LayerSlider
                             label="Tint"
-                            value=tint_strength
+                            value=Signal::derive(move || layer.get().adjust.tint_strength)
                             min=0.0
                             max=1.0
                             step=0.01
                             on_change=Callback::new({
                                 let zone_id = zone_id.clone();
                                 move |value: f32| {
-                                    let mut next = tint_layer.clone();
+                                    let mut next = layer.get_untracked();
                                     next.adjust.tint_strength = value.clamp(0.0, 1.0);
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision,
+                                        revision.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -371,19 +371,19 @@ pub fn LayerRow(
                         />
                         <LayerSlider
                             label="Scale X"
-                            value=scale_x
+                            value=Signal::derive(move || layer.get().transform.scale[0])
                             min=0.1
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
                                 let zone_id = zone_id.clone();
                                 move |value: f32| {
-                                    let mut next = scale_x_layer.clone();
+                                    let mut next = layer.get_untracked();
                                     next.transform.scale[0] = value.clamp(0.1, 4.0);
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision,
+                                        revision.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -391,19 +391,19 @@ pub fn LayerRow(
                         />
                         <LayerSlider
                             label="Scale Y"
-                            value=scale_y
+                            value=Signal::derive(move || layer.get().transform.scale[1])
                             min=0.1
                             max=4.0
                             step=0.05
                             on_change=Callback::new({
                                 let zone_id = zone_id.clone();
                                 move |value: f32| {
-                                    let mut next = scale_y_layer.clone();
+                                    let mut next = layer.get_untracked();
                                     next.transform.scale[1] = value.clamp(0.1, 4.0);
                                     update_layer(
                                         zone_id.clone(),
                                         next,
-                                        revision,
+                                        revision.get_untracked(),
                                         on_layers_mutated,
                                     );
                                 }
@@ -419,7 +419,7 @@ pub fn LayerRow(
 #[component]
 fn LayerSlider(
     label: &'static str,
-    value: f32,
+    value: Signal<f32>,
     min: f32,
     max: f32,
     step: f32,
@@ -434,14 +434,14 @@ fn LayerSlider(
                 max=max.to_string()
                 step=step.to_string()
                 class="w-full accent-accent"
-                prop:value=format!("{value:.2}")
+                prop:value=move || format!("{:.2}", value.get())
                 on:change=move |event| {
                     if let Some(value) = Change::from_event(event).value::<f32>() {
                         on_change.run(value);
                     }
                 }
             />
-            <span class="text-right tabular-nums">{format!("{value:.2}")}</span>
+            <span class="text-right tabular-nums">{move || format!("{:.2}", value.get())}</span>
         </label>
     }
 }

@@ -7,7 +7,8 @@ use hypercolor_ui::ws::messages::{
     OutputPowerReconciler, PerformanceMetrics, SCENE_EVENTS, extract_effect_error_hint,
     extract_layer_health, extract_scene_event_hint, initial_subscription_admission,
     is_resync_required, layer_health_key, reset_layer_health_cache,
-    scene_event_affects_active_effect, sequence_scene_event_hint, zone_has_degraded_layer,
+    scene_event_affects_active_effect, scene_event_requires_effect_refresh,
+    sequence_scene_event_hint, zone_has_degraded_layer,
 };
 
 #[test]
@@ -71,7 +72,7 @@ fn layout_changes_invalidate_layout_resources_without_control_chatter() {
 }
 
 #[test]
-fn control_changes_are_authoritative_scene_refresh_hints() {
+fn control_changes_do_not_invalidate_effect_metadata() {
     assert!(SCENE_EVENTS.contains(&"effect_control_changed"));
     let hint = extract_scene_event_hint(
         "effect_control_changed",
@@ -82,7 +83,142 @@ fn control_changes_are_authoritative_scene_refresh_hints() {
         }),
     );
     assert_eq!(hint.zone_id.as_deref(), Some("zone-2"));
-    assert!(scene_event_affects_active_effect(&hint));
+    assert!(!scene_event_affects_active_effect(&hint));
+}
+
+#[test]
+fn a_compound_control_edit_invalidates_the_scene_once_without_reloading_faces() {
+    let before = sequence_scene_event_hint(
+        None,
+        extract_scene_event_hint(
+            "active_scene_changed",
+            &serde_json::json!({"current": "scene-1"}),
+        ),
+    );
+    let commit = sequence_scene_event_hint(
+        Some(&before),
+        extract_scene_event_hint(
+            "zone_changed",
+            &serde_json::json!({"zone_id": "screen", "kind": "controls_patched", "role": "display"}),
+        ),
+    );
+    let first = sequence_scene_event_hint(
+        Some(&commit),
+        extract_scene_event_hint(
+            "effect_control_changed",
+            &serde_json::json!({"zone_id": "screen", "control_id": "glow"}),
+        ),
+    );
+    let second = sequence_scene_event_hint(
+        Some(&first),
+        extract_scene_event_hint(
+            "effect_control_changed",
+            &serde_json::json!({"zone_id": "screen", "control_id": "speed"}),
+        ),
+    );
+    assert_eq!(second.scene_generation, before.scene_generation + 1);
+    assert_eq!(second.control_generations.get("screen"), Some(&1));
+    assert_eq!(second.structural_generation, before.structural_generation);
+    assert!(!scene_event_requires_effect_refresh(
+        Some(&before),
+        &second,
+        Some("primary")
+    ));
+    assert!(scene_event_requires_effect_refresh(
+        Some(&before),
+        &second,
+        Some("screen")
+    ));
+}
+
+#[test]
+fn the_zone_commit_refreshes_primary_controls_without_per_control_notifications() {
+    let commit = sequence_scene_event_hint(
+        None,
+        extract_scene_event_hint(
+            "zone_changed",
+            &serde_json::json!({"zone_id": "primary", "kind": "controls_patched"}),
+        ),
+    );
+    assert_eq!(commit.scene_generation, 1);
+    assert!(scene_event_requires_effect_refresh(
+        None,
+        &commit,
+        Some("primary")
+    ));
+    assert!(!scene_event_requires_effect_refresh(
+        None,
+        &commit,
+        Some("screen")
+    ));
+}
+
+#[test]
+fn batched_control_hints_preserve_primary_and_structural_invalidations() {
+    let before = sequence_scene_event_hint(
+        None,
+        extract_scene_event_hint(
+            "active_scene_changed",
+            &serde_json::json!({"current": "scene-1"}),
+        ),
+    );
+    let primary = sequence_scene_event_hint(
+        Some(&before),
+        extract_scene_event_hint(
+            "zone_changed",
+            &serde_json::json!({"zone_id": "primary", "kind": "controls_patched"}),
+        ),
+    );
+    let screen = sequence_scene_event_hint(
+        Some(&primary),
+        extract_scene_event_hint(
+            "effect_control_changed",
+            &serde_json::json!({"zone_id": "screen"}),
+        ),
+    );
+    assert!(scene_event_requires_effect_refresh(
+        Some(&before),
+        &screen,
+        Some("primary")
+    ));
+
+    let structural = sequence_scene_event_hint(
+        Some(&screen),
+        extract_scene_event_hint(
+            "zone_changed",
+            &serde_json::json!({"zone_id": "primary", "role": "primary", "kind": "updated"}),
+        ),
+    );
+    let later_control = sequence_scene_event_hint(
+        Some(&structural),
+        extract_scene_event_hint(
+            "effect_control_changed",
+            &serde_json::json!({"zone_id": "screen"}),
+        ),
+    );
+    assert_eq!(
+        later_control.structural_generation,
+        screen.structural_generation + 1
+    );
+    assert!(scene_event_requires_effect_refresh(
+        Some(&screen),
+        &later_control,
+        Some("primary")
+    ));
+
+    let activated = sequence_scene_event_hint(
+        Some(&later_control),
+        extract_scene_event_hint(
+            "active_scene_changed",
+            &serde_json::json!({"current": "scene-2"}),
+        ),
+    );
+    assert!(activated.control_generations.is_empty());
+    assert!(scene_event_requires_effect_refresh(
+        Some(&later_control),
+        &activated,
+        Some("primary")
+    ));
 }
 
 #[test]

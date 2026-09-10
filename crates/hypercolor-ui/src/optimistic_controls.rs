@@ -22,7 +22,7 @@ pub(crate) struct OptimisticControlSession {
 #[derive(Default)]
 struct ControlMutationQueue {
     pending: Option<ControlMutationBatch>,
-    in_flight: bool,
+    in_flight: Option<ControlMutationBatch>,
 }
 
 impl ControlMutationQueue {
@@ -45,7 +45,7 @@ impl ControlMutationQueue {
     }
 
     fn start_flush_for(&mut self, active_target: &str) -> Result<Option<ControlMutationBatch>, ()> {
-        if self.in_flight {
+        if self.in_flight.is_some() {
             return Ok(None);
         }
         let Some(batch) = self.pending.take() else {
@@ -54,16 +54,18 @@ impl ControlMutationQueue {
         if batch.target != active_target {
             return Err(());
         }
-        self.in_flight = true;
+        self.in_flight = Some(batch.clone());
         Ok(Some(batch))
     }
 
     fn complete_flush(&mut self) -> Option<ControlMutationBatch> {
         if self.pending.is_none() {
-            self.in_flight = false;
+            self.in_flight = None;
             None
         } else {
-            self.pending.take()
+            let next = self.pending.take();
+            self.in_flight = next.clone();
+            next
         }
     }
 
@@ -71,7 +73,7 @@ impl ControlMutationQueue {
         &mut self,
         active_target: &str,
     ) -> Result<Option<ControlMutationBatch>, ()> {
-        self.in_flight = false;
+        self.in_flight = None;
         self.start_flush_for(active_target)
     }
 
@@ -86,9 +88,21 @@ impl ControlMutationQueue {
         }
     }
 
+    fn reconcile_values(&self, target: &str, mut values: ControlValueMap) -> ControlValueMap {
+        for batch in [self.in_flight.as_ref(), self.pending.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if batch.target == target {
+                merge_control_values(&mut values, &batch.values);
+            }
+        }
+        values
+    }
+
     fn fail_flush(&mut self) {
         self.pending = None;
-        self.in_flight = false;
+        self.in_flight = None;
     }
 
     fn clear_pending(&mut self) {
@@ -166,6 +180,16 @@ impl OptimisticControlSession {
             .unwrap_or_default()
     }
 
+    pub(crate) fn reconcile_values(self, target: &str, values: ControlValueMap) -> ControlValueMap {
+        self.queue
+            .with_value(|queue| queue.reconcile_values(target, values))
+    }
+
+    pub(crate) fn track_in_flight(self, batch: &ControlMutationBatch) {
+        self.queue
+            .update_value(|queue| queue.in_flight = Some(batch.clone()));
+    }
+
     pub(crate) fn fail_flush(self) {
         let _ = self
             .queue
@@ -232,6 +256,42 @@ mod tests {
     use hypercolor_types::control::ControlValue;
 
     use super::{ControlMutationQueue, ControlValueMap};
+
+    #[test]
+    fn server_snapshot_preserves_pending_and_in_flight_values_for_its_target() {
+        let mut queue = ControlMutationQueue::default();
+        queue.insert("layer-a".into(), "speed".into(), ControlValue::Float(0.5));
+        queue.start_flush_for("layer-a").expect("valid target");
+        queue.insert("layer-a".into(), "speed".into(), ControlValue::Float(0.8));
+        let server = ControlValueMap::from([
+            ("speed".into(), ControlValue::Float(0.2)),
+            ("hue".into(), ControlValue::Int(120)),
+        ]);
+        let merged = queue.reconcile_values("layer-a", server.clone());
+        assert_eq!(merged["speed"], ControlValue::Float(0.8));
+        assert_eq!(merged["hue"], ControlValue::Int(120));
+        assert_eq!(queue.reconcile_values("layer-b", server.clone()), server);
+        queue.complete_flush();
+        assert_eq!(
+            queue.reconcile_values("layer-a", server.clone())["speed"],
+            ControlValue::Float(0.8)
+        );
+        queue.complete_flush();
+        assert_eq!(queue.reconcile_values("layer-a", server.clone()), server);
+    }
+
+    #[test]
+    fn failed_patch_recovery_accepts_authoritative_values() {
+        let mut queue = ControlMutationQueue::default();
+        queue.insert("layer-a".into(), "speed".into(), ControlValue::Float(0.5));
+        queue.start_flush_for("layer-a").expect("valid target");
+        queue.fail_flush();
+        assert!(
+            queue
+                .reconcile_values("layer-a", ControlValueMap::new())
+                .is_empty()
+        );
+    }
 
     #[test]
     fn in_flight_flush_drains_distinct_newer_keys_in_a_second_batch() {

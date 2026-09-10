@@ -254,27 +254,7 @@ pub fn StudioPage() -> impl IntoView {
                 }),
             _ => Ok(empty_layer_stack()),
         });
-        // Control events intentionally leave the structural scene cache alone.
-        // On selection, recover fresh control values and an If-Match revision
-        // if the latest event invalidated that cache. Reading the hint untracked
-        // keeps slider-rate events from rebuilding the inspector.
-        let refresh_zone = zone_id.filter(|id| {
-            id != UNASSIGNED_SURFACE_ID
-                && active_scene.with_untracked(Option::is_some)
-                && ws.last_scene_event.with_untracked(|hint| {
-                    hint.as_ref().is_some_and(|hint| {
-                        hint.event_type == "zone_changed"
-                            && hint.zone_change_kind
-                                == Some(hypercolor_types::event::ZoneChangeKind::ControlsPatched)
-                    })
-                })
-        });
-        async move {
-            match refresh_zone {
-                Some(zone_id) => api::list_layers(&zone_id).await,
-                None => stack,
-            }
-        }
+        async move { stack }
     });
 
     let on_layers_mutated = Callback::new(move |()| {
@@ -285,9 +265,13 @@ pub fn StudioPage() -> impl IntoView {
     // The selected Screen's face rides the display face endpoint, which
     // reports the scene layer or the stored default, whichever is live.
     // It refetches on selection, after every face write from this page,
-    // and on any scene event (the daemon publishes zone_changed for
+    // and on structural scene events (the daemon publishes zone_changed for
     // default-face writes too), so it never needs a timer.
     let (face_tick, set_face_tick) = signal(0_u64);
+    let face_scene_generation = Memo::new(move |_| {
+        ws.last_scene_event
+            .with(|hint| hint.as_ref().map_or(0, |hint| hint.structural_generation))
+    });
     let selected_screen_device = Memo::new(move |_| {
         let selected = selected_surface_id.get()?;
         let scene = active_scene.get()?;
@@ -295,7 +279,7 @@ pub fn StudioPage() -> impl IntoView {
     });
     let screen_face_resource = api::daemon_resource(move || {
         let _ = face_tick.get();
-        let _ = ws.last_scene_event.get();
+        let _ = face_scene_generation.get();
         let device_id = selected_screen_device.get();
         async move {
             match device_id {
