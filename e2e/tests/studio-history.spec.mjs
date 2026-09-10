@@ -276,14 +276,26 @@ test("Studio pending assignment disables open device menus and the add picker", 
   await expect(picker).toBeEnabled();
   await addStand(page);
   await expect.poll(() => fixture.writes.length).toBe(1);
-  await expect(picker).toBeDisabled();
+  // The rail may close its picker when the operation starts. Either state
+  // must make another assignment unavailable until the reply arrives.
+  if (await picker.count()) {
+    await expect(picker).toBeDisabled();
+  } else {
+    await expect(page.getByRole("button", { name: "Add device", exact: true }).last()).toBeDisabled();
+  }
+  if (!(await move.isVisible())) await page.getByTitle("Device options", { exact: true }).click();
   await expect(move).toBeDisabled();
   await expect(remove).toBeDisabled();
   await expect(page.getByTitle("Add to a zone", { exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Accent lights 0 devices", exact: true })).toBeEnabled();
   release();
   await expect.poll(() => fixture.assigned().length).toBe(1);
+  if (!(await picker.count())) await page.getByRole("button", { name: "Add device", exact: true }).last().click();
   await expect(picker).toBeEnabled();
+  if (!(await move.isVisible())) {
+    await page.locator('div.group\\/card').filter({ has: page.getByText("Anchor light", { exact: true }) })
+      .getByTitle("Device options", { exact: true }).click();
+  }
   await expect(move).toBeEnabled();
   await expect(remove).toBeEnabled();
   expect(fixture.writes).toHaveLength(1);
