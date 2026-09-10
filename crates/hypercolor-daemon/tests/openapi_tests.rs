@@ -18,6 +18,31 @@ fn openapi_document() -> serde_json::Value {
     .expect("OpenAPI document should parse")
 }
 
+#[test]
+fn membership_edit_declares_its_required_revision_header() {
+    let document = openapi_document();
+    let operation = &document["paths"]["/api/v1/scene/members/edit"]["post"];
+    let parameters = operation["parameters"]
+        .as_array()
+        .expect("membership edits declare their revision header");
+    let header = parameters
+        .iter()
+        .find(|parameter| parameter["in"] == "header" && parameter["name"] == "If-Match")
+        .expect("required If-Match header is discoverable by generated clients");
+    assert_eq!(header["required"], true);
+    assert_eq!(header["schema"]["type"], "string");
+    assert!(
+        header["description"]
+            .as_str()
+            .expect("header format is described")
+            .contains("quoted or bare integer")
+    );
+    assert_eq!(
+        operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/EditMembersRequest"
+    );
+}
+
 fn isolated_state() -> AppState {
     let _lock = DATA_DIR_LOCK
         .lock()

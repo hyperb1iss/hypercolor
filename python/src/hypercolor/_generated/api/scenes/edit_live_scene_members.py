@@ -16,8 +16,10 @@ from ...types import Response
 def _get_kwargs(
     *,
     body: EditMembersRequest,
+    if_match: str,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+    headers["If-Match"] = if_match
 
     _kwargs: dict[str, Any] = {
         "method": "post",
@@ -106,10 +108,12 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: EditMembersRequest,
+    if_match: str,
 ) -> Response[ApiErrorBody | EditLiveSceneMembersResponse200]:
     """Atomically edit live scene memberships
 
     Args:
+        if_match (str):
         body (EditMembersRequest): `POST /scene/members/edit`: one revision-fenced membership
             transaction.
 
@@ -123,6 +127,7 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        if_match=if_match,
     )
 
     response = client.get_httpx_client().request(
@@ -136,10 +141,12 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: EditMembersRequest,
+    if_match: str,
 ) -> ApiErrorBody | EditLiveSceneMembersResponse200 | None:
     """Atomically edit live scene memberships
 
     Args:
+        if_match (str):
         body (EditMembersRequest): `POST /scene/members/edit`: one revision-fenced membership
             transaction.
 
@@ -154,6 +161,7 @@ def sync(
     return sync_detailed(
         client=client,
         body=body,
+        if_match=if_match,
     ).parsed
 
 
@@ -161,10 +169,12 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: EditMembersRequest,
+    if_match: str,
 ) -> Response[ApiErrorBody | EditLiveSceneMembersResponse200]:
     """Atomically edit live scene memberships
 
     Args:
+        if_match (str):
         body (EditMembersRequest): `POST /scene/members/edit`: one revision-fenced membership
             transaction.
 
@@ -178,6 +188,7 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         body=body,
+        if_match=if_match,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -189,10 +200,12 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: EditMembersRequest,
+    if_match: str,
 ) -> ApiErrorBody | EditLiveSceneMembersResponse200 | None:
     """Atomically edit live scene memberships
 
     Args:
+        if_match (str):
         body (EditMembersRequest): `POST /scene/members/edit`: one revision-fenced membership
             transaction.
 
@@ -208,5 +221,6 @@ async def asyncio(
         await asyncio_detailed(
             client=client,
             body=body,
+            if_match=if_match,
         )
     ).parsed

@@ -105,7 +105,11 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "scenes",
                     "Atomically edit live scene memberships",
                 )
-                .body::<hypercolor_types::api::scene::EditMembersRequest>(),
+                .body::<hypercolor_types::api::scene::EditMembersRequest>()
+                .required_header(
+                    "If-Match",
+                    "Last observed scene revision, as a quoted or bare integer. The wildcard * is not accepted.",
+                ),
             ],
         ))
         .routes(openapi::documented_route(

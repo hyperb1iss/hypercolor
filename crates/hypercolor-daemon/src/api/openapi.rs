@@ -1,7 +1,7 @@
 #![allow(clippy::needless_for_each)]
 
 use axum::routing::MethodRouter;
-use utoipa::openapi::path::{OperationBuilder, ParameterBuilder, ParameterIn, Paths};
+use utoipa::openapi::path::{OperationBuilder, Parameter, ParameterBuilder, ParameterIn, Paths};
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::schema::{ObjectBuilder, Schema, Type};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -123,6 +123,7 @@ pub(crate) struct OperationDoc {
     request_schema: Option<SchemaRegistrar>,
     additional_schemas: Vec<SchemaRegistrar>,
     query: Option<ParameterProvider>,
+    headers: Vec<Parameter>,
 }
 
 impl OperationDoc {
@@ -207,6 +208,7 @@ impl OperationDoc {
             request_schema: None,
             additional_schemas: Vec::new(),
             query: None,
+            headers: Vec::new(),
         }
     }
 
@@ -252,6 +254,19 @@ impl OperationDoc {
 
     pub(crate) fn query<T: utoipa::IntoParams>(mut self) -> Self {
         self.query = Some(query_parameters::<T>);
+        self
+    }
+
+    pub(crate) fn required_header(mut self, name: &'static str, description: &'static str) -> Self {
+        self.headers.push(
+            ParameterBuilder::new()
+                .name(name)
+                .parameter_in(ParameterIn::Header)
+                .required(Required::True)
+                .description(Some(description))
+                .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
+                .build(),
+        );
         self
     }
 
@@ -319,6 +334,9 @@ fn operation(path: &str, document: OperationDoc) -> utoipa::openapi::path::Opera
         for parameter in query() {
             builder = builder.parameter(parameter);
         }
+    }
+    for header in document.headers {
+        builder = builder.parameter(header);
     }
 
     if let Some((schema, required)) = document.request {
