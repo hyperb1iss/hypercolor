@@ -44,8 +44,8 @@ Each zone in the tree ends with an **Add device** button. Click it to open a pic
 
 Picking a device brings every output it has into this zone:
 
-- A device already placed in **another zone** is **moved**: its existing outputs are reassigned to the target zone.
-- A device the scene has **not placed at all** is **minted** fresh, one output per channel, or a single output for a device with no channels. The daemon resets position and size on assign, so the device drops onto the zone's canvas with sensible defaults.
+- A device already placed in **another zone** is **moved**: its existing outputs and placement are retained in the target zone.
+- A device the scene has **not placed at all** is **minted** fresh, one output per channel, or a single output for a device with no channels. Known device shapes keep their prepared arrangement; other outputs receive an initial grid placement.
 
 In a **single-zone scene**, devices that sit in no zone fold under the sole LED zone as one-tap **Available** rows. Each Available card carries a green **add** (`+`) action that drops the device straight into the zone, no picker needed.
 
@@ -76,7 +76,19 @@ picker of every LED zone, because "add" has to say where.
 
 **Identify** flashes the device's LEDs through the daemon so you can match the on-screen card to a physical light. On a placed card it lives in the kebab menu; on an Available or Unassigned card it is a lightning button in the cluster itself. A brief toast confirms the flash.
 
-**Remove from zone** pulls every one of the device's outputs out of this zone. For a multi-output controller the removals run in sequence as a single user action, so the whole device leaves the zone in one click. The device then becomes Unassigned (or Available, in a single-zone scene) and can be added to a different zone.
+**Remove from zone** pulls every one of the device's outputs out of this zone. All outputs are removed in one atomic operation, so a failed request leaves the whole device in its original zone. The device then becomes Unassigned (or Available, in a single-zone scene) and can be added to a different zone.
+
+### Saving and undoing assignments
+
+Adding, moving, and removing devices save automatically. The Stage status shows
+`Saving…` during the write and `Saved` after it succeeds. If you also have
+unsaved placement edits, the status remains `Unsaved layout` until you save
+those edits.
+
+Assignments and canvas edits share one chronological **Undo / Redo** history.
+Undoing or redoing an assignment also saves that assignment change. Moving or
+resizing an output on the canvas still requires **Save**. History belongs to
+the current Studio session and resets when you switch scenes or leave Studio.
 
 ### Offline devices
 
