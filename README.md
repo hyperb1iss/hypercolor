@@ -335,9 +335,11 @@ Grab `Hypercolor_<version>_x64-setup.exe` from the
 [GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). The install is
 per-machine, so expect one UAC prompt; hardware setup runs inside that same elevated pass,
 including the optional [PawnIO](https://github.com/namazso/PawnIO) driver that unlocks
-motherboard and DRAM SMBus lighting (ASUS Aura and friends). Hypercolor only offers the
-PawnIO step when compatible hardware is detected. Tested on Windows 10 22H2 and
-Windows 11 23H2/24H2, x64.
+supported motherboard and DRAM SMBus lighting. Native support currently covers
+ASUS Aura hardware; other vendors may work through the separately installed
+[OpenRGB bridge](docs/content/hardware/openrgb-fallback.md). Hypercolor only
+offers the PawnIO step when compatible hardware is detected. Tested on Windows
+10 22H2 and Windows 11 23H2/24H2, x64.
 
 > Current Windows builds are not code-signed, so SmartScreen will warn on first run.
 > Choose **More info**, then **Run anyway**.
@@ -363,6 +365,9 @@ brew install --cask hyperb1iss/tap/hypercolor-app
 > Public CI does not publish unsigned macOS packages. macOS artifacts and the
 > matching Homebrew updates are promoted manually only after signing,
 > notarization, and the signed physical acceptance checkpoint pass.
+>
+> The current stable release has no accepted macOS artifacts yet. The latest
+> signed DMG and Homebrew cask remain at 0.3.2.
 
 Hue, WLED, Nanoleaf, Govee, and USB-HID lighting all work out of the box. Hypercolor asks
 for Microphone, Screen Recording, or Input Monitoring access only when you explicitly

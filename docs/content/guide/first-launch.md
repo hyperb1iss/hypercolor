@@ -116,8 +116,10 @@ RGB zones use the SMBus bus, which requires an additional kernel-level driver ca
 **PawnIO**. The wizard surfaces a "Set up RGB hardware support" button when:
 
 - The host is Windows.
-- The motherboard vendor is one Hypercolor can drive (ASUS, MSI, Gigabyte, ASRock),
-  detected automatically from WMI.
+- WMI reports a motherboard vendor whose lighting may need SMBus access.
+  Hypercolor drives supported ASUS Aura hardware natively. MSI, Gigabyte,
+  ASRock, and other vendors may use the separately installed
+  [OpenRGB bridge](@/hardware/openrgb-fallback.md).
 - The SMBus broker service (`HypercolorSmBus`) is not already running.
 
 If those conditions are not met (you are on Linux or macOS, your board is not
