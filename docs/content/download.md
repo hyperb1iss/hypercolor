@@ -45,10 +45,11 @@ user service, udev rules, and shell completions through your package manager:
 
 ```bash
 # x86_64
-sudo apt install ./hypercolor_0.5.1_amd64.deb
+version=X.Y.Z
+sudo apt install "./hypercolor_${version}_amd64.deb"
 
 # arm64
-sudo apt install ./hypercolor_0.5.1_arm64.deb
+sudo apt install "./hypercolor_${version}_arm64.deb"
 ```
 
 ### Arch Linux (AUR)
