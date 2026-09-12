@@ -94,7 +94,7 @@ pub fn bind_macos_release_provenance(
     unit: &UnitRecord,
 ) -> Result<MacosReleaseProvenance, ReleasePayloadError> {
     let manifest_bytes = tree::read_retained_manifest_bytes(unit.directory())?;
-    let manifest = ValidatedManifest::parse(manifest_bytes)?;
+    let manifest = ValidatedManifest::parse_installed(manifest_bytes)?;
     if manifest.unit_id != *unit.id() {
         return Err(ReleasePayloadError::UnexpectedManifestDigest {
             expected: unit.id().as_str().to_owned(),

@@ -42,7 +42,12 @@ pub(super) struct ValidatedManifest {
 impl ValidatedManifest {
     pub(super) fn parse(bytes: Vec<u8>) -> Result<Self, ReleasePayloadError> {
         let raw: RawManifest = serde_json::from_slice(&bytes)?;
-        raw.validate(bytes)
+        raw.validate(bytes, true)
+    }
+
+    pub(super) fn parse_installed(bytes: Vec<u8>) -> Result<Self, ReleasePayloadError> {
+        let raw: RawManifest = serde_json::from_slice(&bytes)?;
+        raw.validate(bytes, false)
     }
 }
 
@@ -77,7 +82,11 @@ struct RawManifest {
 }
 
 impl RawManifest {
-    fn validate(self, bytes: Vec<u8>) -> Result<ValidatedManifest, ReleasePayloadError> {
+    fn validate(
+        self,
+        bytes: Vec<u8>,
+        require_user_skills: bool,
+    ) -> Result<ValidatedManifest, ReleasePayloadError> {
         if self.name != "hypercolor"
             || !valid_identity(&self.version)
             || !valid_identity(&self.platform)
@@ -94,7 +103,7 @@ impl RawManifest {
                 "manifest binaries do not match the release payload".to_owned(),
             ));
         }
-        self.assets.validate_minimums()?;
+        self.assets.validate_minimums(require_user_skills)?;
         if self.members.is_empty() || self.members.len() > MAX_RELEASE_MEMBERS {
             return Err(ReleasePayloadError::InvalidManifest(format!(
                 "manifest member count must be in 1..={MAX_RELEASE_MEMBERS}"
@@ -187,7 +196,7 @@ struct RawAssets {
     #[serde(rename = "skill_files")]
     skills: u64,
     #[serde(rename = "user_skill_files")]
-    user_skills: u64,
+    user_skills: Option<u64>,
     #[serde(rename = "agent_files")]
     agents: u64,
     #[serde(rename = "site_files")]
@@ -195,12 +204,13 @@ struct RawAssets {
 }
 
 impl RawAssets {
-    fn validate_minimums(&self) -> Result<(), ReleasePayloadError> {
+    fn validate_minimums(&self, require_user_skills: bool) -> Result<(), ReleasePayloadError> {
         if self.ui == 0
             || self.bundled_effects == 0
             || self.skills == 0
-            || self.user_skills == 0
             || self.agents == 0
+            || self.user_skills == Some(0)
+            || (require_user_skills && self.user_skills.is_none())
         {
             return Err(ReleasePayloadError::InvalidManifest(
                 "required release asset counts must be nonzero".to_owned(),
@@ -315,32 +325,43 @@ fn validate_asset_counts(
         ("share/hypercolor/effects/bundled", assets.bundled_effects),
         ("share/hypercolor/docs", assets.docs),
         ("share/hypercolor/agents/skills", assets.skills),
-        ("share/hypercolor/skills", assets.user_skills),
         ("share/hypercolor/agents/agents", assets.agents),
         ("share/hypercolor/site", assets.site),
     ];
     for (prefix, expected_count) in expected {
-        if !members
-            .get(prefix)
-            .is_some_and(ValidatedMember::is_directory)
-        {
-            return Err(ReleasePayloadError::InvalidManifest(format!(
-                "manifest asset root is missing or not a directory: {prefix}"
-            )));
-        }
-        let prefix_with_separator = format!("{prefix}/");
-        let actual = members
-            .iter()
-            .filter(|(path, member)| {
-                path.starts_with(&prefix_with_separator)
-                    && matches!(member, ValidatedMember::File { .. })
-            })
-            .count();
-        if u64::try_from(actual).ok() != Some(expected_count) {
-            return Err(ReleasePayloadError::InvalidManifest(format!(
-                "manifest asset count is wrong for {prefix}"
-            )));
-        }
+        validate_asset_count(members, prefix, expected_count)?;
+    }
+    if let Some(expected_count) = assets.user_skills {
+        validate_asset_count(members, "share/hypercolor/skills", expected_count)?;
+    }
+    Ok(())
+}
+
+fn validate_asset_count(
+    members: &BTreeMap<String, ValidatedMember>,
+    prefix: &str,
+    expected_count: u64,
+) -> Result<(), ReleasePayloadError> {
+    if !members
+        .get(prefix)
+        .is_some_and(ValidatedMember::is_directory)
+    {
+        return Err(ReleasePayloadError::InvalidManifest(format!(
+            "manifest asset root is missing or not a directory: {prefix}"
+        )));
+    }
+    let prefix_with_separator = format!("{prefix}/");
+    let actual = members
+        .iter()
+        .filter(|(path, member)| {
+            path.starts_with(&prefix_with_separator)
+                && matches!(member, ValidatedMember::File { .. })
+        })
+        .count();
+    if u64::try_from(actual).ok() != Some(expected_count) {
+        return Err(ReleasePayloadError::InvalidManifest(format!(
+            "manifest asset count is wrong for {prefix}"
+        )));
     }
     Ok(())
 }
