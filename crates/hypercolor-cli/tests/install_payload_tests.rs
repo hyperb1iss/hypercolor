@@ -78,6 +78,7 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
         "share/hypercolor/agents",
         "share/hypercolor/agents/skills",
         "share/hypercolor/agents/agents",
+        "share/hypercolor/skills",
         "share/hypercolor/site",
         "share/hypercolor/launchd",
     ];
@@ -118,6 +119,7 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
         ),
         ("share/hypercolor/agents/skills/skill.md", b"skill".to_vec()),
         ("share/hypercolor/agents/agents/agent.md", b"agent".to_vec()),
+        ("share/hypercolor/skills/skill.md", b"user skill".to_vec()),
         (
             "share/hypercolor/launchd/tech.hyperbliss.hypercolor.plist",
             b"plist".to_vec(),
@@ -161,6 +163,7 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
             "bundled_effect_files": 1,
             "docs_files": 0,
             "skill_files": 1,
+            "user_skill_files": 1,
             "agent_files": 1,
             "site_files": 0,
         },
@@ -749,6 +752,7 @@ fn manifest_rejects_unreadable_files_untraversable_directories_and_uppercase_dig
         "directory-mode",
         "uppercase-digest",
         "asset-count",
+        "user-skill-count",
     ] {
         let fixture = ReleaseFixture::new();
         let mut manifest = fixture.manifest_value();
@@ -764,6 +768,7 @@ fn manifest_rejects_unreadable_files_untraversable_directories_and_uppercase_dig
                     json!(sha256(b"ui").to_uppercase());
             }
             "asset-count" => manifest["assets"]["ui_files"] = json!(2),
+            "user-skill-count" => manifest["assets"]["user_skill_files"] = json!(2),
             _ => unreachable!("known case"),
         }
         fixture.write_manifest(&manifest);

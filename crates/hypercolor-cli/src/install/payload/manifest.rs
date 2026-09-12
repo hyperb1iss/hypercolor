@@ -186,6 +186,8 @@ struct RawAssets {
     docs: u64,
     #[serde(rename = "skill_files")]
     skills: u64,
+    #[serde(rename = "user_skill_files")]
+    user_skills: u64,
     #[serde(rename = "agent_files")]
     agents: u64,
     #[serde(rename = "site_files")]
@@ -194,7 +196,12 @@ struct RawAssets {
 
 impl RawAssets {
     fn validate_minimums(&self) -> Result<(), ReleasePayloadError> {
-        if self.ui == 0 || self.bundled_effects == 0 || self.skills == 0 || self.agents == 0 {
+        if self.ui == 0
+            || self.bundled_effects == 0
+            || self.skills == 0
+            || self.user_skills == 0
+            || self.agents == 0
+        {
             return Err(ReleasePayloadError::InvalidManifest(
                 "required release asset counts must be nonzero".to_owned(),
             ));
@@ -308,6 +315,7 @@ fn validate_asset_counts(
         ("share/hypercolor/effects/bundled", assets.bundled_effects),
         ("share/hypercolor/docs", assets.docs),
         ("share/hypercolor/agents/skills", assets.skills),
+        ("share/hypercolor/skills", assets.user_skills),
         ("share/hypercolor/agents/agents", assets.agents),
         ("share/hypercolor/site", assets.site),
     ];

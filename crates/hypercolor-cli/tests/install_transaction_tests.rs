@@ -619,6 +619,7 @@ fn write_transaction_release(root: &Path, seed: &str) -> File {
         "share/hypercolor/agents",
         "share/hypercolor/agents/skills",
         "share/hypercolor/agents/agents",
+        "share/hypercolor/skills",
         "share/hypercolor/site",
     ];
     let files = [
@@ -640,6 +641,7 @@ fn write_transaction_release(root: &Path, seed: &str) -> File {
             "share/hypercolor/agents/agents/agent.md",
             b"agent".as_slice(),
         ),
+        ("share/hypercolor/skills/skill.md", b"user skill".as_slice()),
     ];
     let mut members = Vec::new();
     for directory in directories {
@@ -677,6 +679,7 @@ fn write_transaction_release(root: &Path, seed: &str) -> File {
             "bundled_effect_files": 1,
             "docs_files": 0,
             "skill_files": 1,
+            "user_skill_files": 1,
             "agent_files": 1,
             "site_files": 0,
         },
