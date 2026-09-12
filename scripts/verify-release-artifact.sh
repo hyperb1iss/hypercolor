@@ -497,7 +497,12 @@ if [[ "${install_candidate}" == true ]]; then
   fi
   "${root_dir}/bin/hypercolor" "${candidate_args[@]}"
 elif [[ "${host_platform}" == "${platform}" ]]; then
-  "${root_dir}/bin/hypercolor" --version >/dev/null
+  "${root_dir}/bin/hypercolor" \
+    __install-release \
+    --install-prefix "${HOME}/.local" \
+    --install-dir "${HOME}/.local/bin" \
+    --expected-manifest-sha256 "${manifest_sha256}" \
+    --validate-only
 fi
 
 echo "verified ${root_name}"

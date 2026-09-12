@@ -243,6 +243,9 @@ pub struct InstallReleaseArgs {
 
     #[arg(long)]
     no_service: bool,
+
+    #[arg(long)]
+    validate_only: bool,
 }
 
 #[cfg(unix)]

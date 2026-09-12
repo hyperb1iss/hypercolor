@@ -923,6 +923,7 @@ fn release_archives_bind_every_safe_member_before_installation() {
     assert!(VERIFY_RELEASE_SH.contains("manifest member set mismatch"));
     assert!(VERIFY_RELEASE_SH.contains("manifest digest mismatch"));
     assert!(VERIFY_RELEASE_SH.contains("manifest mode mismatch"));
+    assert!(VERIFY_RELEASE_SH.contains("--validate-only"));
     assert!(VERIFY_RELEASE_SH.contains("os.fdopen(descriptor, \"rb\")"));
     assert!(VERIFY_RELEASE_SH.contains("os.O_RDWR | os.O_CREAT | os.O_EXCL"));
     assert!(VERIFY_RELEASE_SH.contains("os.unlink(snapshot_path)"));
