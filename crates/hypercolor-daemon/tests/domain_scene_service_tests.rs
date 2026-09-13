@@ -738,46 +738,74 @@ async fn activation_persists_zones_after_auto_layout_convergence() {
 
 #[tokio::test]
 async fn activation_hydrates_only_existing_connected_display_zones() {
-    let (state, _tempdir) = isolated_state();
-    let assigned_device = DeviceId::new();
-    let unassigned_device = DeviceId::new();
-    for device_id in [assigned_device, unassigned_device] {
-        state
-            .device_registry
-            .add(display_device_info(device_id, 320, 200))
-            .await;
-        assert!(
+    for selected in [false, true] {
+        let (state, _tempdir) = isolated_state();
+        let assigned_device = DeviceId::new();
+        let unassigned_device = DeviceId::new();
+        for device_id in [assigned_device, unassigned_device] {
             state
                 .device_registry
-                .set_state(&device_id, DeviceState::Connected)
-                .await
-        );
+                .add(display_device_info(device_id, 320, 200))
+                .await;
+            assert!(
+                state
+                    .device_registry
+                    .set_state(&device_id, DeviceState::Connected)
+                    .await
+            );
+        }
+
+        let mut scene = named_scene("imported");
+        scene.mutation_mode = SceneMutationMode::Snapshot;
+        scene.zones.push(imported_display_zone(assigned_device));
+        let scene_id = scene.id;
+        seed_scene(&state, scene).await;
+
+        if selected {
+            use hypercolor_daemon::domain::scene_activation::{
+                ObservedScene, SelectedSceneFields, activate_selected_fields,
+            };
+            let observed = state.scene_manager.begin_mutation().await;
+            let scene = observed
+                .scenes()
+                .get(&scene_id)
+                .expect("authored snapshot")
+                .clone();
+            activate_selected_fields(
+                &state.domains.scene_library,
+                SelectedSceneFields {
+                    context: Some(scene.transition.clone()),
+                    expected: ObservedScene {
+                        scene,
+                        revision: observed.base_revision(),
+                    },
+                    layout: None,
+                    brightness: None,
+                },
+            )
+            .await
+            .expect("selected context hydrates connected display geometry");
+        } else {
+            activate_scene(
+                &state.domains.scene_library,
+                ActivateScene {
+                    scene_id,
+                    transition_ms: None,
+                },
+            )
+            .await
+            .expect("snapshot activation should hydrate derived geometry");
+        }
+
+        let manager = state.scene_manager.snapshot().await;
+        let active = manager.active_scene().expect("scene should be active");
+        let assigned = active
+            .display_zone_for(assigned_device)
+            .expect("assigned display zone should remain");
+        assert_eq!(assigned.layout.canvas_width, 320);
+        assert_eq!(assigned.layout.canvas_height, 200);
+        assert!(active.display_zone_for(unassigned_device).is_none());
     }
-
-    let mut scene = named_scene("imported");
-    scene.mutation_mode = SceneMutationMode::Snapshot;
-    scene.zones.push(imported_display_zone(assigned_device));
-    let scene_id = scene.id;
-    seed_scene(&state, scene).await;
-
-    activate_scene(
-        &state.domains.scene_library,
-        ActivateScene {
-            scene_id,
-            transition_ms: None,
-        },
-    )
-    .await
-    .expect("snapshot activation should hydrate derived geometry");
-
-    let manager = state.scene_manager.snapshot().await;
-    let active = manager.active_scene().expect("scene should be active");
-    let assigned = active
-        .display_zone_for(assigned_device)
-        .expect("assigned display zone should remain");
-    assert_eq!(assigned.layout.canvas_width, 320);
-    assert_eq!(assigned.layout.canvas_height, 200);
-    assert!(active.display_zone_for(unassigned_device).is_none());
 }
 
 #[tokio::test]

@@ -11,6 +11,7 @@ use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone};
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::domain::scene::SceneService;
+use crate::domain::scene_activation::LayoutSceneFence;
 use crate::domain::spatial::SpatialService;
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -80,6 +81,7 @@ impl PreparedLayoutUpdate {
 
 #[derive(Debug)]
 pub(crate) struct PrepareLayoutTransaction {
+    scene_fence: Option<Arc<LayoutSceneFence>>,
     spatial_engine: SpatialEngine,
     expected_layout: SpatialLayout,
     active_scene_id: Option<SceneId>,
@@ -93,6 +95,9 @@ pub(crate) struct PrepareLayoutTransaction {
 }
 
 impl PrepareLayoutTransaction {
+    pub(crate) fn scene_fence(&self) -> Option<Arc<LayoutSceneFence>> {
+        self.scene_fence.clone()
+    }
     #[must_use]
     pub(crate) fn spatial_engine(&self) -> &SpatialEngine {
         &self.spatial_engine
@@ -162,6 +167,7 @@ impl PrepareLayoutTransaction {
         let expected_active_scene_id = self.active_scene_id;
         let expected_resolved_zones_revision = self.source_resolved_zones_revision;
         let publication_mode = self.publication_mode;
+        let scene_fence = self.scene_fence.clone();
         self.accept();
         while activation.decision() == LayoutActivationDecision::Pending {
             tokio::task::yield_now().await;
@@ -175,12 +181,13 @@ impl PrepareLayoutTransaction {
         let result = match publication_mode {
             LayoutPublicationMode::AuthorityAndRenderer => {
                 scene_manager
-                    .publish_layout_activation(
+                    .publish_guarded_layout_activation(
                         spatial_engine,
                         candidate_spatial_engine,
                         &expected_layout,
                         expected_active_scene_id,
                         expected_resolved_zones_revision,
+                        scene_fence.as_deref(),
                         |_| Ok(()),
                     )
                     .await
@@ -387,6 +394,7 @@ impl LayoutTransactionAuthority {
             guard,
             layout,
             LayoutPublicationMode::AuthorityAndRenderer,
+            None,
             |_| async { LayoutPersistenceOutcome::Written },
         )
         .await
@@ -401,6 +409,7 @@ impl LayoutTransactionAuthority {
             guard,
             layout,
             LayoutPublicationMode::RendererOnly,
+            None,
             |_| async { LayoutPersistenceOutcome::Written },
         )
         .await
@@ -420,6 +429,28 @@ impl LayoutTransactionAuthority {
             guard,
             layout,
             LayoutPublicationMode::AuthorityAndRenderer,
+            None,
+            persist,
+        )
+        .await
+    }
+
+    pub(crate) async fn apply_selected_under_guard<F, Fut>(
+        &self,
+        guard: &LayoutUpdateGuard,
+        layout: SpatialLayout,
+        fence: Arc<LayoutSceneFence>,
+        persist: F,
+    ) -> Result<(), LayoutUpdateError>
+    where
+        F: FnMut(LayoutPersistencePhase) -> Fut + Send + 'static,
+        Fut: Future<Output = LayoutPersistenceOutcome> + Send + 'static,
+    {
+        self.apply_under_guard_with_mode(
+            guard,
+            layout,
+            LayoutPublicationMode::AuthorityAndRenderer,
+            Some(fence),
             persist,
         )
         .await
@@ -430,6 +461,7 @@ impl LayoutTransactionAuthority {
         guard: &LayoutUpdateGuard,
         layout: SpatialLayout,
         publication_mode: LayoutPublicationMode,
+        scene_fence: Option<Arc<LayoutSceneFence>>,
         mut persist: F,
     ) -> Result<(), LayoutUpdateError>
     where
@@ -477,6 +509,7 @@ impl LayoutTransactionAuthority {
                 resolved_zones_revision,
                 unassigned_behavior,
                 publication_mode,
+                scene_fence,
             )?;
             submission.preparation.wait().await?;
             let commit_state = LayoutPersistenceState {
@@ -572,10 +605,12 @@ impl SceneTransactionQueue {
         resolved_zones_revision: u64,
         unassigned_behavior: UnassignedBehavior,
         publication_mode: LayoutPublicationMode,
+        scene_fence: Option<Arc<LayoutSceneFence>>,
     ) -> Result<PreparedLayoutSubmission, LayoutTransactionRejection> {
         let (acknowledgment, receipt) = oneshot::channel();
         let (activation, completion) = LayoutActivationControl::new();
         self.push(SceneTransaction::PrepareLayout(PrepareLayoutTransaction {
+            scene_fence,
             spatial_engine,
             expected_layout,
             active_scene_id,

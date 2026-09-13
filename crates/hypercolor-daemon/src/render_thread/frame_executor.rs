@@ -64,6 +64,7 @@ pub(crate) async fn service_scene_transactions(
             }
             LayoutActivationDecision::Commit => {
                 let PreparedLayoutActivation {
+                    scene_fence,
                     spatial_engine,
                     expected_layout,
                     active_scene_id,
@@ -103,12 +104,13 @@ pub(crate) async fn service_scene_transactions(
                     LayoutPublicationMode::AuthorityAndRenderer => {
                         state
                             .scene_manager
-                            .publish_layout_activation(
+                            .publish_guarded_layout_activation(
                                 &state.spatial_engine,
                                 spatial_engine,
                                 &expected_layout,
                                 active_scene_id,
                                 source_resolved_zones_revision,
+                                scene_fence.as_deref(),
                                 publish_renderer_state,
                             )
                             .await
@@ -281,6 +283,7 @@ pub(crate) async fn service_scene_transactions(
                     }
                 };
                 render.pending_layout_activation = Some(PreparedLayoutActivation {
+                    scene_fence: transaction.scene_fence(),
                     spatial_engine,
                     expected_layout,
                     active_scene_id,
