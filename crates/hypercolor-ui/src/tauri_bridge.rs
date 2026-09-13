@@ -119,7 +119,7 @@ fn notify_verified_daemon_connection_change() {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 fn notify_verified_daemon_connection_change() {}
 
 /// Initialize the bundled app's process-memory daemon transport.
@@ -874,6 +874,23 @@ fn js_error_string(value: JsValue) -> String {
     })
 }
 
+/// Installation guidance from the desktop host, when the app owns the session.
+#[cfg(target_arch = "wasm32")]
+pub async fn openrgb_install_hints()
+-> Result<Option<Vec<hypercolor_types::api::system::OpenRgbInstallHint>>, String> {
+    let Some(invoke) = tauri_invoke() else {
+        return Ok(None);
+    };
+    let value = invoke_command(&invoke, "openrgb_install_hints", None).await?;
+    serde_json_from_js_value(value).map(Some)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn openrgb_install_hints()
+-> Result<Option<Vec<hypercolor_types::api::system::OpenRgbInstallHint>>, String> {
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1181,21 +1198,4 @@ mod tests {
             state: Some("RUNNING".to_string()),
         }
     }
-}
-
-/// Installation guidance from the desktop host, when the app owns the session.
-#[cfg(target_arch = "wasm32")]
-pub async fn openrgb_install_hints()
--> Result<Option<Vec<hypercolor_types::api::system::OpenRgbInstallHint>>, String> {
-    let Some(invoke) = tauri_invoke() else {
-        return Ok(None);
-    };
-    let value = invoke_command(&invoke, "openrgb_install_hints", None).await?;
-    serde_json_from_js_value(value).map(Some)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn openrgb_install_hints()
--> Result<Option<Vec<hypercolor_types::api::system::OpenRgbInstallHint>>, String> {
-    Ok(None)
 }
