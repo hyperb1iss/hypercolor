@@ -540,6 +540,9 @@ pub struct InstallLock {
 }
 
 impl InstallLock {
+    pub(crate) fn guards_roots(&self, release_root: &Path, state_root: &Path) -> bool {
+        self.root == release_root && self.state_root == state_root
+    }
     fn validate_roots(&self) -> Result<(), InstallStoreError> {
         if let Some((release, state)) = &self.root_anchors {
             release

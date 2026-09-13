@@ -15,11 +15,12 @@ pub use coordinator::{
 pub use linux::{
     InstallLocationError, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem,
     LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse,
-    LinuxInstallConfig, LinuxInstallExecutor, LinuxInstallLocation, LinuxInstallPlatform,
-    LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLegacySnapshot,
-    LinuxNativeExecutor, LinuxProcessExecutable, LinuxPublicEntry, LinuxPublicTree,
-    LinuxSystemdConnection, LinuxSystemdObservation, RetainedLinuxInstallLocation,
-    bind_linux_retained_unit, parse_systemd_show, retain_linux_unit,
+    LinuxInstallAuthority, LinuxInstallConfig, LinuxInstallExecutor, LinuxInstallLocation,
+    LinuxInstallLocator, LinuxInstallPlatform, LinuxLayoutItem, LinuxLayoutPublication,
+    LinuxLegacyFile, LinuxLegacySnapshot, LinuxLocatorError, LinuxNativeExecutor,
+    LinuxProcessExecutable, LinuxPublicEntry, LinuxPublicTree, LinuxSystemdConnection,
+    LinuxSystemdObservation, RetainedLinuxInstallLocation, bind_linux_retained_unit,
+    parse_systemd_show, retain_linux_unit,
 };
 pub use model::{
     INSTALL_JOURNAL_SCHEMA_VERSION, InstallAction, InstallDisposition, InstallJournalV1,

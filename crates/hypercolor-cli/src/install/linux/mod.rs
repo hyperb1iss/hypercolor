@@ -11,6 +11,8 @@ mod legacy_validation;
 mod location;
 #[cfg(test)]
 mod location_tests;
+mod locator;
+mod locator_receipt;
 mod model;
 mod platform;
 mod proof;
@@ -27,6 +29,7 @@ use super::{InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord}
 pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};
 pub use location::{InstallLocationError, LinuxInstallLocation, RetainedLinuxInstallLocation};
+pub use locator::{LinuxInstallAuthority, LinuxInstallLocator, LinuxLocatorError};
 pub use model::{
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,
     LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse, LinuxInstallConfig, LinuxLayoutItem,
