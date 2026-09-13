@@ -33,9 +33,9 @@ pub use model::{
 #[cfg(unix)]
 pub use payload::{
     MAX_RELEASE_MANIFEST_BYTES, MAX_RELEASE_MEMBER_BYTES, MAX_RELEASE_MEMBERS,
-    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, ReleasePayloadError, stage_release_payload,
-    stage_release_payload_from_authority, validate_release_payload,
-    validate_release_payload_from_authority,
+    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, ReleasePayloadError,
+    copy_installed_release_unit, stage_release_payload, stage_release_payload_from_authority,
+    validate_release_payload, validate_release_payload_from_authority,
 };
 #[cfg(target_os = "macos")]
 pub use payload::{MacosReleaseProvenance, bind_macos_release_provenance};

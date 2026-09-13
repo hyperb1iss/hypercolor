@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use hypercolor_cli::install::bind_macos_release_provenance;
 use hypercolor_cli::install::{
     InstallLock, InstallStore, MAX_RELEASE_MANIFEST_BYTES, ReleasePayloadError, UnitId, UnitRecord,
-    retain_linux_unit, stage_release_payload, stage_release_payload_from_authority,
-    validate_release_payload,
+    copy_installed_release_unit, retain_linux_unit, stage_release_payload,
+    stage_release_payload_from_authority, validate_release_payload,
 };
 use hypercolor_platform_fs::{DirectoryEntryKind, ReadOnlyDirectoryAuthority};
 use serde_json::{Value, json};
@@ -1154,4 +1154,100 @@ fn corrupt_existing_digest_unit_is_refused_without_replacement() {
         0o755
     );
     assert_no_private_residue(&store);
+}
+
+#[test]
+fn installed_copy_preserves_read_only_source_and_publishes_distinct_inode() {
+    let fixture = ReleaseFixture::new();
+    let (_source_parent, source_store) = new_store();
+    let source_lock = source_store.acquire_lock().expect("source lock");
+    let original = stage_fixture(&source_store, &source_lock, &fixture).expect("original unit");
+    let source_path = source_store.unit_path(original.id());
+    let before =
+        fs::metadata(source_path.join("bin/hypercolor-daemon")).expect("original metadata");
+    let (_destination_parent, destination) = new_store();
+    let destination_lock = destination.acquire_lock().expect("destination lock");
+    let copied = copy_installed_release_unit(&destination, &destination_lock, &original)
+        .expect("copy installed unit");
+    assert_eq!(original.id(), copied.id());
+    assert_ne!(original, copied);
+    let after = fs::metadata(source_path.join("bin/hypercolor-daemon")).expect("source unchanged");
+    assert_eq!(
+        (before.dev(), before.ino(), before.mode()),
+        (after.dev(), after.ino(), after.mode())
+    );
+    assert_eq!(after.mode() & 0o777, 0o555);
+    assert_eq!(
+        fs::read(source_path.join("manifest.json")).expect("source manifest"),
+        fs::read(destination.unit_path(copied.id()).join("manifest.json"))
+            .expect("copied manifest")
+    );
+    let reused = copy_installed_release_unit(&destination, &destination_lock, &original)
+        .expect("reuse verified destination");
+    assert_eq!(copied, reused);
+    assert_no_private_residue(&destination);
+}
+
+#[test]
+fn installed_copy_refuses_mutated_source_before_destination_staging() {
+    let fixture = ReleaseFixture::new();
+    let (_source_parent, source_store) = new_store();
+    let source_lock = source_store.acquire_lock().expect("source lock");
+    let original = stage_fixture(&source_store, &source_lock, &fixture).expect("original unit");
+    let daemon = source_store
+        .unit_path(original.id())
+        .join("bin/hypercolor-daemon");
+    fs::set_permissions(&daemon, fs::Permissions::from_mode(0o755)).expect("make source writable");
+    let (_destination_parent, destination) = new_store();
+    let destination_lock = destination.acquire_lock().expect("destination lock");
+    assert!(copy_installed_release_unit(&destination, &destination_lock, &original).is_err());
+    assert!(!destination.unit_path(original.id()).exists());
+    fs::write(&daemon, b"altered executable").expect("alter contents");
+    fs::set_permissions(&daemon, fs::Permissions::from_mode(0o555))
+        .expect("restore installed mode");
+    assert!(copy_installed_release_unit(&destination, &destination_lock, &original).is_err());
+    assert_no_private_residue(&destination);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn installed_copy_crosses_filesystems_without_renaming_source() {
+    let fixture = ReleaseFixture::new();
+    let (_source_parent, source_store) = new_store();
+    let source_lock = source_store.acquire_lock().expect("source lock");
+    let original = stage_fixture(&source_store, &source_lock, &fixture).expect("original unit");
+    let destination_parent = tempfile::Builder::new()
+        .prefix("hypercolor-installed-copy-")
+        .tempdir_in("/dev/shm")
+        .expect("Linux shared-memory filesystem fixture");
+    let destination = InstallStore::new(destination_parent.path().join("store"), 64 * 1024);
+    let destination_lock = destination.acquire_lock().expect("destination lock");
+    assert_ne!(
+        fs::metadata(source_store.root())
+            .expect("source filesystem")
+            .dev(),
+        fs::metadata(destination.root())
+            .expect("destination filesystem")
+            .dev(),
+        "fixture must cross filesystems"
+    );
+    let copied = copy_installed_release_unit(&destination, &destination_lock, &original)
+        .expect("cross-filesystem copy");
+    assert_eq!(copied.id(), original.id());
+    assert!(source_store.unit_path(original.id()).exists());
+    assert_ne!(copied, original);
+    let daemon = destination
+        .unit_path(copied.id())
+        .join("bin/hypercolor-daemon");
+    fs::set_permissions(&daemon, fs::Permissions::from_mode(0o755))
+        .expect("writable destination fixture");
+    fs::write(&daemon, b"foreign destination").expect("corrupt existing destination");
+    fs::set_permissions(&daemon, fs::Permissions::from_mode(0o555))
+        .expect("restore destination mode");
+    assert!(copy_installed_release_unit(&destination, &destination_lock, &original).is_err());
+    assert_eq!(
+        fs::read(&daemon).expect("unchanged refused destination"),
+        b"foreign destination"
+    );
+    assert_no_private_residue(&destination);
 }

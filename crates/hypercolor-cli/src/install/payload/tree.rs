@@ -32,7 +32,6 @@ pub(super) fn read_installed_manifest_bytes(
     read_manifest_with_mode(root, MANIFEST_INSTALLED_MODE)
 }
 
-#[cfg(target_os = "macos")]
 pub(super) fn read_retained_manifest_bytes(
     root: &ReadOnlyDirectoryAuthority,
 ) -> Result<Vec<u8>, ReleasePayloadError> {
@@ -67,6 +66,7 @@ pub(super) fn populate_staging(
     staging: &PrivateStagingDirectory,
     source: &ReadOnlyDirectoryAuthority,
     manifest: &ValidatedManifest,
+    mode: TreeMode,
 ) -> Result<(), ReleasePayloadError> {
     let root = staging.directory();
     let manifest_size = u64::try_from(manifest.bytes.len()).map_err(|_| {
@@ -121,10 +121,10 @@ pub(super) fn populate_staging(
         })?;
         require_file_metadata(
             opened.metadata(),
-            *source_mode,
+            mode.select_mode(*source_mode),
             *size,
             path,
-            TreeMode::Source,
+            mode,
         )?;
         let mut hashing = HashingReader::new(opened.file_mut());
         with_directory(root, parent, |directory| {
@@ -156,7 +156,7 @@ pub(super) fn populate_staging(
                 })?,
             opened.metadata(),
             path,
-            TreeMode::Source,
+            mode,
         )?;
     }
     Ok(())
@@ -255,6 +255,14 @@ pub(super) fn validate_source(
     validate_tree(root, manifest, TreeMode::Source, EnumerationMode::Existing)
 }
 
+pub(super) fn validate_copy_source(
+    root: &ReadOnlyDirectoryAuthority,
+    manifest: &ValidatedManifest,
+    mode: TreeMode,
+) -> Result<(), ReleasePayloadError> {
+    validate_tree(root, manifest, mode, EnumerationMode::Existing)
+}
+
 pub(super) fn validate_installed(
     root: &DirectoryAuthority,
     manifest: &ValidatedManifest,
@@ -281,7 +289,7 @@ pub(super) fn validate_retained(
 }
 
 #[derive(Debug, Clone, Copy)]
-enum TreeMode {
+pub(super) enum TreeMode {
     Source,
     Installed,
 }
