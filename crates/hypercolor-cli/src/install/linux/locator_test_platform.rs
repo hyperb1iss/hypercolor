@@ -23,6 +23,15 @@ macro_rules! unexpected_mutations {
 }
 
 impl InstallPlatform for PriorProof {
+    fn inspect(&mut self) -> Result<PlatformState, InstallPlatformError> {
+        Ok(PlatformState {
+            layout_unit: None,
+            launcher_unit: None,
+            loaded: false,
+            running_unit: None,
+            autostart_enabled: false,
+        })
+    }
     fn validate_transaction_plan(
         &mut self,
         _prior: &PlatformState,
@@ -49,7 +58,6 @@ impl InstallPlatform for PriorProof {
     }
 
     unexpected_mutations! {
-        inspect() -> Result<PlatformState, InstallPlatformError>;
         prepare_transaction(_candidate: &UnitRecord, _prior: &InstallationState,
             _target: &PlatformState) -> Result<PreparedPlatformTransaction, InstallPlatformError>;
         capture_candidate_owner_receipt(_expected: &PlatformState,

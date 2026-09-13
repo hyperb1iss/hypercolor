@@ -8,6 +8,8 @@ use uuid::Uuid;
 use super::super::InstallJournalV1;
 use super::locator::LinuxLocatorError;
 
+pub(super) const MAX_PREPARATION_BYTES: u64 = (super::super::MAX_INSTALL_JOURNAL_BYTES * 2) as u64;
+
 pub(super) const RECEIPT_NAME: &str = "adoption-preparation.json";
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,6 +18,7 @@ pub(super) struct AdoptionPreparation {
     schema_version: u32,
     installation_id: Uuid,
     journal_sha256: [u8; 32],
+    pub(super) initial_journal: InstallJournalV1,
     legacy_journal: RecordedEntry,
     legacy_active: RecordedEntry,
 }
@@ -37,9 +40,10 @@ impl AdoptionPreparation {
             return Err(LinuxLocatorError::InvalidLocator);
         }
         Ok(Self {
-            schema_version: 1,
+            schema_version: 2,
             installation_id,
             journal_sha256: Sha256::digest(serde_json::to_vec(journal)?).into(),
+            initial_journal: journal.clone(),
             legacy_journal: RecordedEntry::from(legacy_journal),
             legacy_active: RecordedEntry::from(legacy_active),
         })

@@ -115,45 +115,63 @@ fn elect_managed(
     )?;
     // Split-root acquire_lock opens existing roots; it does not bootstrap them.
     let lock = store.acquire_lock()?;
-    let root = home.join(".local/lib/hypercolor");
-    let locator = LinuxInstallLocator {
-        home: home.to_owned(),
-        public: lock.open_public_directory(&root)?,
-        directory: lock
-            .open_public_directory(&root)?
-            .into_directory_authority()?,
-    };
-    let roots = location.retain_existing(home, &lock)?;
-    locator.confirm_durable(&location)?;
-    let state = lock.open_public_directory(location.state_root())?;
-    let identity_observation = state.observe_entry(Path::new("installation.json"))?;
-    let mut identity = state.open_regular_file(Path::new("installation.json"))?;
-    super::preparation::require_file_owner(identity.metadata(), location.uid())?;
-    let mut bytes = Vec::new();
-    identity
-        .file_mut()
-        .take(MAX_LOCATOR_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_LOCATOR_BYTES
-        || LinuxInstallLocation::parse(&bytes, home)? != location
-        || store.load_journal(&lock)?.is_none()
-    {
-        return Err(LinuxLocatorError::Unprepared);
-    }
-    roots.validate()?;
-    let authority = LinuxManagedAuthority {
-        locator,
-        location,
-        roots,
-        state,
-        identity: identity_observation,
-    };
-    authority.confirm_durable()?;
+    let authority = LinuxManagedAuthority::retain(home, &store, &lock, location)?;
     Ok(LinuxInstallElection::Managed {
         store,
         lock,
         authority,
     })
+}
+
+impl LinuxManagedAuthority {
+    pub(crate) fn retain(
+        home: &Path,
+        store: &InstallStore,
+        lock: &InstallLock,
+        location: LinuxInstallLocation,
+    ) -> Result<Self, LinuxLocatorError> {
+        if store.root() != location.release_root()
+            || store.state_root() != location.state_root()
+            || !lock.guards_roots(location.release_root(), location.state_root())
+        {
+            return Err(LinuxLocatorError::WrongLock);
+        }
+        let root = home.join(".local/lib/hypercolor");
+        let locator = LinuxInstallLocator {
+            home: home.to_owned(),
+            public: lock.open_public_directory(&root)?,
+            directory: lock
+                .open_public_directory(&root)?
+                .into_directory_authority()?,
+        };
+        let roots = location.retain_existing(home, lock)?;
+        locator.confirm_durable(&location)?;
+        let state = lock.open_public_directory(location.state_root())?;
+        let identity_observation = state.observe_entry(Path::new("installation.json"))?;
+        let mut identity = state.open_regular_file(Path::new("installation.json"))?;
+        super::preparation::require_file_owner(identity.metadata(), location.uid())?;
+        let mut bytes = Vec::new();
+        identity
+            .file_mut()
+            .take(MAX_LOCATOR_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_LOCATOR_BYTES
+            || LinuxInstallLocation::parse(&bytes, home)? != location
+            || store.load_journal(lock)?.is_none()
+        {
+            return Err(LinuxLocatorError::Unprepared);
+        }
+        roots.validate()?;
+        let authority = LinuxManagedAuthority {
+            locator,
+            location,
+            roots,
+            state,
+            identity: identity_observation,
+        };
+        authority.confirm_durable()?;
+        Ok(authority)
+    }
 }
 
 fn read_hint(home: &Path) -> Result<LinuxInstallAuthority, LinuxLocatorError> {

@@ -6,11 +6,8 @@ use crate::install::{
     InstallStore, PlatformCheckpoint,
 };
 
-use super::super::locator_receipt::{AdoptionPreparation, RECEIPT_NAME};
-use super::{
-    LinuxInstallAuthority, LinuxInstallLocation, LinuxInstallLocator, LinuxLocatorError,
-    MAX_LOCATOR_BYTES,
-};
+use super::super::locator_receipt::{AdoptionPreparation, MAX_PREPARATION_BYTES, RECEIPT_NAME};
+use super::{LinuxInstallAuthority, LinuxInstallLocation, LinuxInstallLocator, LinuxLocatorError};
 
 impl LinuxInstallLocator {
     /// Bind exact legacy observations to the intended initial managed journal.
@@ -40,9 +37,9 @@ impl LinuxInstallLocator {
                 require_file_owner(file.metadata(), location.uid())?;
                 let mut bytes = Vec::new();
                 file.file_mut()
-                    .take(MAX_LOCATOR_BYTES + 1)
+                    .take(MAX_PREPARATION_BYTES + 1)
                     .read_to_end(&mut bytes)?;
-                if bytes.len() as u64 > MAX_LOCATOR_BYTES
+                if bytes.len() as u64 > MAX_PREPARATION_BYTES
                     || serde_json::from_slice::<AdoptionPreparation>(&bytes)? != expected
                 {
                     return Err(LinuxLocatorError::Unprepared);
@@ -59,6 +56,9 @@ impl LinuxInstallLocator {
                     return Err(LinuxLocatorError::Unprepared);
                 }
                 let bytes = serde_json::to_vec(&expected)?;
+                if bytes.len() as u64 > MAX_PREPARATION_BYTES {
+                    return Err(LinuxLocatorError::Unprepared);
+                }
                 state_lock
                     .open_public_directory(location.state_root())?
                     .into_directory_authority()?
@@ -80,6 +80,43 @@ impl LinuxInstallLocator {
             return Err(LinuxLocatorError::Unprepared);
         }
         Ok(())
+    }
+
+    /// Read an exact initial proposal retained before the state journal exists.
+    ///
+    /// This does not authorize publication; the live platform proof must still
+    /// pass prepare_adoption and publish_prepared after restoring its bindings.
+    ///
+    /// # Errors
+    /// Refuses corrupt receipts, inconsistent hashes or changed legacy authority.
+    pub fn prepared_journal(
+        &self,
+        location: &LinuxInstallLocation,
+        state_store: &InstallStore,
+        state_lock: &InstallLock,
+    ) -> Result<Option<InstallJournalV1>, LinuxLocatorError> {
+        require_state(location, state_store, state_lock)?;
+        let state = state_lock.open_public_directory(location.state_root())?;
+        let mut file = match state.open_regular_file(Path::new(RECEIPT_NAME)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        require_file_owner(file.metadata(), location.uid())?;
+        let mut bytes = Vec::new();
+        file.file_mut()
+            .take(MAX_PREPARATION_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_PREPARATION_BYTES {
+            return Err(LinuxLocatorError::Unprepared);
+        }
+        let receipt: AdoptionPreparation = serde_json::from_slice(&bytes)?;
+        require_initial(&receipt.initial_journal)?;
+        if self.capture_preparation(location, &receipt.initial_journal)? != receipt {
+            return Err(LinuxLocatorError::Unprepared);
+        }
+        state.validate_ancestry()?;
+        Ok(Some(receipt.initial_journal))
     }
 
     pub(super) fn capture_preparation(
@@ -149,6 +186,9 @@ pub(super) fn validate_platform(
         journal.layout_operation_count,
         &journal.platform_record,
     )?;
+    if platform.inspect()? != journal.prior_platform {
+        return Err(LinuxLocatorError::Unprepared);
+    }
     if !platform.matches_exact_state(
         PlatformCheckpoint::PriorOriginal,
         &journal.prior_platform,

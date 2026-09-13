@@ -27,6 +27,7 @@ const UNITS_ROOT: &str = "/home/test/.local/lib/hypercolor/units";
 
 #[derive(Debug, Clone)]
 struct FakeExecutor {
+    expected_topology: Option<LinuxInstallConfig>,
     launcher_discovery: Option<fn(&mut FakeSystemd)>,
     active_path: PathBuf,
     launcher: LinuxExactEntry,
@@ -78,6 +79,7 @@ struct FakeSystemd {
 impl FakeExecutor {
     fn absent(active_path: PathBuf, daemon_digest: String) -> Self {
         Self {
+            expected_topology: None,
             launcher_discovery: None,
             active_path,
             launcher: LinuxExactEntry::Absent,
@@ -209,7 +211,7 @@ impl LinuxInstallExecutor for FakeExecutor {
         &mut self,
         topology: &LinuxInstallConfig,
     ) -> Result<(), hypercolor_cli::install::InstallPlatformError> {
-        if topology != &config() {
+        if topology != self.expected_topology.as_ref().unwrap_or(&config()) {
             return Err(hypercolor_cli::install::InstallPlatformError::new(
                 "split install-store topology",
             ));
@@ -356,7 +358,10 @@ impl LinuxInstallExecutor for FakeExecutor {
             && !matches!(self.launcher, LinuxExactEntry::Absent)
         {
             self.systemd.load = "loaded";
-            FRAGMENT.clone_into(&mut self.systemd.fragment);
+            self.systemd.fragment = self.expected_topology.as_ref().map_or_else(
+                || FRAGMENT.to_owned(),
+                |config| config.direct_fragment_path.clone(),
+            );
             self.systemd.exec_start = launcher_exec(&self.launcher_bytes);
             discover(&mut self.systemd);
         }
@@ -410,7 +415,10 @@ impl LinuxInstallExecutor for FakeExecutor {
             self.systemd.exec_start.clear();
         } else {
             self.systemd.load = "loaded";
-            FRAGMENT.clone_into(&mut self.systemd.fragment);
+            self.systemd.fragment = self.expected_topology.as_ref().map_or_else(
+                || FRAGMENT.to_owned(),
+                |config| config.direct_fragment_path.clone(),
+            );
             self.systemd.exec_start = launcher_exec(&self.launcher_bytes);
         }
         Self::finish_effect(fail_after)
@@ -456,10 +464,48 @@ impl LinuxInstallExecutor for FakeExecutor {
         if let Some(process) = &self.process_override {
             return Ok(process.clone());
         }
+        if let Some((prior, root)) = &self.expected_prior
+            && self.systemd.exec_start.starts_with(
+                root.parent()
+                    .expect("prior store")
+                    .join("active/bin/hypercolor-daemon")
+                    .to_str()
+                    .expect("prior executable path"),
+            )
+        {
+            let executable = prior
+                .directory()
+                .open_child_directory(Path::new("bin"))
+                .expect("original bin")
+                .open_regular_file(Path::new("hypercolor-daemon"))
+                .expect("original daemon");
+            return Ok(LinuxProcessExecutable {
+                path: root
+                    .join(prior.id().as_str())
+                    .join("bin/hypercolor-daemon")
+                    .to_str()
+                    .expect("original path")
+                    .to_owned(),
+                sha256: self.daemon_digest.clone(),
+                device: executable.metadata().device(),
+                inode: executable.metadata().inode(),
+            });
+        }
         let unit = self.active().expect("running unit");
         let (device, inode) = self.daemon_identities[unit.as_str()];
         Ok(LinuxProcessExecutable {
-            path: format!("{UNITS_ROOT}/{}/bin/hypercolor-daemon", unit.as_str()),
+            path: self
+                .expected_topology
+                .as_ref()
+                .map_or_else(
+                    || PathBuf::from(UNITS_ROOT),
+                    |config| config.immutable_units_root.clone(),
+                )
+                .join(unit.as_str())
+                .join("bin/hypercolor-daemon")
+                .to_str()
+                .expect("fixture UTF-8 path")
+                .to_owned(),
             sha256: self
                 .daemon_digests
                 .get(unit.as_str())
@@ -996,6 +1042,224 @@ fn unloaded_disabled_upgrade_preserves_service_state_and_user_data() {
     assert_eq!(fs::read(config_sentinel).expect("config"), b"config");
     assert_eq!(fs::read(data_sentinel).expect("data"), b"data");
     assert_eq!(fs::read(effects_sentinel).expect("effect"), b"effect");
+}
+
+#[test]
+fn managed_adoption_preserves_real_old_paths_until_cold_state_recovery() {
+    for journal_written in [false, true] {
+        cold_managed_adoption(journal_written, false);
+    }
+}
+
+#[test]
+fn managed_adoption_rollback_restores_original_launcher_layout_and_inode() {
+    cold_managed_adoption(true, true);
+}
+
+fn cold_managed_adoption(journal_written: bool, rollback: bool) {
+    use hypercolor_cli::install::{
+        LinuxAdoption, LinuxInstallElection, LinuxInstallLocation, elect_linux_installation,
+    };
+    let home = tempfile::tempdir_in(std::env::var_os("HOME").expect("owned test home"))
+        .expect("owned home");
+    let source = home.path().join("source");
+    fs::create_dir(&source).expect("source");
+    let executable = write_release(&source);
+    let id = UnitId::new(sha256(
+        &fs::read(source.join("manifest.json")).expect("manifest"),
+    ))
+    .expect("unit");
+    let old = InstallStore::new(home.path().join(".local/lib/hypercolor"), 65536);
+    let mut old_lock = old.acquire_anchored_lock(home.path()).expect("old lock");
+    let original = stage_release_payload(&old, &old_lock, &source, &executable, &id)
+        .expect("original installed unit");
+    let fragment = home
+        .path()
+        .join(".config/systemd/user/hypercolor.service")
+        .to_str()
+        .expect("fragment")
+        .to_owned();
+    let old_config = LinuxInstallConfig {
+        direct_fragment_path: fragment.clone(),
+        immutable_units_root: old.root().join("units"),
+        active_root: old.active_path(),
+    };
+    let mut executor = FakeExecutor::absent(old.active_path(), sha256(b"daemon"));
+    executor.expected_topology = Some(old_config.clone());
+    let mut platform = LinuxInstallPlatform::new(executor, old_config, []).expect("old platform");
+    InstallCoordinator::new(&old, &mut platform)
+        .install_with_lock(
+            InstallRequest {
+                transaction_id: InstallTransactionId::new("original-install").expect("id"),
+                candidate: original.clone(),
+                target_policy: InstallTargetPolicy::EnableOnFirstInstall,
+            },
+            &mut old_lock,
+        )
+        .expect("old service installation");
+    let mut executor = platform.into_executor();
+    let old_launcher = executor.launcher_bytes.clone();
+    let old_layout = executor.layout.clone();
+    executor.effects.clear();
+    drop(old_lock);
+    let proposed = LinuxInstallLocation::new(
+        home.path(),
+        &home.path().join("data"),
+        &home.path().join("state"),
+        &home.path().join("config"),
+        fs::metadata(home.path()).expect("owner").uid(),
+    )
+    .expect("location");
+    let adoption = LinuxAdoption::begin(
+        home.path(),
+        elect_linux_installation(home.path()).expect("legacy election"),
+        proposed,
+    )
+    .expect("begin adoption");
+    let location = adoption.location().clone();
+    let copied = retain_linux_unit(adoption.store(), adoption.lock(), &id).expect("copied unit");
+    assert_ne!(original, copied);
+    let new_config = LinuxInstallConfig {
+        direct_fragment_path: fragment,
+        immutable_units_root: adoption.store().root().join("units"),
+        active_root: adoption.store().active_path(),
+    };
+    executor.active_path = adoption.store().active_path();
+    executor.expected_topology = Some(new_config.clone());
+    executor.expected_prior = Some((original.clone(), old.root().join("units")));
+    let metadata =
+        fs::metadata(old.unit_path(&id).join("bin/hypercolor-daemon")).expect("original inode");
+    executor.process_override = Some(LinuxProcessExecutable {
+        path: old
+            .unit_path(&id)
+            .join("bin/hypercolor-daemon")
+            .to_str()
+            .expect("old path")
+            .to_owned(),
+        sha256: sha256(b"daemon"),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    });
+    let mut platform = LinuxInstallPlatform::new(executor, new_config.clone(), [copied.clone()])
+        .expect("managed platform")
+        .with_prior_unit(original.clone())
+        .expect("original prior");
+    let journal = adoption
+        .prepare(
+            &mut platform,
+            InstallRequest {
+                transaction_id: InstallTransactionId::new("adopt-original").expect("id"),
+                candidate: copied.clone(),
+                target_policy: InstallTargetPolicy::Preserve,
+            },
+        )
+        .expect("prepare original layout under managed candidate topology");
+    let executor = platform.into_executor();
+    assert!(executor.effects.is_empty());
+    assert_eq!(executor.launcher_bytes, old_launcher);
+    assert_eq!(executor.layout, old_layout);
+    if journal_written {
+        adoption
+            .store()
+            .write_journal(&journal, adoption.lock())
+            .expect("crash after state journal durability");
+    }
+    drop(adoption);
+    let adoption = LinuxAdoption::begin(
+        home.path(),
+        elect_linux_installation(home.path()).expect("cold legacy election"),
+        location.clone(),
+    )
+    .expect("receipt-only resume");
+    assert_eq!(
+        adoption.prepared_journal().expect("read receipt"),
+        Some(journal.clone())
+    );
+    let copied =
+        retain_linux_unit(adoption.store(), adoption.lock(), &id).expect("cold copied unit");
+    let mut platform = LinuxInstallPlatform::new(executor, new_config.clone(), [copied])
+        .expect("cold managed platform")
+        .with_prior_unit(original.clone())
+        .expect("cold prior");
+    let managed = adoption
+        .publish(&journal, &mut platform)
+        .expect("publish authority");
+    let mut executor = platform.into_executor();
+    assert!(executor.effects.is_empty());
+    drop(managed);
+    if rollback {
+        executor.fault = Some(("runtime:true".to_owned(), FaultPoint::Before));
+    }
+    let LinuxInstallElection::Managed {
+        store,
+        mut lock,
+        authority,
+    } = elect_linux_installation(home.path()).expect("cold state-only election")
+    else {
+        panic!("managed authority")
+    };
+    let old_lock = old.acquire_lock().expect("old lock released after handoff");
+    assert!(
+        old.load_journal(&old_lock).is_err(),
+        "old decoder permanently fenced"
+    );
+    assert_eq!(
+        old.active_unit(&old_lock).expect("old pointer"),
+        Some(id.clone())
+    );
+    let copied = retain_linux_unit(&store, &lock, &id).expect("managed unit");
+    let mut platform = LinuxInstallPlatform::new(executor, new_config, [copied])
+        .expect("recovery platform")
+        .with_prior_unit(original)
+        .expect("recorded original role");
+    let result = InstallCoordinator::new(&store, &mut platform).recover_with_lock(&mut lock);
+    if rollback {
+        assert!(matches!(
+            result.expect("settled recovery"),
+            Some(hypercolor_cli::install::InstallOutcome::RolledBack { .. })
+        ));
+    } else {
+        result.expect("cold activation recovery");
+    }
+    authority
+        .confirm_durable()
+        .expect("authority remains valid");
+    assert_eq!(
+        store
+            .load_journal(&lock)
+            .expect("settled journal")
+            .expect("journal")
+            .disposition,
+        if rollback {
+            InstallDisposition::RolledBack
+        } else {
+            InstallDisposition::Committed
+        }
+    );
+    let executor = platform.into_executor();
+    if rollback {
+        assert_eq!(executor.launcher_bytes, old_launcher);
+        assert_eq!(executor.layout, old_layout);
+    } else {
+        assert_ne!(executor.launcher_bytes, old_launcher);
+        assert_ne!(executor.layout, old_layout);
+    }
+    assert!(executor.systemd.active);
+    assert!(
+        executor.systemd.exec_start.contains(
+            if rollback {
+                old.root()
+            } else {
+                location.release_root()
+            }
+            .to_str()
+            .expect("path")
+        )
+    );
+    drop(authority);
+    drop(lock);
+    drop(old_lock);
+    make_fixture_directories_writable(home.path());
 }
 
 #[test]
@@ -2095,6 +2359,19 @@ fn config() -> LinuxInstallConfig {
         direct_fragment_path: FRAGMENT.to_owned(),
         immutable_units_root: PathBuf::from(UNITS_ROOT),
         active_root: PathBuf::from(ACTIVE_ROOT),
+    }
+}
+
+fn make_fixture_directories_writable(root: &Path) {
+    if !fs::symlink_metadata(root)
+        .expect("fixture metadata")
+        .is_dir()
+    {
+        return;
+    }
+    fs::set_permissions(root, fs::Permissions::from_mode(0o755)).expect("fixture cleanup mode");
+    for entry in fs::read_dir(root).expect("fixture directory") {
+        make_fixture_directories_writable(&entry.expect("fixture entry").path());
     }
 }
 

@@ -11,7 +11,7 @@ use super::super::{
     InstallPlatformError, InstallStore, InstallStoreError, MAX_INSTALL_JOURNAL_BYTES,
 };
 use super::location::{InstallLocationError, LinuxInstallLocation};
-use super::locator_receipt::{AdoptionPreparation, RECEIPT_NAME};
+use super::locator_receipt::{AdoptionPreparation, MAX_PREPARATION_BYTES, RECEIPT_NAME};
 
 #[path = "election.rs"]
 mod election;
@@ -169,9 +169,9 @@ impl LinuxInstallLocator {
         let mut receipt_bytes = Vec::new();
         receipt
             .file_mut()
-            .take(MAX_LOCATOR_BYTES + 1)
+            .take(MAX_PREPARATION_BYTES + 1)
             .read_to_end(&mut receipt_bytes)?;
-        if receipt_bytes.len() as u64 > MAX_LOCATOR_BYTES
+        if receipt_bytes.len() as u64 > MAX_PREPARATION_BYTES
             || serde_json::from_slice::<AdoptionPreparation>(&receipt_bytes)? != expected
         {
             return Err(LinuxLocatorError::Unprepared);

@@ -407,6 +407,103 @@ fn identical_preparation_reuses_the_durable_receipt_without_replacing_it() {
 }
 
 #[test]
+fn receipt_only_restart_retains_the_exact_initial_transaction() {
+    let fixture = Fixture::new();
+    let intended = journal();
+    fixture
+        .locator
+        .prepare_adoption(
+            &fixture.location,
+            &intended,
+            &fixture.state,
+            &fixture.state_lock,
+            &mut PriorProof::valid(),
+        )
+        .expect("durable receipt before state journal");
+    assert!(!fixture.state.journal_path().exists());
+    let Fixture {
+        home,
+        old,
+        old_lock,
+        locator,
+        location,
+        state,
+        state_lock,
+    } = fixture;
+    drop(locator);
+    drop(state_lock);
+    drop(old_lock);
+    let old_lock = old.acquire_lock().expect("cold old lock first");
+    let locator = LinuxInstallLocator::retain(home.path(), &old_lock).expect("cold locator");
+    let state_lock = state.acquire_lock().expect("cold state lock second");
+    let recovered = locator
+        .prepared_journal(&location, &state, &state_lock)
+        .expect("unchanged receipt")
+        .expect("original proposal");
+    assert_eq!(recovered, intended);
+    locator
+        .prepare_adoption(
+            &location,
+            &recovered,
+            &state,
+            &state_lock,
+            &mut PriorProof::valid(),
+        )
+        .expect("resume exact proposal");
+    state
+        .write_journal(&recovered, &state_lock)
+        .expect("finish state journal");
+    assert_eq!(
+        locator
+            .prepared_journal(&location, &state, &state_lock)
+            .expect("read after journal")
+            .expect("proposal"),
+        intended
+    );
+}
+
+#[test]
+fn receipt_resume_rejects_changed_body_hash_and_legacy_authority() {
+    for scenario in 0..4 {
+        let fixture = Fixture::new();
+        fixture.prepare();
+        let path = fixture
+            .location
+            .state_root()
+            .join("adoption-preparation.json");
+        let mut receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("receipt bytes")).expect("receipt JSON");
+        match scenario {
+            0 => receipt["initial_journal"]["transaction_id"] = "different-transaction".into(),
+            1 => {
+                receipt["journal_sha256"][0] =
+                    (receipt["journal_sha256"][0].as_u64().expect("digest byte") ^ 1).into();
+            }
+            2 => receipt["schema_version"] = 1.into(),
+            _ => fixture
+                .old
+                .set_active(
+                    Some(&UnitId::new("b".repeat(64)).expect("changed unit")),
+                    &fixture.old_lock,
+                )
+                .expect("changed legacy active"),
+        }
+        fs::write(
+            &path,
+            serde_json::to_vec(&receipt).expect("changed receipt"),
+        )
+        .expect("write receipt");
+        assert!(
+            fixture
+                .locator
+                .prepared_journal(&fixture.location, &fixture.state, &fixture.state_lock,)
+                .is_err()
+        );
+        assert!(!fixture.old.journal_path().exists());
+    }
+}
+
+#[test]
 fn writable_preparation_files_cannot_authorize_locator_publication() {
     use std::os::unix::fs::PermissionsExt as _;
     for name in [
@@ -543,6 +640,72 @@ fn legacy_election_holds_the_original_install_lock() {
         LinuxInstallAuthority::Legacy(None)
     ));
     assert!(store.acquire_lock().is_err());
+}
+
+#[test]
+fn adoption_refuses_pending_legacy_before_creating_recorded_roots() {
+    let home = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).expect("home");
+    let elected = super::elect_linux_installation(home.path()).expect("legacy election");
+    let super::LinuxInstallElection::Legacy { store, lock, .. } = &elected else {
+        panic!("legacy authority")
+    };
+    store
+        .write_journal(&journal(), lock)
+        .expect("pending legacy transaction");
+    let proposed = LinuxInstallLocation::new(
+        home.path(),
+        &home.path().join("new-data"),
+        &home.path().join("new-state"),
+        &home.path().join("new-config"),
+        fs::metadata(home.path()).expect("owner").uid(),
+    )
+    .expect("location");
+    assert!(matches!(
+        crate::install::LinuxAdoption::begin(home.path(), elected, proposed),
+        Err(crate::install::LinuxAdoptionError::LegacyRecoveryRequired)
+    ));
+    for name in ["new-data", "new-state", "new-config"] {
+        assert!(!home.path().join(name).exists());
+    }
+}
+
+#[test]
+fn adoption_reuses_recorded_identity_and_refuses_orphan_state_journal() {
+    let home = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).expect("home");
+    let propose = || {
+        LinuxInstallLocation::new(
+            home.path(),
+            &home.path().join("data"),
+            &home.path().join("state"),
+            &home.path().join("config"),
+            fs::metadata(home.path()).expect("owner").uid(),
+        )
+        .expect("location")
+    };
+    let adoption = crate::install::LinuxAdoption::begin(
+        home.path(),
+        super::elect_linux_installation(home.path()).expect("election"),
+        propose(),
+    )
+    .expect("begin preparation");
+    let original_id = adoption.location().installation_id();
+    adoption
+        .store()
+        .write_journal(&journal(), adoption.lock())
+        .expect("unbound orphan");
+    drop(adoption);
+    let adoption = crate::install::LinuxAdoption::begin(
+        home.path(),
+        super::elect_linux_installation(home.path()).expect("cold election"),
+        propose(),
+    )
+    .expect("retain original identity");
+    assert_eq!(adoption.location().installation_id(), original_id);
+    assert!(adoption.prepared_journal().is_err());
+    assert!(matches!(
+        super::LinuxInstallLocator::retain(home.path(), adoption.lock()),
+        Err(LinuxLocatorError::WrongLock)
+    ));
 }
 
 #[test]
