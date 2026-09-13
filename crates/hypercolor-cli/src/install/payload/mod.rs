@@ -99,6 +99,25 @@ pub fn copy_installed_release_unit(
     lock: &InstallLock,
     source: &UnitRecord,
 ) -> Result<UnitRecord, ReleasePayloadError> {
+    let manifest = validated_installed_manifest(source)?;
+    stage_validated_payload(
+        store,
+        lock,
+        source.directory(),
+        manifest,
+        tree::TreeMode::Installed,
+    )
+}
+
+pub(crate) fn validate_installed_release_record(
+    source: &UnitRecord,
+) -> Result<(), ReleasePayloadError> {
+    validated_installed_manifest(source).map(drop)
+}
+
+fn validated_installed_manifest(
+    source: &UnitRecord,
+) -> Result<ValidatedManifest, ReleasePayloadError> {
     let manifest =
         ValidatedManifest::parse(tree::read_retained_manifest_bytes(source.directory())?)?;
     if manifest.unit_id != *source.id() {
@@ -108,13 +127,7 @@ pub fn copy_installed_release_unit(
         });
     }
     tree::validate_copy_source(source.directory(), &manifest, tree::TreeMode::Installed)?;
-    stage_validated_payload(
-        store,
-        lock,
-        source.directory(),
-        manifest,
-        tree::TreeMode::Installed,
-    )
+    Ok(manifest)
 }
 
 fn stage_validated_payload(

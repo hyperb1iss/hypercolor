@@ -71,6 +71,64 @@ impl LinuxNativeExecutor {
         Ok(())
     }
 
+    /// Retain a historical prior only when the persisted path selects it.
+    ///
+    /// Current-store and synthetic legacy bindings remain with their existing
+    /// validators. A historical binding must match its original path, inode,
+    /// digest, size and version before returning any authority.
+    ///
+    /// # Errors
+    /// Refuses unknown records, foreign paths and changed original releases.
+    pub fn retain_recorded_prior(
+        &mut self,
+        encoded: &super::super::PlatformTransactionRecord,
+    ) -> Result<Option<UnitRecord>, InstallPlatformError> {
+        encoded
+            .validate()
+            .map_err(|source| error(source.to_string()))?;
+        let record = super::record::decode_record(encoded)?;
+        let Some(binding) = record.prior else {
+            return Ok(None);
+        };
+        if binding.unit.as_str().starts_with("legacy-") {
+            return Ok(None);
+        }
+        let current_path = self
+            .units_root_hint
+            .join(binding.unit.as_str())
+            .join(super::model::DAEMON_RELATIVE_PATH);
+        if current_path.to_str() == Some(binding.daemon_path.as_str()) {
+            return Ok(None);
+        }
+        if self.prior_units.is_none() {
+            self.retain_prior_units()?;
+        }
+        let prior = self
+            .prior_units
+            .as_ref()
+            .ok_or_else(|| error("missing prior authority"))?;
+        let expected_path = prior
+            .path
+            .join(binding.unit.as_str())
+            .join(super::model::DAEMON_RELATIVE_PATH);
+        if expected_path.to_str() != Some(binding.daemon_path.as_str()) {
+            return Err(error(
+                "recorded prior path does not select an authorized store",
+            ));
+        }
+        let unit = retained_unit(&prior.directory, &prior.path, binding.unit.clone())?;
+        self.validate_prior_unit(&unit)?;
+        super::super::payload::validate_installed_release_record(&unit)
+            .map_err(|source| error(source.to_string()))?;
+        if super::proof::retained_unit_binding(&unit, &prior.path)? != binding {
+            return Err(error(
+                "recorded historical prior changed its executable identity",
+            ));
+        }
+        self.validate_prior_unit(&unit)?;
+        Ok(Some(unit))
+    }
+
     pub(super) fn validate_prior_unit(
         &self,
         unit: &UnitRecord,
@@ -163,5 +221,22 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             Some(prior) => self.unit_binding_at(unit, &prior.units_root),
             None => self.unit_binding(unit),
         }
+    }
+}
+
+impl LinuxInstallPlatform<LinuxNativeExecutor> {
+    /// Restore prior-role selection and validate a cold transaction record.
+    ///
+    /// # Errors
+    /// Refuses any prior or candidate record inconsistent with retained authority.
+    pub fn with_recorded_prior(
+        mut self,
+        record: &super::super::PlatformTransactionRecord,
+    ) -> Result<Self, InstallPlatformError> {
+        if let Some(unit) = self.executor.retain_recorded_prior(record)? {
+            self = self.with_prior_unit(unit)?;
+        }
+        self.validated_record(record)?;
+        Ok(self)
     }
 }

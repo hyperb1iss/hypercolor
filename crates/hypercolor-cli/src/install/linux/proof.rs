@@ -26,39 +26,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         unit: &UnitRecord,
         units_root: &Path,
     ) -> Result<LinuxUnitBinding, InstallPlatformError> {
-        let daemon = open_unit_file(unit, DAEMON_RELATIVE_PATH)?;
-        let daemon_size = daemon.metadata().size();
-        let daemon_device = daemon.metadata().device();
-        let daemon_inode = daemon.metadata().inode();
-        let daemon_sha256 = hash_opened(daemon, daemon_size)?;
-        let manifest = read_unit_file(
-            unit,
-            "manifest.json",
-            super::model::MAX_MANIFEST_BYTES as u64,
-        )?;
-        let manifest: serde_json::Value = serde_json::from_slice(&manifest)
-            .map_err(|source| error(format!("invalid retained unit manifest: {source}")))?;
-        let version = manifest
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .filter(|version| !version.is_empty() && version.len() <= 128)
-            .ok_or_else(|| error("retained unit manifest has no bounded version"))?
-            .to_owned();
-        let daemon_path = units_root
-            .join(unit.id().as_str())
-            .join(DAEMON_RELATIVE_PATH)
-            .to_str()
-            .expect("Linux install roots were validated as exact UTF-8")
-            .to_owned();
-        Ok(LinuxUnitBinding {
-            unit: unit.id().clone(),
-            daemon_path,
-            daemon_sha256,
-            daemon_size,
-            daemon_device,
-            daemon_inode,
-            version,
-        })
+        retained_unit_binding(unit, units_root)
     }
 
     pub(super) fn candidate_launcher(&self) -> Result<LinuxLauncher, InstallPlatformError> {
@@ -275,6 +243,45 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         }
         Ok(())
     }
+}
+
+pub(super) fn retained_unit_binding(
+    unit: &UnitRecord,
+    units_root: &Path,
+) -> Result<LinuxUnitBinding, InstallPlatformError> {
+    let daemon = open_unit_file(unit, DAEMON_RELATIVE_PATH)?;
+    let daemon_size = daemon.metadata().size();
+    let daemon_device = daemon.metadata().device();
+    let daemon_inode = daemon.metadata().inode();
+    let daemon_sha256 = hash_opened(daemon, daemon_size)?;
+    let manifest = read_unit_file(
+        unit,
+        "manifest.json",
+        super::model::MAX_MANIFEST_BYTES as u64,
+    )?;
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest)
+        .map_err(|source| error(format!("invalid retained unit manifest: {source}")))?;
+    let version = manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|version| !version.is_empty() && version.len() <= 128)
+        .ok_or_else(|| error("retained unit manifest has no bounded version"))?
+        .to_owned();
+    let daemon_path = units_root
+        .join(unit.id().as_str())
+        .join(DAEMON_RELATIVE_PATH)
+        .to_str()
+        .expect("Linux install roots were validated as exact UTF-8")
+        .to_owned();
+    Ok(LinuxUnitBinding {
+        unit: unit.id().clone(),
+        daemon_path,
+        daemon_sha256,
+        daemon_size,
+        daemon_device,
+        daemon_inode,
+        version,
+    })
 }
 
 pub(super) fn validate_prior_launcher_entry(

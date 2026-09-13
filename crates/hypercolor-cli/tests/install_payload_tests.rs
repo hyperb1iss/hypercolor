@@ -1251,3 +1251,120 @@ fn installed_copy_crosses_filesystems_without_renaming_source() {
     );
     assert_no_private_residue(&destination);
 }
+
+#[test]
+fn cold_recorded_prior_selects_exact_historical_path_and_original_inode() {
+    use hypercolor_cli::install::{LinuxNativeExecutor, LinuxPublicTree, LinuxSystemdConnection};
+    let home = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).expect("owned home");
+    let old = InstallStore::new(home.path().join(".local/lib/hypercolor"), 64 * 1024);
+    let old_lock = old.acquire_anchored_lock(home.path()).expect("old lock");
+    let fixture = ReleaseFixture::new();
+    let original = stage_fixture(&old, &old_lock, &fixture).expect("original installed release");
+    let current = InstallStore::with_roots(
+        home.path().join("releases"),
+        home.path().join("state"),
+        64 * 1024,
+    )
+    .expect("split store");
+    let lock = current
+        .acquire_anchored_lock(home.path())
+        .expect("state lock after old");
+    let copied = copy_installed_release_unit(&current, &lock, &original).expect("copied release");
+    let runtime = tempfile::tempdir().expect("runtime");
+    fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700))
+        .expect("private runtime");
+    let _bus = UnixListener::bind(runtime.path().join("bus")).expect("fixture bus");
+    let connection = LinuxSystemdConnection::from_runtime_directory(
+        runtime.path(),
+        fs::metadata(runtime.path()).expect("runtime owner").uid(),
+    )
+    .expect("connection authority");
+    let tree = LinuxPublicTree::new(&lock, home.path()).expect("public tree");
+    let mut executor = LinuxNativeExecutor::new_with_connection(
+        &current,
+        &lock,
+        tree,
+        "127.0.0.1:9420".parse().expect("address"),
+        connection,
+    )
+    .expect("native executor");
+    let current_binding = cold_prior_binding(&copied, &current);
+    let historical_binding = cold_prior_binding(&original, &old);
+    assert!(
+        executor
+            .retain_recorded_prior(&cold_prior_record(&current_binding))
+            .expect("current-store selection")
+            .is_none()
+    );
+    let restored = executor
+        .retain_recorded_prior(&cold_prior_record(&historical_binding))
+        .expect("historical selection")
+        .expect("historical authority");
+    assert_eq!(restored, original);
+    assert_ne!(restored, copied);
+    let mut wrong_inode = historical_binding.clone();
+    wrong_inode["daemon_inode"] = current_binding["daemon_inode"].clone();
+    assert!(
+        executor
+            .retain_recorded_prior(&cold_prior_record(&wrong_inode))
+            .is_err()
+    );
+    let mut foreign_path = historical_binding.clone();
+    foreign_path["daemon_path"] = json!(home.path().join("foreign/bin/hypercolor-daemon"));
+    assert!(
+        executor
+            .retain_recorded_prior(&cold_prior_record(&foreign_path))
+            .is_err()
+    );
+    let manifest = old.unit_path(original.id()).join("manifest.json");
+    fs::set_permissions(&manifest, fs::Permissions::from_mode(0o644))
+        .expect("alter installed manifest mode");
+    assert!(
+        executor
+            .retain_recorded_prior(&cold_prior_record(&historical_binding))
+            .is_err()
+    );
+    fs::set_permissions(&manifest, fs::Permissions::from_mode(0o444))
+        .expect("restore manifest mode");
+    fs::rename(
+        home.path().join(".local/lib"),
+        home.path().join(".local/previous-lib"),
+    )
+    .expect("displace ancestor");
+    fs::create_dir(home.path().join(".local/lib")).expect("replacement ancestor");
+    fs::rename(
+        home.path().join(".local/previous-lib/hypercolor"),
+        home.path().join(".local/lib/hypercolor"),
+    )
+    .expect("retain original unit below new ancestor");
+    assert!(
+        executor
+            .retain_recorded_prior(&cold_prior_record(&historical_binding))
+            .is_err()
+    );
+}
+
+fn cold_prior_binding(unit: &UnitRecord, store: &InstallStore) -> Value {
+    let path = store.unit_path(unit.id()).join("bin/hypercolor-daemon");
+    let metadata = fs::metadata(&path).expect("daemon metadata");
+    json!({"unit": unit.id(), "daemon_path": path,
+        "daemon_sha256": sha256(&fs::read(&path).expect("daemon bytes")),
+        "daemon_size": metadata.len(), "daemon_device": metadata.dev(),
+        "daemon_inode": metadata.ino(), "version": "0.3.2"})
+}
+
+fn cold_prior_record(binding: &Value) -> hypercolor_cli::install::PlatformTransactionRecord {
+    hypercolor_cli::install::PlatformTransactionRecord::linux(
+        1,
+        serde_json::to_vec(&json!({
+            "candidate": binding, "prior": binding,
+            "baseline_systemd": {"load_state":"not-found", "active_state":"inactive",
+                "sub_state":"dead", "unit_file_state":"disabled", "fragment_path":"",
+                "exec_start":"", "main_pid":0, "invocation_id":""},
+            "prior_launcher":{"kind":"absent"}, "prior_launcher_bytes":[],
+            "candidate_launcher":null, "prior_directories":{}, "layout":[], "first_conversion":false
+        }))
+        .expect("strict record bytes"),
+    )
+    .expect("bounded selection record")
+}
