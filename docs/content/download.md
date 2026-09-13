@@ -6,9 +6,8 @@ template = "page.html"
 +++
 
 Hypercolor release artifacts are published on GitHub Releases. Use the release
-page for Windows installers, Linux tarballs and `.deb` packages, checksums, and
-release notes. Accepted macOS builds are attached manually after signing,
-notarization, and physical acceptance:
+page for Windows installers, macOS disk images, Linux tarballs and `.deb`
+packages, checksums, and release notes:
 
 [Open Hypercolor releases](https://github.com/hyperb1iss/hypercolor/releases)
 
@@ -75,17 +74,13 @@ Choose "More info" and then "Run anyway" to continue.
 
 ## macOS
 
-Public CI does not publish unsigned macOS packages. When a release includes an
-accepted macOS build, download the matching signed and notarized DMG for Apple
-Silicon or Intel from the release page. If a tag has no DMG, build from source
-instead of installing an unqualified package.
+Download the DMG for Apple Silicon or Intel from the release page, then drag
+Hypercolor into Applications. You can also install the desktop app with
+Homebrew:
 
-The current stable release does not yet have an accepted macOS desktop build.
-The latest signed DMG and Homebrew cask remain at 0.3.2 while the current
-release completes the manual macOS acceptance lane.
+```bash
+brew install --cask hyperb1iss/tap/hypercolor-app
+```
 
-On Apple Silicon, `install-release.sh` also works for a daemon-and-CLI install.
-Homebrew carries both the `hypercolor` formula (CLI and daemon) and the
-`hypercolor-app` cask (desktop app), with tap updates performed manually after
-the matching signed artifacts pass acceptance. See
+The `hypercolor` formula installs the CLI and daemon. See
 [Choose your install](@/guide/choose-your-install.md) for the tradeoffs.

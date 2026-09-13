@@ -125,16 +125,10 @@ later from Settings → Device Discovery → Hardware Support.
 
 ## macOS
 
-When a release includes an accepted macOS build, download the signed DMG from
+Download the signed DMG from
 the [download page](@/download.md). Open the DMG, drag Hypercolor to
 Applications, and launch it. The app registers a LaunchAgent for autostart and
 supervises the daemon; no terminal setup is required.
-
-{% <callout type="info"> %}
-Public CI does not publish unsigned macOS packages. macOS artifacts are
-promoted manually only after Developer ID signing, notarization, and the signed
-physical acceptance checkpoint pass.
-{% </callout> %}
 
 {% <callout type="info"> %}
 macOS hardware support covers USB-HID and network devices (Hue, Nanoleaf, WLED, Govee). SMBus/motherboard RGB is Linux and Windows only.
@@ -143,12 +137,7 @@ macOS hardware support covers USB-HID and network devices (Hue, Nanoleaf, WLED, 
 Homebrew users can install the desktop app as a cask
 (`brew install --cask hyperb1iss/tap/hypercolor-app`) or the daemon and CLI as
 a formula (`brew install hyperb1iss/tap/hypercolor`, with `brew services`
-support). The tap is updated manually after the matching signed artifacts pass
-acceptance.
-
-The current stable release has no accepted macOS artifacts. The Homebrew cask
-remains at 0.3.2 for Apple Silicon and Intel, and the formula remains at 0.3.2
-on Apple Silicon. Intel users should use the cask rather than the formula.
+support).
 
 ### macOS screen capture support
 
@@ -157,11 +146,6 @@ action. Keyboard capture uses Input Monitoring. Passive pointer capture does
 not use a TCC service. ScreenCaptureKit uses Screen Recording. The settings
 page links directly to the matching System Settings privacy pane when manual
 remediation is needed.
-
-The native Apple Silicon HDR, Intel SDR, and Tahoe paired-reference paths are
-implemented but remain release-gated by the signed physical acceptance matrix.
-Development builds can exercise pure fixtures and native mechanics, but they
-do not establish durable TCC or hardware qualification.
 
 The CLI exposes the same explicit actions when the active process topology can
 perform them:

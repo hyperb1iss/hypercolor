@@ -350,7 +350,7 @@ Duplication and is enabled by default.
 
 ### Install on macOS
 
-When a release includes an accepted macOS build, download
+Download
 `Hypercolor-<version>-arm64.dmg` for Apple Silicon or the `-x86_64.dmg` build for
 Intel from the
 [GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). Drag
@@ -361,13 +361,6 @@ Or via Homebrew Cask:
 ```bash
 brew install --cask hyperb1iss/tap/hypercolor-app
 ```
-
-> Public CI does not publish unsigned macOS packages. macOS artifacts and the
-> matching Homebrew updates are promoted manually only after signing,
-> notarization, and the signed physical acceptance checkpoint pass.
->
-> The current stable release has no accepted macOS artifacts yet. The latest
-> signed DMG and Homebrew cask remain at 0.3.2.
 
 Hue, WLED, Nanoleaf, Govee, and USB-HID lighting all work out of the box. Hypercolor asks
 for Microphone, Screen Recording, or Input Monitoring access only when you explicitly

@@ -21,7 +21,7 @@ and laptop-lid settings are accepted but nothing emits those events yet.
 | A Debian or Ubuntu user | Linux | [`.deb` package](@/download.md#debian-and-ubuntu-deb) |
 | A user on another distribution | Linux | [Prebuilt one-liner and permissions](#prebuilt-linux) |
 | A regular user who wants things to work | Windows | [Desktop installer](#windows-installer) |
-| A regular user who wants things to work | macOS | [Check signed-build availability](#macos-dmg) |
+| A regular user who wants things to work | macOS | [DMG or Homebrew](#macos-dmg) |
 | An Arch Linux user | Linux | [AUR package](#aur) |
 | A developer or contributor | Any | [Build from source](#build-from-source) |
 
@@ -44,8 +44,7 @@ No Rust toolchain required. The script is idempotent, so it is safe to re-run to
 
 **Supported platforms:** Linux x86_64 and aarch64. The installer also supports
 macOS when the selected release includes a standalone tarball for that
-architecture. Check the release assets first; the current stable release has
-no macOS tarballs or DMGs.
+architecture. Use the [desktop app](#macos-dmg) for the macOS setup flow.
 
 ### Installer options
 
@@ -109,46 +108,24 @@ PawnIO setup was skipped or failed, re-run it from Settings → Device Discovery
 
 ### DMG
 
-When a release includes an accepted macOS build, download
+Download
 `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel) from
 the [download page](@/download.md), drag the app into `/Applications`, and
 launch. Minimum macOS 15.2 (Sequoia).
 
-{% <callout type="info"> %}
-Public CI does not publish unsigned macOS packages. macOS artifacts are
-promoted manually only after Developer ID signing, notarization, and the signed
-physical acceptance checkpoint pass.
-{% </callout> %}
-
-The native ScreenCaptureKit, host-input, HDR, and multi-owner implementations
-are present, but they are not release-qualified until the signed macOS physical
-acceptance matrix ships with the release provenance. Development builds do not
-establish durable TCC grants or hardware support claims. Screen Recording is
-requested only after an explicit local capture action. Audio-reactive effects
-still need the loopback setup described in [Audio setup](@/guide/audio-setup.md).
-
-The pending qualification matrix covers the app sidecar, direct launchd,
-Homebrew service, and standalone daemon as distinct TCC identities. It also
-covers Apple Silicon HDR, Intel SDR, and Tahoe paired-reference diagnostics.
-Until those signed receipts pass, use the packaged app sidecar for protected
-macOS sources and treat the other topologies as experimental.
-
-The current stable release has not completed that acceptance lane, so it has
-no macOS DMG or standalone tarball. The latest accepted desktop release is
-0.3.2.
+Hypercolor requests Screen Recording permission when you enable screen capture.
+For system audio, follow [Audio setup](@/guide/audio-setup.md).
 
 ### Homebrew {% raw %}{#homebrew}{% endraw %}
 
-The tap carries both a cask and a formula. Maintainers update their macOS
-artifacts manually after the matching signed builds pass acceptance. The macOS
-cask is currently 0.3.2; the formula serves 0.3.2 on macOS and tracks the
-current stable release on Linux.
+Install the desktop app for the full setup and permissions UI, or choose the
+formula for a daemon managed by `brew services`.
 
 ```bash
-# Desktop app (latest accepted macOS release, currently 0.3.2)
+# Desktop app
 brew install --cask hyperb1iss/tap/hypercolor-app
 
-# Daemon and CLI only, currently available on Apple Silicon
+# Daemon and CLI
 brew install hyperb1iss/tap/hypercolor
 ```
 
