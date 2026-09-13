@@ -12,6 +12,8 @@ use crate::app::WsContext;
 pub mod assets;
 #[cfg(target_arch = "wasm32")]
 pub mod browser_body;
+#[cfg(target_arch = "wasm32")]
+pub mod browser_response;
 pub mod client;
 pub mod config;
 pub mod controls;
