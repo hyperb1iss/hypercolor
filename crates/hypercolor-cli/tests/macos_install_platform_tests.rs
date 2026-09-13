@@ -2664,6 +2664,11 @@ impl ReleaseFixture {
                 0o644,
             ),
             (
+                "share/hypercolor/skills/skill.md",
+                b"user skill".as_slice(),
+                0o644,
+            ),
+            (
                 "share/hypercolor/site/index.html",
                 b"site".as_slice(),
                 0o644,
@@ -2716,6 +2721,7 @@ impl ReleaseFixture {
             "share/hypercolor/agents",
             "share/hypercolor/agents/skills",
             "share/hypercolor/agents/agents",
+            "share/hypercolor/skills",
             "share/hypercolor/site",
         ];
         let mut members = directories
@@ -2754,6 +2760,7 @@ impl ReleaseFixture {
                 "bundled_effect_files":1,
                 "docs_files":1,
                 "skill_files":1,
+                "user_skill_files":1,
                 "agent_files":1,
                 "site_files":1,
             },

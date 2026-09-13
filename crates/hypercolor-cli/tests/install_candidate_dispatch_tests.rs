@@ -48,6 +48,17 @@ fn installer_protocol_is_strict_and_absent_from_help() {
             "--install-dir",
             "/home/test/.local/bin",
             "--expected-manifest-sha256",
+            DIGEST,
+            "--validate-only",
+            "--validate-only",
+        ],
+        vec![
+            "__install-release",
+            "--install-prefix",
+            "/home/test/.local",
+            "--install-dir",
+            "/home/test/.local/bin",
+            "--expected-manifest-sha256",
             legacy.as_str(),
         ],
     ];
@@ -67,6 +78,7 @@ fn installer_protocol_is_strict_and_absent_from_help() {
 
     let help = Cli::command().render_long_help().to_string();
     assert!(!help.contains("__install-release"));
+    assert!(!help.contains("--validate-only"));
 }
 
 #[test]

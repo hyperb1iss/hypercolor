@@ -26,6 +26,9 @@ pub(super) fn execute(args: &InstallReleaseArgs) -> Result<()> {
         &args.expected_manifest_sha256,
     )
     .context("release candidate validation failed before install bootstrap")?;
+    if args.validate_only {
+        return Ok(());
+    }
 
     let store = InstallStore::new(&topology.store_root, MAX_INSTALL_JOURNAL_BYTES);
     let mut lock = store

@@ -3,10 +3,7 @@
 
 # Homebrew formula for Hypercolor.
 #
-# scripts/homebrew-formula.mjs renders this template on every stable tag:
-# the Linux stanzas come from the public release, and the macOS stanzas are
-# carried forward from the formula already published in the tap until the
-# signed macOS lane promotes a newer accepted build.
+# scripts/homebrew-formula.mjs renders every platform from the same release.
 
 class Hypercolor < Formula
   # Sequoia's symbolic version cannot distinguish 15.0 from the 15.2 floor.
@@ -28,8 +25,7 @@ class Hypercolor < Formula
   license "Apache-2.0"
 
   on_macos do
-    version "MACOS_VERSION_PLACEHOLDER"
-    depends_on macos: ">= :sequoia"
+    depends_on macos: :sequoia
     depends_on MacosVersionRequirement
 
     if Hardware::CPU.arm?
@@ -94,7 +90,7 @@ class Hypercolor < Formula
   # systemd evidence resolves the identity on its own.
   on_macos do
     service do
-      run [opt_bin/"hypercolor-daemon", "--macos-owner", "homebrew", "--ui-dir", share/"hypercolor/ui"]
+      run [opt_bin/"hypercolor-daemon", "--macos-owner", "homebrew", "--ui-dir", opt_pkgshare/"ui"]
       keep_alive successful_exit: false
       log_path var/"log/hypercolor/hypercolor.log"
       error_log_path var/"log/hypercolor/hypercolor.log"
@@ -104,7 +100,7 @@ class Hypercolor < Formula
 
   on_linux do
     service do
-      run [opt_bin/"hypercolor-daemon", "--ui-dir", share/"hypercolor/ui"]
+      run [opt_bin/"hypercolor-daemon", "--ui-dir", opt_pkgshare/"ui"]
       keep_alive successful_exit: false
       log_path var/"log/hypercolor/hypercolor.log"
       error_log_path var/"log/hypercolor/hypercolor.log"

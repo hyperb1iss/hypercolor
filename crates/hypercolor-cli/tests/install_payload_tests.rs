@@ -78,6 +78,7 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
         "share/hypercolor/agents",
         "share/hypercolor/agents/skills",
         "share/hypercolor/agents/agents",
+        "share/hypercolor/skills",
         "share/hypercolor/site",
         "share/hypercolor/launchd",
     ];
@@ -118,6 +119,7 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
         ),
         ("share/hypercolor/agents/skills/skill.md", b"skill".to_vec()),
         ("share/hypercolor/agents/agents/agent.md", b"agent".to_vec()),
+        ("share/hypercolor/skills/skill.md", b"user skill".to_vec()),
         (
             "share/hypercolor/launchd/tech.hyperbliss.hypercolor.plist",
             b"plist".to_vec(),
@@ -161,6 +163,7 @@ fn write_release(root: &Path) -> (File, Vec<u8>) {
             "bundled_effect_files": 1,
             "docs_files": 0,
             "skill_files": 1,
+            "user_skill_files": 1,
             "agent_files": 1,
             "site_files": 0,
         },
@@ -749,6 +752,7 @@ fn manifest_rejects_unreadable_files_untraversable_directories_and_uppercase_dig
         "directory-mode",
         "uppercase-digest",
         "asset-count",
+        "user-skill-count",
     ] {
         let fixture = ReleaseFixture::new();
         let mut manifest = fixture.manifest_value();
@@ -764,6 +768,7 @@ fn manifest_rejects_unreadable_files_untraversable_directories_and_uppercase_dig
                     json!(sha256(b"ui").to_uppercase());
             }
             "asset-count" => manifest["assets"]["ui_files"] = json!(2),
+            "user-skill-count" => manifest["assets"]["user_skill_files"] = json!(2),
             _ => unreachable!("known case"),
         }
         fixture.write_manifest(&manifest);
@@ -889,6 +894,84 @@ fn cold_rebind_validates_the_exact_installed_release() {
     assert_eq!(rebound.id(), &unit);
     assert_eq!(
         read_authority_file(rebound.directory(), &["bin", "hypercolor"]),
+        b"candidate"
+    );
+}
+
+#[test]
+fn legacy_installed_manifest_is_retained_but_rejected_as_a_candidate() {
+    let candidate_fixture = ReleaseFixture::new();
+    let mut candidate_manifest = candidate_fixture.manifest_value();
+    candidate_manifest["assets"]
+        .as_object_mut()
+        .expect("asset counts")
+        .remove("user_skill_files");
+    candidate_fixture.write_manifest(&candidate_manifest);
+    let (_candidate_parent, candidate_store) = new_store();
+    let candidate_lock = candidate_store.acquire_lock().expect("candidate lock");
+    let candidate_error = stage_fixture(&candidate_store, &candidate_lock, &candidate_fixture)
+        .expect_err("new candidates must declare bundled user skills");
+    assert!(
+        candidate_error
+            .to_string()
+            .contains("required release asset counts must be nonzero")
+    );
+
+    let fixture = ReleaseFixture::new();
+    let (_install_parent, store) = new_store();
+    let lock = store.acquire_lock().expect("install lock");
+    let staged = stage_fixture(&store, &lock, &fixture).expect("stage current release");
+    let current_unit = staged.id().clone();
+    drop(staged);
+
+    let current_root = store.unit_path(&current_unit);
+    let hypercolor_root = current_root.join("share/hypercolor");
+    fs::set_permissions(&current_root, fs::Permissions::from_mode(0o755))
+        .expect("make unit root mutable");
+    fs::set_permissions(&hypercolor_root, fs::Permissions::from_mode(0o755))
+        .expect("make asset root mutable");
+    fs::set_permissions(
+        hypercolor_root.join("skills"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("make user skills root mutable");
+    fs::remove_dir_all(hypercolor_root.join("skills")).expect("remove post-v0.4 user skills");
+
+    let manifest_path = current_root.join("manifest.json");
+    fs::set_permissions(&manifest_path, fs::Permissions::from_mode(0o644))
+        .expect("make installed manifest mutable");
+    let mut legacy_manifest: Value =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("read installed manifest"))
+            .expect("decode installed manifest");
+    legacy_manifest["assets"]
+        .as_object_mut()
+        .expect("asset counts")
+        .remove("user_skill_files");
+    legacy_manifest["members"]
+        .as_array_mut()
+        .expect("manifest members")
+        .retain(|member| {
+            member["path"].as_str().is_some_and(|path| {
+                path != "share/hypercolor/skills" && !path.starts_with("share/hypercolor/skills/")
+            })
+        });
+    let legacy_bytes = serde_json::to_vec_pretty(&legacy_manifest).expect("encode legacy manifest");
+    fs::write(&manifest_path, &legacy_bytes).expect("write legacy manifest");
+    fs::set_permissions(&manifest_path, fs::Permissions::from_mode(0o444))
+        .expect("freeze legacy manifest");
+    fs::set_permissions(&hypercolor_root, fs::Permissions::from_mode(0o555))
+        .expect("freeze asset root");
+    fs::set_permissions(&current_root, fs::Permissions::from_mode(0o555))
+        .expect("freeze unit root");
+
+    let legacy_unit = UnitId::new(sha256(&legacy_bytes)).expect("legacy unit id");
+    fs::rename(&current_root, store.unit_path(&legacy_unit)).expect("rename legacy unit");
+    let retained = retain_linux_unit(&store, &lock, &legacy_unit)
+        .expect("retain immutable pre-user-skills release");
+
+    assert_eq!(retained.id(), &legacy_unit);
+    assert_eq!(
+        read_authority_file(retained.directory(), &["bin", "hypercolor"]),
         b"candidate"
     );
 }

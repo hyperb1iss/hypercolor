@@ -63,16 +63,11 @@ just udev-install
 
 This copies both rules files (`udev/99-hypercolor.rules` for USB and hidraw access, `udev/70-hypercolor-input.rules` for input capture) to `/etc/udev/rules.d/`, reloads the udev database, and retriggers existing device events. After installation you must either re-plug the device or log out and back in for the session ACLs to take effect.
 
-The `.deb` and the AUR package install both rules files for you. The `scripts/install-release.sh` one-liner does not: it never asks for `sudo`, so it leaves the rules unapplied even though release payloads from 0.3.0 onward carry them under `lib/udev/rules.d/` inside the release directory. Copy them from that directory or from a repo checkout:
-
-```bash
-sudo cp /path/to/hypercolor/udev/99-hypercolor.rules /etc/udev/rules.d/
-sudo cp /path/to/hypercolor/udev/70-hypercolor-input.rules /etc/udev/rules.d/
-sudo udevadm control --reload
-sudo udevadm trigger
-```
-
-Then re-plug or reboot.
+The `.deb` and AUR packages install both rules files for you. The prebuilt
+one-liner does not because it never asks for `sudo`. Follow the
+[one-liner permissions steps](@/guide/installation.md#linux-udev-rules-usb-and-input-device-access)
+to install the rules retained with the active release. Then re-plug the device
+or log out and back in.
 
 {% <callout type="warning"> %}
 If another RGB manager (openrazer daemon, Aura Sync, iCUE, or an OpenRGB you started yourself) is running and holding the same HID device, Hypercolor cannot connect to it even with correct udev rules. Stop the other tool before starting Hypercolor, or check whether the other tool's kernel module grabbed the device at boot. OpenRGB run through `hypercolor openrgb start` is not a conflict: it uses a Hypercolor-written configuration that skips natively owned devices, and it drives only what no native driver covers. See [OpenRGB fallback](@/hardware/openrgb-fallback.md).

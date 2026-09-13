@@ -203,9 +203,14 @@ jobs:
               - '.github/workflows/**'
               - '.github/actions/**'
               - 'scripts/homebrew-formula.mjs'
+              - 'scripts/with-macos-signing.sh'
+              - 'scripts/resolve-release-version.sh'
               - 'scripts/tests/homebrew-formula.test.mjs'
               - 'scripts/tests/macos-ci-coverage.test.mjs'
-              - 'packaging/homebrew/hypercolor.rb'
+              - 'scripts/tests/macos-release.test.mjs'
+              - 'scripts/tests/release-workflow.test.mjs'
+              - 'scripts/tests/resolve-release-version.test.mjs'
+              - 'packaging/homebrew/**'
 
   # ── Workflow Lint ─────────────────────────────────────────────
   workflow-lint:
@@ -226,6 +231,9 @@ jobs:
         run: node --test scripts/tests/macos-ci-coverage.test.mjs
       - name: Test Homebrew formula rendering
         run: node --test scripts/tests/homebrew-formula.test.mjs
+
+      - name: Test release orchestration
+        run: node --test scripts/tests/release-workflow.test.mjs scripts/tests/resolve-release-version.test.mjs scripts/tests/macos-release.test.mjs
 
       - name: Actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
@@ -1467,13 +1475,31 @@ jobs:
           phase: save
 
   # ── Build Native App Installers ───────────────────────────────
+  release-credentials:
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'full')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify signing credentials before building release artifacts
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: bash scripts/with-macos-signing.sh true
+
   build-native-app:
     name: Native App (${{ matrix.target }})
     if: >-
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
+    needs: [release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     strategy:
       fail-fast: false
       matrix:
@@ -1491,18 +1517,18 @@ jobs:
             os: macos-26
             rust-target: aarch64-apple-darwin
             bundles: app
-            artifact-kind: unsigned-app
+            artifact-kind: dmg
             cask_arch: arm64
             artifact-path: |
-              target/aarch64-apple-darwin/release/bundle/macos/*.app
+              target/aarch64-apple-darwin/release/bundle/dmg/*.dmg*
           - target: macos-x64
             os: macos-26-intel
             rust-target: x86_64-apple-darwin
             bundles: app
-            artifact-kind: unsigned-app
+            artifact-kind: dmg
             cask_arch: x86_64
             artifact-path: |
-              target/x86_64-apple-darwin/release/bundle/macos/*.app
+              target/x86_64-apple-darwin/release/bundle/dmg/*.dmg*
     runs-on: ${{ matrix.os }}
     env:
       # Absolute on purpose. Cargo resolves a relative CARGO_TARGET_DIR
@@ -1584,7 +1610,7 @@ jobs:
 
           $cargoVersion = Get-CargoVersion
           $baseVersion = ($version -split '-', 2)[0]
-          if ($baseVersion -ne $cargoVersion) {
+          if ($version -ne $cargoVersion -and $baseVersion -ne $cargoVersion) {
             throw "Release version $version does not match Cargo version $cargoVersion"
           }
 
@@ -1654,6 +1680,7 @@ jobs:
         run: ./scripts/stage-app-bundle-assets.ps1
 
       - name: Build Tauri native bundle
+        if: runner.os == 'Windows'
         working-directory: crates/hypercolor-app
         shell: pwsh
         env:
@@ -1668,36 +1695,44 @@ jobs:
             $configArgs += @("--config", "tauri.windows.bundle.conf.json")
           }
           $buildArgs = @("--ci", "--bundles", $env:TAURI_BUNDLES)
-          # Public CI proves packaging without receiving release credentials.
           $buildArgs += "--no-sign"
-          if ($env:RUNNER_OS -eq "macOS") {
-            $buildArgs += @("--target", $env:RUST_TARGET)
-          }
           cargo tauri build @buildArgs @configArgs
 
-      - name: Verify unsigned macOS app deployment target
+      - name: Build signed and notarized macOS app
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          bash scripts/with-macos-signing.sh scripts/sign-macos-artifacts.sh app \
+            --target '${{ matrix.rust-target }}' \
+            --version '${{ steps.version.outputs.version }}' \
+            --arch '${{ matrix.cask_arch }}' --ci
+
+      - name: Verify signed macOS app
         if: matrix.cask_arch != ''
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           profile_dir="target/${{ matrix.rust-target }}/release"
           app="${profile_dir}/bundle/macos/Hypercolor.app"
           ./scripts/verify-macos-deployment-target.sh "${app}"
+          dmg="${profile_dir}/bundle/dmg/Hypercolor-${{ steps.version.outputs.version }}-${{ matrix.cask_arch }}.dmg"
+          ./scripts/sign-macos-artifacts.sh verify-app \
+            --app "$app" --dmg "$dmg" --provenance "${dmg}.notarization.json" \
+            --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
 
       - name: Upload native release bundle
-        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: hypercolor-app-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
           path: ${{ matrix.artifact-path }}
           if-no-files-found: error
-
-      - name: Upload unsigned macOS packaging fixture
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v7
-        with:
-          name: oss-ci-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
-          path: ${{ matrix.artifact-path }}
-          if-no-files-found: error
-          retention-days: 7
 
       - name: Save Rust build caches
         if: always()
@@ -1822,7 +1857,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
+    needs: [release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     strategy:
       fail-fast: false
       matrix:
@@ -1833,12 +1868,28 @@ jobs:
           - target: linux-arm64
             os: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-gnu
+          - target: macos-arm64
+            os: macos-26
+            rust-target: aarch64-apple-darwin
+          - target: macos-amd64
+            os: macos-26-intel
+            rust-target: x86_64-apple-darwin
     # A full workflow_dispatch on the default branch warms these release
     # shapes. Tags restore that trusted cache; they never publish cache state.
     timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Qualify macOS runner and SDK
+        if: runner.os == 'macOS'
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          test "$(xcrun --show-sdk-version | cut -d. -f1)" = "26"
+
+      - name: Install NASM for Intel macOS
+        if: matrix.target == 'macos-amd64'
+        run: brew install nasm
 
       - name: Report runner capacity
         shell: bash
@@ -1943,9 +1994,25 @@ jobs:
             --version "${{ steps.version.outputs.version }}"
           test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
 
-      # Kept for the failure modes that leave the runner alive. Memory
-      # exhaustion is not one of them: it takes the whole VM down and every
-      # remaining step with it, which is why the build step samples inline.
+      - name: Assemble signed macOS distribution
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          bash scripts/with-macos-signing.sh scripts/dist.sh --ci --skip-docs \
+            --web-assets web-assets --target '${{ matrix.target }}' \
+            --version '${{ steps.version.outputs.version }}'
+          ./scripts/sign-macos-artifacts.sh verify-standalone \
+            --directory 'dist/${{ steps.version.outputs.dist_name }}' \
+            --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
+
+      # Memory exhaustion can take down the VM before this step runs.
       - name: Report runner capacity after failure
         if: failure()
         shell: bash
@@ -2049,7 +2116,8 @@ jobs:
           # hundreds of internal files into individual release assets.
           mapfile -t files < <(find release-artifacts -type f \
             \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' \
-               -o -name '*.deb' -o -name '*-setup.exe' \) | sort)
+               -o -name '*.deb' -o -name '*-setup.exe' \
+               -o -name '*.dmg' -o -name '*.dmg.notarization.json' \) | sort)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No release artifacts found" >&2
             exit 1
@@ -2188,7 +2256,6 @@ jobs:
             echo "sha256_${platform//-/_}=${sha}" >> "$GITHUB_OUTPUT"
             echo "  ${platform}: ${sha}"
           done
-
       - name: Generate AUR package files
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -2283,7 +2350,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-artifacts
-          for platform in linux-amd64 linux-arm64; do
+          for platform in linux-amd64 linux-arm64 macos-amd64 macos-arm64; do
             tarball="hypercolor-${VERSION}-${platform}.tar.gz"
             gh release download "v${VERSION}" \
               --repo "${{ github.repository }}" \
@@ -2292,6 +2359,13 @@ jobs:
             sha=$(sha256sum "release-artifacts/${tarball}" | cut -d' ' -f1)
             echo "sha256_${platform//-/_}=${sha}" >> "$GITHUB_OUTPUT"
             echo "  ${platform}: ${sha}"
+          done
+          for arch in arm64 x86_64; do
+            dmg="Hypercolor-${VERSION}-${arch}.dmg"
+            gh release download "v${VERSION}" \
+              --repo "${{ github.repository }}" --pattern "$dmg" --dir release-artifacts
+            sha=$(sha256sum "release-artifacts/${dmg}" | cut -d' ' -f1)
+            echo "sha256_dmg_${arch}=${sha}" >> "$GITHUB_OUTPUT"
           done
 
       - name: Verify Homebrew tap token
@@ -2320,21 +2394,30 @@ jobs:
           path: homebrew-tap
           persist-credentials: true
 
-      - name: Render formula
+      - name: Render formula and cask
         env:
           VERSION: ${{ steps.version.outputs.version }}
           SHA256_LINUX_AMD64: ${{ steps.checksums.outputs.sha256_linux_amd64 }}
           SHA256_LINUX_ARM64: ${{ steps.checksums.outputs.sha256_linux_arm64 }}
+          SHA256_MACOS_AMD64: ${{ steps.checksums.outputs.sha256_macos_amd64 }}
+          SHA256_MACOS_ARM64: ${{ steps.checksums.outputs.sha256_macos_arm64 }}
+          SHA256_DMG_ARM64: ${{ steps.checksums.outputs.sha256_dmg_arm64 }}
+          SHA256_DMG_X86_64: ${{ steps.checksums.outputs.sha256_dmg_x86_64 }}
         run: |
           set -euo pipefail
-          mkdir -p homebrew-tap/Formula
+          mkdir -p homebrew-tap/Formula homebrew-tap/Casks
           node scripts/homebrew-formula.mjs \
             --version "$VERSION" \
             --linux-amd64 "$SHA256_LINUX_AMD64" \
             --linux-arm64 "$SHA256_LINUX_ARM64" \
+            --macos-amd64 "$SHA256_MACOS_AMD64" \
+            --macos-arm64 "$SHA256_MACOS_ARM64" \
+            --dmg-arm64 "$SHA256_DMG_ARM64" \
+            --dmg-x86_64 "$SHA256_DMG_X86_64" \
             --template packaging/homebrew/hypercolor.rb \
-            --current homebrew-tap/Formula/hypercolor.rb \
-            --output homebrew-tap/Formula/hypercolor.rb
+            --cask-template packaging/homebrew/hypercolor-app.rb \
+            --output homebrew-tap/Formula/hypercolor.rb \
+            --cask-output homebrew-tap/Casks/hypercolor-app.rb
           echo "Rendered formula:"
           cat homebrew-tap/Formula/hypercolor.rb
 
@@ -2342,7 +2425,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: homebrew-hypercolor-${{ steps.version.outputs.version }}
-          path: homebrew-tap/Formula/hypercolor.rb
+          path: |
+            homebrew-tap/Formula/hypercolor.rb
+            homebrew-tap/Casks/hypercolor-app.rb
           if-no-files-found: error
 
       - name: Push to homebrew-tap
@@ -2353,12 +2438,12 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/hypercolor.rb
-          if git diff --cached --quiet -- Formula/hypercolor.rb; then
-            echo "Formula/hypercolor.rb already matches v${VERSION}"
+          git add Formula/hypercolor.rb Casks/hypercolor-app.rb
+          if git diff --cached --quiet; then
+            echo "Homebrew packages already match v${VERSION}"
             exit 0
           fi
           git commit \
             -m "hypercolor: update to ${VERSION}" \
-            -m "Linux stanzas come from the v${VERSION} release tarballs; macOS stanzas are carried forward until the signed lane promotes a newer build."
+            -m "Update formula and cask from the published release checksums."
           git push

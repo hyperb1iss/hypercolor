@@ -35,7 +35,7 @@ fi
 
 base_version="${version%%-*}"
 package_version="$(cargo_version)"
-if [[ "${base_version}" != "${package_version}" ]]; then
+if [[ "${version}" != "${package_version}" && "${base_version}" != "${package_version}" ]]; then
   echo "Release version ${version} does not match Cargo version ${package_version}" >&2
   exit 1
 fi

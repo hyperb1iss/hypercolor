@@ -22,10 +22,11 @@ SMBus device access need; see [udev rules](#linux-udev-rules-usb-and-input-devic
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
 ```
 
-The installer is idempotent: re-running it upgrades an existing install. Pin any tagged release with `--version`:
+The installer is idempotent: re-running it upgrades an existing install. Pin
+any tagged release with `--version` (replace `vX.Y.Z` with the tag):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.4.0
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version vX.Y.Z
 ```
 
 On Linux the install root is fixed. `HYPERCOLOR_INSTALL_PREFIX` must be
@@ -42,11 +43,16 @@ back in** so they take effect. If your devices are still not detected, see
 
 ### Debian and Ubuntu (.deb)
 
-Each release ships a `.deb` package for amd64. It installs the daemon, CLI,
-systemd user service, udev rules, and shell completions through `apt`:
+Each release ships `.deb` packages for amd64 and arm64. They install the daemon,
+CLI, systemd user service, udev rules, and shell completions through `apt`:
 
 ```bash
-sudo apt install ./hypercolor_<version>_amd64.deb
+# x86_64
+version=X.Y.Z
+sudo apt install "./hypercolor_${version}_amd64.deb"
+
+# arm64
+sudo apt install "./hypercolor_${version}_arm64.deb"
 ```
 
 Remove it later with `sudo apt remove hypercolor`.
@@ -66,18 +72,28 @@ The PKGBUILD installs binaries, the systemd user service, shell completions, and
 ## Linux: udev rules (USB and input device access)
 
 USB and input device access on Linux requires udev rules. The `.deb` and AUR
-packages place them for you. The prebuilt one-liner does not, so if you used it
-(or you are installing manually or from source), apply them yourself:
+packages place them for you. If you used the prebuilt one-liner, install the
+copies retained under the active release directory:
 
 ```bash
-just udev-install
+sudo install -Dm644 \
+  "$HOME/.local/lib/hypercolor/active/lib/udev/rules.d/99-hypercolor.rules" \
+  /etc/udev/rules.d/99-hypercolor.rules
+sudo install -Dm644 \
+  "$HOME/.local/lib/hypercolor/active/lib/udev/rules.d/70-hypercolor-input.rules" \
+  /etc/udev/rules.d/70-hypercolor-input.rules
+sudo install -Dm644 \
+  "$HOME/.local/lib/hypercolor/active/etc/modules-load.d/i2c-dev.conf" \
+  /etc/modules-load.d/i2c-dev.conf
+sudo modprobe i2c-dev
+sudo udevadm control --reload-rules
+sudo udevadm trigger
 ```
 
-This copies both rules files (`udev/99-hypercolor.rules` for USB and hidraw
-access, `udev/70-hypercolor-input.rules` for input capture) to
-`/etc/udev/rules.d/`, reloads udev, and retriggers the `hidraw`, `usb`, `tty`,
-`i2c-dev`, and `input` subsystems. You will need to re-plug connected devices or
-log out and back in for group membership changes to propagate.
+Source installs apply the USB and hidraw rule, persist `i2c-dev`, and load the
+module by default. Run `just udev-install` from the checkout to install both
+udev rules, including input capture, and retrigger connected devices. Re-plug
+USB devices or log out and back in for session access changes to take effect.
 
 ---
 
@@ -109,16 +125,10 @@ later from Settings → Device Discovery → Hardware Support.
 
 ## macOS
 
-When a release includes an accepted macOS build, download the signed DMG from
+Download the signed DMG from
 the [download page](@/download.md). Open the DMG, drag Hypercolor to
 Applications, and launch it. The app registers a LaunchAgent for autostart and
 supervises the daemon; no terminal setup is required.
-
-{% <callout type="info"> %}
-Public CI does not publish unsigned macOS packages. macOS artifacts are
-promoted manually only after Developer ID signing, notarization, and the signed
-physical acceptance checkpoint pass.
-{% </callout> %}
 
 {% <callout type="info"> %}
 macOS hardware support covers USB-HID and network devices (Hue, Nanoleaf, WLED, Govee). SMBus/motherboard RGB is Linux and Windows only.
@@ -127,8 +137,7 @@ macOS hardware support covers USB-HID and network devices (Hue, Nanoleaf, WLED, 
 Homebrew users can install the desktop app as a cask
 (`brew install --cask hyperb1iss/tap/hypercolor-app`) or the daemon and CLI as
 a formula (`brew install hyperb1iss/tap/hypercolor`, with `brew services`
-support). The tap is updated manually after the matching signed artifacts pass
-acceptance.
+support).
 
 ### macOS screen capture support
 
@@ -137,11 +146,6 @@ action. Keyboard capture uses Input Monitoring. Passive pointer capture does
 not use a TCC service. ScreenCaptureKit uses Screen Recording. The settings
 page links directly to the matching System Settings privacy pane when manual
 remediation is needed.
-
-The native Apple Silicon HDR, Intel SDR, and Tahoe paired-reference paths are
-implemented but remain release-gated by the signed physical acceptance matrix.
-Development builds can exercise pure fixtures and native mechanics, but they
-do not establish durable TCC or hardware qualification.
 
 The CLI exposes the same explicit actions when the active process topology can
 perform them:

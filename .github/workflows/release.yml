@@ -40,11 +40,67 @@ jobs:
   release:
     name: Cut Release
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.commit.outputs.commit }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
+
+      - name: Require macOS signing credentials
+        if: inputs.dry_run == false
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY_ID \
+            APPLE_API_ISSUER APPLE_API_KEY_CONTENT; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required repository secret: ${name}" >&2
+              missing=1
+            fi
+          done
+          exit "${missing}"
+
+      - name: Require passing CI for the release source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          candidates="$(gh run list --workflow ci.yml --commit "${commit}" \
+            --limit 100 --json databaseId,headBranch,event \
+            --jq '.[] | [.databaseId, .headBranch, .event] | @tsv')"
+          run_id=""
+          while IFS=$'\t' read -r candidate ref event; do
+            if [[ "${ref}" == main && "${event}" == push ]]; then
+              run_id="${candidate}"
+              break
+            fi
+            # Release commits pushed by GITHUB_TOKEN have no main push
+            # run. Their explicitly dispatched tag lane runs full CI.
+            if [[ "${ref}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ \
+              && ( "${event}" == push || "${event}" == workflow_dispatch ) \
+              && "$(git rev-parse -q --verify "refs/tags/${ref}^{commit}" 2>/dev/null)" == "${commit}" ]]; then
+              run_id="${candidate}"
+              break
+            fi
+          done <<< "${candidates}"
+          if [[ -z "${run_id}" ]]; then
+            echo "No trusted main or release-tag CI run exists for source ${commit}" >&2
+            exit 1
+          fi
+          gh run watch "${run_id}" --exit-status
 
       - name: Validate release version
         id: version
@@ -64,9 +120,19 @@ jobs:
             exit 1
           fi
 
-          last_tag="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          last_tag="$(git -c versionsort.suffix=-alpha \
+            -c versionsort.suffix=-beta -c versionsort.suffix=-rc \
+            -c versionsort.suffix= tag --list 'v*' --sort=-v:refname | head -n1)"
           if [[ -n "${last_tag}" ]]; then
-            highest="$(printf '%s\n%s\n' "${last_tag#v}" "${version}" | sort -V | tail -n1)"
+            previous="${last_tag#v}"
+            highest="$(printf '%s\n%s\n' "${previous}" "${version}" | sort -V | tail -n1)"
+            if [[ "${previous%%-*}" == "${version%%-*}" ]]; then
+              if [[ "${previous}" == *-* && "${version}" != *-* ]]; then
+                highest="${version}"
+              elif [[ "${previous}" != *-* && "${version}" == *-* ]]; then
+                highest="${previous}"
+              fi
+            fi
             if [[ "${highest}" != "${version}" || "${last_tag#v}" == "${version}" ]]; then
               echo "Version ${version} is not above the latest tag ${last_tag}" >&2
               exit 1
@@ -193,6 +259,7 @@ jobs:
             --update --file CHANGELOG.md
 
       - name: Create atomic release commit and tag
+        id: commit
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -201,11 +268,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit \
-            -m "release: ${TAG}" \
-            -m "Automated release commit: version stamps, lockfiles, changelog, and release notes."
+          {
+            printf 'chore(release): prepare %s\n\n' "${TAG}"
+            printf '%s\n' \
+              'Align package versions and lockfiles for the release.' \
+              'Record the changelog and release notes with the tagged source.'
+          } | git commit -F -
           git tag -a "${TAG}" -m "Hypercolor ${TAG}"
           git show --stat HEAD
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Upload release preview
         uses: actions/upload-artifact@v7
@@ -215,27 +286,6 @@ jobs:
             .github/release-notes/${{ steps.version.outputs.tag }}.md
             CHANGELOG.md
           if-no-files-found: error
-
-      - name: Push release commit and tag
-        if: inputs.dry_run == false
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          set -euo pipefail
-          git push origin HEAD:main
-          git push origin "${TAG}"
-
-      - name: Dispatch build and publish
-        if: inputs.dry_run == false
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          set -euo pipefail
-          # Tags pushed with GITHUB_TOKEN do not fire `on: push`, so launch
-          # the CI tag lane explicitly on the tag ref.
-          gh workflow run ci.yml --ref "${TAG}"
-          echo "Dispatched ci.yml on ${TAG}"
 
       - name: Summarize
         env:
@@ -255,10 +305,42 @@ jobs:
               echo "Dry run: the release commit, tag, and notes were prepared but NOT pushed."
               echo "Download the release-preview artifact to review the notes and changelog."
             else
-              echo "Release commit and tag pushed; ci.yml dispatched on ${TAG} to build and publish."
+              echo "Release commit and tag prepared; the publish job will dispatch ci.yml after the atomic push."
             fi
             echo
             echo "### Release notes"
             echo
             cat ".github/release-notes/${TAG}.md"
           } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Push release commit and tag atomically
+        if: inputs.dry_run == false
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: git push --atomic origin HEAD:main "refs/tags/${TAG}"
+
+  publish:
+    name: Dispatch Build and Publish
+    needs: release
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+
+      - name: Dispatch the prepared release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "${RELEASE_COMMIT}" ]]; then
+            echo "Release tag ${TAG} no longer points to prepared commit ${RELEASE_COMMIT}" >&2
+            exit 1
+          fi
+          # Keep dispatch separate so rerunning failed jobs resumes the
+          # prepared tag without restamping or creating another release.
+          gh workflow run ci.yml --ref "${TAG}"
+          echo "Dispatched ci.yml on ${TAG} (${RELEASE_COMMIT})" >> "$GITHUB_STEP_SUMMARY"

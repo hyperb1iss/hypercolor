@@ -1986,6 +1986,7 @@ fn write_release_with(root: &Path, version: &str, daemon: &[u8]) -> File {
         "share/hypercolor/agents",
         "share/hypercolor/agents/skills",
         "share/hypercolor/agents/agents",
+        "share/hypercolor/skills",
         "share/hypercolor/site",
     ];
     let files = [
@@ -2007,6 +2008,7 @@ fn write_release_with(root: &Path, version: &str, daemon: &[u8]) -> File {
             "share/hypercolor/agents/agents/agent.md",
             b"agent".as_slice(),
         ),
+        ("share/hypercolor/skills/skill.md", b"user skill".as_slice()),
     ];
     let mut members = Vec::new();
     for directory in directories {
@@ -2031,7 +2033,7 @@ fn write_release_with(root: &Path, version: &str, daemon: &[u8]) -> File {
         "name":"hypercolor","version":version,"platform":"linux-x86_64",
         "rust_target":"x86_64-unknown-linux-gnu",
         "binaries":["hypercolor-daemon","hypercolor","hypercolor-app","hypercolor-tui","hypercolor-open"],
-        "assets":{"ui_files":1,"bundled_effect_files":1,"docs_files":0,"skill_files":1,"agent_files":1,"site_files":0},
+        "assets":{"ui_files":1,"bundled_effect_files":1,"docs_files":0,"skill_files":1,"user_skill_files":1,"agent_files":1,"site_files":0},
         "members":members,
     }))
     .expect("manifest JSON");

@@ -18,7 +18,8 @@ and laptop-lid settings are accepted but nothing emits those events yet.
 
 | I am... | My OS | Go here |
 |---|---|---|
-| A regular user who wants things to work | Linux | [Prebuilt one-liner](#prebuilt-linux) |
+| A Debian or Ubuntu user | Linux | [`.deb` package](@/download.md#debian-and-ubuntu-deb) |
+| A user on another distribution | Linux | [Prebuilt one-liner and permissions](#prebuilt-linux) |
 | A regular user who wants things to work | Windows | [Desktop installer](#windows-installer) |
 | A regular user who wants things to work | macOS | [DMG or Homebrew](#macos-dmg) |
 | An Arch Linux user | Linux | [AUR package](#aur) |
@@ -41,15 +42,17 @@ curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/
 
 No Rust toolchain required. The script is idempotent, so it is safe to re-run to upgrade.
 
-**Supported platforms:** Linux x86_64 and aarch64, and macOS on both Apple Silicon (arm64) and Intel (x86_64). The [DMG](#macos-dmg) is the friendlier macOS path if you would rather not use a shell one-liner.
+**Supported platforms:** Linux x86_64 and aarch64. The installer also supports
+macOS when the selected release includes a standalone tarball for that
+architecture. Use the [desktop app](#macos-dmg) for the macOS setup flow.
 
 ### Installer options
 
 Pass flags after `--` to control the install:
 
 ```bash
-# Pin any tagged release
-curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.4.0
+# Pin any tagged release (replace vX.Y.Z with the tag)
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version vX.Y.Z
 
 # Skip service setup (useful for custom init systems)
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --no-service
@@ -70,7 +73,12 @@ On macOS you can set `HYPERCOLOR_INSTALL_PREFIX` and `HYPERCOLOR_INSTALL_DIR` to
 3. Installs `hypercolor`, `hypercolor-daemon`, `hypercolor-app`, `hypercolor-tui`, and `hypercolor-open` to `~/.local/bin`.
 4. Installs the systemd **user** service to `~/.config/systemd/user/hypercolor.service` and enables it.
 
-The release tarball carries the udev rules and the `i2c-dev` modules-load config, but the one-liner never applies them, because it never asks for `sudo`. To get USB device access and SMBus RGB working, run `just udev-install` from a checkout, or install the `.deb` or the AUR package, which place both for you.
+The release tarball carries the udev rules and the `i2c-dev` modules-load config,
+but the one-liner never applies them because it never asks for `sudo`. Debian,
+Ubuntu, and Arch users can avoid the manual step by using the `.deb` or AUR
+package. Other distributions should follow the
+[manual permissions steps](@/guide/installation.md#linux-udev-rules-usb-and-input-device-access)
+after the one-liner finishes.
 
 After the installer finishes, see [First launch](@/guide/first-launch.md) to open the UI for the first time.
 
@@ -86,7 +94,13 @@ elevated pass runs hardware setup: it installs the
 SmartScreen may warn on first run; choose "More info" and then "Run anyway".
 Tested on Windows 10 22H2 and Windows 11 23H2/24H2, x64.
 
-USB-HID lighting (Razer, Corsair, Lian Li, and others) and network devices (Hue, WLED, Nanoleaf, Govee) work out of the box. Motherboard and DRAM SMBus lighting (ASUS Aura, MSI, Gigabyte) uses the PawnIO hardware support installed above; if that step was skipped or failed, re-run it from Settings → Device Discovery → Hardware Support.
+USB-HID lighting (Razer, Corsair, Lian Li, and others) and network devices (Hue,
+WLED, Nanoleaf, Govee) work out of the box. Native ASUS Aura motherboard and
+DRAM lighting uses the PawnIO hardware support installed above. MSI, Gigabyte,
+and other hardware without a native Hypercolor driver can use the separately
+installed [OpenRGB bridge](@/hardware/openrgb-fallback.md). If Hypercolor's
+PawnIO setup was skipped or failed, re-run it from Settings → Device Discovery
+→ Hardware Support.
 
 ---
 
@@ -94,44 +108,29 @@ USB-HID lighting (Razer, Corsair, Lian Li, and others) and network devices (Hue,
 
 ### DMG
 
-When a release includes an accepted macOS build, download
+Download
 `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel) from
 the [download page](@/download.md), drag the app into `/Applications`, and
 launch. Minimum macOS 15.2 (Sequoia).
 
-{% <callout type="info"> %}
-Public CI does not publish unsigned macOS packages. macOS artifacts are
-promoted manually only after Developer ID signing, notarization, and the signed
-physical acceptance checkpoint pass.
-{% </callout> %}
-
-The native ScreenCaptureKit, host-input, HDR, and multi-owner implementations
-are present, but they are not release-qualified until the signed macOS physical
-acceptance matrix ships with the release provenance. Development builds do not
-establish durable TCC grants or hardware support claims. Screen Recording is
-requested only after an explicit local capture action. Audio-reactive effects
-still need the loopback setup described in [Audio setup](@/guide/audio-setup.md).
-
-The pending qualification matrix covers the app sidecar, direct launchd,
-Homebrew service, and standalone daemon as distinct TCC identities. It also
-covers Apple Silicon HDR, Intel SDR, and Tahoe paired-reference diagnostics.
-Until those signed receipts pass, use the packaged app sidecar for protected
-macOS sources and treat the other topologies as experimental.
+Hypercolor requests Screen Recording permission when you enable screen capture.
+For system audio, follow [Audio setup](@/guide/audio-setup.md).
 
 ### Homebrew {% raw %}{#homebrew}{% endraw %}
 
-The tap carries both a cask and a formula. Maintainers update both manually
-after the matching signed artifacts pass acceptance:
+Install the desktop app for the full setup and permissions UI, or choose the
+formula for a daemon managed by `brew services`.
 
 ```bash
-# Desktop app (both Mac architectures)
+# Desktop app
 brew install --cask hyperb1iss/tap/hypercolor-app
 
-# Daemon and CLI only, with brew services support
+# Daemon and CLI
 brew install hyperb1iss/tap/hypercolor
 ```
 
-The formula covers macOS arm64 and x86_64 plus Linux amd64 and arm64; the cask is the full desktop app for either Mac architecture.
+The formula covers macOS arm64 plus Linux amd64 and arm64. The cask is the full
+desktop app for either Mac architecture.
 
 The formula selects the Homebrew service topology when managed with
 `brew services`. Install the cask when protected macOS permissions or the
@@ -175,7 +174,12 @@ just install
 Full system dependency lists and optional flags (`--minimal`, `--no-system`, `--with-servo`) are in the [Installation reference](@/guide/installation.md).
 
 {% <callout type="tip"> %}
-The `just setup` and `just install` path uses the same install layout as the prebuilt one-liner. Both land in `~/.local` with the same systemd unit and udev rules; the only difference is that source builds compile everything on your machine.
+On Linux, the source and prebuilt paths both install Hypercolor under
+`~/.local` and use the same systemd user service. A source install applies the
+USB rule and
+`i2c-dev` setup; run `just udev-install` from the checkout to add the input
+capture rule too. The prebuilt one-liner leaves every system hook to the
+separate permissions step above.
 {% </callout> %}
 
 ---

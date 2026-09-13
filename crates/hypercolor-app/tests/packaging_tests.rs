@@ -305,7 +305,7 @@ fn macos_distribution_surfaces_require_15_2() {
     assert!(
         CARGO_CONFIG.contains(r#"MACOSX_DEPLOYMENT_TARGET = { value = "15.2", force = true }"#)
     );
-    assert!(HOMEBREW_FORMULA.contains(r#"depends_on macos: ">= :sequoia""#));
+    assert!(HOMEBREW_FORMULA.contains("depends_on macos: :sequoia"));
     assert!(HOMEBREW_FORMULA.contains("MacOS.version >= Version.new(\"15.2\")"));
     assert!(HOMEBREW_CASK.contains(r#"depends_on macos: ">= :sequoia""#));
     assert!(HOMEBREW_CASK.contains("MacOS.version < Version.new(\"15.2\")"));
@@ -423,7 +423,7 @@ fn macos_launchers_identify_their_daemon_topology() {
         homebrew_macos_service,
         concat!(
             "      run [opt_bin/\"hypercolor-daemon\", \"--macos-owner\", \"homebrew\", ",
-            "\"--ui-dir\", share/\"hypercolor/ui\"]\n",
+            "\"--ui-dir\", opt_pkgshare/\"ui\"]\n",
             "      keep_alive successful_exit: false\n",
             "      log_path var/\"log/hypercolor/hypercolor.log\"\n",
             "      error_log_path var/\"log/hypercolor/hypercolor.log\"\n",
@@ -445,7 +445,7 @@ fn macos_launchers_identify_their_daemon_topology() {
     assert_eq!(
         homebrew_linux_service,
         concat!(
-            "      run [opt_bin/\"hypercolor-daemon\", \"--ui-dir\", share/\"hypercolor/ui\"]\n",
+            "      run [opt_bin/\"hypercolor-daemon\", \"--ui-dir\", opt_pkgshare/\"ui\"]\n",
             "      keep_alive successful_exit: false\n",
             "      log_path var/\"log/hypercolor/hypercolor.log\"\n",
             "      error_log_path var/\"log/hypercolor/hypercolor.log\"\n",
@@ -761,24 +761,22 @@ fn homebrew_cask_template_targets_normalized_macos_dmg_names() {
 }
 
 #[test]
-fn public_ci_builds_unsigned_macos_app_fixtures_only() {
+fn release_ci_publishes_signed_macos_apps() {
     assert!(CI_WORKFLOW.contains("cask_arch: arm64"));
     assert!(CI_WORKFLOW.contains("cask_arch: x86_64"));
-    assert!(CI_WORKFLOW.contains("artifact-kind: unsigned-app"));
-    assert!(CI_WORKFLOW.contains("--no-sign"));
-    assert!(CI_WORKFLOW.contains(r#"@("--target", $env:RUST_TARGET)"#));
-    assert!(CI_WORKFLOW.contains("Upload unsigned macOS packaging fixture"));
-    assert!(CI_WORKFLOW.contains("name: oss-ci-${{ steps.version.outputs.version }}"));
-    assert!(!CI_WORKFLOW.contains("Build signed and notarized macOS artifacts"));
-    assert!(!CI_WORKFLOW.contains("APPLE_SIGNING_IDENTITY"));
-    assert!(!CI_WORKFLOW.contains("-name '*.dmg'"));
-    assert!(!CI_WORKFLOW.contains("-name '*.notarization.json'"));
+    assert!(CI_WORKFLOW.contains("artifact-kind: dmg"));
+    assert!(CI_WORKFLOW.contains("Build signed and notarized macOS app"));
+    assert!(CI_WORKFLOW.contains("Verify signed macOS app"));
+    assert!(CI_WORKFLOW.contains("-name '*.dmg'"));
+    assert!(CI_WORKFLOW.contains("-name '*.dmg.notarization.json'"));
 }
 
 #[test]
-fn proprietary_macos_release_tools_use_the_manifest_signing_actor() {
+fn macos_release_tools_use_the_manifest_signing_actor() {
     assert!(!CI_WORKFLOW.contains(r#"APPLE_SIGNING_IDENTITY: "-""#));
-    assert!(!CI_WORKFLOW.contains("./scripts/sign-macos-artifacts.sh"));
+    assert!(
+        CI_WORKFLOW.contains("scripts/with-macos-signing.sh scripts/sign-macos-artifacts.sh app")
+    );
     assert!(BUILD_MAC_INSTALLER_SH.contains(r#"--bundles app"#));
     assert!(!BUILD_MAC_INSTALLER_SH.contains("dmg,app"));
     assert!(BUILD_MAC_INSTALLER_SH.contains(r#""${SIGNING_ACTOR}" app"#));
@@ -807,7 +805,11 @@ fn macos_signing_secrets_stay_out_of_process_arguments() {
     assert!(MACOS_SIGNING_KEYCHAIN_C.contains("SecKeychainItemSetAccessWithPassword"));
     assert!(MACOS_SIGNING_KEYCHAIN_C.contains("memset_s"));
 
-    assert!(!CI_WORKFLOW.contains("APPLE_"));
+    assert!(
+        CI_WORKFLOW
+            .contains("APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}")
+    );
+    assert!(!CI_WORKFLOW.contains("--password"));
     assert!(!CI_WORKFLOW.contains("notarytool"));
 
     assert!(BUILD_MAC_INSTALLER_SH.contains("APPLE_NOTARY_KEYCHAIN_PROFILE"));
@@ -923,6 +925,7 @@ fn release_archives_bind_every_safe_member_before_installation() {
     assert!(VERIFY_RELEASE_SH.contains("manifest member set mismatch"));
     assert!(VERIFY_RELEASE_SH.contains("manifest digest mismatch"));
     assert!(VERIFY_RELEASE_SH.contains("manifest mode mismatch"));
+    assert!(VERIFY_RELEASE_SH.contains("--validate-only"));
     assert!(VERIFY_RELEASE_SH.contains("os.fdopen(descriptor, \"rb\")"));
     assert!(VERIFY_RELEASE_SH.contains("os.O_RDWR | os.O_CREAT | os.O_EXCL"));
     assert!(VERIFY_RELEASE_SH.contains("os.unlink(snapshot_path)"));
@@ -1485,7 +1488,7 @@ with tarfile.open(archive_path, "w:gz") as output:
 }
 
 #[test]
-fn public_ci_updates_linux_homebrew_stanzas_and_leaves_macos_promotion_to_the_signed_pipeline() {
+fn release_ci_updates_formula_and_cask_from_the_same_release() {
     let (_, update_homebrew) = CI_WORKFLOW
         .split_once("\n  update-homebrew:\n")
         .expect("public CI should update the Homebrew tap on stable tags");
@@ -1494,16 +1497,12 @@ fn public_ci_updates_linux_homebrew_stanzas_and_leaves_macos_promotion_to_the_si
         .map_or(update_homebrew, |(job_body, _)| job_body);
     assert!(job_body.contains("!contains(github.ref_name, '-')"));
     assert!(job_body.contains("scripts/homebrew-formula.mjs"));
-    assert!(job_body.contains("--current homebrew-tap/Formula/hypercolor.rb"));
+    assert!(job_body.contains("--cask-output homebrew-tap/Casks/hypercolor-app.rb"));
     assert!(
         job_body.contains("gh api repos/hyperb1iss/homebrew-tap --jq '.permissions.push // false'")
     );
 
-    // The public lane never publishes a macOS build: it downloads only the
-    // Linux tarballs, never touches the cask, and the generator carries the
-    // macOS stanzas forward from the tap until the signed lane replaces them.
-    assert!(job_body.contains("for platform in linux-amd64 linux-arm64; do"));
-    for forbidden in [
+    for required in [
         "macos-arm64",
         "macos-amd64",
         ".dmg",
@@ -1511,12 +1510,11 @@ fn public_ci_updates_linux_homebrew_stanzas_and_leaves_macos_promotion_to_the_si
         "hypercolor-app.rb",
     ] {
         assert!(
-            !job_body.contains(forbidden),
-            "update-homebrew must not publish macOS artifacts: found {forbidden}"
+            job_body.contains(required),
+            "update-homebrew must update every artifact: missing {required}"
         );
     }
-    assert!(!CI_WORKFLOW.contains("tap/Casks"));
-    assert!(HOMEBREW_FORMULA.contains("MACOS_VERSION_PLACEHOLDER"));
+    assert!(!HOMEBREW_FORMULA.contains("MACOS_VERSION_PLACEHOLDER"));
     assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_ARM64"));
     assert!(HOMEBREW_CASK.contains("SHA256_MACOS_APP_ARM64"));
 }
