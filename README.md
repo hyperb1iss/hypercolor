@@ -311,7 +311,10 @@ themselves.
 
 Debian and Ubuntu users can install the `.deb` from the releases page. Arch users have
 [`hypercolor-bin`](https://aur.archlinux.org/packages/hypercolor-bin) on the AUR, and the
-Homebrew formula works on Linux too: `brew install hyperb1iss/tap/hypercolor`.
+Homebrew formula works on Linux too: `brew install hyperb1iss/tap/hypercolor`. NixOS users
+get a flake with a `services.hypercolor` module; `nix run github:hyperb1iss/hypercolor`
+tries the CLI without installing anything (details on the
+[download page](https://hyperb1iss.github.io/hypercolor/download/)).
 
 Building from source instead:
 

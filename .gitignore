@@ -84,3 +84,7 @@ site/out/
 .agents/scheduled_tasks.lock
 .agents/settings.local.json
 drafts-browser.html
+
+# Nix build outputs
+result
+result-*
