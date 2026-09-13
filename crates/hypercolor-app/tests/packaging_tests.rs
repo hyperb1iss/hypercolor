@@ -445,7 +445,7 @@ fn macos_launchers_identify_their_daemon_topology() {
     assert_eq!(
         homebrew_linux_service,
         concat!(
-            "      run [opt_bin/\"hypercolor-daemon\", \"--ui-dir\", share/\"hypercolor/ui\"]\n",
+            "      run [opt_bin/\"hypercolor-daemon\", \"--ui-dir\", opt_pkgshare/\"ui\"]\n",
             "      keep_alive successful_exit: false\n",
             "      log_path var/\"log/hypercolor/hypercolor.log\"\n",
             "      error_log_path var/\"log/hypercolor/hypercolor.log\"\n",
