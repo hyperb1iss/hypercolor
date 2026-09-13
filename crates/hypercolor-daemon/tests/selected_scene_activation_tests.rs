@@ -265,6 +265,7 @@ async fn definition_edit_after_prewrite_rejects_publication_and_persists_exact_r
     assert!(result.brightness.expect("selected brightness").is_err());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn brightness_retry_and_refusal_preserve_original_context_receipt() {
     use hypercolor_daemon::persistence::AtomicFileWriter;
