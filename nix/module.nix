@@ -100,6 +100,16 @@ in
 
     boot.kernelModules = mkIf cfg.smbus.enable [ "i2c-dev" ];
 
+    # ProtectHome=read-only plus ReadWritePaths= needs every listed path to
+    # exist before systemd builds the mount namespace, and nothing else
+    # creates them on a fresh NixOS login (the deb and AUR installers do it
+    # at install time). User tmpfiles run at session start, ahead of the unit.
+    systemd.user.tmpfiles.rules = [
+      "d %h/.config/hypercolor 0700 - - -"
+      "d %h/.local/share/hypercolor 0700 - - -"
+      "d %h/.local/state/hypercolor 0700 - - -"
+    ];
+
     systemd.user.services.hypercolor = {
       description = "Hypercolor RGB Lighting Daemon";
       documentation = [ "https://github.com/hyperb1iss/hypercolor" ];
