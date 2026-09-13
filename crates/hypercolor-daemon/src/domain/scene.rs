@@ -1391,6 +1391,49 @@ impl SceneMutation {
         Ok(zone)
     }
 
+    /// Replace the layers of one exact live lighting zone in this candidate.
+    ///
+    /// # Errors
+    ///
+    /// Refuses stale revisions, a different active scene, snapshot scenes,
+    /// missing zones and display-owned zones before changing the candidate.
+    pub fn set_runtime_zone_color(
+        &mut self,
+        target: super::runtime_zone::RuntimeZoneTarget,
+        color: hypercolor_color::Rgb,
+    ) -> Result<Zone, DomainError> {
+        super::scene_tree::check_scene_revision(self, Some(target.revision))?;
+        let scene_id = self.active_scene_for_runtime_mutation("setting a zone color")?;
+        if scene_id != target.scene_id {
+            return Err(DomainError::conflict(
+                "the requested scene is no longer active",
+            ));
+        }
+        super::scene_tree::ensure_live_zone_mutable(self, target.zone_id)?;
+        let linear = color.to_linear();
+        let layer = SceneLayer {
+            id: SceneLayerId::new(),
+            name: None,
+            source: hypercolor_types::layer::LayerSource::ColorFill {
+                rgba: [linear.r, linear.g, linear.b, linear.a],
+            },
+            blend: hypercolor_types::layer::BlendMode::Replace,
+            opacity: 1.0,
+            transform: hypercolor_types::layer::LayerTransform::default(),
+            adjust: hypercolor_types::layer::LayerAdjust::default(),
+            bindings: Vec::new(),
+            enabled: true,
+        };
+        let (zone, _) = self
+            .candidate
+            .replace_zone_layer_stack(scene_id, target.zone_id, vec![layer])
+            .map_err(|error| DomainError::Internal(anyhow::anyhow!("{error:?}")))?;
+        let zone = zone.clone();
+        self.persists_scene_content = true;
+        self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Updated);
+        Ok(zone)
+    }
+
     /// Drop one layer out of a zone's stack.
     pub fn remove_layer(
         &mut self,

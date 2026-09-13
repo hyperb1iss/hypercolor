@@ -2055,3 +2055,175 @@ async fn orchestrator_reappeared_device_keeps_stable_id_when_scanner_emits_new_i
         .expect("stable registry entry should remain");
     assert_eq!(tracked.info.id, existing_id);
 }
+
+#[tokio::test]
+async fn registry_name_clear_restores_latest_observation_and_preserves_settings() {
+    let registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint::from_persisted("bridge:name-reset".to_owned());
+    let id = registry
+        .add_with_fingerprint(mock_device_info("Original"), fingerprint.clone())
+        .await;
+    registry
+        .update_user_settings(
+            &id,
+            Some("Custom".to_owned()),
+            Some(false),
+            Some(0.37),
+            None,
+        )
+        .await;
+    let before = registry.get(&id).await.expect("registered");
+    assert_eq!(
+        registry
+            .add_with_fingerprint(mock_device_info("Latest"), fingerprint)
+            .await,
+        id
+    );
+    let observed = registry.get(&id).await.expect("rediscovered");
+    assert_eq!(observed.info.name, "Custom");
+    assert!(observed.revision > before.revision);
+    let settings = DeviceUserSettings {
+        name: None,
+        ..observed.user_settings
+    };
+    let cleared = registry
+        .replace_user_settings(&id, settings.clone())
+        .await
+        .expect("cleared");
+    assert_eq!(cleared.info.name, "Latest");
+    assert!(!cleared.user_settings.enabled);
+    assert_eq!(cleared.user_settings.brightness, 0.37);
+    assert_eq!(registry.list().await[0].info.name, "Latest");
+    let generation = registry.generation();
+    let replay = registry
+        .replace_user_settings(&id, settings)
+        .await
+        .expect("replayed");
+    assert_eq!(replay.revision, cleared.revision);
+    assert_eq!(registry.generation(), generation);
+}
+
+#[tokio::test]
+async fn registry_metadata_refresh_keeps_latest_name_behind_override() {
+    let registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint::from_persisted("bridge:name-refresh".to_owned());
+    let id = registry
+        .add_with_fingerprint(mock_device_info("Original"), fingerprint.clone())
+        .await;
+    registry
+        .update_user_settings(&id, Some("Custom".to_owned()), None, None, None)
+        .await;
+    registry
+        .update_info(&id, mock_device_info("Connected name"))
+        .await
+        .expect("metadata update");
+    let settings = registry.get(&id).await.expect("registered").user_settings;
+    assert_eq!(
+        registry
+            .replace_user_settings(
+                &id,
+                DeviceUserSettings {
+                    name: None,
+                    ..settings
+                }
+            )
+            .await
+            .expect("clear")
+            .info
+            .name,
+        "Connected name"
+    );
+    registry
+        .update_user_settings(&id, Some("Custom again".to_owned()), None, None, None)
+        .await;
+    let mut observation = DiscoveredDevice {
+        info: DeviceInfo {
+            id,
+            ..mock_device_info("Refreshed name")
+        },
+        fingerprint,
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+        metadata: HashMap::new(),
+        claim: None,
+    };
+    registry
+        .refresh_discovered(&id, observation.clone())
+        .await
+        .expect("refresh");
+    let tracked = registry.get(&id).await.expect("refreshed device");
+    assert_eq!(tracked.info.name, "Custom again");
+    assert_eq!(tracked.observed_info().name, "Refreshed name");
+    let mut metadata_only = observation.clone();
+    metadata_only.info = tracked.observed_info();
+    metadata_only
+        .metadata
+        .insert("status".to_owned(), "ready".to_owned());
+    registry
+        .refresh_discovered(&id, metadata_only)
+        .await
+        .expect("metadata-only refresh");
+    observation.info.name = "Rejected name".to_owned();
+    observation.info.id = DeviceId::new();
+    assert!(
+        registry
+            .refresh_discovered(&id, observation)
+            .await
+            .is_none()
+    );
+    let settings = registry.get(&id).await.expect("registered").user_settings;
+    assert_eq!(
+        registry
+            .replace_user_settings(
+                &id,
+                DeviceUserSettings {
+                    name: None,
+                    ..settings
+                }
+            )
+            .await
+            .expect("clear refreshed name")
+            .info
+            .name,
+        "Refreshed name"
+    );
+}
+
+#[tokio::test]
+async fn registry_name_clear_after_smbus_remap_uses_new_observed_name() {
+    let registry = DeviceRegistry::new();
+    let id = registry
+        .add_with_fingerprint_and_metadata(
+            asus_dram_device_info(0x71),
+            DeviceFingerprint::from_persisted("smbus:/dev/i2c-9:71".to_owned()),
+            asus_dram_metadata(0x71),
+        )
+        .await;
+    registry.set_state(&id, DeviceState::Connected).await;
+    registry
+        .update_user_settings(&id, Some("My RAM".to_owned()), None, None, None)
+        .await;
+    let remapped = registry
+        .add_with_fingerprint_and_metadata(
+            asus_dram_device_info(0x73),
+            DeviceFingerprint::from_persisted("smbus:/dev/i2c-9:73".to_owned()),
+            asus_dram_metadata(0x73),
+        )
+        .await;
+    assert_eq!(remapped, id);
+    let settings = registry.get(&id).await.expect("remapped").user_settings;
+    assert_eq!(
+        registry
+            .replace_user_settings(
+                &id,
+                DeviceUserSettings {
+                    name: None,
+                    ..settings
+                }
+            )
+            .await
+            .expect("clear")
+            .info
+            .name,
+        "ASUS Aura DRAM (SMBus 0x73)"
+    );
+}
