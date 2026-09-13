@@ -96,8 +96,18 @@ through the desktop portal, so the module enables `xdg.portal` by default.
 Log out and back in after the first rebuild so logind replays the device ACLs.
 
 Outside NixOS, `nix profile install github:hyperb1iss/hypercolor` installs the
-binaries, and the package ships a user unit at `lib/systemd/user/` with store
-paths already filled in.
+binaries, and the package ships a user unit with store paths already filled
+in. systemd does not scan the Nix profile, so link the unit in and copy the
+udev rules yourself:
+
+```bash
+mkdir -p ~/.config/systemd/user
+ln -sf ~/.nix-profile/lib/systemd/user/hypercolor.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now hypercolor.service
+sudo cp ~/.nix-profile/lib/udev/rules.d/*hypercolor*.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+```
 
 ## Windows
 
