@@ -27,6 +27,9 @@ pub struct TrackedDevice {
     /// Full device metadata.
     pub info: DeviceInfo,
 
+    /// Latest driver-provided name before the user override is applied.
+    observed_name: String,
+
     /// Current lifecycle state.
     pub state: DeviceState,
 
@@ -38,6 +41,16 @@ pub struct TrackedDevice {
 
     /// Monotonic mutation counter for this specific device.
     pub revision: u64,
+}
+
+impl TrackedDevice {
+    /// Device metadata without the user-provided name override.
+    #[must_use]
+    pub fn observed_info(&self) -> DeviceInfo {
+        let mut info = self.info.clone();
+        info.name.clone_from(&self.observed_name);
+        info
+    }
 }
 
 // ── DeviceRegistry ───────────────────────────────────────────────────────
@@ -217,9 +230,11 @@ impl DeviceRegistry {
                 // Keep the canonical registry ID stable across rediscovery.
                 updated_info.id = existing_id;
                 preserve_resolved_device_shape(&mut updated_info, &entry.info);
+                let observed_name = updated_info.name.clone();
                 apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
-                let entry_changed =
-                    entry.info != updated_info || entry.connect_behavior != connect_behavior;
+                let entry_changed = entry.info != updated_info
+                    || entry.observed_name != observed_name
+                    || entry.connect_behavior != connect_behavior;
                 let fingerprint_changed =
                     inner.id_to_fingerprint.get(&existing_id) != Some(&fingerprint);
                 let metadata_changed = !metadata.is_empty()
@@ -236,6 +251,7 @@ impl DeviceRegistry {
                             .get_mut(&existing_id)
                             .expect("existing device was resolved above");
                         entry.info = updated_info;
+                        entry.observed_name = observed_name;
                         entry.connect_behavior = connect_behavior;
                         bump_device_revision(entry);
                     }
@@ -280,6 +296,7 @@ impl DeviceRegistry {
                 let mut updated_info = info;
                 updated_info.id = existing_id;
                 preserve_resolved_device_shape(&mut updated_info, &entry.info);
+                entry.observed_name.clone_from(&updated_info.name);
                 apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
                 debug!(
                     device_id = %existing_id,
@@ -319,6 +336,7 @@ impl DeviceRegistry {
 
         let name = tracked_info.name.clone();
         let tracked = TrackedDevice {
+            observed_name: name.clone(),
             info: tracked_info,
             state: DeviceState::Known,
             connect_behavior,
@@ -424,6 +442,7 @@ impl DeviceRegistry {
 
         let mut updated_info = info;
         updated_info.id = *id;
+        entry.observed_name.clone_from(&updated_info.name);
         apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
         entry.info = updated_info;
         bump_device_revision(entry);
@@ -456,6 +475,7 @@ impl DeviceRegistry {
             return None;
         }
         let mut info = discovered.info;
+        entry.observed_name.clone_from(&info.name);
         apply_user_settings_to_info(&mut info, &entry.user_settings);
         entry.info = info;
         entry.connect_behavior = discovered.connect_behavior;
@@ -521,6 +541,7 @@ impl DeviceRegistry {
         let entry = inner.devices.get_mut(id)?;
 
         let mut updated_info = entry.info.clone();
+        updated_info.name.clone_from(&entry.observed_name);
         apply_user_settings_to_info(&mut updated_info, &settings);
         if entry.user_settings == settings && entry.info == updated_info {
             return Some(entry.clone());
@@ -735,6 +756,7 @@ impl DeviceRegistry {
             .expect("device presence was checked above");
         if let Some(settings) = inherited_settings {
             entry.user_settings = settings;
+            entry.info.name.clone_from(&entry.observed_name);
             apply_user_settings_to_info(&mut entry.info, &entry.user_settings);
         }
         bump_device_revision(entry);
