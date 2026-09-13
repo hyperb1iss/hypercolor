@@ -939,6 +939,78 @@ fn seed_state_neutral_rollback_manager(fixture: &Fixture, action: InstallAction)
 }
 
 #[test]
+fn preparation_returns_exact_journal_before_publication_or_platform_transitions() {
+    let fixture = Fixture::new();
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    let mut lock = fixture.store.acquire_lock().expect("preparation lock");
+    let journal = InstallCoordinator::new(&fixture.store, &mut platform)
+        .prepare_with_lock(fixture.request(), &lock)
+        .expect("prepare");
+    assert_eq!(journal.prior_platform, fixture.prior_state());
+    assert_eq!(journal.candidate_unit, *fixture.candidate.id());
+    assert_eq!(journal.next_action, Some(InstallAction::PreflightCandidate));
+    assert!(
+        fixture
+            .store
+            .load_journal(&lock)
+            .expect("unpublished")
+            .is_none()
+    );
+    assert_eq!(
+        fixture.store.active_unit(&lock).expect("active unchanged"),
+        Some(fixture.prior.id().clone())
+    );
+    assert!(platform.effects.is_empty());
+    assert_eq!(platform.state, fixture.prior_state());
+    fixture
+        .store
+        .write_journal(&journal, &lock)
+        .expect("caller publishes after binding");
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover_with_lock(&mut lock)
+        .expect("existing recovery path")
+        .expect("transaction");
+    assert!(matches!(outcome, InstallOutcome::Committed { .. }));
+    assert_eq!(
+        fixture.store.active_unit(&lock).expect("candidate active"),
+        Some(fixture.candidate.id().clone())
+    );
+    fixture.assert_sentinels();
+}
+
+#[test]
+fn preparation_does_not_replace_a_pending_transaction_or_accept_a_foreign_lock() {
+    let fixture = Fixture::new();
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    let lock = fixture.store.acquire_lock().expect("lock");
+    let journal = InstallCoordinator::new(&fixture.store, &mut platform)
+        .prepare_with_lock(fixture.request(), &lock)
+        .expect("prepare");
+    fixture
+        .store
+        .write_journal(&journal, &lock)
+        .expect("existing transaction");
+    assert!(matches!(
+        InstallCoordinator::new(&fixture.store, &mut platform)
+            .prepare_with_lock(fixture.request(), &lock),
+        Err(InstallCoordinatorError::PendingPreparation)
+    ));
+    assert_eq!(
+        fixture.store.load_journal(&lock).expect("unchanged"),
+        Some(journal)
+    );
+    let foreign = InstallStore::new(fixture.directory.path().join("foreign"), 65536);
+    let foreign_lock = foreign.acquire_lock().expect("foreign lock");
+    assert!(matches!(
+        InstallCoordinator::new(&fixture.store, &mut platform)
+            .prepare_with_lock(fixture.request(), &foreign_lock),
+        Err(InstallCoordinatorError::Store(InstallStoreError::WrongLock))
+    ));
+    assert!(platform.effects.is_empty());
+    fixture.assert_sentinels();
+}
+
+#[test]
 fn successful_install_preserves_write_ahead_order_and_private_journal() {
     let fixture = Fixture::new();
     let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
