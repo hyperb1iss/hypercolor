@@ -215,6 +215,7 @@ pub struct DirectoryEntryMetadata {
     pub(super) link_count: u64,
     pub(super) device: u64,
     pub(super) inode: u64,
+    pub(super) owner_uid: u32,
 }
 
 impl DirectoryEntryMetadata {
@@ -246,6 +247,18 @@ impl DirectoryEntryMetadata {
     #[must_use]
     pub fn device(self) -> u64 {
         self.device
+    }
+
+    /// Return the owning Unix user ID observed on the retained file handle.
+    #[must_use]
+    pub fn owner_uid(self) -> u32 {
+        self.owner_uid
+    }
+
+    /// Whether the observed owner is the process's effective Unix user.
+    #[must_use]
+    pub fn is_owned_by_current_user(self) -> bool {
+        self.owner_uid == rustix::process::geteuid().as_raw()
     }
 
     /// Return the inode number.

@@ -504,6 +504,7 @@ fn require_safe_bootstrap_directory(
     path: &Path,
 ) -> Result<(), InstallStoreError> {
     if metadata.kind() != DirectoryEntryKind::Directory
+        || !metadata.is_owned_by_current_user()
         || metadata.mode() & 0o700 != 0o700
         || metadata.mode() & 0o022 != 0
     {
