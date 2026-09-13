@@ -74,10 +74,12 @@ user service that starts the daemon with every graphical login:
 
 ```nix
 {
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   inputs.hypercolor.url = "github:hyperb1iss/hypercolor";
 
   outputs = { nixpkgs, hypercolor, ... }: {
     nixosConfigurations.rig = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
       modules = [
         hypercolor.nixosModules.default
         { services.hypercolor.enable = true; }
