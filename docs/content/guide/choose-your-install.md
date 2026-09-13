@@ -197,8 +197,9 @@ just install
 Full system dependency lists and optional flags (`--minimal`, `--no-system`, `--with-servo`) are in the [Installation reference](@/guide/installation.md).
 
 {% <callout type="tip"> %}
-The source and prebuilt paths both install Hypercolor under `~/.local` and use
-the same systemd user service. A source install applies the USB rule and
+On Linux, the source and prebuilt paths both install Hypercolor under
+`~/.local` and use the same systemd user service. A source install applies the
+USB rule and
 `i2c-dev` setup; run `just udev-install` from the checkout to add the input
 capture rule too. The prebuilt one-liner leaves every system hook to the
 separate permissions step above.
