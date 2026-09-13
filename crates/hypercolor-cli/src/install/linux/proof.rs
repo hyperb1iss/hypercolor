@@ -18,6 +18,14 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         &self,
         unit: &UnitRecord,
     ) -> Result<LinuxUnitBinding, InstallPlatformError> {
+        self.unit_binding_at(unit, &self.config.immutable_units_root)
+    }
+
+    pub(super) fn unit_binding_at(
+        &self,
+        unit: &UnitRecord,
+        units_root: &Path,
+    ) -> Result<LinuxUnitBinding, InstallPlatformError> {
         let daemon = open_unit_file(unit, DAEMON_RELATIVE_PATH)?;
         let daemon_size = daemon.metadata().size();
         let daemon_device = daemon.metadata().device();
@@ -36,9 +44,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             .filter(|version| !version.is_empty() && version.len() <= 128)
             .ok_or_else(|| error("retained unit manifest has no bounded version"))?
             .to_owned();
-        let daemon_path = self
-            .config
-            .immutable_units_root
+        let daemon_path = units_root
             .join(unit.id().as_str())
             .join(DAEMON_RELATIVE_PATH)
             .to_str()

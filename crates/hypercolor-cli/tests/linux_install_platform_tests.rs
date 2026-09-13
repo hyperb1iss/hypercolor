@@ -39,6 +39,7 @@ struct FakeExecutor {
     daemon_digests: BTreeMap<String, String>,
     daemon_identities: BTreeMap<String, (u64, u64)>,
     expected_unit_authorities: Option<Vec<hypercolor_cli::install::UnitRecord>>,
+    expected_prior: Option<(hypercolor_cli::install::UnitRecord, PathBuf)>,
     versions: BTreeMap<String, String>,
     invocation: u32,
     http_calls: usize,
@@ -103,6 +104,7 @@ impl FakeExecutor {
             daemon_digests: BTreeMap::new(),
             daemon_identities: BTreeMap::new(),
             expected_unit_authorities: None,
+            expected_prior: None,
             versions: BTreeMap::new(),
             invocation: 0,
             http_calls: 0,
@@ -240,6 +242,19 @@ impl LinuxInstallExecutor for FakeExecutor {
             (daemon.metadata().device(), daemon.metadata().inode()),
         );
         Ok(())
+    }
+
+    fn prior_units_root(
+        &self,
+        unit: &hypercolor_cli::install::UnitRecord,
+    ) -> Result<PathBuf, hypercolor_cli::install::InstallPlatformError> {
+        self.expected_prior
+            .as_ref()
+            .filter(|(expected, _)| expected == unit)
+            .map(|(_, root)| root.clone())
+            .ok_or_else(|| {
+                hypercolor_cli::install::InstallPlatformError::new("unretained prior role")
+            })
     }
 
     fn active_unit(
@@ -981,6 +996,119 @@ fn unloaded_disabled_upgrade_preserves_service_state_and_user_data() {
     assert_eq!(fs::read(config_sentinel).expect("config"), b"config");
     assert_eq!(fs::read(data_sentinel).expect("data"), b"data");
     assert_eq!(fs::read(effects_sentinel).expect("effect"), b"effect");
+}
+
+#[test]
+fn copied_same_id_keeps_the_original_prior_inode_and_path() {
+    let original = Fixture::new();
+    let copied = Fixture::new();
+    assert_eq!(original.candidate.id(), copied.candidate.id());
+    assert_ne!(original.candidate, copied.candidate);
+    let executor =
+        FakeExecutor::absent(original.store.active_path(), original.daemon_digest.clone());
+    let mut initial = LinuxInstallPlatform::new(executor, config(), []).expect("initial platform");
+    let mut lock = original.store.acquire_lock().expect("original lock");
+    InstallCoordinator::new(&original.store, &mut initial)
+        .install_with_lock(
+            original.request(InstallTargetPolicy::EnableOnFirstInstall),
+            &mut lock,
+        )
+        .expect("original service");
+    let mut executor = initial.into_executor();
+    executor.effects.clear();
+    let root = PathBuf::from("/home/test/historical/units");
+    executor.expected_prior = Some((original.candidate.clone(), root.clone()));
+    let metadata = fs::metadata(
+        original
+            .store
+            .unit_path(original.candidate.id())
+            .join("bin/hypercolor-daemon"),
+    )
+    .expect("original executable");
+    executor.process_override = Some(LinuxProcessExecutable {
+        path: root
+            .join(original.candidate.id().as_str())
+            .join("bin/hypercolor-daemon")
+            .to_str()
+            .expect("fixture authority")
+            .to_owned(),
+        sha256: original.daemon_digest.clone(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    });
+    let mut platform = LinuxInstallPlatform::new(executor, config(), [copied.candidate.clone()])
+        .expect("candidate authority")
+        .with_prior_unit(original.candidate.clone())
+        .expect("prior authority");
+    let prior = InstallationState {
+        active_unit: Some(original.candidate.id().clone()),
+        platform: platform.inspect().expect("inspect"),
+    };
+    let prepared = platform
+        .prepare_transaction(&copied.candidate, &prior, &prior.platform)
+        .expect("prepare");
+    let PlatformTransactionRecord::Linux { payload, .. } = &prepared.record else {
+        panic!("Linux record")
+    };
+    let record: serde_json::Value = serde_json::from_slice(payload).expect("fixture authority");
+    assert_eq!(record["candidate"]["unit"], record["prior"]["unit"]);
+    assert_ne!(
+        record["candidate"]["daemon_inode"],
+        record["prior"]["daemon_inode"]
+    );
+    assert_ne!(
+        record["candidate"]["daemon_path"],
+        record["prior"]["daemon_path"]
+    );
+    platform
+        .preflight_authority(copied.candidate.id(), &prior, &prepared.record)
+        .expect("original owner proof");
+    let forged = forge_record(&prepared.record, |value| {
+        value["prior"] = value["candidate"].clone();
+    });
+    assert!(
+        platform
+            .preflight_authority(copied.candidate.id(), &prior, &forged)
+            .is_err()
+    );
+    let mut executor = platform.into_executor();
+    assert!(executor.effects.is_empty());
+    let copied_metadata = fs::metadata(
+        copied
+            .store
+            .unit_path(copied.candidate.id())
+            .join("bin/hypercolor-daemon"),
+    )
+    .expect("fixture authority");
+    executor
+        .process_override
+        .as_mut()
+        .expect("fixture authority")
+        .inode = copied_metadata.ino();
+    let mut platform = LinuxInstallPlatform::new(executor, config(), [copied.candidate.clone()])
+        .expect("fixture authority")
+        .with_prior_unit(original.candidate.clone())
+        .expect("fixture authority");
+    assert!(
+        platform
+            .preflight_authority(copied.candidate.id(), &prior, &prepared.record)
+            .is_err()
+    );
+}
+
+#[test]
+fn prior_role_refuses_an_unrecognized_same_id_copy() {
+    let original = Fixture::new();
+    let copied = Fixture::new();
+    let mut executor =
+        FakeExecutor::absent(original.store.active_path(), original.daemon_digest.clone());
+    executor.expected_prior = Some((
+        original.candidate.clone(),
+        PathBuf::from("/home/test/prior/units"),
+    ));
+    let platform = LinuxInstallPlatform::new(executor, config(), [copied.candidate.clone()])
+        .expect("fixture authority");
+    assert!(platform.with_prior_unit(copied.candidate.clone()).is_err());
 }
 
 #[test]

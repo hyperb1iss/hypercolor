@@ -15,6 +15,7 @@ mod locator;
 mod locator_receipt;
 mod model;
 mod platform;
+mod prior;
 mod proof;
 mod record;
 mod runtime;
@@ -91,6 +92,7 @@ pub struct LinuxInstallPlatform<E> {
     pub(super) executor: E,
     pub(super) config: LinuxInstallConfig,
     pub(super) known_units: Vec<UnitRecord>,
+    prior_unit: Option<prior::PriorUnitAuthority>,
     pub(super) last_inspection: Option<LinuxInspection>,
     pub(super) legacy_unit: Option<super::UnitId>,
 }
@@ -149,6 +151,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             executor,
             config,
             known_units: units,
+            prior_unit: None,
             last_inspection: None,
             legacy_unit,
         })

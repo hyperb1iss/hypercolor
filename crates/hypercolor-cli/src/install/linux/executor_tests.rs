@@ -382,3 +382,81 @@ fn public_exact_read_rejects_growth_after_the_metadata_bound() {
 
     assert!(error.to_string().contains("changed size"));
 }
+
+#[test]
+fn historical_prior_authority_rejects_copy_and_replaced_ancestor() {
+    use super::executor::LinuxInstallExecutor as _;
+    use crate::install::{UnitId, UnitRecord};
+    use hypercolor_platform_fs::ReadOnlyDirectoryAuthority;
+
+    let id = UnitId::new("a".repeat(64)).expect("unit ID");
+    with_native_public_tree(
+        |home| {
+            fs::create_dir_all(home.join(".local/lib/hypercolor/units").join(id.as_str()))
+                .expect("historical unit");
+            fs::create_dir(home.join("copied-unit")).expect("copied unit");
+        },
+        |home, executor| {
+            let path = home.join(".local/lib/hypercolor/units");
+            let original = UnitRecord::new(
+                id.clone(),
+                home.join("diagnostic-only"),
+                ReadOnlyDirectoryAuthority::open(&path.join(id.as_str()))
+                    .expect("fixture authority"),
+            )
+            .expect("fixture authority");
+            assert!(executor.prior_units_root(&original).is_err());
+            executor
+                .retain_prior_units()
+                .expect("retain historical authority");
+            assert_eq!(
+                executor
+                    .prior_units_root(&original)
+                    .expect("fixture authority"),
+                path
+            );
+            assert!(executor.retain_prior_units().is_err());
+            let copied = UnitRecord::new(
+                id.clone(),
+                path.join(id.as_str()),
+                ReadOnlyDirectoryAuthority::open(&home.join("copied-unit"))
+                    .expect("fixture authority"),
+            )
+            .expect("fixture authority");
+            assert!(executor.prior_units_root(&copied).is_err());
+            fs::rename(home.join(".local/lib"), home.join(".local/displaced-lib"))
+                .expect("fixture authority");
+            fs::create_dir(home.join(".local/lib")).expect("fixture authority");
+            fs::rename(
+                home.join(".local/displaced-lib/hypercolor"),
+                home.join(".local/lib/hypercolor"),
+            )
+            .expect("fixture authority");
+            assert!(executor.prior_units_root(&original).is_err());
+        },
+    );
+}
+
+#[test]
+fn historical_prior_authority_refuses_missing_or_symlinked_root() {
+    with_native_public_tree(
+        |_| {},
+        |_, executor| {
+            assert!(executor.retain_prior_units().is_err());
+        },
+    );
+    with_native_public_tree(
+        |home| {
+            fs::create_dir_all(home.join(".local/lib/hypercolor")).expect("fixture authority");
+            fs::create_dir(home.join("foreign-units")).expect("fixture authority");
+            std::os::unix::fs::symlink(
+                home.join("foreign-units"),
+                home.join(".local/lib/hypercolor/units"),
+            )
+            .expect("fixture authority");
+        },
+        |_, executor| {
+            assert!(executor.retain_prior_units().is_err());
+        },
+    );
+}

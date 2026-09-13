@@ -29,6 +29,7 @@ impl DirectoryObservation {
 #[derive(Debug)]
 pub struct LinuxPublicTree {
     home: PublicDirectoryAuthority,
+    home_path: std::path::PathBuf,
     direct_fragment_path: String,
     directories: BTreeMap<LinuxDirectoryItem, DirectoryObservation>,
 }
@@ -40,11 +41,13 @@ impl LinuxPublicTree {
             .to_str()
             .ok_or_else(|| error("Linux HOME must be exact UTF-8"))?
             .to_owned();
+        let home_path = home.to_owned();
         let home = lock
             .open_public_directory(home)
             .map_err(|source| error(source.to_string()))?;
         let mut tree = Self {
             home,
+            home_path,
             direct_fragment_path,
             directories: BTreeMap::new(),
         };
@@ -56,6 +59,22 @@ impl LinuxPublicTree {
             tree.directories.insert(item, state);
         }
         Ok(tree)
+    }
+
+    pub(super) fn historical_units(
+        &self,
+    ) -> Result<(std::path::PathBuf, PublicDirectoryAuthority), InstallPlatformError> {
+        let relative = Path::new(".local/lib/hypercolor/units");
+        let mut authority = self
+            .home
+            .open_child_directory(Path::new(".local"))
+            .map_err(|source| error(source.to_string()))?;
+        for name in ["lib", "hypercolor", "units"] {
+            authority = authority
+                .open_child_directory(Path::new(name))
+                .map_err(|source| error(source.to_string()))?;
+        }
+        Ok((self.home_path.join(relative), authority))
     }
 
     pub(super) fn direct_fragment_path(&self) -> &str {
