@@ -433,3 +433,236 @@ fn writable_preparation_files_cannot_authorize_locator_publication() {
         assert!(!fixture.old.journal_path().exists());
     }
 }
+
+#[test]
+fn managed_election_uses_only_state_lock_while_old_lock_is_held() {
+    let fixture = Fixture::new();
+    fixture.prepare();
+    fixture
+        .locator
+        .publish_prepared(
+            &fixture.location,
+            &fixture.state,
+            &fixture.state_lock,
+            &mut PriorProof::valid(),
+        )
+        .expect("publish");
+    drop(fixture.state_lock);
+    let elected =
+        super::elect_linux_installation(fixture.home.path()).expect("state-only election");
+    let super::LinuxInstallElection::Managed {
+        store,
+        lock,
+        authority,
+    } = elected
+    else {
+        panic!("managed authority")
+    };
+    assert_eq!(store.root(), fixture.location.release_root());
+    assert_eq!(authority.location(), &fixture.location);
+    authority.confirm_durable().expect("durable authority");
+    let identity = fixture.location.state_root().join("installation.json");
+    let bytes = fs::read(&identity).expect("identity bytes");
+    fs::rename(
+        &identity,
+        fixture.location.state_root().join("previous-identity.json"),
+    )
+    .expect("retain previous identity inode");
+    fs::write(&identity, bytes).expect("replace identical identity");
+    assert!(
+        authority.confirm_durable().is_err(),
+        "replacement identity is not original authority"
+    );
+    assert!(LinuxInstallLocator::retain(fixture.home.path(), &lock).is_err());
+    assert!(
+        fixture.old.acquire_lock().is_err(),
+        "old lock remains held independently"
+    );
+}
+
+#[test]
+fn managed_election_never_bootstraps_missing_state_or_falls_back() {
+    let fixture = Fixture::new();
+    fixture.prepare();
+    fixture
+        .locator
+        .publish_prepared(
+            &fixture.location,
+            &fixture.state,
+            &fixture.state_lock,
+            &mut PriorProof::valid(),
+        )
+        .expect("publish");
+    drop(fixture.state_lock);
+    let relocated = fixture.home.path().join("displaced-state");
+    fs::rename(fixture.location.state_root(), &relocated).expect("displace state");
+    assert!(super::elect_linux_installation(fixture.home.path()).is_err());
+    assert!(!fixture.location.state_root().exists());
+    assert!(matches!(
+        fixture.locator.read().expect("permanent locator"),
+        LinuxInstallAuthority::Managed(_)
+    ));
+}
+
+#[test]
+fn managed_election_requires_matching_identity_and_existing_journal() {
+    let fixture = Fixture::new();
+    fixture.prepare();
+    fixture
+        .locator
+        .publish_prepared(
+            &fixture.location,
+            &fixture.state,
+            &fixture.state_lock,
+            &mut PriorProof::valid(),
+        )
+        .expect("publish");
+    drop(fixture.state_lock);
+    let journal = fixture.location.state_root().join("install-journal.json");
+    let bytes = fs::read(&journal).expect("journal");
+    fs::remove_file(&journal).expect("remove journal");
+    assert!(super::elect_linux_installation(fixture.home.path()).is_err());
+    fs::write(&journal, bytes).expect("restore journal");
+    fs::write(
+        fixture.location.state_root().join("installation.json"),
+        b"{}",
+    )
+    .expect("corrupt identity");
+    assert!(super::elect_linux_installation(fixture.home.path()).is_err());
+}
+
+#[test]
+fn legacy_election_holds_the_original_install_lock() {
+    let home = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).expect("home");
+    let elected = super::elect_linux_installation(home.path()).expect("legacy authority");
+    let super::LinuxInstallElection::Legacy { store, locator, .. } = elected else {
+        panic!("legacy authority")
+    };
+    assert!(matches!(
+        locator.read().expect("legacy journal"),
+        LinuxInstallAuthority::Legacy(None)
+    ));
+    assert!(store.acquire_lock().is_err());
+}
+
+#[test]
+fn managed_election_rechecks_the_locator_after_the_unlocked_hint() {
+    let fixture = Fixture::new();
+    fixture.prepare();
+    fixture
+        .locator
+        .publish_prepared(
+            &fixture.location,
+            &fixture.state,
+            &fixture.state_lock,
+            &mut PriorProof::valid(),
+        )
+        .expect("publish");
+    drop(fixture.state_lock);
+    let result = super::election::elect_with(fixture.home.path(), || {
+        fs::write(
+            fixture.old.root().join("install-journal.json"),
+            br#"{"schema_version":99}"#,
+        )
+        .expect("replace locator after hint");
+    });
+    assert!(result.is_err());
+    assert!(
+        fixture.state.acquire_lock().is_ok(),
+        "failed election releases state lock"
+    );
+}
+
+#[test]
+fn legacy_hint_rechecks_a_concurrently_published_managed_locator() {
+    let fixture = Fixture::new();
+    fixture.prepare();
+    let Fixture {
+        home,
+        old: _,
+        old_lock,
+        locator,
+        location,
+        state,
+        state_lock,
+    } = fixture;
+    let expected = location.clone();
+    let elected = super::election::elect_with(home.path(), move || {
+        locator
+            .publish_prepared(&location, &state, &state_lock, &mut PriorProof::valid())
+            .expect("publish after legacy hint");
+        drop(locator);
+        drop(state_lock);
+        drop(old_lock);
+    })
+    .expect("reread selects managed authority");
+    let super::LinuxInstallElection::Managed { authority, .. } = elected else {
+        panic!("managed authority")
+    };
+    assert_eq!(authority.location(), &expected);
+}
+
+#[test]
+fn managed_election_refuses_a_writable_permanent_locator() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixture = Fixture::new();
+    fixture.prepare();
+    fixture
+        .locator
+        .publish_prepared(
+            &fixture.location,
+            &fixture.state,
+            &fixture.state_lock,
+            &mut PriorProof::valid(),
+        )
+        .expect("publish");
+    drop(fixture.state_lock);
+    fs::set_permissions(
+        fixture.old.root().join("install-journal.json"),
+        fs::Permissions::from_mode(0o666),
+    )
+    .expect("make locator writable");
+    assert!(super::elect_linux_installation(fixture.home.path()).is_err());
+}
+
+#[test]
+fn managed_election_refuses_writable_state_journal_and_allows_normal_replacement() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixture = Fixture::new();
+    fixture.prepare();
+    fixture
+        .locator
+        .publish_prepared(
+            &fixture.location,
+            &fixture.state,
+            &fixture.state_lock,
+            &mut PriorProof::valid(),
+        )
+        .expect("publish");
+    drop(fixture.state_lock);
+    let path = fixture.location.state_root().join("install-journal.json");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).expect("writable journal");
+    assert!(super::elect_linux_installation(fixture.home.path()).is_err());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("private journal");
+    let elected = super::elect_linux_installation(fixture.home.path()).expect("valid journal");
+    let super::LinuxInstallElection::Managed {
+        store,
+        lock,
+        authority,
+    } = elected
+    else {
+        panic!("managed authority")
+    };
+    let journal = store
+        .load_journal(&lock)
+        .expect("read journal")
+        .expect("journal exists");
+    store
+        .write_journal(&journal, &lock)
+        .expect("normal atomic journal replacement");
+    authority
+        .confirm_durable()
+        .expect("journal is mutable during recovery");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).expect("late writable journal");
+    assert!(authority.confirm_durable().is_err());
+}

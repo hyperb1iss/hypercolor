@@ -13,8 +13,11 @@ use super::super::{
 use super::location::{InstallLocationError, LinuxInstallLocation};
 use super::locator_receipt::{AdoptionPreparation, RECEIPT_NAME};
 
+#[path = "election.rs"]
+mod election;
 #[path = "locator_preparation.rs"]
 mod preparation;
+pub use election::{LinuxInstallElection, LinuxManagedAuthority, elect_linux_installation};
 
 const LOCATOR_NAME: &str = "install-journal.json";
 const MAX_LOCATOR_BYTES: u64 = MAX_INSTALL_JOURNAL_BYTES as u64;
@@ -90,6 +93,13 @@ impl LinuxInstallLocator {
     }
 
     fn decode(&self, bytes: Option<Vec<u8>>) -> Result<LinuxInstallAuthority, LinuxLocatorError> {
+        Self::decode_at(&self.home, bytes)
+    }
+
+    fn decode_at(
+        home: &Path,
+        bytes: Option<Vec<u8>>,
+    ) -> Result<LinuxInstallAuthority, LinuxLocatorError> {
         let Some(bytes) = bytes else {
             return Ok(LinuxInstallAuthority::Legacy(None));
         };
@@ -106,7 +116,7 @@ impl LinuxInstallLocator {
                 Ok(LinuxInstallAuthority::Legacy(Some(journal)))
             }
             Some(2) => Ok(LinuxInstallAuthority::Managed(LinuxInstallLocation::parse(
-                &bytes, &self.home,
+                &bytes, home,
             )?)),
             _ => Err(LinuxLocatorError::InvalidLocator),
         }
@@ -226,6 +236,8 @@ impl LinuxInstallLocator {
             _ => return Err(LinuxLocatorError::InvalidLocator),
         }
         self.public.validate_ancestry()?;
+        let locator_file = self.public.open_regular_file(Path::new(LOCATOR_NAME))?;
+        preparation::require_file_owner(locator_file.metadata(), expected.uid())?;
         self.directory.sync()?;
         self.public.validate_ancestry()?;
         match self.read()? {
