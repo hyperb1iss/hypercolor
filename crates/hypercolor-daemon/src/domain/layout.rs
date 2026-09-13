@@ -676,6 +676,18 @@ impl LayoutContext {
             .await
     }
 
+    pub(crate) async fn apply_selected_under_guard(
+        &self,
+        guard: &LayoutUpdateGuard,
+        layout: SpatialLayout,
+        expected: super::scene_activation::ObservedScene,
+        runtime: &LayoutRuntime,
+    ) -> super::scene_activation::SelectedLayoutOutcome {
+        self.publication
+            .apply_selected_under_guard(guard, layout, expected, runtime.driver_host())
+            .await
+    }
+
     pub(crate) async fn converge_persisted_update(
         &self,
         runtime: &LayoutRuntime,

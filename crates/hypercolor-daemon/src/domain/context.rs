@@ -363,6 +363,42 @@ impl RuntimeSessionProjection {
         })
     }
 
+    pub(crate) async fn persist_snapshot_observed<F, Fut>(
+        &self,
+        path: &Path,
+        before_snapshot: Fut,
+        update: F,
+    ) -> super::scene_activation::ProjectionWriteEvidence
+    where
+        F: FnOnce(&mut RuntimeSessionSnapshot),
+        Fut: Future<Output = ()>,
+    {
+        use super::scene_activation::{ProjectionDurability, ProjectionWriteEvidence};
+        let mut save = match self.prepare_save(path, before_snapshot).await {
+            Ok(save) => save,
+            Err(error) => {
+                return ProjectionWriteEvidence {
+                    projection: None,
+                    durability: ProjectionDurability::BeforeAdmission(error.to_string()),
+                };
+            }
+        };
+        update(&mut save.snapshot);
+        let (projection, result) = save.commit_observed();
+        let durability = match result {
+            Ok(AtomicWriteOutcome::Written) => ProjectionDurability::Written,
+            Ok(AtomicWriteOutcome::Superseded) => ProjectionDurability::Superseded,
+            Err(error @ runtime_state::RuntimeSessionError::Persist { .. }) => {
+                ProjectionDurability::Retrying(error.to_string())
+            }
+            Err(error) => ProjectionDurability::BeforeAdmission(error.to_string()),
+        };
+        ProjectionWriteEvidence {
+            projection: Some(projection),
+            durability,
+        }
+    }
+
     pub(crate) async fn flush_persistence(
         &self,
         path: &Path,
@@ -693,6 +729,17 @@ pub struct SceneContext {
 }
 
 impl SceneContext {
+    pub(crate) async fn set_selected_brightness(
+        &self,
+        output: &super::output::OutputContext,
+        expected: &super::scene_activation::ObservedScene,
+        brightness: f32,
+    ) -> Result<super::scene_activation::SelectedBrightnessOutcome, DomainError> {
+        output
+            .set_selected_brightness(&self.scenes, expected, brightness)
+            .await
+    }
+
     pub(crate) fn new(
         scenes: SceneService,
         runtime_session: RuntimeSessionService,

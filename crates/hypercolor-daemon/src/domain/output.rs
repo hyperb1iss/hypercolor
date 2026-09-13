@@ -57,6 +57,38 @@ pub struct OutputContext {
 }
 
 impl OutputContext {
+    pub(crate) async fn set_selected_brightness(
+        &self,
+        scenes: &super::scene::SceneService,
+        expected: &super::scene_activation::ObservedScene,
+        brightness: f32,
+    ) -> Result<super::scene_activation::SelectedBrightnessOutcome, DomainError> {
+        use super::scene_activation::{BrightnessDurability, SelectedBrightnessOutcome};
+        if !(0.0..=1.0).contains(&brightness) {
+            return Err(DomainError::validation_field(
+                "brightness",
+                "brightness must be between 0.0 and 1.0",
+            ));
+        }
+        let transition = self.output_power.transition().await;
+        let _definition = scenes.guard_definition(expected).await?;
+        let (previous, persistence) = transition
+            .set_brightness_observed(&self.event_bus, brightness, || {})
+            .await
+            .map_err(DomainError::Internal)?;
+        let durability = match persistence {
+            crate::device_settings::BrightnessPersistence::Durable => BrightnessDurability::Written,
+            crate::device_settings::BrightnessPersistence::Retrying(error) => {
+                BrightnessDurability::Retrying(error.to_string())
+            }
+        };
+        Ok(SelectedBrightnessOutcome {
+            value: brightness,
+            previous,
+            durability,
+        })
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "the composition root supplies the complete output ownership boundary"

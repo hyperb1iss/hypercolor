@@ -46,6 +46,77 @@ impl ActiveLayoutBindingMigration {
 }
 
 impl LayoutPublication {
+    pub(super) async fn apply_selected_under_guard(
+        &self,
+        guard: &LayoutUpdateGuard,
+        layout: SpatialLayout,
+        expected: crate::domain::scene_activation::ObservedScene,
+        driver_host: Arc<DaemonDriverHost>,
+    ) -> crate::domain::scene_activation::SelectedLayoutOutcome {
+        use crate::domain::scene_activation::{
+            LayoutSceneFence, ProjectionDurability, SelectedLayoutOutcome,
+        };
+        let fence = LayoutSceneFence::new(expected);
+        let selected_layout = layout.clone();
+        let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&writes);
+        let context = self.persistence_context(driver_host);
+        let result = self
+            .transactions
+            .apply_selected_under_guard(guard, layout, Arc::clone(&fence), move |phase| {
+                let context = context.clone();
+                let recorded = Arc::clone(&recorded);
+                async move {
+                    let driver_host = Arc::clone(&context.driver_host);
+                    let evidence = context
+                        .runtime_projection
+                        .persist_snapshot_observed(
+                            &context.runtime_state_path,
+                            async move {
+                                driver_host.refresh_driver_inventory().await;
+                            },
+                            move |snapshot| {
+                                if let LayoutPersistencePhase::Precommit(candidate) = phase {
+                                    snapshot.active_layout_id = Some(candidate.layout.id);
+                                    if candidate.active_scene_id == Some(SceneId::DEFAULT) {
+                                        snapshot.default_scene_zones =
+                                            candidate.resolved_zones.to_vec();
+                                    }
+                                }
+                            },
+                        )
+                        .await;
+                    let outcome = match &evidence.durability {
+                        ProjectionDurability::Written => LayoutPersistenceOutcome::Written,
+                        ProjectionDurability::Superseded => LayoutPersistenceOutcome::Superseded,
+                        ProjectionDurability::BeforeAdmission(error) => {
+                            LayoutPersistenceOutcome::BeforeAdmission(error.clone())
+                        }
+                        ProjectionDurability::Retrying(error) => {
+                            LayoutPersistenceOutcome::RetryArmed(error.clone())
+                        }
+                    };
+                    recorded
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(evidence);
+                    outcome
+                }
+            })
+            .await;
+        let writes = std::mem::take(
+            &mut *writes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        SelectedLayoutOutcome {
+            layout: selected_layout,
+            publication: result.map_err(|error| error.to_string()),
+            writes,
+            admitted_scene: fence.admitted(),
+        }
+    }
+
     pub(super) fn new(
         spatial: SpatialService,
         scenes: SceneService,

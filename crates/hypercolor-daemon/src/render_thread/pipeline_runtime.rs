@@ -1340,6 +1340,7 @@ impl PreparedCanvasResize {
 }
 
 pub(crate) struct PreparedLayoutActivation {
+    pub(crate) scene_fence: Option<Arc<crate::domain::scene_activation::LayoutSceneFence>>,
     pub(crate) spatial_engine: SpatialEngine,
     pub(crate) expected_layout: SpatialLayout,
     pub(crate) active_scene_id: Option<SceneId>,
