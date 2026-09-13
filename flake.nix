@@ -85,7 +85,7 @@
               grep -q -- "--effects-dir ${hypercolor}/share/hypercolor/effects/bundled" "$unit"
               grep -q -- "--log-level debug" "$unit"
               grep -q "^ProtectSystem=strict" "$unit"
-              grep -q "^HYPERCOLOR_LOG=info" "$unit" || grep -q 'HYPERCOLOR_LOG=info' "$unit"
+              grep -q 'HYPERCOLOR_LOG=info' "$unit"
               touch $out
             '';
         }

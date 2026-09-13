@@ -374,8 +374,9 @@ fn resolve_ui_dir(explicit: Option<PathBuf>) -> Option<PathBuf> {
         .ok()
         .and_then(|meta| meta.modified().ok())
         // Reproducible package stores (Nix, Guix) normalize every mtime to
-        // the Unix epoch, which would read as decades stale. Treat those as
-        // an unknown build time rather than a rebuild nag on every boot.
+        // one second past the Unix epoch, which would read as decades stale.
+        // Treat anything that early as an unknown build time rather than a
+        // rebuild nag on every boot.
         .filter(|modified| *modified > std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
         .and_then(|modified| modified.elapsed().ok());
 
