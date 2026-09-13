@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Homebrew cask for the Hypercolor desktop app.
-# Updated manually after release artifacts pass signed acceptance.
+# Updated by CI from signed and notarized release artifacts.
 
 cask "hypercolor-app" do
   arch arm: "arm64", intel: "x86_64"
