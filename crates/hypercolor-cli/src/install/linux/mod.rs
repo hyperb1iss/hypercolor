@@ -8,6 +8,9 @@ mod legacy;
 #[cfg(test)]
 mod legacy_tests;
 mod legacy_validation;
+mod location;
+#[cfg(test)]
+mod location_tests;
 mod model;
 mod platform;
 mod proof;
@@ -23,6 +26,7 @@ use super::{InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord}
 
 pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};
+pub use location::{InstallLocationError, LinuxInstallLocation, RetainedLinuxInstallLocation};
 pub use model::{
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,
     LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse, LinuxInstallConfig, LinuxLayoutItem,

@@ -13,11 +13,12 @@ pub use coordinator::{
 };
 #[cfg(unix)]
 pub use linux::{
-    LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,
-    LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse, LinuxInstallConfig,
-    LinuxInstallExecutor, LinuxInstallPlatform, LinuxLayoutItem, LinuxLayoutPublication,
-    LinuxLegacyFile, LinuxLegacySnapshot, LinuxNativeExecutor, LinuxProcessExecutable,
-    LinuxPublicEntry, LinuxPublicTree, LinuxSystemdConnection, LinuxSystemdObservation,
+    InstallLocationError, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem,
+    LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse,
+    LinuxInstallConfig, LinuxInstallExecutor, LinuxInstallLocation, LinuxInstallPlatform,
+    LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLegacySnapshot,
+    LinuxNativeExecutor, LinuxProcessExecutable, LinuxPublicEntry, LinuxPublicTree,
+    LinuxSystemdConnection, LinuxSystemdObservation, RetainedLinuxInstallLocation,
     bind_linux_retained_unit, parse_systemd_show, retain_linux_unit,
 };
 pub use model::{

@@ -7,6 +7,7 @@ mod exact;
 mod metadata_tests;
 mod operation;
 mod read;
+mod relationship;
 mod rollback;
 mod staging;
 
