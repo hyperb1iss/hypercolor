@@ -186,15 +186,32 @@ struct RawAssets {
     docs: u64,
     #[serde(rename = "skill_files")]
     skills: u64,
+    #[serde(
+        default,
+        rename = "user_skill_files",
+        deserialize_with = "present_asset_count"
+    )]
+    user_skills: Option<u64>,
     #[serde(rename = "agent_files")]
     agents: u64,
     #[serde(rename = "site_files")]
     site: u64,
 }
 
+fn present_asset_count<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    u64::deserialize(deserializer).map(Some)
+}
+
 impl RawAssets {
     fn validate_minimums(&self) -> Result<(), ReleasePayloadError> {
-        if self.ui == 0 || self.bundled_effects == 0 || self.skills == 0 || self.agents == 0 {
+        if self.ui == 0
+            || self.bundled_effects == 0
+            || self.skills == 0
+            || self.user_skills == Some(0)
+            || self.agents == 0
+        {
             return Err(ReleasePayloadError::InvalidManifest(
                 "required release asset counts must be nonzero".to_owned(),
             ));
@@ -311,7 +328,11 @@ fn validate_asset_counts(
         ("share/hypercolor/agents/agents", assets.agents),
         ("share/hypercolor/site", assets.site),
     ];
-    for (prefix, expected_count) in expected {
+    // Older releases predate the separate user-facing skills directory.
+    let user_skills = assets
+        .user_skills
+        .map(|count| ("share/hypercolor/skills", count));
+    for (prefix, expected_count) in expected.into_iter().chain(user_skills) {
         if !members
             .get(prefix)
             .is_some_and(ValidatedMember::is_directory)

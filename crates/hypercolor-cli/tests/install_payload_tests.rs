@@ -577,6 +577,76 @@ fn verified_manifest_digest_mismatch_fails_before_install_state_mutation() {
 }
 
 #[test]
+fn user_skill_asset_count_validates_shipped_tree_and_preserves_legacy_manifests() {
+    let fixture = ReleaseFixture::new();
+    validate_release_payload(fixture.path(), &fixture.candidate, &fixture.expected_unit())
+        .expect("legacy manifest without separate user skills remains valid");
+
+    let root = "share/hypercolor/skills";
+    let file = "share/hypercolor/skills/SKILL.md";
+    fs::create_dir(fixture.path().join(root)).expect("create user skills root");
+    fs::set_permissions(fixture.path().join(root), fs::Permissions::from_mode(0o755))
+        .expect("set root mode");
+    fs::write(fixture.path().join(file), b"user skill").expect("write user skill");
+    fs::set_permissions(fixture.path().join(file), fs::Permissions::from_mode(0o644))
+        .expect("set skill mode");
+    let mut manifest = fixture.manifest_value();
+    manifest["assets"]["user_skill_files"] = json!(1);
+    let members = manifest["members"].as_array_mut().expect("member list");
+    members.push(json!({"path": root, "type": "directory", "mode": 0o755}));
+    members.push(json!({"path": file, "type": "file", "mode": 0o644,
+        "size": 10, "sha256": sha256(b"user skill")}));
+    members.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
+    fixture.write_manifest(&manifest);
+    validate_release_payload(fixture.path(), &fixture.candidate, &fixture.expected_unit())
+        .expect("current user skills manifest validates");
+
+    manifest["assets"]["user_skill_files"] = json!(2);
+    fixture.write_manifest(&manifest);
+    let error =
+        validate_release_payload(fixture.path(), &fixture.candidate, &fixture.expected_unit())
+            .expect_err("incorrect user skill count must fail");
+    assert!(error.to_string().contains("asset count is wrong"));
+}
+
+#[test]
+fn user_skill_asset_field_requires_a_root_and_rejects_null() {
+    for count in [json!(1), Value::Null] {
+        let fixture = ReleaseFixture::new();
+        let mut manifest = fixture.manifest_value();
+        manifest["assets"]["user_skill_files"] = count.clone();
+        fixture.write_manifest(&manifest);
+        let error =
+            validate_release_payload(fixture.path(), &fixture.candidate, &fixture.expected_unit())
+                .expect_err("present user skills count must be valid and have a root");
+        if count.is_null() {
+            assert!(error.to_string().contains("strict JSON"));
+        } else {
+            assert!(error.to_string().contains("asset root is missing"));
+        }
+    }
+}
+
+#[test]
+fn user_skill_asset_field_rejects_an_empty_present_root() {
+    let fixture = ReleaseFixture::new();
+    let root = "share/hypercolor/skills";
+    fs::create_dir(fixture.path().join(root)).expect("create user skills root");
+    fs::set_permissions(fixture.path().join(root), fs::Permissions::from_mode(0o755))
+        .expect("set root mode");
+    let mut manifest = fixture.manifest_value();
+    manifest["assets"]["user_skill_files"] = json!(0);
+    let members = manifest["members"].as_array_mut().expect("member list");
+    members.push(json!({"path": root, "type": "directory", "mode": 0o755}));
+    members.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
+    fixture.write_manifest(&manifest);
+    let error =
+        validate_release_payload(fixture.path(), &fixture.candidate, &fixture.expected_unit())
+            .expect_err("declared user skills must be nonempty like other required assets");
+    assert!(error.to_string().contains("counts must be nonzero"));
+}
+
+#[test]
 fn release_preflight_validates_before_store_bootstrap() {
     let fixture = ReleaseFixture::new();
     let (install_parent, store) = new_store();
