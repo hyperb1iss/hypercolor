@@ -955,7 +955,9 @@ jobs:
     if: needs.changes.outputs.nix == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
@@ -2499,7 +2501,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: main
 
@@ -2591,9 +2593,13 @@ jobs:
           EOF
           # The branch is bot-owned, so a rerun of the tag lane replaces it.
           git push --force origin "${branch}"
+          existing="$(gh pr list --head "${branch}" --state open --json number --jq 'length')"
+          if [[ "${existing}" != "0" ]]; then
+            echo "Pull request already open for ${branch}; the force-push refreshed it."
+            exit 0
+          fi
           gh pr create \
             --base main \
             --head "${branch}" \
             --title "chore(nix): pin flake to release ${VERSION}" \
-            --body "Automated pin of the Nix flake to the v${VERSION} release tarballs. Checksums come straight from the published GitHub Release assets." \
-            || echo "Pull request already open for ${branch}."
+            --body "Automated pin of the Nix flake to the v${VERSION} release tarballs. Checksums come straight from the published GitHub Release assets."
