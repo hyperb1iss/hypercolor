@@ -1208,9 +1208,9 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         Some(id.clone())
     );
     let copied = retain_linux_unit(&store, &lock, &id).expect("managed unit");
-    let mut platform = LinuxInstallPlatform::new(executor, new_config, [copied])
+    let mut platform = LinuxInstallPlatform::new(executor, new_config.clone(), [copied.clone()])
         .expect("recovery platform")
-        .with_prior_unit(original)
+        .with_prior_unit(original.clone())
         .expect("recorded original role");
     let result = InstallCoordinator::new(&store, &mut platform).recover_with_lock(&mut lock);
     if rollback {
@@ -1256,6 +1256,28 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
             .expect("path")
         )
     );
+    let mut next = LinuxInstallPlatform::new(executor, new_config, [copied.clone()])
+        .expect("next command platform");
+    if rollback {
+        next = next
+            .with_prior_unit(original)
+            .expect("rollback still runs historical prior");
+    }
+    let outcome = InstallCoordinator::new(&store, &mut next)
+        .install_with_lock(
+            InstallRequest {
+                transaction_id: InstallTransactionId::new("next-managed-attempt").expect("id"),
+                candidate: copied,
+                target_policy: InstallTargetPolicy::Preserve,
+            },
+            &mut lock,
+        )
+        .expect("next attempt uses disposition-appropriate prior");
+    assert!(matches!(
+        outcome,
+        hypercolor_cli::install::InstallOutcome::Committed { .. }
+    ));
+    drop(next);
     drop(authority);
     drop(lock);
     drop(old_lock);
