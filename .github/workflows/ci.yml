@@ -2485,7 +2485,9 @@ jobs:
   # ── Update Nix Release Pin ───────────────────────────────────────
   # Mirrors update-aur: the flake wraps the published tarballs, so the
   # version and checksums in nix/release.json move after every stable
-  # release. Lands as a pull request so main keeps the review gate.
+  # release. Lands as a pull request so main keeps the review gate. GitHub
+  # never runs pull_request workflows for PRs opened with GITHUB_TOKEN, so
+  # the job builds the flake against the new pin itself before opening it.
   update-nix:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
@@ -2539,16 +2541,42 @@ jobs:
             > nix/release.json
           cat nix/release.json
 
-      - name: Open pull request
+      - name: Check whether the pin moved
+        id: pin
         env:
-          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           if git diff --quiet -- nix/release.json; then
             echo "nix/release.json already points at ${VERSION}; nothing to do."
-            exit 0
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - uses: cachix/install-nix-action@v31
+        if: steps.pin.outputs.changed == 'true'
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build the flake against the new pin
+        if: steps.pin.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          nix flake check --print-build-logs
+          nix build .#hypercolor --print-build-logs
+          ./result/bin/hypercolor --version | grep -F "${VERSION}"
+
+      - name: Open pull request
+        if: steps.pin.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
           branch="ci/nix-release-${VERSION}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -2561,7 +2589,8 @@ jobs:
           wraps those artifacts, so the version and per-architecture
           checksums in nix/release.json follow every stable release.
           EOF
-          git push --force-with-lease origin "${branch}"
+          # The branch is bot-owned, so a rerun of the tag lane replaces it.
+          git push --force origin "${branch}"
           gh pr create \
             --base main \
             --head "${branch}" \
