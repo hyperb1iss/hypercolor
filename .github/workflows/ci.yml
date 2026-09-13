@@ -110,6 +110,7 @@ jobs:
       ui: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.ui }}
       compat: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.compat }}
       docs: ${{ steps.filter.outputs.docs }}
+      nix: ${{ steps.filter.outputs.nix }}
       workflow: ${{ steps.filter.outputs.workflow }}
     steps:
       - uses: actions/checkout@v7
@@ -211,6 +212,12 @@ jobs:
               - 'scripts/tests/release-workflow.test.mjs'
               - 'scripts/tests/resolve-release-version.test.mjs'
               - 'packaging/homebrew/**'
+            nix:
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/**'
+              - 'udev/**'
+              - '.github/workflows/ci.yml'
 
   # ── Workflow Lint ─────────────────────────────────────────────
   workflow-lint:
@@ -940,6 +947,33 @@ jobs:
           bun-version: 1.4.0
       - name: Verify compatibility matrix is current
         run: bun scripts/gen-compat.ts --check
+
+  # ── Nix Flake ───────────────────────────────────────────────────
+  nix:
+    name: Nix Flake
+    needs: changes
+    if: needs.changes.outputs.nix == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Check flake formatting
+        run: nix run nixpkgs#nixfmt-tree -- --ci
+      - name: Build package and evaluate the NixOS module
+        run: nix flake check --print-build-logs
+      - name: Smoke-test the built package
+        run: |
+          set -euo pipefail
+          nix build .#hypercolor --print-build-logs
+          ./result/bin/hypercolor --version
+          ./result/bin/hypercolor-daemon --help >/dev/null
+          test -f ./result/lib/udev/rules.d/99-hypercolor.rules
+          test -f ./result/lib/udev/rules.d/70-hypercolor-input.rules
+          test -f ./result/share/hypercolor/ui/index.html
+          test -d ./result/share/hypercolor/effects/bundled
 
   # ── Python Client ────────────────────────────────────────────────
   python:
@@ -2447,3 +2481,90 @@ jobs:
             -m "hypercolor: update to ${VERSION}" \
             -m "Update formula and cask from the published release checksums."
           git push
+
+  # ── Update Nix Release Pin ───────────────────────────────────────
+  # Mirrors update-aur: the flake wraps the published tarballs, so the
+  # version and checksums in nix/release.json move after every stable
+  # release. Lands as a pull request so main keeps the review gate.
+  update-nix:
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      startsWith(github.ref, 'refs/tags/') &&
+      !contains(github.ref_name, '-')
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Determine version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release artifacts and compute checksums
+        id: checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          for platform in linux-amd64 linux-arm64; do
+            tarball="hypercolor-${VERSION}-${platform}.tar.gz"
+            gh release download "v${VERSION}" \
+              --repo "${{ github.repository }}" \
+              --pattern "${tarball}" \
+              --dir release-artifacts
+            sha=$(sha256sum "release-artifacts/${tarball}" | cut -d' ' -f1)
+            echo "sha256_${platform//-/_}=${sha}" >> "$GITHUB_OUTPUT"
+            echo "  ${platform}: ${sha}"
+          done
+
+      - name: Write nix/release.json
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA_AMD64: ${{ steps.checksums.outputs.sha256_linux_amd64 }}
+          SHA_ARM64: ${{ steps.checksums.outputs.sha256_linux_arm64 }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg version "$VERSION" \
+            --arg amd64 "$SHA_AMD64" \
+            --arg arm64 "$SHA_ARM64" \
+            '{version: $version, sha256: {"x86_64-linux": $amd64, "aarch64-linux": $arm64}}' \
+            > nix/release.json
+          cat nix/release.json
+
+      - name: Open pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- nix/release.json; then
+            echo "nix/release.json already points at ${VERSION}; nothing to do."
+            exit 0
+          fi
+          branch="ci/nix-release-${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${branch}"
+          git add nix/release.json
+          git commit -F - <<EOF
+          chore(nix): pin flake to release ${VERSION}
+
+          Automated after the v${VERSION} tarballs were published. The flake
+          wraps those artifacts, so the version and per-architecture
+          checksums in nix/release.json follow every stable release.
+          EOF
+          git push --force-with-lease origin "${branch}"
+          gh pr create \
+            --base main \
+            --head "${branch}" \
+            --title "chore(nix): pin flake to release ${VERSION}" \
+            --body "Automated pin of the Nix flake to the v${VERSION} release tarballs. Checksums come straight from the published GitHub Release assets." \
+            || echo "Pull request already open for ${branch}."
