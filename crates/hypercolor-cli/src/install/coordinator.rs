@@ -157,6 +157,34 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             return self.resume(journal, lock);
         }
 
+        let journal = self.prepare_with_lock(request, lock)?;
+        self.store.write_journal(&journal, lock)?;
+        self.drive_forward(journal, lock)
+    }
+
+    /// Build an exact initial journal without publishing or driving it.
+    ///
+    /// Platform preparation retains the original inspection and candidate
+    /// bindings. Callers may durably bind that journal to an authority handoff
+    /// before writing it and entering the existing recovery path.
+    ///
+    /// # Errors
+    /// Returns an error when another transaction needs recovery, the lock is
+    /// foreign, or the original platform and transaction plan cannot be proven.
+    pub fn prepare_with_lock(
+        &mut self,
+        request: InstallRequest,
+        lock: &InstallLock,
+    ) -> Result<InstallJournalV1, InstallCoordinatorError> {
+        if let Some(journal) = self.store.load_journal(lock)?
+            && matches!(
+                journal.disposition,
+                InstallDisposition::Forward | InstallDisposition::Rollback
+            )
+        {
+            return Err(InstallCoordinatorError::PendingPreparation);
+        }
+
         let prior_active_unit = self.store.active_unit(lock)?;
         let prior_platform = self
             .platform
@@ -198,8 +226,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             prepared_platform.layout_operation_count,
             prepared_platform.record,
         )?;
-        self.store.write_journal(&journal, lock)?;
-        self.drive_forward(journal, lock)
+        Ok(journal)
     }
 
     pub fn recover(&mut self) -> Result<Option<InstallOutcome>, InstallCoordinatorError> {
@@ -1295,6 +1322,8 @@ fn truncate_detail(mut detail: String) -> String {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InstallCoordinatorError {
+    #[error("an existing install transaction must be recovered before preparing another")]
+    PendingPreparation,
     #[error(transparent)]
     Store(#[from] InstallStoreError),
     #[error(transparent)]

@@ -163,13 +163,7 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
         }
         let mut prior_binding = prior_platform_unit
             .as_ref()
-            .map(|unit| {
-                self.known_units
-                    .iter()
-                    .find(|known| known.id() == unit)
-                    .ok_or_else(|| error("loaded direct service lacks a retained synthetic legacy or immutable prior UnitRecord"))
-                    .and_then(|record| self.unit_binding(record))
-            })
+            .map(|unit| self.prior_unit_binding(unit))
             .transpose()?;
         if prior
             .platform
@@ -556,7 +550,7 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
             &record,
             prior,
             candidate_target,
-            &self.known_units,
+            &self.prior_layout_units(),
         )?;
         require_exact_entry(
             &current,

@@ -1,3 +1,5 @@
+mod adoption;
+mod adoption_roots;
 mod directory;
 mod effects;
 mod executor;
@@ -8,8 +10,14 @@ mod legacy;
 #[cfg(test)]
 mod legacy_tests;
 mod legacy_validation;
+mod location;
+#[cfg(test)]
+mod location_tests;
+mod locator;
+mod locator_receipt;
 mod model;
 mod platform;
+mod prior;
 mod proof;
 mod record;
 mod runtime;
@@ -21,8 +29,14 @@ use std::collections::BTreeMap;
 
 use super::{InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord};
 
+pub use adoption::{LinuxAdoption, LinuxAdoptionError};
 pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};
+pub use location::{InstallLocationError, LinuxInstallLocation, RetainedLinuxInstallLocation};
+pub use locator::{
+    LinuxInstallAuthority, LinuxInstallElection, LinuxInstallLocator, LinuxLocatorError,
+    LinuxManagedAuthority, elect_linux_installation,
+};
 pub use model::{
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,
     LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse, LinuxInstallConfig, LinuxLayoutItem,
@@ -84,6 +98,7 @@ pub struct LinuxInstallPlatform<E> {
     pub(super) executor: E,
     pub(super) config: LinuxInstallConfig,
     pub(super) known_units: Vec<UnitRecord>,
+    prior_unit: Option<prior::PriorUnitAuthority>,
     pub(super) last_inspection: Option<LinuxInspection>,
     pub(super) legacy_unit: Option<super::UnitId>,
 }
@@ -142,6 +157,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             executor,
             config,
             known_units: units,
+            prior_unit: None,
             last_inspection: None,
             legacy_unit,
         })

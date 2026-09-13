@@ -160,6 +160,7 @@ fn metadata_from_stat(metadata: &rustix::fs::Stat) -> io::Result<DirectoryEntryM
         link_count: widen_to_u64(metadata.st_nlink),
         device: checked_to_u64(metadata.st_dev, "negative device number")?,
         inode: widen_to_u64(metadata.st_ino),
+        owner_uid: widen_to_u32(metadata.st_uid),
     })
 }
 

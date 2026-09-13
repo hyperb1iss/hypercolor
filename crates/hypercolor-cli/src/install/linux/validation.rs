@@ -89,8 +89,11 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         prior: bool,
         record: &LinuxRecord,
     ) -> Result<(), InstallPlatformError> {
-        let unit = self.retained_unit(&binding.unit)?;
-        let mut expected = self.unit_binding(unit)?;
+        let mut expected = if prior {
+            self.prior_unit_binding(&binding.unit)?
+        } else {
+            self.unit_binding(self.retained_unit(&binding.unit)?)?
+        };
         if prior && binding.unit.as_str().starts_with("legacy-") {
             let launcher = require_notify_launcher(&record.prior_launcher_bytes)?;
             expected.daemon_path = canonical_executable(&launcher)?;
@@ -190,7 +193,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                 "prior regular entry snapshot unit is not the prior binding",
             ));
         }
-        let unit = self.retained_unit(snapshot_unit)?;
+        let unit = self.prior_retained_unit(snapshot_unit)?;
         let opened = open_unit_file(unit, snapshot_path)?;
         if opened.metadata().mode() & 0o7777 != *mode {
             return Err(error("prior regular entry snapshot mode changed"));

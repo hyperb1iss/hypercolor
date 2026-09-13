@@ -340,9 +340,22 @@ pub(super) fn durable_replace_file_at(
     source: &OsStr,
     destination: &OsStr,
 ) -> io::Result<()> {
-    renameat(directory, source, directory, destination).map_err(io::Error::from)?;
-    directory.sync_all()
+    durable_replace_file_at_with(directory, source, destination, File::sync_all)
 }
+
+fn durable_replace_file_at_with(
+    directory: &File,
+    source: &OsStr,
+    destination: &OsStr,
+    sync: impl FnOnce(&File) -> io::Result<()>,
+) -> io::Result<()> {
+    renameat(directory, source, directory, destination).map_err(io::Error::from)?;
+    sync(directory)
+}
+
+#[cfg(test)]
+#[path = "entry_publication_tests.rs"]
+mod publication_tests;
 
 pub(super) fn durable_replace_symlink_at(
     directory: &File,
