@@ -1342,6 +1342,7 @@ fn cold_recorded_prior_selects_exact_historical_path_and_original_inode() {
             .retain_recorded_prior(&cold_prior_record(&historical_binding))
             .is_err()
     );
+    make_fixture_directories_writable(home.path());
 }
 
 fn cold_prior_binding(unit: &UnitRecord, store: &InstallStore) -> Value {
@@ -1367,4 +1368,16 @@ fn cold_prior_record(binding: &Value) -> hypercolor_cli::install::PlatformTransa
         .expect("strict record bytes"),
     )
     .expect("bounded selection record")
+}
+
+fn make_fixture_directories_writable(root: &Path) {
+    let metadata = fs::symlink_metadata(root).expect("fixture metadata");
+    if !metadata.is_dir() {
+        return;
+    }
+    fs::set_permissions(root, fs::Permissions::from_mode(0o755))
+        .expect("writable fixture directory");
+    for entry in fs::read_dir(root).expect("fixture entries") {
+        make_fixture_directories_writable(&entry.expect("fixture entry").path());
+    }
 }
