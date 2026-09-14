@@ -224,7 +224,7 @@ after composition, not Servo-specific.
 
 ## 6. Linux Import Strategy
 
-The Linux first implementation should use the proven external-memory shape:
+The Linux implementation should use the proven external-memory shape:
 
 1. Create a Vulkan image with exportable opaque-FD memory using the same Vulkan
    device behind SparkleFlinger's `wgpu::Device`.

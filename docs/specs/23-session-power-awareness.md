@@ -50,7 +50,7 @@ This spec defines a **session monitor** subsystem that observes desktop and hard
 
 **Design principles:**
 
-- **Linux-first.** D-Bus (logind, freedesktop screensaver) and kernel (evdev) are the primary backends. Cross-platform can follow later.
+- **Native backends per platform.** D-Bus (logind, freedesktop screensaver) and kernel evdev on Linux, `WM_POWERBROADCAST` plus WTS session events on Windows, and NSWorkspace notifications on macOS, all feeding the same `SessionEvent` stream.
 - **Event-driven, not polling.** Subscribe to D-Bus signals and kernel input events. No timers ticking to check state, except as a fallback for idle detection on X11.
 - **Graceful degradation.** Each monitor is independent. If logind is unreachable (container, WSL), the screensaver monitor still works. If neither D-Bus bus is available, the daemon runs without session awareness.
 - **Inhibitor-aware.** Acquire a logind sleep inhibitor lock so the daemon can complete its fade-out before the kernel actually suspends.

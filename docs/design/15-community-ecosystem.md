@@ -811,17 +811,17 @@ WLED is the most natural ally. It's already open source, already has a massive c
 
 > "Everything proprietary tools do, but open source, Linux-native, and yours to keep."
 
-| Dimension                | Closed-Source Alternative    | Hypercolor                           |
-| ------------------------ | ---------------------------- | ------------------------------------ |
-| **Platform**             | Windows only                 | Linux-first (future: cross-platform) |
-| **License**              | Proprietary                  | Apache-2.0                           |
-| **Effect compatibility** | Native                       | ~90% via Servo compatibility layer   |
-| **Effect format**        | HTML/Canvas (proprietary)    | HTML/Canvas + native wgpu shaders    |
-| **Performance**          | 60fps (proprietary renderer) | 60fps (Servo) + 1000s fps (wgpu)     |
-| **Customization**        | Limited (closed source)      | Infinite (modify anything)           |
-| **Price**                | Free tier + subscription     | Free forever                         |
-| **Community effects**    | Curated store                | Open marketplace (GitHub)            |
-| **Smart home**           | None                         | Home Assistant integration           |
+| Dimension                | Closed-Source Alternative    | Hypercolor                         |
+| ------------------------ | ---------------------------- | ---------------------------------- |
+| **Platform**             | Windows only                 | Linux, Windows, and macOS          |
+| **License**              | Proprietary                  | Apache-2.0                         |
+| **Effect compatibility** | Native                       | ~90% via Servo compatibility layer |
+| **Effect format**        | HTML/Canvas (proprietary)    | HTML/Canvas + native wgpu shaders  |
+| **Performance**          | 60fps (proprietary renderer) | 60fps (Servo) + 1000s fps (wgpu)   |
+| **Customization**        | Limited (closed source)      | Infinite (modify anything)         |
+| **Price**                | Free tier + subscription     | Free forever                       |
+| **Community effects**    | Curated store                | Open marketplace (GitHub)          |
+| **Smart home**           | None                         | Home Assistant integration         |
 
 **Key narrative:** Hypercolor doesn't need to beat closed-source tools on Windows. It needs to be **so good on Linux** that Windows users consider switching. The existence of a compelling open-source alternative creates pressure regardless.
 
@@ -1095,14 +1095,14 @@ The README is the most important marketing asset. It should:
 
 **Target conferences:**
 
-| Conference                    | When      | Talk Angle                                                          |
-| ----------------------------- | --------- | ------------------------------------------------------------------- |
-| **FOSDEM**                    | February  | "RGB Lighting as a Linux-First Problem" -- embedded systems devroom |
-| **Linux Plumbers Conference** | September | "USB HID RGB Device Support in Linux" -- kernel/userspace devroom   |
-| **SCALE**                     | March     | "Open Source RGB: From Reverse Engineering to Community"            |
-| **RustConf**                  | September | "Embedding Servo for Real-Time LED Control" -- Rust ecosystem talk  |
-| **FOSDEM Rust devroom**       | February  | "wgpu + Servo: A Dual-Path Render Engine for IoT"                   |
-| **All Things Open**           | October   | "Building Sustainable Open Source Hardware Projects"                |
+| Conference                    | When      | Talk Angle                                                           |
+| ----------------------------- | --------- | -------------------------------------------------------------------- |
+| **FOSDEM**                    | February  | "RGB Lighting as an Open Source Problem" -- embedded systems devroom |
+| **Linux Plumbers Conference** | September | "USB HID RGB Device Support in Linux" -- kernel/userspace devroom    |
+| **SCALE**                     | March     | "Open Source RGB: From Reverse Engineering to Community"             |
+| **RustConf**                  | September | "Embedding Servo for Real-Time LED Control" -- Rust ecosystem talk   |
+| **FOSDEM Rust devroom**       | February  | "wgpu + Servo: A Dual-Path Render Engine for IoT"                    |
+| **All Things Open**           | October   | "Building Sustainable Open Source Hardware Projects"                 |
 
 **Talk formats:**
 
@@ -1443,7 +1443,7 @@ The path:
 1. **Solve the pain** (RGB on Linux sucks → Hypercolor fixes it)
 2. **Build the community** (contributors, effect authors, plugin developers)
 3. **Win the ecosystem** (hardware partnerships, distro integration, smart home)
-4. **Transcend the platform** (Linux-first → everywhere)
+4. **Transcend the platform** (every OS, every device, every room)
 
 Hypercolor isn't just software. It's the argument that open source can do creative, visual, hardware-integrated things better than closed-source alternatives. And it's built by someone who has proven that argument before.
 
