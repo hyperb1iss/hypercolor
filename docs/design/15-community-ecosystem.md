@@ -809,7 +809,7 @@ WLED is the most natural ally. It's already open source, already has a massive c
 
 **Hypercolor's pitch:**
 
-> "Everything proprietary tools do, but open source, Linux-native, and yours to keep."
+> "Everything proprietary tools do, but open source, native on every desktop, and yours to keep."
 
 | Dimension                | Closed-Source Alternative    | Hypercolor                         |
 | ------------------------ | ---------------------------- | ---------------------------------- |
@@ -823,7 +823,7 @@ WLED is the most natural ally. It's already open source, already has a massive c
 | **Community effects**    | Curated store                | Open marketplace (GitHub)          |
 | **Smart home**           | None                         | Home Assistant integration         |
 
-**Key narrative:** Hypercolor doesn't need to beat closed-source tools on Windows. It needs to be **so good on Linux** that Windows users consider switching. The existence of a compelling open-source alternative creates pressure regardless.
+**Key narrative:** Hypercolor meets the closed-source tools on their own platform and everywhere else. It needs to be **so good on every desktop** that vendor apps have nothing left to offer. The existence of a compelling open-source alternative creates pressure regardless.
 
 ### 6.3 vs. OpenRGB
 
