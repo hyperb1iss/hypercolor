@@ -126,8 +126,9 @@ later from Settings → Device Discovery → Hardware Support.
 ## macOS
 
 Download the signed DMG from
-the [download page](@/download.md). Open the DMG, drag Hypercolor to
-Applications, and launch it. The app registers a LaunchAgent for autostart and
+the [download page](@/download.md). macOS builds ship only when the signed
+lane runs, so the newest DMG can be older than the Linux and Windows
+releases. Open the DMG, drag Hypercolor to Applications, and launch it. The app registers a LaunchAgent for autostart and
 supervises the daemon; no terminal setup is required.
 
 {% <callout type="info"> %}
