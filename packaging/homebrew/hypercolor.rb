@@ -25,6 +25,7 @@ class Hypercolor < Formula
   license "Apache-2.0"
 
   on_macos do
+    version "MACOS_VERSION_PLACEHOLDER"
     depends_on macos: :sequoia
     depends_on MacosVersionRequirement
 
