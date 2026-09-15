@@ -2168,10 +2168,26 @@ jobs:
           fi
 
           # A tag lane re-run after the macOS signing credentials land adds
-          # the signed artifacts to the release the first run created.
-          if gh release view "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release ${GITHUB_REF_NAME} exists; uploading ${#files[@]} artifacts onto it"
-            gh release upload "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" --clobber "${files[@]}"
+          # the signed artifacts to the release the first run created. Assets
+          # already on the release keep their published digests: a rebuild is
+          # not byte-identical, and the tap, AUR, and Nix pins point at the
+          # first run's checksums.
+          if existing="$(gh release view "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" \
+              --json assets --jq '.assets[].name' 2>/dev/null)"; then
+            new_files=()
+            for file in "${files[@]}"; do
+              if grep -qxF "$(basename "${file}")" <<<"${existing}"; then
+                echo "  keeping published $(basename "${file}")"
+              else
+                new_files+=("${file}")
+              fi
+            done
+            if (( ${#new_files[@]} == 0 )); then
+              echo "Release ${GITHUB_REF_NAME} already carries every artifact from this run"
+            else
+              echo "Release ${GITHUB_REF_NAME} exists; adding ${#new_files[@]} new artifacts"
+              gh release upload "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" "${new_files[@]}"
+            fi
           else
             gh release create "${args[@]}" "${files[@]}"
           fi

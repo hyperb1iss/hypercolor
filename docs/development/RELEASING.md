@@ -67,9 +67,10 @@ artifact in either mode.
 
 To add macOS to a release that shipped without it, configure the secrets
 and re-dispatch **CI/CD** on the existing tag with `release_artifacts: full`.
-`create-release` uploads the new artifacts onto the existing GitHub Release,
-`update-homebrew` advances the macOS stanzas and the cask, and the npm, PyPI,
-AUR, and Nix jobs recognise the already-published version and do nothing.
+`create-release` adds only the assets the release does not already carry, so
+the Linux and Windows artifacts keep their published digests and the AUR and
+Nix pins stay put; `update-homebrew` advances the macOS stanzas and the cask;
+the npm and PyPI jobs skip the already-published version.
 
 ## Signed macOS acceptance checkpoint
 

@@ -90,6 +90,8 @@ Environment=RUST_BACKTRACE=1
 WantedBy=default.target
 ```
 
+> The `MemoryMax=512M` and `CPUQuota=25%` lines above no longer ship. `CPUQuota=25%` is a quarter of one core, which starved the compositor on every packaged install, and the memory ceiling sat one busy scene above the daemon's idle footprint. See design 13 for the retirement note.
+
 ### 1.2 Socket Activation
 
 systemd opens the HTTP port and hands the file descriptor to Hypercolor on first connection. This eliminates port conflicts and enables on-demand startup.
