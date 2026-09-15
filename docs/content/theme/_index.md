@@ -31,9 +31,9 @@ components.
 
 In practice that means:
 
-- The same **typeface stack**: Satoshi (sans and display) and JetBrains Mono
-  (code), loaded via Bunny Fonts (`fonts.bunny.net`), the same origin the app
-  uses. `--font-display` resolves to Satoshi. The app's request also pulls Sora;
+- The same **typeface stack**: Satoshi (sans and display) from Fontshare and
+  JetBrains Mono (code) from Bunny Fonts (`fonts.bunny.net`), the same origins
+  the app uses. `--font-display` resolves to Satoshi. The app's request also pulls Sora;
   the docs request does not, since Sora has no mapped docs token.
 - The same **OKLCH color vocabulary**: `--accent` is `oklch(0.65 0.30 320)`
   (electric purple); surfaces and text ride a low-chroma hue-280 neutral ramp
@@ -68,7 +68,7 @@ carried over?
 
 | Element | Status | Notes |
 |---|---|---|
-| Satoshi + JetBrains Mono via `fonts.bunny.net` | **Keep** | Same CDN as the app; no Google Fonts, no Inter |
+| Satoshi via Fontshare, JetBrains Mono via `fonts.bunny.net` | **Keep** | Same CDNs as the app; no Google Fonts, no Inter |
 | OKLCH semantic token names (`--surface-base`, `--accent`, `--text-secondary`, etc.) | **Keep** | Same intent; docs Sass maintains its own values in `_variables.scss` |
 | Purple-only chrome accent (`oklch(0.65 0.30 320)`) | **Keep** | Hard rule; cyan/coral/green are not UI chrome |
 | Cyan focus rings only (`oklch(0.88 0.18 175)` in dark, purple in light) | **Keep** | Interactive focus indicator, never decoration |
@@ -95,7 +95,9 @@ Fonts load from Bunny Fonts, the same privacy-respecting CDN the app uses. The
 
 ```html
 <link rel="preconnect" href="https://fonts.bunny.net">
-<link href="https://fonts.bunny.net/css?family=satoshi:400,500,600,700|jetbrains-mono:400,500,600,400i" rel="stylesheet">
+<link rel="preconnect" href="https://cdn.fontshare.com" crossorigin>
+<link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&display=swap" rel="stylesheet">
+<link href="https://fonts.bunny.net/css?family=jetbrains-mono:400,500,600,400i" rel="stylesheet">
 ```
 
 The app's request in `crates/hypercolor-ui/index.html` additionally pulls

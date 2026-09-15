@@ -236,11 +236,21 @@ fn bundled_origin_csp_is_exact_and_macos_network_access_is_loopback_only() {
         assert_eq!(directives["worker-src"], csp_sources(&["'self'", "blob:"]));
         assert_eq!(
             directives["style-src"],
-            csp_sources(&["'self'", "'unsafe-inline'", "https://fonts.bunny.net"])
+            csp_sources(&[
+                "'self'",
+                "'unsafe-inline'",
+                "https://fonts.bunny.net",
+                "https://api.fontshare.com"
+            ])
         );
         assert_eq!(
             directives["font-src"],
-            csp_sources(&["'self'", "data:", "https://fonts.bunny.net"])
+            csp_sources(&[
+                "'self'",
+                "data:",
+                "https://fonts.bunny.net",
+                "https://cdn.fontshare.com"
+            ])
         );
         for denied in [
             "object-src",
