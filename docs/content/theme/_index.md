@@ -95,8 +95,9 @@ Fonts load from Bunny Fonts, the same privacy-respecting CDN the app uses. The
 
 ```html
 <link rel="preconnect" href="https://fonts.bunny.net">
+<link rel="preconnect" href="https://api.fontshare.com">
 <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin>
-<link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&display=swap" rel="stylesheet">
+<link href="https://api.fontshare.com/v2/css?f[]=satoshi@1,2&display=swap" rel="stylesheet">
 <link href="https://fonts.bunny.net/css?family=jetbrains-mono:400,500,600,400i" rel="stylesheet">
 ```
 

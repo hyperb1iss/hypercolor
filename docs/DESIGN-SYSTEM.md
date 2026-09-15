@@ -346,12 +346,14 @@ The shipped page title is `.page-title`: 21px, weight 500, +0.02em, in Sora
 
 ### 5.2 Display Faces
 
-Exactly three families load in `index.html`: **Satoshi** (400/500/700/900,
-from Fontshare, which is the only CDN that carries it; Bunny Fonts does not,
-and a request there returns no faces), **JetBrains Mono** (400/500/600 plus
-400 italic, from Bunny), and **Sora** (400/500/600, from Bunny). Nothing else
-is fetched, so any face named in a stack without one of those three behind it
-silently falls back. Satoshi has no 600 cut; a 600 request resolves to 700.
+Exactly three families load in `index.html`: **Satoshi** (the variable
+face, weight axis 300 to 900, upright and italic, from Fontshare, which is the
+only CDN that carries it; Bunny Fonts does not, and a request there returns no
+faces), **JetBrains Mono** (400/500/600 plus 400 italic, from Bunny), and
+**Sora** (400/500/600, from Bunny). Nothing else is fetched, so any face named
+in a stack without one of those three behind it silently falls back. Because
+Satoshi is variable, every weight the type scale asks for (including 600)
+renders as a true instance rather than a synthesized one.
 
 **Sora** is the display face, and it has exactly one job: `.page-title` in
 `input.css`, at 21px, weight 500, +0.02em tracking, with an accent-forward
