@@ -1247,7 +1247,7 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ```
 
-`CPUQuota=25%` is a hard backstop: even if Hypercolor goes haywire, it cannot consume more than 25% of system CPU. `MemoryMax=512M` kills the process if memory exceeds half a gig — something is very wrong at that point.
+The `CPUQuota=25%` and `MemoryMax=512M` lines above were the original backstop and no longer ship. `CPUQuota=25%` is a quarter of one core, not a quarter of the machine, which starves the 60fps compositor plus Servo on every packaged install, and the daemon idles near 330MB RSS with Servo in-process, so the memory ceiling was an OOM kill waiting for a busy scene. Resource ceilings are a product baseline (see CLAUDE.md), so the packaged units now run unconstrained and rely on the watchdog and `Restart=on-failure` for runaway recovery.
 
 ---
 
