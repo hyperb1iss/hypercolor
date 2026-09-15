@@ -111,7 +111,8 @@ PawnIO setup was skipped or failed, re-run it from Settings → Device Discovery
 Download
 `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel) from
 the [download page](@/download.md), drag the app into `/Applications`, and
-launch. Minimum macOS 15.2 (Sequoia).
+launch. Minimum macOS 15.2 (Sequoia). macOS builds ship only when the signed
+lane runs, so the newest DMG can be older than the Linux and Windows releases.
 
 Hypercolor requests Screen Recording permission when you enable screen capture.
 For system audio, follow [Audio setup](@/guide/audio-setup.md).

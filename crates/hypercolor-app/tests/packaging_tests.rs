@@ -6,6 +6,7 @@ const GET_INSTALLER: &str = include_str!("../../../scripts/get-hypercolor.sh");
 const HOMEBREW_FORMULA: &str = include_str!("../../../packaging/homebrew/hypercolor.rb");
 const HOMEBREW_CASK: &str = include_str!("../../../packaging/homebrew/hypercolor-app.rb");
 const CI_WORKFLOW: &str = include_str!("../../../.github/workflows/ci.yml");
+const RELEASE_MATRIX: &str = include_str!("../../../.github/release-matrix.json");
 const JUSTFILE: &str = include_str!("../../../justfile");
 const WINDOWS_INSTALLER_SCRIPT: &str = include_str!("../../../scripts/build-windows-installer.ps1");
 const DIST_SH: &str = include_str!("../../../scripts/dist.sh");
@@ -347,10 +348,21 @@ fn curl_installer_compares_macos_versions_by_numeric_component() {
 
 #[test]
 fn macos_packaging_and_installers_cover_both_architectures() {
-    assert!(CI_WORKFLOW.contains("target: macos-arm64"));
-    assert!(CI_WORKFLOW.contains("target: macos-x64"));
-    assert!(CI_WORKFLOW.contains("rust-target: aarch64-apple-darwin"));
-    assert!(CI_WORKFLOW.contains("rust-target: x86_64-apple-darwin"));
+    // The release matrices live in release-matrix.json so the credential
+    // probe can drop the macOS lanes when the Apple secrets are missing.
+    assert!(RELEASE_MATRIX.contains(r#""target": "macos-arm64""#));
+    assert!(RELEASE_MATRIX.contains(r#""target": "macos-x64""#));
+    assert!(RELEASE_MATRIX.contains(r#""target": "macos-amd64""#));
+    assert!(RELEASE_MATRIX.contains(r#""rust-target": "aarch64-apple-darwin""#));
+    assert!(RELEASE_MATRIX.contains(r#""rust-target": "x86_64-apple-darwin""#));
+    assert!(
+        CI_WORKFLOW
+            .contains("include: ${{ fromJSON(needs.release-credentials.outputs.native-matrix) }}")
+    );
+    assert!(
+        CI_WORKFLOW
+            .contains("include: ${{ fromJSON(needs.release-credentials.outputs.release-matrix) }}")
+    );
 
     for expected in ["macos-arm64", "macos-amd64"] {
         assert!(GET_INSTALLER.contains(expected));
@@ -358,8 +370,8 @@ fn macos_packaging_and_installers_cover_both_architectures() {
         assert!(HOMEBREW_FORMULA.contains(expected));
     }
 
-    assert!(CI_WORKFLOW.contains("os: macos-26"));
-    assert!(CI_WORKFLOW.contains("os: macos-26-intel"));
+    assert!(RELEASE_MATRIX.contains(r#""os": "macos-26""#));
+    assert!(RELEASE_MATRIX.contains(r#""os": "macos-26-intel""#));
     assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_AMD64"));
     assert!(HOMEBREW_FORMULA.contains("keep_alive successful_exit: false"));
     assert!(HOMEBREW_FORMULA.contains(r#""--macos-owner", "homebrew""#));
@@ -762,9 +774,12 @@ fn homebrew_cask_template_targets_normalized_macos_dmg_names() {
 
 #[test]
 fn release_ci_publishes_signed_macos_apps() {
-    assert!(CI_WORKFLOW.contains("cask_arch: arm64"));
-    assert!(CI_WORKFLOW.contains("cask_arch: x86_64"));
-    assert!(CI_WORKFLOW.contains("artifact-kind: dmg"));
+    assert!(RELEASE_MATRIX.contains(r#""cask_arch": "arm64""#));
+    assert!(RELEASE_MATRIX.contains(r#""cask_arch": "x86_64""#));
+    assert!(RELEASE_MATRIX.contains(r#""artifact-kind": "dmg""#));
+    // Only the lanes that sign carry the marker the probe filters on.
+    assert_eq!(RELEASE_MATRIX.matches(r#""signing": true"#).count(), 4);
+    assert!(CI_WORKFLOW.contains("Probe signing credentials and select release lanes"));
     assert!(CI_WORKFLOW.contains("Build signed and notarized macOS app"));
     assert!(CI_WORKFLOW.contains("Verify signed macOS app"));
     assert!(CI_WORKFLOW.contains("-name '*.dmg'"));
@@ -1514,7 +1529,11 @@ fn release_ci_updates_formula_and_cask_from_the_same_release() {
             "update-homebrew must update every artifact: missing {required}"
         );
     }
-    assert!(!HOMEBREW_FORMULA.contains("MACOS_VERSION_PLACEHOLDER"));
+    // The on_macos block carries its own version so a Linux-only release can
+    // carry the tap's macOS build forward instead of pointing at nothing.
+    assert!(HOMEBREW_FORMULA.contains("MACOS_VERSION_PLACEHOLDER"));
+    assert!(job_body.contains("--current homebrew-tap/Formula/hypercolor.rb"));
+    assert!(job_body.contains("keeps its current macOS build"));
     assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_ARM64"));
     assert!(HOMEBREW_CASK.contains("SHA256_MACOS_APP_ARM64"));
 }

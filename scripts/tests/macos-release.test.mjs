@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -57,25 +57,96 @@ test('native app version validation accepts an exact stamped prerelease', () => 
   assert.match(step, /if \(\$version -ne \$cargoVersion -and \$baseVersion -ne \$cargoVersion\)/);
 });
 
-test('Homebrew checksum step supplies every value consumed by its renderer', () => {
-  const repo = fileURLToPath(new URL('../../', import.meta.url));
-  const workflow = readFileSync(path.join(repo, '.github/workflows/ci.yml'), 'utf8');
-  const job = workflow.match(/^  update-homebrew:\n([\s\S]*?)(?=^  [a-z][\w-]*:|$(?![\s\S]))/m)?.[1];
-  assert.ok(job, 'Homebrew publication job exists');
-  const steps = new Map([...job.matchAll(/^      - name: (.+)\n([\s\S]*?)(?=^      - |$(?![\s\S]))/gm)]
+const workflowText = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+
+function jobSteps(id) {
+  const job = workflowText.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'))?.[1];
+  assert.ok(job, `${id} job exists`);
+  return new Map([...job.matchAll(/^      - name: (.+)\n([\s\S]*?)(?=^      - |$(?![\s\S]))/gm)]
     .map(([, name, body]) => [name, body]));
-  const shell = body => {
-    assert.ok(body, 'expected workflow step exists');
-    const run = body.match(/^        run: \|\n([\s\S]*)/m)?.[1];
-    assert.ok(run, 'step has a shell body');
-    return run.replace(/^          /gm, '').replaceAll('${{ github.repository }}', 'hyperb1iss/hypercolor');
-  };
-  const dir = mkdtempSync(path.join(tmpdir(), 'homebrew-workflow-'));
+}
+
+function shell(body) {
+  assert.ok(body, 'expected workflow step exists');
+  const run = body.match(/^        run: \|\n([\s\S]*)/m)?.[1];
+  assert.ok(run, 'step has a shell body');
+  return run.replace(/^          /gm, '').replaceAll('${{ github.repository }}', 'hyperb1iss/hypercolor');
+}
+
+const readOutputs = file => Object.fromEntries(readFileSync(file, 'utf8').trim().split('\n')
+  .filter(Boolean).map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+
+const appleSecrets = ['APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_SIGNING_IDENTITY',
+  'APPLE_TEAM_ID', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER', 'APPLE_API_KEY_CONTENT'];
+
+test('credential probe drops the macOS lanes when any Apple secret is missing', () => {
+  const repo = fileURLToPath(new URL('../../', import.meta.url));
+  const probe = shell(jobSteps('release-credentials').get('Probe signing credentials and select release lanes'));
+  const matrices = JSON.parse(readFileSync(path.join(repo, '.github/release-matrix.json'), 'utf8'));
+  assert.ok(matrices.native.some(entry => entry.signing) && matrices.release.some(entry => entry.signing));
+  assert.ok(matrices.native.some(entry => !entry.signing) && matrices.release.some(entry => !entry.signing));
+  const dir = mkdtempSync(path.join(tmpdir(), 'release-credentials-'));
   try {
-    const output = path.join(dir, 'outputs');
-    const env = { ...process.env, VERSION: '0.5.2', GITHUB_OUTPUT: output };
-    // Substitute only the download transport; execute the workflow shell itself.
-    const gh = `gh() {
+    const run = (env) => {
+      const output = path.join(dir, `outputs-${Math.random()}`);
+      const result = spawnSync('bash', ['-c', probe], { cwd: repo, encoding: 'utf8',
+        env: { ...process.env, ...env, GITHUB_OUTPUT: output } });
+      assert.equal(result.status, 0, result.stderr);
+      return { result, outputs: readOutputs(output) };
+    };
+    const complete = run(Object.fromEntries(appleSecrets.map(name => [name, 'fixture-only'])));
+    assert.equal(complete.outputs.macos, 'true');
+    assert.doesNotMatch(complete.result.stdout, /::warning::/);
+    for (const lane of ['native', 'release']) {
+      const selected = JSON.parse(complete.outputs[`${lane}_matrix`]);
+      assert.deepEqual(selected.map(entry => entry.target), matrices[lane].map(entry => entry.target));
+      assert.ok(selected.every(entry => !('signing' in entry)), 'the selector key never reaches the matrix');
+    }
+    const missing = run(Object.fromEntries(appleSecrets.map(name => [name, name === 'APPLE_TEAM_ID' ? '' : 'fixture-only'])));
+    assert.equal(missing.outputs.macos, 'false');
+    assert.match(missing.result.stdout, /^::warning::.*missing APPLE_TEAM_ID\b.*Linux and Windows only/m);
+    for (const lane of ['native', 'release']) {
+      const selected = JSON.parse(missing.outputs[`${lane}_matrix`]);
+      assert.deepEqual(selected.map(entry => entry.target),
+        matrices[lane].filter(entry => !entry.signing).map(entry => entry.target));
+      assert.ok(selected.length > 0, `${lane} still builds its unsigned platforms`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  for (const [id, output] of [['build-native-app', 'native-matrix'], ['build-release', 'release-matrix']]) {
+    const job = workflowText.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:)`, 'm'))[1];
+    assert.ok(job.includes(`include: \${{ fromJSON(needs.release-credentials.outputs.${output}) }}`), `${id} takes its matrix from the probe`);
+  }
+});
+
+test('Homebrew step tracks macOS only when the release published the whole signed set', () => {
+  const repo = fileURLToPath(new URL('../../', import.meta.url));
+  const steps = jobSteps('update-homebrew');
+  const checksums = shell(steps.get('Download release tarballs and compute checksums'));
+  const renderStep = steps.get('Render formula and cask');
+  const render = shell(renderStep);
+  const sha = seed => seed.repeat(64);
+  // The tap before this release: Linux at 0.5.1, macOS carried at 0.3.2.
+  const currentFormula = `class Hypercolor < Formula
+  version "0.5.1"
+
+  on_macos do
+    version "0.3.2"
+    if Hardware::CPU.arm?
+      url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/hypercolor-#{version}-macos-arm64.tar.gz"
+      sha256 "${sha('c')}"
+    end
+  end
+end
+`;
+  const currentCask = 'cask "hypercolor-app" do\n  version "0.3.2"\nend\n';
+  const linuxAssets = ['hypercolor-0.5.2-linux-amd64.tar.gz', 'hypercolor-0.5.2-linux-arm64.tar.gz'];
+  const macosAssets = ['hypercolor-0.5.2-macos-amd64.tar.gz', 'hypercolor-0.5.2-macos-arm64.tar.gz',
+    'Hypercolor-0.5.2-arm64.dmg', 'Hypercolor-0.5.2-x86_64.dmg'];
+  // Substitute only the GitHub transport; execute the workflow shell itself.
+  const gh = `gh() {
+      if [[ "$1 $2" == "release view" ]]; then printf '%s\\n' $ASSETS; return 0; fi
       local artifact='' directory=''
       while (( $# )); do
         case "$1" in
@@ -85,43 +156,74 @@ test('Homebrew checksum step supplies every value consumed by its renderer', () 
         shift
       done
       test -n "$artifact" && test -n "$directory" || return 99
+      grep -qxF "$artifact" <<<"$(printf '%s\\n' $ASSETS)" || return 98
       printf 'fixture:%s' "$artifact" > "$directory/$artifact"
     }
     `;
-    const checksums = spawnSync('bash', ['-c', gh + shell(steps.get('Download release tarballs and compute checksums'))],
-      { cwd: dir, env, encoding: 'utf8' });
-    assert.equal(checksums.status, 0, checksums.stderr);
-    const values = Object.fromEntries(readFileSync(output, 'utf8').trim().split('\n').map(line => line.split('=')));
-    const expectedAssets = {
-      sha256_linux_amd64: 'hypercolor-0.5.2-linux-amd64.tar.gz',
-      sha256_linux_arm64: 'hypercolor-0.5.2-linux-arm64.tar.gz',
-      sha256_macos_amd64: 'hypercolor-0.5.2-macos-amd64.tar.gz',
-      sha256_macos_arm64: 'hypercolor-0.5.2-macos-arm64.tar.gz',
-      sha256_dmg_arm64: 'Hypercolor-0.5.2-arm64.dmg',
-      sha256_dmg_x86_64: 'Hypercolor-0.5.2-x86_64.dmg',
-    };
-    assert.deepEqual(Object.keys(values).sort(), Object.keys(expectedAssets).sort());
-    for (const [key, asset] of Object.entries(expectedAssets)) {
-      assert.equal(values[key], createHash('sha256').update(`fixture:${asset}`).digest('hex'));
+  const scenario = (assets, check) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'homebrew-workflow-'));
+    try {
+      const output = path.join(dir, 'outputs');
+      const env = { ...process.env, VERSION: '0.5.2', GITHUB_OUTPUT: output, ASSETS: assets.join(' ') };
+      mkdirSync(path.join(dir, 'homebrew-tap/Formula'), { recursive: true });
+      mkdirSync(path.join(dir, 'homebrew-tap/Casks'), { recursive: true });
+      writeFileSync(path.join(dir, 'homebrew-tap/Formula/hypercolor.rb'), currentFormula);
+      writeFileSync(path.join(dir, 'homebrew-tap/Casks/hypercolor-app.rb'), currentCask);
+      mkdirSync(path.join(dir, 'scripts'));
+      copyFileSync(path.join(repo, 'scripts/homebrew-formula.mjs'), path.join(dir, 'scripts/homebrew-formula.mjs'));
+      symlinkSync(path.join(repo, 'packaging'), path.join(dir, 'packaging'));
+      const downloaded = spawnSync('bash', ['-c', gh + checksums], { cwd: dir, env, encoding: 'utf8' });
+      check(downloaded, () => {
+        const values = readOutputs(output);
+        // GitHub materialises every env line, so an unset output arrives as
+        // an empty string rather than an unbound variable.
+        for (const [, name, key] of renderStep.matchAll(/^          (SHA256_\w+): \$\{\{ steps.checksums.outputs.(\w+) \}\}/gm)) {
+          env[name] = values[key] ?? '';
+        }
+        env.MACOS_PUBLISHED = values.macos;
+        const rendered = spawnSync('bash', ['-c', render], { cwd: dir, env, encoding: 'utf8' });
+        assert.equal(rendered.status, 0, rendered.stderr);
+        return { values, formula: readFileSync(path.join(dir, 'homebrew-tap/Formula/hypercolor.rb'), 'utf8'),
+          cask: readFileSync(path.join(dir, 'homebrew-tap/Casks/hypercolor-app.rb'), 'utf8') };
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
-    const renderStep = steps.get('Render formula and cask');
-    for (const [, name, key] of renderStep.matchAll(/^          (SHA256_\w+): \$\{\{ steps.checksums.outputs.(\w+) \}\}/gm)) {
-      assert.ok(values[key], `renderer input ${name} has an upstream value`);
-      env[name] = values[key];
-    }
-    mkdirSync(path.join(dir, 'scripts'));
-    copyFileSync(path.join(repo, 'scripts/homebrew-formula.mjs'), path.join(dir, 'scripts/homebrew-formula.mjs'));
-    symlinkSync(path.join(repo, 'packaging'), path.join(dir, 'packaging'));
-    const rendered = spawnSync('bash', ['-c', shell(renderStep)], { cwd: dir, env, encoding: 'utf8' });
-    assert.equal(rendered.status, 0, rendered.stderr);
-    for (const file of ['Formula/hypercolor.rb', 'Casks/hypercolor-app.rb']) {
-      const content = readFileSync(path.join(dir, 'homebrew-tap', file), 'utf8');
-      assert.match(content, /version "0\.5\.2"/);
-      assert.doesNotMatch(content, /PLACEHOLDER|SHA256_/);
-    }
-    const aur = workflow.match(/^  update-aur:\n([\s\S]*?)(?=^  [a-z][\w-]*:)/m)[1];
-    assert.doesNotMatch(aur, /macos-|\.dmg/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  };
+  const digest = asset => createHash('sha256').update(`fixture:${asset}`).digest('hex');
+
+  scenario([...linuxAssets, ...macosAssets], (downloaded, renderTap) => {
+    assert.equal(downloaded.status, 0, downloaded.stderr);
+    const { values, formula, cask } = renderTap();
+    assert.equal(values.macos, 'true');
+    assert.deepEqual(Object.keys(values).sort(), ['macos', 'sha256_dmg_arm64', 'sha256_dmg_x86_64',
+      'sha256_linux_amd64', 'sha256_linux_arm64', 'sha256_macos_amd64', 'sha256_macos_arm64']);
+    assert.equal(values.sha256_macos_arm64, digest('hypercolor-0.5.2-macos-arm64.tar.gz'));
+    assert.equal(values.sha256_dmg_x86_64, digest('Hypercolor-0.5.2-x86_64.dmg'));
+    assert.deepEqual([...formula.matchAll(/version "([^"]+)"/g)].map(match => match[1]), ['0.5.2', '0.5.2']);
+    assert.match(cask, /version "0\.5\.2"/);
+    for (const file of [formula, cask]) assert.doesNotMatch(file, /PLACEHOLDER|SHA256_/);
+  });
+
+  scenario(linuxAssets, (downloaded, renderTap) => {
+    assert.equal(downloaded.status, 0, downloaded.stderr);
+    assert.match(downloaded.stdout, /keeps its current macOS build/);
+    const { values, formula, cask } = renderTap();
+    assert.equal(values.macos, 'false');
+    assert.deepEqual(Object.keys(values).sort(), ['macos', 'sha256_linux_amd64', 'sha256_linux_arm64']);
+    assert.equal(values.sha256_linux_amd64, digest('hypercolor-0.5.2-linux-amd64.tar.gz'));
+    assert.match(formula, /^  version "0\.5\.2"$/m);
+    assert.match(formula, /^    version "0\.3\.2"$/m);
+    assert.ok(formula.includes(`macos-arm64.tar.gz"\n      sha256 "${sha('c')}"`), 'macOS stanza carried forward');
+    assert.ok(!formula.includes('macos-amd64'));
+    assert.equal(cask, currentCask, 'the cask is untouched without a new DMG');
+  });
+
+  scenario([...linuxAssets, macosAssets[0], macosAssets[2]], (downloaded) => {
+    assert.equal(downloaded.status, 1);
+    assert.match(downloaded.stdout + downloaded.stderr, /published 2 of 4 macOS artifacts; refusing to advance the tap/);
+  });
+
+  const aur = workflowText.match(/^  update-aur:\n([\s\S]*?)(?=^  [a-z][\w-]*:)/m)[1];
+  assert.doesNotMatch(aur, /macos-|\.dmg/);
 });

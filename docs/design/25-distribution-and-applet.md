@@ -171,6 +171,8 @@ NoNewPrivileges=true
 WantedBy=default.target
 ```
 
+> The `MemoryMax=512M` and `CPUQuota=25%` lines above no longer ship. `CPUQuota=25%` is a quarter of one core, which starved the compositor on every packaged install, and the memory ceiling sat one busy scene above the daemon's idle footprint. See design 13 for the retirement note.
+
 **Key changes from current:**
 
 - `Type=notify` with `WatchdogSec=30` — daemon sends `sd_notify` heartbeats every 15s

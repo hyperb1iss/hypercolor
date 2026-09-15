@@ -126,13 +126,17 @@ Choose "More info" and then "Run anyway" to continue.
 
 ## macOS
 
-Download the DMG for Apple Silicon or Intel from the release page, then drag
-Hypercolor into Applications. You can also install the desktop app with
-Homebrew:
+macOS builds need Developer ID signing and notarization, so they ship only
+when the signed lane runs and can lag the Linux and Windows releases. The
+Homebrew tap always points at the newest macOS build:
 
 ```bash
 brew install --cask hyperb1iss/tap/hypercolor-app
 ```
+
+Releases that shipped a signed macOS build also carry the DMG for Apple
+Silicon or Intel on the release page: download it and drag Hypercolor into
+Applications.
 
 The `hypercolor` formula installs the CLI and daemon. See
 [Choose your install](@/guide/choose-your-install.md) for the tradeoffs.

@@ -1,0 +1,60 @@
+{
+  "native": [
+    {
+      "target": "windows-x64",
+      "os": "windows-latest",
+      "rust-target": "x86_64-pc-windows-msvc",
+      "bundles": "nsis",
+      "artifact-kind": "nsis",
+      "cask_arch": "",
+      "artifact-path": "target/release/bundle/nsis/*.exe\ncrates/hypercolor-app/target/release/bundle/nsis/*.exe\n",
+      "signing": false
+    },
+    {
+      "target": "macos-arm64",
+      "os": "macos-26",
+      "rust-target": "aarch64-apple-darwin",
+      "bundles": "app",
+      "artifact-kind": "dmg",
+      "cask_arch": "arm64",
+      "artifact-path": "target/aarch64-apple-darwin/release/bundle/dmg/*.dmg*\n",
+      "signing": true
+    },
+    {
+      "target": "macos-x64",
+      "os": "macos-26-intel",
+      "rust-target": "x86_64-apple-darwin",
+      "bundles": "app",
+      "artifact-kind": "dmg",
+      "cask_arch": "x86_64",
+      "artifact-path": "target/x86_64-apple-darwin/release/bundle/dmg/*.dmg*\n",
+      "signing": true
+    }
+  ],
+  "release": [
+    {
+      "target": "linux-amd64",
+      "os": "ubuntu-latest",
+      "rust-target": "x86_64-unknown-linux-gnu",
+      "signing": false
+    },
+    {
+      "target": "linux-arm64",
+      "os": "ubuntu-24.04-arm",
+      "rust-target": "aarch64-unknown-linux-gnu",
+      "signing": false
+    },
+    {
+      "target": "macos-arm64",
+      "os": "macos-26",
+      "rust-target": "aarch64-apple-darwin",
+      "signing": true
+    },
+    {
+      "target": "macos-amd64",
+      "os": "macos-26-intel",
+      "rust-target": "x86_64-apple-darwin",
+      "signing": true
+    }
+  ]
+}

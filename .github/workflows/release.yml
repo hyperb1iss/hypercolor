@@ -49,8 +49,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Require macOS signing credentials
-        if: inputs.dry_run == false
+      - name: Report macOS signing credentials
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -61,16 +60,22 @@ jobs:
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         run: |
           set -euo pipefail
-          missing=0
+          # Linux and Windows never need these. The tag lane skips the macOS
+          # builds when any are missing and the Homebrew tap keeps its
+          # current macOS build, so a missing secret narrows the release
+          # instead of blocking it.
+          missing=()
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
             APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY_ID \
             APPLE_API_ISSUER APPLE_API_KEY_CONTENT; do
-            if [[ -z "${!name}" ]]; then
-              echo "Missing required repository secret: ${name}" >&2
-              missing=1
-            fi
+            [[ -n "${!name:-}" ]] || missing+=("${name}")
           done
-          exit "${missing}"
+          if (( ${#missing[@]} )); then
+            echo "macOS signing credentials are not configured; this release ships Linux and Windows only. Missing: ${missing[*]}" >&2
+            echo "::warning::macOS signing credentials are not configured (missing ${missing[*]}); this release ships Linux and Windows only."
+          else
+            echo "macOS signing credentials are configured; the tag lane will sign and notarize macOS artifacts."
+          fi
 
       - name: Require passing CI for the release source
         env:

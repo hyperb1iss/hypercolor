@@ -16,10 +16,6 @@ Environment=HYPERCOLOR_LOG=info
 Environment=RUST_BACKTRACE=1
 Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service
 
-# Resource limits
-MemoryMax=512M
-CPUQuota=25%
-
 # Security hardening
 ProtectHome=read-only
 ProtectSystem=strict
