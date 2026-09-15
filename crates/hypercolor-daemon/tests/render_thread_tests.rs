@@ -1369,15 +1369,20 @@ impl InteractionSource for EventOnlySource {}
 /// `true`. Both orderings are correct, so the contract is the shape of the
 /// real transitions, not the presence of the startup no-op.
 fn assert_capture_toggled_once(transitions: &[bool]) {
+    assert_capture_transitions(
+        transitions,
+        &[true, false],
+        "capture should activate once for the reactive scene and deactivate after it",
+    );
+}
+
+/// Assert the demand transitions after the optional startup no-op.
+fn assert_capture_transitions(transitions: &[bool], expected: &[bool], context: &str) {
     let real = match transitions {
         [false, rest @ ..] => rest,
         rest => rest,
     };
-    assert_eq!(
-        real,
-        [true, false],
-        "capture should activate once for the reactive scene and deactivate after it; saw {transitions:?}"
-    );
+    assert_eq!(real, expected, "{context}; saw {transitions:?}");
 }
 
 async fn wait_for_audio_capture_transition(transitions: &Arc<StdMutex<Vec<bool>>>, expected: bool) {
@@ -2136,10 +2141,10 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
         frame_rx.borrow().zones.is_empty()
     })
     .await;
-    assert_eq!(
-        *transitions.lock().expect("transition log should lock"),
-        [false, true],
-        "output policy must not disable a live input consumer"
+    assert_capture_transitions(
+        &transitions.lock().expect("transition log should lock"),
+        &[true],
+        "output policy must not disable a live input consumer",
     );
 
     {
@@ -2148,10 +2153,7 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
     }
     render_thread.shutdown().await.expect("shutdown");
 
-    assert_eq!(
-        *transitions.lock().expect("transition log should lock"),
-        [false, true, false]
-    );
+    assert_capture_toggled_once(&transitions.lock().expect("transition log should lock"));
 }
 
 // ── Frame Pipeline Tests ────────────────────────────────────────────────────
