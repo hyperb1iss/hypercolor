@@ -1359,6 +1359,27 @@ impl SourceRoleBinding for EventOnlySource {
 
 impl InteractionSource for EventOnlySource {}
 
+/// Assert a demand-gated source was switched on exactly once and left off.
+///
+/// The input publication worker reconciles capture demand as soon as it
+/// starts, before the first frame has published the scene's authoritative
+/// demand. When that first reconcile wins the race it applies "inactive" to
+/// a source whose cached demand was cleared by `start_all`, logging a leading
+/// `false`; when the first frame wins, the first application is already
+/// `true`. Both orderings are correct, so the contract is the shape of the
+/// real transitions, not the presence of the startup no-op.
+fn assert_capture_toggled_once(transitions: &[bool]) {
+    let real = match transitions {
+        [false, rest @ ..] => rest,
+        rest => rest,
+    };
+    assert_eq!(
+        real,
+        [true, false],
+        "capture should activate once for the reactive scene and deactivate after it; saw {transitions:?}"
+    );
+}
+
 async fn wait_for_audio_capture_transition(transitions: &Arc<StdMutex<Vec<bool>>>, expected: bool) {
     tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
@@ -2067,7 +2088,7 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
         .lock()
         .expect("transition log should lock")
         .clone();
-    assert_eq!(transitions, vec![false, true, false]);
+    assert_capture_toggled_once(&transitions);
 }
 
 #[tokio::test]
@@ -2729,7 +2750,7 @@ async fn audio_capture_enabled_when_any_active_zone_is_reactive() {
         .lock()
         .expect("transition log should lock")
         .clone();
-    assert_eq!(transitions, vec![false, true, false]);
+    assert_capture_toggled_once(&transitions);
 }
 
 #[tokio::test]
@@ -2809,7 +2830,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
         .lock()
         .expect("transition log should lock")
         .clone();
-    assert_eq!(transitions, vec![false, true, false]);
+    assert_capture_toggled_once(&transitions);
 }
 
 #[tokio::test]
