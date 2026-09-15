@@ -45,16 +45,31 @@ dist-tag), publishes the Python client to PyPI (stable only), and updates
 the AUR metadata (stable only).
 
 The tag lane also updates the Homebrew tap: `update-homebrew` renders
-`packaging/homebrew/hypercolor.rb` with `scripts/homebrew-formula.mjs`,
-filling the Linux stanzas from the tarballs it just published and carrying
-the macOS stanzas forward from the formula already in
-`hyperb1iss/homebrew-tap`, so Linux users track every stable tag while macOS
-users keep the last accepted build until the signed lane promotes a newer one.
+`packaging/homebrew/hypercolor.rb` and `hypercolor-app.rb` with
+`scripts/homebrew-formula.mjs`, filling the Linux stanzas from the tarballs
+it just published. When the release also shipped the signed macOS set (both
+standalone tarballs and both DMGs), the macOS stanzas and the cask advance
+with it; otherwise the macOS stanzas are carried forward from the formula
+already in `hyperb1iss/homebrew-tap` and the cask is left alone, so Linux
+users track every stable tag while macOS users keep the last signed build.
+A release that published only part of the macOS set fails the job instead
+of advancing the tap.
 
-Public CI ships no macOS artifacts: macOS binaries require Developer ID
-signing that repository runners cannot perform, so signed macOS tarballs and
-the `hypercolor-app` cask are produced, attached, and promoted into the tap
-through the signed acceptance checkpoint below.
+The macOS lanes are conditional on the seven `APPLE_*` repository secrets.
+`release-credentials` probes them and selects the release matrices from
+`.github/release-matrix.json`: with every secret present the macOS
+standalone tarballs and the signed, notarized DMGs build alongside Linux and
+Windows; with any missing, the macOS entries are dropped and the run warns
+that the release ships Linux and Windows only. The Release workflow reports
+the same status on both the dry run and the real cut so the gap is visible
+before anything is tagged. Public CI never publishes an unsigned macOS
+artifact in either mode.
+
+To add macOS to a release that shipped without it, configure the secrets
+and re-dispatch **CI/CD** on the existing tag with `release_artifacts: full`.
+`create-release` uploads the new artifacts onto the existing GitHub Release,
+`update-homebrew` advances the macOS stanzas and the cask, and the npm, PyPI,
+AUR, and Nix jobs recognise the already-published version and do nothing.
 
 ## Signed macOS acceptance checkpoint
 

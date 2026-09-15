@@ -105,20 +105,27 @@ esac
   }
 });
 
-test('signing preflight accepts complete credentials and reports only missing names', () => {
+test('signing report accepts complete credentials and lists only the missing names', () => {
   const names = [
     'APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_SIGNING_IDENTITY',
     'APPLE_TEAM_ID', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER', 'APPLE_API_KEY_CONTENT',
   ];
-  const env = { ...process.env, ...Object.fromEntries(names.map((name) => [name, 'private-test-value'])) };
-  const complete = spawnSync('bash', ['-c', stepScript('Require macOS signing credentials')], { encoding: 'utf8', env });
+  const env = { ...process.env, ...Object.fromEntries(names.map(name => [name, 'fixture'])) };
+  const script = stepScript('Report macOS signing credentials');
+  const complete = spawnSync('bash', ['-c', script], { encoding: 'utf8', env });
   assert.equal(complete.status, 0, complete.stderr);
-  const missing = spawnSync('bash', ['-c', stepScript('Require macOS signing credentials')], {
-    encoding: 'utf8', env: { ...env, APPLE_CERTIFICATE: '' },
+  assert.match(complete.stdout, /credentials are configured/);
+  assert.equal(complete.stderr, '');
+  // A missing secret narrows the release to Linux and Windows; it never blocks the cut.
+  const missing = spawnSync('bash', ['-c', script], {
+    encoding: 'utf8', env: { ...env, APPLE_CERTIFICATE: '', APPLE_API_ISSUER: '' },
   });
-  assert.notEqual(missing.status, 0);
-  assert.equal(missing.stderr.trim(), 'Missing required repository secret: APPLE_CERTIFICATE');
-  assert.doesNotMatch(missing.stdout + missing.stderr, /private-test-value/);
+  assert.equal(missing.status, 0, missing.stderr);
+  assert.match(missing.stderr, /Linux and Windows only\. Missing: APPLE_CERTIFICATE APPLE_API_ISSUER$/m);
+  assert.match(missing.stdout, /^::warning::.*missing APPLE_CERTIFICATE APPLE_API_ISSUER/m);
+  assert.doesNotMatch(missing.stderr, /APPLE_TEAM_ID/);
+  assert.doesNotMatch(readFileSync(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8'),
+    /name: Report macOS signing credentials\n        if:/, 'the report runs on dry runs too');
 });
 
 test('dispatch resumes the prepared tag and refuses a moved tag', () => {
