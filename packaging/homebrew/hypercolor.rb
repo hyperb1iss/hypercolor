@@ -3,7 +3,10 @@
 
 # Homebrew formula for Hypercolor.
 #
-# scripts/homebrew-formula.mjs renders every platform from the same release.
+# scripts/homebrew-formula.mjs fills the Linux stanzas from the release it
+# just published. macOS stanzas come from the same release when it shipped
+# the signed macOS set, and are otherwise carried forward from the formula
+# already in the tap, with their own version line inside on_macos.
 
 class Hypercolor < Formula
   # Sequoia's symbolic version cannot distinguish 15.0 from the 15.2 floor.
