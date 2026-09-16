@@ -841,6 +841,13 @@ def build_social() -> None:
         1280, 640, mark_wf=0.28, mark_y=0.11, wm_wf=0.58, wm_y=0.57, sparkles=160
     ).save(out / "github-social.png")
 
+    # README header banner: the horizontal lockup on the luminary chip with
+    # the neon underline, sized for GitHub's ~900px content column at 2x.
+    # Checked in as social/hypercolor-banner.png next to the social preview.
+    _luminary_horizontal(1600, 440, lockup_wf=0.72, underline=True).save(
+        out / "readme-banner.png"
+    )
+
     # Discord server icon 512
     bg = radial_gradient((512, 512), inner=(35, 15, 70), outer=VOID_BLACK).convert("RGBA")
     mark_scaled = sq.resize((420, 420), Image.LANCZOS)

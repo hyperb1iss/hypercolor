@@ -1,12 +1,14 @@
 <p align="center">
-  <img src="docs/images/dashboard.png" alt="Hypercolor dashboard running the Neon City effect" width="800">
+  <img src="assets/brand/social/hypercolor-banner.png" alt="Hypercolor" width="800">
 </p>
-
-<h1 align="center">Hypercolor</h1>
 
 <p align="center">
   <strong>Open-source RGB lighting engine for Linux, Windows, and macOS</strong><br>
   <sub>✦ Your world is a canvas: paint every pixel. ✦</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="Hypercolor dashboard running the Neon City effect" width="800">
 </p>
 
 <p align="center">

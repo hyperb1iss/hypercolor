@@ -32,11 +32,14 @@ and `derived/`. Idempotent.
 - **`mask/`** — grayscale masks for dynamically tinting the logo at runtime
   in the UI. See `mask/README.md` for the three flavors of dynamic-tint and
   Leptos usage.
-- **`social/`** — `hypercolor-social.png`, the 1280x640 repository social
-  preview (the luminary field with the mark over the wordmark). GitHub has
-  no API for it, so it is uploaded by hand under Settings, General, Social
-  preview; regenerate with `uv run assets/brand/build.py` and copy
-  `derived/social/github-social.png` here when the masters change.
+- **`social/`** — the checked-in derived images the repository itself
+  displays: `hypercolor-social.png`, the 1280x640 social preview (the
+  luminary field with the mark over the wordmark), and
+  `hypercolor-banner.png`, the README header lockup. GitHub has no API for
+  the social preview, so it is uploaded by hand under Settings, General,
+  Social preview. Regenerate with `uv run assets/brand/build.py` and copy
+  `derived/social/github-social.png` and `derived/social/readme-banner.png`
+  here when the masters change.
 - **`derived/`** — final sized/format outputs: Tauri app icon set, Windows ICO,
   favicons, OG images, WiX/NSIS installer BMPs, social avatars. Regenerated on
   release, not edited by hand. The Windows installer assets are also mirrored
