@@ -824,13 +824,22 @@ def build_social() -> None:
     bg.paste(h_scaled, ((1500 - target_w) // 2, (500 - target_h) // 2), h_scaled)
     bg.convert("RGB").save(out / "twitter-banner.png")
 
-    # GitHub org banner 1280x640
+    # GitHub org banner 1280x640. Fit by width first: the horizontal lockup
+    # is wider than 4:1, so a height-only fit ran past both edges.
     bg = radial_gradient((1280, 640), inner=(35, 15, 70), outer=VOID_BLACK).convert("RGBA")
-    target_h = 360
-    target_w = int(hw * target_h / hh)
-    h_scaled = h_lockup.resize((target_w, target_h), Image.LANCZOS)
-    bg.paste(h_scaled, ((1280 - target_w) // 2, (640 - target_h) // 2), h_scaled)
+    h_scaled = _fit_width(h_lockup, int(1280 * 0.84))
+    if h_scaled.height > 360:
+        h_scaled = _fit_height(h_lockup, 360)
+    bg.paste(h_scaled, ((1280 - h_scaled.width) // 2, (640 - h_scaled.height) // 2), h_scaled)
     bg.convert("RGB").save(out / "github-banner.png")
+
+    # GitHub repository social preview 1280x640: the luminary nebula field
+    # with the mark over the glowing wordmark. This is the image the repo
+    # Settings page takes under Social preview; the checked-in copy at
+    # social/hypercolor-social.png is regenerated from here.
+    _luminary_vertical(
+        1280, 640, mark_wf=0.28, mark_y=0.09, wm_wf=0.58, wm_y=0.62, sparkles=160
+    ).save(out / "github-social.png")
 
     # Discord server icon 512
     bg = radial_gradient((512, 512), inner=(35, 15, 70), outer=VOID_BLACK).convert("RGBA")
