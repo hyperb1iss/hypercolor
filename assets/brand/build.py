@@ -842,9 +842,9 @@ def build_social() -> None:
     ).save(out / "github-social.png")
 
     # README header banner: the horizontal lockup on the luminary chip with
-    # the neon underline, sized for GitHub's ~900px content column at 2x.
+    # no underline, sized for GitHub's ~900px content column at 2x.
     # Checked in as social/hypercolor-banner.png next to the social preview.
-    _luminary_horizontal(1600, 440, lockup_wf=0.72, underline=True).save(
+    _luminary_horizontal(1600, 400, lockup_wf=0.72, underline=False).save(
         out / "readme-banner.png"
     )
 
