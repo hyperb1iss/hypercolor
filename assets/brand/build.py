@@ -838,7 +838,7 @@ def build_social() -> None:
     # Settings page takes under Social preview; the checked-in copy at
     # social/hypercolor-social.png is regenerated from here.
     _luminary_vertical(
-        1280, 640, mark_wf=0.28, mark_y=0.09, wm_wf=0.58, wm_y=0.62, sparkles=160
+        1280, 640, mark_wf=0.28, mark_y=0.11, wm_wf=0.58, wm_y=0.57, sparkles=160
     ).save(out / "github-social.png")
 
     # Discord server icon 512
