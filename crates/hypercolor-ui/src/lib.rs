@@ -43,10 +43,10 @@ pub mod optimistic_controls;
 pub mod pages;
 pub mod preferences;
 pub mod preview_telemetry;
+pub mod remote_bridge;
 pub mod render_canvas;
 pub mod render_presets;
 pub mod route_ui;
-pub mod remote_bridge;
 pub mod settings_audio_devices;
 pub mod storage;
 pub mod style_utils;
@@ -98,7 +98,10 @@ fn print_banner() {
 /// than through context: the erased route defs ([`extensions::UiExtensions::routes`])
 /// are `Send` but not `Sync`, so `provide_context` cannot carry them. Nav items
 /// are plain data and are surfaced through context inside [`app::app_view`].
-#[allow(unused_mut, reason = "Remote WASM discovery replaces the runtime mount")]
+#[allow(
+    unused_mut,
+    reason = "Remote WASM discovery replaces the runtime mount"
+)]
 pub fn run_with_extensions(mut ext: UiExtensions) {
     _ = console_log::init_with_level(log::Level::Debug);
     console_error_panic_hook::set_once();

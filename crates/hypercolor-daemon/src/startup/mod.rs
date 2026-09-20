@@ -100,7 +100,7 @@ pub(crate) async fn persist_scene_store_snapshot(
 pub struct DaemonState {
     /// Resolved directory served by the local UI router, when present.
     /// Extensions may inspect the same path before their install/start hooks.
-    pub ui_dir: Option<PathBuf>,
+    pub(crate) ui_dir: Option<PathBuf>,
 
     /// Complete domain service graph shared by every transport.
     pub domains: DomainContexts,
