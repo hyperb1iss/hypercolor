@@ -17,8 +17,8 @@ use hypercolor_types::scene::ZoneRole;
 use crate::api::{self, DeviceSummary, SegmentTopologySummary};
 use crate::channel_names;
 use crate::components::device_card::{
-    brand_colors, brand_label, brand_vendor, classify_brand, classify_device, device_class_icon,
-    driver_identifier_label, topology_shape_svg,
+    TopologyShape, TopologyShapeKind, brand_colors, brand_label, brand_vendor, classify_brand,
+    classify_device, device_class_icon, driver_identifier_label, topology_shape_kind,
 };
 use crate::icons::*;
 use crate::layout_utils;
@@ -55,7 +55,7 @@ pub enum CardMode {
 struct ComponentRow {
     /// User-facing channel label, identical to the row's display name.
     name: String,
-    shape_svg: &'static str,
+    shape: TopologyShapeKind,
     led_count: usize,
     /// `Output.id` (`Output.id`) when this channel has an output
     /// in the current zone — `None` for the Unassigned bucket or a
@@ -179,7 +179,7 @@ pub fn StudioDeviceCard(
             });
             ComponentRow {
                 name: display_name.clone(),
-                shape_svg: topology_shape_svg(&channel.topology),
+                shape: topology_shape_kind(&channel.topology),
                 led_count: channel.led_count as usize,
                 output_id,
                 slot_id: channel.id.clone(),
@@ -818,7 +818,7 @@ fn component_row_view(
 ) -> impl IntoView {
     let ComponentRow {
         name,
-        shape_svg,
+        shape,
         led_count,
         output_id,
         slot_id,
@@ -927,13 +927,9 @@ fn component_row_view(
             }
             on:mouseleave=move |_| studio.hovered_output_ids.set(HashSet::new())
         >
-            <div
-                class="h-3 w-3 shrink-0"
-                style=shape_style
-                inner_html=format!(
-                    r#"<svg viewBox="0 0 16 16" width="12" height="12">{shape_svg}</svg>"#,
-                )
-            />
+            <div class="h-3 w-3 shrink-0" style=shape_style>
+                <TopologyShape kind=shape size=12 />
+            </div>
             <div class="min-w-0 flex-1">
                 <div class="truncate text-[10px] text-fg-tertiary">{name}</div>
                 {move || {
