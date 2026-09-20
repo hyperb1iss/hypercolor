@@ -290,6 +290,9 @@ jobs:
       - name: Check macOS GPU-only architecture
         run: ./scripts/check-macos-gpu-only.sh
 
+      - name: Refuse new raw HTML sinks
+        run: ./scripts/check-ui-html-sinks.sh
+
       - name: Test local build fabric
         run: |
           ./scripts/tests/cargo-cache-build-tests.sh

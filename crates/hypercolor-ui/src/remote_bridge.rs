@@ -8,6 +8,18 @@ use crate::route_ui::UiMount;
 pub const CONTRACT_MIN: u32 = 1;
 pub const CONTRACT_MAX: u32 = 1;
 
+/// Whether this browser page exposes the Remote host bridge.
+///
+/// Callers may use this before [`crate::run_with_extensions`] initializes the
+/// transport to avoid issuing ordinary same-origin requests from a Remote
+/// page. The full contract is still validated by [`initialize`].
+/// Native builds never expose the browser Remote bridge.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub const fn is_available() -> bool {
+    false
+}
+
 /// Resolve a daemon API path inside the host-provided Remote mount.
 ///
 /// Only relative `/api/v1` routes are accepted. Browser normalization never
@@ -138,22 +150,27 @@ mod browser {
         }
     }
 
+    #[must_use]
+    pub fn is_available() -> bool {
+        bridge_value().is_some()
+    }
+
     pub fn initialize() -> Result<Option<RemoteBridge>, RemoteBridgeError> {
-        let Some(window) = web_sys::window() else {
+        let Some(value) = bridge_value() else {
             return Ok(None);
         };
-        let Ok(value) = Reflect::get(window.as_ref(), &JsValue::from_str("__HYPERCOLOR_REMOTE__"))
-        else {
-            return Ok(None);
-        };
-        if value.is_null() || value.is_undefined() {
-            return Ok(None);
-        }
         let result = initialize_value(value.clone());
         if let Err(code) = &result {
             fatal(&value, code);
         }
         result.map(Some).map_err(|code| RemoteBridgeError { code })
+    }
+
+    fn bridge_value() -> Option<JsValue> {
+        let window = web_sys::window()?;
+        Reflect::get(window.as_ref(), &JsValue::from_str("__HYPERCOLOR_REMOTE__"))
+            .ok()
+            .filter(|value| !value.is_null() && !value.is_undefined())
     }
 
     fn initialize_value(value: JsValue) -> Result<RemoteBridge, &'static str> {
@@ -864,13 +881,18 @@ export function socketHandlersCleared() {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use browser::{RemoteBridge, RemoteBridgeError, initialize};
+pub use browser::{RemoteBridge, RemoteBridgeError, initialize, is_available};
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_remote_api_url;
+    use super::{is_available, resolve_remote_api_url};
 
     const DAEMON: &str = "018f4c36-4a44-7cc9-9f57-0d2e9224d2f1";
+
+    #[test]
+    fn native_runtime_never_reports_a_browser_bridge() {
+        assert!(!is_available());
+    }
 
     #[test]
     fn rebases_api_routes_under_the_remote_daemon_mount() {
