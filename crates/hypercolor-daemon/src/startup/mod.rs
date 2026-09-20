@@ -98,6 +98,10 @@ pub(crate) async fn persist_scene_store_snapshot(
 /// The domain graph is the primary transport-facing surface. Raw authorities
 /// stay private when their pointer identity must remain fixed after assembly.
 pub struct DaemonState {
+    /// Resolved directory served by the local UI router, when present.
+    /// Extensions may inspect the same path before their install/start hooks.
+    pub ui_dir: Option<PathBuf>,
+
     /// Complete domain service graph shared by every transport.
     pub domains: DomainContexts,
 
@@ -295,6 +299,12 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
+    /// Resolved directory served by the local UI router.
+    #[must_use]
+    pub fn ui_dir(&self) -> Option<&std::path::Path> {
+        self.ui_dir.as_deref()
+    }
+
     #[doc(hidden)]
     #[must_use]
     pub const fn input_manager(&self) -> &InputManager {
