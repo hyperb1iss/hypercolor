@@ -2,11 +2,11 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use hypercolor_leptos_ext::canvas::{
-    bitmap_renderer_context, message_image_bitmap, revoke_blob_url, script_blob_url,
-    set_canvas_size, supports_global, supports_offscreen_canvas_2d_bitmap,
+    bitmap_renderer_context, message_image_bitmap, revoke_blob_url, set_canvas_size,
+    supports_global, supports_offscreen_canvas_2d_bitmap,
 };
 use hypercolor_leptos_ext::events::{WorkerMessageHandler, post_worker_canvas_frame};
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{HtmlCanvasElement, ImageBitmapRenderingContext, MessageEvent, Worker};
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
@@ -223,8 +223,7 @@ impl PreviewWorkerRuntime {
         let bitmap_ctx = bitmap_renderer_context(canvas).ok_or(())?;
         probe_worker_support(frame.pixel_format())?;
 
-        let worker_url = create_worker_url().map_err(|_| ())?;
-        let worker = Worker::new(&worker_url).map_err(|_| ())?;
+        let (worker, worker_url) = create_worker().map_err(|_| ())?;
         let failed = Rc::new(Cell::new(false));
         let dispatch_state = Rc::new(RefCell::new(FrameDispatchState::default()));
         let failed_handle = Rc::clone(&failed);
@@ -316,8 +315,9 @@ impl Drop for PreviewWorkerRuntime {
     }
 }
 
-fn create_worker_url() -> Result<String, JsValue> {
-    script_blob_url(PREVIEW_WORKER_SOURCE)
+fn create_worker() -> Result<(Worker, String), JsValue> {
+    let (worker, url) = tachys::renderer::dom::create_static_worker(PREVIEW_WORKER_SOURCE)?;
+    Ok((worker.dyn_into()?, url))
 }
 
 fn post_frame(worker: &Worker, frame: &CanvasFrame) -> Result<(), JsValue> {

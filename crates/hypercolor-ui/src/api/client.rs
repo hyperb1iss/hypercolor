@@ -70,6 +70,7 @@ pub fn install_http_transport(
 #[derive(Clone, PartialEq, Eq)]
 struct DaemonTransport {
     native_app: bool,
+    remote: bool,
     base_url: Option<String>,
     protected_control_credential: Option<String>,
 }
@@ -78,6 +79,7 @@ impl Default for DaemonTransport {
     fn default() -> Self {
         Self {
             native_app: false,
+            remote: false,
             base_url: None,
             protected_control_credential: fragment_dev_control_credential(),
         }
@@ -115,6 +117,11 @@ fn fragment_dev_control_credential() -> Option<String> {
 
 impl DaemonTransport {
     fn resolve_url(&self, url: &str) -> Option<String> {
+        if self.remote {
+            return self.base_url.as_ref().and_then(|base| {
+                crate::remote_bridge::resolve_remote_api_url_from_base(base, url)
+            });
+        }
         if !url.starts_with('/') {
             return Some(url.to_owned());
         }
@@ -348,6 +355,7 @@ pub fn save_api_key(api_key: &str) {
 pub fn begin_native_daemon_verification() {
     DAEMON_TRANSPORT.with_borrow_mut(|transport| {
         transport.native_app = true;
+        transport.remote = false;
         transport.base_url = None;
         transport.protected_control_credential = None;
     });
@@ -361,6 +369,7 @@ pub fn install_verified_daemon_connection(base_url: &str, credential: Option<&st
         .filter(|credential| !credential.is_empty());
     DAEMON_TRANSPORT.with_borrow_mut(|transport| {
         transport.native_app = true;
+        transport.remote = false;
         transport.base_url = (!base_url.is_empty()).then(|| base_url.to_owned());
         transport.protected_control_credential = credential.map(str::to_owned);
     });
@@ -370,6 +379,19 @@ pub fn install_verified_daemon_connection(base_url: &str, credential: Option<&st
 pub fn clear_verified_daemon_connection() {
     DAEMON_TRANSPORT.with_borrow_mut(|transport| {
         transport.base_url = None;
+        transport.remote = false;
+        transport.protected_control_credential = None;
+    });
+}
+
+/// Install the host-provided Remote daemon route. Remote mode accepts only
+/// `/api/v1` paths and never carries a local bearer credential.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn install_remote_daemon_connection(base_url: &str) {
+    DAEMON_TRANSPORT.with_borrow_mut(|transport| {
+        transport.native_app = false;
+        transport.remote = true;
+        transport.base_url = Some(base_url.trim_end_matches('/').to_owned());
         transport.protected_control_credential = None;
     });
 }
@@ -890,6 +912,7 @@ mod tests {
     fn native_transport_routes_relative_urls_and_preserves_absolute_urls() {
         let transport = DaemonTransport {
             native_app: true,
+            remote: false,
             base_url: Some("http://127.0.0.1:9420".to_owned()),
             protected_control_credential: None,
         };
@@ -931,6 +954,7 @@ mod tests {
     fn verified_credential_precedes_public_key_and_clears_without_persistence() {
         let transport = DaemonTransport {
             native_app: true,
+            remote: false,
             base_url: None,
             protected_control_credential: Some("protected".to_owned()),
         };

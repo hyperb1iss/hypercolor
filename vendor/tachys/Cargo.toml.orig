@@ -1,0 +1,217 @@
+[package]
+name = "tachys"
+version = "0.2.18"
+authors = ["Greg Johnston"]
+license = "MIT"
+readme = "../README.md"
+repository = "https://github.com/leptos-rs/leptos"
+description = "Tools for building reactivity-agnostic, renderer-generic, statically-typed view trees for user interface libraries."
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+throw_error = { workspace = true }
+any_spawner = { workspace = true, optional = true }
+const_str_slice_concat = { workspace = true }
+either_of = { workspace = true }
+next_tuple = { workspace = true }
+or_poisoned = { workspace = true }
+reactive_graph = { workspace = true, optional = true }
+reactive_stores = { workspace = true, optional = true }
+slotmap = { optional = true, workspace = true, default-features = true }
+oco_ref = { workspace = true, optional = true }
+async-trait = { workspace = true, default-features = true }
+paste = { workspace = true, default-features = true }
+erased = { workspace = true, default-features = true }
+wasm-bindgen = { workspace = true, default-features = true }
+html-escape = { workspace = true, default-features = true }
+js-sys = { workspace = true, default-features = true }
+web-sys = { features = [
+  "Window",
+  "Document",
+  "HtmlElement",
+  "HtmlInputElement",
+  "Element",
+  "Event",
+  "console",
+  "Comment",
+  "Text",
+  "Node",
+  "HtmlTemplateElement",
+  "DocumentFragment",
+  "DomTokenList",
+  "CssStyleDeclaration",
+  "ShadowRoot",
+  "HtmlCollection",
+  "DomStringMap",
+
+  # Events we cast to in leptos_macro -- added here so we don't force users to import them
+  "AddEventListenerOptions",
+  "AnimationEvent",
+  "BeforeUnloadEvent",
+  "ClipboardEvent",
+  "CompositionEvent",
+  "CustomEvent",
+  "DeviceMotionEvent",
+  "DeviceOrientationEvent",
+  "DragEvent",
+  "ErrorEvent",
+  "Event",
+  "FocusEvent",
+  "GamepadEvent",
+  "HashChangeEvent",
+  "InputEvent",
+  "KeyboardEvent",
+  "MessageEvent",
+  "MouseEvent",
+  "PageTransitionEvent",
+  "PointerEvent",
+  "PopStateEvent",
+  "ProgressEvent",
+  "PromiseRejectionEvent",
+  "SecurityPolicyViolationEvent",
+  "StorageEvent",
+  "SubmitEvent",
+  "TouchEvent",
+  "TransitionEvent",
+  "UiEvent",
+  "WheelEvent",
+
+  # HTML Element Types
+  "HtmlHtmlElement",
+  "HtmlBaseElement",
+  "HtmlHeadElement",
+  "HtmlLinkElement",
+  "HtmlMetaElement",
+  "HtmlStyleElement",
+  "HtmlTitleElement",
+  "HtmlBodyElement",
+  "HtmlHeadingElement",
+  "HtmlQuoteElement",
+  "HtmlDivElement",
+  "HtmlDListElement",
+  "HtmlHrElement",
+  "HtmlLiElement",
+  "HtmlOListElement",
+  "HtmlParagraphElement",
+  "HtmlPreElement",
+  "HtmlUListElement",
+  "HtmlAnchorElement",
+  "HtmlBrElement",
+  "HtmlDataElement",
+  "HtmlQuoteElement",
+  "HtmlSpanElement",
+  "HtmlTimeElement",
+  "HtmlAreaElement",
+  "HtmlAudioElement",
+  "HtmlImageElement",
+  "HtmlMapElement",
+  "HtmlTrackElement",
+  "HtmlVideoElement",
+  "HtmlEmbedElement",
+  "HtmlIFrameElement",
+  "HtmlObjectElement",
+  "HtmlParamElement",
+  "HtmlPictureElement",
+  "HtmlSourceElement",
+  "SvgElement",
+  "HtmlCanvasElement",
+  "HtmlScriptElement",
+  "HtmlModElement",
+  "HtmlTableCaptionElement",
+  "HtmlTableColElement",
+  "HtmlTableColElement",
+  "HtmlTableElement",
+  "HtmlTableSectionElement",
+  "HtmlTableCellElement",
+  "HtmlTableSectionElement",
+  "HtmlTableCellElement",
+  "HtmlTableSectionElement",
+  "HtmlTableRowElement",
+  "HtmlButtonElement",
+  "HtmlDataListElement",
+  "HtmlFieldSetElement",
+  "HtmlFormElement",
+  "HtmlInputElement",
+  "HtmlLabelElement",
+  "HtmlLegendElement",
+  "HtmlMeterElement",
+  "HtmlOptGroupElement",
+  "HtmlOutputElement",
+  "HtmlProgressElement",
+  "HtmlSelectElement",
+  "HtmlTextAreaElement",
+  "HtmlDetailsElement",
+  "HtmlDialogElement",
+  "HtmlMenuElement",
+  "HtmlSlotElement",
+  "HtmlTemplateElement",
+  "HtmlOptionElement",
+], workspace = true, default-features = true }
+drain_filter_polyfill = { workspace = true, default-features = true }
+indexmap = { workspace = true, default-features = true }
+rustc-hash = { workspace = true, default-features = true }
+futures = { workspace = true, default-features = true }
+itertools = { workspace = true, default-features = true }
+send_wrapper = { workspace = true, default-features = true }
+sledgehammer_bindgen = { features = [
+  "web",
+], optional = true, workspace = true, default-features = true }
+sledgehammer_utils = { optional = true, workspace = true, default-features = true }
+tracing = { optional = true, workspace = true, default-features = true }
+serde = { optional = true, workspace = true, default-features = true }
+serde_json = { optional = true, workspace = true, default-features = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true, default-features = true }
+tokio = { features = [
+  "rt",
+  "macros",
+], workspace = true, default-features = true }
+
+[build-dependencies]
+rustc_version = { workspace = true, default-features = true }
+
+[features]
+default = ["testing"]
+delegation = []                                                       # enables event delegation
+error-hook = []
+hydrate = []
+islands = ["dep:serde", "dep:serde_json"]
+ssr = []
+oco = ["dep:oco_ref"]
+nightly = ["reactive_graph/nightly"]
+testing = ["dep:slotmap"]
+reactive_graph = ["dep:reactive_graph", "dep:any_spawner"]
+reactive_stores = ["reactive_graph", "dep:reactive_stores"]
+sledgehammer = ["dep:sledgehammer_bindgen", "dep:sledgehammer_utils"]
+tracing = ["dep:tracing"]
+mark_branches = []
+
+[package.metadata.cargo-all-features]
+denylist = ["tracing", "sledgehammer"]
+skip_feature_sets = [
+  [
+    "ssr",
+    "hydrate",
+  ],
+  [
+    "hydrate",
+    "islands",
+  ],
+  [
+    "ssr",
+    "delegation",
+  ],
+  [
+    "nightly",
+  ],
+]
+max_combination_size = 2
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(leptos_debuginfo)',
+  'cfg(erase_components)',
+  'cfg(rustc_nightly)',
+] }

@@ -802,6 +802,7 @@ impl DaemonState {
         info!("Device backends registered");
 
         Ok(Self {
+            ui_dir: None,
             domains,
             config_manager,
             extensions: ExtensionRegistry::default(),
