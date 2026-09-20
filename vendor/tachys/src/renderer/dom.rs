@@ -14,11 +14,7 @@ use std::{
     borrow::Cow,
     cell::{LazyCell, RefCell},
 };
-use wasm_bindgen::{
-    intern,
-    prelude::{wasm_bindgen, Closure},
-    JsCast, JsValue,
-};
+use wasm_bindgen::{intern, prelude::{wasm_bindgen, Closure}, JsCast, JsValue};
 use web_sys::{AddEventListenerOptions, Comment, HtmlTemplateElement};
 
 /// A [`Renderer`](crate::renderer::Renderer) that uses `web-sys` to manipulate DOM elements in the browser.
@@ -59,6 +55,11 @@ function staticPolicy() {
 }
 
 export function setStaticInnerHtml(element, html) {
+    const host = globalThis[Symbol.for("tachys.static-dom.v1")];
+    if (host) {
+        host.setStaticInnerHtml(element, html);
+        return;
+    }
     if (!globalThis.trustedTypes) {
         element.innerHTML = html;
         return;
@@ -68,6 +69,8 @@ export function setStaticInnerHtml(element, html) {
 }
 
 export function createStaticWorker(source) {
+    const host = globalThis[Symbol.for("tachys.static-dom.v1")];
+    if (host) return host.createStaticWorker(source);
     const blob = new Blob([source], { type: "text/javascript" });
     const url = URL.createObjectURL(blob);
     try {
@@ -105,10 +108,14 @@ pub fn create_static_worker(source: &'static str) -> Result<(JsValue, String), J
     Ok((worker, url))
 }
 
-fn set_borrowed_static_inner_html(element: &Element, html: &Cow<'static, str>) {
+fn set_borrowed_static_inner_html(
+    element: &Element,
+    html: &Cow<'static, str>,
+    allow_owned_svg: bool,
+) {
     match html {
         Cow::Borrowed(html) => set_static_inner_html(element, html),
-        Cow::Owned(html) if is_safe_static_svg_fragment(html) => {
+        Cow::Owned(html) if allow_owned_svg && is_safe_static_svg_fragment(html) => {
             set_static_inner_html(element, html);
         }
         Cow::Owned(html) => element.set_inner_html(html),
@@ -221,8 +228,12 @@ fn is_safe_static_svg_fragment(html: &str) -> bool {
             let value = &attributes[..value_end];
             if value
                 .bytes()
-                .any(|byte| byte.is_ascii_control() || matches!(byte, b'<' | b'>' | b'&'))
+                .any(|byte| byte.is_ascii_control() || matches!(byte, b'<' | b'>' | b'&' | b'\\'))
                 || value.to_ascii_lowercase().contains("url(")
+                || (matches!(attribute, "fill" | "stroke")
+                    && !value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'#'))
             {
                 return false;
             }
@@ -256,6 +267,8 @@ mod trusted_types_tests {
             r#"<g><use href="https://example.test/icon" /></g>"#,
             r#"<g><path style="display:none" /></g>"#,
             r#"<g><path fill="url(#paint)" /></g>"#,
+            r#"<g><path fill="u\72l(https://example.test/paint)" /></g>"#,
+            r#"<g><path stroke="var(--paint)" /></g>"#,
             r#"<g><svg:path d="M0 0" /></g>"#,
             r#"<g><path d="M0 &amp; 0" /></g>"#,
             r#"<g><path d="M0 0 /></g>"#,
@@ -280,8 +293,9 @@ pub fn queue_microtask(task: impl FnOnce() + 'static) {
 
     let task = Closure::once_into_js(task);
     let window = window();
-    let queue_microtask = Reflect::get(&window, &JsValue::from_str("queueMicrotask"))
-        .expect("queueMicrotask not available");
+    let queue_microtask =
+        Reflect::get(&window, &JsValue::from_str("queueMicrotask"))
+            .expect("queueMicrotask not available");
     let queue_microtask = queue_microtask.unchecked_into::<Function>();
     _ = queue_microtask.call1(&JsValue::UNDEFINED, &task);
 }
@@ -314,7 +328,10 @@ impl Dom {
     pub fn create_element(tag: &str, namespace: Option<&str>) -> Element {
         if let Some(namespace) = namespace {
             document()
-                .create_element_ns(Some(Self::intern(namespace)), Self::intern(tag))
+                .create_element_ns(
+                    Some(Self::intern(namespace)),
+                    Self::intern(tag),
+                )
                 .unwrap()
         } else {
             document().create_element(Self::intern(tag)).unwrap()
@@ -351,7 +368,11 @@ impl Dom {
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace"))]
-    pub fn insert_node(parent: &Element, new_child: &Node, anchor: Option<&Node>) {
+    pub fn insert_node(
+        parent: &Element,
+        new_child: &Node,
+        anchor: Option<&Node>,
+    ) {
         ok_or_debug!(
             parent.insert_before(new_child, anchor),
             parent,
@@ -360,7 +381,11 @@ impl Dom {
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace"))]
-    pub fn try_insert_node(parent: &Element, new_child: &Node, anchor: Option<&Node>) -> bool {
+    pub fn try_insert_node(
+        parent: &Element,
+        new_child: &Node,
+        anchor: Option<&Node>,
+    ) -> bool {
         parent.insert_before(new_child, anchor).is_ok()
     }
 
@@ -445,9 +470,10 @@ impl Dom {
     where
         M: Mountable,
     {
-        let parent =
-            Element::cast_from(Self::get_parent(before).expect("could not find parent element"))
-                .expect("placeholder parent should be Element");
+        let parent = Element::cast_from(
+            Self::get_parent(before).expect("could not find parent element"),
+        )
+        .expect("placeholder parent should be Element");
         new_child.mount(&parent, Some(before));
     }
 
@@ -459,7 +485,9 @@ impl Dom {
     where
         M: Mountable,
     {
-        if let Some(parent) = Self::get_parent(before).and_then(Element::cast_from) {
+        if let Some(parent) =
+            Self::get_parent(before).and_then(Element::cast_from)
+        {
             new_child.mount(&parent, Some(before));
             true
         } else {
@@ -483,7 +511,11 @@ impl Dom {
 
     pub fn set_property(el: &Element, key: &str, value: &JsValue) {
         or_debug!(
-            js_sys::Reflect::set(el, &wasm_bindgen::JsValue::from_str(key), value,),
+            js_sys::Reflect::set(
+                el,
+                &wasm_bindgen::JsValue::from_str(key),
+                value,
+            ),
             el,
             "setProperty"
         );
@@ -497,7 +529,10 @@ impl Dom {
         let cb = wasm_bindgen::closure::Closure::wrap(cb);
         let name = intern(name);
         or_debug!(
-            el.add_event_listener_with_callback(name, cb.as_ref().unchecked_ref()),
+            el.add_event_listener_with_callback(
+                name,
+                cb.as_ref().unchecked_ref()
+            ),
             el,
             "addEventListener"
         );
@@ -605,14 +640,18 @@ impl Dom {
                     // TODO simulate currentTarget
 
                     while !node.is_null() {
-                        let node_is_disabled =
-                            js_sys::Reflect::get(&node, &JsValue::from_str("disabled"))
-                                .unwrap()
-                                .is_truthy();
+                        let node_is_disabled = js_sys::Reflect::get(
+                            &node,
+                            &JsValue::from_str("disabled"),
+                        )
+                        .unwrap()
+                        .is_truthy();
                         if !node_is_disabled {
-                            let maybe_handler = js_sys::Reflect::get(&node, &key).unwrap();
+                            let maybe_handler =
+                                js_sys::Reflect::get(&node, &key).unwrap();
                             if !maybe_handler.is_undefined() {
-                                let f = maybe_handler.unchecked_ref::<js_sys::Function>();
+                                let f = maybe_handler
+                                    .unchecked_ref::<js_sys::Function>();
                                 let _ = f.call1(&node, &ev);
 
                                 if ev.cancel_bubble() {
@@ -622,9 +661,13 @@ impl Dom {
                         }
 
                         // navigate up tree
-                        if let Some(parent) = node.unchecked_ref::<web_sys::Node>().parent_node() {
+                        if let Some(parent) =
+                            node.unchecked_ref::<web_sys::Node>().parent_node()
+                        {
                             node = parent.into()
-                        } else if let Some(root) = node.dyn_ref::<web_sys::ShadowRoot>() {
+                        } else if let Some(root) =
+                            node.dyn_ref::<web_sys::ShadowRoot>()
+                        {
                             node = root.host().unchecked_into();
                         } else {
                             node = JsValue::null()
@@ -632,10 +675,14 @@ impl Dom {
                     }
                 };
 
-                let handler = Box::new(handler) as Box<dyn FnMut(web_sys::Event)>;
+                let handler =
+                    Box::new(handler) as Box<dyn FnMut(web_sys::Event)>;
                 let handler = Closure::wrap(handler).into_js_value();
                 window()
-                    .add_event_listener_with_callback(&name, handler.unchecked_ref())
+                    .add_event_listener_with_callback(
+                        &name,
+                        handler.unchecked_ref(),
+                    )
                     .unwrap();
 
                 // register that we've created handler
@@ -654,7 +701,10 @@ impl Dom {
                 let (el, cb) = el_cb.take();
                 drop(cb);
                 or_debug!(
-                    js_sys::Reflect::delete_property(&el, &JsValue::from_str(&key)),
+                    js_sys::Reflect::delete_property(
+                        &el,
+                        &JsValue::from_str(&key)
+                    ),
                     &el,
                     "delete property"
                 );
@@ -678,7 +728,11 @@ impl Dom {
         el.unchecked_ref::<web_sys::HtmlElement>().style()
     }
 
-    pub fn set_css_property(style: &CssStyleDeclaration, name: &str, value: &str) {
+    pub fn set_css_property(
+        style: &CssStyleDeclaration,
+        name: &str,
+        value: &str,
+    ) {
         or_debug!(
             style.set_property(name, value),
             style.unchecked_ref(),
@@ -743,12 +797,15 @@ impl Dom {
     pub fn create_element_from_html(html: Cow<'static, str>) -> Element {
         let tpl = TEMPLATE_CACHE.with_borrow_mut(|cache| {
             if let Some(tpl_content) = cache.iter().find_map(|(key, tpl)| {
-                (html == *key).then_some(Self::clone_template(tpl.unchecked_ref()))
+                (html == *key)
+                    .then_some(Self::clone_template(tpl.unchecked_ref()))
             }) {
                 tpl_content
             } else {
-                let tpl = document().create_element(Self::intern("template")).unwrap();
-                set_borrowed_static_inner_html(&tpl, &html);
+                let tpl = document()
+                    .create_element(Self::intern("template"))
+                    .unwrap();
+                set_borrowed_static_inner_html(&tpl, &html, false);
                 let tpl_content = Self::clone_template(tpl.unchecked_ref());
                 cache.push((html, tpl));
                 tpl_content
@@ -760,11 +817,14 @@ impl Dom {
     pub fn create_svg_element_from_html(html: Cow<'static, str>) -> Element {
         let tpl = TEMPLATE_CACHE.with_borrow_mut(|cache| {
             if let Some(tpl_content) = cache.iter().find_map(|(key, tpl)| {
-                (html == *key).then_some(Self::clone_template(tpl.unchecked_ref()))
+                (html == *key)
+                    .then_some(Self::clone_template(tpl.unchecked_ref()))
             }) {
                 tpl_content
             } else {
-                let tpl = document().create_element(Self::intern("template")).unwrap();
+                let tpl = document()
+                    .create_element(Self::intern("template"))
+                    .unwrap();
                 let svg = document()
                     .create_element_ns(
                         Some(Self::intern("http://www.w3.org/2000/svg")),
@@ -777,7 +837,7 @@ impl Dom {
                         Self::intern("g"),
                     )
                     .unwrap();
-                set_borrowed_static_inner_html(&g, &html);
+                set_borrowed_static_inner_html(&g, &html, true);
                 svg.append_child(&g).unwrap();
                 tpl.unchecked_ref::<TemplateElement>()
                     .content()
@@ -835,7 +895,8 @@ impl Mountable for Text {
     }
 
     fn insert_before_this(&self, child: &mut dyn Mountable) -> bool {
-        let parent = Dom::get_parent(self.as_ref()).and_then(Element::cast_from);
+        let parent =
+            Dom::get_parent(self.as_ref()).and_then(Element::cast_from);
         if let Some(parent) = parent {
             child.mount(&parent, Some(self));
             return true;
@@ -862,7 +923,8 @@ impl Mountable for Comment {
     }
 
     fn insert_before_this(&self, child: &mut dyn Mountable) -> bool {
-        let parent = Dom::get_parent(self.as_ref()).and_then(Element::cast_from);
+        let parent =
+            Dom::get_parent(self.as_ref()).and_then(Element::cast_from);
         if let Some(parent) = parent {
             child.mount(&parent, Some(self));
             return true;
@@ -885,7 +947,8 @@ impl Mountable for Element {
     }
 
     fn insert_before_this(&self, child: &mut dyn Mountable) -> bool {
-        let parent = Dom::get_parent(self.as_ref()).and_then(Element::cast_from);
+        let parent =
+            Dom::get_parent(self.as_ref()).and_then(Element::cast_from);
         if let Some(parent) = parent {
             child.mount(&parent, Some(self));
             return true;

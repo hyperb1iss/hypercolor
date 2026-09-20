@@ -12,7 +12,9 @@ mod value;
 
 use crate::view::{Position, ToTemplate};
 pub use key::*;
-use maybe_next_attr_erasure_macros::{next_attr_combine, next_attr_output_type};
+use maybe_next_attr_erasure_macros::{
+    next_attr_combine, next_attr_output_type,
+};
 use std::{borrow::Cow, fmt::Debug, future::Future};
 pub use value::*;
 
@@ -49,7 +51,10 @@ pub trait Attribute: NextAttribute + Send {
 
     /// Adds interactivity as necessary, given DOM nodes that were created from HTML that has
     /// either been rendered on the server, or cloned for a `<template>`.
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State;
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State;
 
     /// Adds this attribute to the element during client-side rendering.
     fn build(self, el: &crate::renderer::types::Element) -> Self::State;
@@ -99,7 +104,10 @@ pub trait NextAttribute {
     type Output<NewAttr: Attribute>: Attribute;
 
     /// Adds a new attribute.
-    fn add_any_attr<NewAttr: Attribute>(self, new_attr: NewAttr) -> Self::Output<NewAttr>;
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        new_attr: NewAttr,
+    ) -> Self::Output<NewAttr>;
 }
 
 impl Attribute for () {
@@ -155,9 +163,13 @@ impl NextAttribute for () {
     type Output<NewAttr: Attribute> = (NewAttr,);
 
     #[cfg(erase_components)]
-    type Output<NewAttr: Attribute> = Vec<crate::html::attribute::any_attribute::AnyAttribute>;
+    type Output<NewAttr: Attribute> =
+        Vec<crate::html::attribute::any_attribute::AnyAttribute>;
 
-    fn add_any_attr<NewAttr: Attribute>(self, new_attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        new_attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         #[cfg(not(erase_components))]
         {
             (new_attr,)
@@ -230,7 +242,10 @@ where
         self.1.to_html(K::KEY, buf);
     }
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         self.1.hydrate::<FROM_SERVER>(K::KEY, el)
     }
 
@@ -270,7 +285,10 @@ where
 {
     next_attr_output_type!(Self, NewAttr);
 
-    fn add_any_attr<NewAttr: Attribute>(self, new_attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        new_attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         next_attr_combine!(self, new_attr)
     }
 }
@@ -533,7 +551,10 @@ where
         self.0.to_html(buf, class, style, inner_html);
     }
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         self.0.hydrate::<FROM_SERVER>(el)
     }
 
@@ -572,7 +593,10 @@ where
 {
     next_attr_output_type!(A, NewAttr);
 
-    fn add_any_attr<NewAttr: Attribute>(self, new_attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        new_attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         next_attr_combine!(self.0, new_attr)
     }
 }
@@ -595,12 +619,25 @@ impl_attr_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
 impl_attr_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q);
 impl_attr_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R);
 impl_attr_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S);
-impl_attr_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T);
-impl_attr_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U);
-impl_attr_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V);
-impl_attr_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W);
-impl_attr_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X);
-impl_attr_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y);
+impl_attr_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T
+);
+impl_attr_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U
+);
+impl_attr_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V
+);
+impl_attr_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W
+);
+impl_attr_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X
+);
+impl_attr_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y
+);
 impl_attr_for_tuples_truncate_additional!(
-    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y,
+    Z
 );

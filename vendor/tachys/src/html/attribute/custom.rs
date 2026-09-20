@@ -1,8 +1,10 @@
-use super::{maybe_next_attr_erasure_macros::next_attr_output_type, NextAttribute};
+use super::{
+    maybe_next_attr_erasure_macros::next_attr_output_type, NextAttribute,
+};
 use crate::{
     html::attribute::{
-        maybe_next_attr_erasure_macros::next_attr_combine, Attribute, AttributeValue,
-        NamedAttributeKey,
+        maybe_next_attr_erasure_macros::next_attr_combine, Attribute,
+        AttributeValue, NamedAttributeKey,
     },
     view::{add_attr::AddAnyAttr, Position, ToTemplate},
 };
@@ -67,7 +69,10 @@ where
         self.value.to_html(self.key.as_ref(), buf);
     }
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         if !K::KEY.is_empty() {
             self.value.hydrate::<FROM_SERVER>(self.key.as_ref(), el)
         } else {
@@ -122,7 +127,10 @@ where
 {
     next_attr_output_type!(Self, NewAttr);
 
-    fn add_any_attr<NewAttr: Attribute>(self, new_attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        new_attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         next_attr_combine!(self, new_attr)
     }
 }
@@ -169,7 +177,9 @@ impl CustomAttributeKey for Arc<str> {
 }
 
 #[cfg(all(feature = "nightly", rustc_nightly))]
-impl<const K: &'static str> CustomAttributeKey for crate::view::static_types::Static<K> {
+impl<const K: &'static str> CustomAttributeKey
+    for crate::view::static_types::Static<K>
+{
     const KEY: &'static str = K;
 }
 
@@ -182,7 +192,11 @@ where
     Self: Sized + AddAnyAttr,
 {
     /// Adds an HTML attribute by key and value.
-    fn attr(self, key: K, value: V) -> <Self as AddAnyAttr>::Output<CustomAttr<K, V>> {
+    fn attr(
+        self,
+        key: K,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<CustomAttr<K, V>> {
         self.add_any_attr(custom_attribute(key, value))
     }
 }

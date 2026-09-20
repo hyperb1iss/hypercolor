@@ -135,9 +135,11 @@ where
     E: EventDescriptor + Send + 'static,
     E::EventType: 'static,
     E::EventType: From<crate::renderer::types::Event>,
-    F: FnMut(Targeted<E::EventType, <Self as HasElementType>::ElementType>) + 'static,
+    F: FnMut(Targeted<E::EventType, <Self as HasElementType>::ElementType>)
+        + 'static,
 {
-    type Output = <Self as AddAnyAttr>::Output<On<E, Box<dyn FnMut(E::EventType)>>>;
+    type Output =
+        <Self as AddAnyAttr>::Output<On<E, Box<dyn FnMut(E::EventType)>>>;
 
     fn on_target(self, event: E, cb: F) -> Self::Output {
         self.add_any_attr(on_target::<E, HtmlElement<El, At, Ch>, F>(event, cb))
@@ -151,22 +153,34 @@ where
     V: AttributeValue,
 {
     /// The `accesskey` global attribute provides a hint for generating a keyboard shortcut for the current element.
-    fn accesskey(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Accesskey, V>> {
+    fn accesskey(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Accesskey, V>> {
         self.add_any_attr(accesskey(value))
     }
 
     /// The `autocapitalize` global attribute controls whether and how text input is automatically capitalized as it is entered/edited by the user.
-    fn autocapitalize(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Autocapitalize, V>> {
+    fn autocapitalize(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Autocapitalize, V>> {
         self.add_any_attr(autocapitalize(value))
     }
 
     /// The `autofocus` global attribute is a Boolean attribute indicating that an element should receive focus as soon as the page is loaded.
-    fn autofocus(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Autofocus, V>> {
+    fn autofocus(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Autofocus, V>> {
         self.add_any_attr(autofocus(value))
     }
 
     /// The `contenteditable` global attribute is an enumerated attribute indicating if the element should be editable by the user.
-    fn contenteditable(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Contenteditable, V>> {
+    fn contenteditable(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Contenteditable, V>> {
         self.add_any_attr(contenteditable(value))
     }
 
@@ -176,17 +190,26 @@ where
     }
 
     /// The `draggable` global attribute is an enumerated attribute indicating whether the element can be dragged.
-    fn draggable(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Draggable, V>> {
+    fn draggable(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Draggable, V>> {
         self.add_any_attr(draggable(value))
     }
 
     /// The `enterkeyhint` global attribute is used to customize the enter key on virtual keyboards.
-    fn enterkeyhint(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Enterkeyhint, V>> {
+    fn enterkeyhint(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Enterkeyhint, V>> {
         self.add_any_attr(enterkeyhint(value))
     }
 
     /// The `exportparts` attribute enables the sharing of parts of an element's shadow DOM with a containing document.
-    fn exportparts(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Exportparts, V>> {
+    fn exportparts(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Exportparts, V>> {
         self.add_any_attr(exportparts(value))
     }
 
@@ -206,7 +229,10 @@ where
     }
 
     /// The `inputmode` global attribute provides a hint to browsers for which virtual keyboard to display.
-    fn inputmode(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Inputmode, V>> {
+    fn inputmode(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Inputmode, V>> {
         self.add_any_attr(inputmode(value))
     }
 
@@ -221,22 +247,34 @@ where
     }
 
     /// The `itemprop` global attribute is used to add properties to an item.
-    fn itemprop(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Itemprop, V>> {
+    fn itemprop(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Itemprop, V>> {
         self.add_any_attr(itemprop(value))
     }
 
     /// The `itemref` global attribute is used to refer to other elements.
-    fn itemref(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Itemref, V>> {
+    fn itemref(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Itemref, V>> {
         self.add_any_attr(itemref(value))
     }
 
     /// The `itemscope` global attribute is used to create a new item.
-    fn itemscope(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Itemscope, V>> {
+    fn itemscope(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Itemscope, V>> {
         self.add_any_attr(itemscope(value))
     }
 
     /// The `itemtype` global attribute is used to specify the types of items.
-    fn itemtype(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Itemtype, V>> {
+    fn itemtype(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Itemtype, V>> {
         self.add_any_attr(itemtype(value))
     }
 
@@ -256,7 +294,10 @@ where
     }
 
     /// The `popover` global attribute defines the popover's behavior.
-    fn popover(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Popover, V>> {
+    fn popover(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Popover, V>> {
         self.add_any_attr(popover(value))
     }
 
@@ -271,12 +312,18 @@ where
     }
 
     /// The `spellcheck` global attribute is an enumerated attribute that defines whether the element may be checked for spelling errors.
-    fn spellcheck(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Spellcheck, V>> {
+    fn spellcheck(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Spellcheck, V>> {
         self.add_any_attr(spellcheck(value))
     }
 
     /// The `tabindex` global attribute indicates if the element can take input focus.
-    fn tabindex(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Tabindex, V>> {
+    fn tabindex(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Tabindex, V>> {
         self.add_any_attr(tabindex(value))
     }
 
@@ -286,7 +333,10 @@ where
     }
 
     /// The `translate` global attribute is an enumerated attribute that specifies whether an element's attribute values and text content should be translated when the page is localized.
-    fn translate(self, value: V) -> <Self as AddAnyAttr>::Output<Attr<Translate, V>> {
+    fn translate(
+        self,
+        value: V,
+    ) -> <Self as AddAnyAttr>::Output<Attr<Translate, V>> {
         self.add_any_attr(translate(value))
     }
 

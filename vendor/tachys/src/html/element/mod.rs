@@ -8,11 +8,13 @@ use crate::{
     renderer::{CastFrom, Rndr},
     ssr::StreamBuilder,
     view::{
-        add_attr::AddAnyAttr, IntoRender, Mountable, Position, PositionState, Render, RenderHtml,
-        ToTemplate,
+        add_attr::AddAnyAttr, IntoRender, Mountable, Position, PositionState,
+        Render, RenderHtml, ToTemplate,
     },
 };
-use const_str_slice_concat::{const_concat, const_concat_with_prefix, str_from_buffer};
+use const_str_slice_concat::{
+    const_concat, const_concat_with_prefix, str_from_buffer,
+};
 use futures::future::join;
 use std::ops::Deref;
 
@@ -20,7 +22,9 @@ mod custom;
 mod element_ext;
 mod elements;
 mod inner_html;
-use super::attribute::{any_attribute::AnyAttribute, escape_attr, NextAttribute};
+use super::attribute::{
+    any_attribute::AnyAttribute, escape_attr, NextAttribute,
+};
 pub use custom::*;
 pub use element_ext::*;
 pub use elements::*;
@@ -77,7 +81,11 @@ where
     NewChild: IntoRender,
     NewChild::Output: RenderHtml,
 {
-    type Output = HtmlElement<E, At, <Ch as next_tuple::NextTuple>::Output<NewChild::Output>>;
+    type Output = HtmlElement<
+        E,
+        At,
+        <Ch as next_tuple::NextTuple>::Output<NewChild::Output>,
+    >;
 
     fn child(self, child: NewChild) -> Self::Output {
         HtmlElement {
@@ -99,7 +107,8 @@ where
     NewChild: IntoRender,
     NewChild::Output: RenderHtml,
 {
-    type Output = HtmlElement<E, At, crate::view::iterators::StaticVec<AnyView>>;
+    type Output =
+        HtmlElement<E, At, crate::view::iterators::StaticVec<AnyView>>;
 
     fn child(self, child: NewChild) -> Self::Output {
         use crate::view::any_view::IntoAny;
@@ -109,14 +118,19 @@ where
             defined_at: self.defined_at,
             tag: self.tag,
             attributes: self.attributes,
-            children: self.children.next_children(child.into_render().into_any()),
+            children: self
+                .children
+                .next_children(child.into_render().into_any()),
         }
     }
 }
 
 #[cfg(erase_components)]
 trait NextChildren {
-    fn next_children(self, child: AnyView) -> crate::view::iterators::StaticVec<AnyView>;
+    fn next_children(
+        self,
+        child: AnyView,
+    ) -> crate::view::iterators::StaticVec<AnyView>;
 }
 
 #[cfg(erase_components)]
@@ -169,36 +183,51 @@ mod erased_tuples {
     impl_next_children_tuples!(AA, BB, CC, DD, EE, FF, GG, HH, II, JJ);
     impl_next_children_tuples!(AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK);
     impl_next_children_tuples!(AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL);
-    impl_next_children_tuples!(AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM);
-    impl_next_children_tuples!(AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN);
-    impl_next_children_tuples!(AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO);
-    impl_next_children_tuples!(AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP);
-    impl_next_children_tuples!(AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ);
+    impl_next_children_tuples!(
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM
+    );
+    impl_next_children_tuples!(
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN
+    );
+    impl_next_children_tuples!(
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO
+    );
+    impl_next_children_tuples!(
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP
+    );
+    impl_next_children_tuples!(
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ
+    );
     impl_next_children_tuples!(
         AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR
     );
     impl_next_children_tuples!(
-        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR, SS
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR,
+        SS
     );
     impl_next_children_tuples!(
-        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR, SS, TT
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR,
+        SS, TT
     );
     impl_next_children_tuples!(
-        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR, SS, TT, UU
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR,
+        SS, TT, UU
     );
     impl_next_children_tuples!(
-        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR, SS, TT, UU, VV
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR,
+        SS, TT, UU, VV
     );
     impl_next_children_tuples!(
-        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR, SS, TT, UU, VV, WW
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR,
+        SS, TT, UU, VV, WW
     );
     impl_next_children_tuples!(
-        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR, SS, TT, UU, VV, WW,
-        XX
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR,
+        SS, TT, UU, VV, WW, XX
     );
     impl_next_children_tuples!(
-        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR, SS, TT, UU, VV, WW,
-        XX, YY
+        AA, BB, CC, DD, EE, FF, GG, HH, II, JJ, KK, LL, MM, NN, OO, PP, QQ, RR,
+        SS, TT, UU, VV, WW, XX, YY
     );
 }
 
@@ -211,7 +240,10 @@ where
     type Output<SomeNewAttr: Attribute> =
         HtmlElement<E, <At as NextAttribute>::Output<SomeNewAttr>, Ch>;
 
-    fn add_any_attr<NewAttr: Attribute>(self, attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         let HtmlElement {
             #[cfg(any(debug_assertions, leptos_debuginfo))]
             defined_at,
@@ -363,7 +395,8 @@ where
     }
 
     async fn resolve(self) -> Self::AsyncOutput {
-        let (attributes, children) = join(self.attributes.resolve(), self.children.resolve()).await;
+        let (attributes, children) =
+            join(self.attributes.resolve(), self.children.resolve()).await;
         HtmlElement {
             #[cfg(any(debug_assertions, leptos_debuginfo))]
             defined_at: self.defined_at,
@@ -400,7 +433,8 @@ where
         buf.push('<');
         buf.push_str(self.tag.tag());
 
-        let inner_html = attributes_to_html((self.attributes, extra_attributes), buf);
+        let inner_html =
+            attributes_to_html((self.attributes, extra_attributes), buf);
 
         buf.push('>');
 
@@ -442,7 +476,8 @@ where
         buf.push('<');
         buf.push_str(self.tag.tag());
 
-        let inner_html = attributes_to_html((self.attributes, extra_attributes), &mut buf);
+        let inner_html =
+            attributes_to_html((self.attributes, extra_attributes), &mut buf);
 
         buf.push('>');
         buffer.push_sync(&buf);
@@ -503,7 +538,9 @@ where
                 cursor.sibling();
             }
             crate::renderer::types::Element::cast_from(cursor.current())
-                .unwrap_or_else(|| failed_to_cast_element(tag_name, cursor.current()))
+                .unwrap_or_else(|| {
+                    failed_to_cast_element(tag_name, cursor.current())
+                })
         }
         let el = inner_1(
             cursor,
@@ -531,9 +568,9 @@ where
         ) {
             // go to next sibling
             cursor.set(
-                <crate::renderer::types::Element as AsRef<crate::renderer::types::Node>>::as_ref(
-                    el,
-                )
+                <crate::renderer::types::Element as AsRef<
+                    crate::renderer::types::Node,
+                >>::as_ref(el)
                 .clone(),
             );
             position.set(Position::NextChild);
@@ -547,7 +584,11 @@ where
         }
     }
 
-    async fn hydrate_async(self, cursor: &Cursor, position: &PositionState) -> Self::State {
+    async fn hydrate_async(
+        self,
+        cursor: &Cursor,
+        position: &PositionState,
+    ) -> Self::State {
         // codegen optimisation:
         fn inner_1(
             cursor: &Cursor,
@@ -568,7 +609,9 @@ where
                 cursor.sibling();
             }
             crate::renderer::types::Element::cast_from(cursor.current())
-                .unwrap_or_else(|| failed_to_cast_element(tag_name, cursor.current()))
+                .unwrap_or_else(|| {
+                    failed_to_cast_element(tag_name, cursor.current())
+                })
         }
         let el = inner_1(
             cursor,
@@ -596,9 +639,9 @@ where
         ) {
             // go to next sibling
             cursor.set(
-                <crate::renderer::types::Element as AsRef<crate::renderer::types::Node>>::as_ref(
-                    el,
-                )
+                <crate::renderer::types::Element as AsRef<
+                    crate::renderer::types::Node,
+                >>::as_ref(el)
                 .clone(),
             );
             position.set(Position::NextChild);
@@ -698,9 +741,12 @@ impl<At, Ch> Mountable for ElementState<At, Ch> {
 
     fn insert_before_this(&self, child: &mut dyn Mountable) -> bool {
         // codegen optimisation:
-        fn inner(element: &crate::renderer::types::Element, child: &mut dyn Mountable) -> bool {
-            if let Some(parent) =
-                Rndr::get_parent(element).and_then(crate::renderer::types::Element::cast_from)
+        fn inner(
+            element: &crate::renderer::types::Element,
+            child: &mut dyn Mountable,
+        ) -> bool {
+            if let Some(parent) = Rndr::get_parent(element)
+                .and_then(crate::renderer::types::Element::cast_from)
             {
                 child.mount(&parent, Some(element));
                 true
@@ -732,8 +778,16 @@ where
         "<",
         E::TAG,
         At::TEMPLATE,
-        str_from_buffer(&const_concat_with_prefix(&[At::CLASS], " class=\"", "\"")),
-        str_from_buffer(&const_concat_with_prefix(&[At::STYLE], " style=\"", "\"")),
+        str_from_buffer(&const_concat_with_prefix(
+            &[At::CLASS],
+            " class=\"",
+            "\"",
+        )),
+        str_from_buffer(&const_concat_with_prefix(
+            &[At::STYLE],
+            " style=\"",
+            "\"",
+        )),
         ">",
         Ch::TEMPLATE,
         "</",
@@ -785,7 +839,13 @@ where
             class.clear();
             style.clear();
             inner_html.clear();
-            Ch::to_template(buf, &mut class, &mut style, &mut inner_html, position);
+            Ch::to_template(
+                buf,
+                &mut class,
+                &mut style,
+                &mut inner_html,
+                position,
+            );
 
             // closing tag
             buf.push_str("</");

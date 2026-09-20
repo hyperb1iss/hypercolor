@@ -1,11 +1,15 @@
-use super::{Mountable, Position, PositionState, Render, RenderHtml, ToTemplate};
+use super::{
+    Mountable, Position, PositionState, Render, RenderHtml, ToTemplate,
+};
 use crate::{
     html::attribute::{any_attribute::AnyAttribute, Attribute},
     hydration::Cursor,
     renderer::Rndr,
     view::{add_attr::AddAnyAttr, StreamBuilder},
 };
-use const_str_slice_concat::{const_concat, const_concat_with_separator, str_from_buffer};
+use const_str_slice_concat::{
+    const_concat, const_concat_with_separator, str_from_buffer,
+};
 
 impl Render for () {
     type State = crate::renderer::types::Placeholder;
@@ -58,7 +62,10 @@ impl RenderHtml for () {
 impl AddAnyAttr for () {
     type Output<SomeNewAttr: Attribute> = ();
 
-    fn add_any_attr<NewAttr: Attribute>(self, _attr: NewAttr) -> Self::Output<NewAttr>
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        _attr: NewAttr,
+    ) -> Self::Output<NewAttr>
     where
         Self::Output<NewAttr>: RenderHtml,
     {
@@ -141,8 +148,13 @@ where
         mark_branches: bool,
         extra_attrs: Vec<AnyAttribute>,
     ) {
-        self.0
-            .to_html_with_buf(buf, position, escape, mark_branches, extra_attrs);
+        self.0.to_html_with_buf(
+            buf,
+            position,
+            escape,
+            mark_branches,
+            extra_attrs,
+        );
     }
 
     fn to_html_async_with_buf<const OUT_OF_ORDER: bool>(
@@ -172,7 +184,11 @@ where
         self.0.hydrate::<FROM_SERVER>(cursor, position)
     }
 
-    async fn hydrate_async(self, cursor: &Cursor, position: &PositionState) -> Self::State {
+    async fn hydrate_async(
+        self,
+        cursor: &Cursor,
+        position: &PositionState,
+    ) -> Self::State {
         self.0.hydrate_async(cursor, position).await
     }
 
@@ -211,7 +227,10 @@ where
 {
     type Output<SomeNewAttr: Attribute> = (A::Output<SomeNewAttr>,);
 
-    fn add_any_attr<NewAttr: Attribute>(self, attr: NewAttr) -> Self::Output<NewAttr>
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        attr: NewAttr,
+    ) -> Self::Output<NewAttr>
     where
         Self::Output<NewAttr>: RenderHtml,
     {
@@ -444,10 +463,25 @@ impl_view_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
 impl_view_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q);
 impl_view_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R);
 impl_view_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S);
-impl_view_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T);
-impl_view_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U);
-impl_view_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V);
-impl_view_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W);
-impl_view_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X);
-impl_view_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y);
-impl_view_for_tuples!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z);
+impl_view_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T
+);
+impl_view_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U
+);
+impl_view_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V
+);
+impl_view_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W
+);
+impl_view_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X
+);
+impl_view_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y
+);
+impl_view_for_tuples!(
+    A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y,
+    Z
+);

@@ -19,9 +19,11 @@ pub struct AnyAttribute {
     build: fn(Erased, el: crate::renderer::types::Element) -> AnyAttributeState,
     rebuild: fn(Erased, &mut AnyAttributeState),
     #[cfg(feature = "hydrate")]
-    hydrate_from_server: fn(Erased, crate::renderer::types::Element) -> AnyAttributeState,
+    hydrate_from_server:
+        fn(Erased, crate::renderer::types::Element) -> AnyAttributeState,
     #[cfg(feature = "hydrate")]
-    hydrate_from_template: fn(Erased, crate::renderer::types::Element) -> AnyAttributeState,
+    hydrate_from_template:
+        fn(Erased, crate::renderer::types::Element) -> AnyAttributeState,
     #[cfg(feature = "ssr")]
     #[allow(clippy::type_complexity)]
     resolve: fn(Erased) -> Pin<Box<dyn Future<Output = AnyAttribute> + Send>>,
@@ -63,7 +65,9 @@ where
     crate::renderer::types::Element: Clone,
 {
     fn into_any_attr(self) -> AnyAttribute {
-        fn clone<T: Attribute + Clone + 'static>(value: &Erased) -> AnyAttribute {
+        fn clone<T: Attribute + Clone + 'static>(
+            value: &Erased,
+        ) -> AnyAttribute {
             value.get_ref::<T>().clone().into_any_attr()
         }
 
@@ -100,7 +104,9 @@ where
             AnyAttributeState {
                 type_id: TypeId::of::<T>(),
                 keys: value.get_ref::<T>().keys(),
-                state: ErasedLocal::new(value.into_inner::<T>().hydrate::<true>(&el)),
+                state: ErasedLocal::new(
+                    value.into_inner::<T>().hydrate::<true>(&el),
+                ),
                 el,
             }
         }
@@ -113,12 +119,17 @@ where
             AnyAttributeState {
                 type_id: TypeId::of::<T>(),
                 keys: value.get_ref::<T>().keys(),
-                state: ErasedLocal::new(value.into_inner::<T>().hydrate::<false>(&el)),
+                state: ErasedLocal::new(
+                    value.into_inner::<T>().hydrate::<false>(&el),
+                ),
                 el,
             }
         }
 
-        fn rebuild<T: Attribute + 'static>(value: Erased, state: &mut AnyAttributeState) {
+        fn rebuild<T: Attribute + 'static>(
+            value: Erased,
+            state: &mut AnyAttributeState,
+        ) {
             let value = value.into_inner::<T>();
             let state = state.state.get_mut::<T::State>();
             value.rebuild(state);
@@ -135,10 +146,12 @@ where
         ) -> Pin<Box<dyn Future<Output = AnyAttribute> + Send>> {
             use futures::FutureExt;
 
-            async move { value.into_inner::<T>().resolve().await.into_any_attr() }.boxed()
+            async move {value.into_inner::<T>().resolve().await.into_any_attr()}.boxed()
         }
 
-        fn keys<T: Attribute + 'static>(value: &Erased) -> Vec<NamedAttributeKey> {
+        fn keys<T: Attribute + 'static>(
+            value: &Erased,
+        ) -> Vec<NamedAttributeKey> {
             value.get_ref::<T>().keys()
         }
 
@@ -168,7 +181,10 @@ where
 impl NextAttribute for AnyAttribute {
     type Output<NewAttr: Attribute> = Vec<AnyAttribute>;
 
-    fn add_any_attr<NewAttr: Attribute>(self, new_attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        new_attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         vec![self, new_attr.into_any_attr()]
     }
 }
@@ -204,7 +220,10 @@ impl Attribute for AnyAttribute {
         );
     }
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         #[cfg(feature = "hydrate")]
         if FROM_SERVER {
             (self.hydrate_from_server)(self.value, el.clone())
@@ -274,7 +293,10 @@ impl Attribute for AnyAttribute {
 impl NextAttribute for Vec<AnyAttribute> {
     type Output<NewAttr: Attribute> = Self;
 
-    fn add_any_attr<NewAttr: Attribute>(mut self, new_attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        mut self,
+        new_attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         self.push(new_attr.into_any_attr());
         self
     }
@@ -313,7 +335,10 @@ impl Attribute for Vec<AnyAttribute> {
         );
     }
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         #[cfg(feature = "hydrate")]
         if FROM_SERVER {
             (
@@ -356,7 +381,11 @@ impl Attribute for Vec<AnyAttribute> {
                         Rndr::set_inner_html(&old.el, "");
                     }
                     NamedAttributeKey::Property(prop_name) => {
-                        Rndr::set_property(&old.el, &prop_name, &wasm_bindgen::JsValue::UNDEFINED);
+                        Rndr::set_property(
+                            &old.el,
+                            &prop_name,
+                            &wasm_bindgen::JsValue::UNDEFINED,
+                        );
                     }
                     NamedAttributeKey::Attribute(key) => {
                         Rndr::remove_attribute(&old.el, &key);
@@ -392,7 +421,10 @@ impl Attribute for Vec<AnyAttribute> {
     async fn resolve(self) -> Self::AsyncOutput {
         #[cfg(feature = "ssr")]
         {
-            futures::future::join_all(self.into_iter().map(|attr| attr.resolve())).await
+            futures::future::join_all(
+                self.into_iter().map(|attr| attr.resolve()),
+            )
+            .await
         }
         #[cfg(not(feature = "ssr"))]
         panic!(

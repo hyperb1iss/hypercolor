@@ -236,7 +236,8 @@ impl Render for InertElement {
     fn rebuild(self, state: &mut Self::State) {
         let InertElementState(prev, el) = state;
         if &self.html != prev {
-            let mut new_el = Rndr::create_svg_element_from_html(self.html.clone());
+            let mut new_el =
+                Rndr::create_svg_element_from_html(self.html.clone());
             el.insert_before_this(&mut new_el);
             el.unmount();
             *el = new_el;
@@ -248,7 +249,10 @@ impl Render for InertElement {
 impl AddAnyAttr for InertElement {
     type Output<SomeNewAttr: Attribute> = Self;
 
-    fn add_any_attr<NewAttr: Attribute>(self, _attr: NewAttr) -> Self::Output<NewAttr>
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        _attr: NewAttr,
+    ) -> Self::Output<NewAttr>
     where
         Self::Output<NewAttr>: RenderHtml,
     {
@@ -298,7 +302,8 @@ impl RenderHtml for InertElement {
         } else if curr_position != Position::Current {
             cursor.sibling();
         }
-        let el = crate::renderer::types::Element::cast_from(cursor.current()).unwrap();
+        let el = crate::renderer::types::Element::cast_from(cursor.current())
+            .unwrap();
         position.set(Position::NextChild);
         InertElementState(self.html, el)
     }

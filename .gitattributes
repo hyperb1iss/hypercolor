@@ -10,3 +10,6 @@
 *.icns binary
 *.woff binary
 *.woff2 binary
+
+# Preserve packaged upstream sources exactly, including their whitespace.
+vendor/tachys/** whitespace=-blank-at-eol

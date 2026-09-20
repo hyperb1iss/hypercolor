@@ -76,8 +76,9 @@ impl RenderHtml for Oco<'static, str> {
         position: &PositionState,
     ) -> Self::State {
         let this: &str = self.as_ref();
-        let StrState { node, .. } =
-            <&str as RenderHtml>::hydrate::<FROM_SERVER>(this, cursor, position);
+        let StrState { node, .. } = <&str as RenderHtml>::hydrate::<FROM_SERVER>(
+            this, cursor, position,
+        );
         OcoStrState { node, str: self }
     }
 
@@ -96,7 +97,9 @@ impl ToTemplate for Oco<'static, str> {
         inner_html: &mut String,
         position: &mut Position,
     ) {
-        <&str as ToTemplate>::to_template(buf, class, style, inner_html, position)
+        <&str as ToTemplate>::to_template(
+            buf, class, style, inner_html, position,
+        )
     }
 }
 
@@ -143,11 +146,19 @@ impl AttributeValue for Oco<'static, str> {
         key: &str,
         el: &crate::renderer::types::Element,
     ) -> Self::State {
-        let (el, _) = <&str as AttributeValue>::hydrate::<FROM_SERVER>(self.as_str(), key, el);
+        let (el, _) = <&str as AttributeValue>::hydrate::<FROM_SERVER>(
+            self.as_str(),
+            key,
+            el,
+        );
         (el, self)
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         Rndr::set_attribute(el, key, &self);
         (el.clone(), self)
     }
@@ -193,7 +204,10 @@ impl IntoClass for Oco<'static, str> {
         IntoClass::to_html(self.as_str(), class);
     }
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         if !FROM_SERVER {
             Rndr::set_attribute(el, "class", &self);
         }
@@ -252,7 +266,11 @@ impl IntoProperty for Oco<'static, str> {
         (el.clone(), value)
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         let value = JsValue::from_str(self.as_ref());
         Rndr::set_property_or_value(el, key, &value);
         (el.clone(), value)
@@ -285,7 +303,10 @@ impl IntoStyle for Oco<'static, str> {
         style.push(';');
     }
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         (el.clone(), self)
     }
 
@@ -338,7 +359,10 @@ impl InnerHtmlValue for Oco<'static, str> {
 
     fn to_template(_buf: &mut String) {}
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         if !FROM_SERVER {
             Rndr::set_inner_html(el, &self);
         }

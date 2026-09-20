@@ -1,5 +1,8 @@
 use self::add_attr::AddAnyAttr;
-use crate::{html::attribute::any_attribute::AnyAttribute, hydration::Cursor, ssr::StreamBuilder};
+use crate::{
+    html::attribute::any_attribute::AnyAttribute, hydration::Cursor,
+    ssr::StreamBuilder,
+};
 use or_poisoned::OrPoisoned;
 use std::{
     cell::RefCell,
@@ -134,7 +137,13 @@ where
         Self: Sized,
     {
         let mut buf = String::with_capacity(self.html_len());
-        self.to_html_with_buf(&mut buf, &mut Position::FirstChild, true, false, vec![]);
+        self.to_html_with_buf(
+            &mut buf,
+            &mut Position::FirstChild,
+            true,
+            false,
+            vec![],
+        );
         buf
     }
 
@@ -146,7 +155,13 @@ where
         Self: Sized,
     {
         let mut buf = String::with_capacity(self.html_len());
-        self.to_html_with_buf(&mut buf, &mut Position::FirstChild, true, true, vec![]);
+        self.to_html_with_buf(
+            &mut buf,
+            &mut Position::FirstChild,
+            true,
+            true,
+            vec![],
+        );
         buf
     }
 
@@ -190,7 +205,8 @@ where
         Self: Sized,
     {
         //let capacity = self.html_len();
-        let mut builder = StreamBuilder::with_capacity(self.html_len(), Some(vec![0]));
+        let mut builder =
+            StreamBuilder::with_capacity(self.html_len(), Some(vec![0]));
 
         self.to_html_async_with_buf::<true>(
             &mut builder,
@@ -209,7 +225,8 @@ where
     where
         Self: Sized,
     {
-        let mut builder = StreamBuilder::with_capacity(self.html_len(), Some(vec![0]));
+        let mut builder =
+            StreamBuilder::with_capacity(self.html_len(), Some(vec![0]));
 
         self.to_html_async_with_buf::<true>(
             &mut builder,
@@ -243,7 +260,13 @@ where
         Self: Sized,
     {
         buf.with_buf(|buf| {
-            self.to_html_with_buf(buf, position, escape, mark_branches, extra_attrs)
+            self.to_html_with_buf(
+                buf,
+                position,
+                escape,
+                mark_branches,
+                extra_attrs,
+            )
         });
     }
 

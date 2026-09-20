@@ -10,8 +10,9 @@ use std::{
     fmt::Write,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     num::{
-        NonZeroI128, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroI8, NonZeroIsize, NonZeroU128,
-        NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU8, NonZeroUsize,
+        NonZeroI128, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroI8,
+        NonZeroIsize, NonZeroU128, NonZeroU16, NonZeroU32, NonZeroU64,
+        NonZeroU8, NonZeroUsize,
     },
 };
 
@@ -204,7 +205,13 @@ mod tests {
     #[test]
     fn char_escapes_html_special_characters() {
         let mut buf = String::new();
-        '<'.to_html_with_buf(&mut buf, &mut Position::FirstChild, true, false, vec![]);
+        '<'.to_html_with_buf(
+            &mut buf,
+            &mut Position::FirstChild,
+            true,
+            false,
+            vec![],
+        );
         assert_eq!(buf, "&lt;");
     }
 
@@ -213,14 +220,26 @@ mod tests {
         // When the enclosing element opts out of escaping (e.g. `<script>`),
         // the char must be written verbatim.
         let mut buf = String::new();
-        '<'.to_html_with_buf(&mut buf, &mut Position::FirstChild, false, false, vec![]);
+        '<'.to_html_with_buf(
+            &mut buf,
+            &mut Position::FirstChild,
+            false,
+            false,
+            vec![],
+        );
         assert_eq!(buf, "<");
     }
 
     #[test]
     fn numeric_primitive_renders_unescaped() {
         let mut buf = String::new();
-        42u32.to_html_with_buf(&mut buf, &mut Position::FirstChild, true, false, vec![]);
+        42u32.to_html_with_buf(
+            &mut buf,
+            &mut Position::FirstChild,
+            true,
+            false,
+            vec![],
+        );
         assert_eq!(buf, "42");
     }
 }

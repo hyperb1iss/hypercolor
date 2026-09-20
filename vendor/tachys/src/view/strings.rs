@@ -1,4 +1,6 @@
-use super::{Mountable, Position, PositionState, Render, RenderHtml, ToTemplate};
+use super::{
+    Mountable, Position, PositionState, Render, RenderHtml, ToTemplate,
+};
 use crate::{
     html::attribute::any_attribute::AnyAttribute,
     hydration::Cursor,
@@ -92,7 +94,9 @@ impl RenderHtml for &str {
 
         let node = cursor.current();
         let node = crate::renderer::types::Text::cast_from(node.clone())
-            .unwrap_or_else(|| crate::hydration::failed_to_cast_text_node(node));
+            .unwrap_or_else(|| {
+                crate::hydration::failed_to_cast_text_node(node)
+            });
 
         if !FROM_SERVER {
             Rndr::set_text(&node, self);
@@ -208,7 +212,8 @@ impl RenderHtml for String {
         cursor: &Cursor,
         position: &PositionState,
     ) -> Self::State {
-        let StrState { node, .. } = self.as_str().hydrate::<FROM_SERVER>(cursor, position);
+        let StrState { node, .. } =
+            self.as_str().hydrate::<FROM_SERVER>(cursor, position);
         StringState { node, str: self }
     }
 
@@ -227,7 +232,9 @@ impl ToTemplate for String {
         inner_html: &mut String,
         position: &mut Position,
     ) {
-        <&str as ToTemplate>::to_template(buf, class, style, inner_html, position)
+        <&str as ToTemplate>::to_template(
+            buf, class, style, inner_html, position,
+        )
     }
 }
 
@@ -321,7 +328,9 @@ impl ToTemplate for Rc<str> {
         inner_html: &mut String,
         position: &mut Position,
     ) {
-        <&str as ToTemplate>::to_template(buf, class, style, inner_html, position)
+        <&str as ToTemplate>::to_template(
+            buf, class, style, inner_html, position,
+        )
     }
 }
 
@@ -410,7 +419,8 @@ impl RenderHtml for Arc<str> {
         position: &PositionState,
     ) -> Self::State {
         let this: &str = self.as_ref();
-        let StrState { node, .. } = this.hydrate::<FROM_SERVER>(cursor, position);
+        let StrState { node, .. } =
+            this.hydrate::<FROM_SERVER>(cursor, position);
         ArcStrState { node, str: self }
     }
 
@@ -429,7 +439,9 @@ impl ToTemplate for Arc<str> {
         inner_html: &mut String,
         position: &mut Position,
     ) {
-        <&str as ToTemplate>::to_template(buf, class, style, inner_html, position)
+        <&str as ToTemplate>::to_template(
+            buf, class, style, inner_html, position,
+        )
     }
 }
 
@@ -518,7 +530,8 @@ impl RenderHtml for Cow<'_, str> {
         position: &PositionState,
     ) -> Self::State {
         let this: &str = self.as_ref();
-        let StrState { node, .. } = this.hydrate::<FROM_SERVER>(cursor, position);
+        let StrState { node, .. } =
+            this.hydrate::<FROM_SERVER>(cursor, position);
         CowStrState { node, str: self }
     }
 
@@ -537,7 +550,9 @@ impl ToTemplate for Cow<'_, str> {
         inner_html: &mut String,
         position: &mut Position,
     ) {
-        <&str as ToTemplate>::to_template(buf, class, style, inner_html, position)
+        <&str as ToTemplate>::to_template(
+            buf, class, style, inner_html, position,
+        )
     }
 }
 

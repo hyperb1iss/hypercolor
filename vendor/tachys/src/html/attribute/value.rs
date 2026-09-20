@@ -4,8 +4,9 @@ use std::{
     future::Future,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     num::{
-        NonZeroI128, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroI8, NonZeroIsize, NonZeroU128,
-        NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU8, NonZeroUsize,
+        NonZeroI128, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroI8,
+        NonZeroIsize, NonZeroU128, NonZeroU16, NonZeroU32, NonZeroU64,
+        NonZeroU8, NonZeroUsize,
     },
     sync::Arc,
 };
@@ -69,7 +70,11 @@ pub trait AttributeValue: Send {
     ) -> Self::State;
 
     /// Adds this attribute to the element during client-side rendering.
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State;
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State;
 
     /// Applies a new value for the attribute.
     fn rebuild(self, key: &str, state: &mut Self::State);
@@ -103,9 +108,19 @@ impl AttributeValue for () {
 
     fn to_template(_key: &str, _buf: &mut String) {}
 
-    fn hydrate<const FROM_SERVER: bool>(self, _key: &str, _el: &crate::renderer::types::Element) {}
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        _key: &str,
+        _el: &crate::renderer::types::Element,
+    ) {
+    }
 
-    fn build(self, _el: &crate::renderer::types::Element, _key: &str) -> Self::State {}
+    fn build(
+        self,
+        _el: &crate::renderer::types::Element,
+        _key: &str,
+    ) -> Self::State {
+    }
 
     fn rebuild(self, _key: &str, _state: &mut Self::State) {}
 
@@ -155,7 +170,11 @@ impl<'a> AttributeValue for &'a str {
         (el.clone(), self)
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         Rndr::set_attribute(el, key, self);
         (el.to_owned(), self)
     }
@@ -216,7 +235,11 @@ impl<'a> AttributeValue for Cow<'a, str> {
         (el.clone(), self)
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         Rndr::set_attribute(el, key, &self);
         (el.to_owned(), self)
     }
@@ -245,7 +268,9 @@ impl<'a> AttributeValue for Cow<'a, str> {
 }
 
 #[cfg(all(feature = "nightly", rustc_nightly))]
-impl<const V: &'static str> AttributeValue for crate::view::static_types::Static<V> {
+impl<const V: &'static str> AttributeValue
+    for crate::view::static_types::Static<V>
+{
     type AsyncOutput = Self;
     type State = ();
     type Cloneable = Self;
@@ -274,7 +299,11 @@ impl<const V: &'static str> AttributeValue for crate::view::static_types::Static
     ) -> Self::State {
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         <&str as AttributeValue>::build(V, el, key);
     }
 
@@ -316,11 +345,19 @@ impl<'a> AttributeValue for &'a String {
         key: &str,
         el: &crate::renderer::types::Element,
     ) -> Self::State {
-        let (el, _) = <&str as AttributeValue>::hydrate::<FROM_SERVER>(self.as_str(), key, el);
+        let (el, _) = <&str as AttributeValue>::hydrate::<FROM_SERVER>(
+            self.as_str(),
+            key,
+            el,
+        );
         (el, self)
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         Rndr::set_attribute(el, key, self);
         (el.clone(), self)
     }
@@ -369,11 +406,19 @@ impl AttributeValue for String {
         key: &str,
         el: &crate::renderer::types::Element,
     ) -> Self::State {
-        let (el, _) = <&str as AttributeValue>::hydrate::<FROM_SERVER>(self.as_str(), key, el);
+        let (el, _) = <&str as AttributeValue>::hydrate::<FROM_SERVER>(
+            self.as_str(),
+            key,
+            el,
+        );
         (el, self)
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         Rndr::set_attribute(el, key, &self);
         (el.clone(), self)
     }
@@ -422,11 +467,19 @@ impl AttributeValue for Arc<str> {
         key: &str,
         el: &crate::renderer::types::Element,
     ) -> Self::State {
-        let (el, _) = <&str as AttributeValue>::hydrate::<FROM_SERVER>(self.as_ref(), key, el);
+        let (el, _) = <&str as AttributeValue>::hydrate::<FROM_SERVER>(
+            self.as_ref(),
+            key,
+            el,
+        );
         (el, self)
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         Rndr::set_attribute(el, key, &self);
         (el.clone(), self)
     }
@@ -487,7 +540,11 @@ impl AttributeValue for bool {
         (el.clone(), self)
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         if self {
             Rndr::set_attribute(el, key, "");
         }
@@ -554,7 +611,11 @@ where
         (el.clone(), state)
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         let el = el.clone();
         let v = self.map(|v| v.build(&el, key));
         (el, v)

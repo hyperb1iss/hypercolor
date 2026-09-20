@@ -4,7 +4,8 @@ macro_rules! next_attr_output_type {
         type Output<NewAttr: Attribute> = ($current, $next);
 
         #[cfg(erase_components)]
-        type Output<NewAttr: Attribute> = Vec<$crate::html::attribute::any_attribute::AnyAttribute>;
+        type Output<NewAttr: Attribute> =
+            Vec<$crate::html::attribute::any_attribute::AnyAttribute>;
     };
 }
 

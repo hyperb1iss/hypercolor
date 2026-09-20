@@ -1,8 +1,11 @@
 use super::attribute::{
-    maybe_next_attr_erasure_macros::next_attr_output_type, Attribute, NextAttribute,
+    maybe_next_attr_erasure_macros::next_attr_output_type, Attribute,
+    NextAttribute,
 };
 use crate::{
-    html::attribute::{maybe_next_attr_erasure_macros::next_attr_combine, NamedAttributeKey},
+    html::attribute::{
+        maybe_next_attr_erasure_macros::next_attr_combine, NamedAttributeKey,
+    },
     renderer::Rndr,
     view::{Position, ToTemplate},
 };
@@ -70,7 +73,10 @@ where
     ) {
     }
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         self.value
             .expect(super::FEATURE_CONFLICT_DIAGNOSTIC)
             .take()
@@ -103,9 +109,9 @@ where
     fn into_cloneable_owned(self) -> Self::CloneableOwned {
         Property {
             key: self.key.as_ref().into(),
-            value: self
-                .value
-                .map(|value| SendWrapper::new(value.take().into_cloneable_owned())),
+            value: self.value.map(|value| {
+                SendWrapper::new(value.take().into_cloneable_owned())
+            }),
         }
     }
 
@@ -129,7 +135,10 @@ where
 {
     next_attr_output_type!(Self, NewAttr);
 
-    fn add_any_attr<NewAttr: Attribute>(self, new_attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        new_attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         next_attr_combine!(self, new_attr)
     }
 }
@@ -166,7 +175,11 @@ pub trait IntoProperty {
     ) -> Self::State;
 
     /// Adds the property during client-side rendering.
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State;
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State;
 
     /// Updates the property with a new value.
     fn rebuild(self, state: &mut Self::State, key: &str);
@@ -195,7 +208,11 @@ macro_rules! prop_type {
                 (el.clone(), value)
             }
 
-            fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+            fn build(
+                self,
+                el: &crate::renderer::types::Element,
+                key: &str,
+            ) -> Self::State {
                 let value = self.into();
                 Rndr::set_property_or_value(el, key, &value);
                 (el.clone(), value)
@@ -235,7 +252,11 @@ macro_rules! prop_type {
                 (el.clone(), value)
             }
 
-            fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+            fn build(
+                self,
+                el: &crate::renderer::types::Element,
+                key: &str,
+            ) -> Self::State {
                 let was_some = self.is_some();
                 let value = self.into();
                 if was_some {
@@ -279,7 +300,11 @@ macro_rules! prop_type_str {
                 (el.clone(), value)
             }
 
-            fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+            fn build(
+                self,
+                el: &crate::renderer::types::Element,
+                key: &str,
+            ) -> Self::State {
                 let value = JsValue::from(&*self);
                 Rndr::set_property_or_value(el, key, &value);
                 (el.clone(), value)
@@ -321,7 +346,11 @@ macro_rules! prop_type_str {
                 (el.clone(), value)
             }
 
-            fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+            fn build(
+                self,
+                el: &crate::renderer::types::Element,
+                key: &str,
+            ) -> Self::State {
                 let was_some = self.is_some();
                 let value = JsValue::from(self.map(|n| JsValue::from_str(&n)));
                 if was_some {
@@ -369,7 +398,11 @@ impl IntoProperty for Arc<str> {
         (el.clone(), value)
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         let value = JsValue::from_str(self.as_ref());
         Rndr::set_property_or_value(el, key, &value);
         (el.clone(), value)
@@ -409,7 +442,11 @@ impl IntoProperty for Option<Arc<str>> {
         (el.clone(), value)
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         let was_some = self.is_some();
         let value = JsValue::from(self.map(|n| JsValue::from_str(&n)));
         if was_some {

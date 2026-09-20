@@ -1,5 +1,6 @@
 use super::{
-    add_attr::AddAnyAttr, Mountable, Position, PositionState, Render, RenderHtml, ToTemplate,
+    add_attr::AddAnyAttr, Mountable, Position, PositionState, Render,
+    RenderHtml, ToTemplate,
 };
 use crate::{
     html::attribute::{any_attribute::AnyAttribute, Attribute},
@@ -58,7 +59,10 @@ where
 {
     type Output<SomeNewAttr: Attribute> = ViewTemplate<V>;
 
-    fn add_any_attr<NewAttr: Attribute>(self, _attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        _attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         panic!("AddAnyAttr not supported on ViewTemplate");
     }
 }
@@ -81,8 +85,13 @@ where
         mark_branches: bool,
         extra_attrs: Vec<AnyAttribute>,
     ) {
-        self.view
-            .to_html_with_buf(buf, position, escape, mark_branches, extra_attrs)
+        self.view.to_html_with_buf(
+            buf,
+            position,
+            escape,
+            mark_branches,
+            extra_attrs,
+        )
     }
 
     fn hydrate<const FROM_SERVER: bool>(

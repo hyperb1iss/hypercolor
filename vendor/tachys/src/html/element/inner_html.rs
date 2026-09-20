@@ -1,7 +1,9 @@
 use super::{ElementWithChildren, HtmlElement};
 use crate::{
     html::attribute::{
-        maybe_next_attr_erasure_macros::{next_attr_combine, next_attr_output_type},
+        maybe_next_attr_erasure_macros::{
+            next_attr_combine, next_attr_output_type,
+        },
         Attribute, NamedAttributeKey, NextAttribute,
     },
     renderer::Rndr,
@@ -67,7 +69,10 @@ where
         self.value.to_html(inner_html);
     }
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         self.value.hydrate::<FROM_SERVER>(el)
     }
 
@@ -112,7 +117,10 @@ where
 {
     next_attr_output_type!(Self, NewAttr);
 
-    fn add_any_attr<NewAttr: Attribute>(self, new_attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        new_attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         next_attr_combine!(self, new_attr)
     }
 }
@@ -132,7 +140,10 @@ where
     /// Be very careful when using this method. Always remember to
     /// sanitize the input to avoid a cross-site scripting (XSS)
     /// vulnerability.
-    fn inner_html(self, value: T) -> <Self as AddAnyAttr>::Output<InnerHtml<T>> {
+    fn inner_html(
+        self,
+        value: T,
+    ) -> <Self as AddAnyAttr>::Output<InnerHtml<T>> {
         self.add_any_attr(inner_html(value))
     }
 }
@@ -144,7 +155,10 @@ where
     At: Attribute,
     T: InnerHtmlValue,
 {
-    fn inner_html(self, value: T) -> <Self as AddAnyAttr>::Output<InnerHtml<T>> {
+    fn inner_html(
+        self,
+        value: T,
+    ) -> <Self as AddAnyAttr>::Output<InnerHtml<T>> {
         self.add_any_attr(inner_html(value))
     }
 }
@@ -171,7 +185,10 @@ pub trait InnerHtmlValue: Send {
 
     /// Adds interactivity as necessary, given DOM nodes that were created from HTML that has
     /// either been rendered on the server, or cloned for a `<template>`.
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State;
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State;
 
     /// Adds this class to the element during client-side rendering.
     fn build(self, el: &crate::renderer::types::Element) -> Self::State;
@@ -210,7 +227,10 @@ impl InnerHtmlValue for String {
 
     fn to_template(_buf: &mut String) {}
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         if !FROM_SERVER {
             Rndr::set_inner_html(el, &self);
         }
@@ -260,7 +280,10 @@ impl InnerHtmlValue for Arc<str> {
 
     fn to_template(_buf: &mut String) {}
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         if !FROM_SERVER {
             Rndr::set_inner_html(el, &self);
         }
@@ -310,7 +333,10 @@ impl InnerHtmlValue for &str {
 
     fn to_template(_buf: &mut String) {}
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         if !FROM_SERVER {
             Rndr::set_inner_html(el, self);
         }
@@ -368,7 +394,10 @@ where
 
     fn to_template(_buf: &mut String) {}
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         (el.clone(), self.map(|n| n.hydrate::<FROM_SERVER>(el)))
     }
 

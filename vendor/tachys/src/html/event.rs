@@ -1,6 +1,7 @@
 use crate::{
     html::attribute::{
-        maybe_next_attr_erasure_macros::next_attr_combine, Attribute, NamedAttributeKey,
+        maybe_next_attr_erasure_macros::next_attr_combine, Attribute,
+        NamedAttributeKey,
     },
     renderer::{CastFrom, RemoveEventHandler, Rndr},
     view::{Position, ToTemplate},
@@ -118,10 +119,14 @@ where
 
 /// Creates an [`Attribute`] that will add an event listener with a typed target to an element.
 #[allow(clippy::type_complexity)]
-pub fn on_target<E, T, F>(event: E, mut cb: F) -> On<E, Box<dyn FnMut(E::EventType)>>
+pub fn on_target<E, T, F>(
+    event: E,
+    mut cb: F,
+) -> On<E, Box<dyn FnMut(E::EventType)>>
 where
     T: HasElementType,
-    F: FnMut(Targeted<E::EventType, <T as HasElementType>::ElementType>) + 'static,
+    F: FnMut(Targeted<E::EventType, <T as HasElementType>::ElementType>)
+        + 'static,
     E: EventDescriptor + Send + 'static,
     E::EventType: 'static,
 
@@ -176,7 +181,9 @@ where
         ) -> RemoveEventHandler<crate::renderer::types::Element> {
             match delegation_key {
                 None => Rndr::add_event_listener(el, &name, cb),
-                Some(key) => Rndr::add_event_listener_delegated(el, name, key, cb),
+                Some(key) => {
+                    Rndr::add_event_listener_delegated(el, name, key, cb)
+                }
             }
         }
 
@@ -187,7 +194,8 @@ where
 
         let cb = Box::new(move |ev: crate::renderer::types::Event| {
             #[cfg(all(debug_assertions, feature = "reactive_graph"))]
-            let _rx_guard = reactive_graph::diagnostics::SpecialNonReactiveZone::enter();
+            let _rx_guard =
+                reactive_graph::diagnostics::SpecialNonReactiveZone::enter();
             #[cfg(feature = "tracing")]
             let _tracing_guard = span.enter();
 
@@ -203,7 +211,8 @@ where
             el,
             cb,
             self.event.name(),
-            (E::BUBBLES && cfg!(feature = "delegation")).then(|| self.event.event_delegation_key()),
+            (E::BUBBLES && cfg!(feature = "delegation"))
+                .then(|| self.event.event_delegation_key()),
         )
     }
 
@@ -228,7 +237,8 @@ where
 
         let cb = Box::new(move |ev: crate::renderer::types::Event| {
             #[cfg(all(debug_assertions, feature = "reactive_graph"))]
-            let _rx_guard = reactive_graph::diagnostics::SpecialNonReactiveZone::enter();
+            let _rx_guard =
+                reactive_graph::diagnostics::SpecialNonReactiveZone::enter();
             #[cfg(feature = "tracing")]
             let _tracing_guard = span.enter();
 
@@ -287,7 +297,10 @@ where
     }
 
     #[inline(always)]
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         let cleanup = if E::CAPTURE {
             self.attach_capture(el)
         } else {
@@ -360,7 +373,10 @@ where
 {
     next_attr_output_type!(Self, NewAttr);
 
-    fn add_any_attr<NewAttr: Attribute>(self, new_attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        new_attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         next_attr_combine!(self, new_attr)
     }
 }
@@ -503,8 +519,9 @@ impl<E: FromWasmAbi> Custom<E> {
     pub fn options_mut(&mut self) -> &mut web_sys::AddEventListenerOptions {
         // It is valid to construct a `SendWrapper` here because
         // its inner data will only be accessed in the browser's main thread.
-        self.options
-            .get_or_insert_with(|| SendWrapper::new(web_sys::AddEventListenerOptions::new()))
+        self.options.get_or_insert_with(|| {
+            SendWrapper::new(web_sys::AddEventListenerOptions::new())
+        })
     }
 }
 
@@ -753,15 +770,18 @@ generate_event_types! {
 
 // Export `web_sys` event types
 use super::{
-    attribute::{maybe_next_attr_erasure_macros::next_attr_output_type, NextAttribute},
+    attribute::{
+        maybe_next_attr_erasure_macros::next_attr_output_type, NextAttribute,
+    },
     element::HasElementType,
 };
 #[doc(no_inline)]
 pub use web_sys::{
-    AnimationEvent, BeforeUnloadEvent, ClipboardEvent, CompositionEvent, CustomEvent,
-    DeviceMotionEvent, DeviceOrientationEvent, DragEvent, ErrorEvent, Event, FocusEvent,
-    GamepadEvent, HashChangeEvent, InputEvent, KeyboardEvent, MessageEvent, MouseEvent,
-    PageTransitionEvent, PointerEvent, PopStateEvent, ProgressEvent, PromiseRejectionEvent,
-    SecurityPolicyViolationEvent, StorageEvent, SubmitEvent, TouchEvent, TransitionEvent, UiEvent,
-    WheelEvent,
+    AnimationEvent, BeforeUnloadEvent, ClipboardEvent, CompositionEvent,
+    CustomEvent, DeviceMotionEvent, DeviceOrientationEvent, DragEvent,
+    ErrorEvent, Event, FocusEvent, GamepadEvent, HashChangeEvent, InputEvent,
+    KeyboardEvent, MessageEvent, MouseEvent, PageTransitionEvent, PointerEvent,
+    PopStateEvent, ProgressEvent, PromiseRejectionEvent,
+    SecurityPolicyViolationEvent, StorageEvent, SubmitEvent, TouchEvent,
+    TransitionEvent, UiEvent, WheelEvent,
 };

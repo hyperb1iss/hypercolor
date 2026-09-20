@@ -36,8 +36,8 @@ mod js {
     const JS: &str = r#"
         function Queue() {
             var head, tail;
-            return Object.freeze({
-                enqueue(value) {
+            return Object.freeze({     
+                enqueue(value) { 
                     const link = {value, next: undefined};
                     tail = head ? tail.next = link : head = link;
                 },

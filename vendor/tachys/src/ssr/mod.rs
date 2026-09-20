@@ -173,7 +173,13 @@ impl StreamBuilder {
     ) where
         View: RenderHtml,
     {
-        self.push_async_out_of_order_with_nonce(view, position, mark_branches, None, extra_attrs);
+        self.push_async_out_of_order_with_nonce(
+            view,
+            position,
+            mark_branches,
+            None,
+            extra_attrs,
+        );
     }
 
     /// Injects an out-of-order chunk into the stream, using the given nonce for `<script>` tags.
@@ -215,7 +221,8 @@ impl StreamBuilder {
                     extra_attrs,
                 );
                 let chunks = subbuilder.finish().take_chunks();
-                let mut flattened_chunks = VecDeque::with_capacity(chunks.len());
+                let mut flattened_chunks =
+                    VecDeque::with_capacity(chunks.len());
                 for chunk in chunks {
                     // this will wait for any ErrorBoundary async nodes and flatten them out
                     if let StreamChunk::Async { chunks } = chunk {
@@ -286,7 +293,12 @@ impl OooChunk {
     }
 
     /// Pushes a closing `</template>` and update script with the given nonce into the buffer.
-    pub fn push_end_with_nonce(replace: bool, id: &str, buf: &mut String, nonce: Option<&str>) {
+    pub fn push_end_with_nonce(
+        replace: bool,
+        id: &str,
+        buf: &mut String,
+        nonce: Option<&str>,
+    ) {
         buf.push_str("</template>");
 
         if let Some(nonce) = nonce {
@@ -330,8 +342,12 @@ impl Debug for StreamChunk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Sync(arg0) => f.debug_tuple("Sync").field(arg0).finish(),
-            Self::Async { .. } => f.debug_struct("Async").finish_non_exhaustive(),
-            Self::OutOfOrder { .. } => f.debug_struct("OutOfOrder").finish_non_exhaustive(),
+            Self::Async { .. } => {
+                f.debug_struct("Async").finish_non_exhaustive()
+            }
+            Self::OutOfOrder { .. } => {
+                f.debug_struct("OutOfOrder").finish_non_exhaustive()
+            }
         }
     }
 }
@@ -339,7 +355,10 @@ impl Debug for StreamChunk {
 impl Stream for StreamBuilder {
     type Item = String;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
         let mut this = self.as_mut();
         let pending = this.pending.take();
         if let Some(mut pending) = pending {
@@ -376,22 +395,31 @@ impl Stream for StreamBuilder {
                                     nonce,
                                 }) => {
                                     let opening = format!("<!--s-{id}o-->");
-                                    let placeholder_at = this.sync_buf.find(&opening);
+                                    let placeholder_at =
+                                        this.sync_buf.find(&opening);
                                     if let Some(start) = placeholder_at {
                                         let closing = format!("<!--s-{id}c-->");
-                                        let end = this.sync_buf.find(&closing).unwrap();
-                                        let chunks_iter = chunks.into_iter().rev();
+                                        let end = this
+                                            .sync_buf
+                                            .find(&closing)
+                                            .unwrap();
+                                        let chunks_iter =
+                                            chunks.into_iter().rev();
 
                                         // TODO can probably make this more efficient
-                                        let (before, replaced) = this.sync_buf.split_at(start);
-                                        let (_, after) =
-                                            replaced.split_at(end - start + closing.len());
+                                        let (before, replaced) =
+                                            this.sync_buf.split_at(start);
+                                        let (_, after) = replaced.split_at(
+                                            end - start + closing.len(),
+                                        );
                                         let mut buf = String::new();
                                         buf.push_str(before);
 
                                         let mut held_chunks = VecDeque::new();
                                         for chunk in chunks_iter {
-                                            if let StreamChunk::Sync(ready) = chunk {
+                                            if let StreamChunk::Sync(ready) =
+                                                chunk
+                                            {
                                                 buf.push_str(&ready);
                                             } else {
                                                 held_chunks.push_front(chunk);
@@ -403,9 +431,14 @@ impl Stream for StreamBuilder {
                                             this.chunks.push_front(chunk);
                                         }
                                     } else {
-                                        OooChunk::push_start(&id, &mut this.sync_buf);
+                                        OooChunk::push_start(
+                                            &id,
+                                            &mut this.sync_buf,
+                                        );
                                         for chunk in chunks.into_iter().rev() {
-                                            if let StreamChunk::Sync(ready) = chunk {
+                                            if let StreamChunk::Sync(ready) =
+                                                chunk
+                                            {
                                                 this.sync_buf.push_str(&ready);
                                             } else {
                                                 this.chunks.push_front(chunk);
@@ -438,10 +471,13 @@ impl Stream for StreamBuilder {
                         match this.chunks.pop_front() {
                             None => break,
                             Some(StreamChunk::Async { chunks }) => {
-                                this.chunks.push_front(StreamChunk::Async { chunks });
+                                this.chunks
+                                    .push_front(StreamChunk::Async { chunks });
                                 break;
                             }
-                            Some(StreamChunk::OutOfOrder { chunks, .. }) => {
+                            Some(StreamChunk::OutOfOrder {
+                                chunks, ..
+                            }) => {
                                 this.pending_ooo.push_back(chunks);
                                 break;
                             }

@@ -403,8 +403,8 @@ mod reactive_stores {
     #[allow(deprecated)]
     use reactive_graph::{owner::Storage, traits::Get};
     use reactive_stores::{
-        ArcField, ArcStore, AtIndex, AtKeyed, DerefedField, Field, KeyedSubfield, Store,
-        StoreField, Subfield,
+        ArcField, ArcStore, AtIndex, AtKeyed, DerefedField, Field,
+        KeyedSubfield, Store, StoreField, Subfield,
     };
     use std::{
         ops::{Deref, DerefMut, Index, IndexMut},

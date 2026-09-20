@@ -4,7 +4,8 @@ use crate::{
     renderer::Rndr,
     ssr::StreamBuilder,
     view::{
-        add_attr::AddAnyAttr, Mountable, Position, PositionState, Render, RenderHtml, ToTemplate,
+        add_attr::AddAnyAttr, Mountable, Position, PositionState, Render,
+        RenderHtml, ToTemplate,
     },
 };
 use reactive_graph::effect::RenderEffect;
@@ -159,7 +160,13 @@ where
         extra_attrs: Vec<AnyAttribute>,
     ) {
         let value = self.invoke();
-        value.to_html_with_buf(buf, position, escape, mark_branches, extra_attrs)
+        value.to_html_with_buf(
+            buf,
+            position,
+            escape,
+            mark_branches,
+            extra_attrs,
+        )
     }
 
     fn to_html_async_with_buf<const OUT_OF_ORDER: bool>(
@@ -224,7 +231,11 @@ where
         .into()
     }
 
-    async fn hydrate_async(self, cursor: &Cursor, position: &PositionState) -> Self::State {
+    async fn hydrate_async(
+        self,
+        cursor: &Cursor,
+        position: &PositionState,
+    ) -> Self::State {
         /// codegen optimisation:
         fn prep(
             cursor: &Cursor,
@@ -250,7 +261,8 @@ where
                     /// codegen optimisation:
                     fn get_guard(
                         hook: &Option<Arc<dyn throw_error::ErrorHook>>,
-                    ) -> Option<throw_error::ResetErrorHookOnDrop> {
+                    ) -> Option<throw_error::ResetErrorHookOnDrop>
+                    {
                         hook.as_ref()
                             .map(|h| throw_error::set_error_hook(Arc::clone(h)))
                     }
@@ -284,7 +296,10 @@ where
     type Output<SomeNewAttr: Attribute> =
         Box<dyn FnMut() -> V::Output<SomeNewAttr::CloneableOwned> + Send>;
 
-    fn add_any_attr<NewAttr: Attribute>(mut self, attr: NewAttr) -> Self::Output<NewAttr>
+    fn add_any_attr<NewAttr: Attribute>(
+        mut self,
+        attr: NewAttr,
+    ) -> Self::Output<NewAttr>
     where
         Self::Output<NewAttr>: RenderHtml,
     {
@@ -409,7 +424,11 @@ where
         })
     }
 
-    fn build(mut self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        mut self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         let key = Rndr::intern(key);
         let key = key.to_owned();
         let el = el.to_owned();
@@ -477,7 +496,9 @@ where
 
     fn to_html(self, _key: &str, _buf: &mut String) {
         #[cfg(feature = "tracing")]
-        tracing::error!("Suspended attributes cannot be used outside Suspense.");
+        tracing::error!(
+            "Suspended attributes cannot be used outside Suspense."
+        );
     }
 
     fn to_template(_key: &str, _buf: &mut String) {}
@@ -493,14 +514,19 @@ where
         reactive_graph::spawn_local_scoped({
             let state = Rc::clone(&state);
             async move {
-                *state.borrow_mut() = Some(self.inner.await.hydrate::<FROM_SERVER>(&key, &el));
+                *state.borrow_mut() =
+                    Some(self.inner.await.hydrate::<FROM_SERVER>(&key, &el));
                 self.subscriber.forward();
             }
         });
         state
     }
 
-    fn build(self, el: &crate::renderer::types::Element, key: &str) -> Self::State {
+    fn build(
+        self,
+        el: &crate::renderer::types::Element,
+        key: &str,
+    ) -> Self::State {
         let key = key.to_owned();
         let el = el.to_owned();
         let state = Rc::new(RefCell::new(None));
@@ -574,7 +600,9 @@ impl<T: 'static> ReactiveFunction for Arc<Mutex<dyn FnMut() -> T + Send>> {
     }
 }
 
-impl<T: Send + Sync + 'static> ReactiveFunction for Arc<dyn Fn() -> T + Send + Sync> {
+impl<T: Send + Sync + 'static> ReactiveFunction
+    for Arc<dyn Fn() -> T + Send + Sync>
+{
     type Output = T;
 
     fn invoke(&mut self) -> Self::Output {
@@ -786,10 +814,15 @@ macro_rules! reactive_impl {
 mod stable {
     use super::RenderEffectState;
     use crate::{
-        html::attribute::{any_attribute::AnyAttribute, Attribute, AttributeValue},
+        html::attribute::{
+            any_attribute::AnyAttribute, Attribute, AttributeValue,
+        },
         hydration::Cursor,
         ssr::StreamBuilder,
-        view::{add_attr::AddAnyAttr, Mountable, Position, PositionState, Render, RenderHtml},
+        view::{
+            add_attr::AddAnyAttr, Mountable, Position, PositionState, Render,
+            RenderHtml,
+        },
     };
     #[allow(deprecated)]
     use reactive_graph::wrappers::read::MaybeSignal;
@@ -866,16 +899,21 @@ mod stable {
 mod reactive_stores {
     use super::RenderEffectState;
     use crate::{
-        html::attribute::{any_attribute::AnyAttribute, Attribute, AttributeValue},
+        html::attribute::{
+            any_attribute::AnyAttribute, Attribute, AttributeValue,
+        },
         hydration::Cursor,
         ssr::StreamBuilder,
-        view::{add_attr::AddAnyAttr, Mountable, Position, PositionState, Render, RenderHtml},
+        view::{
+            add_attr::AddAnyAttr, Mountable, Position, PositionState, Render,
+            RenderHtml,
+        },
     };
     #[allow(deprecated)]
     use reactive_graph::{effect::RenderEffect, owner::Storage, traits::Get};
     use reactive_stores::{
-        ArcField, ArcStore, AtIndex, AtKeyed, DerefedField, Field, KeyedSubfield, Store,
-        StoreField, Subfield,
+        ArcField, ArcStore, AtIndex, AtKeyed, DerefedField, Field,
+        KeyedSubfield, Store, StoreField, Subfield,
     };
     use std::ops::{Deref, DerefMut, Index, IndexMut};
 

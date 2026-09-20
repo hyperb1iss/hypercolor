@@ -1,10 +1,16 @@
 use super::{
-    attribute::{maybe_next_attr_erasure_macros::next_attr_output_type, Attribute, NextAttribute},
+    attribute::{
+        maybe_next_attr_erasure_macros::next_attr_output_type, Attribute,
+        NextAttribute,
+    },
     element::ElementType,
 };
 use crate::{
     html::{
-        attribute::{maybe_next_attr_erasure_macros::next_attr_combine, NamedAttributeKey},
+        attribute::{
+            maybe_next_attr_erasure_macros::next_attr_combine,
+            NamedAttributeKey,
+        },
         element::HtmlElement,
     },
     prelude::Render,
@@ -79,7 +85,10 @@ where
     ) {
     }
 
-    fn hydrate<const FROM_SERVER: bool>(self, el: &crate::renderer::types::Element) -> Self::State {
+    fn hydrate<const FROM_SERVER: bool>(
+        self,
+        el: &crate::renderer::types::Element,
+    ) -> Self::State {
         self.container.load(el);
         el.to_owned()
     }
@@ -121,7 +130,10 @@ where
 {
     next_attr_output_type!(Self, NewAttr);
 
-    fn add_any_attr<NewAttr: Attribute>(self, new_attr: NewAttr) -> Self::Output<NewAttr> {
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        new_attr: NewAttr,
+    ) -> Self::Output<NewAttr> {
         next_attr_combine!(self, new_attr)
     }
 }
@@ -135,7 +147,10 @@ where
     crate::renderer::types::Element: PartialEq,
 {
     /// Binds this HTML element to a [`NodeRefContainer`].
-    fn node_ref(self, container: C) -> <Self as AddAnyAttr>::Output<NodeRefAttr<E, C>>
+    fn node_ref(
+        self,
+        container: C,
+    ) -> <Self as AddAnyAttr>::Output<NodeRefAttr<E, C>>
     where
         Self: Sized + AddAnyAttr,
         <Self as AddAnyAttr>::Output<NodeRefAttr<E, C>>: Render,

@@ -30,9 +30,10 @@ where
 {
     /// Creates a new cursor starting at the root element.
     pub fn new(root: crate::renderer::types::Element) -> Self {
-        let root =
-            <crate::renderer::types::Element as AsRef<crate::renderer::types::Node>>::as_ref(&root)
-                .clone();
+        let root = <crate::renderer::types::Element as AsRef<
+            crate::renderer::types::Node,
+        >>::as_ref(&root)
+        .clone();
         Self(Rc::new(RefCell::new(root)))
     }
 
@@ -142,7 +143,9 @@ thread_local! {
     static CURRENTLY_HYDRATING: Cell<Option<&'static Location<'static>>> = const { Cell::new(None) };
 }
 
-pub(crate) fn set_currently_hydrating(location: Option<&'static Location<'static>>) {
+pub(crate) fn set_currently_hydrating(
+    location: Option<&'static Location<'static>>,
+) {
     #[cfg(any(debug_assertions, leptos_debuginfo))]
     {
         CURRENTLY_HYDRATING.set(location);

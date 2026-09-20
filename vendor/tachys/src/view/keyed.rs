@@ -1,5 +1,6 @@
 use super::{
-    add_attr::AddAnyAttr, MarkBranch, Mountable, Position, PositionState, Render, RenderHtml,
+    add_attr::AddAnyAttr, MarkBranch, Mountable, Position, PositionState,
+    Render, RenderHtml,
 };
 use crate::{
     html::attribute::{any_attribute::AnyAttribute, Attribute},
@@ -129,7 +130,8 @@ where
     fn build(self) -> Self::State {
         let items = self.items.into_iter().flatten();
         let (capacity, _) = items.size_hint();
-        let mut hashed_items = FxIndexSet::with_capacity_and_hasher(capacity, Default::default());
+        let mut hashed_items =
+            FxIndexSet::with_capacity_and_hasher(capacity, Default::default());
         let mut rendered_items = Vec::with_capacity(capacity);
         for (index, item) in items.enumerate() {
             hashed_items.insert((self.key_fn)(&item));
@@ -194,14 +196,22 @@ where
         K,
         KF,
         Box<
-            dyn Fn(usize, T) -> (VFS, <V as AddAnyAttr>::Output<SomeNewAttr::CloneableOwned>)
-                + Send,
+            dyn Fn(
+                    usize,
+                    T,
+                ) -> (
+                    VFS,
+                    <V as AddAnyAttr>::Output<SomeNewAttr::CloneableOwned>,
+                ) + Send,
         >,
         VFS,
         V::Output<SomeNewAttr::CloneableOwned>,
     >;
 
-    fn add_any_attr<NewAttr: Attribute>(self, attr: NewAttr) -> Self::Output<NewAttr>
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        attr: NewAttr,
+    ) -> Self::Output<NewAttr>
     where
         Self::Output<NewAttr>: RenderHtml,
     {
@@ -254,19 +264,23 @@ where
     async fn resolve(self) -> Self::AsyncOutput {
         #[cfg(feature = "ssr")]
         {
-            futures::future::join_all(self.ssr_items.into_iter().map(|(_, view)| view.resolve()))
-                .await
-                .into_iter()
-                .collect::<Vec<_>>()
+            futures::future::join_all(
+                self.ssr_items.into_iter().map(|(_, view)| view.resolve()),
+            )
+            .await
+            .into_iter()
+            .collect::<Vec<_>>()
         }
         #[cfg(not(feature = "ssr"))]
         {
-            futures::future::join_all(self.items.into_iter().flatten().enumerate().map(
-                |(index, item)| {
-                    let (_, view) = (self.view_fn)(index, item);
-                    view.resolve()
-                },
-            ))
+            futures::future::join_all(
+                self.items.into_iter().flatten().enumerate().map(
+                    |(index, item)| {
+                        let (_, view) = (self.view_fn)(index, item);
+                        view.resolve()
+                    },
+                ),
+            )
             .await
             .into_iter()
             .collect::<Vec<_>>()
@@ -291,7 +305,13 @@ where
             if mark_branches && escape {
                 buf.open_branch("item");
             }
-            item.to_html_with_buf(buf, position, escape, mark_branches, extra_attrs.clone());
+            item.to_html_with_buf(
+                buf,
+                position,
+                escape,
+                mark_branches,
+                extra_attrs.clone(),
+            );
             if mark_branches && escape {
                 buf.close_branch("item");
             }
@@ -351,7 +371,8 @@ where
         let parent = if position.get() == Position::FirstChild {
             current
         } else {
-            Rndr::get_parent(&current).expect("first child of keyed list has no parent")
+            Rndr::get_parent(&current)
+                .expect("first child of keyed list has no parent")
         };
         let parent = crate::renderer::types::Element::cast_from(parent)
             .expect("parent of keyed list should be an element");
@@ -359,7 +380,8 @@ where
         // build list
         let items = self.items.into_iter().flatten();
         let (capacity, _) = items.size_hint();
-        let mut hashed_items = FxIndexSet::with_capacity_and_hasher(capacity, Default::default());
+        let mut hashed_items =
+            FxIndexSet::with_capacity_and_hasher(capacity, Default::default());
         let mut rendered_items = Vec::with_capacity(capacity);
         for (index, item) in items.enumerate() {
             hashed_items.insert((self.key_fn)(&item));
@@ -378,13 +400,18 @@ where
         }
     }
 
-    async fn hydrate_async(self, cursor: &Cursor, position: &PositionState) -> Self::State {
+    async fn hydrate_async(
+        self,
+        cursor: &Cursor,
+        position: &PositionState,
+    ) -> Self::State {
         // get parent and position
         let current = cursor.current();
         let parent = if position.get() == Position::FirstChild {
             current
         } else {
-            Rndr::get_parent(&current).expect("first child of keyed list has no parent")
+            Rndr::get_parent(&current)
+                .expect("first child of keyed list has no parent")
         };
         let parent = crate::renderer::types::Element::cast_from(parent)
             .expect("parent of keyed list should be an element");
@@ -392,7 +419,8 @@ where
         // build list
         let items = self.items.into_iter().flatten();
         let (capacity, _) = items.size_hint();
-        let mut hashed_items = FxIndexSet::with_capacity_and_hasher(capacity, Default::default());
+        let mut hashed_items =
+            FxIndexSet::with_capacity_and_hasher(capacity, Default::default());
         let mut rendered_items = Vec::with_capacity(capacity);
         for (index, item) in items.enumerate() {
             hashed_items.insert((self.key_fn)(&item));
@@ -464,11 +492,17 @@ where
 }
 
 trait VecExt<T> {
-    fn get_next_closest_mounted_sibling(&self, start_at: usize) -> Option<&Option<T>>;
+    fn get_next_closest_mounted_sibling(
+        &self,
+        start_at: usize,
+    ) -> Option<&Option<T>>;
 }
 
 impl<T> VecExt<T> for Vec<Option<T>> {
-    fn get_next_closest_mounted_sibling(&self, start_at: usize) -> Option<&Option<T>> {
+    fn get_next_closest_mounted_sibling(
+        &self,
+        start_at: usize,
+    ) -> Option<&Option<T>> {
         self[start_at..].iter().find(|s| s.is_some())
     }
 }
@@ -528,8 +562,8 @@ fn diff<K: Eq + Hash>(from: &FxIndexSet<K>, to: &FxIndexSet<K>) -> Diff {
             if let Some(from_item) = from_item {
                 if let Some(to_item) = to.get_full(from_item) {
                     let moves_forward_by = (to_item.0 as i32) - (index as i32);
-                    let move_in_dom =
-                        moves_forward_by != (added.len() as i32) - (removed.len() as i32);
+                    let move_in_dom = moves_forward_by
+                        != (added.len() as i32) - (removed.len() as i32);
 
                     let op = DiffOpMove {
                         from: index,
@@ -693,8 +727,14 @@ fn apply_diff<T, VFS, V>(
         let (set_index, mut each_item) = moved_children[i].take().unwrap();
 
         if let Some(parent) = parent {
-            if let Some(Some((_, state))) = children.get_next_closest_mounted_sibling(to) {
-                state.insert_before_this_or_marker(parent, &mut each_item, Some(marker.as_ref()))
+            if let Some(Some((_, state))) =
+                children.get_next_closest_mounted_sibling(to)
+            {
+                state.insert_before_this_or_marker(
+                    parent,
+                    &mut each_item,
+                    Some(marker.as_ref()),
+                )
             } else {
                 each_item.try_mount(parent, Some(marker.as_ref()));
             }
@@ -712,8 +752,14 @@ fn apply_diff<T, VFS, V>(
         if let Some(parent) = parent {
             match mode {
                 DiffOpAddMode::Normal => {
-                    if let Some(Some((_, state))) = children.get_next_closest_mounted_sibling(at) {
-                        state.insert_before_this_or_marker(parent, &mut item, Some(marker.as_ref()))
+                    if let Some(Some((_, state))) =
+                        children.get_next_closest_mounted_sibling(at)
+                    {
+                        state.insert_before_this_or_marker(
+                            parent,
+                            &mut item,
+                            Some(marker.as_ref()),
+                        )
                     } else {
                         item.try_mount(parent, Some(marker.as_ref()));
                     }

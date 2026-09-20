@@ -24,7 +24,8 @@ pub type Rndr = dom::Dom;
 /// See [`Rndr`] for additional information on this rendering approach.
 pub mod types {
     pub use super::dom::{
-        ClassList, CssStyleDeclaration, Element, Event, Node, Placeholder, TemplateElement, Text,
+        ClassList, CssStyleDeclaration, Element, Event, Node, Placeholder,
+        TemplateElement, Text,
     };
 }
 
@@ -44,12 +45,24 @@ pub trait Renderer: Send + Sized + Debug + 'static {
     /// The basic type of node in the view tree.
     type Node: Mountable + Clone + 'static;
     /// A visible element in the view tree.
-    type Element: AsRef<Self::Node> + CastFrom<Self::Node> + Mountable + Clone + 'static;
+    type Element: AsRef<Self::Node>
+        + CastFrom<Self::Node>
+        + Mountable
+        + Clone
+        + 'static;
     /// A text node in the view tree.
-    type Text: AsRef<Self::Node> + CastFrom<Self::Node> + Mountable + Clone + 'static;
+    type Text: AsRef<Self::Node>
+        + CastFrom<Self::Node>
+        + Mountable
+        + Clone
+        + 'static;
     /// A placeholder node, which can be inserted into the tree but does not
     /// appear (e.g., a comment node in the DOM).
-    type Placeholder: AsRef<Self::Node> + CastFrom<Self::Node> + Mountable + Clone + 'static;
+    type Placeholder: AsRef<Self::Node>
+        + CastFrom<Self::Node>
+        + Mountable
+        + Clone
+        + 'static;
 
     /// Interns a string slice, if that is available on this platform and useful as an optimization.
     fn intern(text: &str) -> &str;
@@ -71,10 +84,17 @@ pub trait Renderer: Send + Sized + Debug + 'static {
 
     /// Appends the new child to the parent, before the anchor node. If `anchor` is `None`,
     /// append to the end of the parent's children.
-    fn insert_node(parent: &Self::Element, new_child: &Self::Node, marker: Option<&Self::Node>);
+    fn insert_node(
+        parent: &Self::Element,
+        new_child: &Self::Node,
+        marker: Option<&Self::Node>,
+    );
 
     /// Removes the child node from the parents, and returns the removed node.
-    fn remove_node(parent: &Self::Element, child: &Self::Node) -> Option<Self::Node>;
+    fn remove_node(
+        parent: &Self::Element,
+        child: &Self::Node,
+    ) -> Option<Self::Node>;
 
     /// Removes all children from the parent element.
     fn clear_children(parent: &Self::Element);
@@ -115,7 +135,9 @@ impl<T> RemoveEventHandler<T> {
     }
 
     #[allow(clippy::type_complexity)]
-    pub(crate) fn into_inner(mut self) -> Option<Box<dyn FnOnce() + Send + Sync>> {
+    pub(crate) fn into_inner(
+        mut self,
+    ) -> Option<Box<dyn FnOnce() + Send + Sync>> {
         self.0.take()
     }
 }
@@ -179,7 +201,11 @@ pub trait DomRenderer: Renderer {
     fn style(el: &Self::Element) -> Self::CssStyleDeclaration;
 
     /// Sets a CSS property.
-    fn set_css_property(style: &Self::CssStyleDeclaration, name: &str, value: &str);
+    fn set_css_property(
+        style: &Self::CssStyleDeclaration,
+        name: &str,
+        value: &str,
+    );
 
     /// Sets the `innerHTML` of a DOM element, without escaping any values.
     fn set_inner_html(el: &Self::Element, html: &str);

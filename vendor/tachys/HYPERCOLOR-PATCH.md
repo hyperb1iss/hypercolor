@@ -15,10 +15,20 @@ Other owned `InertElement` values and the generic renderer `set_inner_html`
 path keep using the ordinary string setter, so the browser continues to reject
 runtime raw markup under that CSP.
 
-The same module owns the only `hc-static` policy instance. Its static-worker
-helper accepts embedded `&'static str` source, creates the Blob URL internally,
-and registers that exact URL for one policy conversion before constructing the
-worker. Callers cannot promote an arbitrary URL to `TrustedScriptURL`.
+In a standalone app, the same module owns the only `hc-static` policy instance.
+An embedding host may install a frozen provider at
+`globalThis[Symbol.for('tachys.static-dom.v1')]` before the app starts. The renderer
+then delegates its static template and worker operations to that provider, so
+the host can register its verified Service Worker under the same policy without
+permitting duplicate policies. The provider exposes `setStaticInnerHtml` and
+`createStaticWorker`; ordinary renderer HTML assignments never call it.
+
+The static-worker helper accepts embedded `&'static str` source, creates its Blob
+URL internally, and registers that exact URL for one policy conversion before
+constructing the worker. Neither implementation exposes general URL promotion.
+Owned markup is eligible only at the SVG template callsite; paint attributes
+allow inert color tokens, and CSS escapes, URL functions, and active SVG syntax
+are rejected before policy conversion.
 
 When updating tachys, reapply the narrow changes in
 `src/renderer/dom.rs`, rerun the raw-sink gate, and exercise the UI in Chromium

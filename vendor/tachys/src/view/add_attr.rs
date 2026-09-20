@@ -13,7 +13,10 @@ pub trait AddAnyAttr {
     type Output<SomeNewAttr: Attribute>: RenderHtml;
 
     /// Adds an attribute to the view.
-    fn add_any_attr<NewAttr: Attribute>(self, attr: NewAttr) -> Self::Output<NewAttr>
+    fn add_any_attr<NewAttr: Attribute>(
+        self,
+        attr: NewAttr,
+    ) -> Self::Output<NewAttr>
     where
         Self::Output<NewAttr>: RenderHtml;
 }
@@ -23,7 +26,8 @@ pub trait AddAnyAttr {
 macro_rules! no_attrs {
     ($ty_name:ty) => {
         impl<'a> $crate::view::add_attr::AddAnyAttr for $ty_name {
-            type Output<SomeNewAttr: $crate::html::attribute::Attribute> = $ty_name;
+            type Output<SomeNewAttr: $crate::html::attribute::Attribute> =
+                $ty_name;
 
             fn add_any_attr<NewAttr: $crate::html::attribute::Attribute>(
                 self,
