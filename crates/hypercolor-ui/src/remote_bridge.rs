@@ -700,10 +700,17 @@ mod browser {
         rows
     }
     fn parse_headers(value: JsValue) -> Result<Vec<HttpHeader>, HttpStreamError> {
-        let rows = Array::from(&value);
+        let rows = value
+            .dyn_into::<Array>()
+            .map_err(|_| transport_message("Remote response headers must be an array"))?;
         rows.iter()
             .map(|row| {
-                let pair = Array::from(&row);
+                let pair = row
+                    .dyn_into::<Array>()
+                    .map_err(|_| transport_message("Remote response header must be a pair"))?;
+                if pair.length() != 2 {
+                    return Err(transport_message("Remote response header must be a pair"));
+                }
                 Ok(HttpHeader {
                     name: pair.get(0).as_string().ok_or_else(|| {
                         HttpStreamError::Transport(
@@ -752,6 +759,32 @@ mod browser {
         use super::*;
 
         wasm_bindgen_test_configure!(run_in_browser);
+
+        #[wasm_bindgen_test]
+        fn response_headers_reject_malformed_javascript_values() {
+            for value in [
+                JsValue::NULL,
+                JsValue::UNDEFINED,
+                JsValue::from_str("headers"),
+            ] {
+                assert!(parse_headers(value).is_err());
+            }
+            for json in [
+                "[null]",
+                "[\"ab\"]",
+                "[[\"name\"]]",
+                "[[\"name\",1]]",
+                "[[\"a\",\"b\",\"c\"]]",
+            ] {
+                assert!(parse_headers(js_sys::JSON::parse(json).unwrap()).is_err());
+            }
+            let headers =
+                parse_headers(js_sys::JSON::parse("[[\"content-type\",\"text/plain\"]]").unwrap())
+                    .unwrap();
+            assert_eq!(headers.len(), 1);
+            assert_eq!(headers[0].name, "content-type");
+            assert_eq!(headers[0].value, "text/plain");
+        }
 
         #[wasm_bindgen(inline_js = r#"
 export function requestFixture(mode) {
