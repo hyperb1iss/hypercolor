@@ -1535,7 +1535,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
+    needs: [release-credentials, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -1763,6 +1763,45 @@ jobs:
             --app "$app" --dmg "$dmg" --provenance "${dmg}.notarization.json" \
             --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
 
+      - name: Assemble signed macOS distribution
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          # The sidecars use the host profile; Tauri builds the app with an
+          # explicit target. Package those exact binaries without recompiling.
+          bin_dir="${RUNNER_TEMP}/macos-release-binaries"
+          mkdir -p "${bin_dir}"
+          install -m755 "${CARGO_TARGET_DIR}/release/hypercolor-daemon" "${bin_dir}/hypercolor-daemon"
+          install -m755 "${CARGO_TARGET_DIR}/release/hypercolor" "${bin_dir}/hypercolor"
+          install -m755 "${CARGO_TARGET_DIR}/${{ matrix.rust-target }}/release/hypercolor-app" "${bin_dir}/hypercolor-app"
+          bash scripts/with-macos-signing.sh scripts/dist.sh --ci --skip-docs \
+            --web-assets web-assets --target '${{ matrix.rust-target }}' \
+            --bin-dir "${bin_dir}" --version '${{ steps.version.outputs.version }}'
+          platform="macos-arm64"
+          if [[ '${{ matrix.cask_arch }}' == 'x86_64' ]]; then platform="macos-amd64"; fi
+          dist_name="hypercolor-${{ steps.version.outputs.version }}-${platform}"
+          ./scripts/sign-macos-artifacts.sh verify-standalone \
+            --directory "dist/${dist_name}" \
+            --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
+          (cd dist && shasum -a 256 "${dist_name}.tar.gz" > "${dist_name}.tar.gz.sha256")
+
+      - name: Upload macOS release tarball
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hypercolor-tarball-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          path: |
+            dist/hypercolor-*.tar.gz
+            dist/hypercolor-*.tar.gz.sha256
+          if-no-files-found: error
+
       - name: Upload native release bundle
         uses: actions/upload-artifact@v7
         with:
@@ -1893,7 +1932,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
+    needs: [release-credentials, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -1904,28 +1943,12 @@ jobs:
           - target: linux-arm64
             os: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-gnu
-          - target: macos-arm64
-            os: macos-26
-            rust-target: aarch64-apple-darwin
-          - target: macos-amd64
-            os: macos-26-intel
-            rust-target: x86_64-apple-darwin
     # A full workflow_dispatch on the default branch warms these release
     # shapes. Tags restore that trusted cache; they never publish cache state.
     timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Qualify macOS runner and SDK
-        if: runner.os == 'macOS'
-        run: |
-          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
-          test "$(xcrun --show-sdk-version | cut -d. -f1)" = "26"
-
-      - name: Install NASM for Intel macOS
-        if: matrix.target == 'macos-amd64'
-        run: brew install nasm
 
       - name: Report runner capacity
         shell: bash
@@ -2030,24 +2053,6 @@ jobs:
             --version "${{ steps.version.outputs.version }}"
           test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
 
-      - name: Assemble signed macOS distribution
-        if: runner.os == 'macOS'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-        run: |
-          bash scripts/with-macos-signing.sh scripts/dist.sh --ci --skip-docs \
-            --web-assets web-assets --target '${{ matrix.target }}' \
-            --version '${{ steps.version.outputs.version }}'
-          ./scripts/sign-macos-artifacts.sh verify-standalone \
-            --directory 'dist/${{ steps.version.outputs.dist_name }}' \
-            --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
-
       # Memory exhaustion can take down the VM before this step runs.
       - name: Report runner capacity after failure
         if: failure()
@@ -2124,11 +2129,12 @@ jobs:
   # Accepts workflow_dispatch as well as push: release.yml pushes tags
   # with GITHUB_TOKEN (which never fires `on: push`) and then dispatches
   # this workflow on the tag ref.
+  # Compilation runs alongside validation; only publication waits for both.
   create-release:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/')
-    needs: [build-release, build-native-app, python, python-generated]
+    needs: [build-release, build-native-app, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     runs-on: ubuntu-latest
     permissions:
       contents: write
