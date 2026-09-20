@@ -3,8 +3,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
-#[cfg(test)]
-use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -65,9 +63,6 @@ use crate::startup::services::{AssembledDomains, DomainAssemblyResources, assemb
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
 // ── AppState ─────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-static APP_STATE_TEST_DATA_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn test_constructor_task_spawner() -> tokio::runtime::Handle {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -240,6 +235,9 @@ pub struct AppState {
 
     /// Shared API auth and rate-limiting state for HTTP and WS command dispatch.
     pub security_state: crate::api::security::SecurityState,
+
+    // Drop the fixture directory after its state-owned stores.
+    _temporary_directory: Option<tempfile::TempDir>,
 }
 
 struct AppStateLibrary {
@@ -260,6 +258,7 @@ pub struct AppStateBuilder {
     runtime_state_path: Option<PathBuf>,
     library: Option<AppStateLibrary>,
     input_manager: Option<InputManager>,
+    temporary_directory: Option<tempfile::TempDir>,
 }
 
 impl AppStateBuilder {
@@ -273,6 +272,7 @@ impl AppStateBuilder {
             runtime_state_path: None,
             library: None,
             input_manager: None,
+            temporary_directory: None,
         }
     }
 
@@ -331,11 +331,12 @@ fn default_state_dir(data_dir: &Path) -> PathBuf {
 }
 
 impl AppState {
-    /// Create a new `AppState` with default empty subsystems.
+    /// Create an isolated `AppState` with empty subsystems and temporary storage.
     ///
     /// Primarily useful for testing. In production, prefer
     /// [`from_daemon_state`](Self::from_daemon_state) to share subsystems
-    /// with the daemon lifecycle.
+    /// with the daemon lifecycle. Isolation also applies when this crate is
+    /// compiled as a dependency; it does not depend on `cfg(test)`.
     pub fn new() -> Self {
         Self::builder().build()
     }
@@ -343,20 +344,13 @@ impl AppState {
     #[doc(hidden)]
     #[must_use]
     pub fn builder() -> AppStateBuilder {
-        #[cfg(test)]
-        {
-            let id = APP_STATE_TEST_DATA_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-            AppStateBuilder::new(
-                std::env::temp_dir()
-                    .join("hypercolor-app-state-tests")
-                    .join(format!("{}-{id}", std::process::id())),
-            )
-        }
-
-        #[cfg(not(test))]
-        {
-            AppStateBuilder::new(ConfigManager::data_dir())
-        }
+        let directory = tempfile::Builder::new()
+            .prefix("hypercolor-app-state-")
+            .tempdir()
+            .expect("isolated AppState storage should initialize");
+        let mut builder = AppStateBuilder::new(directory.path().to_path_buf());
+        builder.temporary_directory = Some(directory);
+        builder
     }
 
     #[doc(hidden)]
@@ -372,6 +366,7 @@ impl AppState {
         use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
         let AppStateBuilder {
+            temporary_directory,
             data_dir,
             state_dir,
             config_manager,
@@ -697,6 +692,7 @@ impl AppState {
             },
             server_session_id: None,
             security_state: crate::api::security::SecurityState::unserved(),
+            _temporary_directory: temporary_directory,
         }
     }
 
@@ -796,6 +792,7 @@ impl AppState {
             server_identity: daemon.server_identity.clone(),
             server_session_id: None,
             security_state: crate::api::security::SecurityState::unserved(),
+            _temporary_directory: None,
         }
     }
 
