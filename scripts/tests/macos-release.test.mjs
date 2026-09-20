@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -123,5 +123,74 @@ test('Homebrew checksum step supplies every value consumed by its renderer', () 
     assert.doesNotMatch(aur, /macos-|\.dmg/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('macOS tarballs package the native job binaries for both architectures', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const native = workflow.match(/^  build-native-app:\n([\s\S]*?)(?=^  [a-z][\w-]*:)/m)[1];
+  const tarballs = workflow.match(/^  build-release:\n([\s\S]*?)(?=^  [a-z][\w-]*:)/m)[1];
+  assert.doesNotMatch(tarballs, /target: macos-/);
+  const step = native.match(/      - name: Assemble signed macOS distribution\n([\s\S]*?)(?=      - name:)/)[1];
+  assert.match(step, /if: runner.os == 'macOS'/);
+  const script = step.split('        run: |\n')[1].replace(/^          /gm, '');
+  assert.doesNotMatch(script, /cargo build|cargo tauri/);
+  assert.match(native, /name: hypercolor-tarball-\$\{\{ steps.version.outputs.version \}\}-\$\{\{ matrix.target \}\}/);
+  assert.match(native, /dist\/hypercolor-\*\.tar.gz\n/);
+  for (const [arch, target, platform] of [
+    ['arm64', 'aarch64-apple-darwin', 'macos-arm64'],
+    ['x86_64', 'x86_64-apple-darwin', 'macos-amd64'],
+  ]) {
+    const dir = mkdtempSync(path.join(tmpdir(), 'macos-prebuilt-release-'));
+    try {
+      mkdirSync(path.join(dir, 'scripts'));
+      mkdirSync(path.join(dir, 'target/release'), { recursive: true });
+      mkdirSync(path.join(dir, `target/${target}/release`), { recursive: true });
+      for (const binary of ['hypercolor-daemon', 'hypercolor']) {
+        writeFileSync(path.join(dir, 'target/release', binary), binary, { mode: 0o755 });
+      }
+      writeFileSync(path.join(dir, `target/${target}/release/hypercolor-app`), 'hypercolor-app', { mode: 0o755 });
+      writeFileSync(path.join(dir, 'scripts/with-macos-signing.sh'), '#!/bin/bash\nexec "$@"\n');
+      // Replace the platform signing transport; execute the actual workflow's
+      // path selection, staging, package invocation and checksum generation.
+      writeFileSync(path.join(dir, 'scripts/dist.sh'), `#!/bin/bash
+set -euo pipefail
+bin_dir=''
+while (( $# )); do
+  case "$1" in
+    --bin-dir) bin_dir="$2"; shift ;;
+    --target) test "$2" = '${target}'; shift ;;
+    --version) test "$2" = '0.5.2'; shift ;;
+    --web-assets) shift ;;
+  esac
+  shift
+done
+for binary in hypercolor-daemon hypercolor hypercolor-app; do
+  test -x "$bin_dir/$binary"
+  test "$(cat "$bin_dir/$binary")" = "$binary"
+done
+mkdir -p dist/hypercolor-0.5.2-${platform}
+printf 'archive-fixture' > dist/hypercolor-0.5.2-${platform}.tar.gz
+`, { mode: 0o755 });
+      writeFileSync(path.join(dir, 'scripts/sign-macos-artifacts.sh'), `#!/bin/bash
+set -euo pipefail
+test "$1" = verify-standalone
+test "$3" = dist/hypercolor-0.5.2-${platform}
+test "$5" = '${target}'
+test "$7" = fixture-team
+`, { mode: 0o755 });
+      const run = script.replaceAll('${{ matrix.rust-target }}', target)
+        .replaceAll('${{ matrix.cask_arch }}', arch)
+        .replaceAll('${{ steps.version.outputs.version }}', '0.5.2');
+      const result = spawnSync('bash', ['-e', '-c', run], {
+        cwd: dir, encoding: 'utf8',
+        env: { ...environment, RUNNER_TEMP: dir, CARGO_TARGET_DIR: path.join(dir, 'target'), APPLE_TEAM_ID: 'fixture-team' },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const checksum = readFileSync(path.join(dir, `dist/hypercolor-0.5.2-${platform}.tar.gz.sha256`), 'utf8');
+      assert.equal(checksum.trim(), `${createHash('sha256').update('archive-fixture').digest('hex')}  hypercolor-0.5.2-${platform}.tar.gz`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });

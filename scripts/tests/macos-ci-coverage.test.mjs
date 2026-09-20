@@ -54,12 +54,21 @@ test('cache ownership and restored target directories agree across lanes', () =>
   assert.equal(condition('Save Rust build caches'), 'always()');
 });
 
-test('both release builders require the macOS matrix and Windows tests', () => {
+test('publication retains every validation gate while compilation overlaps it', () => {
+  const body = id => workflow.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:)`, 'm'))?.[1];
+  const needs = id => body(id)?.match(/^    needs: \[(.+)\]$/m)?.[1].split(', ');
   for (const id of ['build-release', 'build-native-app']) {
-    const body = workflow.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:)`, 'm'))?.[1];
-    assert.ok(body, `missing release builder: ${id}`);
-    const needs = body.match(/^    needs: \[(.+)\]$/m)?.[1].split(', ').map((value) => value.trim());
-    assert.ok(needs?.includes('rust-check-macos'), `${id} must wait for both lanes on both architectures`);
-    assert.ok(needs?.includes('rust-windows'), `${id} must wait for Windows tests before producing release artifacts`);
+    assert.deepEqual(needs(id), ['release-credentials', 'web-assets']);
   }
+  const validation = [
+    'release-credentials', 'rust-check-shared', 'rust-check-macos', 'rust-test',
+    'rust-test-servo', 'rust-windows', 'rust-deny', 'sdk', 'ui', 'e2e',
+    'web-assets', 'python', 'python-generated',
+  ];
+  assert.deepEqual(needs('create-release'), ['build-release', 'build-native-app', ...validation]);
+  // Preserve GitHub's implicit success() gate: failed or skipped validation
+  // must never become publishable through always() or !cancelled().
+  const condition = body('create-release').split('    needs:')[0];
+  assert.doesNotMatch(condition, /always\(|cancelled\(|failure\(/);
+  assert.match(condition, /startsWith\(github.ref, 'refs\/tags\/'\)/);
 });
