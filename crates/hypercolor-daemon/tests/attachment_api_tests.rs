@@ -380,7 +380,7 @@ async fn attachment_template_collection_lists_builtin_metadata() {
 #[tokio::test]
 async fn user_template_create_persists_to_overridden_data_dir() {
     let guard = TestDataDirGuard::new().await;
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new_with_data_dir(guard.data_dir.clone()));
     let app = test_app_with_state(state);
     let template_id = "test-custom-strip";
     let template_path = guard.attachments_dir().join(format!("{template_id}.toml"));
@@ -442,7 +442,7 @@ async fn attachment_template_item_and_facet_routes_are_absent() {
 )]
 async fn device_attachment_profile_flow_persists_and_clears() {
     let guard = TestDataDirGuard::new().await;
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new_with_data_dir(guard.data_dir.clone()));
     let app = test_app_with_state(Arc::clone(&state));
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let template_id = "profile-test-strip";
@@ -777,7 +777,7 @@ async fn nollie32_channel_slots_accept_fan_profiles() {
 #[tokio::test]
 async fn nollie32_attachment_slots_support_cable_profiles() {
     let guard = TestDataDirGuard::new().await;
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(AppState::new_with_data_dir(guard.data_dir.clone()));
     let app = test_app_with_state(Arc::clone(&state));
     let device_id = insert_nollie32_test_device(&state).await;
 
