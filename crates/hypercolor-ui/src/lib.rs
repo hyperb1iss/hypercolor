@@ -46,6 +46,7 @@ pub mod preview_telemetry;
 pub mod render_canvas;
 pub mod render_presets;
 pub mod route_ui;
+pub mod remote_bridge;
 pub mod settings_audio_devices;
 pub mod storage;
 pub mod style_utils;
@@ -97,12 +98,26 @@ fn print_banner() {
 /// than through context: the erased route defs ([`extensions::UiExtensions::routes`])
 /// are `Send` but not `Sync`, so `provide_context` cannot carry them. Nav items
 /// are plain data and are surfaced through context inside [`app::app_view`].
-pub fn run_with_extensions(ext: UiExtensions) {
+#[allow(unused_mut, reason = "Remote WASM discovery replaces the runtime mount")]
+pub fn run_with_extensions(mut ext: UiExtensions) {
     _ = console_log::init_with_level(log::Level::Debug);
     console_error_panic_hook::set_once();
     tauri_bridge::initialize_daemon_transport();
+    #[cfg(target_arch = "wasm32")]
+    let remote = match remote_bridge::initialize() {
+        Ok(remote) => remote,
+        Err(_) => return,
+    };
+    #[cfg(target_arch = "wasm32")]
+    if let Some(remote) = &remote {
+        ext.mount = remote.mount.clone();
+    }
     print_banner();
     mount_to_body(move || app::app_view(ext));
+    #[cfg(target_arch = "wasm32")]
+    if let Some(remote) = remote {
+        remote.ready();
+    }
 }
 
 /// Initialize logging and mount the standalone OSS app. The bin target's whole

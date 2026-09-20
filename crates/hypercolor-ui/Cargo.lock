@@ -817,6 +817,7 @@ dependencies = [
  "bytes",
  "console_error_panic_hook",
  "console_log",
+ "futures-util",
  "gloo-net 0.7.0",
  "hypercolor-color",
  "hypercolor-leptos-ext",
@@ -838,6 +839,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "wasm-streams",
  "web-sys",
 ]
 
