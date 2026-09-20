@@ -33,6 +33,7 @@ hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = 
 uuid = { version = "1.11", features = ["js"] }  # enable WASM RNG for transitive uuid
 leptos_icons = "0.7"
 icondata = { version = "0.7", default-features = false, features = ["lucide"] }
+tachys = "=0.2.18"
 icondata_core = "0.1"
 strum = { version = "0.28", features = ["derive"] }
 leptoaster = { version = "0.2", features = ["csr"] }
@@ -114,3 +115,6 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[patch.crates-io]
+tachys = { path = "../../vendor/tachys" }

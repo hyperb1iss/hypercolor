@@ -835,6 +835,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum",
+ "tachys",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -1965,8 +1966,6 @@ dependencies = [
 [[package]]
 name = "tachys"
 version = "0.2.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a92ba81187437cc5df4281f2326a2e13cc81e8f96448292d1112388e2025ca66"
 dependencies = [
  "any_spawner",
  "async-trait",

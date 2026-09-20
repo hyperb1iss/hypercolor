@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["crates/hypercolor-ui"]
+exclude = ["crates/hypercolor-ui", "vendor/tachys"]
 resolver = "3"
 
 [patch.crates-io]
