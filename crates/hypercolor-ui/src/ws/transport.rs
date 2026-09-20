@@ -211,7 +211,7 @@ fn validate_relative_path(path: &str) -> Result<(), WebSocketTransportError> {
         return Ok(());
     }
     Err(WebSocketTransportError {
-        message: "authenticated daemon WebSocket URLs must be relative".to_owned(),
+        message: "authenticated Hypercolor WebSocket URLs must be relative".to_owned(),
     })
 }
 
@@ -224,7 +224,7 @@ impl WebSocketTransport for BrowserWebSocketTransport {
         events: WebSocketEventHandler,
     ) -> Result<Rc<dyn WebSocketConnection>, WebSocketTransportError> {
         let url = build_ws_url(&request.path).ok_or_else(|| WebSocketTransportError {
-            message: "verified daemon WebSocket route is unavailable".to_owned(),
+            message: "verified Hypercolor WebSocket route is unavailable".to_owned(),
         })?;
         let socket = arraybuffer_websocket(&url, &request.protocol).map_err(|error| {
             WebSocketTransportError {

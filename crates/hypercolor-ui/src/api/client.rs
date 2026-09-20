@@ -425,7 +425,7 @@ fn validate_relative_path(path: &str) -> ApiResult<()> {
         || path.chars().any(char::is_control)
     {
         return Err(ApiError::Network(
-            "authenticated daemon API URLs must be relative".to_owned(),
+            "authenticated Hypercolor API URLs must be relative".to_owned(),
         ));
     }
     Ok(())
@@ -459,7 +459,7 @@ async fn browser_send(
 ) -> Result<HttpResponse, super::http_transport::HttpTransportError> {
     let url =
         daemon_url(&request.path).ok_or_else(|| super::http_transport::HttpTransportError {
-            message: "verified daemon connection is unavailable".to_owned(),
+            message: "verified Hypercolor connection is unavailable".to_owned(),
         })?;
     let mut builder = RequestBuilder::new(&url).method(browser_method(request.method));
     if let Some(token) = authorization_token() {

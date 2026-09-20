@@ -1006,7 +1006,7 @@ fn ApiKeyPrompt(on_unlock: Callback<String>) -> impl IntoView {
             <div class="relative w-full max-w-sm rounded-lg border border-edge-subtle bg-surface-overlay p-5 modal-glow">
                 <div class="text-sm font-semibold text-fg-primary">"Network API Key"</div>
                 <div class="mt-1 text-xs text-fg-tertiary/75">
-                    "This daemon requires a key for network access."
+                    "The connected computer requires a key for network access."
                 </div>
                 <input
                     node_ref=input_ref

@@ -116,7 +116,7 @@ pub fn CaptureSharedControls(
                             <h4
                                 class="text-[9px] font-mono uppercase tracking-[0.15em] shrink-0"
                                 style=label_style
-                                title="Writes the daemon capture pipeline; affects every screen-reactive effect"
+                                title="Changes the connected computer's capture source; affects every screen-reactive effect"
                             >
                                 "Capture \u{00b7} Shared"
                             </h4>

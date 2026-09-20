@@ -91,7 +91,7 @@ pub async fn fetch_status() -> ApiResult<SystemStatus> {
     let system: SystemResource = client::fetch_json("/api/v1/system").await?;
     system
         .status
-        .ok_or_else(|| ApiError::Parse("System status requires daemon read access".to_owned()))
+        .ok_or_else(|| ApiError::Parse("System status requires Hypercolor read access".to_owned()))
 }
 
 /// Fetch the latest system sensor snapshot.
