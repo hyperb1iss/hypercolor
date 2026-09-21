@@ -63,6 +63,8 @@ test('content-qualified timestamps retain Cargo freshness but edits and removals
 
     const changed = path.join(root, 'src/value.rs');
     writeFileSync(changed, 'pub const VALUE: u32 = 2;\n');
+    const submillisecondFuture = Date.now() / 1000 + 0.9999;
+    utimesSync(changed, submillisecondFuture, submillisecondFuture);
     const changedTime = statSync(changed).mtimeMs;
     assert.equal(restoreSourceTimes([root], snapshot), 2);
     assert.ok(statSync(changed).mtimeMs > changedTime);
@@ -223,8 +225,37 @@ test('new files and executable mode changes receive fresh timestamps', () => {
     legacy.version = 1;
     delete legacy.symlinks;
     writeFileSync(snapshot, JSON.stringify(legacy));
+    utimesSync(file, 1000, 1000);
     assert.equal(restoreSourceTimes([root], snapshot), 0);
+    assert.ok(statSync(file).mtimeMs > 1000000);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const unavailable of ['missing', 'invalid']) {
+  test(`${unavailable} timestamp metadata invalidates restored Cargo artifacts`, () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'hypercolor-missing-source-times-'));
+    try {
+      fixture(root);
+      let result = build(root);
+      assert.equal(result.status, 0, result.stderr);
+      const snapshot = path.join(root, 'source-times.json');
+      if (unavailable === 'invalid') writeFileSync(snapshot, '{');
+      const source = path.join(root, 'src/value.rs');
+      utimesSync(source, 1000, 1000);
+
+      result = build(root);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /Fresh freshness_fixture/);
+
+      assert.equal(restoreSourceTimes([root], snapshot), 0);
+      assert.ok(statSync(source).mtimeMs > 1000000);
+      result = build(root);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /Compiling freshness_fixture/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
