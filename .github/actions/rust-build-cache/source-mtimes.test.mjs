@@ -63,9 +63,11 @@ test('content-qualified timestamps retain Cargo freshness but edits and removals
 
     const changed = path.join(root, 'src/value.rs');
     writeFileSync(changed, 'pub const VALUE: u32 = 2;\n');
+    const submillisecondFuture = Date.now() / 1000 + 0.0009999;
+    utimesSync(changed, submillisecondFuture, submillisecondFuture);
     const changedTime = statSync(changed).mtimeMs;
     assert.equal(restoreSourceTimes([root], snapshot), 2);
-    assert.equal(statSync(changed).mtimeMs, changedTime);
+    assert.ok(statSync(changed).mtimeMs > changedTime);
     result = build(root);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stderr, /Compiling freshness_fixture/);
@@ -170,7 +172,36 @@ for (const directory of [false, true]) {
   });
 }
 
-test('executable mode changes retain checkout timestamps and legacy snapshots are ignored', () => {
+test('changed source cannot look older than a restored Cargo artifact', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'hypercolor-stale-cargo-'));
+  try {
+    fixture(root);
+    let result = build(root);
+    assert.equal(result.status, 0, result.stderr);
+    const snapshot = path.join(root, 'source-times.json');
+    captureSourceTimes([root], snapshot);
+    const recorded = JSON.parse(readFileSync(snapshot, 'utf8'))
+      .sources[0].find((file) => file.path === 'src/value.rs').mtimeMs;
+    const changed = path.join(root, 'src/value.rs');
+    writeFileSync(changed, 'pub const VALUE: u32 = 2;\n');
+    utimesSync(changed, recorded / 1000, recorded / 1000);
+
+    result = build(root);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Fresh freshness_fixture/);
+    assert.doesNotMatch(result.stderr, /Compiling freshness_fixture/);
+
+    assert.equal(restoreSourceTimes([root], snapshot), 2);
+    assert.ok(statSync(changed).mtimeMs > recorded);
+    result = build(root);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /Compiling freshness_fixture/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('new files and executable mode changes receive fresh timestamps', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'hypercolor-source-mode-'));
   try {
     fixture(root);
@@ -181,14 +212,59 @@ test('executable mode changes retain checkout timestamps and legacy snapshots ar
     utimesSync(file, 2000, 2000);
     chmodSync(file, 0o755);
     assert.equal(restoreSourceTimes([root], snapshot), 2);
-    assert.equal(statSync(file).mtimeMs, 2000000);
+    assert.ok(statSync(file).mtimeMs > 2000000);
+
+    const added = path.join(root, 'src/added.rs');
+    writeFileSync(added, 'pub const ADDED: bool = true;\n');
+    git(root, 'add', 'src/added.rs');
+    utimesSync(added, 1000, 1000);
+    assert.equal(restoreSourceTimes([root], snapshot), 2);
+    assert.ok(statSync(added).mtimeMs > 1000000);
 
     const legacy = JSON.parse(readFileSync(snapshot, 'utf8'));
     legacy.version = 1;
     delete legacy.symlinks;
     writeFileSync(snapshot, JSON.stringify(legacy));
+    utimesSync(file, 1000, 1000);
     assert.equal(restoreSourceTimes([root], snapshot), 0);
+    assert.ok(statSync(file).mtimeMs > 1000000);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const [unavailable, contents] of [
+  ['missing', undefined],
+  ['malformed JSON', '{'],
+  ['null', 'null'],
+  ['malformed source entry', JSON.stringify({ version: 2, sources: [[null]], symlinks: [[]] })],
+]) {
+  test(`${unavailable} timestamp metadata invalidates restored Cargo artifacts`, () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'hypercolor-missing-source-times-'));
+    try {
+      fixture(root);
+      let result = build(root);
+      assert.equal(result.status, 0, result.stderr);
+      const snapshot = path.join(root, 'source-times.json');
+      if (contents !== undefined) writeFileSync(snapshot, contents);
+      const source = path.join(root, 'src/value.rs');
+      utimesSync(source, 1000, 1000);
+
+      result = build(root);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /Fresh freshness_fixture/);
+
+      assert.equal(restoreSourceTimes([root], snapshot), 0);
+      assert.ok(statSync(source).mtimeMs > 1000000);
+      result = build(root);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /Compiling freshness_fixture/);
+      result = build(root);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /Fresh freshness_fixture/);
+      assert.doesNotMatch(result.stderr, /Compiling freshness_fixture/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

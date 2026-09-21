@@ -4,6 +4,7 @@ import {
   existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, statSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 function sourceFiles(root) {
@@ -46,24 +47,84 @@ export function captureSourceTimes(roots, destination) {
   return sources.reduce((total, files) => total + files.length, 0);
 }
 
+function refreshedTimestamp(current, wallClockMs) {
+  return Math.max(wallClockMs, current.mtimeMs + 0.001) / 1000;
+}
+
+function refreshSourceTimes(roots, wallClockMs) {
+  for (const root of roots) {
+    for (const relative of sourceFiles(root)) {
+      const absolute = regularSource(root, relative);
+      if (!absolute) continue;
+      const stat = statSync(absolute);
+      utimesSync(absolute, stat.atime, refreshedTimestamp(stat, wallClockMs));
+    }
+  }
+}
+
+function validSnapshot(snapshot, rootCount) {
+  const validSource = (file) => file && typeof file === 'object'
+    && typeof file.path === 'string' && typeof file.hash === 'string'
+    && Number.isInteger(file.executable) && Number.isFinite(file.mtimeMs);
+  const validSymlink = (link) => link && typeof link === 'object'
+    && typeof link.path === 'string' && typeof link.target === 'string';
+  return snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
+    && snapshot.version === 2
+    && Array.isArray(snapshot.sources) && snapshot.sources.length === rootCount
+    && snapshot.sources.every((files) => Array.isArray(files) && files.every(validSource))
+    && Array.isArray(snapshot.symlinks) && snapshot.symlinks.length === rootCount
+    && snapshot.symlinks.every((links) => Array.isArray(links) && links.every(validSymlink));
+}
+
 export function restoreSourceTimes(roots, source) {
-  if (!existsSync(source)) return 0;
-  const snapshot = JSON.parse(readFileSync(source, 'utf8'));
-  if (snapshot.version !== 2 || snapshot.sources?.length !== roots.length
-    || snapshot.symlinks?.length !== roots.length) return 0;
+  // Date.now() can precede a freshly written file on filesystems retaining
+  // submillisecond timestamps. Use the high-resolution epoch clock and advance
+  // by one microsecond only when the input is already newer.
+  const wallClockMs = performance.timeOrigin + performance.now();
+  if (!existsSync(source)) {
+    refreshSourceTimes(roots, wallClockMs);
+    return 0;
+  }
+  let snapshot;
+  try {
+    snapshot = JSON.parse(readFileSync(source, 'utf8'));
+  } catch {
+    refreshSourceTimes(roots, wallClockMs);
+    return 0;
+  }
+  if (!validSnapshot(snapshot, roots.length)) {
+    refreshSourceTimes(roots, wallClockMs);
+    return 0;
+  }
   let restored = 0;
   roots.forEach((root, index) => {
     const files = sourceFiles(root);
     // Cargo follows symlinks when checking dependency mtimes. Restoring a new
     // target's old timestamp could otherwise hide changed include_str! bytes.
-    if (JSON.stringify(sourceSymlinks(root, files)) !== JSON.stringify(snapshot.symlinks[index])) return;
+    if (JSON.stringify(sourceSymlinks(root, files)) !== JSON.stringify(snapshot.symlinks[index])) {
+      for (const file of files) {
+        const absolute = regularSource(root, file);
+        if (!absolute) continue;
+        const stat = statSync(absolute);
+        utimesSync(absolute, stat.atime, refreshedTimestamp(stat, wallClockMs));
+      }
+      return;
+    }
     const tracked = new Set(files);
-    for (const file of snapshot.sources[index]) {
-      if (!tracked.has(file.path) || !Number.isFinite(file.mtimeMs)) continue;
-      const absolute = regularSource(root, file.path);
-      if (!absolute || contentHash(absolute) !== file.hash) continue;
+    const previous = new Map(snapshot.sources[index].map((file) => [file.path, file]));
+    for (const relative of tracked) {
+      const file = previous.get(relative);
+      const absolute = regularSource(root, relative);
+      if (!absolute) continue;
       const stat = statSync(absolute);
-      if ((stat.mode & 0o111) !== file.executable) continue;
+      if (!file || !Number.isFinite(file.mtimeMs)
+        || contentHash(absolute) !== file.hash || (stat.mode & 0o111) !== file.executable) {
+        // A fallback target archive can be newer than a fresh checkout. Make
+        // changed and newly tracked inputs newer than the restored artifacts
+        // so Cargo cannot accept stale fingerprints before rustc runs.
+        utimesSync(absolute, stat.atime, refreshedTimestamp(stat, wallClockMs));
+        continue;
+      }
       utimesSync(absolute, stat.atime, file.mtimeMs / 1000);
       restored += 1;
     }
