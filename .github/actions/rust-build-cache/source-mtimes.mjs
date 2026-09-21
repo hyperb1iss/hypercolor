@@ -52,18 +52,35 @@ export function restoreSourceTimes(roots, source) {
   if (snapshot.version !== 2 || snapshot.sources?.length !== roots.length
     || snapshot.symlinks?.length !== roots.length) return 0;
   let restored = 0;
+  const refreshedAt = new Date();
   roots.forEach((root, index) => {
     const files = sourceFiles(root);
     // Cargo follows symlinks when checking dependency mtimes. Restoring a new
     // target's old timestamp could otherwise hide changed include_str! bytes.
-    if (JSON.stringify(sourceSymlinks(root, files)) !== JSON.stringify(snapshot.symlinks[index])) return;
+    if (JSON.stringify(sourceSymlinks(root, files)) !== JSON.stringify(snapshot.symlinks[index])) {
+      for (const file of files) {
+        const absolute = regularSource(root, file);
+        if (!absolute) continue;
+        const stat = statSync(absolute);
+        utimesSync(absolute, stat.atime, refreshedAt);
+      }
+      return;
+    }
     const tracked = new Set(files);
-    for (const file of snapshot.sources[index]) {
-      if (!tracked.has(file.path) || !Number.isFinite(file.mtimeMs)) continue;
-      const absolute = regularSource(root, file.path);
-      if (!absolute || contentHash(absolute) !== file.hash) continue;
+    const previous = new Map(snapshot.sources[index].map((file) => [file.path, file]));
+    for (const relative of tracked) {
+      const file = previous.get(relative);
+      const absolute = regularSource(root, relative);
+      if (!absolute) continue;
       const stat = statSync(absolute);
-      if ((stat.mode & 0o111) !== file.executable) continue;
+      if (!file || !Number.isFinite(file.mtimeMs)
+        || contentHash(absolute) !== file.hash || (stat.mode & 0o111) !== file.executable) {
+        // A fallback target archive can be newer than a fresh checkout. Make
+        // changed and newly tracked inputs newer than the restored artifacts
+        // so Cargo cannot accept stale fingerprints before rustc runs.
+        utimesSync(absolute, stat.atime, refreshedAt);
+        continue;
+      }
       utimesSync(absolute, stat.atime, file.mtimeMs / 1000);
       restored += 1;
     }
