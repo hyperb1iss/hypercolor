@@ -254,6 +254,10 @@ for (const unavailable of ['missing', 'invalid']) {
       result = build(root);
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stderr, /Compiling freshness_fixture/);
+      result = build(root);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /Fresh freshness_fixture/);
+      assert.doesNotMatch(result.stderr, /Compiling freshness_fixture/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
