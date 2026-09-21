@@ -63,7 +63,7 @@ test('content-qualified timestamps retain Cargo freshness but edits and removals
 
     const changed = path.join(root, 'src/value.rs');
     writeFileSync(changed, 'pub const VALUE: u32 = 2;\n');
-    const submillisecondFuture = Date.now() / 1000 + 0.9999;
+    const submillisecondFuture = Date.now() / 1000 + 0.0009999;
     utimesSync(changed, submillisecondFuture, submillisecondFuture);
     const changedTime = statSync(changed).mtimeMs;
     assert.equal(restoreSourceTimes([root], snapshot), 2);
