@@ -860,7 +860,7 @@ pub fn NetworkSection(
             <SectionHeader title="Network" icon=LuGlobe />
             <SettingSegmented
                 label="Access Mode"
-                description="How the daemon API is exposed"
+                description="How the Hypercolor API is exposed"
                 key="network.access_mode"
                 value=access_mode
                 options=access_mode_options
@@ -880,7 +880,7 @@ pub fn NetworkSection(
             <Show when=move || access_mode.get() == "custom">
             <SettingSegmented
                 label="Listen Scope"
-                description="Who can reach the daemon API"
+                description="Who can reach the Hypercolor API"
                 key="daemon.listen_scope"
                 policy_key="daemon.listen_address"
                 value=listen_scope
@@ -929,7 +929,7 @@ pub fn NetworkSection(
             </Show>
             <SettingToggle
                 label="Open Browser on Start"
-                description="Automatically open the web UI when the daemon starts"
+                description="Automatically open the web UI when Hypercolor starts"
                 key="web.open_browser"
                 value=open_browser
                 on_change=on_change
@@ -1094,7 +1094,7 @@ pub fn RenderingSection(
             />
             <SettingDropdown
                 label="Effect Error Fallback"
-                description="What the daemon should do after an effect render failure. Clear failed zones replaces dark or crashed assignments with empty scene slots."
+                description="What Hypercolor should do after an effect render failure. Clear failed zones replaces dark or crashed assignments with empty scene slots."
                 key="effect_engine.effect_error_fallback"
                 value=effect_error_fallback
                 options=Signal::stored(fallback_options)

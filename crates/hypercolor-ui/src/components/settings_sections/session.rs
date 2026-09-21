@@ -416,7 +416,7 @@ fn macos_owner_choice(identity: &ServiceIdentity) -> Option<MacosDaemonOwnerChoi
 fn humanize_identity(identity: &ServiceIdentity) -> String {
     match (identity.run_mode, identity.manager) {
         (DaemonRunMode::SupervisedChild, _) => "Hypercolor.app".to_owned(),
-        (DaemonRunMode::Standalone, _) => "a terminal-launched daemon".to_owned(),
+        (DaemonRunMode::Standalone, _) => "Hypercolor running from a terminal".to_owned(),
         (_, Some(ServiceManager::Launchd)) => "launchd service".to_owned(),
         (_, Some(ServiceManager::Homebrew)) => "Homebrew service".to_owned(),
         (_, Some(ServiceManager::Systemd)) => "systemd service".to_owned(),
@@ -431,7 +431,7 @@ const fn owner_choice_label(owner: MacosDaemonOwnerChoice) -> &'static str {
         MacosDaemonOwnerChoice::AppSidecar => "Use Hypercolor.app",
         MacosDaemonOwnerChoice::DirectLaunchd => "Use launchd service",
         MacosDaemonOwnerChoice::Homebrew => "Use Homebrew service",
-        MacosDaemonOwnerChoice::Standalone => "Use the terminal daemon",
+        MacosDaemonOwnerChoice::Standalone => "Use Hypercolor from the terminal",
     }
 }
 
@@ -461,10 +461,10 @@ fn macos_owner_outcome_message(outcome: &MacosOwnerCoordinatorOutcome) -> String
 fn owner_remedy_label(remedy: &MacosOwnerRemedy) -> String {
     match remedy {
         MacosOwnerRemedy::StopStandaloneOwner { pid } => {
-            format!("Quit the terminal-launched daemon (process {pid}), then try again.")
+            format!("Quit Hypercolor running from the terminal (process {pid}), then try again.")
         }
         MacosOwnerRemedy::RestartStandalone { pid } => {
-            format!("Restart the terminal-launched daemon (process {pid}), then try again.")
+            format!("Restart Hypercolor running from the terminal (process {pid}), then try again.")
         }
         MacosOwnerRemedy::StartAppSidecar => "Start Hypercolor.app.".to_owned(),
         MacosOwnerRemedy::StartLaunchdService => "Start the launchd service.".to_owned(),
@@ -489,7 +489,7 @@ fn humanize_owner(owner: &str) -> String {
         "app_sidecar" => "Hypercolor.app".to_owned(),
         "launchd_service" | "direct_launchd" => "launchd service".to_owned(),
         "homebrew_service" | "homebrew" => "Homebrew service".to_owned(),
-        "standalone" => "a terminal-launched daemon".to_owned(),
+        "standalone" => "Hypercolor running from a terminal".to_owned(),
         value => {
             let mut value = value.replace('_', " ");
             if let Some(first) = value.get_mut(0..1) {
@@ -740,10 +740,13 @@ mod tests {
             recovery_required: None,
         };
 
-        assert_eq!(humanize_owner("standalone"), "a terminal-launched daemon");
+        assert_eq!(
+            humanize_owner("standalone"),
+            "Hypercolor running from a terminal"
+        );
         assert_eq!(
             humanize_identity(&ServiceIdentity::STANDALONE),
-            "a terminal-launched daemon"
+            "Hypercolor running from a terminal"
         );
         assert_eq!(
             macos_owner_choices(&status),
