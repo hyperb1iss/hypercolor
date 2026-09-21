@@ -4,6 +4,7 @@ import {
   existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, statSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 function sourceFiles(root) {
@@ -46,40 +47,40 @@ export function captureSourceTimes(roots, destination) {
   return sources.reduce((total, files) => total + files.length, 0);
 }
 
-function refreshedTimestamp(current, wallClockFloor) {
-  return Math.max(wallClockFloor, Math.ceil(current.mtimeMs / 1000) + 1);
+function refreshedTimestamp(current, wallClockMs) {
+  return Math.max(wallClockMs, current.mtimeMs + 0.001) / 1000;
 }
 
-function refreshSourceTimes(roots, wallClockFloor) {
+function refreshSourceTimes(roots, wallClockMs) {
   for (const root of roots) {
     for (const relative of sourceFiles(root)) {
       const absolute = regularSource(root, relative);
       if (!absolute) continue;
       const stat = statSync(absolute);
-      utimesSync(absolute, stat.atime, refreshedTimestamp(stat, wallClockFloor));
+      utimesSync(absolute, stat.atime, refreshedTimestamp(stat, wallClockMs));
     }
   }
 }
 
 export function restoreSourceTimes(roots, source) {
-  // Use a whole second beyond the current wall clock and the input's existing
-  // mtime. Date's millisecond precision can otherwise move a freshly written
-  // file backward on filesystems that retain submillisecond timestamps.
-  const wallClockFloor = Math.ceil(Date.now() / 1000) + 1;
+  // Date.now() can precede a freshly written file on filesystems retaining
+  // submillisecond timestamps. Use the high-resolution epoch clock and advance
+  // by one microsecond only when the input is already newer.
+  const wallClockMs = performance.timeOrigin + performance.now();
   if (!existsSync(source)) {
-    refreshSourceTimes(roots, wallClockFloor);
+    refreshSourceTimes(roots, wallClockMs);
     return 0;
   }
   let snapshot;
   try {
     snapshot = JSON.parse(readFileSync(source, 'utf8'));
   } catch {
-    refreshSourceTimes(roots, wallClockFloor);
+    refreshSourceTimes(roots, wallClockMs);
     return 0;
   }
   if (snapshot.version !== 2 || snapshot.sources?.length !== roots.length
     || snapshot.symlinks?.length !== roots.length) {
-    refreshSourceTimes(roots, wallClockFloor);
+    refreshSourceTimes(roots, wallClockMs);
     return 0;
   }
   let restored = 0;
@@ -92,7 +93,7 @@ export function restoreSourceTimes(roots, source) {
         const absolute = regularSource(root, file);
         if (!absolute) continue;
         const stat = statSync(absolute);
-        utimesSync(absolute, stat.atime, refreshedTimestamp(stat, wallClockFloor));
+        utimesSync(absolute, stat.atime, refreshedTimestamp(stat, wallClockMs));
       }
       return;
     }
@@ -108,7 +109,7 @@ export function restoreSourceTimes(roots, source) {
         // A fallback target archive can be newer than a fresh checkout. Make
         // changed and newly tracked inputs newer than the restored artifacts
         // so Cargo cannot accept stale fingerprints before rustc runs.
-        utimesSync(absolute, stat.atime, refreshedTimestamp(stat, wallClockFloor));
+        utimesSync(absolute, stat.atime, refreshedTimestamp(stat, wallClockMs));
         continue;
       }
       utimesSync(absolute, stat.atime, file.mtimeMs / 1000);
