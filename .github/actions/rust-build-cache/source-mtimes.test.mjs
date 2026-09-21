@@ -233,7 +233,12 @@ test('new files and executable mode changes receive fresh timestamps', () => {
   }
 });
 
-for (const unavailable of ['missing', 'invalid']) {
+for (const [unavailable, contents] of [
+  ['missing', undefined],
+  ['malformed JSON', '{'],
+  ['null', 'null'],
+  ['malformed source entry', JSON.stringify({ version: 2, sources: [[null]], symlinks: [[]] })],
+]) {
   test(`${unavailable} timestamp metadata invalidates restored Cargo artifacts`, () => {
     const root = mkdtempSync(path.join(tmpdir(), 'hypercolor-missing-source-times-'));
     try {
@@ -241,7 +246,7 @@ for (const unavailable of ['missing', 'invalid']) {
       let result = build(root);
       assert.equal(result.status, 0, result.stderr);
       const snapshot = path.join(root, 'source-times.json');
-      if (unavailable === 'invalid') writeFileSync(snapshot, '{');
+      if (contents !== undefined) writeFileSync(snapshot, contents);
       const source = path.join(root, 'src/value.rs');
       utimesSync(source, 1000, 1000);
 

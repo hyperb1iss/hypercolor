@@ -62,6 +62,20 @@ function refreshSourceTimes(roots, wallClockMs) {
   }
 }
 
+function validSnapshot(snapshot, rootCount) {
+  const validSource = (file) => file && typeof file === 'object'
+    && typeof file.path === 'string' && typeof file.hash === 'string'
+    && Number.isInteger(file.executable) && Number.isFinite(file.mtimeMs);
+  const validSymlink = (link) => link && typeof link === 'object'
+    && typeof link.path === 'string' && typeof link.target === 'string';
+  return snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)
+    && snapshot.version === 2
+    && Array.isArray(snapshot.sources) && snapshot.sources.length === rootCount
+    && snapshot.sources.every((files) => Array.isArray(files) && files.every(validSource))
+    && Array.isArray(snapshot.symlinks) && snapshot.symlinks.length === rootCount
+    && snapshot.symlinks.every((links) => Array.isArray(links) && links.every(validSymlink));
+}
+
 export function restoreSourceTimes(roots, source) {
   // Date.now() can precede a freshly written file on filesystems retaining
   // submillisecond timestamps. Use the high-resolution epoch clock and advance
@@ -78,8 +92,7 @@ export function restoreSourceTimes(roots, source) {
     refreshSourceTimes(roots, wallClockMs);
     return 0;
   }
-  if (snapshot.version !== 2 || snapshot.sources?.length !== roots.length
-    || snapshot.symlinks?.length !== roots.length) {
+  if (!validSnapshot(snapshot, roots.length)) {
     refreshSourceTimes(roots, wallClockMs);
     return 0;
   }
