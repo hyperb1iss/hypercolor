@@ -43,6 +43,11 @@ def main() -> int:
     parser.add_argument("--version", required=True, help="qualification release version")
     parser.add_argument("--out", type=Path, required=True, help="output .tar.gz")
     parser.add_argument(
+        "--companions",
+        type=Path,
+        help="companion unit templates to ship ({\"units\": [{unit, source, enable}]})",
+    )
+    parser.add_argument(
         "--stores",
         type=Path,
         default=Path(__file__).resolve().parents[3] / "packaging/managed/durable-stores.json",
@@ -56,6 +61,16 @@ def main() -> int:
         "bin/hypercolor": args.cli.read_bytes(),
         "bin/hypercolor-daemon": args.daemon.read_bytes(),
     }
+    # Companion templates ship under share/hypercolor/systemd/, as
+    # scripts/dist.sh --companion-units lays them out.
+    additions = {}
+    companions = []
+    if args.companions is not None:
+        spec = json.loads(args.companions.read_text())
+        for unit in spec["units"]:
+            path = f"share/hypercolor/systemd/{unit['unit']}.in"
+            additions[path] = (args.companions.parent / unit["source"]).read_bytes()
+            companions.append({"unit": unit["unit"], "template": path, "enable": unit["enable"]})
 
     with tarfile.open(args.base, "r:gz") as base:
         members = base.getmembers()
@@ -77,6 +92,16 @@ def main() -> int:
         missing = set(replacements) - seen
         if missing:
             raise SystemExit(f"base manifest lacks {sorted(missing)}")
+        if additions:
+            manifest["members"].append(
+                {"path": "share/hypercolor/systemd", "type": "directory", "mode": 0o755}
+            )
+            for path, data in additions.items():
+                manifest["members"].append(
+                    {"path": path, "type": "file", "mode": 0o644, "size": len(data),
+                     "sha256": digest(data)}
+                )
+            manifest["members"].sort(key=lambda member: member["path"])
         if "managed_package" not in manifest:
             manifest["managed_package"] = {
                 "schema_version": 1,
@@ -90,6 +115,8 @@ def main() -> int:
                 },
                 "compatibility": json.loads(args.stores.read_text()),
             }
+        if companions:
+            manifest["managed_package"]["companion_units"] = companions
         manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
 
         new_root = f"hypercolor-{args.version}-linux-amd64"
@@ -117,6 +144,16 @@ def main() -> int:
                     data = base.extractfile(member).read()
                 info.size = len(data)
                 out.addfile(info, io.BytesIO(data))
+            if additions:
+                directory = tarfile.TarInfo(f"{new_root}/share/hypercolor/systemd")
+                directory.type = tarfile.DIRTYPE
+                directory.mode = 0o755
+                out.addfile(directory)
+                for path, data in additions.items():
+                    info = tarfile.TarInfo(f"{new_root}/{path}")
+                    info.mode = 0o644
+                    info.size = len(data)
+                    out.addfile(info, io.BytesIO(data))
         partial.replace(args.out)
 
     manifest_sha256 = digest(manifest_bytes)

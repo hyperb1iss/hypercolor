@@ -88,8 +88,9 @@ members: `bin/hypercolor` becomes the CLI under test,
 A base release from before the managed package contract also gains the
 `managed_package` block `scripts/dist.sh` writes, with the store inventory
 in `packaging/managed/durable-stores.json`, since the installer refuses a
-Linux candidate without one. Everything else is the published release byte
-for byte. Three versions are
+Linux candidate without one. A fourth release, `<base>-qual.4`, also ships
+the companion unit template in `companions/`. Everything else is the
+published release byte for byte. Three versions are
 built (`<base>-qual.1` to `.3`), so each is a distinct unit. The guest
 mounts them read-only at `/releases` and the driver extracts and runs each
 release's own `bin/hypercolor`, as `install.sh` does.
@@ -159,6 +160,7 @@ kernel; page-cache loss needs a virtual machine.
 | `hardened-unit` | Fresh install with write probes, then an upgrade | The unit starts the launcher with its sandbox; the daemon, its UI and effects come from one release (`/proc` agrees); it can write exactly config, data, daemon state, coordinator, cache and a private `/tmp` |
 | `config-reset` | The configuration directory is deleted while the service is stopped, then the service starts | The unit's prepare-roots step recreates it 0700 before the sandbox, and the daemon answers `/health` |
 | `launcher-swap` | `active` flips between two releases continuously while the service restarts 24 times | Every start runs one whole release, and both are selected |
+| `companion-units` | A release with a companion template installs; its unit is started with nothing pending, then over an interrupted install; then an ordinary upgrade | The unit is rendered with the recorded paths and enabled; the user manager runs recovery through the launcher, which rolls back with the prior's CLI; the upgrade leaves the unit byte for byte |
 | `recovery-role` | Installer killed during a wrong candidate's proof; recovery run through the launcher's update-executor role | The prior release's CLI recovers and rolls back; a second run finds nothing to recover |
 
 Every scenario whose rollback restarts the prior also checks the

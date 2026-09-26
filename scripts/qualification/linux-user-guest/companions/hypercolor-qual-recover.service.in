@@ -1,0 +1,11 @@
+[Unit]
+Description=Hypercolor qualification recovery, rendered from a companion template
+
+[Service]
+Type=oneshot
+ExecStart=@LAUNCHER@ --role update-executor -- __recover-release --probation-seconds 0
+UnsetEnvironment=DBUS_SESSION_BUS_ADDRESS
+Environment=HYPERCOLOR_QUAL_RELEASE_ROOT=@RELEASE_ROOT@
+
+[Install]
+WantedBy=default.target

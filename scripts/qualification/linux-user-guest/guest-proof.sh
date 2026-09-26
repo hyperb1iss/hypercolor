@@ -22,6 +22,8 @@ GUEST_UNITS="${GUEST_HOME}/.local/share/hypercolor/releases/units"
 V_A="${BASE_VERSION}-qual.1"
 V_B="${BASE_VERSION}-qual.2"
 V_C="${BASE_VERSION}-qual.3"
+# V_D ships a companion unit template (companions/).
+V_D="${BASE_VERSION}-qual.4"
 
 GUEST=""
 RECEIPT=""
@@ -130,23 +132,27 @@ build() {
     local inputs
     inputs="$(cat "${WORK}/bin/hypercolor" "${WORK}/bin/hc-qual-daemon" \
         "${HARNESS_DIR}/make_release.py" "${REPO_ROOT}/packaging/managed/durable-stores.json" \
-        "${WORK}/downloads/${tarball}" | sha256sum | cut -c1-64)"
+        "${HARNESS_DIR}/companions/"* "${WORK}/downloads/${tarball}" | sha256sum | cut -c1-64)"
     if [[ "$(cat "${WORK}/releases/inputs" 2>/dev/null)" != "${inputs}" ]]; then
         rm -f "${WORK}/releases/"*
         local version
-        for version in "${V_A}" "${V_B}" "${V_C}"; do
+        for version in "${V_A}" "${V_B}" "${V_C}" "${V_D}"; do
             log "packing qualification release ${version}"
+            local companions=()
+            if [[ "${version}" == "${V_D}" ]]; then
+                companions=(--companions "${HARNESS_DIR}/companions/companions.json")
+            fi
             python3 "${HARNESS_DIR}/make_release.py" \
                 --base "${WORK}/downloads/${tarball}" \
                 --cli "${WORK}/bin/hypercolor" \
                 --daemon "${WORK}/bin/hc-qual-daemon" \
-                --version "${version}" \
+                --version "${version}" "${companions[@]}" \
                 --out "${WORK}/releases/hypercolor-${version}-linux-amd64.tar.gz" >/dev/null
         done
         printf '%s\n' "${inputs}" >"${WORK}/releases/inputs"
     fi
     local version
-    for version in "${V_A}" "${V_B}" "${V_C}"; do
+    for version in "${V_A}" "${V_B}" "${V_C}" "${V_D}"; do
         log "release ${version} unit $(unit_of "${version}")"
     done
 }
@@ -517,8 +523,9 @@ run_one() {
             "$(git -C "${REPO_ROOT}" diff --quiet HEAD -- || printf ' (dirty)')"
         printf 'cli_sha256: %s\n' "$(sha256sum "${WORK}/bin/hypercolor" | cut -c1-64)"
         printf 'guest_image: %s %s\n' "$(guest_image)" "$(podman image inspect "$(guest_image)" --format '{{.Id}}')"
-        printf 'releases: %s=%s %s=%s %s=%s\n' "${V_A}" "$(unit_of "${V_A}")" \
-            "${V_B}" "$(unit_of "${V_B}")" "${V_C}" "$(unit_of "${V_C}")"
+        printf 'releases: %s=%s %s=%s %s=%s %s=%s\n' "${V_A}" "$(unit_of "${V_A}")" \
+            "${V_B}" "$(unit_of "${V_B}")" "${V_C}" "$(unit_of "${V_C}")" \
+            "${V_D}" "$(unit_of "${V_D}")"
     } >"${RECEIPT}/receipt.txt"
     log "scenario ${name}"
     local status

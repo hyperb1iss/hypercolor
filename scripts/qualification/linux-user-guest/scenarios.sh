@@ -476,3 +476,58 @@ scenario_recovery_role() {
     expect_output "update-executor from release ${unit_a}"
     expect_output "No unsettled install to recover."
 }
+
+# A release that ships a companion unit template gets it rendered with the
+# installation's paths and enabled once its install commits. Started by the
+# user manager, the unit runs recovery through the launcher's
+# update-executor role, and an ordinary install never changes it.
+scenario_companion_units() {
+    install_run fresh "${V_D}" -- --probation-seconds 0
+    expect_exit 0
+    expect_journal committed
+    expect_active "${V_D}"
+    local unit="${GUEST_HOME}/.config/systemd/user/hypercolor-qual-recover.service"
+    local launcher="${GUEST_RELEASES}/launcher/hypercolor"
+    gx cat "${unit}" >"${RECEIPT}/companion.service" || fail "the companion unit was not installed"
+    grep -qxF "ExecStart=${launcher} __launch --role update-executor -- __recover-release --probation-seconds 0" \
+        "${RECEIPT}/companion.service" || fail "the companion unit was not rendered"
+    grep -qxF "Environment=HYPERCOLOR_QUAL_RELEASE_ROOT=${GUEST_RELEASES}" "${RECEIPT}/companion.service" ||
+        fail "the release root placeholder was not rendered"
+    [[ "$(gx systemctl --user is-enabled hypercolor-qual-recover.service)" == enabled ]] ||
+        fail "the companion unit is not enabled"
+    log "  ok: the companion unit is rendered and enabled"
+    local before
+    before="$(gx sha256sum "${unit}" | cut -d' ' -f1)"
+
+    log "starting the companion unit with nothing to recover"
+    gx systemctl --user start hypercolor-qual-recover.service
+    gx journalctl --user -u hypercolor-qual-recover.service --no-pager -o cat \
+        >"${RECEIPT}/companion-journal-idle.txt" 2>&1 || true
+    grep -qF "No unsettled install to recover." "${RECEIPT}/companion-journal-idle.txt" ||
+        fail "the companion unit did not run recovery"
+    log "  ok: the unit ran recovery through the launcher"
+
+    set_faults "${V_B}" health_delay_ms=3000 report_version=0.0.0-wrong
+    install_run interrupted "${V_B}" --kill-at prove_candidate --with-receipt --delay-ms 500 -- --probation-seconds 0
+    expect_acted kill_installer
+    expect_journal forward
+    log "starting the companion unit over the unsettled install"
+    gx systemctl --user start hypercolor-qual-recover.service
+    gx journalctl --user -u hypercolor-qual-recover.service --no-pager -o cat \
+        >"${RECEIPT}/companion-journal-recovery.txt" 2>&1 || true
+    grep -qF "update-executor from release $(unit_of "${V_D}"), the prior of the unsettled install" \
+        "${RECEIPT}/companion-journal-recovery.txt" || fail "the unit did not run the prior's CLI"
+    grep -qF "Recovered: rolled back" "${RECEIPT}/companion-journal-recovery.txt" ||
+        fail "the unit did not roll the candidate back"
+    expect_journal rolled_back
+    expect_active "${V_D}"
+    expect_health "${V_D}"
+    log "  ok: the user manager ran the prior's recovery through the companion unit"
+
+    install_run upgrade "${V_C}" -- --probation-seconds 0
+    expect_exit 0
+    expect_active "${V_C}"
+    [[ "$(gx sha256sum "${unit}" | cut -d' ' -f1)" == "${before}" ]] ||
+        fail "an ordinary install changed the companion unit"
+    log "  ok: an ordinary install leaves the companion unit exactly as rendered"
+}
