@@ -1,11 +1,14 @@
 //! `hypercolor __launch --role <role> [-- <arguments>...]`: the stable
 //! launcher a managed Linux installation's units start.
 //!
-//! The installer copies this CLI to `<release root>/launcher/hypercolor` once
-//! and never rewrites it. Each launch asks the install library which release
-//! to run and every path it will use, all beneath that one release, then
-//! replaces this process with it, so systemd's main process becomes the
-//! selected program and a later `active` swap cannot mix releases.
+//! The installer copies this CLI to `<release root>/launcher/hypercolor`, and
+//! once an install settles with the service starting through it, never
+//! rewrites it. Each launch asks the install library which release to run
+//! and every path it will use, all beneath that one release, then replaces
+//! this process with it, so systemd's main process becomes the selected
+//! program and a later `active` swap cannot mix releases. The
+//! `prepare-roots` role runs nothing: the service runs it unsandboxed first,
+//! to create any recorded root a user deleted.
 
 use std::ffi::OsString;
 
@@ -18,8 +21,8 @@ pub(crate) struct LaunchInvocation {
     pub(crate) arguments: Vec<OsString>,
 }
 
-const USAGE: &str =
-    "usage: hypercolor __launch --role <daemon|cli|update-executor> [-- <arguments>...]";
+const USAGE: &str = "usage: hypercolor __launch --role \
+                     <daemon|cli|update-executor|prepare-roots> [-- <arguments>...]";
 
 /// Parse `argv` when it asks for `__launch`, or return `None`.
 ///
@@ -76,12 +79,24 @@ pub(crate) fn execute(invocation: LaunchInvocation) -> ! {
             format!("cannot resolve the launcher itself: {error}"),
         ),
     };
-    let plan = match crate::install::plan_linux_launch(&crate::install::LinuxLaunchRequest {
+    let request = crate::install::LinuxLaunchRequest {
         home: &home,
         role: invocation.role,
         arguments: invocation.arguments,
         launcher: &launcher,
-    }) {
+    };
+    if invocation.role == LinuxLaunchRole::PrepareRoots {
+        match crate::install::prepare_linux_launch_roots(&request) {
+            Ok(created) => {
+                for root in created {
+                    eprintln!("hypercolor launcher: created {}", root.display());
+                }
+                std::process::exit(0)
+            }
+            Err(error) => fail(EX_CONFIG, error.to_string()),
+        }
+    }
+    let plan = match crate::install::plan_linux_launch(&request) {
         Ok(plan) => plan,
         Err(error) => fail(EX_CONFIG, error.to_string()),
     };
@@ -94,6 +109,9 @@ pub(crate) fn execute(invocation: LaunchInvocation) -> ! {
                 crate::install::LinuxLaunchSelection::Active => "",
                 crate::install::LinuxLaunchSelection::PendingTransactionPrior => {
                     ", the prior of the unsettled install"
+                }
+                crate::install::LinuxLaunchSelection::ActiveWithoutRunnablePrior => {
+                    ", since the unsettled install has no prior that can run this role"
                 }
             }
         );
@@ -165,6 +183,13 @@ mod tests {
                 arguments: ["update", "activator", "recover"]
                     .map(OsString::from)
                     .to_vec(),
+            }))
+        );
+        assert_eq!(
+            parse(&["hypercolor", "__launch", "--role", "prepare-roots"]),
+            Some(Ok(LaunchInvocation {
+                role: LinuxLaunchRole::PrepareRoots,
+                arguments: Vec::new(),
             }))
         );
         assert_eq!(

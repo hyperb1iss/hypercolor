@@ -76,6 +76,13 @@ pub enum InstallLocationError {
     #[error("installation roots overlap protected or legacy installation state")]
     OverlappingRoots,
     #[error(
+        "installation root {} cannot be sandboxed: configuration and data roots must be \
+         <base>/hypercolor, the update state root <base>/hypercolor/update, and none may \
+         hold your home, ~/.local/bin or ~/.local/lib",
+        .0.display()
+    )]
+    UnsandboxableRoot(PathBuf),
+    #[error(
         "installation path {path} is longer than {limit} bytes, the most a transaction record can carry",
         path = .path.display()
     )]
@@ -242,6 +249,44 @@ impl LinuxInstallLocation {
             || self.data_root.starts_with(&self.state_root)
         {
             return Err(InstallLocationError::OverlappingRoots);
+        }
+        self.validate_sandbox(home)
+    }
+
+    /// The generated service makes the configuration, data and daemon
+    /// state roots writable and the launcher hands their bases to the
+    /// daemon as XDG directories, so each must be a `hypercolor` directory
+    /// that grants nothing else: never the home directory or an ancestor,
+    /// and never a directory holding or inside `~/.local/bin` or
+    /// `~/.local/lib`.
+    fn validate_sandbox(&self, home: &Path) -> Result<(), InstallLocationError> {
+        let named = |root: &Path, suffix: &[&str]| {
+            let mut components = root.components().rev();
+            suffix.iter().rev().all(|expected| {
+                components
+                    .next()
+                    .is_some_and(|component| component.as_os_str() == *expected)
+            })
+        };
+        if !named(&self.config_root, &["hypercolor"])
+            || !named(&self.data_root, &["hypercolor"])
+            || !named(&self.state_root, &["hypercolor", "update"])
+        {
+            let root = [&self.config_root, &self.data_root]
+                .into_iter()
+                .find(|root| !named(root, &["hypercolor"]))
+                .unwrap_or(&self.state_root);
+            return Err(InstallLocationError::UnsandboxableRoot(root.clone()));
+        }
+        let protected = [home.join(".local/bin"), home.join(".local/lib")];
+        for root in [
+            self.config_root.as_path(),
+            self.data_root.as_path(),
+            self.daemon_state_root(),
+        ] {
+            if home.starts_with(root) || protected.iter().any(|path| overlaps(root, path)) {
+                return Err(InstallLocationError::UnsandboxableRoot(root.to_path_buf()));
+            }
         }
         Ok(())
     }

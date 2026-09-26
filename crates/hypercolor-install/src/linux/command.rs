@@ -631,15 +631,18 @@ fn platform<H: LinuxInstallHost>(
 /// [`InstallCoordinator`] itself (preparing, binding and writing a journal,
 /// then recovering it) gets the same platform the raw installer uses.
 ///
-/// A candidate bound for a managed installation must declare that
-/// installation's launcher contract, and the installation's launcher must
-/// already be published and exact, so a host that skips
-/// [`ensure_linux_launcher`] still cannot start a release the launcher
-/// would not run.
+/// Only the historical root binds without a recorded location; any other
+/// store must pass its location, so its service is always rendered through
+/// the launcher and its sandbox. A candidate bound for a managed
+/// installation must declare that installation's launcher contract, and
+/// the installation's launcher must already be published and exact, so a
+/// host that skips [`ensure_linux_launcher`] still cannot start a release
+/// the launcher would not run.
 ///
 /// # Errors
 /// Refuses units, executors, topology or prior roles that cannot be proven,
-/// and a managed candidate without its contract or launcher.
+/// a managed store bound without its location, and a managed candidate
+/// without its contract or launcher.
 pub fn bind_linux_platform<E: LinuxInstallExecutor>(
     home: &Path,
     executor: impl FnOnce(
@@ -651,6 +654,12 @@ pub fn bind_linux_platform<E: LinuxInstallExecutor>(
     lock: &InstallLock,
     inputs: LinuxPlatformInputs<'_>,
 ) -> Result<LinuxInstallPlatform<E>, LinuxInstallCommandError> {
+    if inputs.managed.is_none() && store.root() != home.join(".local/lib/hypercolor") {
+        return Err(InstallPlatformError::new(
+            "a store outside the historical root must be bound with its recorded location",
+        )
+        .into());
+    }
     if let (Some(candidate), Some(location)) = (inputs.candidate, inputs.managed) {
         require_managed_candidate(candidate, location)?;
         if inspect_linux_launcher(location)?.is_none() {

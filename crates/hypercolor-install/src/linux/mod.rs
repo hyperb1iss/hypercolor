@@ -49,7 +49,7 @@ pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};
 pub use launch::{
     LinuxLaunchError, LinuxLaunchPlan, LinuxLaunchRequest, LinuxLaunchRole, LinuxLaunchSelection,
-    plan_linux_launch,
+    plan_linux_launch, prepare_linux_launch_roots,
 };
 pub use location::{InstallLocationError, LinuxInstallLocation, RetainedLinuxInstallLocation};
 pub use locator::{

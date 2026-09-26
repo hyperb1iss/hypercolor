@@ -36,8 +36,8 @@ use hypercolor_cli::install::{
     PrincipalGroup, PrincipalUser, RestoredRelease, UnitCollection, UnitId, UnitRecord,
     bind_linux_platform, elect_linux_installation_with, ensure_linux_launcher,
     ensure_linux_update_directories, linux_layout_directories, observe_linux_installation,
-    plan_linux_launch, run_linux_install, run_linux_recovery, run_linux_uninstall,
-    stage_release_payload,
+    plan_linux_launch, prepare_linux_launch_roots, run_linux_install, run_linux_recovery,
+    run_linux_uninstall, stage_release_payload,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -4113,6 +4113,40 @@ fn a_library_caller_cannot_bind_a_candidate_the_launcher_would_not_run() {
 }
 
 #[test]
+fn a_managed_store_never_binds_without_its_recorded_location() {
+    let (fixture, _location) = managed_v1();
+    let LinuxInstallElection::Managed { store, lock, .. } =
+        elect_linux_installation_with(&fixture.home, &fixture.private()).expect("election")
+    else {
+        panic!("expected managed authority");
+    };
+    let candidate = fixture.v2.stage(&store, &lock);
+    let world = Rc::clone(&fixture.world);
+    let error = bind_linux_platform(
+        &fixture.home,
+        |_, _, _| {
+            Ok(SimExecutor {
+                world,
+                active_root: None,
+            })
+        },
+        &store,
+        &lock,
+        LinuxPlatformInputs {
+            candidate: Some(&candidate),
+            journal: None,
+            managed: None,
+            original: None,
+            probation: DEFAULT_PROBATION_WINDOW,
+        },
+    )
+    .map(drop)
+    .expect_err("without its location the unit would skip the launcher and sandbox")
+    .to_string();
+    assert!(error.contains("recorded location"), "{error}");
+}
+
+#[test]
 fn the_linux_installer_refuses_a_release_without_a_managed_package_whatever_its_label() {
     let (fixture, location) = managed_v1();
     let root = fixture
@@ -4236,7 +4270,7 @@ fn release_cli(release: &Release) -> Vec<u8> {
 fn sandboxed_unit(location: &LinuxInstallLocation) -> String {
     let path = |path: &Path| path.to_str().expect("UTF-8").to_owned();
     format!(
-        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={launcher} __launch --role daemon\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\nProtectSystem=strict\nProtectHome=read-only\nPrivateTmp=true\nNoNewPrivileges=true\nReadWritePaths={config} {data} {daemon_state} -{state}/coordinator\nReadOnlyPaths={releases} {state}\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStartPre=+{launcher} __launch --role prepare-roots\nExecStart={launcher} __launch --role daemon\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\nProtectSystem=strict\nProtectHome=read-only\nPrivateTmp=true\nNoNewPrivileges=true\nReadWritePaths={config} {data} {daemon_state} -{state}/coordinator\nReadOnlyPaths={releases} {state}\n\n[Install]\nWantedBy=default.target\n",
         launcher = path(&launcher_path(location)),
         config = path(location.config_root()),
         data = path(location.data_root()),
@@ -4435,6 +4469,16 @@ fn a_launcher_lost_to_the_user_is_published_again_and_stale_stages_go() {
         .join(".hypercolor-stage-launcher-1-0");
     fs::create_dir(&stale).expect("stale stage");
     fs::write(stale.join("hypercolor"), b"half").expect("stale program");
+    // A crash after sealing a stage but before publishing it leaves a
+    // read-only stage behind.
+    let sealed = location
+        .release_root()
+        .join(".hypercolor-stage-launcher-2-0");
+    fs::create_dir(&sealed).expect("sealed stage");
+    fs::write(sealed.join("hypercolor"), b"whole").expect("sealed program");
+    fs::set_permissions(sealed.join("hypercolor"), fs::Permissions::from_mode(0o555))
+        .expect("seal program");
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).expect("seal stage");
     fixture.update(&fixture.v2).expect("update republishes");
     fixture.assert_managed(&location, &fixture.v2.id);
     assert_eq!(
@@ -4442,6 +4486,7 @@ fn a_launcher_lost_to_the_user_is_published_again_and_stale_stages_go() {
         release_cli(&fixture.v2)
     );
     assert!(!stale.exists(), "the stale stage is removed");
+    assert!(!sealed.exists(), "the sealed stage is removed");
 }
 
 #[test]
@@ -4682,6 +4727,130 @@ fn the_daemon_role_never_reads_the_journal() {
 }
 
 #[test]
+fn the_update_executor_refuses_a_prior_it_cannot_prove_rather_than_run_the_candidate() {
+    let (fixture, location) = managed_v1();
+    fixture
+        .update(&fixture.v2)
+        .expect("v2 is active, v1 retained");
+    let path = location.state_root().join("install-journal.json");
+    let original = fs::read(&path).expect("journal");
+    let pending = |prior: serde_json::Value| {
+        let mut journal: serde_json::Value =
+            serde_json::from_slice(&original).expect("journal JSON");
+        journal["disposition"] = json!("forward");
+        journal["prior_active_unit"] = prior;
+        fs::write(&path, serde_json::to_vec(&journal).expect("bytes")).expect("pending journal");
+    };
+
+    pending(json!(fixture.v1.id.as_str()));
+    let prior = location
+        .release_root()
+        .join("units")
+        .join(fixture.v1.id.as_str());
+    fs::set_permissions(&prior, fs::Permissions::from_mode(0o755)).expect("drift");
+    let error = plan(&fixture, &location, LinuxLaunchRole::UpdateExecutor)
+        .expect_err("a prior that fails its proof stops recovery");
+    assert!(
+        matches!(&error, LinuxLaunchError::Release { unit, .. } if unit == fixture.v1.id.as_str()),
+        "{error}"
+    );
+    fs::set_permissions(&prior, fs::Permissions::from_mode(0o555)).expect("restore");
+
+    for (prior, why) in [
+        (json!(null), "a first install has no prior"),
+        (
+            json!(format!("legacy-{}", "c".repeat(64))),
+            "an adoption's prior is the historical root",
+        ),
+    ] {
+        pending(prior);
+        let executor = plan(&fixture, &location, LinuxLaunchRole::UpdateExecutor).expect(why);
+        assert_eq!(
+            (executor.unit, executor.selection),
+            (
+                fixture.v2.id.clone(),
+                LinuxLaunchSelection::ActiveWithoutRunnablePrior
+            ),
+            "{why}"
+        );
+    }
+    fs::write(&path, original).expect("restore journal");
+}
+
+#[test]
+fn the_service_recreates_recorded_roots_a_user_deleted_before_its_sandbox() {
+    let (fixture, location) = managed_v1();
+    let prepare = |arguments: Vec<std::ffi::OsString>, launcher: &Path| {
+        prepare_linux_launch_roots(&LinuxLaunchRequest {
+            home: &fixture.home,
+            role: LinuxLaunchRole::PrepareRoots,
+            arguments,
+            launcher,
+        })
+    };
+    let launcher = launcher_path(&location);
+    assert_eq!(
+        prepare(Vec::new(), &launcher).expect("nothing missing"),
+        Vec::<PathBuf>::new()
+    );
+
+    fs::remove_dir_all(location.config_root()).expect("the user resets the configuration");
+    assert_eq!(
+        prepare(Vec::new(), &launcher).expect("prepare"),
+        vec![location.config_root().to_path_buf()]
+    );
+    let metadata = fs::metadata(location.config_root()).expect("recreated");
+    assert!(metadata.is_dir());
+    assert_eq!(metadata.permissions().mode() & 0o7777, 0o700);
+
+    fs::remove_dir_all(location.config_root()).expect("reset again");
+    fs::write(location.config_root(), b"not a directory").expect("a file in its place");
+    assert_eq!(
+        prepare(Vec::new(), &launcher).expect("an existing entry is left alone"),
+        Vec::<PathBuf>::new()
+    );
+    assert_eq!(
+        fs::read(location.config_root()).expect("left alone"),
+        b"not a directory"
+    );
+    fs::remove_file(location.config_root()).expect("remove file");
+    fs::create_dir(location.config_root()).expect("restore");
+
+    assert!(matches!(
+        prepare(vec!["--force".into()], &launcher),
+        Err(LinuxLaunchError::Arguments(_))
+    ));
+    assert!(matches!(
+        prepare(Vec::new(), &fixture.home.join("elsewhere/hypercolor")),
+        Err(LinuxLaunchError::ForeignLauncher { .. })
+    ));
+    assert!(matches!(
+        plan(&fixture, &location, LinuxLaunchRole::PrepareRoots),
+        Err(LinuxLaunchError::Arguments(_))
+    ));
+}
+
+#[test]
+fn an_update_directory_whose_mode_drifted_gets_it_back() {
+    let (fixture, location) = managed_v1();
+    let coordinator = location.state_root().join("coordinator");
+    fs::set_permissions(&coordinator, fs::Permissions::from_mode(0o755))
+        .expect("the daemon widens its directory");
+    fixture
+        .update(&fixture.v2)
+        .expect("the next install proceeds");
+    fixture.assert_managed(&location, &fixture.v2.id);
+    assert_eq!(
+        fs::metadata(&coordinator)
+            .expect("coordinator")
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o700
+    );
+}
+
+#[test]
 fn the_update_executor_runs_only_a_release_that_declares_its_launcher_contract() {
     let (fixture, location) = managed_v1();
     let undeclared = plant_unit(
@@ -4704,7 +4873,10 @@ fn the_update_executor_runs_only_a_release_that_declares_its_launcher_contract()
     let executor = plan(&fixture, &location, LinuxLaunchRole::UpdateExecutor).expect("executor");
     assert_eq!(
         (executor.unit, executor.selection),
-        (fixture.v1.id.clone(), LinuxLaunchSelection::Active),
+        (
+            fixture.v1.id.clone(),
+            LinuxLaunchSelection::ActiveWithoutRunnablePrior
+        ),
         "a prior whose CLI has no executor commands is never run as the executor"
     );
 
@@ -4940,7 +5112,24 @@ fn an_install_from_before_the_launcher_gains_it_and_its_rollback_restores_the_di
     );
     assert!(
         launcher_path(&location).exists(),
-        "the launcher stays for the next install"
+        "the launcher stays until the next install"
+    );
+    drop(world);
+    // No settled service ever started through v2's launcher, so the next
+    // install replaces it with its own candidate's CLI; once that install
+    // settles through it, it is the installation's for good.
+    fixture.update(&fixture.v3).expect("the next install");
+    fixture.assert_managed(&location, &fixture.v3.id);
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        release_cli(&fixture.v3),
+        "a launcher from a rolled-back candidate is replaced"
+    );
+    fixture.update(&fixture.v2).expect("a later install");
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        release_cli(&fixture.v3),
+        "a settled launcher is never replaced"
     );
 }
 

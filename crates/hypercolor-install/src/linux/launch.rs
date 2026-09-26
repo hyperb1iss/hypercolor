@@ -12,10 +12,11 @@
 //! Launcher contract 1 reads only what every release since the contract
 //! keeps: the permanent locator and recorded location, the `active` pointer
 //! grammar, a release's content address (the SHA-256 of its `manifest.json`
-//! is its directory name) and its fixed component paths, its manifest's
-//! `managed_package.launcher_contract`, and the install journal's
-//! `disposition` and `prior_active_unit`. A release that changes any of
-//! these changes the launcher contract.
+//! is its directory name, read up to 2 MiB) and its fixed component paths,
+//! its manifest's `managed_package.launcher_contract`, and the install
+//! journal's `disposition` and `prior_active_unit` (read up to the managed
+//! journal's byte bound). A release that changes any of these, or the role
+//! grammar, changes the launcher contract.
 
 use std::ffi::OsString;
 use std::io::Read as _;
@@ -50,11 +51,20 @@ pub enum LinuxLaunchRole {
     /// release must declare this launcher contract, since only such a CLI
     /// takes the commands a recovery unit runs.
     UpdateExecutor,
+    /// Nothing: create any recorded configuration, data or daemon state
+    /// root that is missing, so systemd can build the service's sandbox
+    /// around it. The service runs this unsandboxed before the daemon.
+    PrepareRoots,
 }
 
 impl LinuxLaunchRole {
     /// Every role, in the spelling the unit files use.
-    pub const ALL: [Self; 3] = [Self::Daemon, Self::Cli, Self::UpdateExecutor];
+    pub const ALL: [Self; 4] = [
+        Self::Daemon,
+        Self::Cli,
+        Self::UpdateExecutor,
+        Self::PrepareRoots,
+    ];
 
     /// The role's spelling after `--role`.
     #[must_use]
@@ -63,6 +73,7 @@ impl LinuxLaunchRole {
             Self::Daemon => "daemon",
             Self::Cli => "cli",
             Self::UpdateExecutor => "update-executor",
+            Self::PrepareRoots => "prepare-roots",
         }
     }
 
@@ -93,6 +104,10 @@ pub enum LinuxLaunchSelection {
     Active,
     /// The release an unsettled transaction would roll back to.
     PendingTransactionPrior,
+    /// The active release, because the unsettled transaction has no prior
+    /// that can run this role: none, a legacy snapshot, or a release that
+    /// declares no launcher contract.
+    ActiveWithoutRunnablePrior,
 }
 
 /// Everything one launch runs, all beneath one release's directory.
@@ -128,6 +143,14 @@ pub enum LinuxLaunchError {
     ActivePointer(String),
     #[error("release {unit} cannot be launched: {detail}")]
     Release { unit: String, detail: String },
+    #[error(
+        "release {unit} declares no launcher contract {contract}, so its CLI has no \
+         update-executor commands",
+        contract = MANAGED_LAUNCHER_CONTRACT
+    )]
+    NoLauncherContract { unit: String },
+    #[error("the recorded root {} could not be created: {detail}", .root.display())]
+    PrepareRoot { root: PathBuf, detail: String },
     #[error("the install journal could not be read: {0}")]
     Journal(String),
     #[error("the recorded roots cannot be passed to the daemon: {0}")]
@@ -150,38 +173,26 @@ pub enum LinuxLaunchError {
 pub fn plan_linux_launch(
     request: &LinuxLaunchRequest<'_>,
 ) -> Result<LinuxLaunchPlan, LinuxLaunchError> {
-    let location = match super::locator::read_hint(request.home) {
-        Ok(LinuxInstallAuthority::Managed(location)) => location,
-        Ok(LinuxInstallAuthority::Legacy(_)) => return Err(LinuxLaunchError::NotManaged),
-        Err(error) => return Err(LinuxLaunchError::Locator(error.to_string())),
-    };
-    let expected = linux_launcher_path(&location);
-    if request.launcher != expected {
-        return Err(LinuxLaunchError::ForeignLauncher {
-            expected,
-            actual: request.launcher.to_path_buf(),
-        });
-    }
+    let location = installation(request)?;
     let passthrough = validate_arguments(request.role, &request.arguments)?;
+    if request.role == LinuxLaunchRole::PrepareRoots {
+        return Err(LinuxLaunchError::Arguments(
+            "the prepare-roots role runs no release".to_owned(),
+        ));
+    }
     let releases = ReadOnlyDirectoryAuthority::open(location.release_root())
         .map_err(|source| LinuxLaunchError::ActivePointer(source.to_string()))?;
     let active = read_active(&releases)?;
     let (unit, selection) = match request.role {
-        LinuxLaunchRole::UpdateExecutor => match pending_prior(&location)? {
-            Some(prior) if prove_release(&releases, &location, &prior, request.role).is_ok() => {
-                (prior, LinuxLaunchSelection::PendingTransactionPrior)
-            }
-            _ => (
-                active.ok_or(LinuxLaunchError::NoActiveRelease)?,
-                LinuxLaunchSelection::Active,
-            ),
-        },
-        LinuxLaunchRole::Daemon | LinuxLaunchRole::Cli => (
+        LinuxLaunchRole::UpdateExecutor => {
+            executor_selection(&releases, &location, pending_prior(&location)?, active)?
+        }
+        LinuxLaunchRole::Daemon | LinuxLaunchRole::Cli | LinuxLaunchRole::PrepareRoots => (
             active.ok_or(LinuxLaunchError::NoActiveRelease)?,
             LinuxLaunchSelection::Active,
         ),
     };
-    if selection == LinuxLaunchSelection::Active {
+    if selection != LinuxLaunchSelection::PendingTransactionPrior {
         prove_release(&releases, &location, &unit, request.role)?;
     }
     let release = location.release_root().join("units").join(unit.as_str());
@@ -202,25 +213,142 @@ pub fn plan_linux_launch(
             unit,
             selection,
         },
-        LinuxLaunchRole::Cli | LinuxLaunchRole::UpdateExecutor => LinuxLaunchPlan {
-            program: release.join("bin").join(CLI_PROGRAM),
-            arguments: passthrough,
-            environment: Vec::new(),
-            unit,
-            selection,
-        },
+        LinuxLaunchRole::Cli | LinuxLaunchRole::UpdateExecutor | LinuxLaunchRole::PrepareRoots => {
+            LinuxLaunchPlan {
+                program: release.join("bin").join(CLI_PROGRAM),
+                arguments: passthrough,
+                environment: Vec::new(),
+                unit,
+                selection,
+            }
+        }
     };
     Ok(plan)
+}
+
+/// Create every recorded configuration, data and daemon state root that
+/// does not exist, and return the ones created.
+///
+/// The generated service lists these roots as its only writable paths, and
+/// systemd refuses to build the sandbox around one that is missing, which
+/// is what resetting the configuration by deleting its directory leaves.
+/// The service therefore runs this role unsandboxed before the daemon. It
+/// reads only the locator, creates each missing root (and any missing
+/// parent) with mode `0700`, and leaves every existing entry alone,
+/// whatever its kind.
+///
+/// # Errors
+/// Refuses an unmanaged installation, a foreign launcher, any argument, and
+/// a root that cannot be inspected or created.
+pub fn prepare_linux_launch_roots(
+    request: &LinuxLaunchRequest<'_>,
+) -> Result<Vec<PathBuf>, LinuxLaunchError> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let location = installation(request)?;
+    if request.role != LinuxLaunchRole::PrepareRoots || !request.arguments.is_empty() {
+        return Err(LinuxLaunchError::Arguments(
+            "only the prepare-roots role prepares roots, and it takes no arguments".to_owned(),
+        ));
+    }
+    let mut created = Vec::new();
+    for root in [
+        location.config_root(),
+        location.data_root(),
+        location.daemon_state_root(),
+    ] {
+        match std::fs::symlink_metadata(root) {
+            Ok(_) => continue,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(LinuxLaunchError::PrepareRoot {
+                    root: root.to_path_buf(),
+                    detail: source.to_string(),
+                });
+            }
+        }
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(root)
+            .map_err(|source| LinuxLaunchError::PrepareRoot {
+                root: root.to_path_buf(),
+                detail: source.to_string(),
+            })?;
+        created.push(root.to_path_buf());
+    }
+    Ok(created)
+}
+
+/// The managed installation the locator names, when `request` runs from
+/// its launcher.
+fn installation(
+    request: &LinuxLaunchRequest<'_>,
+) -> Result<LinuxInstallLocation, LinuxLaunchError> {
+    let location = match super::locator::read_hint(request.home) {
+        Ok(LinuxInstallAuthority::Managed(location)) => location,
+        Ok(LinuxInstallAuthority::Legacy(_)) => return Err(LinuxLaunchError::NotManaged),
+        Err(error) => return Err(LinuxLaunchError::Locator(error.to_string())),
+    };
+    let expected = linux_launcher_path(&location);
+    if request.launcher != expected {
+        return Err(LinuxLaunchError::ForeignLauncher {
+            expected,
+            actual: request.launcher.to_path_buf(),
+        });
+    }
+    Ok(location)
+}
+
+/// Which release settles installs.
+///
+/// While a transaction is unsettled, its prior runs when it can: a digest
+/// release that declares this launcher contract. A transaction with no
+/// such prior (a fresh install, an adoption of the historical root, or a
+/// prior from before the contract) falls back to the active release, since
+/// nothing older could run the role. A prior that should run but fails its
+/// proof (missing, changed, or no longer read-only) refuses the launch
+/// instead: recovery must never quietly move to the candidate's code.
+fn executor_selection(
+    releases: &ReadOnlyDirectoryAuthority,
+    location: &LinuxInstallLocation,
+    transaction: Transaction,
+    active: Option<UnitId>,
+) -> Result<(UnitId, LinuxLaunchSelection), LinuxLaunchError> {
+    let active = |selection| Ok((active.ok_or(LinuxLaunchError::NoActiveRelease)?, selection));
+    match transaction {
+        Transaction::Settled => active(LinuxLaunchSelection::Active),
+        Transaction::Unsettled { prior: None } => {
+            active(LinuxLaunchSelection::ActiveWithoutRunnablePrior)
+        }
+        Transaction::Unsettled { prior: Some(prior) } if prior.as_str().starts_with("legacy-") => {
+            active(LinuxLaunchSelection::ActiveWithoutRunnablePrior)
+        }
+        Transaction::Unsettled { prior: Some(prior) } => {
+            match prove_release(releases, location, &prior, LinuxLaunchRole::UpdateExecutor) {
+                Ok(()) => Ok((prior, LinuxLaunchSelection::PendingTransactionPrior)),
+                Err(LinuxLaunchError::NoLauncherContract { .. }) => {
+                    active(LinuxLaunchSelection::ActiveWithoutRunnablePrior)
+                }
+                Err(error) => Err(error),
+            }
+        }
+    }
 }
 
 fn validate_arguments(
     role: LinuxLaunchRole,
     arguments: &[OsString],
 ) -> Result<Vec<OsString>, LinuxLaunchError> {
-    if role == LinuxLaunchRole::Daemon && !arguments.is_empty() {
-        return Err(LinuxLaunchError::Arguments(
-            "the daemon role takes no arguments; its release decides them".to_owned(),
-        ));
+    if matches!(
+        role,
+        LinuxLaunchRole::Daemon | LinuxLaunchRole::PrepareRoots
+    ) && !arguments.is_empty()
+    {
+        return Err(LinuxLaunchError::Arguments(format!(
+            "the {} role takes no arguments",
+            role.as_str()
+        )));
     }
     let bytes: usize = arguments.iter().map(|argument| argument.len()).sum();
     if arguments.len() > MAX_PASSTHROUGH_ARGUMENTS || bytes > MAX_PASSTHROUGH_BYTES {
@@ -307,14 +435,15 @@ fn prove_release(
         ));
     }
     if role == LinuxLaunchRole::UpdateExecutor && !declares_launcher_contract(&bytes) {
-        return Err(refuse(format!(
-            "it declares no launcher contract {MANAGED_LAUNCHER_CONTRACT}, so its CLI has no \
-             update-executor commands"
-        )));
+        return Err(LinuxLaunchError::NoLauncherContract {
+            unit: unit.as_str().to_owned(),
+        });
     }
     let program = match role {
         LinuxLaunchRole::Daemon => DAEMON_PROGRAM,
-        LinuxLaunchRole::Cli | LinuxLaunchRole::UpdateExecutor => CLI_PROGRAM,
+        LinuxLaunchRole::Cli | LinuxLaunchRole::UpdateExecutor | LinuxLaunchRole::PrepareRoots => {
+            CLI_PROGRAM
+        }
     };
     let executable = release
         .open_child_directory(Path::new("bin"))
@@ -369,13 +498,23 @@ struct JournalSelection {
     prior_active_unit: Option<String>,
 }
 
-/// The prior an unsettled transaction would roll back to.
-fn pending_prior(location: &LinuxInstallLocation) -> Result<Option<UnitId>, LinuxLaunchError> {
+/// What the install journal says about the last transaction.
+enum Transaction {
+    /// It settled, or none ever ran.
+    Settled,
+    /// It is unsettled, and would roll back to `prior` when it names one.
+    Unsettled { prior: Option<UnitId> },
+}
+
+/// Read whether a transaction is unsettled and what it would roll back to.
+fn pending_prior(location: &LinuxInstallLocation) -> Result<Transaction, LinuxLaunchError> {
     let state = ReadOnlyDirectoryAuthority::open(location.state_root())
         .map_err(|source| LinuxLaunchError::Journal(source.to_string()))?;
     let mut journal = match state.open_regular_file(Path::new("install-journal.json")) {
         Ok(journal) => journal,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Transaction::Settled);
+        }
         Err(source) => return Err(LinuxLaunchError::Journal(source.to_string())),
     };
     let limit = MAX_MANAGED_INSTALL_JOURNAL_BYTES as u64;
@@ -393,13 +532,14 @@ fn pending_prior(location: &LinuxInstallLocation) -> Result<Option<UnitId>, Linu
     let selection: JournalSelection = serde_json::from_slice(&bytes)
         .map_err(|source| LinuxLaunchError::Journal(source.to_string()))?;
     match selection.disposition.as_str() {
-        "committed" | "rolled_back" => Ok(None),
+        "committed" | "rolled_back" => Ok(Transaction::Settled),
         "forward" | "rollback" => selection
             .prior_active_unit
             .map(|unit| {
                 UnitId::new(unit).map_err(|source| LinuxLaunchError::Journal(source.to_string()))
             })
-            .transpose(),
+            .transpose()
+            .map(|prior| Transaction::Unsettled { prior }),
         other => Err(LinuxLaunchError::Journal(format!(
             "unknown transaction disposition {other:?}"
         ))),

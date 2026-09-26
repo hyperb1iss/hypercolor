@@ -52,9 +52,11 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
 /// effects directories from that same release, inside a sandbox that makes
 /// everything read-only except the recorded configuration, data and daemon
 /// state roots and the coordinator's directory, with the release root and
-/// the update state root read-only beneath them. The text depends only on
-/// the recorded location, so it is the same for every release of launcher
-/// contract 1.
+/// the update state root read-only beneath them. systemd refuses to build
+/// that sandbox around a writable root that does not exist, so the launcher
+/// first runs unsandboxed (`ExecStartPre=+`) to create any recorded root a
+/// user deleted. The text depends only on the recorded location, so it is
+/// the same for every release of launcher contract 1.
 ///
 /// # Errors
 /// Refuses a non-UTF-8 root or a launcher that exceeds its byte bound.
@@ -67,10 +69,11 @@ pub(super) fn render_launcher(
             .map(str::to_owned)
             .ok_or_else(|| error("Linux install roots must be exact UTF-8"))
     };
-    let (launcher_exec, sandbox) = match managed {
+    let (prepare, launcher_exec, sandbox) = match managed {
         None => {
             let active = text(active_root)?;
             (
+                String::new(),
                 format!(
                     "{active}/bin/hypercolor-daemon --ui-dir {active}/share/hypercolor/ui --effects-dir {active}/share/hypercolor/effects/bundled"
                 ),
@@ -85,10 +88,14 @@ pub(super) fn render_launcher(
             }
             let launcher = text(&super::bootstrap::linux_launcher_path(location))?;
             let state = text(location.state_root())?;
+            let command = super::bootstrap::LINUX_LAUNCH_COMMAND;
             (
                 format!(
-                    "{launcher} {} --role {}",
-                    super::bootstrap::LINUX_LAUNCH_COMMAND,
+                    "ExecStartPre=+{launcher} {command} --role {}\n",
+                    super::launch::LinuxLaunchRole::PrepareRoots.as_str()
+                ),
+                format!(
+                    "{launcher} {command} --role {}",
                     super::launch::LinuxLaunchRole::Daemon.as_str()
                 ),
                 format!(
@@ -102,7 +109,7 @@ pub(super) fn render_launcher(
         }
     };
     let bytes = format!(
-        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={launcher_exec}\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n{sandbox}\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\n{prepare}ExecStart={launcher_exec}\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n{sandbox}\n[Install]\nWantedBy=default.target\n"
     )
     .into_bytes();
     if bytes.len() > super::model::MAX_LAUNCHER_BYTES {

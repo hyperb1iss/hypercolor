@@ -4,10 +4,14 @@
 //! `contract.json` naming its digest, size, source release and the launcher
 //! contract it implements. It sits beside `units/`, outside every release
 //! directory, so the releases it selects between can never replace it. It is
-//! published once, atomically, from the first release a managed install or
-//! adoption activates, and every later run only proves it unchanged: an
-//! ordinary install never rewrites it. Replacing it is a launcher contract
-//! change, which contract 1 does not define.
+//! published atomically from the candidate of the first managed install or
+//! adoption, before that candidate starts. Once an install settles with the
+//! service starting through it, it is the installation's for good: every
+//! later run only proves it unchanged, and an ordinary install never
+//! rewrites it. Until then it came from a candidate that never ran as the
+//! settled service (its install rolled back or never finished), so the next
+//! install replaces it with its own candidate's CLI. Replacing a settled
+//! launcher is a launcher contract change, which contract 1 does not define.
 
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -16,7 +20,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::super::{InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord};
+use super::super::{
+    InstallDisposition, InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord,
+};
 use super::LinuxInstallLocation;
 use super::model::error;
 use hypercolor_platform_fs::{DirectoryEntryKind, ReadOnlyDirectoryAuthority};
@@ -103,10 +109,12 @@ const UPDATE_DIRECTORY_MODE: u32 = 0o700;
 /// The generated service can write only `coordinator/` inside an otherwise
 /// read-only update state root, so neither the daemon nor the activator can
 /// create its own directory there; the installer creates both, whatever the
-/// umask, and never changes one that exists.
+/// umask. The daemon owns `coordinator/` and can change its mode, so a
+/// directory the recorded user owns gets its `0700` back instead of
+/// refusing every later install and recovery.
 ///
 /// # Errors
-/// Refuses a directory entry of another kind, mode or owner.
+/// Refuses a directory entry of another kind or owner.
 pub fn ensure_linux_update_directories(
     lock: &InstallLock,
     location: &LinuxInstallLocation,
@@ -115,6 +123,17 @@ pub fn ensure_linux_update_directories(
         .open_public_directory(location.state_root())
         .map_err(|source| error(source.to_string()))?;
     for name in [LINUX_COORDINATOR_DIRECTORY, LINUX_ACTIVATOR_DIRECTORY] {
+        if let Ok(existing) = state.open_child_directory(Path::new(name)) {
+            let metadata = existing
+                .metadata()
+                .map_err(io_error("inspect an update state directory"))?;
+            if metadata.owner_uid() == location.uid() && metadata.mode() != UPDATE_DIRECTORY_MODE {
+                existing
+                    .into_directory_authority()
+                    .and_then(|directory| directory.set_mode(UPDATE_DIRECTORY_MODE))
+                    .map_err(io_error("restore an update state directory's mode"))?;
+            }
+        }
         let directory = state
             .durable_ensure_child_directory(Path::new(name), UPDATE_DIRECTORY_MODE)
             .map_err(|source| {
@@ -147,10 +166,11 @@ pub fn linux_launcher_path(location: &LinuxInstallLocation) -> PathBuf {
 }
 
 /// Prove the installation's launcher, publishing it from `candidate`'s CLI
-/// when the installation has none yet.
+/// when the installation has none yet, or has only one that no settled
+/// service has started through.
 ///
-/// A published launcher is never replaced: one that differs from its own
-/// contract record, carries another launcher contract, or has lost its
+/// A settled launcher is never replaced. Any launcher that differs from its
+/// own contract record, carries another launcher contract, or has lost its
 /// modes or owner refuses the whole run before any service change.
 ///
 /// # Errors
@@ -190,7 +210,14 @@ pub fn ensure_linux_launcher(
         .map_err(io_error("inspect the launcher"))?
         .is_some()
     {
-        return prove(location, false);
+        let existing = prove(location, false)?;
+        if existing.source_unit() == candidate.id() || launcher_settled(store, lock, location)? {
+            return Ok(existing);
+        }
+        lock.open_store_public_directory()
+            .map_err(|source| error(source.to_string()))?
+            .durable_remove_child_tree(Path::new(LINUX_LAUNCHER_DIRECTORY))
+            .map_err(io_error("retire a launcher no settled service started"))?;
     }
     remove_leftover_stages(lock)?;
     let sequence = LAUNCHER_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -380,11 +407,44 @@ fn prove(
     })
 }
 
-/// Remove launcher staging directories a crashed run left beside `units/`.
+/// Whether a settled service already starts through the launcher: the
+/// journal's last transaction committed with the launcher's unit, or rolled
+/// back to a prior that ran through it.
+///
+/// Anything the journal cannot settle (a transaction still pending, or a
+/// record this build cannot read) counts as settled, so doubt never
+/// replaces a launcher.
+fn launcher_settled(
+    store: &InstallStore,
+    lock: &InstallLock,
+    location: &LinuxInstallLocation,
+) -> Result<bool, InstallPlatformError> {
+    let journal = match store.load_journal(lock) {
+        Ok(Some(journal)) => journal,
+        Ok(None) => return Ok(false),
+        Err(_) => return Ok(true),
+    };
+    let Ok(record) = super::record::decode_record(&journal.platform_record) else {
+        return Ok(true);
+    };
+    let unit =
+        super::proof::render_launcher(&location.release_root().join("active"), Some(location))?;
+    let settled = match journal.disposition {
+        InstallDisposition::Committed => record.candidate_launcher.map(|launcher| launcher.bytes),
+        InstallDisposition::RolledBack => Some(record.prior_launcher_bytes),
+        _ => return Ok(true),
+    };
+    Ok(settled.as_deref() == Some(unit.bytes.as_slice()))
+}
+
+/// Remove launcher staging directories a crashed run left beside `units/`,
+/// and what a crash left of retiring an unsettled launcher.
 fn remove_leftover_stages(lock: &InstallLock) -> Result<(), InstallPlatformError> {
     let root = lock
         .open_store_public_directory()
         .map_err(|source| error(source.to_string()))?;
+    root.durable_remove_tombstones(Path::new(LINUX_LAUNCHER_DIRECTORY))
+        .map_err(io_error("remove a retired launcher"))?;
     for name in root
         .child_names()
         .map_err(io_error("list the release root"))?

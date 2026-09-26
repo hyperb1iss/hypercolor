@@ -136,6 +136,73 @@ fn shared_xdg_base_keeps_state_and_releases_as_siblings() {
 }
 
 #[test]
+fn roots_the_service_sandbox_cannot_confine_are_refused() {
+    let home = Path::new("/home/test");
+    for (data, state, config) in [
+        // The configuration root would be the historical root.
+        (
+            "/home/test/.local/share",
+            "/home/test/.local/state",
+            "/home/test/.local/lib",
+        ),
+        // A writable root would hold the command links.
+        (
+            "/home/test/.local/bin",
+            "/home/test/.local/state",
+            "/home/test/.config",
+        ),
+        // The daemon state root would be home itself.
+        ("/home/test/.local/share", "/home", "/home/test/.config"),
+    ] {
+        let home = if state == "/home" {
+            Path::new("/home/hypercolor")
+        } else {
+            home
+        };
+        assert!(
+            matches!(
+                LinuxInstallLocation::new(
+                    home,
+                    Path::new(data),
+                    Path::new(state),
+                    Path::new(config),
+                    1000
+                ),
+                Err(InstallLocationError::UnsandboxableRoot(_))
+            ),
+            "{data} {state} {config} must be refused"
+        );
+    }
+    for (field, path) in [
+        ("config_root", "/home/test/.config/other"),
+        ("data_root", "/home/test/.local/share/other"),
+        ("state_root", "/home/test/.local/state/hypercolor/other"),
+    ] {
+        let mut value = serde_json::to_value(standard_location()).expect("value");
+        value[field] = path.into();
+        if field == "data_root" {
+            value["release_root"] = format!("{path}/releases").into();
+        }
+        let bytes = serde_json::to_vec(&value).expect("serialize");
+        assert!(
+            matches!(
+                LinuxInstallLocation::parse(&bytes, home),
+                Err(InstallLocationError::UnsandboxableRoot(_))
+            ),
+            "{field}={path} must be refused"
+        );
+    }
+    LinuxInstallLocation::new(
+        home,
+        Path::new("/home/test/xdg/data"),
+        Path::new("/home/test/xdg/state"),
+        Path::new("/home/test/xdg/config"),
+        1000,
+    )
+    .expect("custom XDG bases are fine");
+}
+
+#[test]
 fn protected_roots_cannot_be_nested_in_cleanup_owned_roots() {
     for (field, path) in [
         (
