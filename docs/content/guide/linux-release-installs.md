@@ -19,7 +19,8 @@ record.
 | What | Default location | Notes |
 | --- | --- | --- |
 | Releases | `${XDG_DATA_HOME:-~/.local/share}/hypercolor/releases` | The running release and the one before it, each in its own read-only directory, plus an `active` link to the running one |
-| Update state | `${XDG_STATE_HOME:-~/.local/state}/hypercolor/update` | Transaction journal, lock and installation record, private to you |
+| Launcher | `releases/launcher/hypercolor` | The program the service starts; it picks the release to run (see below) |
+| Update state | `${XDG_STATE_HOME:-~/.local/state}/hypercolor/update` | Transaction journal, lock and installation record, private to you, plus `coordinator/` and `activator/` for automatic updates |
 | Locator | `~/.local/lib/hypercolor/install-journal.json` | Points every installer at the recorded locations |
 | Upgrade target | `~/.local/lib/hypercolor/managed-adoption.json` | Written once an upgrade from an older install has proven its locations, before it copies or prepares anything there |
 | Commands | `~/.local/bin/hypercolor` and friends | Links into the active release |
@@ -50,6 +51,25 @@ Each recorded location must be an absolute path of at most 512 bytes, and your
 home directory at most 256 bytes. Both may contain only letters, digits, `/`,
 `.`, `_` and `-`, because they are written verbatim into the generated systemd
 unit. Other paths are refused before anything is written.
+
+## How the service starts
+
+The generated `hypercolor.service` starts the installation's launcher, never
+a release directly. The launcher reads the `active` link once, checks that
+the release it names is complete and unchanged, then replaces itself with
+that release's daemon, passing the UI and bundled effects from the same
+release. An upgrade that switches `active` while the daemon starts can never
+leave it running one release's code with another's UI or effects. The
+launcher is a copy of the CLI from the first release installed this way; no
+later install rewrites it, and an install refuses to continue if it changed.
+
+The service runs sandboxed. The whole system is read-only to it except your
+configuration, data and runtime state directories (the recorded ones above)
+and the update coordinator's directory, and it gets a private `/tmp`. The
+releases directory and the rest of the update state stay read-only even
+though they sit inside those directories, and `~/.local/bin` and
+`~/.local/lib` are never writable. Caches the daemon and its graphics
+libraries write go to `${XDG_STATE_HOME:-~/.local/state}/hypercolor/cache`.
 
 ## Upgrades from older installs
 
@@ -199,6 +219,7 @@ hide accounts from a listing, so they refuse the group exception.
 | The service is still starting, stopping or restarting after its own timeout | A service that keeps changing state is not a safe starting point | Wait for it to settle, or stop it with `systemctl --user stop hypercolor.service`, then rerun |
 | Locator from an unknown or newer installer | Guessing would risk managing the wrong install | Use the current installer |
 | Release manifest lacks a complete `managed_package` declaration | The installer could not tell what the release does to your data | Install an official release tarball |
+| The launcher changed since it was published | The service would start a program the installer never checked | Remove `releases/launcher` and rerun; the install publishes it again |
 | Uninstall finds a service, unit or link this installer did not generate | It belongs to a package, another install or a local edit | Remove it with its owner, then rerun |
 | Another install or uninstall is running | Two writers would corrupt the journal | Wait for it to finish |
 
