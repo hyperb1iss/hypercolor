@@ -2202,25 +2202,48 @@ fn longest_supported_roots_fit_the_transaction_record_and_longer_ones_refuse_ear
         }
     );
     fixture.assert_managed(&location, &fixture.v2.id);
-    let journal = fs::read(location.state_root().join("install-journal.json")).expect("journal");
-    let value: serde_json::Value = serde_json::from_slice(&journal).expect("journal JSON");
-    let record = value["platform_record"]["payload"]
-        .as_array()
-        .expect("record bytes")
-        .len();
-    eprintln!(
-        "longest-root record {record} bytes, journal {} bytes",
-        journal.len()
-    );
-    assert!(
-        record * 4 < hypercolor_cli::install::MAX_LINUX_TRANSACTION_RECORD_BYTES * 3,
-        "the longest record must keep a quarter of its budget free: {record}"
-    );
-    assert!(
-        journal.len() * 4 < hypercolor_cli::install::MAX_MANAGED_INSTALL_JOURNAL_BYTES * 3,
-        "the longest journal must keep a quarter of its budget free: {}",
-        journal.len()
-    );
+    let measure = |stage: &str| {
+        let journal =
+            fs::read(location.state_root().join("install-journal.json")).expect("journal");
+        let value: serde_json::Value = serde_json::from_slice(&journal).expect("journal JSON");
+        let record = value["platform_record"]["payload"]
+            .as_array()
+            .expect("record bytes")
+            .len();
+        eprintln!(
+            "longest-root {stage}: record {record} bytes, journal {} bytes",
+            journal.len()
+        );
+        assert!(
+            record * 4 < hypercolor_cli::install::MAX_LINUX_TRANSACTION_RECORD_BYTES * 3,
+            "{stage}: the longest record must keep a quarter of its budget free: {record}"
+        );
+        assert!(
+            journal.len() * 4 < hypercolor_cli::install::MAX_MANAGED_INSTALL_JOURNAL_BYTES * 3,
+            "{stage}: the longest journal must keep a quarter of its budget free: {}",
+            journal.len()
+        );
+    };
+    measure("adoption");
+
+    // An update carries two release units, the largest record there is,
+    // and a rollback adds its failure detail to the journal.
+    let run = fixture
+        .update(&fixture.v3)
+        .expect("update at the longest roots");
+    assert!(matches!(run.outcome, InstallOutcome::Committed { .. }));
+    measure("update");
+    fixture
+        .world
+        .borrow_mut()
+        .failing_starts
+        .insert("9.8.8".to_owned());
+    let run = fixture
+        .update(&fixture.v2)
+        .expect("a failing update at the longest roots settles");
+    assert!(matches!(run.outcome, InstallOutcome::RolledBack { .. }));
+    measure("rollback");
+    fixture.assert_managed(&location, &fixture.v3.id);
 
     let too_long = LinuxInstallLocation::new(
         &fixture.home,

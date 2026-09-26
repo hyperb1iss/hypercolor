@@ -11,14 +11,17 @@ pub const INSTALL_JOURNAL_SCHEMA_VERSION: u32 = 3;
 pub const MAX_INSTALL_JOURNAL_BYTES: usize = 64 * 1024;
 /// Journal bound for managed split-root stores, which only managed-aware
 /// installers read. Their Linux records embed every recorded root several
-/// times and serialize bytes as JSON integers.
-pub const MAX_MANAGED_INSTALL_JOURNAL_BYTES: usize = 256 * 1024;
+/// times and serialize bytes as JSON integers (up to four characters a
+/// byte), so a record at [`MAX_LINUX_TRANSACTION_RECORD_BYTES`] still fits
+/// with room for the owner receipt and failure detail a transaction adds.
+pub const MAX_MANAGED_INSTALL_JOURNAL_BYTES: usize = 640 * 1024;
 pub const MAX_PLATFORM_TRANSACTION_RECORD_BYTES: usize = 12 * 1024;
-/// Linux record bound sized for the longest supported recorded roots. A
-/// managed record carries the generated unit twice (prior and candidate),
-/// and that unit spells its release directory and every recorded root into
-/// its commands, environment and sandbox.
-pub const MAX_LINUX_TRANSACTION_RECORD_BYTES: usize = 80 * 1024;
+/// Linux record bound sized for the longest supported recorded roots. An
+/// update's record carries two generated units (prior and candidate) as
+/// JSON integer arrays, and each unit spells its release directory and
+/// every recorded root into its commands, environment and sandbox. Two
+/// units at the unit bound plus the rest of the record stay under it.
+pub const MAX_LINUX_TRANSACTION_RECORD_BYTES: usize = 128 * 1024;
 pub const MAX_PLATFORM_OWNER_RECEIPT_BYTES: usize = 1_024;
 pub const MAX_LAYOUT_OPERATIONS: u16 = 256;
 
