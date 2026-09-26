@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::device_binding::DeviceBindingRemaps;
 use crate::persistence::{AtomicFileWriter, AtomicWriteCommitResult, serialize_json_pretty};
 
-const DEVICE_BINDING_JOURNAL_SCHEMA_VERSION: u32 = 1;
+pub(crate) const DEVICE_BINDING_JOURNAL_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone)]
 pub(crate) struct DeviceBindingMigrationJournal {

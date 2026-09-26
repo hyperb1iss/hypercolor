@@ -12,7 +12,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use tokio::sync::{Mutex, RwLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use hypercolor_core::asset::{AssetLibrary, StreamUrlPolicy};
 use hypercolor_core::attachment::ComponentRegistry;
@@ -188,6 +188,18 @@ impl DaemonState {
         let data_dir = ConfigManager::data_dir();
         let state_dir = ConfigManager::state_dir();
         info!("Initializing daemon subsystems");
+        // Before any store opens, migrates or repairs its file.
+        let durable_store_report = Arc::new(crate::durable_stores::probe_durable_stores(
+            &crate::durable_stores::StoreRoots {
+                config: ConfigManager::config_dir(),
+                data: data_dir.clone(),
+                state: state_dir.clone(),
+                config_file: config_manager.path().to_path_buf(),
+            },
+        ));
+        for observation in &durable_store_report.observations {
+            debug!(store = observation.name, found = ?observation.found, "Durable store on disk");
+        }
         config
             .capture
             .validate()
@@ -805,6 +817,7 @@ impl DaemonState {
             ui_dir: None,
             domains,
             config_manager,
+            durable_store_report,
             extensions: ExtensionRegistry::default(),
             api_extensions,
             lifecycle_extensions,

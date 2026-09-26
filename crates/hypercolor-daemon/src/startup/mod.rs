@@ -108,6 +108,11 @@ pub struct DaemonState {
     /// Live configuration manager (lock-free reads via `arc_swap`).
     pub config_manager: Arc<ConfigManager>,
 
+    /// The schema every durable store found on disk before it opened.
+    /// Extensions read it from their install hook to record what data this
+    /// release met; nothing in the daemon acts on it.
+    pub durable_store_report: Arc<crate::durable_stores::DurableStoreReport>,
+
     /// Typed state owned by downstream daemon extensions.
     pub extensions: ExtensionRegistry,
 
