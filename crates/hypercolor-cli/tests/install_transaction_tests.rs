@@ -593,10 +593,12 @@ impl InstallPlatform for FakePlatform {
         &mut self,
         prior: &PlatformState,
         record: &PlatformTransactionRecord,
+        restarted: bool,
     ) -> Result<bool, InstallPlatformError> {
         Self::assert_record(record);
         assert_eq!(prior.layout_unit, self.state.layout_unit);
-        Ok(self.untouched_prior)
+        Ok(self.untouched_prior
+            && (!restarted || self.state.running_unit.is_some() && self.prior_restored))
     }
 }
 
@@ -3140,4 +3142,31 @@ fn a_prior_that_restarts_during_its_preflight_abandons_without_a_stop() {
             .collect::<Vec<_>>(),
         [InstallAction::PreflightCandidate]
     );
+}
+
+#[test]
+fn a_prior_still_under_its_baseline_at_unload_is_never_abandoned() {
+    // A stop that outlived its fence can leave the prior running (or still
+    // stopping) under its baseline identity; that is this transaction's own
+    // unload in progress, not a restart, so it is drift.
+    let fixture = Fixture::new();
+    let mut platform = prior_restarted_before_unload(&fixture);
+    platform.untouched_prior = true;
+    platform.prior_restored = false;
+    platform.state.autostart_enabled = !platform.state.autostart_enabled;
+    let pending = fixture.journal();
+    let error = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect_err("the baseline prior is not a lost baseline");
+    assert!(
+        matches!(
+            error,
+            InstallCoordinatorError::StateDrift {
+                action: InstallAction::UnloadPrior,
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert_eq!(fixture.journal(), pending);
 }

@@ -379,8 +379,20 @@ fn run_runtime_job(
         let deadlines = read_deadlines(&mut bus, &unit).await?;
         if running {
             // Clears a failed state and the start-limit counter a crash loop
-            // left, which a start would otherwise hit.
-            manager_call::<_, ()>(&mut bus, "ResetFailedUnit", &(SERVICE,)).await?;
+            // left, which a start would otherwise hit. A unit the manager has
+            // already unloaded again has nothing to reset.
+            match within_method_deadline(bus.call::<_, ()>(
+                SYSTEMD_PATH,
+                SYSTEMD_MANAGER,
+                "ResetFailedUnit",
+                &(SERVICE,),
+            ))
+            .await?
+            {
+                Ok(()) => {}
+                Err(ManagerCallError::Refused { name, .. }) if name == NO_SUCH_UNIT => {}
+                Err(refused) => return Err(refused.into_platform()),
+            }
         }
         // A stop replaces a start still queued for a service that keeps
         // failing before readiness (systemd before 254 keeps that start job
@@ -789,6 +801,17 @@ mod tests {
         timeout_start_usec: u64,
         timeout_stop_usec: u64,
         calls: Vec<(String, String)>,
+        /// The manager has garbage-collected the unit between `LoadUnit`
+        /// and `ResetFailedUnit`, as a fresh install sees it.
+        unloaded_for_reset: bool,
+    }
+
+    #[derive(Debug, zbus::DBusError)]
+    #[zbus(prefix = "org.freedesktop.systemd1")]
+    enum FakeManagerError {
+        #[zbus(error)]
+        ZBus(zbus::Error),
+        NoSuchUnit(String),
     }
 
     type SharedService = std::sync::Arc<std::sync::Mutex<FakeService>>;
@@ -843,11 +866,17 @@ mod tests {
             OwnedObjectPath::try_from(UNIT_PATH).expect("unit path")
         }
 
-        fn reset_failed_unit(&self, name: String) {
+        fn reset_failed_unit(&self, name: String) -> Result<(), FakeManagerError> {
             self.record("ResetFailedUnit", &name, "");
             let mut service = self.service.lock().expect("fake service");
+            if service.unloaded_for_reset {
+                return Err(FakeManagerError::NoSuchUnit(format!(
+                    "Unit {name} not loaded."
+                )));
+            }
             "inactive".clone_into(&mut service.active_state);
             "dead".clone_into(&mut service.sub_state);
+            Ok(())
         }
     }
 
@@ -1077,6 +1106,7 @@ mod tests {
             timeout_start_usec: 90_000_000,
             timeout_stop_usec: 90_000_000,
             calls: Vec::new(),
+            unloaded_for_reset: false,
         }))
     }
 
@@ -1109,6 +1139,34 @@ mod tests {
                 ("LoadUnit".to_owned(), String::new()),
                 ("StopUnit".to_owned(), "replace".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_start_proceeds_when_the_unit_has_nothing_loaded_to_reset() {
+        // Observed on a fresh Ubuntu 24.04 install: the unit LoadUnit just
+        // loaded is collected again before ResetFailedUnit reaches it.
+        let (fixture, uid) = runtime_fixture();
+        let listener =
+            UnixListener::bind(fixture.path().join("systemd/private")).expect("private socket");
+        let service = fake_service("inactive", "dead");
+        service.lock().expect("fake service").unloaded_for_reset = true;
+        let server = serve_fake_manager(listener, std::sync::Arc::clone(&service), 1);
+        let manager = LinuxRuntimeManager::new(
+            LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid)
+                .expect("private manager coordinate"),
+        );
+        assert_eq!(
+            manager
+                .set_runtime(true)
+                .expect("start after a refused reset"),
+            RuntimeJobOutcome::Done
+        );
+        server.join().expect("fake manager thread");
+        let calls = service.lock().expect("fake service").calls.clone();
+        assert_eq!(
+            calls.last(),
+            Some(&("StartUnit".to_owned(), "fail".to_owned()))
         );
     }
 

@@ -156,7 +156,9 @@ pub trait InstallPlatform {
     /// A transaction whose baseline runtime identity was lost before the
     /// prior was unloaded (a crash and restart, or a power loss) cannot prove
     /// its baseline any more; when this holds it is abandoned without any
-    /// effect instead of stopping with drift.
+    /// effect instead of stopping with drift. With `restarted`, the prior
+    /// must also be running, steadily, under an identity other than its
+    /// baseline, which proves the transaction's own unload never took hold.
     ///
     /// # Errors
     /// Returns an error when the platform cannot be inspected.
@@ -164,8 +166,9 @@ pub trait InstallPlatform {
         &mut self,
         prior: &PlatformState,
         record: &PlatformTransactionRecord,
+        restarted: bool,
     ) -> Result<bool, InstallPlatformError> {
-        let _ = (prior, record);
+        let _ = (prior, record, restarted);
         Ok(false)
     }
 }
@@ -1229,18 +1232,24 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         action: InstallAction,
         actual: &InstallationState,
     ) -> Result<Option<String>, InstallCoordinatorError> {
-        // At UnloadPrior a stopped prior may be this transaction's own stop,
-        // so only a prior running under a new invocation proves nothing was
-        // changed; any other difference there is drift.
+        // At UnloadPrior a stopped or still stopping prior may be this
+        // transaction's own stop, so only a prior running steadily under a
+        // new invocation proves nothing was changed; any other difference
+        // there is drift.
+        let at_unload = action == InstallAction::UnloadPrior;
         if journal.disposition != InstallDisposition::Forward
             || !is_baseline_step(action)
             || journal.layout_operation_index != 0
             || journal.candidate_owner_receipt.is_some()
-            || action == InstallAction::UnloadPrior && actual.platform.running_unit.is_none()
+            || at_unload && actual.platform.running_unit.is_none()
             || actual.active_unit != journal.prior_active_unit
             || !self
                 .platform
-                .matches_untouched_prior(&journal.prior_platform, &journal.platform_record)
+                .matches_untouched_prior(
+                    &journal.prior_platform,
+                    &journal.platform_record,
+                    at_unload,
+                )
                 .map_err(InstallCoordinatorError::InspectPlatform)?
         {
             return Ok(None);

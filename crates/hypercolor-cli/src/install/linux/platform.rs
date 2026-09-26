@@ -700,6 +700,7 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
         &mut self,
         prior: &PlatformState,
         platform_record: &PlatformTransactionRecord,
+        restarted: bool,
     ) -> Result<bool, InstallPlatformError> {
         let record = self.validated_record(platform_record)?;
         let inspection = self.inspect_exact()?;
@@ -717,7 +718,10 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
             && inspection.systemd.load_state == baseline.load_state
             && inspection.systemd.unit_file_state == baseline.unit_file_state
             && inspection.systemd.fragment_path == baseline.fragment_path
-            && inspection.systemd.exec_start == baseline.exec_start;
+            && inspection.systemd.exec_start == baseline.exec_start
+            && (!restarted
+                || inspection.systemd.phase() == LinuxServicePhase::Running
+                    && inspection.systemd.invocation_id != baseline.invocation_id);
         self.last_inspection = Some(inspection);
         Ok(untouched)
     }
