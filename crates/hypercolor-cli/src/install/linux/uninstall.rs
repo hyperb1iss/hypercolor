@@ -278,8 +278,10 @@ fn finish_interrupted_removal(
     old.ownership_policy()
         .require_trusted_ancestor(&parent, metadata)
         .map_err(|refusal| LinuxInstallCommandError::UnsafeDirectory(lib.to_path_buf(), refusal))?;
+    // Only tombstones go: an installer may have created and locked a new
+    // root since the absence check, and that live name is never touched.
     if parent
-        .durable_remove_child_tree(Path::new("hypercolor"))
+        .durable_remove_tombstones(Path::new("hypercolor"))
         .map_err(|error| {
             InstallPlatformError::new(format!("failed to remove hypercolor: {error}"))
         })?

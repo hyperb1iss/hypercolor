@@ -51,6 +51,33 @@ impl PublicDirectoryAuthority {
             self.tombstone(name, &prefix)?;
             removed = true;
         }
+        removed |= self.sweep_tombstones(&prefix)?;
+        self.validate_ancestry_inner()?;
+        Ok(removed)
+    }
+
+    /// Durably finish removal tombstones left for `name`, never touching
+    /// `name` itself.
+    ///
+    /// Only owned directories carrying the tombstone prefix are removed;
+    /// anything else with that prefix is left alone. Returns `true` when a
+    /// tombstone was removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-input for an unsafe name or a refused tombstone entry,
+    /// and an error when ancestry, removal or durability fails.
+    pub fn durable_remove_tombstones(&self, name: &Path) -> io::Result<bool> {
+        let name = entry_name(name, "owned tree name")?;
+        let _operation = self.operation_guard()?;
+        self.validate_ancestry_inner()?;
+        let removed = self.sweep_tombstones(&tombstone_prefix(name))?;
+        self.validate_ancestry_inner()?;
+        Ok(removed)
+    }
+
+    fn sweep_tombstones(&self, prefix: &OsStr) -> io::Result<bool> {
+        let mut removed = false;
         for entry in directory_entries(&self.directory)? {
             if !entry.as_bytes().starts_with(prefix.as_bytes()) {
                 continue;
@@ -58,10 +85,14 @@ impl PublicDirectoryAuthority {
             let Some(metadata) = entry_metadata_at(&self.directory, &entry)? else {
                 continue;
             };
+            // A tombstone is always a renamed directory; a stray file that
+            // merely shares the prefix is not ours to judge or remove.
+            if metadata.kind != DirectoryEntryKind::Directory {
+                continue;
+            }
             remove_owned_directory_tree(&self.directory, &entry, metadata)?;
             removed = true;
         }
-        self.validate_ancestry_inner()?;
         Ok(removed)
     }
 

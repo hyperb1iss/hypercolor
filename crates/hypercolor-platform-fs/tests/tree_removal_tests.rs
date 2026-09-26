@@ -249,3 +249,31 @@ fn empty_child_removal_never_deletes_contents() {
     );
     assert!(fixture.outside.join("keep").exists());
 }
+
+#[test]
+fn tombstone_sweep_never_touches_the_live_name_or_stray_files() {
+    let fixture = Fixture::new();
+    let tree = fixture.populate();
+    let tombstone = fixture.public.join(".hypercolor-removing-releases.1-2");
+    fs::create_dir(&tombstone).expect("tombstone");
+    let stray = fixture.public.join(".hypercolor-removing-releases.stray");
+    fs::write(&stray, b"not a tombstone").expect("stray file");
+    let authority = fixture.authority();
+    assert!(
+        authority
+            .durable_remove_tombstones(Path::new("releases"))
+            .expect("sweep")
+    );
+    assert!(!tombstone.exists());
+    assert!(
+        tree.join("units/a/bin/hypercolor-daemon").exists(),
+        "live tree untouched"
+    );
+    assert!(stray.exists(), "a stray file is skipped");
+    assert!(
+        authority
+            .durable_remove_child_tree(Path::new("releases"))
+            .expect("the live tree still removes despite the stray file")
+    );
+    assert!(stray.exists());
+}
