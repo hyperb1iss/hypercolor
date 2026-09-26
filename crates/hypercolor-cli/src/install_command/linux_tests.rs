@@ -65,6 +65,7 @@ fn invalid_permanent_locator_refuses_normal_and_no_service_before_staging() {
             expected_manifest_sha256: crate::install::UnitId::new("a".repeat(64)).expect("id"),
             no_service,
             validate_only: false,
+            probation_seconds: 0,
         };
         let error = execute(&args, home.path(), &old_root, &source, &executable)
             .expect_err("unknown authority cannot fall back");

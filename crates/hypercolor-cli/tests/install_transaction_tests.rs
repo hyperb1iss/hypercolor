@@ -11,8 +11,8 @@ use hypercolor_cli::install::{
     InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy, InstallTransactionId,
     MAX_LINUX_TRANSACTION_RECORD_BYTES, MAX_PLATFORM_OWNER_RECEIPT_BYTES,
     MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
-    PlatformTransactionRecord, PlatformTransitionStates, PreparedPlatformTransaction, UnitId,
-    UnitRecord, stage_release_payload,
+    PlatformTransactionRecord, PlatformTransitionStates, PreparedPlatformTransaction,
+    RestoredRelease, UnitId, UnitRecord, stage_release_payload,
 };
 use hypercolor_platform_fs::DirectoryEntryKind;
 use serde_json::json;
@@ -68,6 +68,10 @@ struct FakePlatform {
     /// The prior restarts under a new invocation while its preflight runs,
     /// which then fails.
     prior_restarts_in_preflight: bool,
+    /// What each successful `ProvePrior` proof names as running again.
+    restores: Option<RestoredRelease>,
+    /// The last proof's release, until the coordinator takes it.
+    proven_restore: Option<RestoredRelease>,
 }
 
 impl FakePlatform {
@@ -91,6 +95,8 @@ impl FakePlatform {
             unjournaled_stops: 0,
             untouched_prior: false,
             prior_restarts_in_preflight: false,
+            restores: None,
+            proven_restore: None,
         }
     }
 
@@ -540,7 +546,11 @@ impl InstallPlatform for FakePlatform {
         if &self.state != expected {
             return Err(InstallPlatformError::new("publication does not match"));
         }
-        Self::finish_effect(action, injection)
+        Self::finish_effect(action, injection)?;
+        if action == InstallAction::ProvePrior {
+            self.proven_restore.clone_from(&self.restores);
+        }
+        Ok(())
     }
 
     fn matches_exact_state_except_runtime(
@@ -599,6 +609,10 @@ impl InstallPlatform for FakePlatform {
         assert_eq!(prior.layout_unit, self.state.layout_unit);
         Ok(self.untouched_prior
             && (!restarted || self.state.running_unit.is_some() && self.prior_restored))
+    }
+
+    fn take_restored_release(&mut self) -> Option<RestoredRelease> {
+        self.proven_restore.take()
     }
 }
 
@@ -2979,10 +2993,12 @@ fn an_unstarted_transaction_whose_baseline_is_gone_is_abandoned_without_effects(
         active_unit,
         failure,
         abandoned,
+        restored,
     } = outcome
     else {
         panic!("expected abandonment: {outcome:?}");
     };
+    assert_eq!(restored, None, "an abandonment restores nothing");
     assert!(abandoned);
     assert_eq!(active_unit, Some(fixture.prior.id().clone()));
     assert!(failure.contains("abandoned at UnloadPrior"), "{failure}");
@@ -3217,4 +3233,88 @@ fn a_prior_still_under_its_baseline_at_unload_is_never_abandoned() {
         "{error}"
     );
     assert_eq!(fixture.journal(), pending);
+}
+
+fn restored_release(unit: &UnitRecord) -> RestoredRelease {
+    RestoredRelease {
+        unit: unit.id().clone(),
+        version: "9.8.7".to_owned(),
+        instance: "7".repeat(32),
+        process_id: 4242,
+        executable_sha256: "a".repeat(64),
+    }
+}
+
+#[test]
+fn a_rollback_reports_the_release_its_own_prior_proof_found_running() {
+    let fixture = Fixture::new();
+    let prior = fixture.prior_state();
+    let mut platform = FakePlatform::new(prior.clone(), &fixture.store);
+    platform.restores = Some(restored_release(&fixture.prior));
+    platform.inject(InstallAction::ProveCandidate, InjectionKind::Fail);
+
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .install(fixture.request())
+        .expect("rollback");
+    let InstallOutcome::RolledBack {
+        restored,
+        abandoned,
+        ..
+    } = outcome
+    else {
+        panic!("expected a rollback: {outcome:?}");
+    };
+    assert!(!abandoned);
+    assert_eq!(restored, Some(restored_release(&fixture.prior)));
+    assert_eq!(platform.state, prior);
+
+    // A settled journal was proven by an earlier run; this run names nothing.
+    let settled = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect("settled journal")
+        .expect("outcome");
+    assert!(matches!(
+        settled,
+        InstallOutcome::RolledBack { restored: None, .. }
+    ));
+}
+
+#[test]
+fn a_rollback_resumed_at_prove_prior_reports_its_proof_and_ignores_other_units() {
+    let fixture = Fixture::new();
+    let prior = fixture.prior_state();
+    let mut platform = FakePlatform::new(prior, &fixture.store);
+    platform.restores = Some(restored_release(&fixture.prior));
+    platform.inject(InstallAction::ProveCandidate, InjectionKind::Fail);
+    platform.inject(InstallAction::ProvePrior, InjectionKind::Fail);
+    InstallCoordinator::new(&fixture.store, &mut platform)
+        .install(fixture.request())
+        .expect_err("the prior proof fails once");
+    assert_eq!(
+        fixture.journal().next_action,
+        Some(InstallAction::ProvePrior)
+    );
+
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect("recover the rollback")
+        .expect("outcome");
+    assert!(matches!(
+        outcome,
+        InstallOutcome::RolledBack { restored: Some(ref release), .. }
+            if release == &restored_release(&fixture.prior)
+    ));
+
+    // A proof that names any unit but this journal's prior is not reported.
+    let fixture = Fixture::new();
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    platform.restores = Some(restored_release(&fixture.candidate));
+    platform.inject(InstallAction::ProveCandidate, InjectionKind::Fail);
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .install(fixture.request())
+        .expect("rollback");
+    assert!(matches!(
+        outcome,
+        InstallOutcome::RolledBack { restored: None, .. }
+    ));
 }

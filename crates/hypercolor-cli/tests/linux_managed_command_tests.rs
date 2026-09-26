@@ -18,20 +18,23 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use hypercolor_cli::install::{
-    DirectoryRefusal, InstallAction, InstallCoordinator, InstallDisposition, InstallJournalV1,
-    InstallLock, InstallOutcome, InstallPlatformError, InstallRequest, InstallStore,
-    InstallStoreError, InstallTargetPolicy, InstallTransactionId, LINUX_LAYOUT_ITEMS,
-    LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
-    LinuxHttpResponse, LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallConfig,
-    LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost, LinuxInstallLocation,
-    LinuxInstallPlatform, LinuxInstallRequest, LinuxLayoutItem, LinuxLayoutPublication,
-    LinuxLegacyFile, LinuxLocatorError, LinuxProcessExecutable, LinuxPublicTree,
-    LinuxRuntimeSettlement, LinuxUninstallCheckpoint, LinuxUninstallHost, OwnershipPolicy,
-    PlatformTransactionRecord, PrincipalDatabase, PrincipalGroup, PrincipalUser, UnitId,
-    UnitRecord, elect_linux_installation_with, run_linux_install, run_linux_uninstall,
-    stage_release_payload,
+    DEFAULT_PROBATION_WINDOW, DirectoryRefusal, InstallAction, InstallCoordinator,
+    InstallDisposition, InstallJournalV1, InstallLock, InstallOutcome, InstallPlatformError,
+    InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy, InstallTransactionId,
+    LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry,
+    LinuxFilePublication, LinuxHttpResponse, LinuxInstallCheckpoint, LinuxInstallCommandError,
+    LinuxInstallConfig, LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost,
+    LinuxInstallLocation, LinuxInstallObservation, LinuxInstallPlatform, LinuxInstallRequest,
+    LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLocatorError,
+    LinuxObservationError, LinuxPlatformInputs, LinuxProcessExecutable, LinuxPublicTree,
+    LinuxRuntimeSettlement, LinuxServiceIdentity, LinuxServiceWatch, LinuxUninstallCheckpoint,
+    LinuxUninstallHost, OwnershipPolicy, PlatformTransactionRecord, PrincipalDatabase,
+    PrincipalGroup, PrincipalUser, RestoredRelease, UnitCollection, UnitId, UnitRecord,
+    bind_linux_platform, elect_linux_installation_with, observe_linux_installation,
+    run_linux_install, run_linux_uninstall, stage_release_payload,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -186,6 +189,25 @@ struct World {
     /// What happens when the installer next asks the daemon of this version
     /// for `/health`: the installer dies, or the daemon crashes under it.
     at_health: Option<(&'static str, HealthEvent)>,
+    /// What happens while the installer next holds the daemon of this
+    /// version through its probation window.
+    in_probation: Option<(&'static str, ProbationEvent)>,
+    /// Every probation window held: the running version, the identity it
+    /// was held to, and the window.
+    watches: Vec<(String, LinuxServiceIdentity, Duration)>,
+}
+
+/// An interruption this long into a probation window. One at or past the
+/// window's end happens after the installer stopped watching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbationEvent {
+    /// The daemon crashes and `Restart=on-failure` brings it back.
+    Crashes(Duration),
+    /// The installer dies mid-window; the daemon keeps running.
+    InstallerDies(Duration),
+    /// Power is lost mid-window; the user manager comes back and queues an
+    /// enabled service's start from disk.
+    PowerCut(Duration),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +256,8 @@ impl World {
             shows: 0,
             crash_at_show: None,
             at_health: None,
+            in_probation: None,
+            watches: Vec::new(),
         }))
     }
 
@@ -686,6 +710,59 @@ impl LinuxInstallExecutor for SimExecutor {
         result
     }
 
+    fn watch_service(
+        &mut self,
+        expected: &LinuxServiceIdentity,
+        window: Duration,
+    ) -> Result<LinuxServiceWatch, InstallPlatformError> {
+        let event = {
+            let mut world = self.world.borrow_mut();
+            let version = world
+                .process
+                .as_ref()
+                .map(|_| world.running_version())
+                .unwrap_or_default();
+            world
+                .watches
+                .push((version.clone(), expected.clone(), window));
+            let current = LinuxServiceIdentity {
+                invocation_id: format!("{:032x}", world.invocation),
+                main_pid: world.pid,
+            };
+            if !world.active || &current != expected {
+                return Ok(LinuxServiceWatch::Changed {
+                    after: Duration::ZERO,
+                    observed: "another service identity".to_owned(),
+                });
+            }
+            if world
+                .in_probation
+                .is_some_and(|(targeted, _)| targeted == version)
+            {
+                world.in_probation.take().map(|(_, event)| event)
+            } else {
+                None
+            }
+        };
+        match event {
+            Some(ProbationEvent::Crashes(after)) if after < window => {
+                self.world.borrow_mut().restart_service();
+                Ok(LinuxServiceWatch::Changed {
+                    after,
+                    observed: "active/running under a new invocation".to_owned(),
+                })
+            }
+            Some(ProbationEvent::InstallerDies(after)) if after < window => {
+                panic!("simulated installer loss {after:?} into probation")
+            }
+            Some(ProbationEvent::PowerCut(after)) if after < window => {
+                self.world.borrow_mut().power_cycle();
+                panic!("simulated power loss {after:?} into probation")
+            }
+            _ => Ok(LinuxServiceWatch::Steady),
+        }
+    }
+
     fn process_executable(
         &mut self,
         pid: u32,
@@ -789,6 +866,7 @@ impl Release {
             ))
             .expect("transaction"),
             target_policy: policy,
+            probation: DEFAULT_PROBATION_WINDOW,
         }
     }
 }
@@ -982,6 +1060,7 @@ impl Fixture {
             direct_fragment_path: self.world.borrow().fragment.clone(),
             immutable_units_root: old.root().join("units"),
             active_root: old.active_path(),
+            probation: Duration::ZERO,
         };
         let executor = SimExecutor {
             world: Rc::clone(&self.world),
@@ -2725,11 +2804,13 @@ fn a_prior_that_restarted_before_it_was_unloaded_abandons_without_any_effect() {
         active_unit,
         failure,
         abandoned,
+        restored,
     } = run.outcome
     else {
         panic!("expected an abandoned rollback: {:?}", run.outcome);
     };
     assert!(abandoned);
+    assert_eq!(restored, None, "an abandonment proves no restored release");
     assert_eq!(active_unit, Some(fixture.v1.id.clone()));
     assert!(failure.contains("abandoned at UnloadPrior"), "{failure}");
     assert_eq!(
@@ -3254,4 +3335,580 @@ fn a_second_power_loss_during_recovery_still_recovers_to_exactly_one_release() {
         }
     });
     eprintln!("{} double-loss cases recovered", cases.len());
+}
+
+// ── Probation ───────────────────────────────────────────────────────────
+
+impl Fixture {
+    /// The release the running service proves to be, as a rollback reports it.
+    fn running_release(&self, release: &Release) -> RestoredRelease {
+        let world = self.world.borrow();
+        let process = world.process.as_ref().expect("a release runs");
+        RestoredRelease {
+            unit: release.id.clone(),
+            version: world.running_version(),
+            instance: format!("{:032x}", world.invocation),
+            process_id: world.pid,
+            executable_sha256: process.sha256.clone(),
+        }
+    }
+
+    /// The probation windows held for `version`.
+    fn watches_for(&self, version: &str) -> Vec<(LinuxServiceIdentity, Duration)> {
+        self.world
+            .borrow()
+            .watches
+            .iter()
+            .filter(|(watched, _, _)| watched == version)
+            .map(|(_, identity, window)| (identity.clone(), *window))
+            .collect()
+    }
+}
+
+#[test]
+fn the_raw_installer_holds_every_started_candidate_for_the_default_window() {
+    let (fixture, location) = managed_v1();
+    let run = fixture.update(&fixture.v2).expect("update");
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v2.id.clone()
+        }
+    );
+    fixture.assert_managed(&location, &fixture.v2.id);
+    let running = fixture.running_release(&fixture.v2);
+    assert_eq!(
+        fixture.watches_for("9.8.8"),
+        [(
+            LinuxServiceIdentity {
+                invocation_id: running.instance,
+                main_pid: running.process_id,
+            },
+            Duration::from_secs(90)
+        )],
+        "one 90 s window over the identity the candidate still runs under"
+    );
+    assert_eq!(
+        fixture.watches_for("9.8.7").len(),
+        1,
+        "the first install's release was held through its window too"
+    );
+}
+
+#[test]
+fn a_candidate_that_crashes_89_seconds_into_probation_rolls_back_and_names_the_prior() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().in_probation =
+        Some(("9.8.8", ProbationEvent::Crashes(Duration::from_secs(89))));
+    let run = fixture
+        .update(&fixture.v2)
+        .expect("the same run settles the crash");
+    assert!(!run.recovered);
+    let InstallOutcome::RolledBack {
+        failure,
+        abandoned,
+        restored,
+        ..
+    } = run.outcome
+    else {
+        panic!("expected a rollback: {:?}", run.outcome);
+    };
+    assert!(!abandoned);
+    assert!(
+        failure.contains("probation 89.0 s into its 90 s window"),
+        "{failure}"
+    );
+    fixture.assert_managed(&location, &fixture.v1.id);
+    fixture.assert_settled_service("crash 89 s into probation");
+    assert_eq!(
+        restored,
+        Some(fixture.running_release(&fixture.v1)),
+        "the rollback names exactly the prior that runs again"
+    );
+}
+
+#[test]
+fn an_installer_lost_during_probation_holds_the_candidate_for_a_whole_window_again() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().in_probation = Some((
+        "9.8.8",
+        ProbationEvent::InstallerDies(Duration::from_secs(30)),
+    ));
+    let lost = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+    assert!(lost.is_err(), "the installer died in the window");
+    let pending = fixture.journal();
+    assert_eq!(
+        (pending.disposition, pending.next_action),
+        (
+            InstallDisposition::Forward,
+            Some(InstallAction::ProveCandidate)
+        )
+    );
+    assert!(pending.candidate_owner_receipt.is_some());
+    let effects = fixture.world.borrow().effects.len();
+
+    let run = fixture.update(&fixture.v2).expect("recovery");
+    assert!(run.recovered);
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v2.id.clone()
+        },
+        "an installer loss alone never rolls back a healthy candidate"
+    );
+    fixture.assert_managed(&location, &fixture.v2.id);
+    assert_eq!(
+        fixture.world.borrow().effects.len(),
+        effects,
+        "recovery only watched and proved; it changed nothing"
+    );
+    let watches = fixture.watches_for("9.8.8");
+    assert_eq!(watches.len(), 2, "the recovery held a second window");
+    assert_eq!(
+        watches[0], watches[1],
+        "both windows held the same candidate, under the same receipt"
+    );
+    assert_eq!(
+        watches[1].1,
+        Duration::from_secs(90),
+        "a whole window again"
+    );
+}
+
+#[test]
+fn a_power_cut_during_probation_rolls_back_to_the_prior_and_names_it() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().in_probation =
+        Some(("9.8.8", ProbationEvent::PowerCut(Duration::from_secs(20))));
+    let lost = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+    assert!(lost.is_err(), "power was lost in the window");
+    assert!(
+        fixture.world.borrow().queued_start,
+        "the user manager queued the candidate's autostart"
+    );
+
+    let run = fixture.update(&fixture.v2).expect("recovery");
+    assert!(run.recovered);
+    let InstallOutcome::RolledBack {
+        abandoned,
+        restored,
+        ..
+    } = run.outcome
+    else {
+        panic!("expected a rollback: {:?}", run.outcome);
+    };
+    // The candidate that autostarted runs under a new invocation, not the
+    // one its receipt and probation named.
+    assert!(!abandoned);
+    fixture.assert_managed(&location, &fixture.v1.id);
+    fixture.assert_settled_service("power cut in probation");
+    assert_eq!(restored, Some(fixture.running_release(&fixture.v1)));
+}
+
+// ── Read-only observation ───────────────────────────────────────────────
+
+fn daemon_path(location: &LinuxInstallLocation, unit: &UnitId) -> PathBuf {
+    location
+        .release_root()
+        .join("units")
+        .join(unit.as_str())
+        .join("bin/hypercolor-daemon")
+}
+
+#[test]
+fn observation_reads_an_empty_home_then_the_managed_install_it_records() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        observe_linux_installation(&fixture.home).expect("observe"),
+        LinuxInstallObservation::Absent
+    );
+
+    let (fixture, location) = managed_v1();
+    let observation = observe_linux_installation(&fixture.home).expect("observe");
+    let LinuxInstallObservation::Managed {
+        location: observed,
+        records,
+    } = &observation
+    else {
+        panic!("expected a managed installation: {observation:?}");
+    };
+    assert_eq!(observed, &location);
+    assert_eq!(records.release_root, location.release_root());
+    assert_eq!(records.active_unit.as_ref(), Some(&fixture.v1.id));
+    assert_eq!(
+        records.journal.as_ref().map(|journal| journal.disposition),
+        Some(InstallDisposition::Committed)
+    );
+    assert_eq!(records.pending_transaction(), None);
+    assert_eq!(
+        records.runnable_units(),
+        std::slice::from_ref(&fixture.v1.id)
+    );
+    assert_eq!(
+        records.daemon_unit(&daemon_path(&location, &fixture.v1.id)),
+        Some(fixture.v1.id.clone())
+    );
+    // Only a runnable unit's daemon, by its exact resolved path, counts.
+    for foreign in [
+        daemon_path(&location, &fixture.v2.id),
+        location.release_root().join("active/bin/hypercolor-daemon"),
+        daemon_path(&location, &fixture.v1.id).with_file_name("hypercolor"),
+        PathBuf::from("/usr/bin/hypercolor-daemon"),
+    ] {
+        assert_eq!(records.daemon_unit(&foreign), None, "{}", foreign.display());
+    }
+}
+
+#[test]
+fn observation_names_both_units_mid_transaction_and_never_takes_the_lock() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().in_probation = Some((
+        "9.8.8",
+        ProbationEvent::InstallerDies(Duration::from_secs(5)),
+    ));
+    assert!(catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2))).is_err());
+
+    // An installer holds the installation lock while the daemon observes.
+    let held = elect_linux_installation_with(&fixture.home, &fixture.private())
+        .expect("an installer holds the lock");
+    let state_before = directory_listing(location.state_root());
+    let observation = observe_linux_installation(&fixture.home).expect("observe under the lock");
+    assert_eq!(
+        directory_listing(location.state_root()),
+        state_before,
+        "observation writes nothing"
+    );
+    drop(held);
+
+    let records = observation.records().expect("records");
+    let pending = records.pending_transaction().expect("in flight");
+    assert_eq!(pending.next_action, Some(InstallAction::ProveCandidate));
+    assert_eq!(records.active_unit.as_ref(), Some(&fixture.v2.id));
+    assert_eq!(
+        records.runnable_units(),
+        [fixture.v2.id.clone(), fixture.v1.id.clone()],
+        "either side of the transaction may be running"
+    );
+    for unit in [&fixture.v1.id, &fixture.v2.id] {
+        assert_eq!(
+            records.daemon_unit(&daemon_path(&location, unit)).as_ref(),
+            Some(unit)
+        );
+    }
+}
+
+#[test]
+fn observation_of_a_historical_install_is_legacy() {
+    let fixture = Fixture::new();
+    fixture.legacy_install(&fixture.v1);
+    let observation = observe_linux_installation(&fixture.home).expect("observe");
+    let LinuxInstallObservation::Legacy(records) = observation else {
+        panic!("expected a historical install: {observation:?}");
+    };
+    assert_eq!(
+        records.release_root,
+        fixture.home.join(".local/lib/hypercolor")
+    );
+    assert_eq!(records.active_unit, Some(fixture.v1.id.clone()));
+}
+
+#[test]
+fn observation_refuses_a_managed_locator_without_its_recorded_identity() {
+    let (fixture, location) = managed_v1();
+    let identity = location.state_root().join("installation.json");
+    let saved = fs::read(&identity).expect("identity");
+    fs::remove_file(&identity).expect("remove identity");
+    assert!(matches!(
+        observe_linux_installation(&fixture.home),
+        Err(LinuxObservationError::Unprepared(_))
+    ));
+    fs::write(&identity, saved).expect("restore identity");
+}
+
+/// Names, sizes and modification times of a directory's entries.
+fn directory_listing(root: &Path) -> Vec<(PathBuf, u64, i64)> {
+    let mut entries: Vec<_> = fs::read_dir(root)
+        .expect("list")
+        .map(|entry| {
+            let entry = entry.expect("entry");
+            let metadata = entry.metadata().expect("metadata");
+            (entry.path(), metadata.len(), metadata.mtime())
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
+// ── Release collection ──────────────────────────────────────────────────
+
+/// Every entry in the release root's units directory.
+fn unit_entries(location: &LinuxInstallLocation) -> BTreeSet<String> {
+    fs::read_dir(location.release_root().join("units"))
+        .expect("units directory")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("UTF-8 name")
+        })
+        .collect()
+}
+
+fn names(units: &[&UnitId]) -> BTreeSet<String> {
+    units.iter().map(|unit| unit.as_str().to_owned()).collect()
+}
+
+fn collected(run: &hypercolor_cli::install::LinuxInstallRun) -> &UnitCollection {
+    run.collection
+        .as_ref()
+        .expect("a settled managed run collects")
+        .as_ref()
+        .expect("collection succeeded")
+}
+
+#[test]
+fn a_settled_upgrade_keeps_only_the_active_release_and_the_one_it_replaced() {
+    let (fixture, location) = managed_v1();
+    let run = fixture.update(&fixture.v2).expect("second release");
+    assert!(collected(&run).removed_units.is_empty());
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v1.id, &fixture.v2.id])
+    );
+
+    let run = fixture.update(&fixture.v3).expect("third release");
+    assert_eq!(
+        collected(&run).removed_units,
+        std::slice::from_ref(&fixture.v1.id)
+    );
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v2.id, &fixture.v3.id])
+    );
+    fixture.assert_managed(&location, &fixture.v3.id);
+}
+
+#[test]
+fn a_rollback_keeps_both_sides_for_the_next_install_and_removes_older_releases() {
+    let (fixture, location) = managed_v1();
+    fixture.update(&fixture.v2).expect("second release");
+    fixture
+        .world
+        .borrow_mut()
+        .failing_starts
+        .insert("9.8.9".to_owned());
+    let run = fixture
+        .update(&fixture.v3)
+        .expect("the failing release settles");
+    assert!(matches!(run.outcome, InstallOutcome::RolledBack { .. }));
+    // The next install proves its prior against this rolled-back record,
+    // which binds both of its units by file identity.
+    assert_eq!(
+        collected(&run).removed_units,
+        std::slice::from_ref(&fixture.v1.id)
+    );
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v2.id, &fixture.v3.id])
+    );
+    fixture.assert_managed(&location, &fixture.v2.id);
+
+    fixture.world.borrow_mut().failing_starts.clear();
+    let run = fixture.update(&fixture.v3).expect("retry");
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v3.id.clone()
+        }
+    );
+    assert!(collected(&run).removed_units.is_empty());
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v2.id, &fixture.v3.id])
+    );
+}
+
+#[test]
+fn collection_finishes_interrupted_staging_and_removal_and_leaves_foreign_entries() {
+    let (fixture, location) = managed_v1();
+    let units = location.release_root().join("units");
+    let staging = units.join(".hypercolor-stage-payload-4242-7");
+    fs::create_dir_all(staging.join("bin")).expect("interrupted staging");
+    fs::write(staging.join("bin/hypercolor-daemon"), b"partial").expect("staged file");
+    fs::set_permissions(staging.join("bin"), fs::Permissions::from_mode(0o555))
+        .expect("finalized staging mode");
+    let tombstone = units.join(format!(".hypercolor-removing-{}.4242-3", "e".repeat(64)));
+    fs::create_dir_all(tombstone.join("share")).expect("interrupted removal");
+    fs::write(units.join("notes.txt"), b"not ours").expect("foreign file");
+    // A file with a unit's name refuses removal, and collection goes on.
+    let odd = units.join("f".repeat(64));
+    fs::write(&odd, b"not a unit").expect("file named like a unit");
+    fs::create_dir(units.join("keep-me")).expect("foreign directory");
+    let journal_stage = location.state_root().join(".install-journal.json.4242.9");
+    fs::write(&journal_stage, b"{}").expect("interrupted journal write");
+
+    let run = fixture.update(&fixture.v2).expect("second release");
+    let collection = collected(&run);
+    for leftover in [&staging, &tombstone, &journal_stage] {
+        assert!(
+            collection.removed_leftovers.contains(leftover),
+            "{} not reported in {:?}",
+            leftover.display(),
+            collection.removed_leftovers
+        );
+        assert!(!leftover.exists(), "{} survived", leftover.display());
+    }
+    assert_eq!(
+        collection
+            .refused
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>(),
+        std::slice::from_ref(&odd)
+    );
+    assert!(odd.exists());
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v1.id, &fixture.v2.id])
+            .into_iter()
+            .chain(["f".repeat(64), "keep-me".to_owned(), "notes.txt".to_owned()])
+            .collect()
+    );
+}
+
+#[test]
+fn collection_never_removes_a_unit_an_unsettled_transaction_names() {
+    let (fixture, location) = managed_v1();
+    fixture.update(&fixture.v2).expect("second release");
+    fixture.world.borrow_mut().in_probation = Some((
+        "9.8.9",
+        ProbationEvent::InstallerDies(Duration::from_secs(5)),
+    ));
+    assert!(catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v3))).is_err());
+
+    let LinuxInstallElection::Managed { store, lock, .. } =
+        elect_linux_installation_with(&fixture.home, &fixture.private()).expect("election")
+    else {
+        panic!("expected managed authority");
+    };
+    let referenced = store.referenced_units(&lock).expect("referenced units");
+    for unit in [&fixture.v2.id, &fixture.v3.id] {
+        assert!(referenced.contains(unit), "{} is referenced", unit.as_str());
+        assert!(matches!(
+            store.remove_unit(&lock, unit),
+            Err(InstallStoreError::UnitReferenced(_))
+        ));
+    }
+    let collection = store.collect_units(&lock, &[]).expect("collect");
+    assert_eq!(
+        collection.removed_units,
+        std::slice::from_ref(&fixture.v1.id)
+    );
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v2.id, &fixture.v3.id])
+    );
+    assert!(
+        !store
+            .remove_unit(&lock, &fixture.v1.id)
+            .expect("already gone"),
+        "removing a unit that is not installed reports false"
+    );
+    drop((store, lock));
+
+    let run = fixture.update(&fixture.v3).expect("recovery");
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v3.id.clone()
+        }
+    );
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v2.id, &fixture.v3.id])
+    );
+}
+
+// ── Library use ─────────────────────────────────────────────────────────
+
+#[test]
+fn a_library_caller_prepares_binds_writes_and_drives_its_own_transaction() {
+    // The shape an update activator uses: elect authority, stage the
+    // candidate, bind the platform, prepare a journal under its own
+    // transaction ID, bind the exact initial journal to its own record,
+    // write it, then let the coordinator drive it. No CLI involved.
+    let (fixture, location) = managed_v1();
+    let LinuxInstallElection::Managed {
+        store,
+        mut lock,
+        authority,
+    } = elect_linux_installation_with(&fixture.home, &fixture.private()).expect("election")
+    else {
+        panic!("expected managed authority");
+    };
+    let candidate = fixture.v2.stage(&store, &lock);
+    let world = Rc::clone(&fixture.world);
+    let mut platform = bind_linux_platform(
+        &fixture.home,
+        |_, _, _| {
+            Ok(SimExecutor {
+                world,
+                active_root: None,
+            })
+        },
+        &store,
+        &lock,
+        LinuxPlatformInputs {
+            candidate: Some(&candidate),
+            journal: None,
+            managed: true,
+            original: None,
+            probation: DEFAULT_PROBATION_WINDOW,
+        },
+    )
+    .expect("bind the platform");
+    authority.confirm_durable().expect("durable authority");
+
+    let mut coordinator = InstallCoordinator::new(&store, &mut platform);
+    let journal = coordinator
+        .prepare_with_lock(
+            InstallRequest {
+                transaction_id: InstallTransactionId::new("update-01JZQ3V8ZK6F2N7QK9X4W5T1AB")
+                    .expect("transaction ID"),
+                candidate,
+                target_policy: InstallTargetPolicy::Preserve,
+            },
+            &lock,
+        )
+        .expect("prepare");
+    let bound = sha256(&serde_json::to_vec(&journal).expect("encode the initial journal"));
+    store.write_journal(&journal, &lock).expect("write");
+    let written = store.load_journal(&lock).expect("read").expect("present");
+    assert_eq!(
+        sha256(&serde_json::to_vec(&written).expect("encode")),
+        bound,
+        "the written journal is exactly the one the caller bound"
+    );
+    let outcome = coordinator
+        .recover_with_lock(&mut lock)
+        .expect("drive")
+        .expect("outcome");
+    assert_eq!(
+        outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v2.id.clone()
+        }
+    );
+    drop((platform, authority, lock, store));
+    fixture.assert_managed(&location, &fixture.v2.id);
+    assert_eq!(
+        fixture.watches_for("9.8.8").len(),
+        1,
+        "the library path holds the same probation window"
+    );
+    assert_eq!(
+        fixture.journal().transaction_id.as_str(),
+        "update-01JZQ3V8ZK6F2N7QK9X4W5T1AB"
+    );
 }

@@ -17,6 +17,7 @@ BASE_VERSION="${HC_GUEST_BASE_VERSION:-0.5.1}"
 GUEST_UID=1100
 GUEST_HOME=/home/qualification
 GUEST_RUNTIME="/run/user/${GUEST_UID}"
+GUEST_UNITS="${GUEST_HOME}/.local/share/hypercolor/releases/units"
 
 V_A="${BASE_VERSION}-qual.1"
 V_B="${BASE_VERSION}-qual.2"
@@ -356,6 +357,34 @@ expect_prop() {
 expect_output() {
     grep -qF -- "$1" "${LAST_INSTALL_OUTPUT}" || fail "installer output lacks: $1"
     log "  ok: installer said: $1"
+}
+
+# A rollback report names the release that runs again, and it is exactly
+# the process systemd shows for the service.
+expect_restored_receipt() {
+    local version="$1" line pid invocation
+    line="$(grep -m1 -oE 'rolled back: [^ ]+ \(unit [0-9a-f]{64}\) runs again as pid [0-9]+, invocation [0-9a-f]+' \
+        "${LAST_INSTALL_OUTPUT}" || true)"
+    [[ -n "${line}" ]] || fail "installer output names no restored release"
+    [[ "${line}" == "rolled back: ${version} (unit $(unit_of "${version}")) runs again as pid "* ]] ||
+        fail "the restored release is not ${version}: ${line}"
+    pid="$(sed -E 's/.* pid ([0-9]+),.*/\1/' <<<"${line}")"
+    invocation="$(sed -E 's/.*invocation ([0-9a-f]+)$/\1/' <<<"${line}")"
+    [[ "$(service_prop MainPID)" == "${pid}" ]] ||
+        fail "restored pid ${pid} is not the service's MainPID $(service_prop MainPID)"
+    [[ "$(service_prop InvocationID)" == "${invocation}" ]] ||
+        fail "restored invocation ${invocation} is not the service's $(service_prop InvocationID)"
+    log "  ok: the rollback names ${version} as pid ${pid}, invocation ${invocation}"
+}
+
+# The releases directory holds exactly the units of these versions.
+expect_units() {
+    local expected actual version
+    expected="$(for version in "$@"; do unit_of "${version}"; done | sort)"
+    actual="$(gx ls -A "${GUEST_UNITS}" | sort)"
+    [[ "${actual}" == "${expected}" ]] ||
+        fail "units are $(tr '\n' ' ' <<<"${actual}"), expected those of $*"
+    log "  ok: units are exactly those of $*"
 }
 
 wait_active() {

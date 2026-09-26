@@ -42,6 +42,7 @@ scenario_restart_after_receipt() {
     expect_output "drift before ProveCandidate"
     expect_active "${V_A}"
     expect_health "${V_A}"
+    expect_restored_receipt "${V_A}"
 }
 
 # The candidate is killed while the proof waits on /health; the same run
@@ -58,6 +59,7 @@ scenario_crash_in_proof() {
     expect_output "failed during ProveCandidate"
     expect_active "${V_A}"
     expect_health "${V_A}"
+    expect_restored_receipt "${V_A}"
 }
 
 # The prior stops slowly, the installer dies at UnloadPrior, power is cut,
@@ -111,6 +113,7 @@ scenario_stop_first_failing() {
     expect_output "failed during RestoreCandidateRuntime"
     expect_active "${V_A}"
     expect_health "${V_A}"
+    expect_restored_receipt "${V_A}"
     expect_prop ActiveState active
 }
 
@@ -149,6 +152,7 @@ scenario_disabled_running() {
     expect_output "failed during RestoreCandidateRuntime"
     expect_active "${V_A}"
     expect_health "${V_A}"
+    expect_restored_receipt "${V_A}"
     expect_prop UnitFileState disabled
 
     install_run healthy "${V_C}"
@@ -192,6 +196,113 @@ scenario_slow_start_beyond() {
     expect_output "failed during RestoreCandidateRuntime"
     expect_active "${V_A}"
     expect_health "${V_A}"
+    expect_restored_receipt "${V_A}"
     ((DRIVER_ELAPSED_MS < 30000)) || fail "rollback took ${DRIVER_ELAPSED_MS} ms, past the ready delay"
     log "  ok: rolled back after ${DRIVER_ELAPSED_MS} ms"
+}
+
+# ─── Probation, restored-release receipts and unit collection ───────────
+#
+# These need an installer with a probation window (90 s by default) and
+# rollback reports that name the restored release. Fresh installs of the
+# prior skip the window to keep the scenarios short.
+
+# A healthy candidate commits only after it stayed up, under one
+# invocation, for the whole default window.
+scenario_probation_healthy() {
+    install_run fresh "${V_A}" -- --probation-seconds 0
+    expect_exit 0
+
+    install_run upgrade "${V_B}"
+    expect_exit 0
+    expect_journal committed
+    expect_active "${V_B}"
+    expect_health "${V_B}"
+    expect_prop NRestarts 0
+    ((DRIVER_ELAPSED_MS >= 90000)) || fail "committed after ${DRIVER_ELAPSED_MS} ms, inside the window"
+    log "  ok: committed after ${DRIVER_ELAPSED_MS} ms"
+}
+
+# The candidate crashes 89 s after it became ready, a second before the
+# window ends. The same run rolls back and reports the release that runs
+# again, which is exactly the process systemd shows.
+scenario_probation_crash_late() {
+    install_run fresh "${V_A}" -- --probation-seconds 0
+    expect_exit 0
+    set_faults "${V_B}" crash_after_ready_ms=89000
+
+    install_run upgrade "${V_B}"
+    expect_exit nonzero
+    expect_journal rolled_back
+    expect_output "probation"
+    expect_active "${V_A}"
+    expect_health "${V_A}"
+    expect_restored_receipt "${V_A}"
+    ((DRIVER_ELAPSED_MS >= 89000 && DRIVER_ELAPSED_MS < 120000)) ||
+        fail "rolled back after ${DRIVER_ELAPSED_MS} ms, not at the crash"
+    log "  ok: rolled back after ${DRIVER_ELAPSED_MS} ms"
+}
+
+# The installer dies 30 s into the window. The candidate keeps running
+# under the same invocation, and the rerun watches it for a whole window
+# again before it commits.
+scenario_probation_installer_killed() {
+    install_run fresh "${V_A}" -- --probation-seconds 0
+    expect_exit 0
+
+    install_run interrupted "${V_B}" --kill-at prove_candidate --with-receipt --delay-ms 30000
+    expect_acted kill_installer
+    local invocation
+    invocation="$(service_prop InvocationID)"
+    snapshot before-recovery
+
+    install_run recovery "${V_B}"
+    expect_exit 0
+    expect_journal committed
+    expect_active "${V_B}"
+    expect_health "${V_B}"
+    [[ "$(service_prop InvocationID)" == "${invocation}" ]] ||
+        fail "the candidate restarted during recovery"
+    ((DRIVER_ELAPSED_MS >= 90000)) ||
+        fail "recovery committed after ${DRIVER_ELAPSED_MS} ms, without a whole window"
+    log "  ok: same invocation ${invocation}; recovery committed after ${DRIVER_ELAPSED_MS} ms"
+}
+
+# Power is cut 20 s into the window. The candidate autostarts under a new
+# invocation, not the one on probation, so recovery rolls back and reports
+# the prior.
+scenario_probation_power_cut() {
+    install_run fresh "${V_A}" -- --probation-seconds 0
+    expect_exit 0
+
+    install_run interrupted "${V_B}" --kill-at prove_candidate --with-receipt --delay-ms 20000
+    expect_acted kill_installer
+    power_cut
+    wait_active
+    expect_health "${V_B}"
+    snapshot before-recovery
+
+    install_run recovery "${V_B}"
+    expect_exit nonzero
+    expect_journal rolled_back
+    expect_active "${V_A}"
+    expect_health "${V_A}"
+    expect_restored_receipt "${V_A}"
+}
+
+# After three installs only the active release and the one it replaced
+# remain, and what an interrupted staging left behind is gone.
+scenario_units_collected() {
+    install_run first "${V_A}" -- --probation-seconds 0
+    expect_exit 0
+    install_run second "${V_B}" -- --probation-seconds 0
+    expect_exit 0
+    gx mkdir -p "${GUEST_UNITS}/.hypercolor-stage-payload-4242-0/bin"
+    gx touch "${GUEST_UNITS}/.hypercolor-stage-payload-4242-0/bin/hypercolor-daemon"
+
+    install_run third "${V_C}" -- --probation-seconds 0
+    expect_exit 0
+    expect_journal committed
+    expect_active "${V_C}"
+    expect_units "${V_B}" "${V_C}"
 }

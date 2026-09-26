@@ -73,6 +73,17 @@ fn execute_linux(args: &InstallReleaseArgs) -> Result<()> {
     )
 }
 
+pub(crate) fn parse_probation_seconds(value: &str) -> Result<u64, String> {
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|_| "probation must be a whole number of seconds".to_owned())?;
+    let limit = crate::install::MAX_PROBATION_WINDOW.as_secs();
+    if seconds > limit {
+        return Err(format!("probation may be at most {limit} seconds"));
+    }
+    Ok(seconds)
+}
+
 fn require_candidate_committed(
     outcome: crate::install::InstallOutcome,
     candidate: &crate::install::UnitId,
@@ -91,8 +102,19 @@ fn require_candidate_committed(
             active_unit,
             failure,
             abandoned,
+            restored,
         } => {
             let action = if recovery { "recovery" } else { "installation" };
+            if let Some(release) = restored {
+                bail!(
+                    "release {action} rolled back: {version} (unit {unit}) runs again as pid \
+                     {pid}, invocation {instance}: {failure}",
+                    version = release.version,
+                    unit = release.unit.as_str(),
+                    pid = release.process_id,
+                    instance = release.instance,
+                )
+            }
             let restored = active_unit
                 .as_ref()
                 .map_or("none", crate::install::UnitId::as_str);
@@ -193,7 +215,7 @@ fn require_bounded_absolute(path: &Path, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{require_bounded_absolute, require_candidate_committed};
-    use crate::install::{InstallOutcome, UnitId};
+    use crate::install::{InstallOutcome, RestoredRelease, UnitId};
     use std::path::Path;
 
     #[cfg(target_os = "linux")]
@@ -263,6 +285,7 @@ mod tests {
                 active_unit: None,
                 failure: "candidate owner proof failed".to_owned(),
                 abandoned: false,
+                restored: None,
             },
             &candidate,
             false,
@@ -279,6 +302,7 @@ mod tests {
                 active_unit: Some(UnitId::new("c".repeat(64)).expect("prior unit")),
                 failure: "baseline lost".to_owned(),
                 abandoned: true,
+                restored: None,
             },
             &candidate,
             true,
@@ -290,5 +314,47 @@ mod tests {
             "{abandoned}"
         );
         assert!(abandoned.contains("rerun the installer"), "{abandoned}");
+
+        let prior = UnitId::new("d".repeat(64)).expect("prior unit");
+        let restored = require_candidate_committed(
+            InstallOutcome::RolledBack {
+                active_unit: Some(prior.clone()),
+                failure: "candidate failed probation".to_owned(),
+                abandoned: false,
+                restored: Some(RestoredRelease {
+                    unit: prior.clone(),
+                    version: "0.5.1".to_owned(),
+                    instance: "e".repeat(32),
+                    process_id: 4242,
+                    executable_sha256: "f".repeat(64),
+                }),
+            },
+            &candidate,
+            false,
+        )
+        .expect_err("a rollback is not a successful install")
+        .to_string();
+        assert!(
+            restored.contains(&format!(
+                "rolled back: 0.5.1 (unit {}) runs again as pid 4242, invocation {}",
+                prior.as_str(),
+                "e".repeat(32)
+            )),
+            "{restored}"
+        );
+        assert!(
+            restored.contains("candidate failed probation"),
+            "{restored}"
+        );
+    }
+
+    #[test]
+    fn probation_seconds_are_whole_and_bounded() {
+        assert_eq!(super::parse_probation_seconds("0"), Ok(0));
+        assert_eq!(super::parse_probation_seconds("90"), Ok(90));
+        assert_eq!(super::parse_probation_seconds("600"), Ok(600));
+        assert!(super::parse_probation_seconds("601").is_err());
+        assert!(super::parse_probation_seconds("-1").is_err());
+        assert!(super::parse_probation_seconds("1.5").is_err());
     }
 }

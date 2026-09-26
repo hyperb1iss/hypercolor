@@ -1,0 +1,33 @@
+[package]
+name = "hypercolor-install"
+description = "Transactional release installer for Hypercolor: install journal, coordinator, and the Linux and macOS platforms"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-platform-fs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+zbus = { workspace = true }
+futures-util = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# Tests serve an independent peer-to-peer manager to the client.
+zbus = { workspace = true, features = ["p2p"] }
+tempfile = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+hypercolor-macos-owner = { workspace = true }
+security-framework = "3.7.0"

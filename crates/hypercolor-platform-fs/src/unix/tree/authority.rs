@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::fs::{self, File, TryLockError};
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rustix::fs::{AtFlags, CWD, Mode, OFlags, mkdirat, openat, unlinkat};
@@ -99,6 +99,22 @@ impl ReadOnlyDirectoryAuthority {
     /// invalid-data for a non-normal entry name.
     pub fn entries(&self) -> io::Result<Vec<OsString>> {
         directory_entries(&self.directory)
+    }
+
+    /// Read one symbolic-link target through the retained handle, without
+    /// following it.
+    ///
+    /// Missing entries return `Ok(None)`. Existing entries that are not
+    /// symbolic links are rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-input for an unsafe name or a non-symbolic-link
+    /// entry, and the operating-system error when inspection or reading
+    /// fails.
+    pub fn read_symlink(&self, name: &Path) -> io::Result<Option<PathBuf>> {
+        let name = entry_name(name, "symbolic-link name")?;
+        super::entry::read_symlink_at(&self.directory, name)
     }
 
     /// Inspect one normal child without following a symbolic link.

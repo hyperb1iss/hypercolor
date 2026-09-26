@@ -18,7 +18,7 @@ record.
 
 | What | Default location | Notes |
 | --- | --- | --- |
-| Releases | `${XDG_DATA_HOME:-~/.local/share}/hypercolor/releases` | One read-only directory per installed release, plus an `active` link to the running one |
+| Releases | `${XDG_DATA_HOME:-~/.local/share}/hypercolor/releases` | The running release and the one before it, each in its own read-only directory, plus an `active` link to the running one |
 | Update state | `${XDG_STATE_HOME:-~/.local/state}/hypercolor/update` | Transaction journal, lock and installation record, private to you |
 | Locator | `~/.local/lib/hypercolor/install-journal.json` | Points every installer at the recorded locations |
 | Upgrade target | `~/.local/lib/hypercolor/managed-adoption.json` | Written once an upgrade from an older install has proven its locations, before it copies or prepares anything there |
@@ -27,6 +27,12 @@ record.
 | Your data | `${XDG_DATA_HOME:-~/.local/share}/hypercolor` | Scenes, layouts, credentials, user effects |
 | Your runtime state | `${XDG_STATE_HOME:-~/.local/state}/hypercolor` | Daemon session and device identity, beside `update` |
 | Your configuration | `${XDG_CONFIG_HOME:-~/.config}/hypercolor` | Daemon and CLI configuration |
+
+Every install ends by removing releases nothing needs any more. It keeps the
+running release, the release it replaced, and after a rollback the release
+that failed (the next install checks its own starting point against that
+record). Older releases go, along with anything an interrupted copy or
+removal left behind.
 
 The installer sets exact permissions on every directory it creates, whatever
 your umask is: `0755` for the data and releases directories, and `0700` for the
@@ -71,6 +77,28 @@ recovery always continues in the new layout.
 Once an install has switched, older copies of the installer stop before they
 change the service, launcher, command links or locator, instead of managing a
 second, independent copy. Use a current installer from then on.
+
+## A new release must stay up before it commits
+
+After the installer starts a new release and proves it healthy (the service
+runs that release's own daemon, and the daemon's local API answers with the
+release's version), it keeps watching the service for 90 seconds before it
+commits the upgrade. If the daemon crashes, restarts, stops, or is killed by
+its watchdog in that window, the upgrade rolls back at once and the previous
+release runs again. At the end of the window the installer checks the daemon
+and its API again, which catches a daemon that still runs but no longer
+answers. The watch follows systemd's own change notifications; it does not
+poll the daemon.
+
+After a rollback the installer names the release that runs again, with its
+process ID and systemd invocation, so you can match it against
+`systemctl --user status hypercolor`.
+
+If the installer itself is interrupted during the window, run it again: the
+new release is watched for a whole window again and then committed. If the
+machine loses power during the window, the new release is rolled back,
+because the release systemd starts at boot is not the one that was being
+watched.
 
 ## When an upgrade is interrupted
 

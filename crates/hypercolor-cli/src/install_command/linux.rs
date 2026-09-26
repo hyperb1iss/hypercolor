@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use hypercolor_platform_fs::ReadOnlyDirectoryAuthority;
@@ -31,13 +32,38 @@ pub(super) fn execute(
         } else {
             InstallTargetPolicy::EnableOnFirstInstall
         },
+        probation: Duration::from_secs(args.probation_seconds),
     };
+    if args.probation_seconds > 0 {
+        println!(
+            "A release this install starts must stay up for {} seconds before the install commits it.",
+            args.probation_seconds
+        );
+    }
     let mut host = NativeHost {
         args,
         source,
         executable,
     };
     let run = run_linux_install(home, &request, &OwnershipPolicy::system(), &mut host)?;
+    match &run.collection {
+        Some(Ok(collection)) if !collection.removed_units.is_empty() => println!(
+            "Removed {} older release{} that nothing uses any more.",
+            collection.removed_units.len(),
+            if collection.removed_units.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ),
+        Some(Err(error)) => eprintln!("warning: older releases were not removed: {error}"),
+        _ => {}
+    }
+    if let Some(Ok(collection)) = &run.collection {
+        for (path, reason) in &collection.refused {
+            eprintln!("warning: left {} in place: {reason}", path.display());
+        }
+    }
     super::require_candidate_committed(run.outcome, &args.expected_manifest_sha256, run.recovered)
 }
 
@@ -159,7 +185,3 @@ fn proposed_location_with(
 #[cfg(test)]
 #[path = "linux_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "linux_binding_tests.rs"]
-mod binding_tests;
