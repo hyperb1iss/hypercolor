@@ -3,7 +3,7 @@ use std::path::Path;
 
 use sha2::{Digest as _, Sha256};
 
-use super::super::{InstallPlatformError, PlatformCheckpoint, PlatformState, UnitRecord};
+use super::super::{InstallPlatformError, PlatformCheckpoint, PlatformState, UnitId, UnitRecord};
 use super::LinuxInstallPlatform;
 use super::executor::LinuxInstallExecutor;
 use super::model::{
@@ -11,6 +11,9 @@ use super::model::{
     LinuxOwnerReceipt, LinuxRecord, LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch,
     LinuxSystemdObservation, LinuxUnitBinding, MAX_HTTP_RESPONSE_BYTES, MAX_SYSTEMD_SHOW_BYTES,
     error, parse_systemd_show,
+};
+use super::service::{
+    CONTRACT_LINE_PREFIX, LinuxServiceInput, LinuxServiceRenderer, unit_contract,
 };
 use super::systemd::canonical_launcher_exec;
 
@@ -30,8 +33,61 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         retained_unit_binding(unit, units_root)
     }
 
-    pub(super) fn candidate_launcher(&self) -> Result<LinuxLauncher, InstallPlatformError> {
-        render_launcher(&self.config.active_root, self.config.managed.as_ref())
+    /// The unit this installation renders for `unit`: under its service
+    /// renderer for a managed installation, the direct unit through
+    /// `active` for the historical root.
+    pub(super) fn service_for_unit(
+        &self,
+        unit: &UnitId,
+    ) -> Result<LinuxLauncher, InstallPlatformError> {
+        match &self.config.managed {
+            Some(location) => render_managed(
+                &self.config.service,
+                &self.config.immutable_units_root,
+                unit,
+                location,
+            )
+            .map(|(launcher, _)| launcher),
+            None => render_direct(&self.config.active_root),
+        }
+    }
+
+    /// Render `unit` again under the contract the `recorded` unit names, to
+    /// validate a transaction's recorded candidate unit.
+    pub(super) fn rerender_service(
+        &self,
+        unit: &UnitId,
+        recorded: &[u8],
+    ) -> Result<LinuxLauncher, InstallPlatformError> {
+        let Some(contract) = unit_contract(recorded) else {
+            return render_direct(&self.config.active_root);
+        };
+        let location = self
+            .config
+            .managed
+            .as_ref()
+            .ok_or_else(|| error("the historical root runs no contract service unit"))?;
+        render_managed(
+            &self.renderer_for(contract)?,
+            &self.config.immutable_units_root,
+            unit,
+            location,
+        )
+        .map(|(launcher, _)| launcher)
+    }
+
+    /// The renderer for `contract`: this installation's own, or the public
+    /// one every build carries.
+    fn renderer_for(&self, contract: &str) -> Result<LinuxServiceRenderer, InstallPlatformError> {
+        [self.config.service, LinuxServiceRenderer::PUBLIC]
+            .into_iter()
+            .find(|renderer| renderer.contract() == contract)
+            .ok_or_else(|| {
+                error(format!(
+                    "the service unit was rendered under contract {contract}, which this \
+                     build does not know"
+                ))
+            })
     }
 
     pub(super) fn layout_target(
@@ -44,72 +100,60 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
     }
 }
 
-/// Render the exact generated service unit.
-///
-/// The historical root's unit runs the daemon straight through `active`.
-/// A managed installation's unit runs it through the installation's stable
-/// launcher, which selects one release and derives the daemon's UI and
-/// effects directories from that same release, inside a sandbox that makes
-/// everything read-only except the recorded configuration, data and daemon
-/// state roots and the coordinator's directory, with the release root and
-/// the update state root read-only beneath them. systemd refuses to build
-/// that sandbox around a writable root that does not exist, so the launcher
-/// first runs unsandboxed (`ExecStartPre=+`) to create any recorded root a
-/// user deleted. The text depends only on the recorded location, so it is
-/// the same for every release of launcher contract 1.
+/// Render a managed installation's unit for `unit` under `renderer`, with
+/// the contract line first, and the daemon arguments it runs with.
 ///
 /// # Errors
-/// Refuses a non-UTF-8 root or a launcher that exceeds its byte bound.
-pub(super) fn render_launcher(
-    active_root: &Path,
-    managed: Option<&super::LinuxInstallLocation>,
-) -> Result<LinuxLauncher, InstallPlatformError> {
-    let text = |path: &Path| {
-        path.to_str()
-            .map(str::to_owned)
-            .ok_or_else(|| error("Linux install roots must be exact UTF-8"))
-    };
-    let (prepare, launcher_exec, sandbox) = match managed {
-        None => {
-            let active = text(active_root)?;
-            (
-                String::new(),
-                format!(
-                    "{active}/bin/hypercolor-daemon --ui-dir {active}/share/hypercolor/ui --effects-dir {active}/share/hypercolor/effects/bundled"
-                ),
-                String::new(),
-            )
-        }
-        Some(location) => {
-            if active_root != location.release_root().join("active") {
-                return Err(error(
-                    "the managed service must select the recorded release root",
-                ));
-            }
-            let launcher = text(&super::bootstrap::linux_launcher_path(location))?;
-            let state = text(location.state_root())?;
-            let command = super::bootstrap::LINUX_LAUNCH_COMMAND;
-            (
-                format!(
-                    "ExecStartPre=+{launcher} {command} --role {}\n",
-                    super::launch::LinuxLaunchRole::PrepareRoots.as_str()
-                ),
-                format!(
-                    "{launcher} {command} --role {}",
-                    super::launch::LinuxLaunchRole::Daemon.as_str()
-                ),
-                format!(
-                    "ProtectSystem=strict\nProtectHome=read-only\nPrivateTmp=true\nNoNewPrivileges=true\nReadWritePaths={config} {data} {daemon_state} -{state}/coordinator\nReadOnlyPaths={releases} {state}\n",
-                    config = text(location.config_root())?,
-                    data = text(location.data_root())?,
-                    daemon_state = text(location.daemon_state_root())?,
-                    releases = text(location.release_root())?,
-                ),
-            )
-        }
-    };
+/// Refuses a renderer whose unit is not one `Type=notify` service with one
+/// `ExecStart`, names no daemon arguments, or exceeds the unit byte bound.
+pub(super) fn render_managed(
+    renderer: &LinuxServiceRenderer,
+    units_root: &Path,
+    unit: &UnitId,
+    location: &super::LinuxInstallLocation,
+) -> Result<(LinuxLauncher, Vec<String>), InstallPlatformError> {
+    let release = units_root.join(unit.as_str());
+    let rendered = renderer.render(&LinuxServiceInput {
+        release: &release,
+        location,
+    })?;
+    if rendered.daemon_arguments.is_empty() {
+        return Err(error("a rendered service names no daemon arguments"));
+    }
     let bytes = format!(
-        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\n{prepare}ExecStart={launcher_exec}\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n{sandbox}\n[Install]\nWantedBy=default.target\n"
+        "{CONTRACT_LINE_PREFIX}{}\n{}",
+        renderer.contract(),
+        rendered.unit
+    )
+    .into_bytes();
+    if bytes.len() > super::model::MAX_LAUNCHER_BYTES {
+        return Err(error("rendered Linux launcher exceeds its byte bound"));
+    }
+    let exec_start = require_notify_launcher(&bytes)?;
+    Ok((
+        LinuxLauncher {
+            mode: LAUNCHER_MODE,
+            bytes,
+            exec_start,
+        },
+        rendered.daemon_arguments,
+    ))
+}
+
+/// Render the historical direct unit, which runs the daemon straight
+/// through `active` without a sandbox.
+///
+/// # Errors
+/// Refuses a non-UTF-8 root or a unit that exceeds its byte bound.
+pub(super) fn render_direct(active_root: &Path) -> Result<LinuxLauncher, InstallPlatformError> {
+    let active = active_root
+        .to_str()
+        .ok_or_else(|| error("Linux install roots must be exact UTF-8"))?;
+    let launcher_exec = format!(
+        "{active}/bin/hypercolor-daemon --ui-dir {active}/share/hypercolor/ui --effects-dir {active}/share/hypercolor/effects/bundled"
+    );
+    let bytes = format!(
+        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={launcher_exec}\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n\n[Install]\nWantedBy=default.target\n"
     )
     .into_bytes();
     if bytes.len() > super::model::MAX_LAUNCHER_BYTES {
@@ -167,15 +211,19 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                 .filter(|prior| &prior.unit == unit)
                 .ok_or_else(|| error("prior owner proof requested an unknown unit"))?
         };
-        let expected_exec = if candidate_owner {
-            &record
+        let (unit_bytes, expected_exec) = if candidate_owner {
+            let launcher = record
                 .candidate_launcher
                 .as_ref()
-                .ok_or_else(|| error("running candidate lacks launcher metadata"))?
-                .exec_start
+                .ok_or_else(|| error("running candidate lacks launcher metadata"))?;
+            (launcher.bytes.as_slice(), launcher.exec_start.clone())
         } else {
-            &require_notify_launcher(&record.prior_launcher_bytes)?
+            (
+                record.prior_launcher_bytes.as_slice(),
+                require_notify_launcher(&record.prior_launcher_bytes)?,
+            )
         };
+        let expected_exec = &expected_exec;
         require_running_observation(&before, &self.config.direct_fragment_path, expected_exec)?;
         if before.invocation_id == record.baseline_systemd.invocation_id {
             return Err(error("systemd owner invocation is not fresh"));
@@ -210,7 +258,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                 "/proc executable identity does not match the immutable unit",
             ));
         }
-        self.require_daemon_arguments(&process, &before.exec_start, binding)?;
+        self.require_daemon_arguments(&process, unit_bytes, &before.exec_start, binding)?;
         verify_http(
             self.executor.http_get("/health", MAX_HTTP_RESPONSE_BYTES)?,
             self.executor
@@ -342,7 +390,12 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                 "prior /proc executable identity does not match its retained unit",
             ));
         }
-        self.require_daemon_arguments(&process, &before.exec_start, binding)?;
+        self.require_daemon_arguments(
+            &process,
+            &record.prior_launcher_bytes,
+            &before.exec_start,
+            binding,
+        )?;
         verify_http(
             self.executor.http_get("/health", MAX_HTTP_RESPONSE_BYTES)?,
             self.executor
@@ -358,25 +411,27 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
 }
 
 impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
-    /// Prove the daemon runs with the UI and effects directories of the
-    /// same release its executable belongs to.
+    /// Prove the daemon runs with the arguments its unit gives it, which
+    /// for a managed unit name the UI and effects of the daemon's own
+    /// release.
     ///
-    /// Under the launcher, every path comes from the one release it
-    /// selected, so the arguments name exactly that release's directories.
-    /// Under a direct unit they are the unit's own `ExecStart` arguments.
-    /// Legacy snapshots, whose historical units this installer did not
-    /// write, keep only the executable proof.
+    /// A unit rendered under a contract this build knows gives the
+    /// renderer's daemon arguments; a direct unit, or one that differs from
+    /// its contract's rendering, gives its own `ExecStart` arguments; a unit
+    /// under a contract this build does not know, and legacy snapshots,
+    /// whose historical units this installer did not write, keep only the
+    /// executable proof.
     pub(super) fn require_daemon_arguments(
         &self,
         process: &super::model::LinuxProcessExecutable,
+        unit_bytes: &[u8],
         exec_start: &str,
         binding: &LinuxUnitBinding,
     ) -> Result<(), InstallPlatformError> {
-        if binding.unit.as_str().starts_with("legacy-") {
+        let Some(expected) = self.expected_daemon_arguments(unit_bytes, exec_start, binding)?
+        else {
             return Ok(());
-        }
-        let expected =
-            expected_daemon_arguments(exec_start, self.config.managed.as_ref(), binding)?;
+        };
         if process.arguments != expected {
             return Err(error(format!(
                 "the daemon of {} runs with arguments {:?}, not {:?}",
@@ -387,42 +442,37 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         }
         Ok(())
     }
-}
 
-/// The argument vector the daemon of `binding` runs with when its service's
-/// canonical `ExecStart` is `exec_start`.
-pub(super) fn expected_daemon_arguments(
-    exec_start: &str,
-    managed: Option<&super::LinuxInstallLocation>,
-    binding: &LinuxUnitBinding,
-) -> Result<Vec<String>, InstallPlatformError> {
-    let words: Vec<String> = serde_json::from_str(exec_start)
-        .map_err(|_| error("canonical ExecStart argument vector is malformed"))?;
-    let launched = managed.is_some_and(|location| {
-        super::bootstrap::linux_launcher_path(location).to_str()
-            == words.first().map(String::as_str)
-            && words[1..]
-                == [
-                    super::bootstrap::LINUX_LAUNCH_COMMAND,
-                    "--role",
-                    super::launch::LinuxLaunchRole::Daemon.as_str(),
-                ]
-    });
-    if !launched {
-        return Ok(words);
+    fn expected_daemon_arguments(
+        &self,
+        unit_bytes: &[u8],
+        exec_start: &str,
+        binding: &LinuxUnitBinding,
+    ) -> Result<Option<Vec<String>>, InstallPlatformError> {
+        if binding.unit.as_str().starts_with("legacy-") {
+            return Ok(None);
+        }
+        let words: Vec<String> = serde_json::from_str(exec_start)
+            .map_err(|_| error("canonical ExecStart argument vector is malformed"))?;
+        let Some(contract) = unit_contract(unit_bytes) else {
+            return Ok(Some(words));
+        };
+        let (Some(location), Ok(renderer)) = (&self.config.managed, self.renderer_for(contract))
+        else {
+            return Ok(None);
+        };
+        let (rendered, arguments) = render_managed(
+            &renderer,
+            &self.config.immutable_units_root,
+            &binding.unit,
+            location,
+        )?;
+        Ok(Some(if rendered.bytes == unit_bytes {
+            arguments
+        } else {
+            words
+        }))
     }
-    let release = Path::new(&binding.daemon_path)
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::to_str)
-        .ok_or_else(|| error("the daemon path names no release directory"))?;
-    Ok(vec![
-        binding.daemon_path.clone(),
-        "--ui-dir".to_owned(),
-        format!("{release}/share/hypercolor/ui"),
-        "--effects-dir".to_owned(),
-        format!("{release}/share/hypercolor/effects/bundled"),
-    ])
 }
 
 pub(super) fn retained_unit_binding(

@@ -15,14 +15,10 @@ use super::super::{
     InstallTargetPolicy, InstallTransactionId, OwnershipPolicy, PlatformTransactionRecord,
     UnitCollection, UnitId, UnitRecord,
 };
-use super::bootstrap::{
-    ensure_linux_launcher, ensure_linux_update_directories, inspect_linux_launcher,
-    record_linux_launcher_settled,
-};
 use super::{
     LinuxAdoption, LinuxAdoptionError, LinuxInstallConfig, LinuxInstallElection,
     LinuxInstallExecutor, LinuxInstallLocation, LinuxInstallPlatform, LinuxLocatorError,
-    LinuxPublicTree, elect_linux_installation_with, retain_linux_unit,
+    LinuxPublicTree, LinuxServiceRenderer, elect_linux_installation_with, retain_linux_unit,
 };
 
 /// Durable boundaries of one install run where a crash leaves disk state.
@@ -44,10 +40,6 @@ pub enum LinuxInstallCheckpoint {
     PriorActivated,
     /// The running candidate is staged into the elected release root.
     CandidateStaged,
-    /// The installation's launcher is proven, published from the staged
-    /// candidate when the installation had none, and the update state's
-    /// `coordinator/` and `activator/` directories exist.
-    LauncherReady,
     /// The adoption receipt binding legacy state to the journal is durable.
     AdoptionReceipt,
     /// The initial managed journal is durable in the state root.
@@ -98,6 +90,12 @@ pub trait LinuxInstallHost {
         tree: LinuxPublicTree,
     ) -> Result<Self::Executor, InstallPlatformError>;
 
+    /// The renderer for a managed installation's service unit. A build
+    /// that renders its own unit returns its renderer here.
+    fn service_renderer(&self) -> LinuxServiceRenderer {
+        LinuxServiceRenderer::PUBLIC
+    }
+
     /// Observe one durable boundary.
     ///
     /// # Errors
@@ -134,10 +132,6 @@ pub struct LinuxInstallRun {
     /// or why it could not. `None` when it did not collect: the run
     /// settled the historical root, whose next install adopts it.
     pub collection: Option<Result<UnitCollection, String>>,
-    /// Whether a committed managed run recorded its launcher as settled,
-    /// or why it could not. `None` when the run did not commit a managed
-    /// installation.
-    pub settled_launcher: Option<Result<(), String>>,
 }
 
 /// A run that could not settle, with the stage that refused it.
@@ -219,6 +213,7 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                         managed: None,
                         original: None,
                         probation: request.probation,
+                        service: host.service_renderer(),
                     },
                 )?;
                 return recover(&store, &mut lock, &mut platform);
@@ -251,14 +246,6 @@ pub fn run_linux_install<H: LinuxInstallHost>(
             let candidate = host.stage_candidate(adoption.store(), adoption.lock())?;
             require_managed_candidate(&candidate, adoption.location())?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
-            ensure_linux_launcher(
-                adoption.store(),
-                adoption.lock(),
-                adoption.location(),
-                &candidate,
-            )?;
-            ensure_linux_update_directories(adoption.lock(), adoption.location())?;
-            stop(host, LinuxInstallCheckpoint::LauncherReady)?;
             let (journal, mut platform) =
                 prepare_or_replace(home, host, &adoption, request, &candidate)?;
             stop(host, LinuxInstallCheckpoint::AdoptionReceipt)?;
@@ -277,7 +264,7 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 .confirm_durable()
                 .map_err(LinuxInstallCommandError::Authority)?;
             let run = recover(&store, &mut lock, &mut platform)?;
-            Ok(collect_settled(&store, &lock, authority.location(), run))
+            Ok(collect_settled(&store, &lock, run))
         }
         LinuxInstallElection::Managed {
             store,
@@ -291,7 +278,6 @@ pub fn run_linux_install<H: LinuxInstallHost>(
             authority
                 .confirm_durable()
                 .map_err(LinuxInstallCommandError::Authority)?;
-            ensure_linux_update_directories(&lock, authority.location())?;
             if pending(&journal) {
                 let mut platform = platform(
                     home,
@@ -304,16 +290,15 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                         managed: Some(authority.location()),
                         original: None,
                         probation: request.probation,
+                        service: host.service_renderer(),
                     },
                 )?;
                 let run = recover(&store, &mut lock, &mut platform)?;
-                return Ok(collect_settled(&store, &lock, authority.location(), run));
+                return Ok(collect_settled(&store, &lock, run));
             }
             let candidate = host.stage_candidate(&store, &lock)?;
             require_managed_candidate(&candidate, authority.location())?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
-            ensure_linux_launcher(&store, &lock, authority.location(), &candidate)?;
-            stop(host, LinuxInstallCheckpoint::LauncherReady)?;
             let prior_record =
                 (journal.disposition == InstallDisposition::RolledBack).then_some(&journal);
             let mut platform = platform(
@@ -327,6 +312,7 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                     managed: Some(authority.location()),
                     original: None,
                     probation: request.probation,
+                    service: host.service_renderer(),
                 },
             )?;
             authority
@@ -338,96 +324,12 @@ pub fn run_linux_install<H: LinuxInstallHost>(
             Ok(collect_settled(
                 &store,
                 &lock,
-                authority.location(),
                 LinuxInstallRun {
                     outcome,
                     recovered: false,
                     collection: None,
-                    settled_launcher: None,
                 },
             ))
-        }
-    }
-}
-
-/// Settle an unsettled install, staging and proposing nothing.
-///
-/// Elects authority exactly as an install does. When its journal is still
-/// forward or rolling back, recovers it (with the historical root's own
-/// rules before adoption) and, on a managed installation, collects the
-/// releases nothing needs any more. Returns `None` when nothing was
-/// pending. This is what a recovery unit runs, through the launcher's
-/// update-executor role, so a transaction left unsettled by a candidate is
-/// resumed by the prior release's code; `host` is asked only for its
-/// executor, never to propose roots or stage a candidate.
-///
-/// # Errors
-/// Returns the first refusal; a later run resumes from the durable state.
-pub fn run_linux_recovery<H: LinuxInstallHost>(
-    home: &Path,
-    probation: Duration,
-    ownership: &OwnershipPolicy,
-    host: &mut H,
-) -> Result<Option<LinuxInstallRun>, LinuxInstallCommandError> {
-    match elect_linux_installation_with(home, ownership)
-        .map_err(LinuxInstallCommandError::Election)?
-    {
-        LinuxInstallElection::Legacy {
-            store, mut lock, ..
-        } => {
-            let Some(journal) = store.load_journal(&lock)?.filter(pending) else {
-                return Ok(None);
-            };
-            let mut platform = platform(
-                home,
-                host,
-                &store,
-                &lock,
-                LinuxPlatformInputs {
-                    candidate: None,
-                    journal: Some(&journal),
-                    managed: None,
-                    original: None,
-                    probation,
-                },
-            )?;
-            recover(&store, &mut lock, &mut platform).map(Some)
-        }
-        LinuxInstallElection::Managed {
-            store,
-            mut lock,
-            authority,
-        } => {
-            let journal = store
-                .load_journal(&lock)?
-                .ok_or(LinuxInstallCommandError::MissingJournal)?;
-            authority
-                .confirm_durable()
-                .map_err(LinuxInstallCommandError::Authority)?;
-            ensure_linux_update_directories(&lock, authority.location())?;
-            if !pending(&journal) {
-                return Ok(None);
-            }
-            let mut platform = platform(
-                home,
-                host,
-                &store,
-                &lock,
-                LinuxPlatformInputs {
-                    candidate: None,
-                    journal: Some(&journal),
-                    managed: Some(authority.location()),
-                    original: None,
-                    probation,
-                },
-            )?;
-            let run = recover(&store, &mut lock, &mut platform)?;
-            Ok(Some(collect_settled(
-                &store,
-                &lock,
-                authority.location(),
-                run,
-            )))
         }
     }
 }
@@ -475,6 +377,7 @@ fn prepare_or_replace<H: LinuxInstallHost>(
                 managed: Some(adoption.location()),
                 original: adoption.original_prior(),
                 probation: request.probation,
+                service: host.service_renderer(),
             },
         )?;
         match adoption.prepare(&mut platform, install_request(request, candidate.clone())) {
@@ -564,7 +467,6 @@ pub(super) fn recover<E: LinuxInstallExecutor>(
         outcome,
         recovered: true,
         collection: None,
-        settled_launcher: None,
     })
 }
 
@@ -578,15 +480,8 @@ pub(super) fn recover<E: LinuxInstallExecutor>(
 fn collect_settled(
     store: &InstallStore,
     lock: &InstallLock,
-    location: &LinuxInstallLocation,
     mut run: LinuxInstallRun,
 ) -> LinuxInstallRun {
-    // A commit makes the installation's launcher its own for good; record
-    // that before anything else acts on it.
-    if matches!(run.outcome, InstallOutcome::Committed { .. }) {
-        run.settled_launcher =
-            Some(record_linux_launcher_settled(lock, location).map_err(|error| error.to_string()));
-    }
     let collection = store
         .load_journal(lock)
         .map_err(|error| error.to_string())
@@ -624,6 +519,8 @@ pub struct LinuxPlatformInputs<'a> {
     pub original: Option<&'a UnitRecord>,
     /// How long a started candidate must stay up before it commits.
     pub probation: Duration,
+    /// Renders a managed store's service unit.
+    pub service: LinuxServiceRenderer,
 }
 
 fn platform<H: LinuxInstallHost>(
@@ -654,17 +551,12 @@ fn platform<H: LinuxInstallHost>(
 /// Only the historical root of an installation whose locator still says it
 /// was never adopted binds without a recorded location (an unreadable
 /// locator proves nothing, so it refuses too); any other store must pass its
-/// location, so its service is always rendered through the launcher and
-/// its sandbox. A candidate bound for a managed
-/// installation must declare that installation's launcher contract, and
-/// the installation's launcher must already be published and exact, so a
-/// host that skips [`ensure_linux_launcher`] still cannot start a release
-/// the launcher would not run.
+/// location, so its service is always rendered for one release, inside its
+/// sandbox, by `inputs.service`.
 ///
 /// # Errors
 /// Refuses units, executors, topology or prior roles that cannot be proven,
-/// a managed store bound without its location, and a managed candidate
-/// without its contract or launcher.
+/// and a managed store bound without its location.
 pub fn bind_linux_platform<E: LinuxInstallExecutor>(
     home: &Path,
     executor: impl FnOnce(
@@ -688,15 +580,6 @@ pub fn bind_linux_platform<E: LinuxInstallExecutor>(
         )
         .into());
     }
-    if let (Some(candidate), Some(location)) = (inputs.candidate, inputs.managed) {
-        require_managed_candidate(candidate, location)?;
-        if inspect_linux_launcher(location)?.is_none() {
-            return Err(InstallPlatformError::new(
-                "publish the installation's launcher before binding a candidate to it",
-            )
-            .into());
-        }
-    }
     let known = known_units(store, lock, inputs.candidate, inputs.journal)?;
     let tree = LinuxPublicTree::new(lock, home)?;
     let executor = executor(store, lock, tree)?;
@@ -712,6 +595,7 @@ pub fn bind_linux_platform<E: LinuxInstallExecutor>(
         inputs.original,
         inputs.probation,
         inputs.managed,
+        inputs.service,
     )?)
 }
 
@@ -728,6 +612,7 @@ pub(crate) fn bind_platform<E: LinuxInstallExecutor>(
     original: Option<&UnitRecord>,
     probation: Duration,
     managed: Option<&LinuxInstallLocation>,
+    service: LinuxServiceRenderer,
 ) -> Result<LinuxInstallPlatform<E>, InstallPlatformError> {
     if original.is_some() && record.is_none() {
         executor.retain_prior_units()?;
@@ -742,6 +627,7 @@ pub(crate) fn bind_platform<E: LinuxInstallExecutor>(
         active_root: store.active_path(),
         probation,
         managed: managed.cloned(),
+        service,
     };
     let mut platform = LinuxInstallPlatform::new(executor, config, known)?;
     if let Some(original) = original.filter(|_| record.is_none()) {

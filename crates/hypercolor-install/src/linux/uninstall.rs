@@ -23,7 +23,8 @@ use super::model::{
     LINUX_LAYOUT_ITEMS, LinuxExactEntry, LinuxLayoutItem, LinuxServicePhase, MAX_LAUNCHER_BYTES,
     MAX_SYSTEMD_SHOW_BYTES, parse_systemd_show,
 };
-use super::proof::{layout_target_for, render_launcher};
+use super::proof::{layout_target_for, render_direct, render_managed};
+use super::service::{LinuxServiceRenderer, unit_contract};
 use super::{
     LinuxInstallAuthority, LinuxInstallExecutor, LinuxInstallLocation, LinuxInstallLocator,
     LinuxPublicTree,
@@ -57,6 +58,13 @@ pub trait LinuxUninstallHost {
         lock: &InstallLock,
         tree: LinuxPublicTree,
     ) -> Result<Self::Executor, InstallPlatformError>;
+
+    /// The renderer for a managed installation's service unit, which
+    /// settles a pending transaction and recognizes the unit it wrote. A
+    /// build that renders its own unit returns its renderer here.
+    fn service_renderer(&self) -> LinuxServiceRenderer {
+        LinuxServiceRenderer::PUBLIC
+    }
 
     /// Observe one durable boundary.
     ///
@@ -323,6 +331,7 @@ fn settle<H: LinuxUninstallHost>(
     let journal = store
         .load_journal(lock)?
         .ok_or(LinuxInstallCommandError::MissingJournal)?;
+    let service = host.service_renderer();
     let mut platform = bind_linux_platform(
         home,
         |store, lock, tree| host.executor(store, lock, tree),
@@ -336,6 +345,7 @@ fn settle<H: LinuxUninstallHost>(
             // Removal follows, but a transaction settled here must still
             // meet the rule every other run applies before it commits.
             probation: super::DEFAULT_PROBATION_WINDOW,
+            service,
         },
     )?;
     Ok(recover(store, lock, &mut platform)?.outcome)
@@ -378,7 +388,14 @@ fn remove_platform<H: LinuxUninstallHost>(
             systemd.fragment_path
         ));
     }
-    if !owned_launcher(&launcher, &launcher_bytes, active_roots, managed)? {
+    let renderers = [host.service_renderer(), LinuxServiceRenderer::PUBLIC];
+    if !owned_launcher(
+        &launcher,
+        &launcher_bytes,
+        active_roots,
+        managed,
+        &renderers,
+    )? {
         foreign.push(direct_fragment.clone());
     }
     for (item, entry) in &layout {
@@ -413,31 +430,52 @@ fn remove_platform<H: LinuxUninstallHost>(
     Ok(())
 }
 
+/// Whether the unit file is one this installer wrote: the direct unit for
+/// one of `active_roots`, or, for a managed installation, the unit a known
+/// contract renders for one of its retained releases.
 fn owned_launcher(
     launcher: &LinuxExactEntry,
     bytes: &[u8],
     active_roots: &[PathBuf],
     managed: Option<&LinuxInstallLocation>,
+    renderers: &[LinuxServiceRenderer],
 ) -> Result<bool, InstallPlatformError> {
-    match launcher {
-        LinuxExactEntry::Absent => Ok(true),
-        LinuxExactEntry::Symlink { .. } => Ok(false),
-        LinuxExactEntry::RegularFile { mode, .. } => {
-            let mut rendered = active_roots
-                .iter()
-                .map(|root| render_launcher(root, None))
-                .collect::<Result<Vec<_>, _>>()?;
-            if let Some(location) = managed {
-                rendered.push(render_launcher(
-                    &location.release_root().join("active"),
-                    Some(location),
-                )?);
-            }
-            Ok(rendered
-                .iter()
-                .any(|rendered| *mode == rendered.mode && bytes == rendered.bytes.as_slice()))
+    let LinuxExactEntry::RegularFile { mode, .. } = launcher else {
+        return Ok(matches!(launcher, LinuxExactEntry::Absent));
+    };
+    let mut rendered = active_roots
+        .iter()
+        .map(|root| render_direct(root))
+        .collect::<Result<Vec<_>, _>>()?;
+    if let (Some(location), Some(contract)) = (managed, unit_contract(bytes))
+        && let Some(renderer) = renderers
+            .iter()
+            .find(|renderer| renderer.contract() == contract)
+    {
+        let units_root = location.release_root().join("units");
+        for unit in retained_unit_ids(&units_root) {
+            rendered.push(render_managed(renderer, &units_root, &unit, location)?.0);
         }
     }
+    Ok(rendered
+        .iter()
+        .any(|rendered| *mode == rendered.mode && bytes == rendered.bytes.as_slice()))
+}
+
+/// The release unit IDs beneath a managed release root, read only to
+/// recognize the unit file that names one of them.
+fn retained_unit_ids(units_root: &Path) -> Vec<super::super::UnitId> {
+    std::fs::read_dir(units_root)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .ok()?
+                .file_name()
+                .to_str()
+                .and_then(|name| super::super::UnitId::new(name).ok())
+        })
+        .collect()
 }
 
 fn owned_layout(item: LinuxLayoutItem, entry: &LinuxExactEntry, active_roots: &[PathBuf]) -> bool {

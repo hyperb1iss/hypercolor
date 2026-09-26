@@ -1,6 +1,5 @@
 mod adoption;
 mod adoption_roots;
-mod bootstrap;
 mod command;
 mod directory;
 mod effects;
@@ -8,7 +7,6 @@ mod executor;
 #[cfg(test)]
 mod executor_tests;
 mod http;
-mod launch;
 mod legacy;
 #[cfg(test)]
 mod legacy_tests;
@@ -25,6 +23,7 @@ mod prior;
 mod proof;
 mod record;
 mod runtime;
+mod service;
 mod state;
 mod systemd;
 mod uninstall;
@@ -35,23 +34,12 @@ use std::collections::BTreeMap;
 use super::{InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord};
 
 pub use adoption::{LinuxAdoption, LinuxAdoptionError};
-pub use bootstrap::{
-    LINUX_ACTIVATOR_DIRECTORY, LINUX_COORDINATOR_DIRECTORY, LINUX_LAUNCH_COMMAND,
-    LINUX_LAUNCHER_DIRECTORY, LINUX_LAUNCHER_PROGRAM, LinuxLauncherProgram, ensure_linux_launcher,
-    ensure_linux_update_directories, inspect_linux_launcher, linux_launcher_path,
-    record_linux_launcher_settled,
-};
 pub use command::{
     LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallHost, LinuxInstallRequest,
     LinuxInstallRun, LinuxPlatformInputs, bind_linux_platform, run_linux_install,
-    run_linux_recovery,
 };
 pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};
-pub use launch::{
-    LinuxLaunchError, LinuxLaunchPlan, LinuxLaunchRequest, LinuxLaunchRole, LinuxLaunchSelection,
-    plan_linux_launch, prepare_linux_launch_roots,
-};
 pub use location::{InstallLocationError, LinuxInstallLocation, RetainedLinuxInstallLocation};
 pub use locator::{
     LinuxInstallAuthority, LinuxInstallElection, LinuxInstallLocator, LinuxInstallObservation,
@@ -63,10 +51,13 @@ pub use model::{
     LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse,
     LinuxInstallConfig, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile,
     LinuxLegacySnapshot, LinuxProcessExecutable, LinuxServiceIdentity, LinuxServicePhase,
-    LinuxServiceWatch, LinuxSystemdObservation, MAX_PROBATION_WINDOW, linux_layout_directories,
-    parse_systemd_show,
+    LinuxServiceWatch, LinuxSystemdObservation, MAX_PROBATION_WINDOW, parse_systemd_show,
 };
 pub use runtime::{LinuxRuntimeSettlement, LinuxSystemdConnection};
+pub use service::{
+    LINUX_DIRECT_SERVICE_CONTRACT, LINUX_PUBLIC_SERVICE_CONTRACT, LinuxRenderedService,
+    LinuxServiceInput, LinuxServiceRenderer,
+};
 pub use uninstall::{
     LinuxUninstallCheckpoint, LinuxUninstallHost, LinuxUninstallRun, run_linux_uninstall,
 };

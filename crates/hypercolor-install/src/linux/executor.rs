@@ -546,7 +546,20 @@ fn parse_active_target(target: &Path) -> Result<UnitId, InstallPlatformError> {
 }
 
 pub(super) fn public_parent(item: LinuxLayoutItem) -> LinuxDirectoryItem {
-    item.public_directory()
+    match item {
+        LinuxLayoutItem::Hypercolor
+        | LinuxLayoutItem::HypercolorDaemon
+        | LinuxLayoutItem::HypercolorApp
+        | LinuxLayoutItem::HypercolorTui
+        | LinuxLayoutItem::HypercolorOpen => LinuxDirectoryItem::LocalBin,
+        LinuxLayoutItem::DesktopEntry => LinuxDirectoryItem::Applications,
+        LinuxLayoutItem::BashCompletion => LinuxDirectoryItem::BashCompletions,
+        LinuxLayoutItem::ZshCompletion => LinuxDirectoryItem::ZshSiteFunctions,
+        LinuxLayoutItem::FishCompletion => LinuxDirectoryItem::FishVendorCompletions,
+        LinuxLayoutItem::Icon48 => LinuxDirectoryItem::Icon48Apps,
+        LinuxLayoutItem::Icon128 => LinuxDirectoryItem::Icon128Apps,
+        LinuxLayoutItem::Icon256 => LinuxDirectoryItem::Icon256Apps,
+    }
 }
 
 pub(super) fn public_name(item: LinuxLayoutItem) -> &'static str {

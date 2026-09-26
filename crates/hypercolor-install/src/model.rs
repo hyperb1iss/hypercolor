@@ -16,8 +16,9 @@ pub const MAX_MANAGED_INSTALL_JOURNAL_BYTES: usize = 256 * 1024;
 pub const MAX_PLATFORM_TRANSACTION_RECORD_BYTES: usize = 12 * 1024;
 /// Linux record bound sized for the longest supported recorded roots. A
 /// managed record carries the generated unit twice (prior and candidate),
-/// and that unit spells every recorded root into its launcher and sandbox.
-pub const MAX_LINUX_TRANSACTION_RECORD_BYTES: usize = 64 * 1024;
+/// and that unit spells its release directory and every recorded root into
+/// its commands, environment and sandbox.
+pub const MAX_LINUX_TRANSACTION_RECORD_BYTES: usize = 80 * 1024;
 pub const MAX_PLATFORM_OWNER_RECEIPT_BYTES: usize = 1_024;
 pub const MAX_LAYOUT_OPERATIONS: u16 = 256;
 

@@ -12,8 +12,6 @@ pub mod config;
 pub use hypercolor_install as install;
 #[cfg(unix)]
 mod install_command;
-#[cfg(unix)]
-mod launch_command;
 pub mod output;
 
 use std::future::Future;
@@ -287,50 +285,6 @@ struct UninstallReleaseInvocation {
     args: UninstallReleaseArgs,
 }
 
-#[doc(hidden)]
-#[cfg(unix)]
-#[derive(Debug, Args)]
-pub struct RecoverReleaseArgs {
-    /// Seconds a candidate the recovery starts must stay up before it
-    /// commits.
-    #[arg(
-        long,
-        value_name = "SECONDS",
-        default_value_t = install::DEFAULT_PROBATION_WINDOW.as_secs(),
-        value_parser = install_command::parse_probation_seconds
-    )]
-    probation_seconds: u64,
-}
-
-#[cfg(unix)]
-#[derive(Parser)]
-#[command(name = "hypercolor __recover-release")]
-struct RecoverReleaseInvocation {
-    #[command(flatten)]
-    args: RecoverReleaseArgs,
-}
-
-#[cfg(unix)]
-fn parse_recover_release_invocation<I, T>(
-    raw_args: I,
-) -> Option<std::result::Result<RecoverReleaseArgs, clap::Error>>
-where
-    I: IntoIterator<Item = T>,
-    T: Into<std::ffi::OsString>,
-{
-    let mut raw_args = raw_args.into_iter().map(Into::into);
-    let executable = raw_args.next()?;
-    let command = raw_args.next()?;
-    if command != std::ffi::OsStr::new("__recover-release") {
-        return None;
-    }
-
-    Some(
-        RecoverReleaseInvocation::try_parse_from(std::iter::once(executable).chain(raw_args))
-            .map(|invocation| invocation.args),
-    )
-}
-
 #[cfg(unix)]
 fn parse_uninstall_release_invocation<I, T>(
     raw_args: I,
@@ -381,23 +335,8 @@ pub async fn run() -> Result<()> {
 
 pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()> {
     #[cfg(unix)]
-    match launch_command::parse_launch_invocation(std::env::args_os()) {
-        Some(Ok(invocation)) => launch_command::execute(invocation),
-        Some(Err(usage)) => {
-            eprintln!("{usage}");
-            std::process::exit(launch_command::EX_USAGE);
-        }
-        None => {}
-    }
-    #[cfg(unix)]
     match parse_install_release_invocation(std::env::args_os()) {
         Some(Ok(args)) => return install_command::execute(&args),
-        Some(Err(error)) => error.exit(),
-        None => {}
-    }
-    #[cfg(unix)]
-    match parse_recover_release_invocation(std::env::args_os()) {
-        Some(Ok(args)) => return install_command::execute_recover(&args),
         Some(Err(error)) => error.exit(),
         None => {}
     }

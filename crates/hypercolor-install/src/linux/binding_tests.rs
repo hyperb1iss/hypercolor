@@ -73,6 +73,7 @@ fn native_command_constructor_binds_initial_and_recorded_prior_exactly_once() {
             Some(&original),
             std::time::Duration::ZERO,
             None,
+            super::LinuxServiceRenderer::PUBLIC,
         )
         .expect("single native prior binding");
         drop(platform);

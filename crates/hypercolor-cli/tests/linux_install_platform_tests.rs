@@ -1262,6 +1262,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         active_root: old.active_path(),
         probation: Duration::ZERO,
         managed: None,
+        service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
     };
     let mut executor = FakeExecutor::absent(old.active_path(), sha256(b"daemon"));
     executor.expected_topology = Some(old_config.clone());
@@ -1304,6 +1305,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         active_root: adoption.store().active_path(),
         probation: Duration::ZERO,
         managed: None,
+        service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
     };
     executor.active_path = adoption.store().active_path();
     executor.expected_topology = Some(new_config.clone());
@@ -2212,6 +2214,7 @@ fn byte_identical_unit_from_a_split_root_is_rejected_before_inspection() {
         active_root: PathBuf::from("/tmp/foreign/active"),
         probation: Duration::ZERO,
         managed: None,
+        service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
     };
     let Err(error) = LinuxInstallPlatform::new(executor, split_config, []) else {
         panic!("split config topology must fail before inspection");
@@ -2228,6 +2231,7 @@ fn systemd_unsafe_or_lossy_install_roots_are_rejected_before_inspection() {
             active_root: PathBuf::from(root).join("active"),
             probation: Duration::ZERO,
             managed: None,
+            service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
         };
         let executor = FakeExecutor::absent(PathBuf::from(root).join("active"), "00".repeat(32));
         let error = LinuxInstallPlatform::new(executor, config, [])
@@ -2249,6 +2253,7 @@ fn systemd_unsafe_or_lossy_install_roots_are_rejected_before_inspection() {
             active_root: parent.join("active"),
             probation: Duration::ZERO,
             managed: None,
+            service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
         };
         let executor = FakeExecutor::absent(config.active_root.clone(), "00".repeat(32));
         let error = LinuxInstallPlatform::new(executor, config, [])
@@ -2577,6 +2582,7 @@ fn config_with_probation(probation: Duration) -> LinuxInstallConfig {
         active_root: PathBuf::from(ACTIVE_ROOT),
         probation,
         managed: None,
+        service: hypercolor_cli::install::LinuxServiceRenderer::PUBLIC,
     }
 }
 

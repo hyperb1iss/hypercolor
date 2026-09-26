@@ -215,6 +215,7 @@ fn native_topology_rejects_a_fragment_outside_the_retained_home() {
         active_root: store.active_path(),
         probation: std::time::Duration::ZERO,
         managed: None,
+        service: super::LinuxServiceRenderer::PUBLIC,
     };
 
     let error = LinuxInstallPlatform::new(executor, config, [])
