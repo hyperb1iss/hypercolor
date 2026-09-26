@@ -60,8 +60,11 @@ the release it names is complete and unchanged, then replaces itself with
 that release's daemon, passing the UI and bundled effects from the same
 release. An upgrade that switches `active` while the daemon starts can never
 leave it running one release's code with another's UI or effects. The
-launcher is a copy of the CLI from the first release installed this way; no
-later install rewrites it, and an install refuses to continue if it changed.
+launcher is a copy of the CLI from the first release installed this way. Once
+an install settles with the service starting through it, no later install
+rewrites it, and an install refuses to continue if it changed. If that first
+install rolled back instead, the next install replaces the launcher with its
+own release's CLI.
 
 The service runs sandboxed. The whole system is read-only to it except your
 configuration, data and runtime state directories (the recorded ones above)
@@ -70,6 +73,10 @@ releases directory and the rest of the update state stay read-only even
 though they sit inside those directories, and `~/.local/bin` and
 `~/.local/lib` are never writable. Caches the daemon and its graphics
 libraries write go to `${XDG_STATE_HOME:-~/.local/state}/hypercolor/cache`.
+Before the sandbox is built, the service runs the launcher once more,
+unsandboxed, to recreate any of the configuration, data or state directories
+you deleted, so removing `~/.config/hypercolor` to reset your settings still
+lets the daemon start.
 
 ## Upgrades from older installs
 
@@ -219,7 +226,8 @@ hide accounts from a listing, so they refuse the group exception.
 | The service is still starting, stopping or restarting after its own timeout | A service that keeps changing state is not a safe starting point | Wait for it to settle, or stop it with `systemctl --user stop hypercolor.service`, then rerun |
 | Locator from an unknown or newer installer | Guessing would risk managing the wrong install | Use the current installer |
 | Release manifest lacks a complete `managed_package` declaration | The installer could not tell what the release does to your data | Install an official release tarball |
-| The launcher changed since it was published | The service would start a program the installer never checked | Remove `releases/launcher` and rerun; the install publishes it again |
+| The launcher changed since it was published | The service would start a program the installer never checked | Run `chmod -R u+w` on `releases/launcher`, remove it, and rerun; the install publishes it again |
+| An XDG base directory would put a writable root at your home, `~/.local/bin` or `~/.local/lib` | The service sandbox could not keep the daemon out of your commands and libraries | Point that variable at another directory and rerun |
 | Uninstall finds a service, unit or link this installer did not generate | It belongs to a package, another install or a local edit | Remove it with its owner, then rerun |
 | Another install or uninstall is running | Two writers would corrupt the journal | Wait for it to finish |
 
