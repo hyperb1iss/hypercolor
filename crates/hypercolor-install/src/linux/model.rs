@@ -13,8 +13,11 @@ pub(super) const LINUX_RECEIPT_SCHEMA_VERSION: u32 = 1;
 pub(super) const MAX_SYSTEMD_SHOW_BYTES: usize = 16 * 1024;
 /// Bound for the generated unit file, which spells the release directory
 /// and every recorded root of a managed installation into its commands,
-/// environment and sandbox directives.
-pub(super) const MAX_LAUNCHER_BYTES: usize = 16 * 1024;
+/// environment and sandbox directives. A record carries two units as JSON
+/// integer arrays and the journal carries the record the same way, so two
+/// units at this bound still leave the journal room to grow by an owner
+/// receipt and a failure detail under the managed journal bound.
+pub(super) const MAX_LAUNCHER_BYTES: usize = 10 * 1024;
 /// Bound for `/proc/<pid>/cmdline`.
 pub(super) const MAX_COMMAND_LINE_BYTES: u64 = 64 * 1024;
 pub(super) const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024;

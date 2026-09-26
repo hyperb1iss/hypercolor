@@ -55,8 +55,7 @@ pub use model::{
 };
 pub use runtime::{LinuxRuntimeSettlement, LinuxSystemdConnection};
 pub use service::{
-    LINUX_DIRECT_SERVICE_CONTRACT, LINUX_PUBLIC_SERVICE_CONTRACT, LinuxRenderedService,
-    LinuxServiceInput, LinuxServiceRenderer,
+    LINUX_PUBLIC_SERVICE_CONTRACT, LinuxRenderedService, LinuxServiceInput, LinuxServiceRenderer,
 };
 pub use uninstall::{
     LinuxUninstallCheckpoint, LinuxUninstallHost, LinuxUninstallRun, run_linux_uninstall,

@@ -243,6 +243,7 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 proposed,
                 &mut |checkpoint| stop(host, checkpoint).map_err(boxed_stop),
             )?;
+            require_sandboxable(home, adoption.location())?;
             let candidate = host.stage_candidate(adoption.store(), adoption.lock())?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
             let (journal, mut platform) =
@@ -295,6 +296,7 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 let run = recover(&store, &mut lock, &mut platform)?;
                 return Ok(collect_settled(&store, &lock, run));
             }
+            require_sandboxable(home, authority.location())?;
             let candidate = host.stage_candidate(&store, &lock)?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
             let prior_record =
@@ -390,6 +392,20 @@ fn prepare_or_replace<H: LinuxInstallHost>(
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+/// Refuse to install into a recorded location the service sandbox cannot
+/// confine, before anything is staged. Recovery and uninstall still run.
+fn require_sandboxable(
+    home: &Path,
+    location: &LinuxInstallLocation,
+) -> Result<(), LinuxInstallCommandError> {
+    location.validate_sandbox(home).map_err(|source| {
+        InstallPlatformError::new(format!(
+            "{source}; uninstall, then install again with other XDG directories"
+        ))
+        .into()
+    })
 }
 
 fn stop<H: LinuxInstallHost>(
@@ -525,7 +541,8 @@ fn platform<H: LinuxInstallHost>(
 ///
 /// # Errors
 /// Refuses units, executors, topology or prior roles that cannot be proven,
-/// and a managed store bound without its location.
+/// a managed store bound without its location, and a candidate bound for a
+/// location the service sandbox cannot confine.
 pub fn bind_linux_platform<E: LinuxInstallExecutor>(
     home: &Path,
     executor: impl FnOnce(
@@ -548,6 +565,9 @@ pub fn bind_linux_platform<E: LinuxInstallExecutor>(
             "a managed installation must be bound with its recorded location",
         )
         .into());
+    }
+    if let (Some(_), Some(location)) = (inputs.candidate, inputs.managed) {
+        require_sandboxable(home, location)?;
     }
     let known = known_units(store, lock, inputs.candidate, inputs.journal)?;
     let tree = LinuxPublicTree::new(lock, home)?;

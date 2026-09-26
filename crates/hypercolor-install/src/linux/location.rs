@@ -179,6 +179,7 @@ impl LinuxInstallLocation {
             launcher_contract: LAUNCHER_CONTRACT,
         };
         location.validate(home)?;
+        location.validate_sandbox(home)?;
         Ok(location)
     }
 
@@ -250,19 +251,27 @@ impl LinuxInstallLocation {
         {
             return Err(InstallLocationError::OverlappingRoots);
         }
-        self.validate_sandbox(home)
+        Ok(())
     }
 
-    /// The generated service makes the configuration, data and daemon
-    /// state roots writable and the launcher hands their bases to the
-    /// daemon as XDG directories, so each must be a `hypercolor` directory
-    /// that grants nothing else: never the home directory or an ancestor,
-    /// never a directory holding or inside `~/.local/bin` or `~/.local/lib`,
-    /// and never one strictly holding or inside another writable root, whose
-    /// parent the daemon could then replace before the unsandboxed prepare
-    /// step. A shared XDG base makes two of them the same directory, which is
-    /// fine.
-    fn validate_sandbox(&self, home: &Path) -> Result<(), InstallLocationError> {
+    /// Whether the generated service can confine the daemon to these roots.
+    ///
+    /// The service makes the configuration, data and daemon state roots
+    /// writable and hands their bases to the daemon as XDG directories, so
+    /// each must be a `hypercolor` directory that grants nothing else: never
+    /// the home directory or an ancestor, never a directory holding or
+    /// inside `~/.local/bin` or `~/.local/lib`, and never one strictly
+    /// holding or inside another writable root, whose parent the daemon
+    /// could then replace before the unsandboxed pre-start step. A shared
+    /// XDG base makes two of them the same directory, which is fine.
+    ///
+    /// A new location must pass. A recorded one is still decoded without it,
+    /// so it can be recovered and uninstalled; installing into it refuses.
+    ///
+    /// # Errors
+    /// Returns [`InstallLocationError::UnsandboxableRoot`] for the first root
+    /// that fails.
+    pub fn validate_sandbox(&self, home: &Path) -> Result<(), InstallLocationError> {
         let named = |root: &Path, suffix: &[&str]| {
             let mut components = root.components().rev();
             suffix.iter().rev().all(|expected| {

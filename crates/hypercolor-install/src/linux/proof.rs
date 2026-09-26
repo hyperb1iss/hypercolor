@@ -76,6 +76,33 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         .map(|(launcher, _)| launcher)
     }
 
+    /// Every unit validation accepts for `unit`: the historical direct unit
+    /// through `active`, and the units a contract this build knows renders.
+    pub(super) fn accepted_services(&self, unit: &UnitId) -> Vec<LinuxLauncher> {
+        let mut services: Vec<LinuxLauncher> = render_direct(&self.config.active_root)
+            .into_iter()
+            .collect();
+        services.extend(self.release_services(unit));
+        services
+    }
+
+    /// The units a contract this build knows renders for `unit`: this
+    /// installation's own and the public one. Each names `unit`'s release
+    /// directory, unlike the direct unit. A rendering that fails is left out.
+    pub(super) fn release_services(&self, unit: &UnitId) -> Vec<LinuxLauncher> {
+        let Some(location) = &self.config.managed else {
+            return Vec::new();
+        };
+        [self.config.service, LinuxServiceRenderer::PUBLIC]
+            .into_iter()
+            .filter_map(|renderer| {
+                render_managed(&renderer, &self.config.immutable_units_root, unit, location)
+                    .ok()
+                    .map(|(launcher, _)| launcher)
+            })
+            .collect()
+    }
+
     /// The renderer for `contract`: this installation's own, or the public
     /// one every build carries.
     fn renderer_for(&self, contract: &str) -> Result<LinuxServiceRenderer, InstallPlatformError> {
@@ -127,7 +154,7 @@ pub(super) fn render_managed(
     )
     .into_bytes();
     if bytes.len() > super::model::MAX_LAUNCHER_BYTES {
-        return Err(error("rendered Linux launcher exceeds its byte bound"));
+        return Err(error("rendered service unit exceeds its byte bound"));
     }
     let exec_start = require_notify_launcher(&bytes)?;
     Ok((
@@ -157,7 +184,7 @@ pub(super) fn render_direct(active_root: &Path) -> Result<LinuxLauncher, Install
     )
     .into_bytes();
     if bytes.len() > super::model::MAX_LAUNCHER_BYTES {
-        return Err(error("rendered Linux launcher exceeds its byte bound"));
+        return Err(error("rendered service unit exceeds its byte bound"));
     }
     Ok(LinuxLauncher {
         mode: LAUNCHER_MODE,

@@ -354,8 +354,8 @@ fn settle<H: LinuxUninstallHost>(
 /// Remove the generated service, launcher and public layout entries.
 ///
 /// Every observed entry must be absent or exactly what this installer renders
-/// for one of `active_roots` (and, for a managed installation, the launcher
-/// service its recorded location renders). Anything else refuses the whole
+/// for one of `active_roots` (and, for a managed installation, the service
+/// unit its recorded location renders for the release that unit names). Anything else refuses the whole
 /// removal before the first write.
 fn remove_platform<H: LinuxUninstallHost>(
     home: &Path,
@@ -432,7 +432,7 @@ fn remove_platform<H: LinuxUninstallHost>(
 
 /// Whether the unit file is one this installer wrote: the direct unit for
 /// one of `active_roots`, or, for a managed installation, the unit a known
-/// contract renders for one of its retained releases.
+/// contract renders for the release its `ExecStart` names.
 fn owned_launcher(
     launcher: &LinuxExactEntry,
     bytes: &[u8],
@@ -451,31 +451,27 @@ fn owned_launcher(
         && let Some(renderer) = renderers
             .iter()
             .find(|renderer| renderer.contract() == contract)
+        && let Some(unit) = named_release(bytes, location)
     {
         let units_root = location.release_root().join("units");
-        for unit in retained_unit_ids(&units_root) {
-            rendered.push(render_managed(renderer, &units_root, &unit, location)?.0);
-        }
+        rendered.push(render_managed(renderer, &units_root, &unit, location)?.0);
     }
     Ok(rendered
         .iter()
         .any(|rendered| *mode == rendered.mode && bytes == rendered.bytes.as_slice()))
 }
 
-/// The release unit IDs beneath a managed release root, read only to
-/// recognize the unit file that names one of them.
-fn retained_unit_ids(units_root: &Path) -> Vec<super::super::UnitId> {
-    std::fs::read_dir(units_root)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            entry
-                .ok()?
-                .file_name()
-                .to_str()
-                .and_then(|name| super::super::UnitId::new(name).ok())
-        })
-        .collect()
+/// The release a managed unit's `ExecStart` names beneath the recorded
+/// release root, whether or not that release is still on disk.
+fn named_release(bytes: &[u8], location: &LinuxInstallLocation) -> Option<super::super::UnitId> {
+    let executable =
+        super::systemd::canonical_executable(&super::proof::require_notify_launcher(bytes).ok()?)
+            .ok()?;
+    let units_root = location.release_root().join("units");
+    let unit = Path::new(&executable).strip_prefix(&units_root).ok()?;
+    let mut components = unit.components();
+    let id = components.next()?.as_os_str().to_str()?;
+    super::super::UnitId::new(id).ok()
 }
 
 fn owned_layout(item: LinuxLayoutItem, entry: &LinuxExactEntry, active_roots: &[PathBuf]) -> bool {

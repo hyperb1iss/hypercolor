@@ -4051,7 +4051,7 @@ fn a_managed_store_never_binds_without_its_recorded_location() {
         },
     )
     .map(drop)
-    .expect_err("without its location the unit would skip the launcher and sandbox")
+    .expect_err("without its location the unit would skip its release directory and sandbox")
     .to_string();
     assert!(error.contains("recorded location"), "{error}");
 }
@@ -4094,8 +4094,6 @@ fn an_install_from_before_user_skills_adopts_and_rolls_back_exactly() {
         }
     }
 }
-
-// ── Launcher and sandbox ────────────────────────────────────────────────
 
 // ── Service unit and sandbox ─────────────────────────────────────────────
 
@@ -4265,13 +4263,13 @@ fn render_official(
         "--effects-dir".to_owned(),
         format!("{release}/share/hypercolor/effects/bundled"),
     ];
-    Ok(hypercolor_cli::install::LinuxRenderedService {
-        unit: format!(
+    Ok(hypercolor_cli::install::LinuxRenderedService::new(
+        format!(
             "[Service]\nType=notify\nExecStart={}\nEnvironment=HYPERCOLOR_EDITION=official\n",
             arguments.join(" ")
         ),
-        daemon_arguments: arguments,
-    })
+        arguments,
+    ))
 }
 
 const OFFICIAL: LinuxServiceRenderer =
@@ -4373,6 +4371,88 @@ fn a_daemon_started_with_another_releases_assets_fails_its_proof_and_rolls_back(
     };
     assert!(failure.contains("runs with arguments"), "{failure}");
     fixture.assert_managed(&location, &fixture.v1.id);
+}
+
+#[test]
+fn a_prior_running_with_another_releases_assets_stops_the_install_at_preflight() {
+    let (fixture, location) = managed_v1();
+    fixture.update(&fixture.v2).expect("update");
+    let prior = release_dir(&location, &fixture.v2.id);
+    let other = release_dir(&location, &fixture.v1.id);
+    let mixed = [
+        prior.join("bin/hypercolor-daemon"),
+        PathBuf::from("--ui-dir"),
+        other.join("share/hypercolor/ui"),
+        PathBuf::from("--effects-dir"),
+        prior.join("share/hypercolor/effects/bundled"),
+    ]
+    .map(|argument| argument.to_str().expect("UTF-8").to_owned())
+    .to_vec();
+    {
+        let mut world = fixture.world.borrow_mut();
+        world.argument_override = Some(("9.8.8".to_owned(), mixed));
+        world.restart_service();
+    }
+    let before = fixture.snapshot();
+    let effects = fixture.world.borrow().effects.len();
+    let run = fixture.update(&fixture.v3).expect("the run settles");
+    let InstallOutcome::RolledBack { failure, .. } = run.outcome else {
+        panic!("a prior serving another release's assets is no baseline: {run:?}");
+    };
+    assert!(
+        failure.contains("PreflightCandidate") && failure.contains("runs with arguments"),
+        "{failure}"
+    );
+    assert_eq!(fixture.snapshot(), before, "nothing changed");
+    assert_eq!(
+        fixture.world.borrow().effects.len(),
+        effects,
+        "no service effect"
+    );
+}
+
+#[test]
+fn uninstall_recognizes_its_unit_after_the_releases_were_deleted() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().stop();
+    let releases = location.release_root();
+    for entry in fs::read_dir(releases.join("units")).expect("units") {
+        let path = entry.expect("entry").path();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("thaw");
+        for inner in walk(&path) {
+            if inner.is_dir() {
+                fs::set_permissions(&inner, fs::Permissions::from_mode(0o755)).expect("thaw");
+            }
+        }
+    }
+    fs::set_permissions(releases.join("units"), fs::Permissions::from_mode(0o755)).expect("thaw");
+    fs::remove_dir_all(releases).expect("the user deletes the releases");
+    run_linux_uninstall(
+        &fixture.home,
+        &fixture.private(),
+        &mut UninstallHost {
+            world: Rc::clone(&fixture.world),
+            stop_at: None,
+        },
+    )
+    .expect("the unit naming a deleted release is still this installer's");
+    assert!(
+        matches!(fixture.world.borrow().launcher, LinuxExactEntry::Absent),
+        "the unit is removed"
+    );
+}
+
+/// Every directory beneath `root`, deepest last.
+fn walk(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(root).expect("directory") {
+        let path = entry.expect("entry").path();
+        if fs::symlink_metadata(&path).expect("metadata").is_dir() {
+            found.push(path.clone());
+            found.extend(walk(&path));
+        }
+    }
+    found
 }
 
 /// A managed installation whose unit runs the daemon straight through

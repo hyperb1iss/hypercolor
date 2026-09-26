@@ -25,14 +25,15 @@ use super::model::error;
 /// Contract of the public sandboxed unit [`LinuxServiceRenderer::PUBLIC`]
 /// renders.
 pub const LINUX_PUBLIC_SERVICE_CONTRACT: &str = "hypercolor-public-1";
-/// Contract of the historical direct unit, which carries no contract line.
-pub const LINUX_DIRECT_SERVICE_CONTRACT: &str = "hypercolor-direct-1";
+/// Reserved for the historical direct unit, which carries no contract line.
+const LINUX_DIRECT_SERVICE_CONTRACT: &str = "hypercolor-direct-1";
 
 pub(super) const CONTRACT_LINE_PREFIX: &str = "# Hypercolor service contract: ";
 const MAX_CONTRACT_BYTES: usize = 64;
 
 /// What a renderer renders a unit from.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct LinuxServiceInput<'a> {
     /// The release directory the unit runs: `<release root>/units/<id>`.
     pub release: &'a Path,
@@ -42,6 +43,7 @@ pub struct LinuxServiceInput<'a> {
 
 /// A rendered unit, without its contract line.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LinuxRenderedService {
     /// The unit file text. It must be a `Type=notify` service with exactly
     /// one `ExecStart`; the installer prepends the contract line.
@@ -49,6 +51,17 @@ pub struct LinuxRenderedService {
     /// The argument vector the daemon runs with once the service started,
     /// which the installer's owner proof requires of the running process.
     pub daemon_arguments: Vec<String>,
+}
+
+impl LinuxRenderedService {
+    /// A rendered unit and the daemon arguments it runs the daemon with.
+    #[must_use]
+    pub const fn new(unit: String, daemon_arguments: Vec<String>) -> Self {
+        Self {
+            unit,
+            daemon_arguments,
+        }
+    }
 }
 
 type Render = fn(&LinuxServiceInput<'_>) -> Result<LinuxRenderedService, InstallPlatformError>;
@@ -71,8 +84,17 @@ impl LinuxServiceRenderer {
     /// A renderer for another contract. A contract ID must render the same
     /// unit text for the same input in every build that carries it; change
     /// the text, change the ID.
+    ///
+    /// # Panics
+    /// Panics on the public or the direct contract's ID, which belong to
+    /// this crate's own units.
     #[must_use]
     pub const fn new(contract: &'static str, render: Render) -> Self {
+        assert!(
+            !same(contract, LINUX_PUBLIC_SERVICE_CONTRACT)
+                && !same(contract, LINUX_DIRECT_SERVICE_CONTRACT),
+            "a renderer cannot claim a contract this crate's own units use"
+        );
         Self { contract, render }
     }
 
@@ -123,10 +145,26 @@ impl Default for LinuxServiceRenderer {
 /// which is the historical direct unit.
 pub(super) fn unit_contract(unit: &[u8]) -> Option<&str> {
     let first = unit.split(|byte| *byte == b'\n').next()?;
+    let first = first.strip_suffix(b"\r").unwrap_or(first);
     let contract = std::str::from_utf8(first)
         .ok()?
         .strip_prefix(CONTRACT_LINE_PREFIX)?;
     Some(contract)
+}
+
+const fn same(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 fn valid_contract(contract: &str) -> bool {
@@ -183,14 +221,54 @@ fn render_public(
     let unit = format!(
         "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStartPre=+mkdir -p -m 0700 {config}\nExecStart={daemon} --ui-dir {ui} --effects-dir {effects}\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\nEnvironment=XDG_CONFIG_HOME={config_base}\nEnvironment=XDG_DATA_HOME={data_base}\nEnvironment=XDG_STATE_HOME={state_base}\nEnvironment=XDG_CACHE_HOME={daemon_state}/cache\nProtectSystem=strict\nProtectHome=read-only\nPrivateTmp=true\nNoNewPrivileges=true\nReadWritePaths={config} {data} {daemon_state} -{state}/coordinator\nReadOnlyPaths={releases} {state}\n\n[Install]\nWantedBy=default.target\n"
     );
-    Ok(LinuxRenderedService {
+    Ok(LinuxRenderedService::new(
         unit,
-        daemon_arguments: vec![
+        vec![
             daemon,
             "--ui-dir".to_owned(),
             ui,
             "--effects-dir".to_owned(),
             effects,
         ],
-    })
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LinuxServiceRenderer, unit_contract};
+
+    #[test]
+    fn the_first_line_names_the_contract() {
+        assert_eq!(
+            unit_contract(b"# Hypercolor service contract: a-1\n[Unit]\n"),
+            Some("a-1")
+        );
+        assert_eq!(
+            unit_contract(b"# Hypercolor service contract: a-1\r\n[Unit]\r\n"),
+            Some("a-1")
+        );
+        assert_eq!(unit_contract(b"[Unit]\nDescription=x\n"), None);
+        assert_eq!(
+            unit_contract(b"# edited\n# Hypercolor service contract: a-1\n"),
+            None,
+            "only the first line counts"
+        );
+        assert_eq!(
+            unit_contract(b" # Hypercolor service contract: a-1\n"),
+            None
+        );
+        assert_eq!(unit_contract(b""), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot claim a contract")]
+    fn a_renderer_cannot_claim_the_public_contract() {
+        let _ = LinuxServiceRenderer::new("hypercolor-public-1", super::render_public);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot claim a contract")]
+    fn a_renderer_cannot_claim_the_direct_contract() {
+        let _ = LinuxServiceRenderer::new("hypercolor-direct-1", super::render_public);
+    }
 }

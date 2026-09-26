@@ -196,12 +196,16 @@ fn roots_the_service_sandbox_cannot_confine_are_refused() {
             value["release_root"] = format!("{path}/releases").into();
         }
         let bytes = serde_json::to_vec(&value).expect("serialize");
+        // A recorded location still decodes, so it can be recovered and
+        // uninstalled; installing into it is what refuses.
+        let recorded = LinuxInstallLocation::parse(&bytes, home)
+            .unwrap_or_else(|error| panic!("{field}={path} decodes: {error}"));
         assert!(
             matches!(
-                LinuxInstallLocation::parse(&bytes, home),
+                recorded.validate_sandbox(home),
                 Err(InstallLocationError::UnsandboxableRoot(_))
             ),
-            "{field}={path} must be refused"
+            "{field}={path} must be refused for an install"
         );
     }
     LinuxInstallLocation::new(
