@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
-use zbus::zvariant::OwnedObjectPath;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::super::InstallPlatformError;
 use super::manager_bus::{ManagerBus, ManagerCallError};
@@ -21,7 +21,6 @@ const SYSTEMD_MANAGER: &str = "org.freedesktop.systemd1.Manager";
 const PRIVATE_SOCKET: &str = "systemd/private";
 const SERVICE: &str = "hypercolor.service";
 const METHOD_TIMEOUT: Duration = Duration::from_secs(5);
-const JOB_TIMEOUT: Duration = Duration::from_secs(10);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,49 +125,351 @@ pub(super) enum RuntimeJobOutcome {
     Cancelled,
 }
 
+/// Whether `hypercolor.service` reached a phase a checkpoint can name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxRuntimeSettlement {
+    /// No job is queued or running and the service is running or stopped.
+    Settled,
+    /// A job outlived its unit-derived deadline, or the service is waiting to
+    /// restart on its own. Callers treat it as running, never as stopped.
+    Unsettled,
+}
+
 impl LinuxRuntimeManager {
     pub(super) fn new(connection: LinuxSystemdConnection) -> Self {
         Self { connection }
     }
 
+    /// Start or stop the service and fence the job at the unit's deadline.
+    ///
+    /// A failed service is reset before it starts, so a start limit left by
+    /// a crash-looping release never blocks the next start.
     pub(super) fn set_runtime(
         &self,
         running: bool,
     ) -> Result<RuntimeJobOutcome, InstallPlatformError> {
         let connection = self.connection.clone();
-        let worker = std::thread::spawn(move || run_runtime_job(&connection, running));
-        worker
-            .join()
-            .map_err(|_| error("systemd D-Bus job worker panicked"))?
+        on_worker(move || run_runtime_job(&connection, running))
     }
+
+    /// Wait for every queued or running job on the service to finish,
+    /// bounded by the deadlines its own unit declares.
+    pub(super) fn settle(&self) -> Result<LinuxRuntimeSettlement, InstallPlatformError> {
+        let connection = self.connection.clone();
+        on_worker(move || run_settle(&connection))
+    }
+}
+
+/// Run one manager conversation on its own thread and runtime, so callers
+/// inside an async context never block their executor.
+fn on_worker<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, InstallPlatformError> + Send + 'static,
+) -> Result<T, InstallPlatformError> {
+    std::thread::spawn(work)
+        .join()
+        .map_err(|_| error("systemd D-Bus job worker panicked"))?
+}
+
+fn current_thread_runtime() -> Result<tokio::runtime::Runtime, InstallPlatformError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(io_error)
+}
+
+/// The longest any single start or stop job may run, whatever the unit says.
+const MAX_UNIT_DEADLINE: Duration = Duration::from_mins(3);
+/// Slack past the unit's own timeout, so systemd's timeout (and the kill it
+/// sends) always resolves the job before this fence cancels it.
+const JOB_GRACE: Duration = Duration::from_secs(10);
+
+/// Start and stop deadlines derived from the unit's own timeouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ServiceDeadlines {
+    pub(super) start: Duration,
+    pub(super) stop: Duration,
+}
+
+impl ServiceDeadlines {
+    /// Derive deadlines from `TimeoutStartUSec` and `TimeoutStopUSec`.
+    ///
+    /// Zero and `u64::MAX` both mean the unit waits forever; those, and any
+    /// timeout above the bound, fence at the bound instead.
+    pub(super) fn from_unit(timeout_start_usec: u64, timeout_stop_usec: u64) -> Self {
+        Self {
+            start: unit_deadline(timeout_start_usec),
+            stop: unit_deadline(timeout_stop_usec),
+        }
+    }
+}
+
+fn unit_deadline(usec: u64) -> Duration {
+    let bounded = if usec == 0 || usec == u64::MAX {
+        MAX_UNIT_DEADLINE
+    } else {
+        Duration::from_micros(usec).min(MAX_UNIT_DEADLINE)
+    };
+    bounded + JOB_GRACE
+}
+
+/// The manager's view of the service at one instant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ServiceSnapshot {
+    pub(super) active_state: String,
+    pub(super) sub_state: String,
+    /// The type of the queued or running job, if any.
+    pub(super) job: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettleWait {
+    Steady,
+    Wait(Duration),
+    Unsettled,
+}
+
+fn settle_wait(snapshot: &ServiceSnapshot, deadlines: ServiceDeadlines) -> SettleWait {
+    let Some(job) = snapshot.job.as_deref() else {
+        return match (snapshot.active_state.as_str(), snapshot.sub_state.as_str()) {
+            ("active", "running") | ("inactive", "dead") | ("failed", "failed") => {
+                SettleWait::Steady
+            }
+            // The main process is gone and the manager is collecting the
+            // rest of the service; that ends within the stop timeout.
+            ("deactivating", _) => SettleWait::Wait(deadlines.stop),
+            // Waiting to restart on its own (or otherwise moving without a
+            // job): nothing here bounds it, so report it as it is.
+            _ => SettleWait::Unsettled,
+        };
+    };
+    match job {
+        "start" | "verify-active" | "reload" => SettleWait::Wait(deadlines.start),
+        "stop" => SettleWait::Wait(deadlines.stop),
+        _ => SettleWait::Wait(deadlines.start + deadlines.stop),
+    }
+}
+
+/// What settling needs from the manager.
+trait SettleBoundary {
+    fn snapshot(&mut self) -> LocalBoxFuture<'_, Result<ServiceSnapshot, InstallPlatformError>>;
+
+    fn deadlines(&mut self) -> LocalBoxFuture<'_, Result<ServiceDeadlines, InstallPlatformError>>;
+
+    /// Wait for the next change to the service. `Ok(false)` means the
+    /// deadline passed first.
+    fn changed(
+        &mut self,
+        deadline: tokio::time::Instant,
+    ) -> LocalBoxFuture<'_, Result<bool, InstallPlatformError>>;
+}
+
+async fn settle_service(
+    boundary: &mut impl SettleBoundary,
+) -> Result<LinuxRuntimeSettlement, InstallPlatformError> {
+    let first = boundary.snapshot().await?;
+    // Only a pending job or a stop in flight needs the unit's timeouts.
+    let deadlines = if first.job.is_some() || first.active_state == "deactivating" {
+        boundary.deadlines().await?
+    } else {
+        ServiceDeadlines::from_unit(0, 0)
+    };
+    let deadline = match settle_wait(&first, deadlines) {
+        SettleWait::Steady => return Ok(LinuxRuntimeSettlement::Settled),
+        SettleWait::Unsettled => return Ok(LinuxRuntimeSettlement::Unsettled),
+        SettleWait::Wait(wait) => tokio::time::Instant::now() + wait,
+    };
+    loop {
+        if !boundary.changed(deadline).await? {
+            return Ok(LinuxRuntimeSettlement::Unsettled);
+        }
+        match settle_wait(&boundary.snapshot().await?, deadlines) {
+            SettleWait::Steady => return Ok(LinuxRuntimeSettlement::Settled),
+            SettleWait::Unsettled => return Ok(LinuxRuntimeSettlement::Unsettled),
+            SettleWait::Wait(_) => {}
+        }
+    }
+}
+
+const UNIT_INTERFACE: &str = "org.freedesktop.systemd1.Unit";
+const SERVICE_INTERFACE: &str = "org.freedesktop.systemd1.Service";
+const JOB_INTERFACE: &str = "org.freedesktop.systemd1.Job";
+const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
+
+struct BusSettleBoundary<'a> {
+    bus: &'a mut ManagerBus,
+    unit: OwnedObjectPath,
+}
+
+impl SettleBoundary for BusSettleBoundary<'_> {
+    fn snapshot(&mut self) -> LocalBoxFuture<'_, Result<ServiceSnapshot, InstallPlatformError>> {
+        async move { read_snapshot(self.bus, &self.unit).await }.boxed_local()
+    }
+
+    fn deadlines(&mut self) -> LocalBoxFuture<'_, Result<ServiceDeadlines, InstallPlatformError>> {
+        async move { read_deadlines(self.bus, &self.unit).await }.boxed_local()
+    }
+
+    fn changed(
+        &mut self,
+        deadline: tokio::time::Instant,
+    ) -> LocalBoxFuture<'_, Result<bool, InstallPlatformError>> {
+        async move {
+            let unit = self.unit.as_str().to_owned();
+            let next = async {
+                loop {
+                    let signal = self.bus.next_signal().await?;
+                    let unit_changed = signal.path.as_deref() == Some(unit.as_str())
+                        && signal.is_signal(PROPERTIES_INTERFACE, "PropertiesChanged");
+                    let job_removed = signal.path.as_deref() == Some(SYSTEMD_PATH)
+                        && signal.is_signal(SYSTEMD_MANAGER, "JobRemoved")
+                        && signal
+                            .body::<(u32, OwnedObjectPath, String, String)>()
+                            .is_ok_and(|(_, _, removed, _)| removed == SERVICE);
+                    if unit_changed || job_removed {
+                        return Ok::<(), InstallPlatformError>(());
+                    }
+                }
+            };
+            match tokio::time::timeout_at(deadline, next).await {
+                Err(_) => Ok(false),
+                Ok(result) => result.map(|()| true),
+            }
+        }
+        .boxed_local()
+    }
+}
+
+fn run_settle(
+    manager: &LinuxSystemdConnection,
+) -> Result<LinuxRuntimeSettlement, InstallPlatformError> {
+    current_thread_runtime()?.block_on(async move {
+        // A direct manager connection receives every manager signal without
+        // a bus match or `Subscribe`, and the client keeps every signal that
+        // arrives while it reads, so no change can fall between the first
+        // read and the wait.
+        let mut bus = connect_manager(manager).await?;
+        let unit = match within_method_deadline(bus.call::<_, OwnedObjectPath>(
+            SYSTEMD_PATH,
+            SYSTEMD_MANAGER,
+            "GetUnit",
+            &(SERVICE,),
+        ))
+        .await?
+        {
+            Ok(unit) => unit,
+            // An unloaded unit has no job and no process to wait for.
+            Err(ManagerCallError::Refused { name, .. }) if name == NO_SUCH_UNIT => {
+                return Ok(LinuxRuntimeSettlement::Settled);
+            }
+            Err(refused) => return Err(refused.into_platform()),
+        };
+        let mut boundary = BusSettleBoundary {
+            bus: &mut bus,
+            unit,
+        };
+        settle_service(&mut boundary).await
+    })
 }
 
 fn run_runtime_job(
     manager: &LinuxSystemdConnection,
     running: bool,
 ) -> Result<RuntimeJobOutcome, InstallPlatformError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(io_error)?;
-    runtime.block_on(async move {
+    current_thread_runtime()?.block_on(async move {
         let mut bus = connect_manager(manager).await?;
+        let unit = manager_call::<_, OwnedObjectPath>(&mut bus, "LoadUnit", &(SERVICE,)).await?;
+        let deadlines = read_deadlines(&mut bus, &unit).await?;
+        if running
+            && property::<String>(&mut bus, &unit, UNIT_INTERFACE, "ActiveState").await? == "failed"
+        {
+            // Clears the failed state and the start limit a crash loop left.
+            manager_call::<_, ()>(&mut bus, "ResetFailedUnit", &(SERVICE,)).await?;
+        }
         let method = if running { "StartUnit" } else { "StopUnit" };
-        // A direct manager connection receives every manager signal without
-        // a bus match or `Subscribe`; the client keeps any that arrive
-        // before the reply, so the job's JobRemoved cannot be missed.
-        let job_path = within_method_deadline(bus.call::<_, OwnedObjectPath>(
-            SYSTEMD_PATH,
-            SYSTEMD_MANAGER,
-            method,
-            &(SERVICE, "fail"),
-        ))
-        .await?
-        .map_err(ManagerCallError::into_platform)?;
+        let job_path =
+            manager_call::<_, OwnedObjectPath>(&mut bus, method, &(SERVICE, "fail")).await?;
         let job = owned_job(job_path)?;
         let mut boundary = BusJobBoundary { bus: &mut bus };
-        fence_owned_job(&mut boundary, &job).await
+        let deadline = if running {
+            deadlines.start
+        } else {
+            deadlines.stop
+        };
+        fence_owned_job(&mut boundary, &job, deadline).await
     })
+}
+
+const NO_SUCH_UNIT: &str = "org.freedesktop.systemd1.NoSuchUnit";
+
+/// Call one manager method within the method deadline.
+async fn manager_call<B, R>(
+    bus: &mut ManagerBus,
+    method: &str,
+    body: &B,
+) -> Result<R, InstallPlatformError>
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+    R: serde::de::DeserializeOwned,
+{
+    within_method_deadline(bus.call(SYSTEMD_PATH, SYSTEMD_MANAGER, method, body))
+        .await?
+        .map_err(ManagerCallError::into_platform)
+}
+
+async fn property<T>(
+    bus: &mut ManagerBus,
+    object: &OwnedObjectPath,
+    interface: &str,
+    name: &str,
+) -> Result<T, InstallPlatformError>
+where
+    T: TryFrom<OwnedValue>,
+    T::Error: std::fmt::Display,
+{
+    let value = within_method_deadline(bus.call::<_, OwnedValue>(
+        object.as_str(),
+        PROPERTIES_INTERFACE,
+        "Get",
+        &(interface, name),
+    ))
+    .await?
+    .map_err(ManagerCallError::into_platform)?;
+    T::try_from(value).map_err(|source| error(format!("systemd property {name}: {source}")))
+}
+
+async fn read_snapshot(
+    bus: &mut ManagerBus,
+    unit: &OwnedObjectPath,
+) -> Result<ServiceSnapshot, InstallPlatformError> {
+    let active_state = property::<String>(bus, unit, UNIT_INTERFACE, "ActiveState").await?;
+    let sub_state = property::<String>(bus, unit, UNIT_INTERFACE, "SubState").await?;
+    let (job_id, job_path): (u32, OwnedObjectPath) =
+        property(bus, unit, UNIT_INTERFACE, "Job").await?;
+    let job = if job_id == 0 {
+        None
+    } else {
+        // A job can finish between the two reads; an unreadable type still
+        // counts as pending and gets the widest deadline.
+        Some(
+            property::<String>(bus, &job_path, JOB_INTERFACE, "JobType")
+                .await
+                .unwrap_or_default(),
+        )
+    };
+    Ok(ServiceSnapshot {
+        active_state,
+        sub_state,
+        job,
+    })
+}
+
+async fn read_deadlines(
+    bus: &mut ManagerBus,
+    unit: &OwnedObjectPath,
+) -> Result<ServiceDeadlines, InstallPlatformError> {
+    let start = property::<u64>(bus, unit, SERVICE_INTERFACE, "TimeoutStartUSec").await?;
+    let stop = property::<u64>(bus, unit, SERVICE_INTERFACE, "TimeoutStopUSec").await?;
+    Ok(ServiceDeadlines::from_unit(start, stop))
 }
 
 /// Open the user manager's private socket, proving the peer runs as the
@@ -232,25 +533,16 @@ impl RuntimeJobBoundary for BusJobBoundary<'_> {
         &'a mut self,
         job: &'a OwnedJob,
     ) -> LocalBoxFuture<'a, Result<(), InstallPlatformError>> {
-        async move {
-            within_method_deadline(self.bus.call::<_, ()>(
-                SYSTEMD_PATH,
-                SYSTEMD_MANAGER,
-                "CancelJob",
-                &(job.id,),
-            ))
-            .await?
-            .map_err(ManagerCallError::into_platform)
-        }
-        .boxed_local()
+        async move { manager_call::<_, ()>(self.bus, "CancelJob", &(job.id,)).await }.boxed_local()
     }
 }
 
 async fn fence_owned_job(
     boundary: &mut impl RuntimeJobBoundary,
     job: &OwnedJob,
+    deadline: Duration,
 ) -> Result<RuntimeJobOutcome, InstallPlatformError> {
-    if let Some(result) = boundary.wait(job, JOB_TIMEOUT).await? {
+    if let Some(result) = boundary.wait(job, deadline).await? {
         require_job_result(&result, "done")?;
         return Ok(RuntimeJobOutcome::Done);
     }
@@ -378,9 +670,10 @@ mod tests {
     use zbus::zvariant::OwnedObjectPath;
 
     use super::{
-        InstallPlatformError, LinuxRuntimeManager, LinuxSystemdConnection, OwnedJob,
-        RuntimeJobBoundary, RuntimeJobOutcome, SERVICE, fence_owned_job, owned_job,
-        removed_job_result,
+        InstallPlatformError, LinuxRuntimeManager, LinuxRuntimeSettlement, LinuxSystemdConnection,
+        OwnedJob, RuntimeJobBoundary, RuntimeJobOutcome, SERVICE, ServiceDeadlines,
+        ServiceSnapshot, SettleBoundary, fence_owned_job, owned_job, removed_job_result,
+        settle_service,
     };
 
     /// A runtime directory shaped like a user manager's: private, with a
@@ -483,10 +776,25 @@ mod tests {
         );
     }
 
-    /// Serve `StartUnit` and `StopUnit` peer to peer with an independent
-    /// D-Bus implementation: no bus daemon and no `Hello`.
+    /// What the fake manager knows about `hypercolor.service`.
+    #[derive(Debug)]
+    struct FakeService {
+        active_state: String,
+        sub_state: String,
+        job: Option<(u32, String)>,
+        timeout_start_usec: u64,
+        timeout_stop_usec: u64,
+        calls: Vec<(String, String)>,
+    }
+
+    type SharedService = std::sync::Arc<std::sync::Mutex<FakeService>>;
+
+    const UNIT_PATH: &str = "/org/freedesktop/systemd1/unit/hypercolor_2eservice";
+
+    /// Serve the manager peer to peer the way systemd serves its private
+    /// socket: no bus daemon, no `Hello`, and signals without a sender.
     struct FakeManager {
-        calls: std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+        service: SharedService,
     }
 
     #[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
@@ -497,7 +805,13 @@ mod tests {
             mode: String,
             #[zbus(connection)] connection: &zbus::Connection,
         ) -> zbus::fdo::Result<OwnedObjectPath> {
-            self.job("StartUnit", name, mode, connection).await
+            self.record("StartUnit", &name, &mode);
+            {
+                let mut service = self.service.lock().expect("fake service");
+                "active".clone_into(&mut service.active_state);
+                "running".clone_into(&mut service.sub_state);
+            }
+            job_removed(connection, &name).await
         }
 
         async fn stop_unit(
@@ -506,54 +820,152 @@ mod tests {
             mode: String,
             #[zbus(connection)] connection: &zbus::Connection,
         ) -> zbus::fdo::Result<OwnedObjectPath> {
-            self.job("StopUnit", name, mode, connection).await
+            self.record("StopUnit", &name, &mode);
+            {
+                let mut service = self.service.lock().expect("fake service");
+                "inactive".clone_into(&mut service.active_state);
+                "dead".clone_into(&mut service.sub_state);
+            }
+            job_removed(connection, &name).await
+        }
+
+        fn load_unit(&self, name: String) -> OwnedObjectPath {
+            self.record("LoadUnit", &name, "");
+            OwnedObjectPath::try_from(UNIT_PATH).expect("unit path")
+        }
+
+        fn get_unit(&self, name: String) -> OwnedObjectPath {
+            self.record("GetUnit", &name, "");
+            OwnedObjectPath::try_from(UNIT_PATH).expect("unit path")
+        }
+
+        fn reset_failed_unit(&self, name: String) {
+            self.record("ResetFailedUnit", &name, "");
+            let mut service = self.service.lock().expect("fake service");
+            "inactive".clone_into(&mut service.active_state);
+            "dead".clone_into(&mut service.sub_state);
         }
     }
 
     impl FakeManager {
-        async fn job(
-            &self,
-            method: &str,
-            name: String,
-            mode: String,
-            connection: &zbus::Connection,
-        ) -> zbus::fdo::Result<OwnedObjectPath> {
-            self.calls.lock().expect("fake manager calls").push((
-                method.to_owned(),
-                name.clone(),
-                mode,
-            ));
-            let unrelated = OwnedObjectPath::try_from("/org/freedesktop/systemd1/job/41")
-                .expect("unrelated job path");
-            let owned = OwnedObjectPath::try_from("/org/freedesktop/systemd1/job/42")
-                .expect("owned job path");
-            for (id, path) in [(41_u32, unrelated), (42_u32, owned.clone())] {
-                connection
-                    .emit_signal(
-                        None::<&str>,
-                        "/org/freedesktop/systemd1",
-                        "org.freedesktop.systemd1.Manager",
-                        "JobRemoved",
-                        &(id, path, name.as_str(), "done"),
-                    )
-                    .await
-                    .map_err(|source| zbus::fdo::Error::Failed(source.to_string()))?;
-            }
-            Ok(owned)
+        fn record(&self, method: &str, name: &str, mode: &str) {
+            assert_eq!(name, SERVICE);
+            self.service
+                .lock()
+                .expect("fake service")
+                .calls
+                .push((method.to_owned(), mode.to_owned()));
         }
     }
 
-    #[test]
-    fn runtime_jobs_run_over_the_private_socket_without_a_session_bus() {
-        let (fixture, uid) = runtime_fixture();
-        let socket = fixture.path().join("systemd/private");
-        let listener = UnixListener::bind(&socket).expect("private socket");
+    async fn job_removed(
+        connection: &zbus::Connection,
+        name: &str,
+    ) -> zbus::fdo::Result<OwnedObjectPath> {
+        let unrelated = OwnedObjectPath::try_from("/org/freedesktop/systemd1/job/41")
+            .expect("unrelated job path");
+        let owned =
+            OwnedObjectPath::try_from("/org/freedesktop/systemd1/job/42").expect("owned job path");
+        for (id, path) in [(41_u32, unrelated), (42_u32, owned.clone())] {
+            connection
+                .emit_signal(
+                    None::<&str>,
+                    "/org/freedesktop/systemd1",
+                    "org.freedesktop.systemd1.Manager",
+                    "JobRemoved",
+                    &(id, path, name, "done"),
+                )
+                .await
+                .map_err(|source| zbus::fdo::Error::Failed(source.to_string()))?;
+        }
+        Ok(owned)
+    }
+
+    struct FakeUnit {
+        service: SharedService,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.systemd1.Unit")]
+    impl FakeUnit {
+        #[zbus(property)]
+        fn active_state(&self) -> String {
+            self.service
+                .lock()
+                .expect("fake service")
+                .active_state
+                .clone()
+        }
+
+        #[zbus(property)]
+        fn sub_state(&self) -> String {
+            self.service.lock().expect("fake service").sub_state.clone()
+        }
+
+        #[zbus(property)]
+        fn job(&self) -> (u32, OwnedObjectPath) {
+            let service = self.service.lock().expect("fake service");
+            let (id, path) = service.job.as_ref().map_or((0, "/".to_owned()), |(id, _)| {
+                (*id, format!("/org/freedesktop/systemd1/job/{id}"))
+            });
+            (id, OwnedObjectPath::try_from(path).expect("job path"))
+        }
+    }
+
+    struct FakeServiceTimeouts {
+        service: SharedService,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.systemd1.Service")]
+    impl FakeServiceTimeouts {
+        #[zbus(property, name = "TimeoutStartUSec")]
+        fn timeout_start_usec(&self) -> u64 {
+            self.service
+                .lock()
+                .expect("fake service")
+                .timeout_start_usec
+        }
+
+        #[zbus(property, name = "TimeoutStopUSec")]
+        fn timeout_stop_usec(&self) -> u64 {
+            self.service.lock().expect("fake service").timeout_stop_usec
+        }
+    }
+
+    struct FakeJob {
+        service: SharedService,
+        observed: std::sync::Arc<tokio::sync::Notify>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.systemd1.Job")]
+    impl FakeJob {
+        #[zbus(property)]
+        fn job_type(&self) -> String {
+            // The client has now seen the pending job, so it is waiting.
+            self.observed.notify_one();
+            self.service
+                .lock()
+                .expect("fake service")
+                .job
+                .as_ref()
+                .map(|(_, kind)| kind.clone())
+                .unwrap_or_default()
+        }
+    }
+
+    /// Serve `connections` manager conversations on the private socket.
+    ///
+    /// When the service has a pending job, the fake finishes it only after
+    /// the client has read its type, then announces the change the way
+    /// systemd does: `PropertiesChanged` on the unit and `JobRemoved`.
+    fn serve_fake_manager(
+        listener: std::os::unix::net::UnixListener,
+        service: SharedService,
+        connections: usize,
+    ) -> std::thread::JoinHandle<()> {
         listener
             .set_nonblocking(true)
             .expect("nonblocking listener");
-        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let served = std::sync::Arc::clone(&calls);
-        let server = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -561,8 +973,9 @@ mod tests {
             runtime.block_on(async move {
                 let listener =
                     tokio::net::UnixListener::from_std(listener).expect("tokio listener");
-                for _ in 0..2 {
+                for _ in 0..connections {
                     let (stream, _) = listener.accept().await.expect("manager client");
+                    let observed = std::sync::Arc::new(tokio::sync::Notify::new());
                     let connection = zbus::connection::Builder::unix_stream(stream)
                         .server(zbus::Guid::generate())
                         .expect("server guid")
@@ -570,19 +983,106 @@ mod tests {
                         .serve_at(
                             "/org/freedesktop/systemd1",
                             FakeManager {
-                                calls: std::sync::Arc::clone(&served),
+                                service: std::sync::Arc::clone(&service),
                             },
                         )
                         .expect("serve manager")
+                        .serve_at(
+                            UNIT_PATH,
+                            FakeUnit {
+                                service: std::sync::Arc::clone(&service),
+                            },
+                        )
+                        .expect("serve unit")
+                        .serve_at(
+                            UNIT_PATH,
+                            FakeServiceTimeouts {
+                                service: std::sync::Arc::clone(&service),
+                            },
+                        )
+                        .expect("serve service timeouts")
+                        .serve_at(
+                            "/org/freedesktop/systemd1/job/7",
+                            FakeJob {
+                                service: std::sync::Arc::clone(&service),
+                                observed: std::sync::Arc::clone(&observed),
+                            },
+                        )
+                        .expect("serve job")
                         .build()
                         .await
                         .expect("peer-to-peer manager connection");
+                    let finisher = {
+                        let connection = connection.clone();
+                        let service = std::sync::Arc::clone(&service);
+                        async move {
+                            observed.notified().await;
+                            {
+                                let mut service = service.lock().expect("fake service");
+                                service.job = None;
+                                "active".clone_into(&mut service.active_state);
+                                "running".clone_into(&mut service.sub_state);
+                            }
+                            let unit = connection
+                                .object_server()
+                                .interface::<_, FakeUnit>(UNIT_PATH)
+                                .await
+                                .expect("unit interface");
+                            unit.get()
+                                .await
+                                .active_state_changed(unit.signal_emitter())
+                                .await
+                                .expect("announce state");
+                            connection
+                                .emit_signal(
+                                    None::<&str>,
+                                    "/org/freedesktop/systemd1",
+                                    "org.freedesktop.systemd1.Manager",
+                                    "JobRemoved",
+                                    &(
+                                        7_u32,
+                                        OwnedObjectPath::try_from(
+                                            "/org/freedesktop/systemd1/job/7",
+                                        )
+                                        .expect("job path"),
+                                        SERVICE,
+                                        "done",
+                                    ),
+                                )
+                                .await
+                                .expect("announce job");
+                        }
+                    };
                     // Keep serving until the client hangs up.
                     let mut messages = zbus::MessageStream::from(&connection);
-                    while messages.next().await.is_some() {}
+                    let serve = async { while messages.next().await.is_some() {} };
+                    tokio::select! {
+                        () = serve => {}
+                        () = async { finisher.await; std::future::pending::<()>().await } => {}
+                    }
                 }
             });
-        });
+        })
+    }
+
+    fn fake_service(active_state: &str, sub_state: &str) -> SharedService {
+        std::sync::Arc::new(std::sync::Mutex::new(FakeService {
+            active_state: active_state.to_owned(),
+            sub_state: sub_state.to_owned(),
+            job: None,
+            timeout_start_usec: 90_000_000,
+            timeout_stop_usec: 90_000_000,
+            calls: Vec::new(),
+        }))
+    }
+
+    #[test]
+    fn runtime_jobs_run_over_the_private_socket_without_a_session_bus() {
+        let (fixture, uid) = runtime_fixture();
+        let listener =
+            UnixListener::bind(fixture.path().join("systemd/private")).expect("private socket");
+        let service = fake_service("inactive", "dead");
+        let server = serve_fake_manager(listener, std::sync::Arc::clone(&service), 2);
 
         let connection = LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid)
             .expect("private manager coordinate");
@@ -597,16 +1097,72 @@ mod tests {
         );
         server.join().expect("fake manager thread");
         assert_eq!(
-            *calls.lock().expect("recorded calls"),
+            service.lock().expect("fake service").calls,
             [
-                (
-                    "StartUnit".to_owned(),
-                    SERVICE.to_owned(),
-                    "fail".to_owned()
-                ),
-                ("StopUnit".to_owned(), SERVICE.to_owned(), "fail".to_owned()),
+                ("LoadUnit".to_owned(), String::new()),
+                ("StartUnit".to_owned(), "fail".to_owned()),
+                ("LoadUnit".to_owned(), String::new()),
+                ("StopUnit".to_owned(), "fail".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn a_failed_service_is_reset_before_it_starts_but_not_before_it_stops() {
+        let (fixture, uid) = runtime_fixture();
+        let listener =
+            UnixListener::bind(fixture.path().join("systemd/private")).expect("private socket");
+        let service = fake_service("failed", "failed");
+        let server = serve_fake_manager(listener, std::sync::Arc::clone(&service), 2);
+        let manager = LinuxRuntimeManager::new(
+            LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid)
+                .expect("private manager coordinate"),
+        );
+        manager.set_runtime(false).expect("stop a failed service");
+        {
+            let mut service = service.lock().expect("fake service");
+            "failed".clone_into(&mut service.active_state);
+            "failed".clone_into(&mut service.sub_state);
+        }
+        manager.set_runtime(true).expect("start after a crash loop");
+        server.join().expect("fake manager thread");
+        assert_eq!(
+            service.lock().expect("fake service").calls,
+            [
+                ("LoadUnit".to_owned(), String::new()),
+                ("StopUnit".to_owned(), "fail".to_owned()),
+                ("LoadUnit".to_owned(), String::new()),
+                ("ResetFailedUnit".to_owned(), String::new()),
+                ("StartUnit".to_owned(), "fail".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn settle_waits_for_a_queued_start_job_over_the_private_socket() {
+        let (fixture, uid) = runtime_fixture();
+        let listener =
+            UnixListener::bind(fixture.path().join("systemd/private")).expect("private socket");
+        // A login queues the service's start job while it still reads
+        // inactive; settling must wait for it rather than call it stopped.
+        let service = fake_service("inactive", "dead");
+        service.lock().expect("fake service").job = Some((7, "start".to_owned()));
+        let server = serve_fake_manager(listener, std::sync::Arc::clone(&service), 1);
+        let manager = LinuxRuntimeManager::new(
+            LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid)
+                .expect("private manager coordinate"),
+        );
+        assert_eq!(
+            manager.settle().expect("settle"),
+            LinuxRuntimeSettlement::Settled
+        );
+        server.join().expect("fake manager thread");
+        let service = service.lock().expect("fake service");
+        assert_eq!(
+            (service.active_state.as_str(), service.sub_state.as_str()),
+            ("active", "running")
+        );
+        assert_eq!(service.calls, [("GetUnit".to_owned(), String::new())]);
     }
 
     #[test]
@@ -618,19 +1174,30 @@ mod tests {
         let mut boundary = FakeBoundary {
             waits: VecDeque::from([None, Some("canceled".to_owned())]),
             cancelled: Vec::new(),
+            timeouts: Vec::new(),
         };
         let job = OwnedJob {
             path: OwnedObjectPath::try_from("/org/freedesktop/systemd1/job/42").expect("job path"),
             id: 42,
         };
+        let deadlines = ServiceDeadlines::from_unit(90_000_000, 20_000_000);
         assert_eq!(
             runtime
-                .block_on(fence_owned_job(&mut boundary, &job))
+                .block_on(fence_owned_job(&mut boundary, &job, deadlines.start))
                 .expect("cancelled terminal job"),
             RuntimeJobOutcome::Cancelled
         );
         assert_eq!(boundary.cancelled, [42]);
         assert!(boundary.waits.is_empty());
+        // The job gets the unit's own start timeout plus grace before the
+        // cancel, and the cancel gets its short fixed fence.
+        assert_eq!(
+            boundary.timeouts,
+            [
+                std::time::Duration::from_secs(100),
+                std::time::Duration::from_secs(5)
+            ]
+        );
     }
 
     #[test]
@@ -653,7 +1220,11 @@ mod tests {
         };
         assert_eq!(
             runtime
-                .block_on(fence_owned_job(&mut boundary, &job))
+                .block_on(fence_owned_job(
+                    &mut boundary,
+                    &job,
+                    std::time::Duration::from_secs(1)
+                ))
                 .expect("exact returned job"),
             RuntimeJobOutcome::Done
         );
@@ -690,6 +1261,7 @@ mod tests {
     struct FakeBoundary {
         waits: VecDeque<Option<String>>,
         cancelled: Vec<u32>,
+        timeouts: Vec<std::time::Duration>,
     }
 
     struct InterleavedBoundary {
@@ -724,9 +1296,10 @@ mod tests {
         fn wait<'a>(
             &'a mut self,
             _job: &'a OwnedJob,
-            _timeout: std::time::Duration,
+            timeout: std::time::Duration,
         ) -> futures_util::future::LocalBoxFuture<'a, Result<Option<String>, InstallPlatformError>>
         {
+            self.timeouts.push(timeout);
             let result = self.waits.pop_front().expect("scripted wait");
             async move { Ok(result) }.boxed_local()
         }
@@ -738,5 +1311,146 @@ mod tests {
             self.cancelled.push(job.id);
             async { Ok(()) }.boxed_local()
         }
+    }
+
+    #[test]
+    fn job_deadlines_follow_the_unit_timeouts_within_a_fixed_bound() {
+        let secs = std::time::Duration::from_secs;
+        assert_eq!(
+            ServiceDeadlines::from_unit(90_000_000, 45_000_000),
+            ServiceDeadlines {
+                start: secs(100),
+                stop: secs(55)
+            }
+        );
+        // A slow unit keeps its own longer timeout up to the bound.
+        assert_eq!(ServiceDeadlines::from_unit(150_000_000, 0).start, secs(160));
+        // Zero and infinity both mean "no timeout" to systemd; above the
+        // bound, the fence still ends the wait.
+        for usec in [0, u64::MAX, 3_600_000_000] {
+            assert_eq!(ServiceDeadlines::from_unit(usec, usec).start, secs(190));
+            assert_eq!(ServiceDeadlines::from_unit(usec, usec).stop, secs(190));
+        }
+    }
+
+    /// Scripted snapshots; `changed` reports whether another one exists
+    /// before the deadline.
+    struct ScriptedService {
+        snapshots: VecDeque<ServiceSnapshot>,
+        deadline_reads: usize,
+        waits: Vec<tokio::time::Instant>,
+    }
+
+    fn snapshot(active: &str, sub: &str, job: Option<&str>) -> ServiceSnapshot {
+        ServiceSnapshot {
+            active_state: active.to_owned(),
+            sub_state: sub.to_owned(),
+            job: job.map(str::to_owned),
+        }
+    }
+
+    impl SettleBoundary for ScriptedService {
+        fn snapshot(
+            &mut self,
+        ) -> futures_util::future::LocalBoxFuture<'_, Result<ServiceSnapshot, InstallPlatformError>>
+        {
+            let next = self.snapshots.pop_front().expect("scripted snapshot");
+            async move { Ok(next) }.boxed_local()
+        }
+
+        fn deadlines(
+            &mut self,
+        ) -> futures_util::future::LocalBoxFuture<'_, Result<ServiceDeadlines, InstallPlatformError>>
+        {
+            self.deadline_reads += 1;
+            async { Ok(ServiceDeadlines::from_unit(20_000_000, 30_000_000)) }.boxed_local()
+        }
+
+        fn changed(
+            &mut self,
+            deadline: tokio::time::Instant,
+        ) -> futures_util::future::LocalBoxFuture<'_, Result<bool, InstallPlatformError>> {
+            // An exhausted script stands for a deadline that passed first.
+            self.waits.push(deadline);
+            let more = !self.snapshots.is_empty();
+            async move { Ok(more) }.boxed_local()
+        }
+    }
+
+    fn settle(snapshots: Vec<ServiceSnapshot>) -> (LinuxRuntimeSettlement, ScriptedService) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let mut service = ScriptedService {
+            snapshots: snapshots.into(),
+            deadline_reads: 0,
+            waits: Vec::new(),
+        };
+        let settled = runtime
+            .block_on(settle_service(&mut service))
+            .expect("settle");
+        (settled, service)
+    }
+
+    #[test]
+    fn steady_running_stopped_and_failed_services_settle_without_waiting() {
+        for (active, sub) in [
+            ("active", "running"),
+            ("inactive", "dead"),
+            ("failed", "failed"),
+        ] {
+            let (settled, service) = settle(vec![snapshot(active, sub, None)]);
+            assert_eq!(settled, LinuxRuntimeSettlement::Settled);
+            assert!(service.waits.is_empty());
+            assert_eq!(service.deadline_reads, 0);
+        }
+    }
+
+    #[test]
+    fn queued_and_running_jobs_settle_when_they_finish() {
+        let (settled, service) = settle(vec![
+            snapshot("inactive", "dead", Some("start")),
+            snapshot("activating", "start", Some("start")),
+            snapshot("active", "running", None),
+        ]);
+        assert_eq!(settled, LinuxRuntimeSettlement::Settled);
+        assert_eq!(service.deadline_reads, 1);
+        assert_eq!(service.waits.len(), 2);
+        // Every wait shares the first job's deadline, so a chain of jobs
+        // cannot extend the settle without bound.
+        assert_eq!(service.waits[0], service.waits[1]);
+
+        let (settled, _) = settle(vec![
+            snapshot("deactivating", "stop-sigterm", None),
+            snapshot("inactive", "dead", None),
+        ]);
+        assert_eq!(settled, LinuxRuntimeSettlement::Settled);
+    }
+
+    #[test]
+    fn a_job_outliving_its_unit_deadline_is_reported_unsettled() {
+        let (settled, service) = settle(vec![snapshot("activating", "start", Some("start"))]);
+        assert_eq!(settled, LinuxRuntimeSettlement::Unsettled);
+        assert_eq!(service.waits.len(), 1);
+    }
+
+    #[test]
+    fn a_service_waiting_to_restart_is_unsettled_without_waiting_for_it() {
+        for (active, sub) in [
+            ("activating", "auto-restart"),
+            ("inactive", "dead-before-auto-restart"),
+            ("failed", "failed-before-auto-restart"),
+        ] {
+            let (settled, service) = settle(vec![snapshot(active, sub, None)]);
+            assert_eq!(settled, LinuxRuntimeSettlement::Unsettled, "{active}/{sub}");
+            assert!(service.waits.is_empty());
+        }
+        // A crash after the start job completes lands in auto-restart.
+        let (settled, _) = settle(vec![
+            snapshot("activating", "start", Some("start")),
+            snapshot("activating", "auto-restart", None),
+        ]);
+        assert_eq!(settled, LinuxRuntimeSettlement::Unsettled);
     }
 }

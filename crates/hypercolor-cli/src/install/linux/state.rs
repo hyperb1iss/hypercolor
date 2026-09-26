@@ -2,14 +2,17 @@ use super::super::{InstallPlatformError, PlatformState, UnitId};
 use super::executor::LinuxInstallExecutor;
 use super::legacy::legacy_identity_digest;
 use super::model::{
-    LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxExactEntry, MAX_LAUNCHER_BYTES,
-    MAX_SYSTEMD_SHOW_BYTES, error, hex_digest, parse_systemd_show,
+    LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxExactEntry, LinuxServicePhase,
+    MAX_LAUNCHER_BYTES, MAX_SYSTEMD_SHOW_BYTES, error, hex_digest, parse_systemd_show,
 };
 use super::proof::{require_notify_launcher, validate_prior_launcher_entry};
 use super::{LinuxInspection, LinuxInstallPlatform};
 
 impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
     pub(super) fn inspect_exact(&mut self) -> Result<LinuxInspection, InstallPlatformError> {
+        // Settle first: a queued or in-flight job would otherwise make the
+        // observation below a snapshot of a state about to change.
+        self.executor.settle_runtime()?;
         let active_unit = self.executor.active_unit()?;
         let systemd = parse_systemd_show(&self.executor.systemd_show(MAX_SYSTEMD_SHOW_BYTES)?)?;
         let (launcher, launcher_bytes) = self.executor.launcher_entry(MAX_LAUNCHER_BYTES)?;
@@ -64,7 +67,9 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             .layout
             .values()
             .any(|entry| !matches!(entry, LinuxExactEntry::Absent));
-        let running = inspection.systemd.active_state == "active";
+        // A service still transitioning after settling counts as running:
+        // no checkpoint that expects it stopped may proceed under it.
+        let running = inspection.systemd.phase() != LinuxServicePhase::Stopped;
         let logical_unit = inspection
             .active_unit
             .clone()

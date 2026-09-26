@@ -50,9 +50,9 @@ pub use model::{
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,
     LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse, LinuxInstallConfig, LinuxLayoutItem,
     LinuxLayoutPublication, LinuxLegacyFile, LinuxLegacySnapshot, LinuxProcessExecutable,
-    LinuxSystemdObservation, parse_systemd_show,
+    LinuxServicePhase, LinuxSystemdObservation, parse_systemd_show,
 };
-pub use runtime::LinuxSystemdConnection;
+pub use runtime::{LinuxRuntimeSettlement, LinuxSystemdConnection};
 pub use uninstall::{
     LinuxUninstallCheckpoint, LinuxUninstallHost, LinuxUninstallRun, run_linux_uninstall,
 };

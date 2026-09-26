@@ -27,10 +27,10 @@ use hypercolor_cli::install::{
     LinuxInstallCommandError, LinuxInstallConfig, LinuxInstallElection, LinuxInstallExecutor,
     LinuxInstallHost, LinuxInstallLocation, LinuxInstallPlatform, LinuxInstallRequest,
     LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLocatorError,
-    LinuxProcessExecutable, LinuxPublicTree, LinuxUninstallCheckpoint, LinuxUninstallHost,
-    OwnershipPolicy, PlatformTransactionRecord, PrincipalDatabase, PrincipalGroup, PrincipalUser,
-    UnitId, UnitRecord, elect_linux_installation_with, run_linux_install, run_linux_uninstall,
-    stage_release_payload,
+    LinuxProcessExecutable, LinuxPublicTree, LinuxRuntimeSettlement, LinuxUninstallCheckpoint,
+    LinuxUninstallHost, OwnershipPolicy, PlatformTransactionRecord, PrincipalDatabase,
+    PrincipalGroup, PrincipalUser, UnitId, UnitRecord, elect_linux_installation_with,
+    run_linux_install, run_linux_uninstall, stage_release_payload,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -390,6 +390,10 @@ impl LinuxInstallExecutor for SimExecutor {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(InstallPlatformError::new(error.to_string())),
         }
+    }
+
+    fn settle_runtime(&mut self) -> Result<LinuxRuntimeSettlement, InstallPlatformError> {
+        Ok(LinuxRuntimeSettlement::Settled)
     }
 
     fn systemd_show(&mut self, max_bytes: usize) -> Result<Vec<u8>, InstallPlatformError> {

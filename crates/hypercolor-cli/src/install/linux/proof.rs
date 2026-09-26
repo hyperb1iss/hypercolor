@@ -8,7 +8,7 @@ use super::LinuxInstallPlatform;
 use super::executor::LinuxInstallExecutor;
 use super::model::{
     DAEMON_RELATIVE_PATH, LAUNCHER_MODE, LinuxExactEntry, LinuxHttpResponse, LinuxLauncher,
-    LinuxOwnerReceipt, LinuxRecord, LinuxSystemdObservation, LinuxUnitBinding,
+    LinuxOwnerReceipt, LinuxRecord, LinuxServicePhase, LinuxSystemdObservation, LinuxUnitBinding,
     MAX_HTTP_RESPONSE_BYTES, MAX_SYSTEMD_SHOW_BYTES, error, parse_systemd_show,
 };
 use super::systemd::canonical_launcher_exec;
@@ -87,7 +87,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
     ) -> Result<Option<LinuxOwnerReceipt>, InstallPlatformError> {
         let before = parse_systemd_show(&self.executor.systemd_show(MAX_SYSTEMD_SHOW_BYTES)?)?;
         if expected.running_unit.is_none() {
-            if before.active_state != "inactive" || before.main_pid != 0 {
+            if before.phase() != LinuxServicePhase::Stopped {
                 return Err(error("inactive proof observed a running systemd service"));
             }
             return Ok(None);
@@ -413,17 +413,20 @@ fn absent_systemd() -> LinuxSystemdObservation {
     }
 }
 
+/// Whether an observation is the expected definition in the expected phase.
+///
+/// `failed` and `inactive` are the same stopped phase: a service that ended
+/// in failure is not running, and starting it resets the failure first.
 pub(super) fn systemd_equivalent(
     actual: &LinuxSystemdObservation,
     expected: &LinuxSystemdObservation,
 ) -> bool {
     actual.load_state == expected.load_state
-        && actual.active_state == expected.active_state
-        && actual.sub_state == expected.sub_state
+        && actual.phase() == expected.phase()
         && actual.unit_file_state == expected.unit_file_state
         && actual.fragment_path == expected.fragment_path
         && actual.exec_start == expected.exec_start
-        && (actual.active_state == "active" || actual.main_pid == 0)
+        && (actual.phase() == LinuxServicePhase::Running || actual.main_pid == 0)
 }
 
 pub(super) fn require_running_observation(

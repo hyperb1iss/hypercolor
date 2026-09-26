@@ -11,8 +11,8 @@ use hypercolor_cli::install::{
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,
     LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse, LinuxInstallConfig,
     LinuxInstallExecutor, LinuxInstallPlatform, LinuxLayoutItem, LinuxLayoutPublication,
-    LinuxLegacyFile, LinuxProcessExecutable, LinuxPublicTree, PlatformCheckpoint,
-    PlatformOwnerReceipt, PlatformState, PlatformTransactionRecord, UnitId,
+    LinuxLegacyFile, LinuxProcessExecutable, LinuxPublicTree, LinuxServicePhase,
+    PlatformCheckpoint, PlatformOwnerReceipt, PlatformState, PlatformTransactionRecord, UnitId,
     bind_linux_retained_unit, parse_systemd_show, retain_linux_unit, stage_release_payload,
 };
 use hypercolor_platform_fs::ExclusiveDirectory;
@@ -263,6 +263,15 @@ impl LinuxInstallExecutor for FakeExecutor {
         &mut self,
     ) -> Result<Option<UnitId>, hypercolor_cli::install::InstallPlatformError> {
         Ok(self.active())
+    }
+
+    fn settle_runtime(
+        &mut self,
+    ) -> Result<
+        hypercolor_cli::install::LinuxRuntimeSettlement,
+        hypercolor_cli::install::InstallPlatformError,
+    > {
+        Ok(hypercolor_cli::install::LinuxRuntimeSettlement::Settled)
     }
 
     fn systemd_show(
@@ -681,6 +690,84 @@ fn systemd_show_parser_is_strict_and_rejects_third_states() {
         .expect("UTF-8")
         .replace("UnitFileState=enabled", "UnitFileState=");
     assert!(parse_systemd_show(loaded_empty.as_bytes()).is_err());
+}
+
+#[test]
+fn systemd_show_parser_names_failed_and_transitional_phases() {
+    let show = |active: &str, sub: &str, pid: u32, invocation: &str| {
+        format!(
+            "LoadState=loaded\nActiveState={active}\nSubState={sub}\nUnitFileState=enabled\nFragmentPath=/home/test/.config/systemd/user/hypercolor.service\nExecStart={{ path=/daemon ; argv[]=/daemon --flag value ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid={pid} ; code=(null) ; status=0/0 }}\nMainPID={pid}\nInvocationID={invocation}\n"
+        )
+        .into_bytes()
+    };
+    let invocation = "00112233445566778899aabbccddeeff";
+    for (active, sub, pid, phase) in [
+        ("active", "running", 42, LinuxServicePhase::Running),
+        ("inactive", "dead", 0, LinuxServicePhase::Stopped),
+        // A failed service is stopped; starting it resets the failure.
+        ("failed", "failed", 0, LinuxServicePhase::Stopped),
+        ("activating", "start", 42, LinuxServicePhase::Transitional),
+        (
+            "activating",
+            "auto-restart",
+            0,
+            LinuxServicePhase::Transitional,
+        ),
+        (
+            "activating",
+            "auto-restart-queued",
+            0,
+            LinuxServicePhase::Transitional,
+        ),
+        (
+            "deactivating",
+            "stop-sigterm",
+            42,
+            LinuxServicePhase::Transitional,
+        ),
+        (
+            "inactive",
+            "dead-before-auto-restart",
+            0,
+            LinuxServicePhase::Transitional,
+        ),
+        (
+            "failed",
+            "failed-before-auto-restart",
+            0,
+            LinuxServicePhase::Transitional,
+        ),
+        (
+            "reloading",
+            "reload-notify",
+            42,
+            LinuxServicePhase::Transitional,
+        ),
+    ] {
+        let observation = parse_systemd_show(&show(active, sub, pid, invocation))
+            .unwrap_or_else(|error| panic!("{active}/{sub}: {error}"));
+        assert_eq!(observation.phase(), phase, "{active}/{sub}");
+    }
+    for (active, sub, pid) in [
+        ("failed", "failed", 42),
+        ("failed", "running", 42),
+        ("inactive", "dead", 42),
+        ("active", "reload", 42),
+        ("active", "running", 0),
+        ("maintenance", "cleaning", 0),
+        ("activating", "Auto-Restart", 0),
+        ("activating", "", 0),
+    ] {
+        assert!(
+            parse_systemd_show(&show(active, sub, pid, invocation)).is_err(),
+            "{active}/{sub} pid {pid} must be refused"
+        );
+    }
+    // A running service always names its invocation.
+    assert!(parse_systemd_show(&show("active", "running", 42, "")).is_err());
+    // An absent unit can never be mid-transition.
+    let absent = b"LoadState=not-found\nActiveState=activating\nSubState=auto-restart\nUnitFileState=\nFragmentPath=\nExecStart=\nMainPID=0\nInvocationID=\n";
+    assert!(parse_systemd_show(absent).is_err());
 }
 
 #[test]

@@ -11,8 +11,8 @@ use super::executor::LinuxInstallExecutor;
 use super::model::{
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LINUX_RECEIPT_SCHEMA_VERSION,
     LINUX_RECORD_SCHEMA_VERSION, LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
-    LinuxLayoutEffect, LinuxLayoutOperation, LinuxRecord, MAX_HTTP_RESPONSE_BYTES,
-    MAX_LAUNCHER_BYTES, error,
+    LinuxLayoutEffect, LinuxLayoutOperation, LinuxRecord, LinuxServicePhase,
+    MAX_HTTP_RESPONSE_BYTES, MAX_LAUNCHER_BYTES, error,
 };
 use super::proof::{candidate_systemd, prior_systemd, require_notify_launcher, systemd_equivalent};
 use super::state::consistent_platform_unit;
@@ -97,6 +97,12 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
             .ok_or_else(|| error("prepare requires an exact prior inspection"))?;
         if self.state_from(&inspection)? != prior.platform {
             return Err(error("prior Linux inspection changed before preparation"));
+        }
+        if inspection.systemd.phase() == LinuxServicePhase::Transitional {
+            return Err(error(
+                "hypercolor.service is still starting, stopping or restarting after its \
+                 unit's own deadline; wait for it to settle or stop it, then rerun",
+            ));
         }
         if inspection.systemd.load_state == "loaded"
             && matches!(inspection.launcher, LinuxExactEntry::Absent)
