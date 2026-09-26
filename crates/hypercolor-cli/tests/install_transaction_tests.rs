@@ -65,6 +65,9 @@ struct FakePlatform {
     unjournaled_stops: usize,
     /// Whether the prior's files and service definition are untouched.
     untouched_prior: bool,
+    /// The prior restarts under a new invocation while its preflight runs,
+    /// which then fails.
+    prior_restarts_in_preflight: bool,
 }
 
 impl FakePlatform {
@@ -87,6 +90,7 @@ impl FakePlatform {
             stops_unjournaled_runtime: false,
             unjournaled_stops: 0,
             untouched_prior: false,
+            prior_restarts_in_preflight: false,
         }
     }
 
@@ -357,6 +361,13 @@ impl InstallPlatform for FakePlatform {
         assert_eq!(candidate.as_str().len(), 64);
         assert_eq!(prior.platform, self.state);
         Self::assert_record(record);
+        if self.prior_restarts_in_preflight {
+            self.prior_restarts_in_preflight = false;
+            self.prior_restored = true;
+            return Err(InstallPlatformError::new(
+                "prior owner changed during its baseline proof",
+            ));
+        }
         Self::finish_effect(action, injection)
     }
 
@@ -530,6 +541,38 @@ impl InstallPlatform for FakePlatform {
             return Err(InstallPlatformError::new("publication does not match"));
         }
         Self::finish_effect(action, injection)
+    }
+
+    fn matches_exact_state_except_runtime(
+        &mut self,
+        checkpoint: PlatformCheckpoint,
+        expected: &PlatformState,
+        layout_operation_index: u16,
+        record: &PlatformTransactionRecord,
+    ) -> Result<bool, InstallPlatformError> {
+        Self::assert_record(record);
+        let journal = self.journal();
+        let candidate_launcher = journal.target_platform.launcher_unit.is_some()
+            && matches!(
+                checkpoint,
+                PlatformCheckpoint::CandidateLauncher
+                    | PlatformCheckpoint::CandidateActive
+                    | PlatformCheckpoint::CandidateManager
+                    | PlatformCheckpoint::CandidateAutostart
+                    | PlatformCheckpoint::CandidateRuntime
+                    | PlatformCheckpoint::PriorActiveRestored
+            );
+        let static_state = |state: &PlatformState| {
+            (
+                state.layout_unit.clone(),
+                state.launcher_unit.clone(),
+                state.autostart_enabled,
+            )
+        };
+        Ok(self.exact_state_valid
+            && self.layout_operation_progress == layout_operation_index
+            && self.candidate_launcher_installed == candidate_launcher
+            && static_state(&self.state) == static_state(expected))
     }
 
     fn stop_unjournaled_runtime(
@@ -3039,4 +3082,62 @@ fn abandoned_journals_must_be_effect_free_rollbacks() {
     ordinary.abandoned = false;
     let encoded = serde_json::to_value(&ordinary).expect("encode");
     assert!(encoded.get("abandoned").is_none());
+}
+
+#[test]
+fn a_prior_stopped_at_unload_is_drift_not_abandonment() {
+    // The stop may be this transaction's own, so a stopped prior whose
+    // unloaded checkpoint does not match cannot claim nothing changed.
+    let fixture = Fixture::new();
+    let mut platform = prior_restarted_before_unload(&fixture);
+    platform.untouched_prior = true;
+    platform.stops_unjournaled_runtime = true;
+    platform.state.running_unit = None;
+    platform.state.autostart_enabled = !platform.state.autostart_enabled;
+    let pending = fixture.journal();
+    let error = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect_err("a stopped, changed prior is drift");
+    assert!(
+        matches!(
+            error,
+            InstallCoordinatorError::StateDrift {
+                action: InstallAction::UnloadPrior,
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert_eq!(fixture.journal(), pending);
+    assert_eq!(platform.unjournaled_stops, 0);
+}
+
+#[test]
+fn a_prior_that_restarts_during_its_preflight_abandons_without_a_stop() {
+    let fixture = Fixture::new();
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    platform.prior_restarts_in_preflight = true;
+    platform.untouched_prior = true;
+    platform.stops_unjournaled_runtime = true;
+    let outcome = install(&fixture, &mut platform);
+    let InstallOutcome::RolledBack {
+        abandoned, failure, ..
+    } = outcome
+    else {
+        panic!("expected abandonment: {outcome:?}");
+    };
+    assert!(abandoned, "{failure}");
+    assert_eq!(platform.unjournaled_stops, 0, "the prior keeps running");
+    assert_eq!(
+        platform.state.running_unit,
+        fixture.prior_state().running_unit
+    );
+    assert_eq!(
+        platform
+            .effects
+            .iter()
+            .map(|effect| effect.action)
+            .collect::<Vec<_>>(),
+        [InstallAction::PreflightCandidate]
+    );
 }

@@ -176,6 +176,10 @@ struct World {
     /// A failing start ends `failed` (its start limit hit) instead of
     /// waiting to restart.
     failing_start_ends_failed: bool,
+    /// systemd before 254: a start job for a service that never becomes
+    /// ready stays queued across every automatic restart, so the installer's
+    /// fence cancels it and the next restart queues another.
+    start_job_persists: bool,
     resets: usize,
     shows: usize,
     crash_at_show: Option<usize>,
@@ -225,6 +229,7 @@ impl World {
             failed: false,
             failing_starts: BTreeSet::new(),
             failing_start_ends_failed: false,
+            start_job_persists: false,
             resets: 0,
             shows: 0,
             crash_at_show: None,
@@ -346,6 +351,12 @@ impl World {
                 self.failed = true;
             } else {
                 self.auto_restart = true;
+            }
+            if self.start_job_persists && !self.failed {
+                self.queued_start = true;
+                return Err(InstallPlatformError::new(
+                    "systemd runtime job was cancelled at its deadline",
+                ));
             }
             return Err(InstallPlatformError::new(
                 "systemd job failed with exact result failed",
@@ -522,10 +533,11 @@ impl LinuxInstallExecutor for SimExecutor {
         let mut world = self.world.borrow_mut();
         if world.queued_start {
             world.queued_start = false;
-            // A failed boot start leaves the service waiting to restart.
+            // A failed boot start leaves the service waiting to restart; one
+            // that persists stays queued past the settle deadline.
             let _ = world.start_job();
         }
-        Ok(if world.auto_restart {
+        Ok(if world.auto_restart || world.queued_start {
             LinuxRuntimeSettlement::Unsettled
         } else {
             LinuxRuntimeSettlement::Settled
@@ -3021,4 +3033,176 @@ fn loss_and_power_loss_at_every_update_boundary_recover_to_exactly_one_release()
     assert!(tally.abandoned > 0, "{tally:?}");
     assert!(tally.stopped_then_committed > 0, "{tally:?}");
     eprintln!("{} loss cases recovered: {tally:?}", cases.len());
+}
+
+#[test]
+fn a_start_job_that_outlives_its_deadline_on_older_systemd_still_rolls_back() {
+    // Before systemd 254 a start job for a service that never becomes ready
+    // stays queued across every automatic restart. The installer's fence
+    // cancels it, a stop replaces the next one, and rollback proceeds.
+    for power_loss in [false, true] {
+        let (fixture, location) = managed_v1();
+        {
+            let mut world = fixture.world.borrow_mut();
+            world.failing_starts.insert("9.8.8".to_owned());
+            world.start_job_persists = true;
+        }
+        if power_loss {
+            // An update's effects are the prior's stop, the manager reload
+            // and the candidate's start. Die before that start, then lose
+            // power: the boot queues the candidate from the switched pointer.
+            let before = fixture.world.borrow().effects.len();
+            fixture.world.borrow_mut().crash = Some(Crash::Before(before + 3));
+            let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+            assert!(crashed.is_err());
+            assert_eq!(
+                fixture.journal().next_action,
+                Some(InstallAction::RestoreCandidateRuntime)
+            );
+            fixture.world.borrow_mut().power_cycle();
+        }
+        let run = fixture
+            .update(&fixture.v2)
+            .unwrap_or_else(|error| panic!("power_loss={power_loss}: {error}"));
+        assert!(
+            matches!(
+                run.outcome,
+                InstallOutcome::RolledBack {
+                    abandoned: false,
+                    ..
+                }
+            ),
+            "power_loss={power_loss}: {:?}",
+            run.outcome
+        );
+        fixture.assert_managed(&location, &fixture.v1.id);
+        fixture.assert_settled_service("persistent start job");
+    }
+}
+
+#[test]
+fn a_changed_service_definition_is_drift_and_never_stops_the_candidate() {
+    let (fixture, _) = managed_v1();
+    fixture.world.borrow_mut().at_health = Some(("9.8.8", HealthEvent::InstallerDies));
+    let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+    assert!(crashed.is_err());
+    let pending = fixture.journal();
+    assert_eq!(pending.next_action, Some(InstallAction::ProveCandidate));
+    // The candidate still runs, but someone disabled the service: stopping
+    // it would not reach any checkpoint, so recovery must not stop it.
+    fixture.world.borrow_mut().enabled = false;
+    let effects = fixture.world.borrow().effects.len();
+    let error = fixture
+        .update(&fixture.v2)
+        .expect_err("a changed definition is drift");
+    assert!(error.to_string().contains("drift"), "{error}");
+    let world = fixture.world.borrow();
+    assert!(world.active, "the healthy candidate keeps running");
+    assert_eq!(world.running_version(), "9.8.8");
+    assert_eq!(world.effects.len(), effects, "nothing was stopped");
+    drop(world);
+    assert_eq!(fixture.journal(), pending, "the journal did not move");
+}
+
+/// Arm one loss point on a fixture, relative to its effects and observations
+/// so far.
+fn arm_loss(fixture: &Fixture, point: LossPoint) {
+    let mut world = fixture.world.borrow_mut();
+    let (effects, shows) = (world.effects.len(), world.shows);
+    match point {
+        LossPoint::BeforeEffect(effect) => world.crash = Some(Crash::Before(effects + effect)),
+        LossPoint::AfterEffect(effect) => world.crash = Some(Crash::After(effects + effect)),
+        LossPoint::AtObservation(show) => world.crash_at_show = Some(shows + show),
+    }
+}
+
+/// Lose the installer (and power) at `point` during a run of `release`.
+fn lose_during(fixture: &Fixture, release: &Release, point: LossPoint) -> bool {
+    arm_loss(fixture, point);
+    let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(release))).is_err();
+    let mut world = fixture.world.borrow_mut();
+    world.crash = None;
+    world.crash_at_show = None;
+    world.power_cycle();
+    crashed
+}
+
+#[test]
+fn a_second_power_loss_during_recovery_still_recovers_to_exactly_one_release() {
+    let mut cases = Vec::new();
+    for failing_candidate in [false, true] {
+        let (effects, _) = update_extent(failing_candidate);
+        for first in (1..=effects).flat_map(|effect| {
+            [
+                LossPoint::BeforeEffect(effect),
+                LossPoint::AfterEffect(effect),
+            ]
+        }) {
+            // Probe how many effects the first recovery performs.
+            let (probe, _) = managed_v1();
+            if failing_candidate {
+                probe
+                    .world
+                    .borrow_mut()
+                    .failing_starts
+                    .insert("9.8.8".to_owned());
+            }
+            assert!(lose_during(&probe, &probe.v2, first));
+            let before = probe.world.borrow().effects.len();
+            probe.update(&probe.v2).expect("first recovery");
+            let recovery_effects = probe.world.borrow().effects.len() - before;
+            for second in (1..=recovery_effects).flat_map(|effect| {
+                [
+                    LossPoint::BeforeEffect(effect),
+                    LossPoint::AfterEffect(effect),
+                ]
+            }) {
+                cases.push((first, second, failing_candidate));
+            }
+        }
+    }
+    assert!(!cases.is_empty());
+    let workers = std::thread::available_parallelism().map_or(4, |count| count.get().min(8));
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                let cases = &cases;
+                scope.spawn(move || {
+                    for (first, second, failing_candidate) in
+                        cases.iter().skip(worker).step_by(workers)
+                    {
+                        let context = format!(
+                            "first {first:?} second {second:?} failing_candidate={failing_candidate}"
+                        );
+                        let (fixture, location) = managed_v1();
+                        if *failing_candidate {
+                            fixture
+                                .world
+                                .borrow_mut()
+                                .failing_starts
+                                .insert("9.8.8".to_owned());
+                        }
+                        assert!(lose_during(&fixture, &fixture.v2, *first), "{context}");
+                        assert!(lose_during(&fixture, &fixture.v2, *second), "{context}");
+                        let run = fixture
+                            .update(&fixture.v2)
+                            .unwrap_or_else(|error| panic!("{context}: recovery stopped: {error}"));
+                        let running = match run.outcome {
+                            InstallOutcome::Committed { .. } => {
+                                assert!(!failing_candidate, "{context}");
+                                &fixture.v2.id
+                            }
+                            InstallOutcome::RolledBack { .. } => &fixture.v1.id,
+                        };
+                        fixture.assert_managed(&location, running);
+                        fixture.assert_settled_service(&context);
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("double loss worker");
+        }
+    });
+    eprintln!("{} double-loss cases recovered", cases.len());
 }
