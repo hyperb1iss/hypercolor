@@ -98,7 +98,7 @@ Options:
   --tcc-canary         Include the signed physical TCC canary surface
   --durable-stores <file>
                        Add the stores a downstream build reads or writes to
-                       the managed package's compatibility inventory
+                       the durable store inventory a Linux release ships
                        (JSON {"stores": [...]}; repeatable; a store already
                        declared is refused)
   -h, --help           Show this help
@@ -142,9 +142,6 @@ case "${RUST_TARGET}" in
   aarch64-unknown-linux-gnu)   PLATFORM="linux-arm64" ;;
   aarch64-apple-darwin)        PLATFORM="macos-arm64" ;;
   x86_64-apple-darwin)         PLATFORM="macos-amd64" ;;
-  # A Linux release must be named linux-*: the installer only accepts a
-  # managed package from a release so named.
-  *linux*) die "no release platform name for Linux target ${RUST_TARGET}; add it above" ;;
   *)                           PLATFORM="${RUST_TARGET}" ;;
 esac
 
@@ -394,6 +391,32 @@ import stat
 from pathlib import Path
 
 root = Path(os.environ["DIST_DIR"])
+
+# A Linux release ships the inventory of every durable store it reads or
+# writes (crates/hypercolor-daemon/src/durable_stores.rs keeps it equal to
+# the code), as a member like any other file, so its bytes are bound by
+# the manifest. The installer never reads it; tools that decide whether one
+# release can replace another do.
+if os.environ["IS_LINUX"] == "1":
+    with open(os.environ["DURABLE_STORES"], encoding="utf-8") as handle:
+        inventory = json.load(handle)
+    # A downstream build (the official package) adds the stores its own
+    # code reads and writes; one name is one store, declared once.
+    for overlay in filter(None, os.environ["DURABLE_STORE_OVERLAYS"].split("\n")):
+        with open(overlay, encoding="utf-8") as handle:
+            extra = json.load(handle)
+        if not isinstance(extra, dict) or set(extra) != {"stores"}:
+            raise SystemExit(f"{overlay} must hold exactly {{\"stores\": [...]}}")
+        declared = {store["name"] for store in inventory["stores"]}
+        for store in extra["stores"]:
+            if store.get("name") in declared:
+                raise SystemExit(f"{overlay} declares store {store.get('name')!r} again")
+            declared.add(store.get("name"))
+            inventory["stores"].append(store)
+    shipped = root / "share/hypercolor/durable-stores.json"
+    shipped.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    shipped.chmod(0o644)
+
 members = []
 for path in sorted(root.rglob("*")):
     relative = path.relative_to(root).as_posix()
@@ -447,39 +470,6 @@ manifest = {
     },
     "members": members,
 }
-# A managed per-user Linux package also declares who installs it, the
-# launcher contract its service runs under, where its required components
-# live (their bytes are already bound by `members`), and the compatibility
-# of every durable store, from the inventory the daemon keeps equal to its
-# code (crates/hypercolor-daemon/src/durable_stores.rs).
-if os.environ["IS_LINUX"] == "1":
-    with open(os.environ["DURABLE_STORES"], encoding="utf-8") as handle:
-        compatibility = json.load(handle)
-    # A downstream build (the official package) adds the stores its own
-    # code reads and writes; one name is one store, declared once.
-    for overlay in filter(None, os.environ["DURABLE_STORE_OVERLAYS"].split("\n")):
-        with open(overlay, encoding="utf-8") as handle:
-            extra = json.load(handle)
-        if not isinstance(extra, dict) or set(extra) != {"stores"}:
-            raise SystemExit(f"{overlay} must hold exactly {{\"stores\": [...]}}")
-        declared = {store["name"] for store in compatibility["stores"]}
-        for store in extra["stores"]:
-            if store.get("name") in declared:
-                raise SystemExit(f"{overlay} declares store {store.get('name')!r} again")
-            declared.add(store.get("name"))
-            compatibility["stores"].append(store)
-    manifest["managed_package"] = {
-        "schema_version": 1,
-        "owner": "linux-user-tarball",
-        "launcher_contract": 1,
-        "components": {
-            "daemon": "bin/hypercolor-daemon",
-            "cli": "bin/hypercolor",
-            "ui": "share/hypercolor/ui",
-            "bundled_effects": "share/hypercolor/effects/bundled",
-        },
-        "compatibility": compatibility,
-    }
 (root / "manifest.json").write_text(
     json.dumps(manifest, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",

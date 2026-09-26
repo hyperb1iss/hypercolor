@@ -1,17 +1,16 @@
-//! The release producer, the script verifier and this CLI's own candidate
-//! validator accept and refuse the same manifests.
+//! This CLI's own candidate validator accepts what the release producer
+//! writes, with and without the durable store inventory.
 //!
 //! `scripts/tests/release-artifact-tests.sh` packages this crate's
-//! `hypercolor` binary as the fixture's CLI, so every producer output and
-//! every manifest the script verifier refuses also meets the Rust
-//! validator, each with its own expected reason.
+//! `hypercolor` binary as the fixture's CLI, so the producer's output meets
+//! the Rust validator as well as the script verifier.
 #![cfg(target_os = "linux")]
 
 use std::path::Path;
 use std::process::Command;
 
 #[test]
-fn producer_script_verifier_and_rust_validator_agree() {
+fn the_rust_validator_accepts_what_the_producer_writes() {
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/tests/release-artifact-tests.sh");
     let output = Command::new("bash")
