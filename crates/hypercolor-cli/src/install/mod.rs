@@ -5,6 +5,8 @@ mod linux;
 pub mod macos;
 mod model;
 #[cfg(unix)]
+mod ownership;
+#[cfg(unix)]
 mod payload;
 mod store;
 
@@ -21,7 +23,7 @@ pub use linux::{
     LinuxLegacySnapshot, LinuxLocatorError, LinuxManagedAuthority, LinuxNativeExecutor,
     LinuxProcessExecutable, LinuxPublicEntry, LinuxPublicTree, LinuxSystemdConnection,
     LinuxSystemdObservation, RetainedLinuxInstallLocation, bind_linux_retained_unit,
-    elect_linux_installation, parse_systemd_show, retain_linux_unit,
+    elect_linux_installation, elect_linux_installation_with, parse_systemd_show, retain_linux_unit,
 };
 pub use model::{
     INSTALL_JOURNAL_SCHEMA_VERSION, InstallAction, InstallDisposition, InstallJournalV1,
@@ -30,6 +32,10 @@ pub use model::{
     MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
     PlatformTransactionRecord, PlatformTransitionStates, PreparedPlatformTransaction, UnitId,
     UnitRecord,
+};
+#[cfg(unix)]
+pub use ownership::{
+    DirectoryRefusal, OwnershipPolicy, PrincipalDatabase, PrincipalGroup, PrincipalUser,
 };
 #[cfg(unix)]
 pub use payload::{

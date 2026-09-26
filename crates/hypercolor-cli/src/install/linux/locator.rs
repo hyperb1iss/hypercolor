@@ -17,7 +17,10 @@ use super::locator_receipt::{AdoptionPreparation, MAX_PREPARATION_BYTES, RECEIPT
 mod election;
 #[path = "locator_preparation.rs"]
 mod preparation;
-pub use election::{LinuxInstallElection, LinuxManagedAuthority, elect_linux_installation};
+pub use election::{
+    LinuxInstallElection, LinuxManagedAuthority, elect_linux_installation,
+    elect_linux_installation_with,
+};
 
 const LOCATOR_NAME: &str = "install-journal.json";
 const MAX_LOCATOR_BYTES: u64 = MAX_INSTALL_JOURNAL_BYTES as u64;
@@ -44,6 +47,12 @@ pub enum LinuxLocatorError {
     Unprepared,
     #[error("managed installation authority cannot be replaced")]
     AlreadyManaged,
+    #[error(
+        "installation directory {path} is not writable only by you: {refusal}",
+        path = .0.display(),
+        refusal = .1
+    )]
+    UnsafeDirectory(PathBuf, crate::install::DirectoryRefusal),
     #[error("installation locator filesystem operation failed: {0}")]
     Io(#[from] io::Error),
     #[error("installation locator JSON is invalid: {0}")]

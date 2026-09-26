@@ -3,8 +3,17 @@ use std::path::{Component, Path};
 
 use hypercolor_platform_fs::PublicDirectoryAuthority;
 
+use super::super::ownership::{DirectoryRole, OwnershipPolicy};
 use super::super::{InstallLock, InstallStore, MAX_INSTALL_JOURNAL_BYTES};
 use super::{LinuxInstallLocation, LinuxLocatorError};
+
+/// Exact modes for directories adoption creates, applied after creation so the
+/// process umask never decides them. The daemon reads releases like the
+/// historical store; journal state and configuration stay private.
+const DATA_ROOT_MODE: u32 = 0o755;
+const RELEASE_ROOT_MODE: u32 = 0o755;
+const STATE_ROOT_MODE: u32 = 0o700;
+const CONFIG_ROOT_MODE: u32 = 0o700;
 
 pub(super) fn prepare_roots(
     home: &Path,
@@ -15,22 +24,55 @@ pub(super) fn prepare_roots(
     if owner.owner_uid() != proposed.uid() || !owner.is_owned_by_current_user() {
         return Err(LinuxLocatorError::Unprepared);
     }
+    let ownership = old_lock.ownership_policy().clone();
+    let state_container = proposed
+        .state_root()
+        .parent()
+        .ok_or(LinuxLocatorError::Unprepared)?;
+    let data = bootstrap_root(
+        old_lock,
+        proposed.data_root(),
+        DATA_ROOT_MODE,
+        DirectoryRole::Ancestor,
+    )?;
+    let releases = bootstrap_root(
+        old_lock,
+        proposed.release_root(),
+        RELEASE_ROOT_MODE,
+        DirectoryRole::InstallerOwned,
+    )?;
+    bootstrap_root(
+        old_lock,
+        state_container,
+        STATE_ROOT_MODE,
+        DirectoryRole::Ancestor,
+    )?;
+    let state = bootstrap_root(
+        old_lock,
+        proposed.state_root(),
+        STATE_ROOT_MODE,
+        DirectoryRole::InstallerOwned,
+    )?;
+    let config = bootstrap_root(
+        old_lock,
+        proposed.config_root(),
+        CONFIG_ROOT_MODE,
+        DirectoryRole::Ancestor,
+    )?;
     let paths = [
         proposed.data_root(),
         proposed.state_root(),
         proposed.release_root(),
         proposed.config_root(),
     ];
-    let mut original = Vec::new();
-    for path in paths {
-        original.push(bootstrap_root(old_lock, path)?);
-    }
+    let original = [data, state, releases, config];
     proposed.retain_existing(home, old_lock)?.validate()?;
     let store = InstallStore::with_roots(
         proposed.release_root(),
         proposed.state_root(),
         MAX_INSTALL_JOURNAL_BYTES,
-    )?;
+    )?
+    .with_ownership_policy(ownership);
     let lock = store.acquire_lock()?;
     for (path, retained) in paths.into_iter().zip(&original) {
         let before = retained.metadata()?;
@@ -47,10 +89,18 @@ pub(super) fn prepare_roots(
     Ok((location, store, lock))
 }
 
+/// Open `path`, creating each missing component with the exact `mode`.
+///
+/// A missing component is created only beneath a parent that passes the
+/// ancestor writer rule. The final directory must pass `role`. Existing
+/// components are never chmodded; their authority is proven or refused.
 fn bootstrap_root(
     lock: &InstallLock,
     path: &Path,
+    mode: u32,
+    role: DirectoryRole,
 ) -> Result<PublicDirectoryAuthority, LinuxLocatorError> {
+    let ownership = lock.ownership_policy();
     let mut components = path.components();
     if components.next() != Some(Component::RootDir) {
         return Err(LinuxLocatorError::Unprepared);
@@ -58,7 +108,8 @@ fn bootstrap_root(
     let Some(Component::Normal(first)) = components.next() else {
         return Err(LinuxLocatorError::Unprepared);
     };
-    let mut authority = lock.open_public_directory(&Path::new("/").join(first))?;
+    let mut current = Path::new("/").join(first);
+    let mut authority = lock.open_public_directory(&current)?;
     for component in components {
         let name = match component {
             Component::RootDir => continue,
@@ -68,20 +119,26 @@ fn bootstrap_root(
         authority = match authority.open_child_directory(Path::new(name)) {
             Ok(child) => child,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let owner = authority.metadata()?;
-                if !owner.is_owned_by_current_user() || owner.mode() & 0o022 != 0 {
-                    return Err(LinuxLocatorError::Unprepared);
-                }
-                authority.durable_ensure_child_directory(Path::new(name), 0o755)?
+                require_directory(ownership, &authority, &current, DirectoryRole::Ancestor)?;
+                authority.durable_ensure_child_directory(Path::new(name), mode)?
             }
             Err(error) => return Err(error.into()),
         };
+        current.push(name);
     }
-    let metadata = authority.metadata()?;
-    if !metadata.is_owned_by_current_user() || metadata.mode() & 0o022 != 0 {
-        return Err(LinuxLocatorError::Unprepared);
-    }
+    require_directory(ownership, &authority, &current, role)?;
     Ok(authority)
+}
+
+fn require_directory(
+    ownership: &OwnershipPolicy,
+    authority: &PublicDirectoryAuthority,
+    path: &Path,
+    role: DirectoryRole,
+) -> Result<(), LinuxLocatorError> {
+    ownership
+        .require_owner_only(authority, authority.metadata()?, role)
+        .map_err(|refusal| LinuxLocatorError::UnsafeDirectory(path.to_path_buf(), refusal))
 }
 
 fn retain_identity(

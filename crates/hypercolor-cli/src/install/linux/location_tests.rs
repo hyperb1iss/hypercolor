@@ -74,7 +74,10 @@ fn recorded_owner_must_match_retained_root_owner() {
         .expect("gate");
     assert!(matches!(
         location.retain_existing(home, &gate),
-        Err(InstallLocationError::InvalidOwner)
+        Err(InstallLocationError::InvalidOwner(
+            _,
+            crate::install::DirectoryRefusal::RecordedOwnerMismatch { .. }
+        ))
     ));
 }
 

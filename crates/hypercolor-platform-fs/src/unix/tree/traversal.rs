@@ -161,7 +161,33 @@ fn metadata_from_stat(metadata: &rustix::fs::Stat) -> io::Result<DirectoryEntryM
         device: checked_to_u64(metadata.st_dev, "negative device number")?,
         inode: widen_to_u64(metadata.st_ino),
         owner_uid: widen_to_u32(metadata.st_uid),
+        owner_gid: widen_to_u32(metadata.st_gid),
     })
+}
+
+/// Extended attributes that carry access-control entries beyond the mode bits.
+///
+/// POSIX access ACLs can grant named principals write through the group-class
+/// mask, and NFSv4 ACLs are enforced by the server regardless of the local
+/// mode. Default ACLs only seed new children and are therefore excluded.
+#[cfg(target_os = "linux")]
+const EXTENDED_ACCESS_ACL_ATTRIBUTES: [&str; 2] = ["system.posix_acl_access", "system.nfs4_acl"];
+
+/// Report whether an opened entry carries any extended access ACL.
+///
+/// A present attribute is reported even when its entries happen to mirror the
+/// mode bits; callers that need owner-only authority treat any ACL as unproven.
+#[cfg(target_os = "linux")]
+pub(super) fn has_extended_access_acl(file: &File) -> io::Result<bool> {
+    for name in EXTENDED_ACCESS_ACL_ATTRIBUTES {
+        let empty: &mut [u8] = &mut [];
+        match rustix::fs::fgetxattr(file, name, empty) {
+            Ok(_) => return Ok(true),
+            Err(Errno::NODATA | Errno::OPNOTSUPP) => {}
+            Err(error) => return Err(io::Error::from(error)),
+        }
+    }
+    Ok(false)
 }
 
 fn widen_to_u32<T: Into<u32>>(value: T) -> u32 {

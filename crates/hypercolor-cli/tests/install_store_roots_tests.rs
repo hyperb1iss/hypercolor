@@ -136,7 +136,7 @@ fn root_permissions_are_revalidated_before_mutation() {
         .expect("change mode");
     assert!(matches!(
         store.set_active(None, &lock),
-        Err(InstallStoreError::UnsafeBootstrapDirectory(_))
+        Err(InstallStoreError::UnsafeBootstrapDirectory(_, _))
     ));
     assert!(lock.open_store_public_directory().is_err());
     assert!(lock.open_public_directory(home.path()).is_err());

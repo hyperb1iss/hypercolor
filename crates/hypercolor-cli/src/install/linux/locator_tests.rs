@@ -722,13 +722,17 @@ fn managed_election_rechecks_the_locator_after_the_unlocked_hint() {
         )
         .expect("publish");
     drop(fixture.state_lock);
-    let result = super::election::elect_with(fixture.home.path(), || {
-        fs::write(
-            fixture.old.root().join("install-journal.json"),
-            br#"{"schema_version":99}"#,
-        )
-        .expect("replace locator after hint");
-    });
+    let result = super::election::elect_with(
+        fixture.home.path(),
+        &crate::install::OwnershipPolicy::system(),
+        || {
+            fs::write(
+                fixture.old.root().join("install-journal.json"),
+                br#"{"schema_version":99}"#,
+            )
+            .expect("replace locator after hint");
+        },
+    );
     assert!(result.is_err());
     assert!(
         fixture.state.acquire_lock().is_ok(),
@@ -750,14 +754,18 @@ fn legacy_hint_rechecks_a_concurrently_published_managed_locator() {
         state_lock,
     } = fixture;
     let expected = location.clone();
-    let elected = super::election::elect_with(home.path(), move || {
-        locator
-            .publish_prepared(&location, &state, &state_lock, &mut PriorProof::valid())
-            .expect("publish after legacy hint");
-        drop(locator);
-        drop(state_lock);
-        drop(old_lock);
-    })
+    let elected = super::election::elect_with(
+        home.path(),
+        &crate::install::OwnershipPolicy::system(),
+        move || {
+            locator
+                .publish_prepared(&location, &state, &state_lock, &mut PriorProof::valid())
+                .expect("publish after legacy hint");
+            drop(locator);
+            drop(state_lock);
+            drop(old_lock);
+        },
+    )
     .expect("reread selects managed authority");
     let super::LinuxInstallElection::Managed { authority, .. } = elected else {
         panic!("managed authority")

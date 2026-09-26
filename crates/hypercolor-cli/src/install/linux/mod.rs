@@ -35,7 +35,7 @@ pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};
 pub use location::{InstallLocationError, LinuxInstallLocation, RetainedLinuxInstallLocation};
 pub use locator::{
     LinuxInstallAuthority, LinuxInstallElection, LinuxInstallLocator, LinuxLocatorError,
-    LinuxManagedAuthority, elect_linux_installation,
+    LinuxManagedAuthority, elect_linux_installation, elect_linux_installation_with,
 };
 pub use model::{
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,

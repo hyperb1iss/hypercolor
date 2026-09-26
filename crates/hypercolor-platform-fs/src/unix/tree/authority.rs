@@ -60,6 +60,21 @@ impl ReadOnlyDirectoryAuthority {
         metadata_for_file(&self.directory)
     }
 
+    /// Report whether this exact directory carries an extended access ACL.
+    ///
+    /// The probe reads the retained handle, never the original pathname. Any
+    /// POSIX access ACL or NFSv4 ACL is reported, including one whose entries
+    /// mirror the mode bits.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating-system error when the attribute probe fails for a
+    /// reason other than an absent attribute or an unsupported filesystem.
+    #[cfg(target_os = "linux")]
+    pub fn has_extended_access_acl(&self) -> io::Result<bool> {
+        super::traversal::has_extended_access_acl(&self.directory)
+    }
+
     /// Open one normal child directory without following a symbolic link.
     ///
     /// # Errors
@@ -435,6 +450,18 @@ impl DirectoryAuthority {
         }
         self.directory.sync_all()?;
         Ok(metadata)
+    }
+
+    /// Report whether this exact directory carries an extended access ACL.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating-system error when the attribute probe fails for a
+    /// reason other than an absent attribute or an unsupported filesystem.
+    #[cfg(target_os = "linux")]
+    pub fn has_extended_access_acl(&self) -> io::Result<bool> {
+        let _operation = self.operation_guard()?;
+        super::traversal::has_extended_access_acl(&self.directory)
     }
 
     /// Set this directory's exact permission bits and sync its metadata.

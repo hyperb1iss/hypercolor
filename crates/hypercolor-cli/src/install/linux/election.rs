@@ -9,6 +9,7 @@ use super::{
     InstallLock, InstallStore, LOCATOR_NAME, LinuxInstallAuthority, LinuxInstallLocation,
     LinuxInstallLocator, LinuxLocatorError, MAX_INSTALL_JOURNAL_BYTES, MAX_LOCATOR_BYTES,
 };
+use crate::install::OwnershipPolicy;
 use crate::install::linux::RetainedLinuxInstallLocation;
 
 /// The exclusive authority selected after rereading the permanent locator.
@@ -71,20 +72,35 @@ impl LinuxManagedAuthority {
 /// Refuses malformed locators, contended locks, missing managed preparation,
 /// changed authority or failed directory durability. Never falls back from V2.
 pub fn elect_linux_installation(home: &Path) -> Result<LinuxInstallElection, LinuxLocatorError> {
-    elect_with(home, || {})
+    elect_linux_installation_with(home, &OwnershipPolicy::system())
+}
+
+/// Elect authority with an explicit directory writer policy.
+///
+/// Every store and lock produced by the election carries `ownership`.
+///
+/// # Errors
+/// Returns the same errors as [`elect_linux_installation`].
+pub fn elect_linux_installation_with(
+    home: &Path,
+    ownership: &OwnershipPolicy,
+) -> Result<LinuxInstallElection, LinuxLocatorError> {
+    elect_with(home, ownership, || {})
 }
 
 pub(super) fn elect_with(
     home: &Path,
+    ownership: &OwnershipPolicy,
     after_hint: impl FnOnce(),
 ) -> Result<LinuxInstallElection, LinuxLocatorError> {
     let hint = read_hint(home)?;
     after_hint();
     if let LinuxInstallAuthority::Managed(location) = hint {
-        return elect_managed(home, location);
+        return elect_managed(home, location, ownership);
     }
     let root = home.join(".local/lib/hypercolor");
-    let store = InstallStore::new(root, MAX_INSTALL_JOURNAL_BYTES);
+    let store =
+        InstallStore::new(root, MAX_INSTALL_JOURNAL_BYTES).with_ownership_policy(ownership.clone());
     let lock = store.acquire_anchored_lock(home)?;
     let locator = LinuxInstallLocator::retain(home, &lock)?;
     match locator.read()? {
@@ -96,7 +112,7 @@ pub(super) fn elect_with(
         LinuxInstallAuthority::Managed(location) => {
             // A prior adopter may publish between the hint and old-lock grant.
             // Old then state is the only permitted two-lock acquisition order.
-            let elected = elect_managed(home, location)?;
+            let elected = elect_managed(home, location, ownership)?;
             drop(locator);
             drop(lock);
             Ok(elected)
@@ -107,12 +123,14 @@ pub(super) fn elect_with(
 fn elect_managed(
     home: &Path,
     location: LinuxInstallLocation,
+    ownership: &OwnershipPolicy,
 ) -> Result<LinuxInstallElection, LinuxLocatorError> {
     let store = InstallStore::with_roots(
         location.release_root(),
         location.state_root(),
         MAX_INSTALL_JOURNAL_BYTES,
-    )?;
+    )?
+    .with_ownership_policy(ownership.clone());
     // Split-root acquire_lock opens existing roots; it does not bootstrap them.
     let lock = store.acquire_lock()?;
     let authority = LinuxManagedAuthority::retain(home, &store, &lock, location)?;

@@ -6,6 +6,7 @@ use hypercolor_platform_fs::PublicDirectoryAuthority;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::super::ownership::{DirectoryRefusal, DirectoryRole, OwnershipPolicy};
 use super::super::{InstallLock, InstallStoreError};
 
 const LOCATION_SCHEMA: u32 = 2;
@@ -68,8 +69,12 @@ pub enum InstallLocationError {
     Authority(#[from] std::io::Error),
     #[error("installation lock cannot authorize the recorded roots: {0}")]
     Store(#[from] InstallStoreError),
-    #[error("installation directory ownership or permissions do not match its recorded owner")]
-    InvalidOwner,
+    #[error(
+        "installation directory {path} is not writable only by its recorded owner: {refusal}",
+        path = .0.display(),
+        refusal = .1
+    )]
+    InvalidOwner(PathBuf, DirectoryRefusal),
 }
 
 impl LinuxInstallLocation {
@@ -86,13 +91,22 @@ impl LinuxInstallLocation {
         gate: &InstallLock,
     ) -> Result<RetainedLinuxInstallLocation, InstallLocationError> {
         self.validate(home)?;
+        let legacy = home.join(".local/lib/hypercolor");
         let retained = RetainedLinuxInstallLocation {
             uid: self.uid,
+            ownership: gate.ownership_policy().clone(),
             data: gate.open_public_directory(&self.data_root)?,
             state: gate.open_public_directory(&self.state_root)?,
             releases: gate.open_public_directory(&self.release_root)?,
             config: gate.open_public_directory(&self.config_root)?,
-            legacy: gate.open_public_directory(&home.join(".local/lib/hypercolor"))?,
+            legacy: gate.open_public_directory(&legacy)?,
+            paths: [
+                self.data_root.clone(),
+                self.state_root.clone(),
+                self.release_root.clone(),
+                self.config_root.clone(),
+                legacy,
+            ],
         };
         retained.validate()?;
         Ok(retained)
@@ -229,6 +243,8 @@ impl LinuxInstallLocation {
 #[derive(Debug)]
 pub struct RetainedLinuxInstallLocation {
     uid: u32,
+    ownership: OwnershipPolicy,
+    paths: [PathBuf; 5],
     data: PublicDirectoryAuthority,
     state: PublicDirectoryAuthority,
     releases: PublicDirectoryAuthority,
@@ -242,21 +258,32 @@ impl RetainedLinuxInstallLocation {
     /// # Errors
     /// Returns an error when any retained relationship can no longer be proven.
     pub fn validate(&self) -> Result<(), InstallLocationError> {
-        for root in [
-            &self.data,
-            &self.state,
-            &self.releases,
-            &self.config,
-            &self.legacy,
+        // The daemon creates and shares the data and configuration roots, so
+        // they follow the ancestor rule; the installer owns every other root.
+        for (root, path, role) in [
+            (&self.data, &self.paths[0], DirectoryRole::Ancestor),
+            (&self.state, &self.paths[1], DirectoryRole::InstallerOwned),
+            (
+                &self.releases,
+                &self.paths[2],
+                DirectoryRole::InstallerOwned,
+            ),
+            (&self.config, &self.paths[3], DirectoryRole::Ancestor),
+            (&self.legacy, &self.paths[4], DirectoryRole::InstallerOwned),
         ] {
             let metadata = root.metadata()?;
-            if metadata.owner_uid() != self.uid
-                || !metadata.is_owned_by_current_user()
-                || metadata.mode() & 0o700 != 0o700
-                || metadata.mode() & 0o022 != 0
-            {
-                return Err(InstallLocationError::InvalidOwner);
+            if metadata.owner_uid() != self.uid {
+                return Err(InstallLocationError::InvalidOwner(
+                    path.clone(),
+                    DirectoryRefusal::RecordedOwnerMismatch {
+                        recorded: self.uid,
+                        actual: metadata.owner_uid(),
+                    },
+                ));
             }
+            self.ownership
+                .require_owner_only(root, metadata, role)
+                .map_err(|refusal| InstallLocationError::InvalidOwner(path.clone(), refusal))?;
         }
         for (left, right) in [
             (&self.state, &self.releases),
