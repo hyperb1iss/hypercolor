@@ -473,7 +473,7 @@ else:
             )
         return value
 
-    if not isinstance(managed, dict) or set(managed) != {
+    if not isinstance(managed, dict) or set(managed) - {"companion_units"} != {
         "schema_version", "owner", "launcher_contract", "components", "compatibility",
     }:
         raise SystemExit("managed_package must declare exactly its five contract fields")
@@ -544,6 +544,37 @@ else:
             raise SystemExit(
                 f"durable store {name} has an unknown migration_mode "
                 f"{store['migration_mode']!r}"
+            )
+    companions = managed.get("companion_units", [])
+    if not isinstance(companions, list) or len(companions) > 8:
+        raise SystemExit("managed_package.companion_units may declare at most 8 units")
+    companion_names = set()
+    for companion in companions:
+        if not isinstance(companion, dict) or set(companion) != {"unit", "template", "enable"}:
+            raise SystemExit("a companion unit must declare exactly unit, template and enable")
+        unit = companion["unit"]
+        match = re.fullmatch(r"hypercolor-([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(@?)\.service", unit) \
+            if isinstance(unit, str) else None
+        if match is None or len(match.group(1)) > 48:
+            raise SystemExit(
+                f"companion unit {unit!r} must be named hypercolor-<name>.service "
+                "or hypercolor-<name>@.service"
+            )
+        if unit in companion_names:
+            raise SystemExit(f"companion unit {unit} is declared twice")
+        companion_names.add(unit)
+        if type(companion["enable"]) is not bool:
+            raise SystemExit(f"companion unit {unit} enable must be true or false")
+        if match.group(2) and companion["enable"]:
+            raise SystemExit(
+                f"companion unit {unit} is a template and cannot be enabled without an instance"
+            )
+        template = companion["template"]
+        kind = member_kinds.get(template) if isinstance(template, str) else None
+        if kind is None or kind[0] != "file" or (root / template).stat().st_size > 16 * 1024:
+            raise SystemExit(
+                f"companion unit {unit} template {template!r} must be a declared file "
+                "of at most 16384 bytes"
             )
 PY
 

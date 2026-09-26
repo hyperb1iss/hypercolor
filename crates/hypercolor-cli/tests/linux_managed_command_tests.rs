@@ -205,6 +205,10 @@ struct World {
     /// A daemon of this version starts with these arguments instead of the
     /// ones its unit gives it.
     argument_override: Option<(String, Vec<String>)>,
+    /// Companion unit files in the systemd user directory, by name.
+    companions: BTreeMap<String, Vec<u8>>,
+    /// Companion units enabled with the manager.
+    enabled_companions: BTreeSet<String>,
 }
 
 /// An interruption this long into a probation window. One at or past the
@@ -271,6 +275,8 @@ impl World {
             watches: Vec::new(),
             crash_after_effect: None,
             argument_override: None,
+            companions: BTreeMap::new(),
+            enabled_companions: BTreeSet::new(),
         }))
     }
 
@@ -729,6 +735,70 @@ impl LinuxInstallExecutor for SimExecutor {
         let mut world = self.world.borrow_mut();
         let crash = world.effect(format!("autostart:{enabled}"))?;
         world.enabled = enabled;
+        world.settle(crash);
+        Ok(())
+    }
+
+    fn companion_unit_entry(
+        &mut self,
+        name: &str,
+        _max_bytes: usize,
+    ) -> Result<(LinuxExactEntry, Vec<u8>), InstallPlatformError> {
+        let world = self.world.borrow();
+        Ok(match world.companions.get(name) {
+            Some(bytes) => (
+                LinuxExactEntry::RegularFile {
+                    mode: 0o644,
+                    sha256: sha256(bytes),
+                    snapshot_unit: None,
+                    snapshot_path: None,
+                },
+                bytes.clone(),
+            ),
+            None => (LinuxExactEntry::Absent, Vec::new()),
+        })
+    }
+
+    fn replace_companion_unit(
+        &mut self,
+        name: &str,
+        expected: &LinuxExactEntry,
+        replacement: Option<&LinuxFilePublication>,
+    ) -> Result<(), InstallPlatformError> {
+        let mut world = self.world.borrow_mut();
+        let current = world.companions.get(name).map(|bytes| sha256(bytes));
+        match (expected, current) {
+            (LinuxExactEntry::Absent, None) => {}
+            (LinuxExactEntry::RegularFile { sha256, .. }, Some(current)) if *sha256 == current => {}
+            _ => return Err(InstallPlatformError::new("companion unit drifted")),
+        }
+        let crash = world.effect(format!("companion:{name}"))?;
+        match replacement {
+            Some(file) => {
+                world
+                    .companions
+                    .insert(name.to_owned(), file.contents.clone());
+            }
+            None => {
+                world.companions.remove(name);
+            }
+        }
+        world.settle(crash);
+        Ok(())
+    }
+
+    fn enable_companion_unit(
+        &mut self,
+        name: &str,
+        enabled: bool,
+    ) -> Result<(), InstallPlatformError> {
+        let mut world = self.world.borrow_mut();
+        let crash = world.effect(format!("companion-enable:{name}:{enabled}"))?;
+        if enabled {
+            world.enabled_companions.insert(name.to_owned());
+        } else {
+            world.enabled_companions.remove(name);
+        }
         world.settle(crash);
         Ok(())
     }
@@ -3970,8 +4040,14 @@ fn a_library_caller_prepares_binds_writes_and_drives_its_own_transaction() {
     let candidate = fixture.v2.stage(&store, &lock);
     // The launcher and update directories exist from the first install;
     // a library host proves them before it binds.
-    let launcher = ensure_linux_launcher(&store, &lock, authority.location(), &candidate)
-        .expect("the installation's launcher");
+    let launcher = ensure_linux_launcher(
+        &store,
+        &lock,
+        authority.location(),
+        &fixture.home,
+        &candidate,
+    )
+    .expect("the installation's launcher");
     assert!(!launcher.published(), "the first install published it");
     ensure_linux_update_directories(&lock, authority.location()).expect("update directories");
     let world = Rc::clone(&fixture.world);
@@ -4107,8 +4183,14 @@ fn a_library_caller_cannot_bind_a_candidate_the_launcher_would_not_run() {
         error.contains("publish the installation's launcher"),
         "{error}"
     );
-    ensure_linux_launcher(&store, &lock, authority.location(), &candidate)
-        .expect("publish the launcher");
+    ensure_linux_launcher(
+        &store,
+        &lock,
+        authority.location(),
+        &fixture.home,
+        &candidate,
+    )
+    .expect("publish the launcher");
     bind(&candidate).expect("with its launcher published, the candidate binds");
 }
 
@@ -5337,4 +5419,334 @@ fn the_published_layout_directories_are_every_directory_the_installer_writes() {
         "the service fragment's directory is listed"
     );
     let _ = location;
+}
+
+// ── Companion units ─────────────────────────────────────────────────────
+
+/// A release that ships companion unit templates.
+fn companion_release(
+    fixture: &Fixture,
+    version: &str,
+    templates: &[(&str, &str, bool)],
+) -> Release {
+    let root = fixture
+        .v1
+        .source
+        .parent()
+        .expect("fixture root")
+        .join(format!("source-companions-{version}"));
+    let files_root = root.clone();
+    let templates: Vec<(String, String, bool)> = templates
+        .iter()
+        .map(|(unit, text, enable)| ((*unit).to_owned(), (*text).to_owned(), *enable))
+        .collect();
+    write_release_with(&root, version, version.as_bytes(), move |manifest| {
+        let directory = files_root.join("share/hypercolor/systemd");
+        fs::create_dir_all(&directory).expect("template directory");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).expect("mode");
+        let members = manifest["members"].as_array_mut().expect("members");
+        members.push(json!({"path":"share/hypercolor/systemd","type":"directory","mode":0o755}));
+        let mut declared = Vec::new();
+        for (unit, text, enable) in &templates {
+            let path = format!("share/hypercolor/systemd/{unit}.in");
+            fs::write(files_root.join(&path), text).expect("template");
+            fs::set_permissions(files_root.join(&path), fs::Permissions::from_mode(0o644))
+                .expect("mode");
+            members.push(json!({
+                "path": path, "type": "file", "mode": 0o644,
+                "size": text.len(), "sha256": sha256(text.as_bytes()),
+            }));
+            declared.push(json!({"unit": unit, "template": path, "enable": enable}));
+        }
+        members.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
+        manifest["managed_package"]["companion_units"] = json!(declared);
+    });
+    Release {
+        id: UnitId::new(sha256(
+            &fs::read(root.join("manifest.json")).expect("manifest"),
+        ))
+        .expect("unit ID"),
+        source: root,
+    }
+}
+
+const RECOVER_TEMPLATE: &str = "[Unit]\nDescription=Recover (see hypercolor-qual-activator@.service)\n\n[Service]\nType=oneshot\nExecStart=@LAUNCHER@ --role update-executor -- __recover-release\nReadWritePaths=@RELEASE_ROOT@ @STATE_ROOT@ @USER_UNIT_DIR@ @OPTIONAL_LAYOUT_PATHS@\nInaccessiblePaths=-%t/bus -@DATA_ROOT@/cloud-state-v1\n\n[Install]\nWantedBy=default.target\n";
+const ACTIVATOR_TEMPLATE: &str =
+    "[Service]\nType=oneshot\nExecStart=@LAUNCHER@ --role update-executor -- update activator %i\n";
+
+fn rendered_recover(fixture: &Fixture, location: &LinuxInstallLocation) -> Vec<u8> {
+    let layout = linux_layout_directories(&fixture.home)
+        .iter()
+        .map(|directory| format!("-{}", directory.display()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    RECOVER_TEMPLATE
+        .replace(
+            "@LAUNCHER@",
+            &format!("{} __launch", launcher_path(location).display()),
+        )
+        .replace(
+            "@RELEASE_ROOT@",
+            location.release_root().to_str().expect("UTF-8"),
+        )
+        .replace(
+            "@STATE_ROOT@",
+            location.state_root().to_str().expect("UTF-8"),
+        )
+        .replace(
+            "@USER_UNIT_DIR@",
+            fixture
+                .home
+                .join(".config/systemd/user")
+                .to_str()
+                .expect("UTF-8"),
+        )
+        .replace("@OPTIONAL_LAYOUT_PATHS@", &layout)
+        .replace("@DATA_ROOT@", location.data_root().to_str().expect("UTF-8"))
+        .into_bytes()
+}
+
+#[test]
+fn companion_units_render_once_and_install_after_the_install_commits() {
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    let first = companion_release(
+        &fixture,
+        "9.8.10",
+        &[
+            ("hypercolor-qual-recover.service", RECOVER_TEMPLATE, true),
+            (
+                "hypercolor-qual-activator@.service",
+                ACTIVATOR_TEMPLATE,
+                false,
+            ),
+        ],
+    );
+    let run = fixture
+        .run(&first, Some(location.clone()), &fixture.private())
+        .expect("fresh install");
+    let report = run
+        .companions
+        .expect("a committed managed run settles companions")
+        .expect("companions in place");
+    assert_eq!(
+        report.installed,
+        [
+            "hypercolor-qual-recover.service",
+            "hypercolor-qual-activator@.service"
+        ]
+    );
+    assert_eq!(report.enabled, ["hypercolor-qual-recover.service"]);
+    assert!(report.refused.is_empty());
+    let recover = rendered_recover(&fixture, &location);
+    {
+        let world = fixture.world.borrow();
+        assert_eq!(world.companions["hypercolor-qual-recover.service"], recover);
+        let activator =
+            String::from_utf8(world.companions["hypercolor-qual-activator@.service"].clone())
+                .expect("UTF-8");
+        assert!(
+            activator.contains(&format!(
+                "ExecStart={} __launch --role update-executor -- update activator %i",
+                launcher_path(&location).display()
+            )),
+            "{activator}"
+        );
+        assert_eq!(
+            world.enabled_companions,
+            BTreeSet::from(["hypercolor-qual-recover.service".to_owned()])
+        );
+    }
+
+    // An ordinary install never changes them, whatever its release ships.
+    let changed = companion_release(
+        &fixture,
+        "9.8.11",
+        &[(
+            "hypercolor-qual-recover.service",
+            "[Service]\nExecStart=/bin/false\n",
+            true,
+        )],
+    );
+    let run = fixture.update(&changed).expect("update");
+    fixture.assert_managed(&location, &changed.id);
+    let report = run.companions.expect("settled").expect("in place");
+    assert!(report.installed.is_empty(), "{report:?}");
+    assert_eq!(
+        fixture.world.borrow().companions["hypercolor-qual-recover.service"],
+        recover
+    );
+
+    // One the user removed comes back from the launcher, as first rendered.
+    fixture
+        .world
+        .borrow_mut()
+        .companions
+        .remove("hypercolor-qual-recover.service");
+    let run = fixture.update(&fixture.v2).expect("update");
+    let report = run.companions.expect("settled").expect("in place");
+    assert_eq!(report.installed, ["hypercolor-qual-recover.service"]);
+    assert_eq!(
+        fixture.world.borrow().companions["hypercolor-qual-recover.service"],
+        recover
+    );
+
+    // One a person edited is left alone and reported.
+    fixture.world.borrow_mut().companions.insert(
+        "hypercolor-qual-recover.service".to_owned(),
+        b"edited".to_vec(),
+    );
+    let run = fixture.update(&fixture.v3).expect("update");
+    let report = run.companions.expect("settled").expect("in place");
+    assert_eq!(report.refused.len(), 1, "{report:?}");
+    assert_eq!(
+        fixture.world.borrow().companions["hypercolor-qual-recover.service"],
+        b"edited"
+    );
+}
+
+#[test]
+fn a_rolled_back_first_install_installs_no_companions_and_the_next_one_renders_its_own() {
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    let failing = companion_release(
+        &fixture,
+        "9.8.20",
+        &[("hypercolor-qual-recover.service", RECOVER_TEMPLATE, true)],
+    );
+    fixture
+        .world
+        .borrow_mut()
+        .failing_starts
+        .insert("9.8.20".to_owned());
+    let run = fixture
+        .run(&failing, Some(location.clone()), &fixture.private())
+        .expect("the run settles");
+    assert!(matches!(run.outcome, InstallOutcome::RolledBack { .. }));
+    assert!(
+        run.companions.is_none(),
+        "nothing committed, nothing installed"
+    );
+    assert!(fixture.world.borrow().companions.is_empty());
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("the launcher stays until the next install"),
+        release_cli(&failing)
+    );
+
+    // No settled service ever started through the rolled-back candidate's
+    // launcher, so the next install replaces it and renders its own units.
+    let next = companion_release(
+        &fixture,
+        "9.8.21",
+        &[(
+            "hypercolor-qual-activator@.service",
+            ACTIVATOR_TEMPLATE,
+            false,
+        )],
+    );
+    let run = fixture
+        .run(&next, Some(location.clone()), &fixture.private())
+        .expect("the next install");
+    fixture.assert_managed(&location, &next.id);
+    let report = run.companions.expect("settled").expect("in place");
+    assert_eq!(report.installed, ["hypercolor-qual-activator@.service"]);
+    assert_eq!(
+        fixture.world.borrow().companions.keys().collect::<Vec<_>>(),
+        ["hypercolor-qual-activator@.service"],
+        "the rolled-back release's units were never rendered into the installation"
+    );
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        release_cli(&next)
+    );
+}
+
+#[test]
+fn a_template_with_an_unknown_placeholder_refuses_before_any_service_change() {
+    let fixture = Fixture::new();
+    let release = companion_release(
+        &fixture,
+        "9.8.10",
+        &[(
+            "hypercolor-qual-bad.service",
+            "[Service]\nExecStart=@SHELL@\n",
+            false,
+        )],
+    );
+    let error = fixture
+        .run(
+            &release,
+            Some(fixture.default_location()),
+            &fixture.private(),
+        )
+        .expect_err("an unknown placeholder refuses")
+        .to_string();
+    assert!(error.contains("unknown placeholder @SHELL@"), "{error}");
+    assert!(fixture.world.borrow().effects.is_empty());
+    assert!(
+        !launcher_path(&fixture.default_location()).exists(),
+        "no launcher is published from a release it cannot render"
+    );
+}
+
+#[test]
+fn uninstall_removes_the_companion_units_it_rendered() {
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    let release = companion_release(
+        &fixture,
+        "9.8.10",
+        &[("hypercolor-qual-recover.service", RECOVER_TEMPLATE, true)],
+    );
+    fixture
+        .run(&release, Some(location.clone()), &fixture.private())
+        .expect("fresh install");
+    assert!(!fixture.world.borrow().companions.is_empty());
+    let run = run_linux_uninstall(
+        &fixture.home,
+        &fixture.private(),
+        &mut UninstallHost {
+            world: Rc::clone(&fixture.world),
+            stop_at: None,
+        },
+    )
+    .expect("uninstall");
+    assert!(run.removed.contains(&location.release_root().to_path_buf()));
+    let world = fixture.world.borrow();
+    assert!(world.companions.is_empty(), "the rendered unit is removed");
+    assert!(world.enabled_companions.is_empty(), "and disabled first");
+}
+
+#[test]
+fn uninstall_refuses_a_companion_unit_someone_edited() {
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    let release = companion_release(
+        &fixture,
+        "9.8.10",
+        &[("hypercolor-qual-recover.service", RECOVER_TEMPLATE, true)],
+    );
+    fixture
+        .run(&release, Some(location), &fixture.private())
+        .expect("fresh install");
+    fixture.world.borrow_mut().companions.insert(
+        "hypercolor-qual-recover.service".to_owned(),
+        b"edited".to_vec(),
+    );
+    let before = fixture.snapshot();
+    let error = run_linux_uninstall(
+        &fixture.home,
+        &fixture.private(),
+        &mut UninstallHost {
+            world: Rc::clone(&fixture.world),
+            stop_at: None,
+        },
+    )
+    .expect_err("an edited companion unit is not the installer's to remove")
+    .to_string();
+    assert!(
+        error.contains("companion unit hypercolor-qual-recover.service"),
+        "{error}"
+    );
+    assert_eq!(fixture.snapshot(), before, "nothing was removed");
 }

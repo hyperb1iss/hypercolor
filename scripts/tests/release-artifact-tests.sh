@@ -205,7 +205,7 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.payload = renamed
         return manifest
 
-    def dist(self, *extra):
+    def dist(self, *extra, version="1.0.0-overlay"):
         """Run the producer on the class fixture tree with extra options."""
         fixture = self.root / "source"
         return subprocess.run(
@@ -213,10 +213,76 @@ class ReleaseArtifactTests(unittest.TestCase):
                 "bash", str(fixture / "scripts/dist.sh"), "--ci", "--skip-docs",
                 "--web-assets", str(self.root / "web-assets"),
                 "--bin-dir", str(self.root / "probe-binaries"),
-                "--version", "1.0.0-overlay", *extra,
+                "--version", version, *extra,
             ],
             capture_output=True, text=True, check=False,
         )
+
+    def test_producer_ships_companion_unit_templates(self):
+        template = self.directory / "recover.service.in"
+        template.write_text(
+            "[Service]\nExecStart=@LAUNCHER@ --role update-executor -- __recover-release\n"
+        )
+        spec = self.directory / "companions.json"
+        spec.write_text(json.dumps({"units": [{
+            "unit": "hypercolor-update-recover.service", "source": str(template),
+            "enable": True,
+        }]}))
+        result = self.dist(
+            "--target", "linux-amd64", "--companion-units", str(spec),
+            version="1.0.0-companions",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        produced = self.root / "source/dist/hypercolor-1.0.0-companions-linux-amd64"
+        manifest = json.loads((produced / "manifest.json").read_text())
+        shipped = "share/hypercolor/systemd/hypercolor-update-recover.service.in"
+        self.assertEqual(manifest["managed_package"]["companion_units"], [{
+            "unit": "hypercolor-update-recover.service", "template": shipped, "enable": True,
+        }])
+        self.assertEqual((produced / shipped).read_text(), template.read_text())
+        self.assertTrue(any(member["path"] == shipped for member in manifest["members"]))
+        payload = self.directory / produced.name
+        shutil.copytree(produced, payload)
+        self.payload = payload
+        result = self.repack()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if REAL_CLI:
+            validated = self.rust_validate()
+            self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+
+    def test_companion_unit_declarations_are_validated(self):
+        original = self.manifest()
+        ui = "share/hypercolor/ui/index.html"
+
+        def unit(name, template=ui, enable=False, **extra):
+            return {"unit": name, "template": template, "enable": enable, **extra}
+
+        cases = {
+            "daemon unit": ([unit("hypercolor.service")], "must be named", "must be named"),
+            "foreign name": ([unit("sshd.service")], "must be named", "must be named"),
+            "enabled template": (
+                [unit("hypercolor-activator@.service", enable=True)],
+                "cannot be enabled without an instance", "cannot be enabled without an instance",
+            ),
+            "missing template": (
+                [unit("hypercolor-recover.service", template="share/nope.in")],
+                "must be a declared file", "must be a declared file",
+            ),
+            "duplicate": (
+                [unit("hypercolor-recover.service"), unit("hypercolor-recover.service")],
+                "declared twice", "declared twice",
+            ),
+            "extra field": (
+                [unit("hypercolor-recover.service", note="x")],
+                "exactly unit, template and enable", "unknown field `note`",
+            ),
+        }
+        for label, (units, message, rust) in cases.items():
+            with self.subTest(case=label):
+                manifest = json.loads(json.dumps(original))
+                manifest["managed_package"]["companion_units"] = units
+                self.assert_rejected(manifest, message, rust)
+        self.save_manifest(original)
 
     def test_producer_declares_the_managed_package_from_the_store_inventory(self):
         managed = self.manifest()["managed_package"]

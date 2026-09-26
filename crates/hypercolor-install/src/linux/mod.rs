@@ -2,6 +2,7 @@ mod adoption;
 mod adoption_roots;
 mod bootstrap;
 mod command;
+mod companion;
 mod directory;
 mod effects;
 mod executor;
@@ -45,6 +46,10 @@ pub use command::{
     LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallHost, LinuxInstallRequest,
     LinuxInstallRun, LinuxPlatformInputs, bind_linux_platform, run_linux_install,
     run_linux_recovery,
+};
+pub use companion::{
+    LinuxCompanionReport, LinuxCompanionUnit, MAX_COMPANION_UNIT_BYTES,
+    apply_linux_companion_units, render_linux_companion_unit,
 };
 pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};

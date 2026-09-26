@@ -355,6 +355,14 @@ fn remove_platform<H: LinuxUninstallHost>(
     active_roots: &[PathBuf],
     managed: Option<&LinuxInstallLocation>,
 ) -> Result<(), LinuxInstallCommandError> {
+    // The companion units this installation rendered, from its launcher;
+    // an installation without one has none.
+    let companions = match managed {
+        Some(location) => super::bootstrap::inspect_linux_launcher(location)?
+            .map(|launcher| launcher.companion_units().to_vec())
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
     let tree = LinuxPublicTree::new(lock, home)?;
     let direct_fragment = home
         .join(".config/systemd/user/hypercolor.service")
@@ -386,6 +394,20 @@ fn remove_platform<H: LinuxUninstallHost>(
             foreign.push(format!("public layout entry {item:?}"));
         }
     }
+    let mut installed_companions = Vec::new();
+    for unit in &companions {
+        let (entry, bytes) = executor
+            .companion_unit_entry(unit.name(), super::companion::MAX_COMPANION_UNIT_BYTES)?;
+        match entry {
+            LinuxExactEntry::Absent => {}
+            LinuxExactEntry::RegularFile { .. } if bytes == unit.text() => {
+                installed_companions.push((unit, entry));
+            }
+            LinuxExactEntry::RegularFile { .. } | LinuxExactEntry::Symlink { .. } => {
+                foreign.push(format!("companion unit {}", unit.name()));
+            }
+        }
+    }
     if !foreign.is_empty() {
         return Err(LinuxInstallCommandError::ForeignInstallation(foreign));
     }
@@ -403,11 +425,17 @@ fn remove_platform<H: LinuxUninstallHost>(
             executor.replace_layout(*item, entry, None)?;
         }
     }
+    for (unit, entry) in &installed_companions {
+        if unit.enable() {
+            executor.enable_companion_unit(unit.name(), false)?;
+        }
+        executor.replace_companion_unit(unit.name(), entry, None)?;
+    }
     let launcher_present = !matches!(launcher, LinuxExactEntry::Absent);
     if launcher_present {
         executor.replace_launcher(&launcher, None)?;
     }
-    if launcher_present || loaded {
+    if launcher_present || loaded || !installed_companions.is_empty() {
         executor.reload_manager()?;
     }
     Ok(())

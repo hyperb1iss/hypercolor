@@ -12,6 +12,10 @@
 //! whose install rolled back or never finished, so the next install
 //! replaces it with its own candidate's CLI. Replacing a settled
 //! launcher is a launcher contract change, which contract 1 does not define.
+//!
+//! The directory also holds, under `units/`, the companion units the
+//! publishing release shipped, rendered for this installation (see
+//! [`super::companion`]); the contract record names each one's digest.
 
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -24,6 +28,7 @@ use super::super::{
     InstallDisposition, InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord,
 };
 use super::LinuxInstallLocation;
+use super::companion::LinuxCompanionUnit;
 use super::model::error;
 use hypercolor_platform_fs::{DirectoryEntryKind, ReadOnlyDirectoryAuthority};
 
@@ -52,7 +57,20 @@ struct ContractRecord {
     program_sha256: String,
     program_size: u64,
     source_unit: UnitId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    companion_units: Vec<CompanionRecord>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompanionRecord {
+    unit: String,
+    sha256: String,
+    enable: bool,
+}
+
+const COMPANION_DIRECTORY: &str = "units";
+const COMPANION_MODE: u32 = 0o444;
 
 /// A managed installation's proven launcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +80,7 @@ pub struct LinuxLauncherProgram {
     size: u64,
     source_unit: UnitId,
     published: bool,
+    companion_units: Vec<LinuxCompanionUnit>,
 }
 
 impl LinuxLauncherProgram {
@@ -94,6 +113,12 @@ impl LinuxLauncherProgram {
     #[must_use]
     pub const fn published(&self) -> bool {
         self.published
+    }
+
+    /// The companion units rendered when the launcher was published.
+    #[must_use]
+    pub fn companion_units(&self) -> &[LinuxCompanionUnit] {
+        &self.companion_units
     }
 }
 
@@ -181,13 +206,14 @@ pub fn ensure_linux_launcher(
     store: &InstallStore,
     lock: &InstallLock,
     location: &LinuxInstallLocation,
+    home: &Path,
     candidate: &UnitRecord,
 ) -> Result<LinuxLauncherProgram, InstallPlatformError> {
     require_store(store, location)?;
     let declared = super::super::read_declared_compatibility(candidate)
         .map_err(|source| error(format!("cannot read the candidate's contract: {source}")))?;
-    match declared.declared() {
-        Some(package) if package.launcher_contract() == location.launcher_contract() => {}
+    let package = match declared.declared() {
+        Some(package) if package.launcher_contract() == location.launcher_contract() => package,
         Some(package) => {
             return Err(error(format!(
                 "the candidate runs under launcher contract {}, but this installation \
@@ -201,7 +227,7 @@ pub fn ensure_linux_launcher(
                 "the candidate declares no managed package contract to launch under",
             ));
         }
-    }
+    };
     let root = store
         .root_authority(lock)
         .map_err(|source| error(source.to_string()))?;
@@ -229,7 +255,7 @@ pub fn ensure_linux_launcher(
             std::process::id()
         )))
         .map_err(io_error("create the launcher staging directory"))?;
-    let populated = populate(staging.directory(), location, candidate);
+    let populated = populate(staging.directory(), location, home, candidate, package);
     if let Err(failure) = populated {
         return match staging.remove() {
             Ok(()) => Err(failure),
@@ -273,8 +299,11 @@ fn require_store(
 fn populate(
     staging: &hypercolor_platform_fs::DirectoryAuthority,
     location: &LinuxInstallLocation,
+    home: &Path,
     candidate: &UnitRecord,
+    package: &crate::ManagedPackage,
 ) -> Result<(), InstallPlatformError> {
+    let companion_units = populate_companions(staging, location, home, candidate, package)?;
     let mut source = candidate
         .directory()
         .open_child_directory(Path::new("bin"))
@@ -302,6 +331,7 @@ fn populate(
         program_sha256: hex::encode(hashing.hasher.finalize()),
         program_size: size,
         source_unit: candidate.id().clone(),
+        companion_units,
     };
     let bytes = serde_json::to_vec_pretty(&record)
         .map_err(|source| error(format!("encode the launcher contract: {source}")))?;
@@ -316,6 +346,146 @@ fn populate(
     staging
         .set_mode(DIRECTORY_MODE)
         .map_err(io_error("seal the launcher directory"))
+}
+
+/// Render each companion template the candidate ships into `units/`.
+fn populate_companions(
+    staging: &hypercolor_platform_fs::DirectoryAuthority,
+    location: &LinuxInstallLocation,
+    home: &Path,
+    candidate: &UnitRecord,
+    package: &crate::ManagedPackage,
+) -> Result<Vec<CompanionRecord>, InstallPlatformError> {
+    if package.companion_units().is_empty() {
+        return Ok(Vec::new());
+    }
+    let units = staging
+        .create_child_directory(Path::new(COMPANION_DIRECTORY))
+        .map_err(io_error("create the companion unit directory"))?;
+    let mut records = Vec::new();
+    for declared in package.companion_units() {
+        let template = read_unit_member(candidate, declared.template())?;
+        let rendered = super::companion::render_linux_companion_unit(&template, location, home)
+            .map_err(|source| error(format!("companion unit {}: {source}", declared.unit())))?;
+        units
+            .create_regular_file(
+                Path::new(declared.unit()),
+                COMPANION_MODE,
+                rendered.len() as u64,
+                &mut rendered.as_slice(),
+            )
+            .map_err(io_error("write a companion unit"))?;
+        records.push(CompanionRecord {
+            unit: declared.unit().to_owned(),
+            sha256: hex::encode(Sha256::digest(&rendered)),
+            enable: declared.enable(),
+        });
+    }
+    units
+        .set_mode(DIRECTORY_MODE)
+        .map_err(io_error("seal the companion unit directory"))?;
+    Ok(records)
+}
+
+/// Read one bounded file of a retained release by its release path.
+fn read_unit_member(unit: &UnitRecord, path: &str) -> Result<Vec<u8>, InstallPlatformError> {
+    let mut components: Vec<&str> = path.split('/').collect();
+    let name = components
+        .pop()
+        .ok_or_else(|| error("a companion template path is empty"))?;
+    let mut directory = unit
+        .directory()
+        .open_child_directory(Path::new(components.first().copied().unwrap_or(".")))
+        .map_err(io_error("open a companion template"))?;
+    for component in components.iter().skip(1) {
+        directory = directory
+            .open_child_directory(Path::new(component))
+            .map_err(io_error("open a companion template"))?;
+    }
+    let mut opened = directory
+        .open_regular_file(Path::new(name))
+        .map_err(io_error("open a companion template"))?;
+    let mut bytes = Vec::new();
+    let limit = crate::MAX_COMPANION_TEMPLATE_BYTES;
+    opened
+        .file_mut()
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io_error("read a companion template"))?;
+    if bytes.len() as u64 > limit {
+        return Err(error("a companion template exceeds its byte bound"));
+    }
+    Ok(bytes)
+}
+
+/// Load the rendered companion units a published launcher carries.
+fn prove_companions(
+    directory: &ReadOnlyDirectoryAuthority,
+    location: &LinuxInstallLocation,
+    records: &[CompanionRecord],
+) -> Result<Vec<LinuxCompanionUnit>, InstallPlatformError> {
+    if records.is_empty() {
+        return Ok(Vec::new());
+    }
+    let units = directory
+        .open_child_directory(Path::new(COMPANION_DIRECTORY))
+        .map_err(io_error("open the companion units"))?;
+    let metadata = units
+        .metadata()
+        .map_err(io_error("inspect the companion units"))?;
+    if metadata.mode() != DIRECTORY_MODE || metadata.owner_uid() != location.uid() {
+        return Err(error(
+            "the launcher's companion unit directory is not exact",
+        ));
+    }
+    let mut expected: Vec<std::ffi::OsString> = records
+        .iter()
+        .map(|record| std::ffi::OsString::from(&record.unit))
+        .collect();
+    expected.sort();
+    if units
+        .entries()
+        .map_err(io_error("list the companion units"))?
+        != expected
+    {
+        return Err(error(
+            "the launcher's companion units are not the ones it recorded",
+        ));
+    }
+    let mut loaded = Vec::with_capacity(records.len());
+    for record in records {
+        let mut file = units
+            .open_regular_file(Path::new(&record.unit))
+            .map_err(io_error("open a companion unit"))?;
+        let file_metadata = file.metadata();
+        if file_metadata.mode() != COMPANION_MODE
+            || file_metadata.owner_uid() != location.uid()
+            || file_metadata.link_count() != 1
+        {
+            return Err(error(format!(
+                "companion unit {} lost its mode or owner",
+                record.unit
+            )));
+        }
+        let mut bytes = Vec::new();
+        let limit = super::companion::MAX_COMPANION_UNIT_BYTES as u64;
+        file.file_mut()
+            .take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io_error("read a companion unit"))?;
+        if bytes.len() as u64 > limit || hex::encode(Sha256::digest(&bytes)) != record.sha256 {
+            return Err(error(format!(
+                "companion unit {} changed since the launcher was published",
+                record.unit
+            )));
+        }
+        loaded.push(LinuxCompanionUnit::new(
+            record.unit.clone(),
+            bytes,
+            record.enable,
+        ));
+    }
+    Ok(loaded)
 }
 
 fn prove(
@@ -336,14 +506,13 @@ fn prove(
         )));
     }
     let names: Vec<_> = directory.entries().map_err(io_error("list the launcher"))?;
-    let mut expected = vec![
-        std::ffi::OsString::from(CONTRACT_NAME),
-        std::ffi::OsString::from(LINUX_LAUNCHER_PROGRAM),
-    ];
-    expected.sort();
-    if names != expected {
+    let allowed = [CONTRACT_NAME, LINUX_LAUNCHER_PROGRAM, COMPANION_DIRECTORY];
+    if names
+        .iter()
+        .any(|name| !allowed.iter().any(|allowed| name.as_os_str() == *allowed))
+    {
         return Err(error(format!(
-            "{} holds entries other than its program and contract",
+            "{} holds entries other than its program, contract and companion units",
             directory_path.display()
         )));
     }
@@ -400,12 +569,22 @@ fn prove(
             "the launcher program's bytes changed since it was published",
         ));
     }
+    let has_companions = names
+        .iter()
+        .any(|name| name.as_os_str() == COMPANION_DIRECTORY);
+    if has_companions == record.companion_units.is_empty() {
+        return Err(error(
+            "the launcher's companion units do not match its contract record",
+        ));
+    }
+    let companion_units = prove_companions(&directory, location, &record.companion_units)?;
     Ok(LinuxLauncherProgram {
         path: directory_path.join(LINUX_LAUNCHER_PROGRAM),
         sha256: record.program_sha256,
         size: record.program_size,
         source_unit: record.source_unit,
         published,
+        companion_units,
     })
 }
 

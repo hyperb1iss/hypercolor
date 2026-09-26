@@ -28,6 +28,7 @@ RELEASE_VERSION=""
 BUILD_ROOT=""
 TCC_CANARY=0
 DURABLE_STORE_OVERLAYS=()
+COMPANION_UNITS=""
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
 CARGO_CACHE_BUILD="${ROOT_DIR}/scripts/cargo-cache-build.sh"
@@ -80,6 +81,7 @@ while [[ $# -gt 0 ]]; do
     --target)           RUST_TARGET="$(normalize_target "$2")"; shift 2 ;;
     --version)          RELEASE_VERSION="$2"; shift 2 ;;
     --durable-stores)   DURABLE_STORE_OVERLAYS+=("$2"); shift 2 ;;
+    --companion-units)  COMPANION_UNITS="$2"; shift 2 ;;
     -h|--help)
       cat <<'EOF'
 Usage: ./scripts/dist.sh [options]
@@ -101,6 +103,11 @@ Options:
                        the managed package's compatibility inventory
                        (JSON {"stores": [...]}; repeatable; a store already
                        declared is refused)
+  --companion-units <file>
+                       Ship systemd user unit templates the installer renders
+                       with the installation's paths when it publishes its
+                       launcher (JSON {"units": [{"unit", "source",
+                       "enable"}]}; Linux only)
   -h, --help           Show this help
 EOF
       exit 0
@@ -386,7 +393,8 @@ cp LICENSE NOTICE README.md "${DIST_DIR}/"
 DIST_DIR="${DIST_DIR}" VERSION="${VERSION}" PLATFORM="${PLATFORM}" \
 RUST_TARGET="${RUST_TARGET}" IS_LINUX="${IS_LINUX}" \
 DURABLE_STORES="${ROOT_DIR}/packaging/managed/durable-stores.json" \
-DURABLE_STORE_OVERLAYS="$(printf '%s\n' ${DURABLE_STORE_OVERLAYS[@]+"${DURABLE_STORE_OVERLAYS[@]}"})" python3 - <<'PY'
+DURABLE_STORE_OVERLAYS="$(printf '%s\n' ${DURABLE_STORE_OVERLAYS[@]+"${DURABLE_STORE_OVERLAYS[@]}"})" \
+COMPANION_UNITS="${COMPANION_UNITS}" python3 - <<'PY'
 import hashlib
 import json
 import os
@@ -394,6 +402,31 @@ import stat
 from pathlib import Path
 
 root = Path(os.environ["DIST_DIR"])
+
+# Companion unit templates ship under share/hypercolor/systemd/ before the
+# member inventory is taken, so their bytes are bound like every member.
+companion_units = []
+if os.environ["COMPANION_UNITS"]:
+    if os.environ["IS_LINUX"] != "1":
+        raise SystemExit("--companion-units applies only to Linux releases")
+    with open(os.environ["COMPANION_UNITS"], encoding="utf-8") as handle:
+        spec = json.load(handle)
+    if not isinstance(spec, dict) or set(spec) != {"units"}:
+        raise SystemExit("--companion-units must hold exactly {\"units\": [...]}")
+    templates = root / "share/hypercolor/systemd"
+    templates.mkdir(mode=0o755, parents=True, exist_ok=True)
+    templates.chmod(0o755)
+    for unit in spec["units"]:
+        if not isinstance(unit, dict) or set(unit) != {"unit", "source", "enable"}:
+            raise SystemExit("a companion unit must name exactly unit, source and enable")
+        target = templates / f"{unit['unit']}.in"
+        target.write_bytes(Path(unit["source"]).read_bytes())
+        target.chmod(0o644)
+        companion_units.append({
+            "unit": unit["unit"],
+            "template": target.relative_to(root).as_posix(),
+            "enable": unit["enable"],
+        })
 members = []
 for path in sorted(root.rglob("*")):
     relative = path.relative_to(root).as_posix()
@@ -468,7 +501,7 @@ if os.environ["IS_LINUX"] == "1":
                 raise SystemExit(f"{overlay} declares store {store.get('name')!r} again")
             declared.add(store.get("name"))
             compatibility["stores"].append(store)
-    manifest["managed_package"] = {
+    managed = manifest["managed_package"] = {
         "schema_version": 1,
         "owner": "linux-user-tarball",
         "launcher_contract": 1,
@@ -480,6 +513,8 @@ if os.environ["IS_LINUX"] == "1":
         },
         "compatibility": compatibility,
     }
+    if companion_units:
+        managed["companion_units"] = companion_units
 (root / "manifest.json").write_text(
     json.dumps(manifest, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",

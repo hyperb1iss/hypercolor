@@ -160,6 +160,48 @@ impl DurableStoreDeclaration {
 pub struct ManagedPackage {
     launcher_contract: u32,
     stores: Vec<DurableStoreDeclaration>,
+    companion_units: Vec<CompanionUnitDeclaration>,
+}
+
+/// The most companion units one release may declare.
+pub const MAX_COMPANION_UNITS: usize = 8;
+/// The largest companion unit template.
+pub const MAX_COMPANION_TEMPLATE_BYTES: u64 = 16 * 1024;
+
+/// A systemd user unit the release ships as a template for the installer
+/// to render with the installation's recorded paths.
+///
+/// Companion units belong to the installer contract, like the launcher:
+/// they are rendered when an installation publishes its launcher (a fresh
+/// install, an adoption, or a launcher lost to the user) and never by an
+/// ordinary install, so a release can never change the unit text its own
+/// recovery runs under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompanionUnitDeclaration {
+    unit: String,
+    template: String,
+    enable: bool,
+}
+
+impl CompanionUnitDeclaration {
+    /// The unit's file name, `hypercolor-<name>.service` or a template
+    /// `hypercolor-<name>@.service`.
+    #[must_use]
+    pub fn unit(&self) -> &str {
+        &self.unit
+    }
+
+    /// The release path of the template the installer renders.
+    #[must_use]
+    pub fn template(&self) -> &str {
+        &self.template
+    }
+
+    /// Whether the installer enables the unit once it is installed.
+    #[must_use]
+    pub const fn enable(&self) -> bool {
+        self.enable
+    }
 }
 
 impl ManagedPackage {
@@ -179,6 +221,12 @@ impl ManagedPackage {
     #[must_use]
     pub fn store(&self, name: &str) -> Option<&DurableStoreDeclaration> {
         self.stores.iter().find(|store| store.name == name)
+    }
+
+    /// The companion units the release ships, in manifest order.
+    #[must_use]
+    pub fn companion_units(&self) -> &[CompanionUnitDeclaration] {
+        &self.companion_units
     }
 }
 
@@ -425,6 +473,16 @@ struct StrictPackage {
     launcher_contract: u32,
     components: StrictComponents,
     compatibility: StrictCompatibility,
+    #[serde(default)]
+    companion_units: Vec<StrictCompanionUnit>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictCompanionUnit {
+    unit: String,
+    template: String,
+    enable: bool,
 }
 
 #[derive(Deserialize)]
@@ -541,10 +599,70 @@ fn parse_package(
     }
     validate_components(&raw.components, members)?;
     let stores = validate_stores(raw.compatibility.stores)?;
+    let companion_units = validate_companion_units(raw.companion_units, members)?;
     Ok(ManagedPackage {
         launcher_contract: raw.launcher_contract,
         stores,
+        companion_units,
     })
+}
+
+fn validate_companion_units(
+    raw: Vec<StrictCompanionUnit>,
+    members: &BTreeMap<String, ValidatedMember>,
+) -> Result<Vec<CompanionUnitDeclaration>, ReleasePayloadError> {
+    if raw.len() > MAX_COMPANION_UNITS {
+        return Err(invalid(format!(
+            "managed_package.companion_units may declare at most {MAX_COMPANION_UNITS} units"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    let mut units = Vec::with_capacity(raw.len());
+    for unit in raw {
+        let (stem, template) = match unit.unit.strip_suffix("@.service") {
+            Some(stem) => (stem, true),
+            None => (
+                unit.unit.strip_suffix(".service").unwrap_or_default(),
+                false,
+            ),
+        };
+        let name = stem.strip_prefix("hypercolor-").unwrap_or_default();
+        if !valid_token(name, 48) {
+            return Err(invalid(format!(
+                "companion unit {:?} must be named hypercolor-<name>.service or \
+                 hypercolor-<name>@.service",
+                unit.unit
+            )));
+        }
+        if !seen.insert(unit.unit.clone()) {
+            return Err(invalid(format!(
+                "companion unit {} is declared twice",
+                unit.unit
+            )));
+        }
+        if template && unit.enable {
+            return Err(invalid(format!(
+                "companion unit {} is a template and cannot be enabled without an instance",
+                unit.unit
+            )));
+        }
+        match members.get(&unit.template) {
+            Some(ValidatedMember::File { size, .. }) if *size <= MAX_COMPANION_TEMPLATE_BYTES => {}
+            _ => {
+                return Err(invalid(format!(
+                    "companion unit {} template {} must be a declared file of at most \
+                     {MAX_COMPANION_TEMPLATE_BYTES} bytes",
+                    unit.unit, unit.template
+                )));
+            }
+        }
+        units.push(CompanionUnitDeclaration {
+            unit: unit.unit,
+            template: unit.template,
+            enable: unit.enable,
+        });
+    }
+    Ok(units)
 }
 
 fn validate_components(

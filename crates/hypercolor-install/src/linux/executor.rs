@@ -134,6 +134,55 @@ pub trait LinuxInstallExecutor {
         &mut self,
         snapshot: &LinuxLegacySnapshot,
     ) -> Result<super::super::UnitRecord, InstallPlatformError>;
+    /// Observe one companion unit file in the systemd user directory.
+    ///
+    /// Executors that manage no companion units refuse by default.
+    fn companion_unit_entry(
+        &mut self,
+        name: &str,
+        max_bytes: usize,
+    ) -> Result<(LinuxExactEntry, Vec<u8>), InstallPlatformError> {
+        let _ = (name, max_bytes);
+        Err(error("this executor manages no companion units"))
+    }
+    /// Replace one companion unit file exactly as observed.
+    fn replace_companion_unit(
+        &mut self,
+        name: &str,
+        expected: &LinuxExactEntry,
+        replacement: Option<&LinuxFilePublication>,
+    ) -> Result<(), InstallPlatformError> {
+        let _ = (name, expected, replacement);
+        Err(error("this executor manages no companion units"))
+    }
+    /// Enable or disable one companion unit without reloading the manager.
+    fn enable_companion_unit(
+        &mut self,
+        name: &str,
+        enabled: bool,
+    ) -> Result<(), InstallPlatformError> {
+        let _ = (name, enabled);
+        Err(error("this executor manages no companion units"))
+    }
+}
+
+/// A companion unit's file name: `hypercolor-<name>.service` or a template
+/// `hypercolor-<name>@.service`, never the daemon's own unit.
+pub(super) fn require_companion_name(name: &str) -> Result<&Path, InstallPlatformError> {
+    let stem = name
+        .strip_suffix("@.service")
+        .or_else(|| name.strip_suffix(".service"))
+        .and_then(|stem| stem.strip_prefix("hypercolor-"));
+    if !stem.is_some_and(|stem| {
+        !stem.is_empty()
+            && stem.len() <= 48
+            && stem
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    }) {
+        return Err(error(format!("{name:?} is not a companion unit name")));
+    }
+    Ok(Path::new(name))
 }
 
 #[derive(Debug)]
@@ -432,6 +481,59 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
         window: Duration,
     ) -> Result<LinuxServiceWatch, InstallPlatformError> {
         self.runtime_manager.watch(expected.clone(), window)
+    }
+
+    fn companion_unit_entry(
+        &mut self,
+        name: &str,
+        max_bytes: usize,
+    ) -> Result<(LinuxExactEntry, Vec<u8>), InstallPlatformError> {
+        let name = require_companion_name(name)?;
+        if self.public_tree.state(LinuxDirectoryItem::SystemdUser)? == LinuxDirectoryState::Absent {
+            return Ok((LinuxExactEntry::Absent, Vec::new()));
+        }
+        let directory = self
+            .public_tree
+            .open_directory(LinuxDirectoryItem::SystemdUser)?;
+        read_exact_entry(&directory, name, max_bytes)
+    }
+
+    fn replace_companion_unit(
+        &mut self,
+        name: &str,
+        expected: &LinuxExactEntry,
+        replacement: Option<&LinuxFilePublication>,
+    ) -> Result<(), InstallPlatformError> {
+        let name = require_companion_name(name)?;
+        let directory = self
+            .public_tree
+            .open_directory(LinuxDirectoryItem::SystemdUser)?;
+        replace_entry(
+            &directory,
+            name,
+            expected,
+            replacement.map(|file| LinuxLayoutPublication::RegularFile(file.clone())),
+        )
+    }
+
+    fn enable_companion_unit(
+        &mut self,
+        name: &str,
+        enabled: bool,
+    ) -> Result<(), InstallPlatformError> {
+        let name = require_companion_name(name)?
+            .to_str()
+            .expect("a checked companion name is UTF-8");
+        run_systemctl(
+            &self.systemd_connection,
+            &[
+                if enabled { "enable" } else { "disable" },
+                "--no-reload",
+                name,
+            ],
+            MAX_COMMAND_OUTPUT_BYTES,
+        )
+        .map(|_| ())
     }
 
     fn process_executable(

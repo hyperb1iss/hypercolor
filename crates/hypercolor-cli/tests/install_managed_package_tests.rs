@@ -765,3 +765,80 @@ fn old_data_still_on_disk_bounds_the_target_from_below() {
         "without the on-disk report the mark alone cannot see it"
     );
 }
+
+#[test]
+fn companion_units_bind_declared_templates_and_sane_names() {
+    let release = Release::new();
+    let (_parent, store) = new_store();
+    let lock = store.acquire_lock().expect("lock");
+    let unit = |name: &str, template: &str, enable: bool| json!({"unit": name, "template": template, "enable": enable});
+    let ui = "share/hypercolor/ui/index.html";
+    let mut manifest = release.manifest();
+    manifest["managed_package"]["companion_units"] = json!([
+        unit("hypercolor-update-recover.service", ui, true),
+        unit("hypercolor-update-activator@.service", ui, false),
+    ]);
+    let staged = release
+        .stage(&store, &lock, &manifest)
+        .expect("valid companion units stage");
+    let declared = read_declared_compatibility(&staged).expect("read");
+    let package = declared.declared().expect("declared");
+    assert_eq!(package.companion_units().len(), 2);
+    assert_eq!(
+        package.companion_units()[0].unit(),
+        "hypercolor-update-recover.service"
+    );
+    assert!(package.companion_units()[0].enable());
+    assert_eq!(package.companion_units()[1].template(), ui);
+
+    let cases: [(&str, Value, &str); 7] = [
+        (
+            "daemon unit",
+            json!([unit("hypercolor.service", ui, false)]),
+            "must be named",
+        ),
+        (
+            "foreign prefix",
+            json!([unit("sshd.service", ui, false)]),
+            "must be named",
+        ),
+        (
+            "path in name",
+            json!([unit("hypercolor-a/b.service", ui, false)]),
+            "must be named",
+        ),
+        (
+            "enabled template",
+            json!([unit("hypercolor-activator@.service", ui, true)]),
+            "cannot be enabled without an instance",
+        ),
+        (
+            "missing template",
+            json!([unit("hypercolor-recover.service", "share/nope.in", false)]),
+            "must be a declared file",
+        ),
+        (
+            "duplicate",
+            json!([
+                unit("hypercolor-recover.service", ui, false),
+                unit("hypercolor-recover.service", ui, false)
+            ]),
+            "declared twice",
+        ),
+        (
+            "too many",
+            json!(
+                (0..9)
+                    .map(|index| unit(&format!("hypercolor-unit{index}.service"), ui, false))
+                    .collect::<Vec<_>>()
+            ),
+            "at most 8",
+        ),
+    ];
+    for (label, units, message) in cases {
+        let mut manifest = release.manifest();
+        manifest["managed_package"]["companion_units"] = units;
+        let error = refusal(release.stage(&store, &lock, &manifest));
+        assert!(error.contains(message), "{label}: {error}");
+    }
+}

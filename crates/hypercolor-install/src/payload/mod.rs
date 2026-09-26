@@ -16,8 +16,9 @@ mod tree;
 #[cfg(target_os = "macos")]
 pub use macos::{MacosReleaseProvenance, bind_macos_release_provenance};
 pub use managed::{
-    CompatibilityDecision, CompatibilityRefusal, DeclaredCompatibility, DurableStoreDeclaration,
-    LINUX_USER_TARBALL_OWNER, MANAGED_LAUNCHER_CONTRACT, MANAGED_PACKAGE_SCHEMA_VERSION,
+    CompanionUnitDeclaration, CompatibilityDecision, CompatibilityRefusal, DeclaredCompatibility,
+    DurableStoreDeclaration, LINUX_USER_TARBALL_OWNER, MANAGED_LAUNCHER_CONTRACT,
+    MANAGED_PACKAGE_SCHEMA_VERSION, MAX_COMPANION_TEMPLATE_BYTES, MAX_COMPANION_UNITS,
     MAX_DURABLE_STORES, ManagedComponent, ManagedPackage, MigrationMode, ObservedStores,
     evaluate_data_compatibility,
 };

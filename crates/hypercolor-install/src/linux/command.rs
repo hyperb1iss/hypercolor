@@ -19,6 +19,7 @@ use super::bootstrap::{
     ensure_linux_launcher, ensure_linux_update_directories, inspect_linux_launcher,
     record_linux_launcher_settled,
 };
+use super::companion::{LinuxCompanionReport, apply_linux_companion_units};
 use super::{
     LinuxAdoption, LinuxAdoptionError, LinuxInstallConfig, LinuxInstallElection,
     LinuxInstallExecutor, LinuxInstallLocation, LinuxInstallPlatform, LinuxLocatorError,
@@ -138,6 +139,10 @@ pub struct LinuxInstallRun {
     /// or why it could not. `None` when the run did not commit a managed
     /// installation.
     pub settled_launcher: Option<Result<(), String>>,
+    /// The installation's companion units, put in place once a managed run
+    /// committed, or why they could not be. `None` when the run did not
+    /// commit a managed installation.
+    pub companions: Option<Result<LinuxCompanionReport, String>>,
 }
 
 /// A run that could not settle, with the stage that refused it.
@@ -255,6 +260,7 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 adoption.store(),
                 adoption.lock(),
                 adoption.location(),
+                home,
                 &candidate,
             )?;
             ensure_linux_update_directories(adoption.lock(), adoption.location())?;
@@ -277,7 +283,9 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 .confirm_durable()
                 .map_err(LinuxInstallCommandError::Authority)?;
             let run = recover(&store, &mut lock, &mut platform)?;
-            Ok(collect_settled(&store, &lock, authority.location(), run))
+            let mut run = collect_settled(&store, &lock, authority.location(), run);
+            settle_companions(platform, authority.location(), &mut run);
+            Ok(run)
         }
         LinuxInstallElection::Managed {
             store,
@@ -307,12 +315,14 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                     },
                 )?;
                 let run = recover(&store, &mut lock, &mut platform)?;
-                return Ok(collect_settled(&store, &lock, authority.location(), run));
+                let mut run = collect_settled(&store, &lock, authority.location(), run);
+                settle_companions(platform, authority.location(), &mut run);
+                return Ok(run);
             }
             let candidate = host.stage_candidate(&store, &lock)?;
             require_managed_candidate(&candidate, authority.location())?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
-            ensure_linux_launcher(&store, &lock, authority.location(), &candidate)?;
+            ensure_linux_launcher(&store, &lock, authority.location(), home, &candidate)?;
             stop(host, LinuxInstallCheckpoint::LauncherReady)?;
             let prior_record =
                 (journal.disposition == InstallDisposition::RolledBack).then_some(&journal);
@@ -334,8 +344,7 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 .map_err(LinuxInstallCommandError::Authority)?;
             let outcome = InstallCoordinator::new(&store, &mut platform)
                 .install_with_lock(install_request(request, candidate), &mut lock)?;
-            drop(platform);
-            Ok(collect_settled(
+            let mut run = collect_settled(
                 &store,
                 &lock,
                 authority.location(),
@@ -344,8 +353,11 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                     recovered: false,
                     collection: None,
                     settled_launcher: None,
+                    companions: None,
                 },
-            ))
+            );
+            settle_companions(platform, authority.location(), &mut run);
+            Ok(run)
         }
     }
 }
@@ -422,12 +434,9 @@ pub fn run_linux_recovery<H: LinuxInstallHost>(
                 },
             )?;
             let run = recover(&store, &mut lock, &mut platform)?;
-            Ok(Some(collect_settled(
-                &store,
-                &lock,
-                authority.location(),
-                run,
-            )))
+            let mut run = collect_settled(&store, &lock, authority.location(), run);
+            settle_companions(platform, authority.location(), &mut run);
+            Ok(Some(run))
         }
     }
 }
@@ -565,7 +574,44 @@ pub(super) fn recover<E: LinuxInstallExecutor>(
         recovered: true,
         collection: None,
         settled_launcher: None,
+        companions: None,
     })
+}
+
+/// Put the installation's companion units in place once a managed run
+/// committed and recorded its launcher as settled.
+///
+/// They come from the launcher, never from the candidate, so an ordinary
+/// install cannot change them. A failure is reported, never raised: the
+/// transaction already settled, and the next committed run tries again.
+fn settle_companions<E: LinuxInstallExecutor>(
+    platform: LinuxInstallPlatform<E>,
+    location: &LinuxInstallLocation,
+    run: &mut LinuxInstallRun,
+) {
+    // Units are only ever placed from a launcher recorded as settled, one
+    // no later install replaces, so none can be stranded by a replacement.
+    match &run.settled_launcher {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            run.companions = Some(Err(format!(
+                "the launcher was not recorded as settled ({error}), so companion units wait \
+                 for the next committed install"
+            )));
+            return;
+        }
+        None => return,
+    }
+    let mut executor = platform.into_executor();
+    let applied = inspect_linux_launcher(location)
+        .and_then(|launcher| match launcher {
+            Some(launcher) => {
+                apply_linux_companion_units(&mut executor, launcher.companion_units())
+            }
+            None => Ok(LinuxCompanionReport::default()),
+        })
+        .map_err(|error| error.to_string());
+    run.companions = Some(applied);
 }
 
 /// Remove the releases a settled managed installation no longer needs.
