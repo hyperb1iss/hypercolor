@@ -39,6 +39,7 @@ scenario_restart_after_receipt() {
     install_run recovery "${V_B}"
     expect_exit nonzero
     expect_journal rolled_back
+    expect_output "drift before ProveCandidate"
     expect_active "${V_A}"
     expect_health "${V_A}"
 }
@@ -54,6 +55,7 @@ scenario_crash_in_proof() {
     expect_acted kill_service
     expect_exit nonzero
     expect_journal rolled_back
+    expect_output "failed during ProveCandidate"
     expect_active "${V_A}"
     expect_health "${V_A}"
 }
@@ -104,6 +106,9 @@ scenario_stop_first_failing() {
     install_run recovery "${V_B}"
     expect_exit nonzero
     expect_journal rolled_back
+    # Recovery stopped the autostarted candidate, then resumed its start,
+    # which failed again.
+    expect_output "failed during RestoreCandidateRuntime"
     expect_active "${V_A}"
     expect_health "${V_A}"
     expect_prop ActiveState active
@@ -141,6 +146,7 @@ scenario_disabled_running() {
     install_run failing "${V_B}"
     expect_exit nonzero
     expect_journal rolled_back
+    expect_output "failed during RestoreCandidateRuntime"
     expect_active "${V_A}"
     expect_health "${V_A}"
     expect_prop UnitFileState disabled
@@ -183,6 +189,7 @@ scenario_slow_start_beyond() {
     install_run slow "${V_B}"
     expect_exit nonzero
     expect_journal rolled_back
+    expect_output "failed during RestoreCandidateRuntime"
     expect_active "${V_A}"
     expect_health "${V_A}"
     ((DRIVER_ELAPSED_MS < 30000)) || fail "rollback took ${DRIVER_ELAPSED_MS} ms, past the ready delay"

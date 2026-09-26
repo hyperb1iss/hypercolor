@@ -15,7 +15,10 @@ simulator could not (see "What only the guest catches").
 
 Requirements: Linux, rootless podman with cgroup v2 delegation (systemd as
 PID 1 inside a container), `curl`, `python3` and network access for the
-first build.
+first build. Containers run with SELinux labeling disabled, so the bind
+mounts also work on enforcing hosts. Several checkouts can run scenarios at
+once: guests carry a label naming their checkout, and `clean` only removes
+this checkout's.
 
 ```bash
 just linux-guest-proof list                 # scenario names
@@ -45,6 +48,8 @@ Every scenario writes a directory under `receipts/` (ignored by git):
   SHA-256, guest image ID, guest systemd version, the unit digest of every
   qualification release, and the verdict.
 - `steps.log`: every step and expectation with timestamps.
+- `NN-service-journal-before-power-cut.txt`: the service journal of each
+  boot a power cut ends.
 - `NN-install-<label>.log`: installer output for one run, ending with a
   `DRIVER` line (exit status, elapsed time, where the installer or daemon
   was killed).
@@ -109,13 +114,19 @@ the file comes out empty).
 its `next_action` is that action (optionally only after the candidate's
 owner receipt is recorded, and after `--delay-ms`), sends `SIGKILL` to the
 installer, or with `--kill-service` to the daemon's main process instead.
-The `DRIVER` line records where it acted; a scenario fails if the installer
-got past the kill point first.
+The `DRIVER` line records the watched action, the action the journal named
+when the driver acted, and the one it names once the installer is gone; a
+scenario fails unless all three match. Only the installer process is
+killed, so a `systemctl` child it was waiting on can still finish, as after
+any single-process crash.
 
 **Power cut.** `podman kill --signal KILL` takes down the whole guest; the
 harness then starts it again from its disk. The user manager comes back and
 autostarts `hypercolor.service` from the on-disk pointer and fragment
-before the installer inspects anything.
+before the installer inspects anything. The guest's journal is volatile, so
+the service journal of the boot that ends is saved to the receipts first.
+Processes die but the page cache survives, since the guest shares the host
+kernel; page-cache loss needs a virtual machine.
 
 ## Scenarios
 
@@ -141,6 +152,8 @@ the helpers in `guest-proof.sh` (`install_run`, `set_faults`, `power_cut`,
 shellcheck -x scripts/qualification/linux-user-guest/*.sh
 python3 -m py_compile scripts/qualification/linux-user-guest/make_release.py
 rustfmt --edition 2024 --check scripts/qualification/linux-user-guest/hc-qual-daemon.rs
+rustc --edition 2024 --test -o target/linux-user-guest/lint/hc-qual-daemon-tests \
+    scripts/qualification/linux-user-guest/hc-qual-daemon.rs && target/linux-user-guest/lint/hc-qual-daemon-tests
 clippy-driver --edition 2024 -W clippy::pedantic -D warnings --emit=metadata \
     --out-dir target/linux-user-guest/lint scripts/qualification/linux-user-guest/hc-qual-daemon.rs
 ```

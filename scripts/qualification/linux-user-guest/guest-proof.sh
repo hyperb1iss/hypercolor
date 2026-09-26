@@ -25,6 +25,10 @@ V_C="${BASE_VERSION}-qual.3"
 GUEST=""
 RECEIPT=""
 STEP=0
+FAILED=()
+# Guests carry the checkout they belong to, so `clean` in one worktree never
+# removes a guest another worktree is running.
+CHECKOUT_LABEL="hypercolor.qualification.checkout=$(printf '%s' "${REPO_ROOT}" | sha256sum | cut -c1-16)"
 
 # shellcheck source-path=SCRIPTDIR source=scenarios.sh
 source "${HARNESS_DIR}/scenarios.sh"
@@ -108,7 +112,7 @@ build() {
     (cd "${WORK}/downloads" && sha256sum --quiet -c "${tarball}.sha256")
 
     log "building the installer CLI and qualification daemon in $(builder_image)"
-    podman run --rm --userns=keep-id \
+    podman run --rm --userns=keep-id --security-opt label=disable \
         -v "${REPO_ROOT}:/src:ro" -v "${WORK}:/work" \
         -e CARGO_HOME=/work/cargo-home -e "RUSTUP_TOOLCHAIN=$(toolchain)" \
         -e CARGO_TERM_COLOR=never -w /src "$(builder_image)" bash -c '
@@ -181,12 +185,16 @@ hide_bus() {
     if gx test -e "${GUEST_RUNTIME}/bus"; then
         gx mv "${GUEST_RUNTIME}/bus" "${GUEST_RUNTIME}/bus.hidden"
     fi
+    if gx test -e "${GUEST_RUNTIME}/bus"; then
+        fail "the session bus is still reachable"
+    fi
 }
 
 guest_up() {
     local name
-    name="hc-guest-proof-$1-$(date -u +%Y%m%d%H%M%S)"
+    name="hc-guest-proof-$1-$(date -u +%Y%m%d%H%M%S)-${RANDOM}"
     podman run -d --name "${name}" --label hypercolor.qualification=linux-user-guest \
+        --label "${CHECKOUT_LABEL}" --security-opt label=disable \
         --systemd=always --cgroupns=private --pid=private --network=none \
         -v "${WORK}/releases:/releases:ro" "$(guest_image)" >/dev/null
     GUEST="${name}"
@@ -212,6 +220,9 @@ guest_down() {
 # pointer and fragment before anything inspects it.
 power_cut() {
     log "power cut"
+    STEP=$((STEP + 1))
+    gx journalctl --user -u hypercolor.service --no-pager -o short-monotonic \
+        >"${RECEIPT}/$(printf '%02d' "${STEP}")-service-journal-before-power-cut.txt" 2>&1 || true
     podman kill --signal KILL "${GUEST}" >/dev/null
     podman wait "${GUEST}" >/dev/null 2>&1 || true
     podman start "${GUEST}" >/dev/null
@@ -235,7 +246,9 @@ clear_faults() {
 
 DRIVER_EXIT=""
 DRIVER_ELAPSED_MS=""
+DRIVER_WATCHED=""
 DRIVER_ACTED_AT=""
+DRIVER_SETTLED_AT=""
 DRIVER_ACTION=""
 LAST_INSTALL_OUTPUT=""
 
@@ -253,7 +266,9 @@ install_run() {
     [[ -n "${driver}" ]] || fail "driver produced no result for ${label} (see ${output})"
     DRIVER_EXIT="$(json_field "${driver}" exit)"
     DRIVER_ELAPSED_MS="$(json_field "${driver}" elapsed_ms)"
+    DRIVER_WATCHED="$(json_field "${driver}" watched)"
     DRIVER_ACTED_AT="$(json_field "${driver}" acted_at)"
+    DRIVER_SETTLED_AT="$(json_field "${driver}" settled_at)"
     DRIVER_ACTION="$(json_field "${driver}" action)"
     LAST_INSTALL_OUTPUT="${output}"
     log "  exit=${DRIVER_EXIT} elapsed_ms=${DRIVER_ELAPSED_MS} action=${DRIVER_ACTION} at=${DRIVER_ACTED_AT}"
@@ -287,9 +302,17 @@ expect_exit() {
     log "  ok: installer exit ${DRIVER_EXIT}"
 }
 
+# The driver acted, and the journal named the watched action both when it
+# acted and, for an installer kill, after the installer was gone. Anything
+# else proves a different interruption than the scenario names.
 expect_acted() {
     [[ "${DRIVER_ACTION}" == "$1" ]] ||
         fail "driver did not ${1//_/ } at its kill point (action '${DRIVER_ACTION}'); rerun"
+    [[ "${DRIVER_ACTED_AT}" == "${DRIVER_WATCHED}" ]] ||
+        fail "driver acted at ${DRIVER_ACTED_AT}, past ${DRIVER_WATCHED}; rerun"
+    if [[ "$1" == kill_installer && "${DRIVER_SETTLED_AT}" != "${DRIVER_WATCHED}" ]]; then
+        fail "the killed installer left the journal at ${DRIVER_SETTLED_AT}, past ${DRIVER_WATCHED}; rerun"
+    fi
     log "  ok: ${1//_/ } at ${DRIVER_ACTED_AT}"
 }
 
@@ -352,9 +375,16 @@ list_scenarios() {
     declare -F | sed -n 's/^declare -f scenario_//p' | tr '_' '-'
 }
 
+# Runs one scenario and records a failure in FAILED. It must be called as a
+# plain command, never under `if`, `||` or `&&`: bash ignores `set -e` for
+# everything beneath those, including the scenario's own subshell.
 run_one() {
     local name="$1" fn="scenario_${1//-/_}"
-    declare -F "${fn}" >/dev/null || { printf 'unknown scenario %s\n' "${name}" >&2; return 2; }
+    if ! declare -F "${fn}" >/dev/null; then
+        printf 'unknown scenario %s\n' "${name}" >&2
+        FAILED+=("${name}")
+        return 0
+    fi
     RECEIPT="${RECEIPT_ROOT}/$(date -u +%Y%m%dT%H%M%SZ)-${name}"
     STEP=0
     mkdir -p "${RECEIPT}"
@@ -387,19 +417,19 @@ run_one() {
     else
         printf 'verdict: FAIL\n' >>"${RECEIPT}/receipt.txt"
         log "FAIL ${name} (receipts: ${RECEIPT})"
+        FAILED+=("${name}")
     fi
     RECEIPT=""
-    return "${status}"
 }
 
 run_many() {
     build
-    local name failed=()
+    local name
     for name in "$@"; do
-        run_one "${name}" || failed+=("${name}")
+        run_one "${name}"
     done
-    if ((${#failed[@]})); then
-        log "failed: ${failed[*]}"
+    if ((${#FAILED[@]})); then
+        log "failed: ${FAILED[*]}"
         return 1
     fi
     log "all passed: $*"
@@ -414,8 +444,8 @@ main() {
         build) build ;;
         run) (($#)) || { usage; exit 2; }; run_many "$@" ;;
         all) mapfile -t names < <(list_scenarios); run_many "${names[@]}" ;;
-        clean) podman ps -a --filter label=hypercolor.qualification=linux-user-guest -q |
-            xargs -r podman rm -f -t 0 ;;
+        clean) podman ps -a --filter label=hypercolor.qualification=linux-user-guest \
+            --filter "label=${CHECKOUT_LABEL}" -q | xargs -r podman rm -f -t 0 ;;
         *) usage; exit 2 ;;
     esac
 }

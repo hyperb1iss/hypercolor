@@ -8,7 +8,9 @@
 #       --kill-at, watch the install journal; once its next action is ACTION
 #       (and, with --with-receipt, the candidate receipt is recorded), wait
 #       --delay-ms and SIGKILL the installer, or with --kill-service the
-#       service's main process instead. ARGS go to the installer.
+#       service's main process instead. ARGS go to the installer. Only the
+#       installer process is killed; a systemctl child it is waiting on may
+#       still finish, as after any single-process crash.
 #   hc-guest-driver state
 #       Print the journal, active pointer, service properties and /health.
 #   hc-guest-driver health
@@ -165,12 +167,16 @@ if observed is not None:
 
 status = installer.wait()
 elapsed_ms = int((time.monotonic() - started) * 1000)
+# The journal once the installer is gone: after a kill it must still name
+# the watched action, or the installer got past it before the signal landed.
+settled = (journal() or {}).get("next_action")
 result = {
     "exit": status,
     "elapsed_ms": elapsed_ms,
     "watched": kill_at or None,
     "observed_ms": None if observed is None else int((observed - started) * 1000),
     "acted_at": acted,
+    "settled_at": settled,
     "action": None if acted is None else ("kill_service" if kill_service else "kill_installer"),
 }
 print("DRIVER " + json.dumps(result), flush=True)

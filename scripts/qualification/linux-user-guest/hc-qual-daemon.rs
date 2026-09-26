@@ -110,14 +110,60 @@ fn unit_version() -> String {
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
-/// The top-level `"version"` string of a release manifest. Members carry no
-/// `version` key, so the first occurrence is the release's.
+/// The top-level `"version"` string of a release manifest.
+///
+/// A small scanner tracks strings and nesting, so only a key of the
+/// outermost object counts, whatever order the keys come in.
 fn manifest_version(text: &str) -> Option<String> {
-    let start = text.find("\"version\"")? + "\"version\"".len();
-    let rest = text[start..].trim_start().strip_prefix(':')?.trim_start();
-    let rest = rest.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    Some(rest[..end].to_owned())
+    let bytes = text.as_bytes();
+    let mut depth = 0_usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            b'"' => {
+                let (string, next) = json_string(bytes, index)?;
+                index = next;
+                if depth == 1 && string == "version" {
+                    let rest = text[index..].trim_start();
+                    if let Some(value) = rest.strip_prefix(':') {
+                        let value = value.trim_start();
+                        if value.starts_with('"') {
+                            let start = text.len() - value.len();
+                            return json_string(bytes, start).map(|(version, _)| version);
+                        }
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+/// The JSON string whose opening quote is at `start`, and the index just
+/// past its closing quote. An escape keeps the escaped byte verbatim, which
+/// is exact for the ASCII identities a manifest carries.
+fn json_string(bytes: &[u8], start: usize) -> Option<(String, usize)> {
+    let mut index = start + 1;
+    let mut value = String::new();
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => {
+                value.push(char::from(*bytes.get(index + 1)?));
+                index += 2;
+            }
+            b'"' => return Some((value, index + 1)),
+            byte => {
+                value.push(char::from(byte));
+                index += 1;
+            }
+        }
+    }
+    None
 }
 
 fn notify(state: &str) {
@@ -292,4 +338,32 @@ fn main() {
         std::thread::sleep(delay);
     }
     log("stopped");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::manifest_version;
+
+    #[test]
+    fn version_is_the_top_level_key_in_any_key_order() {
+        let cases = [
+            (
+                r#"{"members":[{"path":"version","version":"x"}],"version":"1.2-qual.3"}"#,
+                Some("1.2-qual.3"),
+            ),
+            (r#"{"version": "0.5.1", "name":"version"}"#, Some("0.5.1")),
+            (
+                r#"{"name":"version","assets":{"version":"no"},"version":"9"}"#,
+                Some("9"),
+            ),
+            (r#"{"members":[]}"#, None),
+        ];
+        for (manifest, expected) in cases {
+            assert_eq!(
+                manifest_version(manifest).as_deref(),
+                expected,
+                "{manifest}"
+            );
+        }
+    }
 }
