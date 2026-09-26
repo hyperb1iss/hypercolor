@@ -5134,9 +5134,9 @@ fn an_install_from_before_the_launcher_gains_it_and_its_rollback_restores_the_di
 }
 
 #[test]
-fn a_launcher_only_settles_once_the_service_runs_through_it() {
-    // An upgrade while the service is stopped commits without starting it,
-    // so no service has run through the launcher it published yet.
+fn a_launcher_settles_at_its_first_commit_and_stays_settled() {
+    // An upgrade while the service is stopped still commits the unit that
+    // starts the launcher, so the launcher it published is settled.
     let (fixture, location, _) = managed_v1_without_launcher();
     fixture.world.borrow_mut().stop();
     let run = fixture.update(&fixture.v2).expect("upgrade while stopped");
@@ -5145,31 +5145,33 @@ fn a_launcher_only_settles_once_the_service_runs_through_it() {
         !fixture.world.borrow().active,
         "the stopped service stays stopped"
     );
-    assert_eq!(
-        fs::read(launcher_path(&location)).expect("launcher"),
-        release_cli(&fixture.v2)
-    );
+    let settled = fs::read(launcher_path(&location)).expect("launcher");
+    assert_eq!(settled, release_cli(&fixture.v2));
     fixture
         .update(&fixture.v3)
         .expect("another upgrade while stopped");
     assert_eq!(
         fs::read(launcher_path(&location)).expect("launcher"),
-        release_cli(&fixture.v3),
-        "a launcher no service ran through is replaced"
+        settled,
+        "a committed launcher is never replaced"
     );
 
-    // Once an install commits with the service running through it, the
-    // launcher is the installation's for good.
+    // Running, stopping, and upgrading again never unsettle it.
     fixture.world.borrow_mut().start();
     fixture.update(&fixture.v2).expect("upgrade while running");
+    fixture.world.borrow_mut().stop();
+    fixture
+        .update(&fixture.v3)
+        .expect("upgrade after the user stopped it");
+    fixture.world.borrow_mut().start();
+    fixture
+        .update(&fixture.v2)
+        .expect("upgrade after the user started it");
     fixture.assert_managed(&location, &fixture.v2.id);
-    let settled = fs::read(launcher_path(&location)).expect("launcher");
-    assert_eq!(settled, release_cli(&fixture.v2));
-    fixture.update(&fixture.v3).expect("a later upgrade");
     assert_eq!(
         fs::read(launcher_path(&location)).expect("launcher"),
         settled,
-        "a settled launcher is never replaced"
+        "the launcher stays the installation's"
     );
 }
 

@@ -5,12 +5,12 @@
 //! contract it implements. It sits beside `units/`, outside every release
 //! directory, so the releases it selects between can never replace it. It is
 //! published atomically from the candidate of the first managed install or
-//! adoption, before that candidate starts. Once an install settles with the
-//! service running through it, it is the installation's for good: every
+//! adoption, before that candidate starts. Once an install commits with
+//! the service unit starting it, it is the installation's for good: every
 //! later run only proves it unchanged, and an ordinary install never
-//! rewrites it. Until then it came from a candidate that never ran as the
-//! settled service (its install rolled back or never finished), so the next
-//! install replaces it with its own candidate's CLI. Replacing a settled
+//! rewrites it. Until then it came from a candidate whose install rolled
+//! back or never finished, so the next install replaces it with its own
+//! candidate's CLI. Replacing a settled
 //! launcher is a launcher contract change, which contract 1 does not define.
 
 use std::io::{self, Read};
@@ -407,14 +407,18 @@ fn prove(
     })
 }
 
-/// Whether a settled service already starts through the launcher: the
-/// journal's last transaction committed with the service running under a
-/// unit that starts the launcher, or rolled back to a prior that ran under
-/// one.
+/// Whether the launcher is the installation's for good: the journal's last
+/// transaction committed with a service unit that starts the launcher, or
+/// rolled back to one.
 ///
-/// The unit is matched by its `ExecStart` naming this installation's
-/// launcher, not by its whole text, so a settled launcher stays settled
-/// whatever else a later build writes into the unit. Anything the journal
+/// Every unit a managed installation renders starts the launcher, so once
+/// one install commits through it, every later journal names such a unit
+/// as its target or its prior, whether or not the service was running:
+/// the launcher stays settled across stopped upgrades and rollbacks. A
+/// launcher can only be unsettled when no install ever committed through
+/// it (its install rolled back to a direct unit, or never wrote a
+/// journal). The unit is matched by its `ExecStart` naming this
+/// installation's launcher, not by its whole text. Anything the journal
 /// cannot settle (a transaction still pending, or a record this build
 /// cannot read) counts as settled, so doubt never replaces a launcher.
 fn launcher_settled(
@@ -437,16 +441,10 @@ fn launcher_settled(
         super::proof::require_notify_launcher(unit).is_ok_and(|exec| exec == expected)
     };
     Ok(match journal.disposition {
-        InstallDisposition::Committed => {
-            journal.target_platform.running_unit.is_some()
-                && record
-                    .candidate_launcher
-                    .is_some_and(|launcher| starts_launcher(&launcher.bytes))
-        }
-        InstallDisposition::RolledBack => {
-            journal.prior_platform.running_unit.is_some()
-                && starts_launcher(&record.prior_launcher_bytes)
-        }
+        InstallDisposition::Committed => record
+            .candidate_launcher
+            .is_some_and(|launcher| starts_launcher(&launcher.bytes)),
+        InstallDisposition::RolledBack => starts_launcher(&record.prior_launcher_bytes),
         _ => true,
     })
 }

@@ -61,10 +61,10 @@ that release's daemon, passing the UI and bundled effects from the same
 release. An upgrade that switches `active` while the daemon starts can never
 leave it running one release's code with another's UI or effects. The
 launcher is a copy of the CLI from the first release installed this way. Once
-an install settles with the service starting through it, no later install
-rewrites it, and an install refuses to continue if it changed. If that first
-install rolled back instead, the next install replaces the launcher with its
-own release's CLI.
+an install commits with the service set up to start through it, no later
+install rewrites it, and an install refuses to continue if it changed. If that
+first install rolled back instead, the next install replaces the launcher with
+its own release's CLI.
 
 The service runs sandboxed. The whole system is read-only to it except your
 configuration, data and runtime state directories (the recorded ones above)
@@ -229,6 +229,7 @@ hide accounts from a listing, so they refuse the group exception.
 | Locator from an unknown or newer installer | Guessing would risk managing the wrong install | Use the current installer |
 | Release manifest lacks a complete `managed_package` declaration | The installer could not tell what the release does to your data | Install an official release tarball |
 | The launcher changed since it was published | The service would start a program the installer never checked | Run `chmod -R u+w` on `releases/launcher`, remove it, and rerun; the install publishes it again |
+| The service fails to start through the launcher | The launcher was published by a release whose CLI cannot launch, during an install that committed with the service stopped | Run `chmod -R u+w` on `releases/launcher`, remove it, and rerun the install; it publishes the launcher from the new release |
 | An XDG base directory would put a writable root at your home, `~/.local/bin` or `~/.local/lib` | The service sandbox could not keep the daemon out of your commands and libraries | Point that variable at another directory and rerun |
 | Uninstall finds a service, unit or link this installer did not generate | It belongs to a package, another install or a local edit | Remove it with its owner, then rerun |
 | Another install or uninstall is running | Two writers would corrupt the journal | Wait for it to finish |
