@@ -462,7 +462,7 @@ impl<E: MacosInstallExecutor> InstallPlatform for MacosInstallPlatform<E> {
                     .ok_or_else(|| error("macOS target lacks its candidate layout unit"))?
             || target.launcher_unit.is_some() != record.candidate_launcher.is_some()
             || prior.launcher_unit.is_some()
-                != !matches!(record.prior_launcher, MacosExactEntry::Absent)
+                == matches!(record.prior_launcher, MacosExactEntry::Absent)
         {
             return Err(error(
                 "macOS transaction plan hides compound platform effects",
