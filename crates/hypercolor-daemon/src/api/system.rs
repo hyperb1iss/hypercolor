@@ -344,9 +344,12 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> Response {
     };
 
     let health = overall_health(&checks);
+    // The served identity, not this crate's version: builds that extend the
+    // daemon report their own release version there, and install proofs
+    // compare this field with `/api/v1/system` identity.
     let resp = HealthResponse {
         status: health.to_owned(),
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: state.server_identity.version.clone(),
         uptime_seconds,
         checks,
     };

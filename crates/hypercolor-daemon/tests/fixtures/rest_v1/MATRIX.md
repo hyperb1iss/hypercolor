@@ -279,7 +279,7 @@ Mounted on the **outer** router, not under `/api/v1`. There is no
 | Field | Domain |
 | --- | --- |
 | `status` | `healthy` \| `degraded` |
-| `version` | `CARGO_PKG_VERSION` |
+| `version` | served identity version (`server_identity.version`, the same value as `/api/v1/system` `identity.version`) |
 | `uptime_seconds` | unsigned integer |
 | `checks.render_loop` | `ok` (running) \| `idle` (created or paused) \| `degraded` (stopped) |
 | `checks.device_backends` | `ok` \| `idle` \| `degraded` |
