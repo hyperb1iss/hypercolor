@@ -7,8 +7,10 @@ mod exact;
 mod metadata_tests;
 mod operation;
 mod read;
+mod relationship;
 mod rollback;
 mod staging;
+mod tree_removal;
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -55,6 +57,25 @@ impl PublicDirectoryAuthority {
         after_fstat()?;
         self.validate_ancestry_inner()?;
         Ok(metadata)
+    }
+
+    /// Report whether this exact retained directory carries an extended
+    /// access ACL.
+    ///
+    /// Full absolute ancestry is validated before and after the probe, which
+    /// reads the retained handle rather than reopening the pathname.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when ancestry changes or the attribute probe fails for
+    /// a reason other than an absent attribute or an unsupported filesystem.
+    #[cfg(target_os = "linux")]
+    pub fn has_extended_access_acl(&self) -> io::Result<bool> {
+        let _operation = self.operation_guard()?;
+        self.validate_ancestry_inner()?;
+        let present = super::traversal::has_extended_access_acl(&self.directory)?;
+        self.validate_ancestry_inner()?;
+        Ok(present)
     }
 
     /// Downgrade this ancestry-anchored capability to a handle-relative one.

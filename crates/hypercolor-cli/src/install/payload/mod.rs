@@ -82,7 +82,61 @@ pub fn stage_release_payload_from_authority(
     expected_unit: &UnitId,
 ) -> Result<UnitRecord, ReleasePayloadError> {
     let manifest = validate_release_payload_authority(source, candidate_executable, expected_unit)?;
+    stage_validated_payload(store, lock, source, manifest, tree::TreeMode::Source)
+}
 
+/// Copy a verified installed release into another store without modifying it.
+///
+/// The original retained unit remains read-only. Copying uses release-local
+/// staging and no-replace publication, so source and destination may be on
+/// different filesystems. A matching existing destination is fully revalidated.
+///
+/// # Errors
+/// Refuses changed manifests, invalid installed modes, altered members, foreign
+/// locks, unsafe destination entries or incomplete durable publication.
+pub fn copy_installed_release_unit(
+    store: &InstallStore,
+    lock: &InstallLock,
+    source: &UnitRecord,
+) -> Result<UnitRecord, ReleasePayloadError> {
+    let manifest = validated_installed_manifest(source)?;
+    stage_validated_payload(
+        store,
+        lock,
+        source.directory(),
+        manifest,
+        tree::TreeMode::Installed,
+    )
+}
+
+pub(crate) fn validate_installed_release_record(
+    source: &UnitRecord,
+) -> Result<(), ReleasePayloadError> {
+    validated_installed_manifest(source).map(drop)
+}
+
+fn validated_installed_manifest(
+    source: &UnitRecord,
+) -> Result<ValidatedManifest, ReleasePayloadError> {
+    let manifest =
+        ValidatedManifest::parse(tree::read_retained_manifest_bytes(source.directory())?)?;
+    if manifest.unit_id != *source.id() {
+        return Err(ReleasePayloadError::UnexpectedManifestDigest {
+            expected: source.id().as_str().to_owned(),
+            actual: manifest.unit_id.as_str().to_owned(),
+        });
+    }
+    tree::validate_copy_source(source.directory(), &manifest, tree::TreeMode::Installed)?;
+    Ok(manifest)
+}
+
+fn stage_validated_payload(
+    store: &InstallStore,
+    lock: &InstallLock,
+    source: &ReadOnlyDirectoryAuthority,
+    manifest: ValidatedManifest,
+    mode: tree::TreeMode,
+) -> Result<UnitRecord, ReleasePayloadError> {
     let units = store.units_authority(lock)?;
     let unit_name = Path::new(manifest.unit_id.as_str());
     if let Some(metadata) =
@@ -109,8 +163,8 @@ pub fn stage_release_payload_from_authority(
     }
 
     let staging = create_staging_directory(&units)?;
-    if let Err(error) = tree::populate_staging(&staging, source, &manifest)
-        .and_then(|()| tree::validate_source(source, &manifest))
+    if let Err(error) = tree::populate_staging(&staging, source, &manifest, mode)
+        .and_then(|()| tree::validate_copy_source(source, &manifest, mode))
         .and_then(|()| tree::finalize_staging(&staging, &manifest))
         .and_then(|()| tree::validate_installed(staging.directory(), &manifest))
     {

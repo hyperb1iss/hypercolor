@@ -9,9 +9,10 @@ use hypercolor_cli::install::{
     InstallAction, InstallCoordinator, InstallCoordinatorError, InstallDisposition,
     InstallJournalV1, InstallModelError, InstallOutcome, InstallPlatform, InstallPlatformError,
     InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy, InstallTransactionId,
-    MAX_PLATFORM_OWNER_RECEIPT_BYTES, MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint,
-    PlatformOwnerReceipt, PlatformState, PlatformTransactionRecord, PlatformTransitionStates,
-    PreparedPlatformTransaction, UnitId, UnitRecord, stage_release_payload,
+    MAX_LINUX_TRANSACTION_RECORD_BYTES, MAX_PLATFORM_OWNER_RECEIPT_BYTES,
+    MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
+    PlatformTransactionRecord, PlatformTransitionStates, PreparedPlatformTransaction, UnitId,
+    UnitRecord, stage_release_payload,
 };
 use hypercolor_platform_fs::DirectoryEntryKind;
 use serde_json::json;
@@ -936,6 +937,78 @@ fn seed_state_neutral_rollback_manager(fixture: &Fixture, action: InstallAction)
     platform.layout_operation_progress = layout_operation_index;
     platform.candidate_launcher_installed = candidate_launcher_installed;
     platform
+}
+
+#[test]
+fn preparation_returns_exact_journal_before_publication_or_platform_transitions() {
+    let fixture = Fixture::new();
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    let mut lock = fixture.store.acquire_lock().expect("preparation lock");
+    let journal = InstallCoordinator::new(&fixture.store, &mut platform)
+        .prepare_with_lock(fixture.request(), &lock)
+        .expect("prepare");
+    assert_eq!(journal.prior_platform, fixture.prior_state());
+    assert_eq!(journal.candidate_unit, *fixture.candidate.id());
+    assert_eq!(journal.next_action, Some(InstallAction::PreflightCandidate));
+    assert!(
+        fixture
+            .store
+            .load_journal(&lock)
+            .expect("unpublished")
+            .is_none()
+    );
+    assert_eq!(
+        fixture.store.active_unit(&lock).expect("active unchanged"),
+        Some(fixture.prior.id().clone())
+    );
+    assert!(platform.effects.is_empty());
+    assert_eq!(platform.state, fixture.prior_state());
+    fixture
+        .store
+        .write_journal(&journal, &lock)
+        .expect("caller publishes after binding");
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover_with_lock(&mut lock)
+        .expect("existing recovery path")
+        .expect("transaction");
+    assert!(matches!(outcome, InstallOutcome::Committed { .. }));
+    assert_eq!(
+        fixture.store.active_unit(&lock).expect("candidate active"),
+        Some(fixture.candidate.id().clone())
+    );
+    fixture.assert_sentinels();
+}
+
+#[test]
+fn preparation_does_not_replace_a_pending_transaction_or_accept_a_foreign_lock() {
+    let fixture = Fixture::new();
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    let lock = fixture.store.acquire_lock().expect("lock");
+    let journal = InstallCoordinator::new(&fixture.store, &mut platform)
+        .prepare_with_lock(fixture.request(), &lock)
+        .expect("prepare");
+    fixture
+        .store
+        .write_journal(&journal, &lock)
+        .expect("existing transaction");
+    assert!(matches!(
+        InstallCoordinator::new(&fixture.store, &mut platform)
+            .prepare_with_lock(fixture.request(), &lock),
+        Err(InstallCoordinatorError::PendingPreparation)
+    ));
+    assert_eq!(
+        fixture.store.load_journal(&lock).expect("unchanged"),
+        Some(journal)
+    );
+    let foreign = InstallStore::new(fixture.directory.path().join("foreign"), 65536);
+    let foreign_lock = foreign.acquire_lock().expect("foreign lock");
+    assert!(matches!(
+        InstallCoordinator::new(&fixture.store, &mut platform)
+            .prepare_with_lock(fixture.request(), &foreign_lock),
+        Err(InstallCoordinatorError::Store(InstallStoreError::WrongLock))
+    ));
+    assert!(platform.effects.is_empty());
+    fixture.assert_sentinels();
 }
 
 #[test]
@@ -2478,7 +2551,14 @@ fn platform_records_are_tagged_bounded_and_round_trip_unchanged() {
     }
 
     assert!(matches!(
-        PlatformTransactionRecord::linux(1, vec![0; MAX_PLATFORM_TRANSACTION_RECORD_BYTES + 1]),
+        PlatformTransactionRecord::linux(1, vec![0; MAX_LINUX_TRANSACTION_RECORD_BYTES + 1]),
+        Err(InstallModelError::PlatformRecordTooLarge { .. })
+    ));
+    assert!(
+        PlatformTransactionRecord::linux(1, vec![0; MAX_LINUX_TRANSACTION_RECORD_BYTES]).is_ok()
+    );
+    assert!(matches!(
+        PlatformTransactionRecord::macos(1, vec![0; MAX_PLATFORM_TRANSACTION_RECORD_BYTES + 1]),
         Err(InstallModelError::PlatformRecordTooLarge { .. })
     ));
     assert!(matches!(
@@ -2574,7 +2654,7 @@ fn oversized_embedded_platform_record_is_rejected_after_bounded_read() {
         fixture.prior_state(),
         InstallTargetPolicy::Preserve,
     );
-    journal.platform_record = PlatformTransactionRecord::Linux {
+    journal.platform_record = PlatformTransactionRecord::Macos {
         schema_version: 1,
         payload: vec![0; MAX_PLATFORM_TRANSACTION_RECORD_BYTES + 1],
     };

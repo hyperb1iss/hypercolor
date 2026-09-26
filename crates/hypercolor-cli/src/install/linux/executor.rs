@@ -41,6 +41,26 @@ pub trait LinuxInstallExecutor {
         config: &super::model::LinuxInstallConfig,
     ) -> Result<(), InstallPlatformError>;
     fn validate_unit_authority(&mut self, unit: &UnitRecord) -> Result<(), InstallPlatformError>;
+    /// Resolve an explicitly retained prior role; executors deny it by default.
+    fn prior_units_root(&self, _unit: &UnitRecord) -> Result<PathBuf, InstallPlatformError> {
+        Err(error("executor has no retained prior units authority"))
+    }
+    /// Retain the historical units root before an original prior role binds.
+    ///
+    /// Executors without historical authority refuse by default.
+    fn retain_prior_units(&mut self) -> Result<(), InstallPlatformError> {
+        Err(error("executor cannot retain historical units authority"))
+    }
+    /// Rebind a cold record's prior when it names a historical release root.
+    ///
+    /// The default binds nothing; record validation then refuses any prior
+    /// whose recorded path lies outside the current units root.
+    fn retain_recorded_prior(
+        &mut self,
+        _record: &super::super::PlatformTransactionRecord,
+    ) -> Result<Option<UnitRecord>, InstallPlatformError> {
+        Ok(None)
+    }
     fn active_unit(&mut self) -> Result<Option<UnitId>, InstallPlatformError>;
     fn systemd_show(&mut self, max_bytes: usize) -> Result<Vec<u8>, InstallPlatformError>;
     fn launcher_entry(
@@ -113,9 +133,10 @@ impl LinuxPublicEntry {
 #[derive(Debug)]
 pub struct LinuxNativeExecutor {
     active: LinuxPublicEntry,
-    public_tree: LinuxPublicTree,
-    units: DirectoryAuthority,
-    units_root_hint: PathBuf,
+    pub(super) public_tree: LinuxPublicTree,
+    pub(super) prior_units: Option<super::prior::NativePriorUnits>,
+    pub(super) units: DirectoryAuthority,
+    pub(super) units_root_hint: PathBuf,
     http_address: SocketAddr,
     systemd_connection: LinuxSystemdConnection,
     runtime_manager: LinuxRuntimeManager,
@@ -155,6 +176,7 @@ impl LinuxNativeExecutor {
         Ok(Self {
             active,
             public_tree,
+            prior_units: None,
             units,
             units_root_hint,
             http_address,
@@ -210,6 +232,21 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
             ));
         }
         Ok(())
+    }
+
+    fn prior_units_root(&self, unit: &UnitRecord) -> Result<PathBuf, InstallPlatformError> {
+        self.validate_prior_unit(unit)
+    }
+
+    fn retain_prior_units(&mut self) -> Result<(), InstallPlatformError> {
+        self.retain_historical_units()
+    }
+
+    fn retain_recorded_prior(
+        &mut self,
+        record: &super::super::PlatformTransactionRecord,
+    ) -> Result<Option<UnitRecord>, InstallPlatformError> {
+        self.retain_recorded_historical_prior(record)
     }
 
     fn active_unit(&mut self) -> Result<Option<UnitId>, InstallPlatformError> {
@@ -590,7 +627,7 @@ fn replace_entry(
     }
 }
 
-fn retained_unit(
+pub(super) fn retained_unit(
     units: &DirectoryAuthority,
     units_root_hint: &Path,
     unit: UnitId,

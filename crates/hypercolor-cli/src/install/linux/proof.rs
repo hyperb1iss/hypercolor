@@ -18,64 +18,19 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         &self,
         unit: &UnitRecord,
     ) -> Result<LinuxUnitBinding, InstallPlatformError> {
-        let daemon = open_unit_file(unit, DAEMON_RELATIVE_PATH)?;
-        let daemon_size = daemon.metadata().size();
-        let daemon_device = daemon.metadata().device();
-        let daemon_inode = daemon.metadata().inode();
-        let daemon_sha256 = hash_opened(daemon, daemon_size)?;
-        let manifest = read_unit_file(
-            unit,
-            "manifest.json",
-            super::model::MAX_MANIFEST_BYTES as u64,
-        )?;
-        let manifest: serde_json::Value = serde_json::from_slice(&manifest)
-            .map_err(|source| error(format!("invalid retained unit manifest: {source}")))?;
-        let version = manifest
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .filter(|version| !version.is_empty() && version.len() <= 128)
-            .ok_or_else(|| error("retained unit manifest has no bounded version"))?
-            .to_owned();
-        let daemon_path = self
-            .config
-            .immutable_units_root
-            .join(unit.id().as_str())
-            .join(DAEMON_RELATIVE_PATH)
-            .to_str()
-            .expect("Linux install roots were validated as exact UTF-8")
-            .to_owned();
-        Ok(LinuxUnitBinding {
-            unit: unit.id().clone(),
-            daemon_path,
-            daemon_sha256,
-            daemon_size,
-            daemon_device,
-            daemon_inode,
-            version,
-        })
+        self.unit_binding_at(unit, &self.config.immutable_units_root)
+    }
+
+    pub(super) fn unit_binding_at(
+        &self,
+        unit: &UnitRecord,
+        units_root: &Path,
+    ) -> Result<LinuxUnitBinding, InstallPlatformError> {
+        retained_unit_binding(unit, units_root)
     }
 
     pub(super) fn candidate_launcher(&self) -> Result<LinuxLauncher, InstallPlatformError> {
-        let active = self
-            .config
-            .active_root
-            .to_str()
-            .expect("Linux install roots were validated as exact UTF-8");
-        let launcher_exec = format!(
-            "{active}/bin/hypercolor-daemon --ui-dir {active}/share/hypercolor/ui --effects-dir {active}/share/hypercolor/effects/bundled"
-        );
-        let bytes = format!(
-            "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={launcher_exec}\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n\n[Install]\nWantedBy=default.target\n"
-        )
-        .into_bytes();
-        if bytes.len() > super::model::MAX_LAUNCHER_BYTES {
-            return Err(error("rendered Linux launcher exceeds its byte bound"));
-        }
-        Ok(LinuxLauncher {
-            mode: LAUNCHER_MODE,
-            bytes,
-            exec_start: canonical_launcher_exec(&launcher_exec)?,
-        })
+        render_launcher(&self.config.active_root)
     }
 
     pub(super) fn layout_target(
@@ -84,13 +39,42 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         item: super::model::LinuxLayoutItem,
     ) -> String {
         let _ = candidate;
-        self.config
-            .active_root
-            .join(item.unit_path())
-            .to_str()
-            .expect("Linux install roots were validated as exact UTF-8")
-            .to_owned()
+        layout_target_for(&self.config.active_root, item)
     }
+}
+
+/// Render the exact generated launcher for one active root.
+///
+/// # Errors
+/// Refuses a non-UTF-8 root or a launcher that exceeds its byte bound.
+pub(super) fn render_launcher(active_root: &Path) -> Result<LinuxLauncher, InstallPlatformError> {
+    let active = active_root
+        .to_str()
+        .ok_or_else(|| error("Linux install roots must be exact UTF-8"))?;
+    let launcher_exec = format!(
+        "{active}/bin/hypercolor-daemon --ui-dir {active}/share/hypercolor/ui --effects-dir {active}/share/hypercolor/effects/bundled"
+    );
+    let bytes = format!(
+        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={launcher_exec}\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n\n[Install]\nWantedBy=default.target\n"
+    )
+    .into_bytes();
+    if bytes.len() > super::model::MAX_LAUNCHER_BYTES {
+        return Err(error("rendered Linux launcher exceeds its byte bound"));
+    }
+    Ok(LinuxLauncher {
+        mode: LAUNCHER_MODE,
+        bytes,
+        exec_start: canonical_launcher_exec(&launcher_exec)?,
+    })
+}
+
+/// The exact public symlink target one layout item names beneath a root.
+pub(super) fn layout_target_for(active_root: &Path, item: super::model::LinuxLayoutItem) -> String {
+    active_root
+        .join(item.unit_path())
+        .to_str()
+        .expect("Linux install roots were validated as exact UTF-8")
+        .to_owned()
 }
 
 impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
@@ -269,6 +253,45 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         }
         Ok(())
     }
+}
+
+pub(super) fn retained_unit_binding(
+    unit: &UnitRecord,
+    units_root: &Path,
+) -> Result<LinuxUnitBinding, InstallPlatformError> {
+    let daemon = open_unit_file(unit, DAEMON_RELATIVE_PATH)?;
+    let daemon_size = daemon.metadata().size();
+    let daemon_device = daemon.metadata().device();
+    let daemon_inode = daemon.metadata().inode();
+    let daemon_sha256 = hash_opened(daemon, daemon_size)?;
+    let manifest = read_unit_file(
+        unit,
+        "manifest.json",
+        super::model::MAX_MANIFEST_BYTES as u64,
+    )?;
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest)
+        .map_err(|source| error(format!("invalid retained unit manifest: {source}")))?;
+    let version = manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|version| !version.is_empty() && version.len() <= 128)
+        .ok_or_else(|| error("retained unit manifest has no bounded version"))?
+        .to_owned();
+    let daemon_path = units_root
+        .join(unit.id().as_str())
+        .join(DAEMON_RELATIVE_PATH)
+        .to_str()
+        .expect("Linux install roots were validated as exact UTF-8")
+        .to_owned();
+    Ok(LinuxUnitBinding {
+        unit: unit.id().clone(),
+        daemon_path,
+        daemon_sha256,
+        daemon_size,
+        daemon_device,
+        daemon_inode,
+        version,
+    })
 }
 
 pub(super) fn validate_prior_launcher_entry(

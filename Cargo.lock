@@ -4714,6 +4714,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width",
+ "uuid",
  "zbus",
 ]
 

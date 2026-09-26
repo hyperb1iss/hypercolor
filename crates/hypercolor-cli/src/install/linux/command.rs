@@ -1,0 +1,535 @@
+//! The raw Linux install, adoption and recovery orchestration.
+//!
+//! The hidden `__install-release` command and the fake-platform suites drive
+//! this exact sequence. Hosts supply only what depends on the process: the
+//! environment-derived root proposal, the running candidate, and the platform
+//! executor. Authority election, adoption ordering and recovery live here.
+
+use std::collections::BTreeSet;
+use std::path::Path;
+
+use super::super::{
+    InstallCoordinator, InstallCoordinatorError, InstallDisposition, InstallJournalV1, InstallLock,
+    InstallOutcome, InstallPlatformError, InstallRequest, InstallStore, InstallStoreError,
+    InstallTargetPolicy, InstallTransactionId, OwnershipPolicy, PlatformTransactionRecord, UnitId,
+    UnitRecord,
+};
+use super::{
+    LinuxAdoption, LinuxAdoptionError, LinuxInstallConfig, LinuxInstallElection,
+    LinuxInstallExecutor, LinuxInstallLocation, LinuxInstallPlatform, LinuxLocatorError,
+    LinuxPublicTree, elect_linux_installation_with, retain_linux_unit,
+};
+
+/// Durable boundaries of one install run where a crash leaves disk state.
+///
+/// Hosts observe each boundary after it is durable. Returning an error from
+/// [`LinuxInstallHost::checkpoint`] stops the run exactly there, which the
+/// recovery suites use to model process loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LinuxInstallCheckpoint {
+    /// The historical root still holds authority and its lock is held.
+    LegacyElected,
+    /// Recorded roots and the installation identity exist.
+    RootsBootstrapped,
+    /// The proven adoption target is recorded beside the locator.
+    IntentRecorded,
+    /// The historical active unit is copied into the release root.
+    PriorCopied,
+    /// The new release root's pointer names the copied historical unit.
+    PriorActivated,
+    /// The running candidate is staged into the elected release root.
+    CandidateStaged,
+    /// The adoption receipt binding legacy state to the journal is durable.
+    AdoptionReceipt,
+    /// The initial managed journal is durable in the state root.
+    StateJournal,
+    /// The permanent locator names the managed installation.
+    LocatorPublished,
+    /// A recorded managed installation was elected through its state lock.
+    ManagedElected,
+}
+
+/// Process-dependent inputs to [`run_linux_install`].
+pub trait LinuxInstallHost {
+    /// The platform executor bound to one elected store.
+    type Executor: LinuxInstallExecutor;
+
+    /// Propose fresh managed roots from the caller's environment.
+    ///
+    /// This runs only while the historical root holds authority. Once a
+    /// managed location is recorded, installs, updates and recovery follow
+    /// that record and never call this method.
+    ///
+    /// # Errors
+    /// Returns an error when the environment names unusable roots.
+    fn propose_location(
+        &mut self,
+        home: &Path,
+        uid: u32,
+    ) -> Result<LinuxInstallLocation, InstallPlatformError>;
+
+    /// Revalidate and stage the running candidate into the elected store.
+    ///
+    /// # Errors
+    /// Returns an error when the candidate cannot be proven or staged.
+    fn stage_candidate(
+        &mut self,
+        store: &InstallStore,
+        lock: &InstallLock,
+    ) -> Result<UnitRecord, InstallPlatformError>;
+
+    /// Bind a platform executor to the elected store and lock.
+    ///
+    /// # Errors
+    /// Returns an error when the executor cannot retain its authority.
+    fn executor(
+        &mut self,
+        store: &InstallStore,
+        lock: &InstallLock,
+        tree: LinuxPublicTree,
+    ) -> Result<Self::Executor, InstallPlatformError>;
+
+    /// Observe one durable boundary.
+    ///
+    /// # Errors
+    /// An error stops the run at this boundary without further writes.
+    fn checkpoint(
+        &mut self,
+        checkpoint: LinuxInstallCheckpoint,
+    ) -> Result<(), InstallPlatformError> {
+        let _ = checkpoint;
+        Ok(())
+    }
+}
+
+/// What one invocation asks the installer to make active.
+#[derive(Debug, Clone)]
+pub struct LinuxInstallRequest {
+    pub candidate: UnitId,
+    pub transaction_id: InstallTransactionId,
+    pub target_policy: InstallTargetPolicy,
+}
+
+/// The settled result of one run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxInstallRun {
+    pub outcome: InstallOutcome,
+    /// Whether the run settled a journal instead of preparing a fresh one.
+    pub recovered: bool,
+}
+
+/// A run that could not settle, with the stage that refused it.
+#[derive(Debug, thiserror::Error)]
+pub enum LinuxInstallCommandError {
+    #[error("failed to elect install authority: {0}")]
+    Election(#[source] LinuxLocatorError),
+    #[error("managed adoption failed: {0}")]
+    Adoption(#[from] LinuxAdoptionError),
+    #[error("managed authority could not be reconfirmed: {0}")]
+    Authority(#[source] LinuxLocatorError),
+    #[error(transparent)]
+    Store(#[from] InstallStoreError),
+    #[error(transparent)]
+    Coordinator(#[from] InstallCoordinatorError),
+    #[error(transparent)]
+    Platform(#[from] InstallPlatformError),
+    #[error("the recorded install journal disappeared under its lock")]
+    MissingJournal,
+    #[error("adoption did not elect managed authority")]
+    AdoptionNotManaged,
+    #[error("the run stopped at checkpoint {0:?}: {1}")]
+    Stopped(LinuxInstallCheckpoint, InstallPlatformError),
+    #[error("the uninstall stopped at checkpoint {0:?}: {1}")]
+    UninstallStopped(
+        super::uninstall::LinuxUninstallCheckpoint,
+        InstallPlatformError,
+    ),
+    #[error(
+        "refusing to uninstall without writes; these are not the entries this installer \
+         generates, so remove them manually or with the package manager that owns them: {}",
+        .0.join(", ")
+    )]
+    ForeignInstallation(Vec<String>),
+    #[error(
+        "refusing to remove beneath {path}: {refusal}",
+        path = .0.display(),
+        refusal = .1
+    )]
+    UnsafeDirectory(std::path::PathBuf, crate::install::DirectoryRefusal),
+}
+
+/// Elect authority, adopt or recover, and settle one install request.
+///
+/// Legacy authority with a pending journal is recovered with legacy
+/// semantics first. Otherwise legacy authority is adopted into the host's
+/// proposed roots before the candidate activates. Managed authority always
+/// follows its recorded location and recovers a pending journal before
+/// preparing another candidate.
+///
+/// # Errors
+/// Returns the first refusal. Locks are released and nothing is rolled back
+/// by the caller; a later run resumes from the durable state.
+pub fn run_linux_install<H: LinuxInstallHost>(
+    home: &Path,
+    request: &LinuxInstallRequest,
+    ownership: &OwnershipPolicy,
+    host: &mut H,
+) -> Result<LinuxInstallRun, LinuxInstallCommandError> {
+    let elected = elect_linux_installation_with(home, ownership)
+        .map_err(LinuxInstallCommandError::Election)?;
+    match elected {
+        LinuxInstallElection::Legacy {
+            store,
+            mut lock,
+            locator,
+        } => {
+            stop(host, LinuxInstallCheckpoint::LegacyElected)?;
+            let journal = store.load_journal(&lock)?;
+            if let Some(journal) = journal.as_ref().filter(|journal| pending(journal)) {
+                let mut platform = platform(
+                    home,
+                    host,
+                    &store,
+                    &lock,
+                    PlatformInputs {
+                        candidate: None,
+                        journal: Some(journal),
+                        managed: false,
+                        original: None,
+                    },
+                )?;
+                return recover(&store, &mut lock, &mut platform);
+            }
+            let uid = lock
+                .open_public_directory(home)?
+                .metadata()
+                .map_err(|source| {
+                    LinuxInstallCommandError::Election(LinuxLocatorError::Io(source))
+                })?;
+            // An adoption that already started keeps its recorded roots; only
+            // a first attempt consults the environment.
+            let proposed = match locator
+                .adoption_intent()
+                .map_err(LinuxInstallCommandError::Election)?
+            {
+                Some(recorded) => recorded,
+                None => host.propose_location(home, uid.owner_uid())?,
+            };
+            let adoption = LinuxAdoption::begin_observed(
+                home,
+                LinuxInstallElection::Legacy {
+                    store,
+                    lock,
+                    locator,
+                },
+                proposed,
+                &mut |checkpoint| stop(host, checkpoint).map_err(boxed_stop),
+            )?;
+            let candidate = host.stage_candidate(adoption.store(), adoption.lock())?;
+            stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
+            let (journal, mut platform) =
+                prepare_or_replace(home, host, &adoption, request, &candidate)?;
+            stop(host, LinuxInstallCheckpoint::AdoptionReceipt)?;
+            adoption.store().write_journal(&journal, adoption.lock())?;
+            stop(host, LinuxInstallCheckpoint::StateJournal)?;
+            let LinuxInstallElection::Managed {
+                store,
+                mut lock,
+                authority,
+            } = adoption.publish(&journal, &mut platform)?
+            else {
+                return Err(LinuxInstallCommandError::AdoptionNotManaged);
+            };
+            stop(host, LinuxInstallCheckpoint::LocatorPublished)?;
+            authority
+                .confirm_durable()
+                .map_err(LinuxInstallCommandError::Authority)?;
+            recover(&store, &mut lock, &mut platform)
+        }
+        LinuxInstallElection::Managed {
+            store,
+            mut lock,
+            authority,
+        } => {
+            stop(host, LinuxInstallCheckpoint::ManagedElected)?;
+            let journal = store
+                .load_journal(&lock)?
+                .ok_or(LinuxInstallCommandError::MissingJournal)?;
+            authority
+                .confirm_durable()
+                .map_err(LinuxInstallCommandError::Authority)?;
+            if pending(&journal) {
+                let mut platform = platform(
+                    home,
+                    host,
+                    &store,
+                    &lock,
+                    PlatformInputs {
+                        candidate: None,
+                        journal: Some(&journal),
+                        managed: true,
+                        original: None,
+                    },
+                )?;
+                return recover(&store, &mut lock, &mut platform);
+            }
+            let candidate = host.stage_candidate(&store, &lock)?;
+            stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
+            let prior_record =
+                (journal.disposition == InstallDisposition::RolledBack).then_some(&journal);
+            let mut platform = platform(
+                home,
+                host,
+                &store,
+                &lock,
+                PlatformInputs {
+                    candidate: Some(&candidate),
+                    journal: prior_record,
+                    managed: true,
+                    original: None,
+                },
+            )?;
+            authority
+                .confirm_durable()
+                .map_err(LinuxInstallCommandError::Authority)?;
+            let outcome = InstallCoordinator::new(&store, &mut platform)
+                .install_with_lock(install_request(request, candidate), &mut lock)?;
+            Ok(LinuxInstallRun {
+                outcome,
+                recovered: false,
+            })
+        }
+    }
+}
+
+/// Resume the unpublished preparation or replace one that cannot resume.
+///
+/// Before the locator publishes, a prepared journal holds no authority and no
+/// platform effect has run for it. One that names another candidate, whose
+/// receipt no longer matches the legacy state, or whose recorded prior no
+/// longer matches the live platform (a restart after a crash, say) is
+/// discarded and prepared again from the present state.
+fn prepare_or_replace<H: LinuxInstallHost>(
+    home: &Path,
+    host: &mut H,
+    adoption: &LinuxAdoption,
+    request: &LinuxInstallRequest,
+    candidate: &UnitRecord,
+) -> Result<(InstallJournalV1, LinuxInstallPlatform<H::Executor>), LinuxInstallCommandError> {
+    let mut replaced = false;
+    loop {
+        let prepared = match adoption.prepared_journal() {
+            Ok(Some(journal)) if journal.candidate_unit == request.candidate => Some(journal),
+            Ok(None) => None,
+            Ok(Some(_))
+            | Err(
+                LinuxAdoptionError::ConflictingPreparation
+                | LinuxAdoptionError::Locator(LinuxLocatorError::Unprepared),
+            ) if !replaced => {
+                adoption.discard_unpublished_preparation()?;
+                replaced = true;
+                continue;
+            }
+            Ok(Some(_)) => return Err(LinuxAdoptionError::ConflictingPreparation.into()),
+            Err(error) => return Err(error.into()),
+        };
+        let resumed = prepared.is_some();
+        let mut platform = platform(
+            home,
+            host,
+            adoption.store(),
+            adoption.lock(),
+            PlatformInputs {
+                candidate: Some(candidate),
+                journal: prepared.as_ref(),
+                managed: true,
+                original: adoption.original_prior(),
+            },
+        )?;
+        match adoption.prepare(&mut platform, install_request(request, candidate.clone())) {
+            Ok(journal) => return Ok((journal, platform)),
+            Err(LinuxAdoptionError::Locator(LinuxLocatorError::Unprepared))
+                if resumed && !replaced =>
+            {
+                drop(platform);
+                adoption.discard_unpublished_preparation()?;
+                replaced = true;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn stop<H: LinuxInstallHost>(
+    host: &mut H,
+    checkpoint: LinuxInstallCheckpoint,
+) -> Result<(), LinuxInstallCommandError> {
+    host.checkpoint(checkpoint)
+        .map_err(|source| LinuxInstallCommandError::Stopped(checkpoint, source))
+}
+
+fn boxed_stop(error: LinuxInstallCommandError) -> LinuxAdoptionError {
+    match error {
+        LinuxInstallCommandError::Stopped(checkpoint, source) => {
+            LinuxAdoptionError::Stopped(format!("{checkpoint:?}: {source}"))
+        }
+        other => LinuxAdoptionError::Stopped(other.to_string()),
+    }
+}
+
+pub(super) fn pending(journal: &InstallJournalV1) -> bool {
+    matches!(
+        journal.disposition,
+        InstallDisposition::Forward | InstallDisposition::Rollback
+    )
+}
+
+fn install_request(request: &LinuxInstallRequest, candidate: UnitRecord) -> InstallRequest {
+    InstallRequest {
+        transaction_id: request.transaction_id.clone(),
+        candidate,
+        target_policy: request.target_policy,
+    }
+}
+
+pub(super) fn recover<E: LinuxInstallExecutor>(
+    store: &InstallStore,
+    lock: &mut InstallLock,
+    platform: &mut LinuxInstallPlatform<E>,
+) -> Result<LinuxInstallRun, LinuxInstallCommandError> {
+    let outcome = InstallCoordinator::new(store, platform)
+        .recover_with_lock(lock)?
+        .ok_or(LinuxInstallCommandError::MissingJournal)?;
+    Ok(LinuxInstallRun {
+        outcome,
+        recovered: true,
+    })
+}
+
+pub(super) struct PlatformInputs<'a> {
+    pub(super) candidate: Option<&'a UnitRecord>,
+    pub(super) journal: Option<&'a InstallJournalV1>,
+    pub(super) managed: bool,
+    pub(super) original: Option<&'a UnitRecord>,
+}
+
+fn platform<H: LinuxInstallHost>(
+    home: &Path,
+    host: &mut H,
+    store: &InstallStore,
+    lock: &InstallLock,
+    inputs: PlatformInputs<'_>,
+) -> Result<LinuxInstallPlatform<H::Executor>, LinuxInstallCommandError> {
+    platform_with(
+        home,
+        |store, lock, tree| host.executor(store, lock, tree),
+        store,
+        lock,
+        inputs,
+    )
+}
+
+pub(super) fn platform_with<E: LinuxInstallExecutor>(
+    home: &Path,
+    executor: impl FnOnce(
+        &InstallStore,
+        &InstallLock,
+        LinuxPublicTree,
+    ) -> Result<E, InstallPlatformError>,
+    store: &InstallStore,
+    lock: &InstallLock,
+    inputs: PlatformInputs<'_>,
+) -> Result<LinuxInstallPlatform<E>, LinuxInstallCommandError> {
+    let known = known_units(store, lock, inputs.candidate, inputs.journal)?;
+    let tree = LinuxPublicTree::new(lock, home)?;
+    let executor = executor(store, lock, tree)?;
+    Ok(bind_platform(
+        home,
+        store,
+        known,
+        executor,
+        inputs
+            .journal
+            .filter(|_| inputs.managed)
+            .map(|journal| &journal.platform_record),
+        inputs.original,
+    )?)
+}
+
+/// Bind retained units and any recorded or original prior role to a platform.
+///
+/// # Errors
+/// Refuses executor, topology, or prior-role bindings that cannot be proven.
+pub(crate) fn bind_platform<E: LinuxInstallExecutor>(
+    home: &Path,
+    store: &InstallStore,
+    known: Vec<UnitRecord>,
+    mut executor: E,
+    record: Option<&PlatformTransactionRecord>,
+    original: Option<&UnitRecord>,
+) -> Result<LinuxInstallPlatform<E>, InstallPlatformError> {
+    if original.is_some() && record.is_none() {
+        executor.retain_prior_units()?;
+    }
+    let config = LinuxInstallConfig {
+        direct_fragment_path: home
+            .join(".config/systemd/user/hypercolor.service")
+            .to_str()
+            .ok_or_else(|| InstallPlatformError::new("Linux HOME must be exact UTF-8"))?
+            .to_owned(),
+        immutable_units_root: store.root().join("units"),
+        active_root: store.active_path(),
+    };
+    let mut platform = LinuxInstallPlatform::new(executor, config, known)?;
+    if let Some(original) = original.filter(|_| record.is_none()) {
+        platform = platform.with_prior_unit(original.clone())?;
+    }
+    match record {
+        Some(record) => platform.with_recorded_prior(record).map_err(|source| {
+            InstallPlatformError::new(format!(
+                "failed to restore recorded prior authority: {source}"
+            ))
+        }),
+        None => Ok(platform),
+    }
+}
+
+fn known_units(
+    store: &InstallStore,
+    lock: &InstallLock,
+    candidate: Option<&UnitRecord>,
+    journal: Option<&InstallJournalV1>,
+) -> Result<Vec<UnitRecord>, LinuxInstallCommandError> {
+    let mut units: Vec<_> = candidate.into_iter().cloned().collect();
+    let mut seen: BTreeSet<_> = units
+        .iter()
+        .map(|unit| unit.id().as_str().to_owned())
+        .collect();
+    let mut ids: Vec<_> = store.active_unit(lock)?.into_iter().collect();
+    if let Some(journal) = journal {
+        ids.push(journal.candidate_unit.clone());
+        ids.extend(journal.prior_active_unit.clone());
+        for state in [&journal.prior_platform, &journal.target_platform] {
+            ids.extend(
+                [
+                    state.layout_unit.clone(),
+                    state.launcher_unit.clone(),
+                    state.running_unit.clone(),
+                ]
+                .into_iter()
+                .flatten(),
+            );
+        }
+    }
+    for id in ids {
+        if seen.insert(id.as_str().to_owned()) {
+            units.push(retain_linux_unit(store, lock, &id).map_err(|source| {
+                InstallPlatformError::new(format!(
+                    "failed to retain installed unit {}: {source}",
+                    id.as_str()
+                ))
+            })?);
+        }
+    }
+    Ok(units)
+}

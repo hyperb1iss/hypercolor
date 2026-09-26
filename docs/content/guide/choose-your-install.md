@@ -64,14 +64,16 @@ curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --uninstall
 ```
 
-On macOS you can set `HYPERCOLOR_INSTALL_PREFIX` and `HYPERCOLOR_INSTALL_DIR` to move the install root. On Linux the prefix is fixed at `~/.local` and the binary directory at `~/.local/bin`; the script refuses anything else so the systemd unit's `%h/.local/bin/hypercolor-daemon` path always resolves.
+On macOS you can set `HYPERCOLOR_INSTALL_PREFIX` and `HYPERCOLOR_INSTALL_DIR` to move the install root. On Linux the prefix is fixed at `~/.local` and the command directory at `~/.local/bin`; the script refuses anything else. Releases and update state follow `XDG_DATA_HOME` and `XDG_STATE_HOME` as recorded by the first install.
 
 ### What the installer does
 
 1. Detects your architecture and downloads the matching release tarball from GitHub.
 2. Verifies the SHA256 checksum before extracting.
-3. Installs `hypercolor`, `hypercolor-daemon`, `hypercolor-app`, `hypercolor-tui`, and `hypercolor-open` to `~/.local/bin`.
-4. Installs the systemd **user** service to `~/.config/systemd/user/hypercolor.service` and enables it.
+3. Installs the release under `~/.local/share/hypercolor/releases` and links `hypercolor`, `hypercolor-daemon`, `hypercolor-app`, `hypercolor-tui`, and `hypercolor-open` into `~/.local/bin`.
+4. Installs the systemd **user** service to `~/.config/systemd/user/hypercolor.service`, enables it, and proves the new daemon is healthy before it commits. A failed start restores the previous release.
+
+[How Linux release installs are managed](@/guide/linux-release-installs.md) covers the layout, upgrades from older installs, uninstall, and the directory permissions the installer requires.
 
 The release tarball carries the udev rules and the `i2c-dev` modules-load config,
 but the one-liner never applies them because it never asks for `sudo`. Debian,

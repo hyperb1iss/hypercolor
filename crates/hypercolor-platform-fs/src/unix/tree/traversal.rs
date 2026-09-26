@@ -160,7 +160,34 @@ fn metadata_from_stat(metadata: &rustix::fs::Stat) -> io::Result<DirectoryEntryM
         link_count: widen_to_u64(metadata.st_nlink),
         device: checked_to_u64(metadata.st_dev, "negative device number")?,
         inode: widen_to_u64(metadata.st_ino),
+        owner_uid: widen_to_u32(metadata.st_uid),
+        owner_gid: widen_to_u32(metadata.st_gid),
     })
+}
+
+/// Extended attributes that carry access-control entries beyond the mode bits.
+///
+/// POSIX access ACLs can grant named principals write through the group-class
+/// mask, and NFSv4 ACLs are enforced by the server regardless of the local
+/// mode. Default ACLs only seed new children and are therefore excluded.
+#[cfg(target_os = "linux")]
+const EXTENDED_ACCESS_ACL_ATTRIBUTES: [&str; 2] = ["system.posix_acl_access", "system.nfs4_acl"];
+
+/// Report whether an opened entry carries any extended access ACL.
+///
+/// A present attribute is reported even when its entries happen to mirror the
+/// mode bits; callers that need owner-only authority treat any ACL as unproven.
+#[cfg(target_os = "linux")]
+pub(super) fn has_extended_access_acl(file: &File) -> io::Result<bool> {
+    for name in EXTENDED_ACCESS_ACL_ATTRIBUTES {
+        let empty: &mut [u8] = &mut [];
+        match rustix::fs::fgetxattr(file, name, empty) {
+            Ok(_) => return Ok(true),
+            Err(Errno::NODATA | Errno::OPNOTSUPP) => {}
+            Err(error) => return Err(io::Error::from(error)),
+        }
+    }
+    Ok(false)
 }
 
 fn widen_to_u32<T: Into<u32>>(value: T) -> u32 {
@@ -349,6 +376,135 @@ fn push_bounded_directory_entry(
     }
     names.push(OsString::from_vec(bytes.to_vec()));
     Ok(())
+}
+
+/// Recursively remove one owned directory tree without following links.
+///
+/// Every entry must belong to the effective user. Directories are made
+/// owner-accessible before enumeration so read-only immutable trees can be
+/// removed. Symbolic links are unlinked and never followed. Special files and
+/// multiply linked regular files are refused before their parent is removed.
+pub(super) fn remove_owned_directory_tree(
+    parent: &File,
+    name: &OsStr,
+    expected: DirectoryEntryMetadata,
+) -> io::Result<()> {
+    let directory = open_owned_tree_directory(parent, name, expected)?;
+    let opened = metadata_for_file(&directory)?;
+    for child in directory_entries(&directory)? {
+        let child_name = child.as_os_str();
+        let Some(metadata) = entry_metadata_at(&directory, child_name)? else {
+            continue;
+        };
+        if !metadata.is_owned_by_current_user() {
+            return Err(unsafe_entry("owned tree contains a foreign entry"));
+        }
+        match metadata.kind {
+            DirectoryEntryKind::Directory => {
+                remove_owned_directory_tree(&directory, child_name, metadata)?;
+            }
+            DirectoryEntryKind::RegularFile if metadata.link_count == 1 => {
+                unlink_exact(&directory, child_name, metadata, AtFlags::empty())?;
+            }
+            DirectoryEntryKind::SymbolicLink => {
+                unlink_exact(&directory, child_name, metadata, AtFlags::empty())?;
+            }
+            DirectoryEntryKind::RegularFile => {
+                return Err(unsafe_entry(
+                    "owned tree contains a multiply linked regular file",
+                ));
+            }
+            DirectoryEntryKind::Special => {
+                return Err(unsafe_entry("owned tree contains a special file"));
+            }
+        }
+    }
+    directory.sync_all()?;
+    unlink_exact(parent, name, opened, AtFlags::REMOVEDIR)?;
+    parent.sync_all()
+}
+
+/// Prove an owned tree removable without changing it.
+///
+/// Every entry must belong to the effective user; directories are walked,
+/// single-link regular files and symbolic links are accepted, and special
+/// files or multiply linked regular files are refused. Nothing is followed.
+pub(super) fn validate_owned_directory_tree(
+    parent: &File,
+    name: &OsStr,
+    expected: DirectoryEntryMetadata,
+) -> io::Result<()> {
+    if expected.kind != DirectoryEntryKind::Directory || !expected.is_owned_by_current_user() {
+        return Err(unsafe_entry("owned tree root is not an owned directory"));
+    }
+    let directory = open_directory_at(parent, name)?;
+    require_same_entry(
+        expected,
+        metadata_for_file(&directory)?,
+        "owned tree directory changed during validation",
+    )?;
+    for child in directory_entries(&directory)? {
+        let child_name = child.as_os_str();
+        let Some(metadata) = entry_metadata_at(&directory, child_name)? else {
+            continue;
+        };
+        if !metadata.is_owned_by_current_user() {
+            return Err(unsafe_entry("owned tree contains a foreign entry"));
+        }
+        match metadata.kind {
+            DirectoryEntryKind::Directory => {
+                validate_owned_directory_tree(&directory, child_name, metadata)?;
+            }
+            DirectoryEntryKind::RegularFile if metadata.link_count == 1 => {}
+            DirectoryEntryKind::SymbolicLink => {}
+            DirectoryEntryKind::RegularFile => {
+                return Err(unsafe_entry(
+                    "owned tree contains a multiply linked regular file",
+                ));
+            }
+            DirectoryEntryKind::Special => {
+                return Err(unsafe_entry("owned tree contains a special file"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn open_owned_tree_directory(
+    parent: &File,
+    name: &OsStr,
+    expected: DirectoryEntryMetadata,
+) -> io::Result<File> {
+    if expected.kind != DirectoryEntryKind::Directory || !expected.is_owned_by_current_user() {
+        return Err(unsafe_entry("owned tree root is not an owned directory"));
+    }
+    let directory = open_directory_at(parent, name)?;
+    require_same_entry(
+        expected,
+        metadata_for_file(&directory)?,
+        "owned tree directory changed during removal",
+    )?;
+    // Read-only immutable directories must become writable before their
+    // entries can be unlinked. The mode changes through the proven handle,
+    // never through a name that could have been swapped for a link.
+    set_exact_mode(&directory, PRIVATE_DIRECTORY_MODE)?;
+    Ok(directory)
+}
+
+fn unlink_exact(
+    parent: &File,
+    name: &OsStr,
+    expected: DirectoryEntryMetadata,
+    flags: AtFlags,
+) -> io::Result<()> {
+    let current = entry_metadata_at(parent, name)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "owned tree entry disappeared during removal",
+        )
+    })?;
+    require_same_entry(expected, current, "owned tree entry changed during removal")?;
+    unlinkat(parent, name, flags).map_err(io::Error::from)
 }
 
 pub(super) fn remove_directory_tree(

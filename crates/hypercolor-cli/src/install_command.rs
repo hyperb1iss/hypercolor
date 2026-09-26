@@ -2,8 +2,10 @@ use std::path::{Component, Path};
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::InstallReleaseArgs;
+use crate::{InstallReleaseArgs, UninstallReleaseArgs};
 
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 
@@ -22,6 +24,19 @@ pub(crate) fn execute(_args: &InstallReleaseArgs) -> Result<()> {
     bail!("raw release installation is unsupported on this platform")
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn execute_uninstall(args: &UninstallReleaseArgs) -> Result<()> {
+    let home = linux_home()?;
+    require_bounded_absolute(&home, "HOME")?;
+    LinuxInstallTopology::new(&args.install_prefix, &args.install_dir, &home)?;
+    linux::execute_uninstall(&home)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub(crate) fn execute_uninstall(_args: &UninstallReleaseArgs) -> Result<()> {
+    bail!("raw release uninstall is supported only for per-user Linux installs")
+}
+
 pub(crate) fn parse_manifest_digest(value: &str) -> Result<crate::install::UnitId, String> {
     if value.len() != 64
         || !value
@@ -35,22 +50,11 @@ pub(crate) fn parse_manifest_digest(value: &str) -> Result<crate::install::UnitI
 
 #[cfg(target_os = "linux")]
 fn execute_linux(args: &InstallReleaseArgs) -> Result<()> {
-    use std::collections::BTreeSet;
-    use std::net::{Ipv4Addr, SocketAddr};
-
-    use crate::install::{
-        InstallCoordinator, InstallDisposition, InstallRequest, InstallStore, InstallTargetPolicy,
-        LinuxInstallConfig, LinuxInstallPlatform, LinuxNativeExecutor, LinuxPublicTree,
-        MAX_INSTALL_JOURNAL_BYTES, stage_release_payload_from_authority,
-        validate_release_payload_from_authority,
-    };
-
     let home = linux_home()?;
     require_bounded_absolute(&home, "HOME")?;
     let topology = LinuxInstallTopology::new(&args.install_prefix, &args.install_dir, &home)?;
     let (source, candidate_executable) = running_linux_candidate()?;
-
-    validate_release_payload_from_authority(
+    crate::install::validate_release_payload_from_authority(
         &source,
         &candidate_executable,
         &args.expected_manifest_sha256,
@@ -60,144 +64,13 @@ fn execute_linux(args: &InstallReleaseArgs) -> Result<()> {
         return Ok(());
     }
 
-    let store = InstallStore::new(&topology.store_root, MAX_INSTALL_JOURNAL_BYTES);
-    let mut lock = store
-        .acquire_anchored_lock(&home)
-        .context("failed to acquire the release install lock")?;
-    let public_tree = LinuxPublicTree::new(&lock, &home)
-        .context("failed to retain the Linux public install tree")?;
-    let candidate = stage_release_payload_from_authority(
-        &store,
-        &lock,
+    linux::execute(
+        args,
+        &home,
+        &topology.store_root,
         &source,
         &candidate_executable,
-        &args.expected_manifest_sha256,
     )
-    .context("release candidate revalidation and staging failed")?;
-    let journal = store
-        .load_journal(&lock)
-        .context("failed to inspect the release install journal")?;
-    let pending_recovery = journal.as_ref().is_some_and(|journal| {
-        matches!(
-            journal.disposition,
-            InstallDisposition::Forward | InstallDisposition::Rollback
-        )
-    });
-    let active_unit = store
-        .active_unit(&lock)
-        .context("failed to inspect the active release unit")?;
-
-    let mut known_units = vec![candidate.clone()];
-    let mut seen = BTreeSet::from([candidate.id().as_str().to_owned()]);
-    if let Some(unit) = active_unit {
-        retain_unit(&store, &lock, unit, &mut seen, &mut known_units)?;
-    }
-    if let Some(journal) = journal.as_ref().filter(|_| pending_recovery) {
-        retain_unit(
-            &store,
-            &lock,
-            journal.candidate_unit.clone(),
-            &mut seen,
-            &mut known_units,
-        )?;
-        if let Some(unit) = journal.prior_active_unit.clone() {
-            retain_unit(&store, &lock, unit, &mut seen, &mut known_units)?;
-        }
-        retain_platform_units(
-            &store,
-            &lock,
-            &journal.prior_platform,
-            &mut seen,
-            &mut known_units,
-        )?;
-        retain_platform_units(
-            &store,
-            &lock,
-            &journal.target_platform,
-            &mut seen,
-            &mut known_units,
-        )?;
-    }
-
-    let config = LinuxInstallConfig {
-        direct_fragment_path: home
-            .join(".config/systemd/user/hypercolor.service")
-            .to_str()
-            .expect("HOME was validated as exact UTF-8")
-            .to_owned(),
-        immutable_units_root: topology.store_root.join("units"),
-        active_root: topology.store_root.join("active"),
-    };
-    let executor = LinuxNativeExecutor::new(
-        &store,
-        &lock,
-        public_tree,
-        SocketAddr::from((Ipv4Addr::LOCALHOST, 9420)),
-    )
-    .context("failed to construct the native Linux install executor")?;
-    let mut platform = LinuxInstallPlatform::new(executor, config, known_units)
-        .context("failed to bind the Linux install transaction")?;
-    let mut coordinator = InstallCoordinator::new(&store, &mut platform);
-
-    if pending_recovery {
-        let outcome = coordinator
-            .recover_with_lock(&mut lock)
-            .context("failed to recover the interrupted release transaction")?
-            .ok_or_else(|| anyhow::anyhow!("the interrupted release journal disappeared"))?;
-        return require_candidate_committed(outcome, &args.expected_manifest_sha256, true);
-    }
-
-    let request = InstallRequest {
-        transaction_id: transaction_id(&args.expected_manifest_sha256)?,
-        candidate,
-        target_policy: if args.no_service {
-            InstallTargetPolicy::Preserve
-        } else {
-            InstallTargetPolicy::EnableOnFirstInstall
-        },
-    };
-    let outcome = coordinator
-        .install_with_lock(request, &mut lock)
-        .context("transactional Linux release installation failed")?;
-    require_candidate_committed(outcome, &args.expected_manifest_sha256, false)
-}
-
-#[cfg(target_os = "linux")]
-fn retain_platform_units(
-    store: &crate::install::InstallStore,
-    lock: &crate::install::InstallLock,
-    state: &crate::install::PlatformState,
-    seen: &mut std::collections::BTreeSet<String>,
-    known_units: &mut Vec<crate::install::UnitRecord>,
-) -> Result<()> {
-    for unit in [
-        state.layout_unit.clone(),
-        state.launcher_unit.clone(),
-        state.running_unit.clone(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        retain_unit(store, lock, unit, seen, known_units)?;
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn retain_unit(
-    store: &crate::install::InstallStore,
-    lock: &crate::install::InstallLock,
-    unit: crate::install::UnitId,
-    seen: &mut std::collections::BTreeSet<String>,
-    known_units: &mut Vec<crate::install::UnitRecord>,
-) -> Result<()> {
-    if seen.insert(unit.as_str().to_owned()) {
-        known_units.push(
-            crate::install::retain_linux_unit(store, lock, &unit)
-                .with_context(|| format!("failed to retain installed unit {}", unit.as_str()))?,
-        );
-    }
-    Ok(())
 }
 
 fn require_candidate_committed(

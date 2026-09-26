@@ -9,6 +9,7 @@ use hypercolor_platform_fs::{
 };
 
 use super::model::{InstallJournalV1, UnitId, active_target};
+use super::ownership::{AclProbe, DirectoryRefusal, DirectoryRole, OwnershipPolicy};
 
 const INSTALL_LOCK_FILE: &str = "install.lock";
 const ANCHORED_INSTALL_LOCK_FILE: &str = ".hypercolor-release-install.lock";
@@ -20,16 +21,71 @@ static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone)]
 pub struct InstallStore {
     root: PathBuf,
+    state_root: PathBuf,
     max_journal_bytes: usize,
+    ownership: OwnershipPolicy,
 }
 
 impl InstallStore {
     #[must_use]
     pub fn new(root: impl Into<PathBuf>, max_journal_bytes: usize) -> Self {
+        let root = root.into();
         Self {
-            root: root.into(),
+            state_root: root.clone(),
+            root,
             max_journal_bytes,
+            ownership: OwnershipPolicy::system(),
         }
+    }
+
+    /// Replace the directory writer policy used by lock acquisition.
+    ///
+    /// Locks acquired from this store carry the same policy, so every root
+    /// and ancestor check made through them applies it consistently.
+    #[must_use]
+    pub fn with_ownership_policy(mut self, ownership: OwnershipPolicy) -> Self {
+        self.ownership = ownership;
+        self
+    }
+
+    /// Directory writer policy applied to this store's roots and ancestors.
+    #[must_use]
+    pub fn ownership_policy(&self) -> &OwnershipPolicy {
+        &self.ownership
+    }
+
+    /// Use separate immutable-release and mutable-journal roots.
+    ///
+    /// Roots must be absolute, normalized, distinct and mutually nonnested.
+    /// Acquisition additionally verifies their modes and directory identity.
+    /// Existing single-root stores continue to use `new`.
+    ///
+    /// # Errors
+    /// Returns an error for invalid or overlapping roots.
+    pub fn with_roots(
+        release_root: impl Into<PathBuf>,
+        state_root: impl Into<PathBuf>,
+        max_journal_bytes: usize,
+    ) -> Result<Self, InstallStoreError> {
+        let root = release_root.into();
+        let state_root = state_root.into();
+        validate_bootstrap_root(&root)?;
+        validate_bootstrap_root(&state_root)?;
+        if root.starts_with(&state_root) || state_root.starts_with(&root) {
+            return Err(InstallStoreError::OverlappingRoots);
+        }
+        Ok(Self {
+            root,
+            state_root,
+            max_journal_bytes,
+            ownership: OwnershipPolicy::system(),
+        })
+    }
+
+    /// Directory containing the transaction lock and durable journal.
+    #[must_use]
+    pub fn state_root(&self) -> &Path {
+        &self.state_root
     }
 
     #[must_use]
@@ -39,12 +95,12 @@ impl InstallStore {
 
     #[must_use]
     pub fn journal_path(&self) -> PathBuf {
-        self.root.join(INSTALL_JOURNAL_FILE)
+        self.state_root.join(INSTALL_JOURNAL_FILE)
     }
 
     #[must_use]
     pub fn lock_path(&self) -> PathBuf {
-        self.root.join(INSTALL_LOCK_FILE)
+        self.state_root.join(INSTALL_LOCK_FILE)
     }
 
     #[must_use]
@@ -59,18 +115,77 @@ impl InstallStore {
     }
 
     pub fn acquire_lock(&self) -> Result<InstallLock, InstallStoreError> {
-        fs::create_dir_all(&self.root).map_err(InstallStoreError::CreateRoot)?;
-        let gate = ExclusiveDirectory::try_acquire(&self.root, Path::new(INSTALL_LOCK_FILE))
+        if self.root == self.state_root {
+            fs::create_dir_all(&self.root).map_err(InstallStoreError::CreateRoot)?;
+        }
+        let gate = ExclusiveDirectory::try_acquire(&self.state_root, Path::new(INSTALL_LOCK_FILE))
             .map_err(InstallStoreError::AcquireLock)?
             .ok_or(InstallStoreError::LockContended)?;
-        let directory = gate
+        self.retain_roots(gate)
+    }
+
+    fn require_owned(
+        &self,
+        directory: &impl AclProbe,
+        metadata: DirectoryEntryMetadata,
+        path: &Path,
+    ) -> Result<(), InstallStoreError> {
+        require_safe_bootstrap_directory(
+            &self.ownership,
+            directory,
+            metadata,
+            path,
+            DirectoryRole::InstallerOwned,
+        )
+    }
+
+    fn retain_roots(&self, gate: ExclusiveDirectory) -> Result<InstallLock, InstallStoreError> {
+        let state_directory = gate
             .root_directory()
             .map_err(InstallStoreError::OpenRootAuthority)?;
-        Ok(InstallLock {
+        let directory = if self.root == self.state_root {
+            gate.root_directory()
+        } else {
+            gate.open_public_directory(&self.root)
+                .and_then(PublicDirectoryAuthority::into_directory_authority)
+        }
+        .map_err(InstallStoreError::OpenRootAuthority)?;
+        if self.root != self.state_root {
+            let state = state_directory
+                .metadata()
+                .map_err(InstallStoreError::OpenRootAuthority)?;
+            let release = directory
+                .metadata()
+                .map_err(InstallStoreError::OpenRootAuthority)?;
+            self.require_owned(&state_directory, state, &self.state_root)?;
+            self.require_owned(&directory, release, &self.root)?;
+            if state.device() == release.device() && state.inode() == release.inode() {
+                return Err(InstallStoreError::OverlappingRoots);
+            }
+        }
+        let root_anchors = if self.root == self.state_root {
+            None
+        } else {
+            Some((
+                gate.open_public_directory(&self.root)
+                    .map_err(InstallStoreError::OpenPublicDirectory)?,
+                gate.open_public_directory(&self.state_root)
+                    .map_err(InstallStoreError::OpenPublicDirectory)?,
+            ))
+        };
+        let lock = InstallLock {
             root: self.root.clone(),
+            state_root: self.state_root.clone(),
+            ownership: self.ownership.clone(),
             gate,
             directory,
-        })
+            state_directory,
+            root_anchors,
+        };
+        if self.root != self.state_root {
+            lock.validate_roots()?;
+        }
+        Ok(lock)
     }
 
     /// Acquire one user-scoped install lock before durably bootstrapping the
@@ -86,7 +201,16 @@ impl InstallStore {
     /// lock contention, ancestry drift, unsafe existing components, directory
     /// creation failure, or failure to retain the final store inode.
     pub fn acquire_anchored_lock(&self, anchor: &Path) -> Result<InstallLock, InstallStoreError> {
+        self.acquire_anchored_lock_after_bootstrap(anchor, || {})
+    }
+
+    fn acquire_anchored_lock_after_bootstrap(
+        &self,
+        anchor: &Path,
+        after_bootstrap: impl FnOnce(),
+    ) -> Result<InstallLock, InstallStoreError> {
         validate_bootstrap_root(&self.root)?;
+        validate_bootstrap_root(&self.state_root)?;
         validate_bootstrap_root(anchor)?;
         let relative =
             self.root
@@ -101,12 +225,24 @@ impl InstallStore {
                 anchor: anchor.to_path_buf(),
             });
         }
+        let state_relative = self.state_root.strip_prefix(anchor).map_err(|_| {
+            InstallStoreError::RootOutsideAnchor {
+                root: self.state_root.clone(),
+                anchor: anchor.to_path_buf(),
+            }
+        })?;
         let anchor_preflight =
             ReadOnlyDirectoryAuthority::open(anchor).map_err(InstallStoreError::BootstrapRoot)?;
         let anchor_metadata = anchor_preflight
             .metadata()
             .map_err(InstallStoreError::BootstrapRoot)?;
-        require_safe_bootstrap_directory(anchor_metadata, anchor)?;
+        require_safe_bootstrap_directory(
+            &self.ownership,
+            &anchor_preflight,
+            anchor_metadata,
+            anchor,
+            DirectoryRole::Ancestor,
+        )?;
         let bootstrap =
             ExclusiveDirectory::try_acquire(anchor, Path::new(ANCHORED_INSTALL_LOCK_FILE))
                 .map_err(InstallStoreError::AcquireLock)?
@@ -118,26 +254,64 @@ impl InstallStore {
                 .and_then(|directory| directory.metadata())
                 .map_err(InstallStoreError::OpenRootAuthority)?,
         )?;
-        let bootstrapped = bootstrap_store_root(&bootstrap, anchor, relative)?;
-        let gate = ExclusiveDirectory::try_acquire(&self.root, Path::new(INSTALL_LOCK_FILE))
+        let bootstrapped = bootstrap_store_root(&self.ownership, &bootstrap, anchor, relative)?;
+        let state_bootstrapped =
+            bootstrap_store_root(&self.ownership, &bootstrap, anchor, state_relative)?;
+        after_bootstrap();
+        bootstrapped
+            .validate_ancestry()
+            .map_err(InstallStoreError::BootstrapRoot)?;
+        state_bootstrapped
+            .validate_ancestry()
+            .map_err(InstallStoreError::BootstrapRoot)?;
+        let gate = ExclusiveDirectory::try_acquire(&self.state_root, Path::new(INSTALL_LOCK_FILE))
             .map_err(InstallStoreError::AcquireLock)?
             .ok_or(InstallStoreError::LockContended)?;
-        let directory = gate
-            .root_directory()
-            .map_err(InstallStoreError::OpenRootAuthority)?;
+        let lock = self.retain_roots(gate)?;
         require_same_directory_identity(
-            directory
+            lock.directory
                 .metadata()
                 .map_err(InstallStoreError::OpenRootAuthority)?,
             bootstrapped
                 .metadata()
                 .map_err(InstallStoreError::BootstrapRoot)?,
         )?;
-        Ok(InstallLock {
-            root: self.root.clone(),
-            gate,
-            directory,
-        })
+        require_same_directory_identity(
+            lock.state_directory
+                .metadata()
+                .map_err(InstallStoreError::OpenRootAuthority)?,
+            state_bootstrapped
+                .metadata()
+                .map_err(InstallStoreError::BootstrapRoot)?,
+        )?;
+        Ok(lock)
+    }
+
+    /// Take the per-user bootstrap lock every installer takes before it
+    /// bootstraps a store beneath `anchor`, without creating any store.
+    ///
+    /// # Errors
+    /// Returns an error for an unsafe anchor, contention, or lock failure.
+    pub(crate) fn acquire_bootstrap_gate(
+        &self,
+        anchor: &Path,
+    ) -> Result<ExclusiveDirectory, InstallStoreError> {
+        validate_bootstrap_root(anchor)?;
+        let preflight =
+            ReadOnlyDirectoryAuthority::open(anchor).map_err(InstallStoreError::BootstrapRoot)?;
+        let metadata = preflight
+            .metadata()
+            .map_err(InstallStoreError::BootstrapRoot)?;
+        require_safe_bootstrap_directory(
+            &self.ownership,
+            &preflight,
+            metadata,
+            anchor,
+            DirectoryRole::Ancestor,
+        )?;
+        ExclusiveDirectory::try_acquire(anchor, Path::new(ANCHORED_INSTALL_LOCK_FILE))
+            .map_err(InstallStoreError::AcquireLock)?
+            .ok_or(InstallStoreError::LockContended)
     }
 
     pub fn active_unit(&self, lock: &InstallLock) -> Result<Option<UnitId>, InstallStoreError> {
@@ -192,7 +366,7 @@ impl InstallStore {
         &self,
         lock: &InstallLock,
     ) -> Result<Option<InstallJournalV1>, InstallStoreError> {
-        let directory = self.authority(lock)?;
+        let directory = self.state_authority(lock)?;
         let mut file = match directory.open_file(Path::new(INSTALL_JOURNAL_FILE)) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -227,7 +401,7 @@ impl InstallStore {
         journal: &InstallJournalV1,
         lock: &InstallLock,
     ) -> Result<(), InstallStoreError> {
-        let directory = self.authority(lock)?;
+        let directory = self.state_authority(lock)?;
         journal
             .validate()
             .map_err(InstallStoreError::InvalidJournal)?;
@@ -251,10 +425,21 @@ impl InstallStore {
         &self,
         lock: &'a InstallLock,
     ) -> Result<&'a DirectoryAuthority, InstallStoreError> {
-        if lock.root != self.root {
+        if lock.root != self.root || lock.state_root != self.state_root {
             return Err(InstallStoreError::WrongLock);
         }
+        if self.root != self.state_root {
+            lock.validate_roots()?;
+        }
         Ok(&lock.directory)
+    }
+
+    fn state_authority<'a>(
+        &self,
+        lock: &'a InstallLock,
+    ) -> Result<&'a DirectoryAuthority, InstallStoreError> {
+        self.authority(lock)?;
+        Ok(&lock.state_directory)
     }
 
     pub(crate) fn units_authority(
@@ -335,6 +520,7 @@ fn validate_bootstrap_root(root: &Path) -> Result<(), InstallStoreError> {
 }
 
 fn bootstrap_store_root(
+    ownership: &OwnershipPolicy,
     gate: &ExclusiveDirectory,
     anchor: &Path,
     relative: &Path,
@@ -354,24 +540,38 @@ fn bootstrap_store_root(
             .map_err(InstallStoreError::BootstrapRoot)?,
     )?;
     require_safe_bootstrap_directory(
+        ownership,
+        &authority,
         authority
             .metadata()
             .map_err(InstallStoreError::BootstrapRoot)?,
         anchor,
+        DirectoryRole::Ancestor,
     )?;
     let mut current = anchor.to_path_buf();
-    for component in relative.components() {
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
         let std::path::Component::Normal(name) = component else {
             return Err(InstallStoreError::InvalidBootstrapRoot(
                 anchor.join(relative),
             ));
         };
         current.push(name);
+        // Intermediate components are shared ancestors; only the store root
+        // itself is installer-owned.
+        let role = if components.peek().is_some() {
+            DirectoryRole::Ancestor
+        } else {
+            DirectoryRole::InstallerOwned
+        };
         authority = match authority.open_child_directory(Path::new(name)) {
             Ok(child) => {
                 require_safe_bootstrap_directory(
+                    ownership,
+                    &child,
                     child.metadata().map_err(InstallStoreError::BootstrapRoot)?,
                     &current,
+                    role,
                 )?;
                 child
             }
@@ -385,18 +585,15 @@ fn bootstrap_store_root(
 }
 
 fn require_safe_bootstrap_directory(
+    ownership: &OwnershipPolicy,
+    directory: &impl AclProbe,
     metadata: DirectoryEntryMetadata,
     path: &Path,
+    role: DirectoryRole,
 ) -> Result<(), InstallStoreError> {
-    if metadata.kind() != DirectoryEntryKind::Directory
-        || metadata.mode() & 0o700 != 0o700
-        || metadata.mode() & 0o022 != 0
-    {
-        return Err(InstallStoreError::UnsafeBootstrapDirectory(
-            path.to_path_buf(),
-        ));
-    }
-    Ok(())
+    ownership
+        .require_owner_only(directory, metadata, role)
+        .map_err(|refusal| InstallStoreError::UnsafeBootstrapDirectory(path.to_path_buf(), refusal))
 }
 
 fn require_same_directory_identity(
@@ -416,11 +613,59 @@ fn require_same_directory_identity(
 #[derive(Debug)]
 pub struct InstallLock {
     root: PathBuf,
+    state_root: PathBuf,
+    ownership: OwnershipPolicy,
+    state_directory: DirectoryAuthority,
+    root_anchors: Option<(PublicDirectoryAuthority, PublicDirectoryAuthority)>,
     gate: ExclusiveDirectory,
     directory: DirectoryAuthority,
 }
 
 impl InstallLock {
+    /// Directory writer policy inherited from the store that acquired this lock.
+    #[must_use]
+    pub fn ownership_policy(&self) -> &OwnershipPolicy {
+        &self.ownership
+    }
+
+    pub(crate) fn guards_roots(&self, release_root: &Path, state_root: &Path) -> bool {
+        self.root == release_root && self.state_root == state_root
+    }
+    fn validate_roots(&self) -> Result<(), InstallStoreError> {
+        if let Some((release, state)) = &self.root_anchors {
+            release
+                .validate_ancestry()
+                .map_err(InstallStoreError::OpenPublicDirectory)?;
+            state
+                .validate_ancestry()
+                .map_err(InstallStoreError::OpenPublicDirectory)?;
+        }
+        for (path, retained) in [
+            (&self.root, &self.directory),
+            (&self.state_root, &self.state_directory),
+        ] {
+            let current = self
+                .gate
+                .open_public_directory(path)
+                .map_err(InstallStoreError::OpenPublicDirectory)?;
+            let retained_metadata = retained
+                .metadata()
+                .map_err(InstallStoreError::OpenRootAuthority)?;
+            let current_metadata = current
+                .metadata()
+                .map_err(InstallStoreError::OpenPublicDirectory)?;
+            require_same_directory_identity(retained_metadata, current_metadata)?;
+            require_safe_bootstrap_directory(
+                &self.ownership,
+                &current,
+                current_metadata,
+                path,
+                DirectoryRole::InstallerOwned,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Open the canonical store root only when it still names this lock's
     /// retained store inode.
     ///
@@ -431,6 +676,9 @@ impl InstallLock {
     pub fn open_store_public_directory(
         &self,
     ) -> Result<PublicDirectoryAuthority, InstallStoreError> {
+        if self.root != self.state_root {
+            self.validate_roots()?;
+        }
         let public = self
             .gate
             .open_public_directory(&self.root)
@@ -459,6 +707,9 @@ impl InstallLock {
         &self,
         directory: &Path,
     ) -> Result<PublicDirectoryAuthority, InstallStoreError> {
+        if self.root != self.state_root {
+            self.validate_roots()?;
+        }
         self.gate
             .open_public_directory(directory)
             .map_err(InstallStoreError::OpenPublicDirectory)
@@ -467,6 +718,8 @@ impl InstallLock {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InstallStoreError {
+    #[error("release and state roots overlap or alias the same directory")]
+    OverlappingRoots,
     #[error("failed to create install state directory: {0}")]
     CreateRoot(io::Error),
     #[error("failed to acquire install transaction authority: {0}")]
@@ -485,8 +738,8 @@ pub enum InstallStoreError {
         anchor.display()
     )]
     RootOutsideAnchor { root: PathBuf, anchor: PathBuf },
-    #[error("install store bootstrap directory is not safely owned: {}", .0.display())]
-    UnsafeBootstrapDirectory(PathBuf),
+    #[error("install store directory {path} is not writable only by you: {refusal}", path = .0.display(), refusal = .1)]
+    UnsafeBootstrapDirectory(PathBuf, DirectoryRefusal),
     #[error("canonical install store path no longer names the retained store inode")]
     StoreRootIdentityMismatch,
     #[error("failed to bootstrap the retained install root: {0}")]
@@ -671,7 +924,7 @@ mod tests {
 
             assert!(matches!(
                 store.acquire_anchored_lock(&home),
-                Err(super::InstallStoreError::UnsafeBootstrapDirectory(ref path))
+                Err(super::InstallStoreError::UnsafeBootstrapDirectory(ref path, _))
                     if path == &unsafe_path
             ));
             assert!(!root.join("install.lock").exists());
@@ -681,3 +934,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "store_acquisition_tests.rs"]
+mod acquisition_tests;

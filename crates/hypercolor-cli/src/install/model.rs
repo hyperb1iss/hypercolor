@@ -9,7 +9,13 @@ use serde::{Deserialize, Serialize};
 
 pub const INSTALL_JOURNAL_SCHEMA_VERSION: u32 = 3;
 pub const MAX_INSTALL_JOURNAL_BYTES: usize = 64 * 1024;
+/// Journal bound for managed split-root stores, which only managed-aware
+/// installers read. Their Linux records embed every recorded root several
+/// times and serialize bytes as JSON integers.
+pub const MAX_MANAGED_INSTALL_JOURNAL_BYTES: usize = 256 * 1024;
 pub const MAX_PLATFORM_TRANSACTION_RECORD_BYTES: usize = 12 * 1024;
+/// Linux record bound sized for the longest supported recorded roots.
+pub const MAX_LINUX_TRANSACTION_RECORD_BYTES: usize = 48 * 1024;
 pub const MAX_PLATFORM_OWNER_RECEIPT_BYTES: usize = 1_024;
 pub const MAX_LAYOUT_OPERATIONS: u16 = 256;
 
@@ -329,10 +335,12 @@ impl PlatformTransactionRecord {
         if payload.is_empty() {
             return Err(InstallModelError::EmptyPlatformRecord);
         }
-        if payload.len() > MAX_PLATFORM_TRANSACTION_RECORD_BYTES {
-            return Err(InstallModelError::PlatformRecordTooLarge {
-                limit: MAX_PLATFORM_TRANSACTION_RECORD_BYTES,
-            });
+        let limit = match self {
+            Self::Linux { .. } => MAX_LINUX_TRANSACTION_RECORD_BYTES,
+            Self::Macos { .. } => MAX_PLATFORM_TRANSACTION_RECORD_BYTES,
+        };
+        if payload.len() > limit {
+            return Err(InstallModelError::PlatformRecordTooLarge { limit });
         }
         Ok(())
     }

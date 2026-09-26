@@ -12,11 +12,14 @@ Not sure which path fits? Read [Choose your install](@/guide/choose-your-install
 ## Linux: prebuilt installer
 
 The fastest path on any Linux distribution. The script downloads a release
-tarball from GitHub, verifies its SHA256 checksum, installs `hypercolor`,
-`hypercolor-daemon`, `hypercolor-app`, `hypercolor-tui`, and `hypercolor-open`
-to `~/.local/bin`, and sets up a systemd user service. It never asks for
-`sudo`, so it does not apply the udev rules or the `i2c-dev` setup that USB and
-SMBus device access need; see [udev rules](#linux-udev-rules-usb-and-input-device-access) below.
+tarball from GitHub, verifies its SHA256 checksum, installs the release under
+`~/.local/share/hypercolor/releases`, links `hypercolor`, `hypercolor-daemon`,
+`hypercolor-app`, `hypercolor-tui`, and `hypercolor-open` into `~/.local/bin`,
+and sets up a systemd user service. [How Linux release installs are
+managed](@/guide/linux-release-installs.md) covers the full layout. It never
+asks for `sudo`, so it does not apply the udev rules or the `i2c-dev` setup
+that USB and SMBus device access need; see [udev
+rules](#linux-udev-rules-usb-and-input-device-access) below.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
@@ -29,11 +32,12 @@ any tagged release with `--version` (replace `vX.Y.Z` with the tag):
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version vX.Y.Z
 ```
 
-On Linux the install root is fixed. `HYPERCOLOR_INSTALL_PREFIX` must be
+On Linux the command prefix is fixed. `HYPERCOLOR_INSTALL_PREFIX` must be
 `$HOME/.local` and `HYPERCOLOR_INSTALL_DIR` must be `$HOME/.local/bin`; the
-script aborts on any other value, before downloading anything, so the systemd
-unit's `%h/.local/bin/hypercolor-daemon` path always resolves. On macOS both
-variables are free to point somewhere else.
+script aborts on any other value, before downloading anything. Releases follow
+`XDG_DATA_HOME` and update state follows `XDG_STATE_HOME` when the first
+install records them. On macOS both variables are free to point somewhere
+else.
 
 {% <callout type="warning"> %}
 After you install the udev rules, **re-plug your USB devices or log out and
@@ -73,17 +77,19 @@ The PKGBUILD installs binaries, the systemd user service, shell completions, and
 
 USB and input device access on Linux requires udev rules. The `.deb` and AUR
 packages place them for you. If you used the prebuilt one-liner, install the
-copies retained under the active release directory:
+copies retained in the active release, which `~/.local/bin/hypercolor` links
+into:
 
 ```bash
+release="$(dirname "$(dirname "$(readlink -f "$HOME/.local/bin/hypercolor")")")"
 sudo install -Dm644 \
-  "$HOME/.local/lib/hypercolor/active/lib/udev/rules.d/99-hypercolor.rules" \
+  "$release/lib/udev/rules.d/99-hypercolor.rules" \
   /etc/udev/rules.d/99-hypercolor.rules
 sudo install -Dm644 \
-  "$HOME/.local/lib/hypercolor/active/lib/udev/rules.d/70-hypercolor-input.rules" \
+  "$release/lib/udev/rules.d/70-hypercolor-input.rules" \
   /etc/udev/rules.d/70-hypercolor-input.rules
 sudo install -Dm644 \
-  "$HOME/.local/lib/hypercolor/active/etc/modules-load.d/i2c-dev.conf" \
+  "$release/etc/modules-load.d/i2c-dev.conf" \
   /etc/modules-load.d/i2c-dev.conf
 sudo modprobe i2c-dev
 sudo udevadm control --reload-rules
