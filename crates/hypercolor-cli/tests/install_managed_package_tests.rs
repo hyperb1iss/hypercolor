@@ -10,9 +10,9 @@ use std::path::Path;
 
 use hypercolor_cli::install::{
     CompatibilityDecision, CompatibilityRefusal, DeclaredCompatibility, InstallLock, InstallStore,
-    MigrationMode, ReleasePayloadError, UnitId, UnitRecord, copy_installed_release_unit,
-    declared_compatibility_from_manifest, evaluate_data_compatibility, read_declared_compatibility,
-    retain_linux_unit, stage_release_payload,
+    MigrationMode, ObservedStores, ReleasePayloadError, UnitId, UnitRecord,
+    copy_installed_release_unit, declared_compatibility_from_manifest, evaluate_data_compatibility,
+    read_declared_compatibility, retain_linux_unit, stage_release_payload,
 };
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -552,7 +552,10 @@ fn a_compatible_pair_activates_automatically() {
         backward("library", 1, 2, 2),
         backward("scenes", 2, 2, 2),
     ]);
-    let high_water = BTreeMap::from([("library".to_owned(), 2)]);
+    let high_water = ObservedStores {
+        high_water: BTreeMap::from([("library".to_owned(), 2)]),
+        ..ObservedStores::default()
+    };
     assert_eq!(
         evaluate_data_compatibility(&running, &target, &high_water),
         CompatibilityDecision::Automatic
@@ -566,7 +569,7 @@ fn a_schema_unsafe_predecessor_is_refused() {
     let running = declared(vec![backward("library", 1, 2, 2)]);
     let target = declared(vec![backward("library", 2, 3, 3)]);
     assert_eq!(
-        evaluate_data_compatibility(&running, &target, &BTreeMap::new()),
+        evaluate_data_compatibility(&running, &target, &ObservedStores::default()),
         CompatibilityDecision::Manual(vec![CompatibilityRefusal::RollbackUnreadable {
             store: "library".to_owned(),
             written_schema: 3,
@@ -577,7 +580,7 @@ fn a_schema_unsafe_predecessor_is_refused() {
     // The same N+1 is safe to reach from a release that already reads 3.
     let newer_running = declared(vec![backward("library", 1, 3, 2)]);
     assert_eq!(
-        evaluate_data_compatibility(&newer_running, &target, &BTreeMap::new()),
+        evaluate_data_compatibility(&newer_running, &target, &ObservedStores::default()),
         CompatibilityDecision::Automatic
     );
 }
@@ -589,7 +592,10 @@ fn the_high_water_mark_refuses_a_target_that_cannot_read_what_ran_before() {
     // N-1 only ever wrote 4.
     let n_minus_1 = declared(vec![backward("library", 3, 5, 4)]);
     let n_minus_2 = declared(vec![backward("library", 3, 4, 4)]);
-    let high_water = BTreeMap::from([("library".to_owned(), 5)]);
+    let high_water = ObservedStores {
+        high_water: BTreeMap::from([("library".to_owned(), 5)]),
+        ..ObservedStores::default()
+    };
     assert_eq!(
         evaluate_data_compatibility(&n_minus_1, &n_minus_2, &high_water),
         CompatibilityDecision::Manual(vec![CompatibilityRefusal::HighWaterUnreadable {
@@ -603,7 +609,10 @@ fn the_high_water_mark_refuses_a_target_that_cannot_read_what_ran_before() {
         evaluate_data_compatibility(
             &n_minus_1,
             &n_minus_2,
-            &BTreeMap::from([("library".to_owned(), 4)])
+            &ObservedStores {
+                high_water: BTreeMap::from([("library".to_owned(), 4)]),
+                ..ObservedStores::default()
+            }
         ),
         CompatibilityDecision::Automatic
     );
@@ -616,7 +625,7 @@ fn the_running_release_counts_toward_the_high_water_mark() {
     let running = declared(vec![backward("library", 1, 3, 2)]);
     let target = declared(vec![backward("library", 3, 3, 3)]);
     assert_eq!(
-        evaluate_data_compatibility(&running, &target, &BTreeMap::new()),
+        evaluate_data_compatibility(&running, &target, &ObservedStores::default()),
         CompatibilityDecision::Manual(vec![CompatibilityRefusal::HighWaterUnreadable {
             store: "library".to_owned(),
             high_water: 2,
@@ -635,7 +644,7 @@ fn staged_and_manual_migrations_never_activate_automatically() {
     ] {
         let target = declared(vec![store_declaration("library", 2, 3, 3, mode)]);
         assert_eq!(
-            evaluate_data_compatibility(&running, &target, &BTreeMap::new()),
+            evaluate_data_compatibility(&running, &target, &ObservedStores::default()),
             CompatibilityDecision::Manual(vec![CompatibilityRefusal::NotBackwardCompatible {
                 store: "library".to_owned(),
                 migration_mode: expected,
@@ -652,15 +661,15 @@ fn missing_metadata_on_either_side_is_manual() {
         reason: "schema_version 2".to_owned(),
     };
     assert_eq!(
-        evaluate_data_compatibility(&undeclared, &current, &BTreeMap::new()),
+        evaluate_data_compatibility(&undeclared, &current, &ObservedStores::default()),
         CompatibilityDecision::Manual(vec![CompatibilityRefusal::RunningUndeclared])
     );
     assert_eq!(
-        evaluate_data_compatibility(&current, &unrecognized, &BTreeMap::new()),
+        evaluate_data_compatibility(&current, &unrecognized, &ObservedStores::default()),
         CompatibilityDecision::Manual(vec![CompatibilityRefusal::TargetUndeclared])
     );
     assert_eq!(
-        evaluate_data_compatibility(&undeclared, &unrecognized, &BTreeMap::new()),
+        evaluate_data_compatibility(&undeclared, &unrecognized, &ObservedStores::default()),
         CompatibilityDecision::Manual(vec![
             CompatibilityRefusal::TargetUndeclared,
             CompatibilityRefusal::RunningUndeclared,
@@ -680,7 +689,10 @@ fn stores_only_one_side_declares_do_not_block() {
         backward("library", 1, 2, 2),
         backward("layouts", 1, 1, 1),
     ]);
-    let high_water = BTreeMap::from([("legacy-profiles".to_owned(), 0)]);
+    let high_water = ObservedStores {
+        high_water: BTreeMap::from([("legacy-profiles".to_owned(), 0)]),
+        ..ObservedStores::default()
+    };
     assert_eq!(
         evaluate_data_compatibility(&running, &target, &high_water),
         CompatibilityDecision::Automatic
@@ -721,8 +733,35 @@ fn the_repository_inventory_is_a_valid_declaration() {
         .collect();
     assert_eq!(names, expected);
     assert_eq!(
-        evaluate_data_compatibility(&compatibility, &compatibility, &BTreeMap::new()),
+        evaluate_data_compatibility(&compatibility, &compatibility, &ObservedStores::default()),
         CompatibilityDecision::Automatic,
         "a release is always compatible with itself"
+    );
+}
+
+#[test]
+fn old_data_still_on_disk_bounds_the_target_from_below() {
+    // The configuration still holds schema 4 (upgraded in memory only), so
+    // a target that reads only 5 cannot load it, though every release that
+    // ran writes 5.
+    let running = declared(vec![backward("config", 4, 5, 5)]);
+    let target = declared(vec![backward("config", 5, 5, 5)]);
+    let observed = ObservedStores {
+        on_disk: BTreeMap::from([("config".to_owned(), 4)]),
+        ..ObservedStores::default()
+    };
+    assert_eq!(
+        evaluate_data_compatibility(&running, &target, &observed),
+        CompatibilityDecision::Manual(vec![CompatibilityRefusal::OnDiskUnreadable {
+            store: "config".to_owned(),
+            schema: 4,
+            readable_schema_min: 5,
+            readable_schema_max: 5,
+        }])
+    );
+    assert_eq!(
+        evaluate_data_compatibility(&running, &target, &ObservedStores::default()),
+        CompatibilityDecision::Automatic,
+        "without the on-disk report the mark alone cannot see it"
     );
 }

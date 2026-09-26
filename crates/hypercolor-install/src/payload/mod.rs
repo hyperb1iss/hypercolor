@@ -18,7 +18,7 @@ pub use macos::{MacosReleaseProvenance, bind_macos_release_provenance};
 pub use managed::{
     CompatibilityDecision, CompatibilityRefusal, DeclaredCompatibility, DurableStoreDeclaration,
     LINUX_USER_TARBALL_OWNER, MANAGED_LAUNCHER_CONTRACT, MANAGED_PACKAGE_SCHEMA_VERSION,
-    MAX_DURABLE_STORES, ManagedComponent, ManagedPackage, MigrationMode,
+    MAX_DURABLE_STORES, ManagedComponent, ManagedPackage, MigrationMode, ObservedStores,
     evaluate_data_compatibility,
 };
 pub use manifest::{

@@ -269,6 +269,19 @@ class ReleaseArtifactTests(unittest.TestCase):
         result = self.repack()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("a macos-arm64 release cannot declare it", result.stderr)
+        if REAL_CLI:
+            validated = self.rust_validate()
+            self.assertNotEqual(validated.returncode, 0)
+            self.assertIn("a macos-arm64 release cannot declare it", validated.stderr)
+
+    @unittest.skipUnless(REAL_CLI, "HYPERCOLOR_RELEASE_TEST_CLI is not set")
+    def test_the_linux_installer_refuses_a_genuine_macos_release(self):
+        manifest = self.relabel("macos-arm64", "aarch64-apple-darwin")
+        del manifest["managed_package"]
+        self.save_manifest(manifest)
+        validated = self.rust_validate()
+        self.assertNotEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+        self.assertIn("must declare its managed_package contract", validated.stderr)
 
     def test_duplicated_keys_are_rejected(self):
         text = json.dumps(self.manifest(), indent=2)

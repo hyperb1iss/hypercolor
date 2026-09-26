@@ -225,6 +225,13 @@ pub enum CompatibilityRefusal {
     TargetUndeclared,
     /// The running release carries no readable declaration.
     RunningUndeclared,
+    /// The store holds data now at a schema the target does not read.
+    OnDiskUnreadable {
+        store: String,
+        schema: u32,
+        readable_schema_min: u32,
+        readable_schema_max: u32,
+    },
     /// Data already on disk is outside what the target reads.
     HighWaterUnreadable {
         store: String,
@@ -256,6 +263,16 @@ impl std::fmt::Display for CompatibilityRefusal {
             Self::RunningUndeclared => {
                 formatter.write_str("the running release declares no durable-data compatibility")
             }
+            Self::OnDiskUnreadable {
+                store,
+                schema,
+                readable_schema_min,
+                readable_schema_max,
+            } => write!(
+                formatter,
+                "store {store} holds schema {schema} now, outside the target's \
+                 {readable_schema_min}..={readable_schema_max}"
+            ),
             Self::HighWaterUnreadable {
                 store,
                 high_water,
@@ -287,15 +304,28 @@ impl std::fmt::Display for CompatibilityRefusal {
     }
 }
 
+/// What is known about the data already in each durable store.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObservedStores {
+    /// The highest schema any release is known to have written, per store.
+    pub high_water: BTreeMap<String, u32>,
+    /// The schema each store holds on disk now, per store, as the daemon's
+    /// startup report found it. An older schema can outlive the releases
+    /// that wrote it (a configuration upgraded in memory is rewritten only
+    /// when something saves it), so the high-water mark alone does not
+    /// bound it from below.
+    pub on_disk: BTreeMap<String, u32>,
+}
+
 /// Decide whether `target` may replace `running` without a person.
 ///
-/// `high_water` maps a store name to the highest schema any release is
-/// known to have written into it. The running release's own written schema
-/// always counts toward the mark, whatever the caller recorded, since the
-/// running release is writing it now. Every condition must hold:
+/// The running release's own written schema always counts toward each
+/// store's high-water mark, whatever `observed` recorded, since the running
+/// release is writing it now. Every condition must hold:
 ///
 /// 1. For every store the target declares that has a high-water mark, the
-///    target reads that schema.
+///    target reads that schema; and it reads the schema the store holds on
+///    disk now, when that is known.
 /// 2. The running release reads what the target writes, for every store
 ///    both declare, so the in-transaction rollback to it is safe. The
 ///    running release's declaration is authoritative about itself.
@@ -307,7 +337,7 @@ impl std::fmt::Display for CompatibilityRefusal {
 pub fn evaluate_data_compatibility(
     running: &DeclaredCompatibility,
     target: &DeclaredCompatibility,
-    high_water: &BTreeMap<String, u32>,
+    observed: &ObservedStores,
 ) -> CompatibilityDecision {
     let mut refusals = Vec::new();
     let (Some(running), Some(target)) = (running.declared(), target.declared()) else {
@@ -320,7 +350,17 @@ pub fn evaluate_data_compatibility(
         return CompatibilityDecision::Manual(refusals);
     };
     for store in target.stores() {
-        let recorded = high_water.get(store.name()).copied();
+        if let Some(&schema) = observed.on_disk.get(store.name())
+            && !store.reads(schema)
+        {
+            refusals.push(CompatibilityRefusal::OnDiskUnreadable {
+                store: store.name().to_owned(),
+                schema,
+                readable_schema_min: store.readable_schema_min(),
+                readable_schema_max: store.readable_schema_max(),
+            });
+        }
+        let recorded = observed.high_water.get(store.name()).copied();
         let running_writes = running
             .store(store.name())
             .map(DurableStoreDeclaration::written_schema);

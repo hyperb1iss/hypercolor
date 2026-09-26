@@ -60,6 +60,8 @@ fn execute_linux(args: &InstallReleaseArgs) -> Result<()> {
         &args.expected_manifest_sha256,
     )
     .context("release candidate validation failed before install bootstrap")?;
+    require_linux_managed_package(&source)
+        .context("release candidate validation failed before install bootstrap")?;
     if args.validate_only {
         return Ok(());
     }
@@ -71,6 +73,39 @@ fn execute_linux(args: &InstallReleaseArgs) -> Result<()> {
         &source,
         &candidate_executable,
     )
+}
+
+/// The Linux installer only installs a release that declares the managed
+/// package contract it runs under, whatever platform its manifest names.
+#[cfg(target_os = "linux")]
+fn require_linux_managed_package(
+    source: &hypercolor_platform_fs::ReadOnlyDirectoryAuthority,
+) -> Result<()> {
+    use std::io::Read as _;
+
+    let mut manifest = source
+        .open_regular_file(Path::new("manifest.json"))
+        .context("failed to open the candidate manifest")?;
+    let mut bytes = Vec::new();
+    manifest
+        .file_mut()
+        .take(crate::install::MAX_RELEASE_MANIFEST_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .context("failed to read the candidate manifest")?;
+    let declared = crate::install::declared_compatibility_from_manifest(bytes)?;
+    match declared.declared() {
+        Some(package)
+            if package.launcher_contract() == crate::install::MANAGED_LAUNCHER_CONTRACT =>
+        {
+            Ok(())
+        }
+        Some(package) => bail!(
+            "the candidate runs under launcher contract {}, which this installer does not \
+             support",
+            package.launcher_contract()
+        ),
+        None => bail!("a Linux release must declare its managed_package contract"),
+    }
 }
 
 pub(crate) fn parse_probation_seconds(value: &str) -> Result<u64, String> {
