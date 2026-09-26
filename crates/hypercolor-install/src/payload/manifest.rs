@@ -192,9 +192,11 @@ impl RawManifest {
         }
         validate_asset_counts(&members, &self.assets)?;
         let compatibility = read_managed_package(
-            self.managed_package,
+            &bytes,
+            self.managed_package.as_ref(),
+            &self.platform,
+            &self.rust_target,
             policy,
-            self.platform.starts_with("linux-"),
             &members,
         )?;
 

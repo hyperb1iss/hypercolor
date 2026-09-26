@@ -242,14 +242,14 @@ fn missing_wrong_and_extra_components_are_refused() {
             |components| {
                 components.remove("bundled_effects");
             },
-            "must name exactly",
+            "missing field `bundled_effects`",
         ),
         (
             "extra",
             |components| {
                 components.insert("app".into(), json!("bin/hypercolor-app"));
             },
-            "must name exactly",
+            "unknown field `app`",
         ),
         (
             "wrong executable",
@@ -302,12 +302,12 @@ fn unknown_contracts_fields_and_invalid_stores_are_refused_as_candidates() {
         (
             "unknown package field",
             |m| m["managed_package"]["channel"] = json!("beta"),
-            "unknown field \"channel\"",
+            "unknown field `channel`",
         ),
         (
             "unknown store field",
             |m| m["managed_package"]["compatibility"]["stores"][0]["note"] = json!("x"),
-            "unknown field \"note\"",
+            "unknown field `note`",
         ),
         (
             "unknown top-level field",
@@ -410,16 +410,99 @@ fn an_installed_release_whose_tree_changed_is_still_refused() {
     let lock = store.acquire_lock().expect("lock");
     let newer = installed_with_manifest(&store, &lock, |manifest| {
         manifest["future_field"] = json!(true);
-        for member in manifest["members"].as_array_mut().expect("members") {
-            if member["path"] == "bin/hypercolor-daemon" {
-                member["sha256"] = json!(sha256(b"another daemon"));
-            }
-        }
     });
+    retain_linux_unit(&store, &lock, &newer).expect("an unknown field alone is tolerated");
+
+    // Change one installed file's bytes, leaving the manifest exact.
+    let daemon = store.unit_path(&newer).join("bin/hypercolor-daemon");
+    let bin = daemon.parent().expect("bin").to_path_buf();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).expect("thaw bin");
+    fs::set_permissions(&daemon, fs::Permissions::from_mode(0o755)).expect("thaw daemon");
+    fs::write(&daemon, b"daemoN").expect("same size, other bytes");
+    fs::set_permissions(&daemon, fs::Permissions::from_mode(0o555)).expect("freeze daemon");
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o555)).expect("freeze bin");
+    let error = match retain_linux_unit(&store, &lock, &newer) {
+        Ok(_) => panic!("tolerating unknown fields never tolerates changed bytes"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("hypercolor-daemon"), "{error}");
+}
+
+#[test]
+fn only_a_macos_release_may_omit_the_block_and_only_linux_may_carry_it() {
+    let release = Release::new();
+    let (_parent, store) = new_store();
+    let lock = store.acquire_lock().expect("lock");
+    for (platform, target) in [
+        ("x86_64-unknown-linux-musl", "x86_64-unknown-linux-musl"),
+        ("Linux-amd64", "x86_64-unknown-linux-gnu"),
+        ("macos-arm64", "x86_64-unknown-linux-gnu"),
+        ("freebsd-amd64", "x86_64-unknown-freebsd"),
+    ] {
+        let mut manifest = release.manifest();
+        manifest["platform"] = json!(platform);
+        manifest["rust_target"] = json!(target);
+        manifest
+            .as_object_mut()
+            .expect("object")
+            .remove("managed_package");
+        let error = refusal(release.stage(&store, &lock, &manifest));
+        assert!(
+            error.contains("must declare its managed_package"),
+            "{platform} for {target}: {error}"
+        );
+    }
+    let mut macos = release.manifest();
+    macos["platform"] = json!("macos-arm64");
+    macos["rust_target"] = json!("aarch64-apple-darwin");
+    let error = refusal(release.stage(&store, &lock, &macos));
     assert!(
-        retain_linux_unit(&store, &lock, &newer).is_err(),
-        "tolerating unknown fields never tolerates changed bytes"
+        error.contains("a macos-arm64 release cannot declare it"),
+        "{error}"
     );
+}
+
+#[test]
+fn a_duplicated_key_inside_the_block_is_refused() {
+    let release = Release::new();
+    let (_parent, store) = new_store();
+    let lock = store.acquire_lock().expect("lock");
+    let manifest = serde_json::to_string_pretty(&release.manifest()).expect("encode");
+    let duplicated = manifest.replacen(
+        "\"owner\": \"linux-user-tarball\"",
+        "\"owner\": \"linux-user-tarball\",\n    \"owner\": \"linux-user-tarball\"",
+        1,
+    );
+    assert_ne!(duplicated, manifest, "the fixture has an owner key");
+    let path = release.root.path().join("manifest.json");
+    fs::write(&path, &duplicated).expect("write manifest");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("mode");
+    let unit = UnitId::new(sha256(duplicated.as_bytes())).expect("digest");
+    let candidate = File::open(release.root.path().join("bin/hypercolor")).expect("candidate");
+    let error = refusal(stage_release_payload(
+        &store,
+        &lock,
+        release.root.path(),
+        &candidate,
+        &unit,
+    ));
+    assert!(error.contains("duplicate field `owner`"), "{error}");
+}
+
+#[test]
+fn an_installed_block_with_fields_this_build_does_not_know_is_unrecognized() {
+    let (_parent, store) = new_store();
+    let lock = store.acquire_lock().expect("lock");
+    let newer = installed_with_manifest(&store, &lock, |manifest| {
+        manifest["managed_package"]["compatibility"]["stores"][0]["encryption"] = json!("aead");
+    });
+    let retained = retain_linux_unit(&store, &lock, &newer).expect("retained");
+    match read_declared_compatibility(&retained).expect("read") {
+        DeclaredCompatibility::Unrecognized { reason } => {
+            assert!(reason.contains("unknown field `encryption`"), "{reason}");
+        }
+        other => panic!("a partly understood declaration is never trusted: {other:?}"),
+    }
 }
 
 fn declared(stores: Vec<Value>) -> DeclaredCompatibility {
@@ -523,6 +606,23 @@ fn the_high_water_mark_refuses_a_target_that_cannot_read_what_ran_before() {
             &BTreeMap::from([("library".to_owned(), 4)])
         ),
         CompatibilityDecision::Automatic
+    );
+}
+
+#[test]
+fn the_running_release_counts_toward_the_high_water_mark() {
+    // No mark was recorded, but the running release writes library 2 right
+    // now; a target that reads only 3 cannot read the data on disk.
+    let running = declared(vec![backward("library", 1, 3, 2)]);
+    let target = declared(vec![backward("library", 3, 3, 3)]);
+    assert_eq!(
+        evaluate_data_compatibility(&running, &target, &BTreeMap::new()),
+        CompatibilityDecision::Manual(vec![CompatibilityRefusal::HighWaterUnreadable {
+            store: "library".to_owned(),
+            high_water: 2,
+            readable_schema_min: 3,
+            readable_schema_max: 3,
+        }])
     );
 }
 

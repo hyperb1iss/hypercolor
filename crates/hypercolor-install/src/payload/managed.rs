@@ -9,11 +9,19 @@
 //! own `name`, `version`, `platform` and `rust_target`, with the SHA-256 of
 //! the manifest bytes (the unit ID) as its digest.
 //!
-//! New Linux candidates must carry a complete block. An installed release
-//! is read tolerantly: one from before this contract, or one written by a
-//! newer contract this build cannot interpret, still retains and rolls back
-//! like any other unit, and only its data compatibility is unknown, which
-//! [`evaluate_data_compatibility`] always treats as manual.
+//! Every new candidate except a macOS release must carry a complete block,
+//! and only a Linux release may carry one. An installed release is read
+//! tolerantly: one from before this contract, or one whose block this
+//! build cannot read exactly (a newer schema, a field it does not know), is
+//! `Undeclared` or `Unrecognized`, never an error, so it still retains and
+//! rolls back, and [`evaluate_data_compatibility`] treats its data as
+//! manual. Only the block and new top-level fields are tolerated this way;
+//! the member inventory, binaries and asset counts stay exact.
+//!
+//! The installer's own records (the install journal, `installation.json`
+//! and the permanent locator) are not durable stores here. Their formats
+//! are part of the launcher contract a release declares, so a release that
+//! changes them declares another contract.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -282,7 +290,9 @@ impl std::fmt::Display for CompatibilityRefusal {
 /// Decide whether `target` may replace `running` without a person.
 ///
 /// `high_water` maps a store name to the highest schema any release is
-/// known to have written into it. Every condition must hold:
+/// known to have written into it. The running release's own written schema
+/// always counts toward the mark, whatever the caller recorded, since the
+/// running release is writing it now. Every condition must hold:
 ///
 /// 1. For every store the target declares that has a high-water mark, the
 ///    target reads that schema.
@@ -310,7 +320,11 @@ pub fn evaluate_data_compatibility(
         return CompatibilityDecision::Manual(refusals);
     };
     for store in target.stores() {
-        if let Some(&mark) = high_water.get(store.name())
+        let recorded = high_water.get(store.name()).copied();
+        let running_writes = running
+            .store(store.name())
+            .map(DurableStoreDeclaration::written_schema);
+        if let Some(mark) = recorded.max(running_writes)
             && !store.reads(mark)
         {
             refusals.push(CompatibilityRefusal::HighWaterUnreadable {
@@ -355,38 +369,52 @@ pub(super) enum ManagedPolicy {
     Installed,
 }
 
-const PACKAGE_FIELDS: [&str; 5] = [
-    "schema_version",
-    "owner",
-    "launcher_contract",
-    "components",
-    "compatibility",
-];
-const COMPATIBILITY_FIELDS: [&str; 1] = ["stores"];
-const STORE_FIELDS: [&str; 6] = [
-    "name",
-    "storage_format",
-    "readable_schema_min",
-    "readable_schema_max",
-    "written_schema",
-    "migration_mode",
-];
-
-/// The fields past `schema_version`, which [`parse_package`] checks first.
+/// The managed block, typed and exact. It is parsed from the manifest
+/// bytes themselves, so a duplicated key anywhere in it is refused, and
+/// every level refuses fields this build does not know.
 #[derive(Deserialize)]
-struct RawPackage {
-    owner: String,
-    launcher_contract: u32,
-    components: BTreeMap<String, String>,
-    compatibility: RawCompatibility,
+struct Envelope {
+    managed_package: Option<StrictPackage>,
 }
 
 #[derive(Deserialize)]
-struct RawCompatibility {
+#[serde(deny_unknown_fields)]
+struct StrictPackage {
+    schema_version: u32,
+    owner: String,
+    launcher_contract: u32,
+    components: StrictComponents,
+    compatibility: StrictCompatibility,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictComponents {
+    daemon: String,
+    cli: String,
+    ui: String,
+    bundled_effects: String,
+}
+
+impl StrictComponents {
+    fn path(&self, component: ManagedComponent) -> &str {
+        match component {
+            ManagedComponent::Daemon => &self.daemon,
+            ManagedComponent::Cli => &self.cli,
+            ManagedComponent::Ui => &self.ui,
+            ManagedComponent::BundledEffects => &self.bundled_effects,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictCompatibility {
     stores: Vec<RawStore>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawStore {
     name: String,
     storage_format: String,
@@ -396,26 +424,36 @@ struct RawStore {
     migration_mode: MigrationMode,
 }
 
-/// Read a manifest's `managed_package` value under `policy`.
+/// Read a manifest's `managed_package` block under `policy`.
 ///
-/// `linux` says whether the manifest names a Linux platform; only Linux
-/// candidates must carry the block. `members` is the validated inventory
-/// the components must bind to.
+/// `present` is the block as the manifest's field map holds it, `bytes`
+/// the manifest itself, and `members` the validated inventory the
+/// components must bind to. A candidate must carry a complete, current
+/// block unless it is a macOS release (a `macos-*` platform built for an
+/// `*-apple-darwin` target), and only a `linux-*` release may carry one.
+/// An installed release that declares nothing is undeclared, and one whose
+/// block this build cannot read exactly is unrecognized; neither is an
+/// error, so the release still retains and rolls back.
 pub(super) fn read_managed_package(
-    value: Option<Value>,
+    bytes: &[u8],
+    present: Option<&Value>,
+    platform: &str,
+    rust_target: &str,
     policy: ManagedPolicy,
-    linux: bool,
     members: &BTreeMap<String, ValidatedMember>,
 ) -> Result<DeclaredCompatibility, ReleasePayloadError> {
-    let Some(value) = value else {
-        if policy == ManagedPolicy::Candidate && linux {
-            return Err(invalid(
-                "a Linux release must declare its managed_package contract",
-            ));
+    let Some(value) = present else {
+        let macos = platform.starts_with("macos-") && rust_target.ends_with("-apple-darwin");
+        if policy == ManagedPolicy::Candidate && !macos {
+            return Err(invalid(format!(
+                "a Linux release must declare its managed_package contract \
+                 (only a macOS release may omit it; this one is {platform} for {rust_target})"
+            )));
         }
         return Ok(DeclaredCompatibility::Undeclared);
     };
-    match (policy, parse_package(value, policy, members)) {
+    let parsed = parse_package(bytes, value, platform, members);
+    match (policy, parsed) {
         (_, Ok(package)) => Ok(DeclaredCompatibility::Declared(package)),
         (ManagedPolicy::Candidate, Err(error)) => Err(error),
         (ManagedPolicy::Installed, Err(error)) => Ok(DeclaredCompatibility::Unrecognized {
@@ -425,10 +463,16 @@ pub(super) fn read_managed_package(
 }
 
 fn parse_package(
-    value: Value,
-    policy: ManagedPolicy,
+    bytes: &[u8],
+    value: &Value,
+    platform: &str,
     members: &BTreeMap<String, ValidatedMember>,
 ) -> Result<ManagedPackage, ReleasePayloadError> {
+    if !platform.starts_with("linux-") {
+        return Err(invalid(format!(
+            "managed_package is the Linux per-user contract; a {platform} release cannot declare it"
+        )));
+    }
     let schema = value
         .get("schema_version")
         .and_then(Value::as_u64)
@@ -438,23 +482,11 @@ fn parse_package(
             "managed_package.schema_version {schema} is not the supported {MANAGED_PACKAGE_SCHEMA_VERSION}"
         )));
     }
-    if policy == ManagedPolicy::Candidate {
-        require_known_fields(&value, &PACKAGE_FIELDS, "managed_package")?;
-        if let Some(compatibility) = value.get("compatibility") {
-            require_known_fields(
-                compatibility,
-                &COMPATIBILITY_FIELDS,
-                "managed_package.compatibility",
-            )?;
-            if let Some(Value::Array(stores)) = compatibility.get("stores") {
-                for store in stores {
-                    require_known_fields(store, &STORE_FIELDS, "a durable store declaration")?;
-                }
-            }
-        }
-    }
-    let raw: RawPackage = serde_json::from_value(value)
-        .map_err(|source| invalid(format!("managed_package is malformed: {source}")))?;
+    let raw = serde_json::from_slice::<Envelope>(bytes)
+        .map_err(|source| invalid(format!("managed_package is malformed: {source}")))?
+        .managed_package
+        .ok_or_else(|| invalid("managed_package is null"))?;
+    debug_assert_eq!(raw.schema_version, MANAGED_PACKAGE_SCHEMA_VERSION);
     if raw.owner != LINUX_USER_TARBALL_OWNER {
         return Err(invalid(format!(
             "managed_package.owner {:?} is not {LINUX_USER_TARBALL_OWNER:?}",
@@ -475,34 +507,12 @@ fn parse_package(
     })
 }
 
-fn require_known_fields(
-    value: &Value,
-    allowed: &[&str],
-    what: &str,
-) -> Result<(), ReleasePayloadError> {
-    let Value::Object(fields) = value else {
-        return Err(invalid(format!("{what} must be a JSON object")));
-    };
-    if let Some(unknown) = fields.keys().find(|key| !allowed.contains(&key.as_str())) {
-        return Err(invalid(format!("{what} has unknown field {unknown:?}")));
-    }
-    Ok(())
-}
-
 fn validate_components(
-    components: &BTreeMap<String, String>,
+    components: &StrictComponents,
     members: &BTreeMap<String, ValidatedMember>,
 ) -> Result<(), ReleasePayloadError> {
-    let names: BTreeSet<&str> = components.keys().map(String::as_str).collect();
-    let required: BTreeSet<&str> = ManagedComponent::ALL.iter().map(|c| c.name()).collect();
-    if names != required {
-        return Err(invalid(format!(
-            "managed_package.components must name exactly {}",
-            required.into_iter().collect::<Vec<_>>().join(", ")
-        )));
-    }
     for component in ManagedComponent::ALL {
-        let path = &components[component.name()];
+        let path = components.path(component);
         if path != component.path() {
             return Err(invalid(format!(
                 "managed_package component {} must be {}, not {path}",

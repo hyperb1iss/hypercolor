@@ -1996,6 +1996,16 @@ fn same_entry(left: &LinuxExactEntry, right: &LinuxExactEntry) -> bool {
 }
 
 fn write_release(root: &Path, version: &str, daemon: &[u8]) {
+    write_release_with(root, version, daemon, |_| {});
+}
+
+/// A release whose manifest `edit` changed before it was written.
+fn write_release_with(
+    root: &Path,
+    version: &str,
+    daemon: &[u8],
+    edit: impl FnOnce(&mut serde_json::Value),
+) {
     let directories = [
         "bin",
         "share",
@@ -2050,7 +2060,7 @@ fn write_release(root: &Path, version: &str, daemon: &[u8]) {
         }));
     }
     members.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
-    let manifest = serde_json::to_vec_pretty(&json!({
+    let mut manifest = json!({
         "name":"hypercolor","version":version,"platform":"linux-x86_64",
         "rust_target":"x86_64-unknown-linux-gnu",
         "binaries":["hypercolor-daemon","hypercolor","hypercolor-app","hypercolor-tui","hypercolor-open"],
@@ -2065,8 +2075,9 @@ fn write_release(root: &Path, version: &str, daemon: &[u8]) {
                 "migration_mode":"backward_compatible"}]},
         },
         "members":members,
-    }))
-    .expect("manifest JSON");
+    });
+    edit(&mut manifest);
+    let manifest = serde_json::to_vec_pretty(&manifest).expect("manifest JSON");
     fs::write(root.join("manifest.json"), manifest).expect("manifest");
     fs::set_permissions(
         root.join("manifest.json"),
@@ -3918,5 +3929,58 @@ fn a_library_caller_prepares_binds_writes_and_drives_its_own_transaction() {
     assert_eq!(
         fixture.journal().transaction_id.as_str(),
         "update-01JZQ3V8ZK6F2N7QK9X4W5T1AB"
+    );
+}
+
+#[test]
+fn the_linux_installer_refuses_a_release_without_a_managed_package_whatever_its_label() {
+    let (fixture, location) = managed_v1();
+    let root = fixture
+        .v1
+        .source
+        .parent()
+        .expect("fixture root")
+        .to_path_buf();
+    let source = root.join("source-labelled-macos");
+    write_release_with(&source, "9.9.0", b"daemon-macos", |manifest| {
+        manifest["platform"] = json!("macos-arm64");
+        manifest["rust_target"] = json!("aarch64-apple-darwin");
+        manifest
+            .as_object_mut()
+            .expect("object")
+            .remove("managed_package");
+    });
+    let release = Release {
+        id: UnitId::new(sha256(
+            &fs::read(source.join("manifest.json")).expect("manifest"),
+        ))
+        .expect("unit ID"),
+        source,
+    };
+    let before = fixture.snapshot();
+    let error = fixture
+        .update(&release)
+        .expect_err("a release that declares no managed package never installs")
+        .to_string();
+    assert!(
+        error.contains("must declare its managed_package contract"),
+        "{error}"
+    );
+    assert_eq!(fixture.snapshot(), before, "nothing changed");
+    fixture.assert_managed(&location, &fixture.v1.id);
+
+    let adopting = Fixture::new();
+    adopting.legacy_install(&adopting.v1);
+    let error = adopting
+        .run(
+            &release,
+            Some(adopting.default_location()),
+            &adopting.private(),
+        )
+        .expect_err("adoption refuses it too")
+        .to_string();
+    assert!(
+        error.contains("must declare its managed_package contract"),
+        "{error}"
     );
 }
