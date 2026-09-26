@@ -2286,3 +2286,47 @@ fn a_refused_proposal_never_pins_later_attempts_or_blocks_uninstall() {
     )
     .expect("cleanup");
 }
+
+#[test]
+fn public_directories_writable_by_another_account_refuse_before_any_platform_write() {
+    for public in [".local/bin", ".config/systemd/user"] {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.home.join(public)).expect("public directory");
+        fs::set_permissions(fixture.home.join(public), fs::Permissions::from_mode(0o777))
+            .expect("world-writable public directory");
+        let error = fixture
+            .run(
+                &fixture.v1,
+                Some(fixture.default_location()),
+                &fixture.private(),
+            )
+            .expect_err("unsafe public tree");
+        assert!(error.to_string().contains(public), "{public}: {error}");
+        assert_legacy_untouched(&fixture);
+        fs::set_permissions(fixture.home.join(public), fs::Permissions::from_mode(0o755))
+            .expect("restore");
+
+        // Installed first, then made unsafe: uninstall refuses unchanged.
+        fixture
+            .run(
+                &fixture.v1,
+                Some(fixture.default_location()),
+                &fixture.private(),
+            )
+            .expect("install");
+        fs::set_permissions(fixture.home.join(public), fs::Permissions::from_mode(0o777))
+            .expect("later unsafe public directory");
+        let before = fixture.snapshot();
+        let mut host = UninstallHost {
+            world: Rc::clone(&fixture.world),
+            stop_at: None,
+        };
+        let error = run_linux_uninstall(&fixture.home, &fixture.private(), &mut host)
+            .expect_err("uninstall under an unsafe public directory");
+        assert!(error.to_string().contains(public), "{public}: {error}");
+        assert_eq!(fixture.snapshot(), before, "{public}");
+        assert!(fixture.default_location().release_root().exists());
+        fs::set_permissions(fixture.home.join(public), fs::Permissions::from_mode(0o755))
+            .expect("cleanup");
+    }
+}

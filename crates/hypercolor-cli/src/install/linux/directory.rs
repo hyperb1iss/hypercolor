@@ -58,7 +58,53 @@ impl LinuxPublicTree {
             };
             tree.directories.insert(item, state);
         }
+        tree.require_trusted(lock)?;
         Ok(tree)
+    }
+
+    /// Refuse a public tree another principal could change.
+    ///
+    /// systemd runs the unit fragment and the shell runs the command links as
+    /// the user, so HOME, every directory above it, and every existing public
+    /// scaffold directory must be root-owned and writable by nobody else, or
+    /// owned by the user under the ancestor rule. Directories the installer
+    /// creates later get an exact mode.
+    fn require_trusted(&self, lock: &InstallLock) -> Result<(), InstallPlatformError> {
+        let policy = lock.ownership_policy();
+        let refuse = |path: &Path, refusal| {
+            error(format!(
+                "public directory {} is not writable only by you: {refusal}",
+                path.display()
+            ))
+        };
+        let system_root = hypercolor_platform_fs::ReadOnlyDirectoryAuthority::open(Path::new("/"))
+            .map_err(io_error)?;
+        policy
+            .require_trusted_ancestor(&system_root, system_root.metadata().map_err(io_error)?)
+            .map_err(|refusal| refuse(Path::new("/"), refusal))?;
+        for ancestor in self.home_path.ancestors() {
+            if ancestor.parent().is_none() {
+                continue;
+            }
+            let directory = lock
+                .open_public_directory(ancestor)
+                .map_err(|source| error(source.to_string()))?;
+            policy
+                .require_trusted_ancestor(&directory, directory.metadata().map_err(io_error)?)
+                .map_err(|refusal| refuse(ancestor, refusal))?;
+        }
+        for (item, observation) in &self.directories {
+            let DirectoryObservation::Present(directory) = observation else {
+                continue;
+            };
+            let path = std::iter::once(first_name(*item))
+                .chain(descendants(*item))
+                .fold(self.home_path.clone(), |path, name| path.join(name));
+            policy
+                .require_trusted_ancestor(directory, directory.metadata().map_err(io_error)?)
+                .map_err(|refusal| refuse(&path, refusal))?;
+        }
+        Ok(())
     }
 
     pub(super) fn historical_units(
