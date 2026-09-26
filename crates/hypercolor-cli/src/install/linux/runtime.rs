@@ -178,7 +178,7 @@ fn current_thread_runtime() -> Result<tokio::runtime::Runtime, InstallPlatformEr
 }
 
 /// The longest any single start or stop job may run, whatever the unit says.
-const MAX_UNIT_DEADLINE: Duration = Duration::from_mins(3);
+const MAX_JOB_DEADLINE: Duration = Duration::from_mins(3);
 /// Slack past the unit's own timeout, so systemd's timeout (and the kill it
 /// sends) always resolves the job before this fence cancels it.
 const JOB_GRACE: Duration = Duration::from_secs(10);
@@ -204,12 +204,10 @@ impl ServiceDeadlines {
 }
 
 fn unit_deadline(usec: u64) -> Duration {
-    let bounded = if usec == 0 || usec == u64::MAX {
-        MAX_UNIT_DEADLINE
-    } else {
-        Duration::from_micros(usec).min(MAX_UNIT_DEADLINE)
-    };
-    bounded + JOB_GRACE
+    if usec == 0 || usec == u64::MAX {
+        return MAX_JOB_DEADLINE;
+    }
+    (Duration::from_micros(usec) + JOB_GRACE).min(MAX_JOB_DEADLINE)
 }
 
 /// The manager's view of the service at one instant.
@@ -379,15 +377,21 @@ fn run_runtime_job(
         let mut bus = connect_manager(manager).await?;
         let unit = manager_call::<_, OwnedObjectPath>(&mut bus, "LoadUnit", &(SERVICE,)).await?;
         let deadlines = read_deadlines(&mut bus, &unit).await?;
-        if running
-            && property::<String>(&mut bus, &unit, UNIT_INTERFACE, "ActiveState").await? == "failed"
-        {
-            // Clears the failed state and the start limit a crash loop left.
+        if running {
+            // Clears a failed state and the start-limit counter a crash loop
+            // left, which a start would otherwise hit.
             manager_call::<_, ()>(&mut bus, "ResetFailedUnit", &(SERVICE,)).await?;
         }
-        let method = if running { "StartUnit" } else { "StopUnit" };
+        // A stop replaces a start still queued for a service that keeps
+        // failing before readiness (systemd before 254 keeps that start job
+        // across every automatic restart), where "fail" would be refused.
+        let (method, mode) = if running {
+            ("StartUnit", "fail")
+        } else {
+            ("StopUnit", "replace")
+        };
         let job_path =
-            manager_call::<_, OwnedObjectPath>(&mut bus, method, &(SERVICE, "fail")).await?;
+            manager_call::<_, OwnedObjectPath>(&mut bus, method, &(SERVICE, mode)).await?;
         let job = owned_job(job_path)?;
         let mut boundary = BusJobBoundary { bus: &mut bus };
         let deadline = if running {
@@ -1100,15 +1104,16 @@ mod tests {
             service.lock().expect("fake service").calls,
             [
                 ("LoadUnit".to_owned(), String::new()),
+                ("ResetFailedUnit".to_owned(), String::new()),
                 ("StartUnit".to_owned(), "fail".to_owned()),
                 ("LoadUnit".to_owned(), String::new()),
-                ("StopUnit".to_owned(), "fail".to_owned()),
+                ("StopUnit".to_owned(), "replace".to_owned()),
             ]
         );
     }
 
     #[test]
-    fn a_failed_service_is_reset_before_it_starts_but_not_before_it_stops() {
+    fn every_start_resets_the_service_first_and_a_stop_replaces_a_queued_start() {
         let (fixture, uid) = runtime_fixture();
         let listener =
             UnixListener::bind(fixture.path().join("systemd/private")).expect("private socket");
@@ -1130,7 +1135,7 @@ mod tests {
             service.lock().expect("fake service").calls,
             [
                 ("LoadUnit".to_owned(), String::new()),
-                ("StopUnit".to_owned(), "fail".to_owned()),
+                ("StopUnit".to_owned(), "replace".to_owned()),
                 ("LoadUnit".to_owned(), String::new()),
                 ("ResetFailedUnit".to_owned(), String::new()),
                 ("StartUnit".to_owned(), "fail".to_owned()),
@@ -1326,10 +1331,10 @@ mod tests {
         // A slow unit keeps its own longer timeout up to the bound.
         assert_eq!(ServiceDeadlines::from_unit(150_000_000, 0).start, secs(160));
         // Zero and infinity both mean "no timeout" to systemd; above the
-        // bound, the fence still ends the wait.
-        for usec in [0, u64::MAX, 3_600_000_000] {
-            assert_eq!(ServiceDeadlines::from_unit(usec, usec).start, secs(190));
-            assert_eq!(ServiceDeadlines::from_unit(usec, usec).stop, secs(190));
+        // bound, the fence still ends the wait at three minutes.
+        for usec in [0, u64::MAX, 175_000_000, 3_600_000_000] {
+            assert_eq!(ServiceDeadlines::from_unit(usec, usec).start, secs(180));
+            assert_eq!(ServiceDeadlines::from_unit(usec, usec).stop, secs(180));
         }
     }
 

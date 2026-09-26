@@ -743,6 +743,13 @@ fn systemd_show_parser_names_failed_and_transitional_phases() {
             42,
             LinuxServicePhase::Transitional,
         ),
+        (
+            "maintenance",
+            "cleaning",
+            0,
+            LinuxServicePhase::Transitional,
+        ),
+        ("refreshing", "running", 42, LinuxServicePhase::Transitional),
     ] {
         let observation = parse_systemd_show(&show(active, sub, pid, invocation))
             .unwrap_or_else(|error| panic!("{active}/{sub}: {error}"));
@@ -754,7 +761,7 @@ fn systemd_show_parser_names_failed_and_transitional_phases() {
         ("inactive", "dead", 42),
         ("active", "reload", 42),
         ("active", "running", 0),
-        ("maintenance", "cleaning", 0),
+        ("exploding", "cleaning", 0),
         ("activating", "Auto-Restart", 0),
         ("activating", "", 0),
     ] {
@@ -765,6 +772,12 @@ fn systemd_show_parser_names_failed_and_transitional_phases() {
     }
     // A running service always names its invocation.
     assert!(parse_systemd_show(&show("active", "running", 42, "")).is_err());
+    // Observed on Ubuntu 24.04 user systemd: a daemon-reload while the
+    // service runs forgets the exec pid (it reads 0) but keeps MainPID.
+    let reloaded = b"LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled\nFragmentPath=/home/test/.config/systemd/user/hypercolor.service\nExecStart={ path=/daemon ; argv[]=/daemon --flag value ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\nMainPID=82\nInvocationID=00112233445566778899aabbccddeeff\n";
+    let reloaded = parse_systemd_show(reloaded).expect("a reload keeps the service running");
+    assert_eq!(reloaded.phase(), LinuxServicePhase::Running);
+    assert_eq!(reloaded.main_pid, 82);
     // An absent unit can never be mid-transition.
     let absent = b"LoadState=not-found\nActiveState=activating\nSubState=auto-restart\nUnitFileState=\nFragmentPath=\nExecStart=\nMainPID=0\nInvocationID=\n";
     assert!(parse_systemd_show(absent).is_err());

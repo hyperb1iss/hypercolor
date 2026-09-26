@@ -357,8 +357,10 @@ pub fn parse_systemd_show(bytes: &[u8]) -> Result<LinuxSystemdObservation, Insta
     } else {
         let parsed = parse_systemd_exec(fields["ExecStart"])?;
         // A stopped service keeps its last exec status, including that run's
-        // pid, until the unit reloads. Only a running service must agree.
-        if main_pid != 0 && parsed.runtime_pid != main_pid {
+        // pid, until the unit reloads, and a reload while it runs forgets the
+        // pid (it reads 0). Only a running service with a recorded pid must
+        // agree.
+        if main_pid != 0 && parsed.runtime_pid != 0 && parsed.runtime_pid != main_pid {
             return Err(error("systemd ExecStart pid disagrees with MainPID"));
         }
         parsed.canonical_argv
@@ -409,7 +411,14 @@ impl LinuxSystemdObservation {
         if !matches!(self.load_state.as_str(), "loaded" | "not-found")
             || !matches!(
                 self.active_state.as_str(),
-                "active" | "inactive" | "failed" | "activating" | "deactivating" | "reloading"
+                "active"
+                    | "inactive"
+                    | "failed"
+                    | "activating"
+                    | "deactivating"
+                    | "reloading"
+                    | "maintenance"
+                    | "refreshing"
             )
             || self.sub_state.is_empty()
             || self.sub_state.len() > MAX_SYSTEMD_STATE_BYTES
