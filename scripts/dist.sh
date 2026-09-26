@@ -397,6 +397,8 @@ root = Path(os.environ["DIST_DIR"])
 # the code), as a member like any other file, so its bytes are bound by
 # the manifest. The installer never reads it; tools that decide whether one
 # release can replace another do.
+if os.environ["DURABLE_STORE_OVERLAYS"].strip() and os.environ["IS_LINUX"] != "1":
+    raise SystemExit("--durable-stores applies only to Linux releases")
 if os.environ["IS_LINUX"] == "1":
     with open(os.environ["DURABLE_STORES"], encoding="utf-8") as handle:
         inventory = json.load(handle)
@@ -407,6 +409,11 @@ if os.environ["IS_LINUX"] == "1":
             extra = json.load(handle)
         if not isinstance(extra, dict) or set(extra) != {"stores"}:
             raise SystemExit(f"{overlay} must hold exactly {{\"stores\": [...]}}")
+        if not isinstance(extra["stores"], list) or not all(
+            isinstance(store, dict) and isinstance(store.get("name"), str)
+            for store in extra["stores"]
+        ):
+            raise SystemExit(f"{overlay} must declare each store as an object with a name")
         declared = {store["name"] for store in inventory["stores"]}
         for store in extra["stores"]:
             if store.get("name") in declared:

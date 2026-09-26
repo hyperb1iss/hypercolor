@@ -304,6 +304,11 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("declares store 'config' again", result.stdout + result.stderr)
 
+        overlay.write_text(json.dumps({"stores": ["cloud-state"]}))
+        result = self.dist("--target", "linux-amd64", "--durable-stores", str(overlay))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("as an object with a name", result.stdout + result.stderr)
+
     def test_both_packaged_user_units_declare_user_service_identity(self):
         declaration = "Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service"
         for name in ("hypercolor.service", "hypercolor.service.system"):

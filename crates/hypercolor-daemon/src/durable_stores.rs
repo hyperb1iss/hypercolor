@@ -1,9 +1,11 @@
 //! Every durable store a release reads or writes, and what each one holds.
 //!
 //! [`DURABLE_STORES`] is the inventory a Linux release ships as
-//! `share/hypercolor/durable-stores.json`: one entry per store, with where it
-//! lives, the field that records its schema, the schema this release writes
-//! and the range it reads. The values come from the stores themselves, never
+//! `share/hypercolor/durable-stores.json`: one entry per store, with the
+//! schema this release writes, the range it reads and its migration mode.
+//! The table also records, for tools that read stores on disk, where each
+//! store lives and which field holds its schema; the shipped file carries
+//! only the declarations. The values come from the stores themselves, never
 //! from the application version:
 //!
 //! - A store with a version field declares that field's values: the constant
@@ -102,7 +104,8 @@ pub struct DurableStore {
     pub readable_schema_min: u32,
     pub readable_schema_max: u32,
     pub written_schema: u32,
-    /// `backward_compatible`, `staged` or `manual`, as the manifest spells it.
+    /// `backward_compatible`, `staged` or `manual`, as the shipped file
+    /// spells it.
     pub migration_mode: &'static str,
 }
 

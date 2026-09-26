@@ -21,7 +21,7 @@ fn packaged_declaration_is_exactly_the_store_inventory() {
     assert_eq!(
         object.keys().collect::<Vec<_>>(),
         ["stores"],
-        "the packaged file is the manifest's compatibility object"
+        "the packaged file holds exactly the store declarations"
     );
     let expected: Vec<Value> = DURABLE_STORES
         .iter()
