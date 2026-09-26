@@ -19,11 +19,19 @@
 //! - `hang_http_after_ready_ms`: stop answering HTTP this long after
 //!   `READY=1` while the watchdog keeps pinging.
 //! - `report_version`: answer HTTP with this version instead.
+//! - `probe_writes`: at start, try to write a file into each directory the
+//!   generated service's sandbox allows or denies, and report the results.
+//!
+//! `GET /qual/launch` reports how this process was started: its resolved
+//! executable, its arguments, the XDG variables the launcher set, and the
+//! write probes. A probe leaves nothing behind except
+//! `/tmp/hc-qual-private-<pid>`, which shows whether `/tmp` is private.
 //!
 //! Built by `guest-proof.sh` with plain `rustc` in the baseline builder; it
 //! uses only the standard library plus libc's `signal`.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::os::linux::net::SocketAddrExt as _;
@@ -214,6 +222,106 @@ struct Identity {
     instance_id: String,
     health_delay: Option<Duration>,
     hang_at: Option<Instant>,
+    launch: String,
+}
+
+fn json_text(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            character if character.is_control() => {
+                let _ = write!(quoted, "\\u{:04x}", u32::from(character));
+            }
+            character => quoted.push(character),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+fn env_path(name: &str, fallback: impl FnOnce() -> PathBuf) -> PathBuf {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map_or_else(fallback, PathBuf::from)
+}
+
+/// Try to create and remove one file in `directory`.
+fn probe_write(directory: &Path) -> String {
+    let file = directory.join(format!(".hc-qual-probe-{}", std::process::id()));
+    match std::fs::write(&file, b"probe") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&file);
+            "ok".to_owned()
+        }
+        Err(error) => format!("denied: {:?}", error.kind()),
+    }
+}
+
+/// How this process was started, and what its sandbox lets it write.
+fn launch_report(probe: bool) -> String {
+    let exe = std::fs::read_link("/proc/self/exe")
+        .map_or_else(|_| "unknown".to_owned(), |path| path.display().to_string());
+    let argv: Vec<String> = std::env::args().collect();
+    let variables = [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+    ];
+    let env = variables
+        .iter()
+        .map(|name| {
+            let value = std::env::var(name).unwrap_or_default();
+            format!("{}:{}", json_text(name), json_text(&value))
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut writes = Vec::new();
+    if probe {
+        let home = env_path("HOME", || PathBuf::from("/"));
+        let config = env_path("XDG_CONFIG_HOME", || home.join(".config")).join("hypercolor");
+        let data = env_path("XDG_DATA_HOME", || home.join(".local/share")).join("hypercolor");
+        let state = env_path("XDG_STATE_HOME", || home.join(".local/state")).join("hypercolor");
+        let cache = env_path("XDG_CACHE_HOME", || home.join(".cache")).join("hypercolor");
+        let _ = std::fs::create_dir_all(&cache);
+        let private = PathBuf::from(format!("/tmp/hc-qual-private-{}", std::process::id()));
+        let _ = std::fs::write(&private, b"private");
+        let targets: [(&str, PathBuf); 14] = [
+            ("config", config),
+            ("data", data.clone()),
+            ("daemon_state", state.clone()),
+            ("coordinator", state.join("update/coordinator")),
+            ("cache", cache),
+            ("tmp", PathBuf::from("/tmp")),
+            ("releases", data.join("releases")),
+            ("update_state", state.join("update")),
+            ("activator", state.join("update/activator")),
+            ("local_bin", home.join(".local/bin")),
+            ("legacy_lib", home.join(".local/lib/hypercolor")),
+            ("user_units", home.join(".config/systemd/user")),
+            ("home", home.clone()),
+            ("var_tmp", PathBuf::from("/var/tmp")),
+        ];
+        for (label, directory) in targets {
+            writes.push(format!(
+                "{}:{}",
+                json_text(label),
+                json_text(&probe_write(&directory))
+            ));
+        }
+    }
+    format!(
+        "{{\"exe\":{},\"argv\":[{}],\"env\":{{{env}}},\"writes\":{{{}}}}}",
+        json_text(&exe),
+        argv.iter()
+            .map(|argument| json_text(argument))
+            .collect::<Vec<_>>()
+            .join(","),
+        writes.join(",")
+    )
 }
 
 fn serve(listener: &TcpListener, identity: &Arc<Identity>) {
@@ -260,6 +368,7 @@ fn answer(mut stream: TcpStream, identity: &Identity) {
                 identity.version, identity.instance_id
             ),
         ),
+        "/qual/launch" => ("200 OK", identity.launch.clone()),
         _ => ("404 Not Found", "{}".to_owned()),
     };
     let _ = write!(
@@ -316,6 +425,7 @@ fn main() {
         hang_at: faults
             .millis("hang_http_after_ready_ms")
             .map(|delay| ready_at + delay),
+        launch: launch_report(faults.text("probe_writes") == Some("1")),
     });
     std::thread::spawn(move || serve(&listener, &identity));
     start_watchdog();

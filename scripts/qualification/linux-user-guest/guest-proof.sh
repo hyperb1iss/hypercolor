@@ -388,6 +388,99 @@ expect_units() {
     log "  ok: units are exactly those of $*"
 }
 
+GUEST_RELEASES="${GUEST_HOME}/.local/share/hypercolor/releases"
+
+# Run the installation's launcher as a recovery unit would: update-executor
+# role, __recover-release. Sets DRIVER_EXIT and LAST_INSTALL_OUTPUT.
+recover_run() {
+    local label="$1"
+    shift
+    STEP=$((STEP + 1))
+    local output
+    output="${RECEIPT}/$(printf '%02d' "${STEP}")-recover-${label}.log"
+    hide_bus
+    log "recover ${label}: $*"
+    gx hc-guest-driver recover "$@" >"${output}" 2>&1 || true
+    DRIVER_EXIT="$(sed -n 's/^DRIVER //p' "${output}" | tail -n 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["exit"])')"
+    LAST_INSTALL_OUTPUT="${output}"
+    log "  exit=${DRIVER_EXIT}"
+    snapshot "after-${label}"
+}
+
+# Save and print the qualification daemon's launch report.
+launch_report() {
+    STEP=$((STEP + 1))
+    local output
+    output="${RECEIPT}/$(printf '%02d' "${STEP}")-launch-$1.json"
+    gx hc-guest-driver launch-report >"${output}"
+    cat "${output}"
+}
+
+# The running daemon, its UI and its effects all come from VERSION's own
+# release directory, never through the active pointer, both as the daemon
+# reports itself and as /proc shows its main process.
+expect_launch() {
+    local version="$1" unit report pid
+    unit="${GUEST_RELEASES}/units/$(unit_of "${version}")"
+    report="$(launch_report "${version}")"
+    pid="$(service_prop MainPID)"
+    local exe cmdline
+    exe="$(gx readlink "/proc/${pid}/exe")"
+    cmdline="$(gx cat "/proc/${pid}/cmdline" | tr '\0' ' ')"
+    python3 - "${report}" "${unit}" "${exe}" "${cmdline}" <<'PY' || fail "the running daemon is not ${version}'s whole release"
+import json
+import sys
+
+report, unit, exe, cmdline = sys.argv[1:5]
+launch = json.loads(report)
+argv = launch["argv"]
+expected = [
+    f"{unit}/bin/hypercolor-daemon",
+    "--ui-dir", f"{unit}/share/hypercolor/ui",
+    "--effects-dir", f"{unit}/share/hypercolor/effects/bundled",
+]
+problems = []
+if launch["exe"] != expected[0]:
+    problems.append(f"reported exe {launch['exe']}")
+if exe != expected[0]:
+    problems.append(f"/proc exe {exe}")
+if argv != expected:
+    problems.append(f"argv {argv}")
+if cmdline.split() != expected:
+    problems.append(f"/proc cmdline {cmdline}")
+if problems:
+    sys.exit("; ".join(problems))
+PY
+    log "  ok: ${version}'s daemon runs with its own UI and effects (/proc agrees)"
+}
+
+# Every directory the sandbox must let the daemon write is writable, and
+# every other one is not.
+expect_writes() {
+    local report
+    report="$(launch_report writes)"
+    python3 - "${report}" <<'PY' || fail "the sandbox's writable set is wrong"
+import json
+import sys
+
+writes = json.loads(sys.argv[1])["writes"]
+writable = {"config", "data", "daemon_state", "coordinator", "cache", "tmp", "var_tmp"}
+denied = {"releases", "update_state", "activator", "local_bin", "legacy_lib", "user_units", "home"}
+problems = [f"{label}={writes.get(label)}" for label in sorted(writable) if writes.get(label) != "ok"]
+problems += [
+    f"{label}={writes.get(label)}"
+    for label in sorted(denied)
+    if not str(writes.get(label, "")).startswith("denied")
+]
+if set(writes) != writable | denied:
+    problems.append(f"probed {sorted(writes)}")
+print(json.dumps(writes, indent=2))
+if problems:
+    sys.exit("; ".join(problems))
+PY
+    log "  ok: writable exactly config, data, daemon state, coordinator, cache and private tmp"
+}
+
 wait_active() {
     local deadline=$((SECONDS + ${1:-60}))
     while ((SECONDS < deadline)); do

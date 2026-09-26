@@ -15,6 +15,12 @@
 #       Print the journal, active pointer, service properties and /health.
 #   hc-guest-driver health
 #       Print /health, or "unreachable".
+#   hc-guest-driver launch-report
+#       Print the qualification daemon's /qual/launch report.
+#   hc-guest-driver recover [ARGS...]
+#       Run the installation's launcher in its update-executor role with
+#       __recover-release ARGS, as a recovery unit would, and print a DRIVER
+#       line with its exit status.
 set -euo pipefail
 
 RELEASES=/releases
@@ -22,6 +28,7 @@ CANDIDATES="${HOME}/candidates"
 STATE_ROOT="${HOME}/.local/state/hypercolor/update"
 JOURNAL="${STATE_ROOT}/install-journal.json"
 ACTIVE="${HOME}/.local/share/hypercolor/releases/active"
+LAUNCHER="${HOME}/.local/share/hypercolor/releases/launcher/hypercolor"
 
 die() {
     printf 'hc-guest-driver: %s\n' "$*" >&2
@@ -80,6 +87,17 @@ PY
     if [[ -e "${XDG_RUNTIME_DIR}/bus" ]]; then printf 'reachable\n'; else printf 'hidden\n'; fi
     printf '== health\n'
     health
+}
+
+launch_report() {
+    curl -fsS --max-time 5 http://127.0.0.1:9420/qual/launch 2>/dev/null || printf 'unreachable'
+    printf '\n'
+}
+
+recover() {
+    local status=0
+    "${LAUNCHER}" __launch --role update-executor -- __recover-release "$@" || status=$?
+    printf 'DRIVER {"exit": %d}\n' "${status}"
 }
 
 install() {
@@ -189,5 +207,7 @@ case "${command}" in
     install) (($#)) || die "install needs a version"; install "$@" ;;
     state) state ;;
     health) health ;;
-    *) die "usage: hc-guest-driver install|state|health" ;;
+    launch-report) launch_report ;;
+    recover) recover "$@" ;;
+    *) die "usage: hc-guest-driver install|state|health|launch-report|recover" ;;
 esac
