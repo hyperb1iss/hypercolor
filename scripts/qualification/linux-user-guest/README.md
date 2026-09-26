@@ -142,6 +142,17 @@ kernel; page-cache loss needs a virtual machine.
 | `disabled-running` | Running prior with autostart disabled; failing then healthy candidate | Rollback restarts the prior; upgrade commits; autostart stays disabled |
 | `slow-start-within` | Candidate ready after 20 s | Commits within the default `TimeoutStartSec` |
 | `slow-start-beyond` | `TimeoutStartSec=8s` drop-in; candidate needs 30 s | systemd fails the start; rolls back well before 30 s |
+| `probation-healthy` | A healthy candidate under the default 90 s window | Commits after the whole window, under one invocation |
+| `probation-crash-late` | The candidate crashes 89 s after readiness | The same run rolls back and names the prior that runs again |
+| `probation-installer-killed` | Installer killed 30 s into the window; installer rerun | The candidate keeps its invocation; the rerun watches a whole window again and commits |
+| `probation-power-cut` | Power cut 20 s into the window | The candidate autostarts under a new invocation; recovery rolls back and names the prior |
+| `units-collected` | Three installs, with a leftover staging tree planted before the third | Only the active release and the one it replaced remain; the leftover is gone |
+
+Every rollback scenario also checks the installer's report of the release
+that runs again against the service's `MainPID` and `InvocationID`.
+The probation and collection scenarios install their first releases with
+`--probation-seconds 0` to stay short. Every other install uses the
+installer's default window, so the recovery scenarios run with probation on.
 
 Scenarios live in `scenarios.sh` as `scenario_<name>` functions built from
 the helpers in `guest-proof.sh` (`install_run`, `set_faults`, `power_cut`,
