@@ -8,7 +8,8 @@ use uuid::Uuid;
 use super::super::InstallJournalV1;
 use super::locator::LinuxLocatorError;
 
-pub(super) const MAX_PREPARATION_BYTES: u64 = (super::super::MAX_INSTALL_JOURNAL_BYTES * 2) as u64;
+pub(super) const MAX_PREPARATION_BYTES: u64 =
+    (super::super::MAX_MANAGED_INSTALL_JOURNAL_BYTES * 2) as u64;
 
 pub(super) const RECEIPT_NAME: &str = "adoption-preparation.json";
 

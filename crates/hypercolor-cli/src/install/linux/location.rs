@@ -12,6 +12,11 @@ use super::super::{InstallLock, InstallStoreError};
 const LOCATION_SCHEMA: u32 = 2;
 const LAUNCHER_CONTRACT: u32 = 1;
 const MAX_LOCATION_BYTES: usize = 32 * 1024;
+/// HOME bound. The historical root, launcher and layout all live beneath it.
+const MAX_HOME_BYTES: usize = 256;
+/// Recorded root bound. Every transaction record embeds each root several
+/// times, so these bounds keep the longest record inside its journal budget.
+const MAX_ROOT_BYTES: usize = 512;
 
 /// Installer-recorded roots and owner identity for a managed Linux installation.
 ///
@@ -65,6 +70,11 @@ pub enum InstallLocationError {
     InvalidPath(PathBuf),
     #[error("installation roots overlap protected or legacy installation state")]
     OverlappingRoots,
+    #[error(
+        "installation path {path} is longer than {limit} bytes, the most a transaction record can carry",
+        path = .path.display()
+    )]
+    PathTooLong { path: PathBuf, limit: usize },
     #[error("installation directory authority could not be retained: {0}")]
     Authority(#[from] std::io::Error),
     #[error("installation lock cannot authorize the recorded roots: {0}")]
@@ -184,6 +194,20 @@ impl LinuxInstallLocation {
             &self.config_root,
         ] {
             validate_path(root)?;
+        }
+        for (path, limit) in [
+            (home, MAX_HOME_BYTES),
+            (self.data_root.as_path(), MAX_ROOT_BYTES),
+            (self.state_root.as_path(), MAX_ROOT_BYTES),
+            (self.release_root.as_path(), MAX_ROOT_BYTES),
+            (self.config_root.as_path(), MAX_ROOT_BYTES),
+        ] {
+            if path.as_os_str().len() > limit {
+                return Err(InstallLocationError::PathTooLong {
+                    path: path.to_path_buf(),
+                    limit,
+                });
+            }
         }
         let legacy = home.join(".local/lib/hypercolor");
         if self.release_root != self.data_root.join("releases")

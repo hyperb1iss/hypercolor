@@ -4,7 +4,9 @@ use std::path::{Component, Path};
 use hypercolor_platform_fs::PublicDirectoryAuthority;
 
 use super::super::ownership::{DirectoryRole, OwnershipPolicy};
-use super::super::{InstallLock, InstallStore, MAX_INSTALL_JOURNAL_BYTES};
+use super::super::{
+    InstallLock, InstallStore, MAX_INSTALL_JOURNAL_BYTES, MAX_MANAGED_INSTALL_JOURNAL_BYTES,
+};
 use super::{LinuxInstallLocation, LinuxLocatorError};
 
 /// Exact modes for directories adoption creates, applied after creation so the
@@ -70,7 +72,7 @@ pub(super) fn prepare_roots(
     let store = InstallStore::with_roots(
         proposed.release_root(),
         proposed.state_root(),
-        MAX_INSTALL_JOURNAL_BYTES,
+        MAX_MANAGED_INSTALL_JOURNAL_BYTES,
     )?
     .with_ownership_policy(ownership);
     let lock = store.acquire_lock()?;

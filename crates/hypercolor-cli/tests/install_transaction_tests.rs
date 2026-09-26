@@ -9,9 +9,10 @@ use hypercolor_cli::install::{
     InstallAction, InstallCoordinator, InstallCoordinatorError, InstallDisposition,
     InstallJournalV1, InstallModelError, InstallOutcome, InstallPlatform, InstallPlatformError,
     InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy, InstallTransactionId,
-    MAX_PLATFORM_OWNER_RECEIPT_BYTES, MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint,
-    PlatformOwnerReceipt, PlatformState, PlatformTransactionRecord, PlatformTransitionStates,
-    PreparedPlatformTransaction, UnitId, UnitRecord, stage_release_payload,
+    MAX_LINUX_TRANSACTION_RECORD_BYTES, MAX_PLATFORM_OWNER_RECEIPT_BYTES,
+    MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
+    PlatformTransactionRecord, PlatformTransitionStates, PreparedPlatformTransaction, UnitId,
+    UnitRecord, stage_release_payload,
 };
 use hypercolor_platform_fs::DirectoryEntryKind;
 use serde_json::json;
@@ -2550,7 +2551,14 @@ fn platform_records_are_tagged_bounded_and_round_trip_unchanged() {
     }
 
     assert!(matches!(
-        PlatformTransactionRecord::linux(1, vec![0; MAX_PLATFORM_TRANSACTION_RECORD_BYTES + 1]),
+        PlatformTransactionRecord::linux(1, vec![0; MAX_LINUX_TRANSACTION_RECORD_BYTES + 1]),
+        Err(InstallModelError::PlatformRecordTooLarge { .. })
+    ));
+    assert!(
+        PlatformTransactionRecord::linux(1, vec![0; MAX_LINUX_TRANSACTION_RECORD_BYTES]).is_ok()
+    );
+    assert!(matches!(
+        PlatformTransactionRecord::macos(1, vec![0; MAX_PLATFORM_TRANSACTION_RECORD_BYTES + 1]),
         Err(InstallModelError::PlatformRecordTooLarge { .. })
     ));
     assert!(matches!(
@@ -2646,7 +2654,7 @@ fn oversized_embedded_platform_record_is_rejected_after_bounded_read() {
         fixture.prior_state(),
         InstallTargetPolicy::Preserve,
     );
-    journal.platform_record = PlatformTransactionRecord::Linux {
+    journal.platform_record = PlatformTransactionRecord::Macos {
         schema_version: 1,
         payload: vec![0; MAX_PLATFORM_TRANSACTION_RECORD_BYTES + 1],
     };

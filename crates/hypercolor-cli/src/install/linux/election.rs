@@ -8,6 +8,7 @@ use hypercolor_platform_fs::{ExactEntry, PublicDirectoryAuthority, ReadOnlyDirec
 use super::{
     InstallLock, InstallStore, LOCATOR_NAME, LinuxInstallAuthority, LinuxInstallLocation,
     LinuxInstallLocator, LinuxLocatorError, MAX_INSTALL_JOURNAL_BYTES, MAX_LOCATOR_BYTES,
+    MAX_MANAGED_INSTALL_JOURNAL_BYTES,
 };
 use crate::install::OwnershipPolicy;
 use crate::install::linux::RetainedLinuxInstallLocation;
@@ -128,7 +129,7 @@ fn elect_managed(
     let store = InstallStore::with_roots(
         location.release_root(),
         location.state_root(),
-        MAX_INSTALL_JOURNAL_BYTES,
+        MAX_MANAGED_INSTALL_JOURNAL_BYTES,
     )?
     .with_ownership_policy(ownership.clone());
     // Split-root acquire_lock opens existing roots; it does not bootstrap them.

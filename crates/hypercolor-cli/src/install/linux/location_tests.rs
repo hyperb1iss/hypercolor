@@ -202,3 +202,49 @@ fn invalid_contracts_and_paths_do_not_fall_back_to_legacy() {
         Err(InstallLocationError::TooLarge)
     ));
 }
+
+#[test]
+fn home_and_recorded_roots_are_bounded_before_any_write() {
+    let home = format!("/{}", "h".repeat(255));
+    let home = Path::new(&home);
+    let base = |suffix: usize, letter: &str| {
+        home.join(letter.repeat(512 - suffix - home.as_os_str().len() - 1))
+    };
+    let longest = LinuxInstallLocation::new(
+        home,
+        &base("/hypercolor/releases".len(), "d"),
+        &base("/hypercolor/update".len(), "s"),
+        &base("/hypercolor".len(), "c"),
+        1000,
+    )
+    .expect("the longest supported roots");
+    for root in [
+        longest.release_root(),
+        longest.state_root(),
+        longest.config_root(),
+    ] {
+        assert_eq!(root.as_os_str().len(), 512);
+    }
+    assert!(matches!(
+        LinuxInstallLocation::new(
+            home,
+            &base("/hypercolor/releases".len() - 1, "d"),
+            &home.join("state"),
+            &home.join("config"),
+            1000,
+        ),
+        Err(InstallLocationError::PathTooLong { limit: 512, .. })
+    ));
+    let longer_home = format!("/{}", "h".repeat(256));
+    let longer_home = Path::new(&longer_home);
+    assert!(matches!(
+        LinuxInstallLocation::new(
+            longer_home,
+            &longer_home.join("data"),
+            &longer_home.join("state"),
+            &longer_home.join("config"),
+            1000,
+        ),
+        Err(InstallLocationError::PathTooLong { limit: 256, .. })
+    ));
+}

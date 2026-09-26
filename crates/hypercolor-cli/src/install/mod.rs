@@ -28,7 +28,8 @@ pub use linux::{
 pub use model::{
     INSTALL_JOURNAL_SCHEMA_VERSION, InstallAction, InstallDisposition, InstallJournalV1,
     InstallModelError, InstallOutcome, InstallRequest, InstallTargetPolicy, InstallTransactionId,
-    InstallationState, MAX_INSTALL_JOURNAL_BYTES, MAX_PLATFORM_OWNER_RECEIPT_BYTES,
+    InstallationState, MAX_INSTALL_JOURNAL_BYTES, MAX_LINUX_TRANSACTION_RECORD_BYTES,
+    MAX_MANAGED_INSTALL_JOURNAL_BYTES, MAX_PLATFORM_OWNER_RECEIPT_BYTES,
     MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
     PlatformTransactionRecord, PlatformTransitionStates, PreparedPlatformTransaction, UnitId,
     UnitRecord,

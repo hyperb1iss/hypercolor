@@ -9,6 +9,7 @@ use uuid::Uuid;
 use super::super::{
     INSTALL_JOURNAL_SCHEMA_VERSION, InstallJournalV1, InstallLock, InstallPlatform,
     InstallPlatformError, InstallStore, InstallStoreError, MAX_INSTALL_JOURNAL_BYTES,
+    MAX_MANAGED_INSTALL_JOURNAL_BYTES,
 };
 use super::location::{InstallLocationError, LinuxInstallLocation};
 use super::locator_receipt::{AdoptionPreparation, MAX_PREPARATION_BYTES, RECEIPT_NAME};
