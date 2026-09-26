@@ -281,7 +281,14 @@ class ReleaseArtifactTests(unittest.TestCase):
             duplicated = text.replace('"stores": [', '"stores": [], "stores": [', 1)
             self.assertNotEqual(duplicated, text)
             self.write_inventory(duplicated)
-            self.assert_rejected("has duplicated keys")
+            self.assert_rejected("duplicated keys: ['stores']")
+
+    def test_duplicated_manifest_keys_are_rejected(self):
+        text = json.dumps(self.manifest(), indent=2)
+        duplicated = text.replace('"name": "hypercolor"', '"name": "hypercolor", "name": "hypercolor"', 1)
+        self.assertNotEqual(duplicated, text)
+        (self.payload / "manifest.json").write_text(duplicated + "\n")
+        self.assert_rejected("duplicated keys: ['name']")
 
     def test_a_downstream_build_adds_its_own_stores_once(self):
         overlay = self.directory / "private-stores.json"
@@ -308,6 +315,10 @@ class ReleaseArtifactTests(unittest.TestCase):
         result = self.dist("--target", "linux-amd64", "--durable-stores", str(overlay))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("as an object with a name", result.stdout + result.stderr)
+
+        result = self.dist("--target", "macos-arm64", "--durable-stores", str(overlay))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("applies only to Linux releases", result.stdout + result.stderr)
 
     def test_both_packaged_user_units_declare_user_service_identity(self):
         declaration = "Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service"
