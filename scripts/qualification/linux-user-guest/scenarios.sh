@@ -324,6 +324,8 @@ scenario_hardened_unit() {
     gx cat "${fragment}" >"${RECEIPT}/unit.service"
     grep -qxF "ExecStart=${launcher} __launch --role daemon" "${RECEIPT}/unit.service" ||
         fail "the unit does not start the launcher"
+    grep -qxF "ExecStartPre=+${launcher} __launch --role prepare-roots" "${RECEIPT}/unit.service" ||
+        fail "the unit does not prepare its roots before the sandbox"
     local directive
     for directive in ProtectSystem=strict ProtectHome=read-only PrivateTmp=true \
         NoNewPrivileges=true Type=notify WatchdogSec=30 \
@@ -360,6 +362,32 @@ scenario_hardened_unit() {
     expect_exit 0
     expect_active "${V_B}"
     expect_launch "${V_B}"
+}
+
+# Deleting the configuration directory to reset it, as the uninstall guide
+# suggests, must not keep the sandboxed service from starting: its
+# prepare-roots step recreates the recorded root before systemd builds the
+# sandbox around it.
+scenario_config_reset() {
+    install_run fresh "${V_A}" -- --probation-seconds 0
+    expect_exit 0
+    expect_health "${V_A}"
+    local config="${GUEST_HOME}/.config/hypercolor"
+    gx systemctl --user stop hypercolor.service
+    gx rm -rf "${config}"
+    if gx test -e "${config}"; then
+        fail "the configuration root is still there"
+    fi
+    log "deleted ${config}; starting the service"
+    gx systemctl --user start hypercolor.service || fail "the service did not start after the reset"
+    wait_active
+    expect_health "${V_A}"
+    [[ "$(gx stat -c %a "${config}")" == 700 ]] || fail "the configuration root was not recreated 0700"
+    gx journalctl --user -u hypercolor.service --no-pager -o cat \
+        >"${RECEIPT}/service-journal.txt" 2>&1 || true
+    grep -qF "hypercolor launcher: created ${config}" "${RECEIPT}/service-journal.txt" ||
+        fail "the launcher did not report recreating the root"
+    log "  ok: the service recreated the deleted configuration root and started"
 }
 
 # The active pointer swaps between two releases as fast as the guest can
