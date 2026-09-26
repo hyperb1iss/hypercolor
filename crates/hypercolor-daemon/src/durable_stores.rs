@@ -61,10 +61,12 @@ pub enum StoreSchema {
     Unversioned,
     /// A top-level integer field of a JSON object. `missing` is what the
     /// store's reader assumes when the field is absent; `None` means the
-    /// reader refuses such a file.
+    /// reader refuses such a file. `empty_is_absent` marks a reader that
+    /// takes a bare `{}` as no data at all.
     JsonField {
         field: &'static str,
         missing: Option<u32>,
+        empty_is_absent: bool,
     },
     /// A top-level integer field of a TOML document, which the reader
     /// requires.
@@ -157,6 +159,7 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         schema: StoreSchema::JsonField {
             field: "version",
             missing: Some(hypercolor_core::asset::INDEX_VERSION),
+            empty_is_absent: false,
         },
         readable_schema_min: hypercolor_core::asset::INDEX_VERSION,
         readable_schema_max: hypercolor_core::asset::INDEX_VERSION,
@@ -211,6 +214,7 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         schema: StoreSchema::JsonField {
             field: "schema_version",
             missing: None,
+            empty_is_absent: true,
         },
         readable_schema_min: crate::scene_store::SCENE_STORE_SCHEMA_VERSION,
         readable_schema_max: crate::scene_store::SCENE_STORE_SCHEMA_VERSION,
@@ -227,6 +231,7 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         schema: StoreSchema::JsonField {
             field: "schema_version",
             missing: Some(crate::driver_inventory::INVENTORY_SCHEMA_VERSION),
+            empty_is_absent: false,
         },
         readable_schema_min: crate::driver_inventory::INVENTORY_SCHEMA_VERSION,
         readable_schema_max: crate::driver_inventory::INVENTORY_SCHEMA_VERSION,
@@ -304,6 +309,7 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         schema: StoreSchema::JsonField {
             field: "schema_version",
             missing: Some(1),
+            empty_is_absent: false,
         },
         readable_schema_min: 1,
         readable_schema_max: crate::device_settings::DEVICE_SETTINGS_SCHEMA_VERSION,
@@ -338,6 +344,7 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         schema: StoreSchema::JsonField {
             field: "schema_version",
             missing: Some(crate::device_aliases::SCHEMA_VERSION),
+            empty_is_absent: false,
         },
         readable_schema_min: crate::device_aliases::SCHEMA_VERSION,
         readable_schema_max: crate::device_aliases::SCHEMA_VERSION,
@@ -356,6 +363,7 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         schema: StoreSchema::JsonField {
             field: "version",
             missing: Some(crate::library::LEGACY_LIBRARY_SCHEMA_VERSION),
+            empty_is_absent: false,
         },
         readable_schema_min: crate::library::LEGACY_LIBRARY_SCHEMA_VERSION,
         readable_schema_max: crate::library::LIBRARY_SCHEMA_VERSION,
@@ -374,6 +382,7 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         schema: StoreSchema::JsonField {
             field: "schema_version",
             missing: None,
+            empty_is_absent: false,
         },
         readable_schema_min: crate::device_binding_journal::DEVICE_BINDING_JOURNAL_SCHEMA_VERSION,
         readable_schema_max: crate::device_binding_journal::DEVICE_BINDING_JOURNAL_SCHEMA_VERSION,
@@ -518,17 +527,46 @@ fn probe_store(store: &DurableStore, roots: &StoreRoots) -> StoreFound {
             roots.path(store.root, relative)
         }
     };
-    let path = match store.legacy_data_file {
-        Some(legacy) if !path.exists() => roots.data.join(legacy),
-        _ => path,
-    };
-    match store.location {
-        StoreLocation::Directory(_) => probe_directory(&path, store.schema),
-        StoreLocation::File(_) | StoreLocation::ConfigFile => probe_file(&path, store.schema),
+    let found = probe_path(&path, store.location, store.schema);
+    // A store that moved to the state root still reads its previous data
+    // file, and takes whichever of the two holds the newer schema.
+    match store.legacy_data_file {
+        Some(legacy) => newest(
+            [
+                Ok(found),
+                Ok(probe_path(
+                    &roots.data.join(legacy),
+                    store.location,
+                    store.schema,
+                )),
+            ]
+            .into_iter(),
+        ),
+        None => found,
+    }
+}
+
+fn probe_path(path: &Path, location: StoreLocation, schema: StoreSchema) -> StoreFound {
+    match location {
+        StoreLocation::Directory(_) => probe_directory(path, schema),
+        StoreLocation::File(_) | StoreLocation::ConfigFile => probe_file(path, schema),
     }
 }
 
 fn probe_file(path: &Path, schema: StoreSchema) -> StoreFound {
+    // Readers follow symbolic links, so the probe does too; anything but a
+    // regular file (a FIFO would block the open) is unreadable, unopened.
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => {
+            return StoreFound::Unreadable(format!("{} is not a regular file", path.display()));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return StoreFound::Absent,
+        Err(error) => return StoreFound::Unreadable(format!("{}: {error}", path.display())),
+    }
+    if schema == StoreSchema::Unversioned {
+        return StoreFound::Schema(0);
+    }
     let bytes = match read_bounded(path) {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return StoreFound::Absent,
@@ -541,15 +579,17 @@ fn probe_file(path: &Path, schema: StoreSchema) -> StoreFound {
                 .unwrap_or_else(StoreFound::Unreadable),
             Err(error) => StoreFound::Unreadable(error),
         },
-        StoreSchema::JsonField { field, missing } => {
-            match serde_json::from_slice::<Value>(&bytes) {
-                Ok(Value::Object(fields)) if fields.is_empty() => StoreFound::Absent,
-                Ok(Value::Object(fields)) => json_version(fields.get(field), missing, field)
-                    .unwrap_or_else(StoreFound::Unreadable),
-                Ok(_) => StoreFound::Unreadable("the store is not a JSON object".to_owned()),
-                Err(error) => StoreFound::Unreadable(error.to_string()),
-            }
-        }
+        StoreSchema::JsonField {
+            field,
+            missing,
+            empty_is_absent,
+        } => match serde_json::from_slice::<Value>(&bytes) {
+            Ok(Value::Object(fields)) if empty_is_absent && fields.is_empty() => StoreFound::Absent,
+            Ok(Value::Object(fields)) => json_version(fields.get(field), missing, field)
+                .unwrap_or_else(StoreFound::Unreadable),
+            Ok(_) => StoreFound::Unreadable("the store is not a JSON object".to_owned()),
+            Err(error) => StoreFound::Unreadable(error.to_string()),
+        },
         StoreSchema::JsonArrayRecords { field } => match serde_json::from_slice::<Value>(&bytes) {
             Ok(Value::Array(records)) => newest(
                 records
@@ -577,7 +617,8 @@ fn probe_file(path: &Path, schema: StoreSchema) -> StoreFound {
 }
 
 fn probe_directory(path: &Path, schema: StoreSchema) -> StoreFound {
-    let files = match directory_files(path) {
+    let toml_only = matches!(schema, StoreSchema::TomlDirectoryRecords { .. });
+    let files = match directory_files(path, toml_only) {
         Ok(Some(files)) => files,
         Ok(None) => return StoreFound::Absent,
         Err(error) => return StoreFound::Unreadable(error),
@@ -585,26 +626,31 @@ fn probe_directory(path: &Path, schema: StoreSchema) -> StoreFound {
     match schema {
         StoreSchema::Unversioned if files.is_empty() => StoreFound::Absent,
         StoreSchema::Unversioned => StoreFound::Schema(0),
-        StoreSchema::TomlDirectoryRecords { field, missing } => newest(
-            files
-                .iter()
-                .filter(|file| {
-                    file.extension()
-                        .is_some_and(|extension| extension == "toml")
-                })
-                .map(|file| match read_bounded(file) {
-                    Ok(Some(bytes)) => toml_document(&bytes)
-                        .and_then(|document| toml_version(document.get(field), missing, field)),
-                    Ok(None) => Ok(StoreFound::Absent),
-                    Err(error) => Err(error),
-                }),
-        ),
+        StoreSchema::TomlDirectoryRecords { field, missing } => newest(files.iter().map(|file| {
+            match probe_regular(file) {
+                Ok(Some(bytes)) => toml_document(&bytes)
+                    .and_then(|document| toml_version(document.get(field), missing, field)),
+                Ok(None) => Ok(StoreFound::Absent),
+                Err(error) => Err(error),
+            }
+        })),
         StoreSchema::JsonField { .. }
         | StoreSchema::TomlField { .. }
         | StoreSchema::JsonArrayRecords { .. }
         | StoreSchema::JsonMapRecords { .. } => {
             StoreFound::Unreadable("a file store was declared as a directory".to_owned())
         }
+    }
+}
+
+/// Read one file a directory store's reader would read, refusing anything
+/// but a regular file before opening it.
+fn probe_regular(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => read_bounded(path),
+        Ok(_) => Err(format!("{} is not a regular file", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("{}: {error}", path.display())),
     }
 }
 
@@ -684,9 +730,11 @@ fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
     Ok(Some(bytes))
 }
 
-/// Every regular file beneath `root`, without following symbolic links.
-fn directory_files(root: &Path) -> Result<Option<Vec<PathBuf>>, String> {
-    match std::fs::symlink_metadata(root) {
+/// The files beneath `root` its reader would load: it follows a symbolic
+/// link at the root, descends only into real directories, and takes every
+/// other entry (`.toml` ones only, ignoring case, for a template store).
+fn directory_files(root: &Path, toml_only: bool) -> Result<Option<Vec<PathBuf>>, String> {
+    match std::fs::metadata(root) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => return Err(format!("{} is not a directory", root.display())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -704,14 +752,23 @@ fn directory_files(root: &Path) -> Result<Option<Vec<PathBuf>>, String> {
                 .map_err(|error| format!("{}: {error}", entry.path().display()))?;
             if kind.is_dir() {
                 pending.push(entry.path());
-            } else if kind.is_file() {
-                files.push(entry.path());
-                if files.len() > MAX_PROBED_DIRECTORY_FILES {
-                    return Err(format!(
-                        "{} holds more than {MAX_PROBED_DIRECTORY_FILES} files",
-                        root.display()
-                    ));
-                }
+                continue;
+            }
+            let path = entry.path();
+            if toml_only
+                && !path
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))
+            {
+                continue;
+            }
+            files.push(path);
+            if files.len() > MAX_PROBED_DIRECTORY_FILES {
+                return Err(format!(
+                    "{} holds more than {MAX_PROBED_DIRECTORY_FILES} files",
+                    root.display()
+                ));
             }
         }
     }

@@ -358,3 +358,172 @@ fn probing_never_writes() {
         "a probe creates nothing"
     );
 }
+
+fn declared(name: &str) -> &'static hypercolor_daemon::durable_stores::DurableStore {
+    DURABLE_STORES
+        .iter()
+        .find(|store| store.name == name)
+        .unwrap_or_else(|| panic!("{name} is inventoried"))
+}
+
+/// Every version from one below the declared range to one above it.
+fn around(name: &str) -> std::ops::RangeInclusive<u32> {
+    let store = declared(name);
+    store.readable_schema_min.saturating_sub(1)..=store.readable_schema_max + 1
+}
+
+fn assert_reader_matches_declaration(name: &str, accepts: impl Fn(u32) -> bool) {
+    let store = declared(name);
+    for version in around(name) {
+        let declared_readable =
+            store.readable_schema_min <= version && version <= store.readable_schema_max;
+        assert_eq!(
+            accepts(version),
+            declared_readable,
+            "{name}: the real reader and the declaration disagree about schema {version}"
+        );
+    }
+}
+
+#[test]
+fn the_real_readers_accept_exactly_the_declared_ranges() {
+    assert_reader_matches_declaration("config", |version| {
+        hypercolor_core::config::ConfigManager::parse_toml(&format!("schema_version = {version}\n"))
+            .is_ok()
+    });
+
+    let directory = tempfile::tempdir().expect("store directory");
+    let write = |name: &str, document: Value| {
+        let path = directory.path().join(name);
+        fs::write(&path, serde_json::to_vec(&document).expect("encode")).expect("write store");
+        path
+    };
+    assert_reader_matches_declaration("scenes", |version| {
+        hypercolor_daemon::scene_store::load(&write(
+            "scenes.json",
+            json!({"schema_version": version, "scenes": {}}),
+        ))
+        .is_ok()
+    });
+    assert_reader_matches_declaration("device-aliases", |version| {
+        hypercolor_daemon::device_aliases::load(&write(
+            "device-aliases.json",
+            json!({"schema_version": version, "aliases": {}, "quarantined_keys": [], "collisions": []}),
+        ))
+        .is_ok()
+    });
+    assert_reader_matches_declaration("library", |version| {
+        let path = write("library.json", json!({"version": version}));
+        hypercolor_daemon::library::JsonLibraryStore::open(path).is_ok()
+    });
+}
+
+#[test]
+fn an_empty_document_reads_the_way_each_reader_takes_it() {
+    let roots = Roots::new();
+    roots.data("library.json", "{}");
+    roots.state("device-binding-migration.json", "{}");
+    roots.state("device-settings.json", "{}");
+    let report = roots.probe();
+    assert_eq!(
+        found(&report, "library"),
+        StoreFound::Schema(1),
+        "the library reads a bare object as its legacy schema"
+    );
+    assert!(
+        matches!(
+            found(&report, "device-binding-journal"),
+            StoreFound::Unreadable(_)
+        ),
+        "the binding journal refuses a document without its version"
+    );
+    assert_eq!(found(&report, "device-settings"), StoreFound::Schema(1));
+}
+
+#[test]
+fn a_moved_store_reports_the_newer_of_its_two_files() {
+    let roots = Roots::new();
+    roots.state("device-settings.json", r#"{"schema_version":2}"#);
+    roots.data("device-settings.json", r#"{"schema_version":3}"#);
+    assert_eq!(
+        found(&roots.probe(), "device-settings"),
+        StoreFound::Schema(3),
+        "the reader takes a newer previous file, so the probe reports it"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_special_file_is_unreadable_without_being_opened() {
+    let roots = Roots::new();
+    for (root, name) in [
+        (&roots.roots.data, "library.json"),
+        (&roots.roots.config, "cli.toml"),
+    ] {
+        let path = root.join(name);
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success());
+    }
+    // Opening a FIFO for reading blocks until a writer appears; the probe
+    // must not open one at all.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let probe_roots = roots.roots.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(probe_durable_stores(&probe_roots));
+    });
+    let report = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the probe never blocks on a special file");
+    for name in ["library", "cli-config"] {
+        assert!(
+            matches!(found(&report, name), StoreFound::Unreadable(_)),
+            "{name}: {:?}",
+            found(&report, name)
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_stores_are_read_the_way_their_readers_walk_them() {
+    let roots = Roots::new();
+    let elsewhere = roots.roots.data.join("real-attachments");
+    fs::create_dir_all(elsewhere.join("nested")).expect("templates");
+    fs::write(elsewhere.join("nested/strip.TOML"), "schema_version = 2\n").expect("template");
+    for index in 0..10 {
+        fs::write(
+            elsewhere.join(format!("note-{index}.txt")),
+            "not a template",
+        )
+        .expect("note");
+    }
+    std::os::unix::fs::symlink(&elsewhere, roots.roots.data.join("attachments"))
+        .expect("linked store root");
+    assert_eq!(
+        found(&roots.probe(), "attachment-templates"),
+        StoreFound::Schema(2),
+        "a linked root and an upper-case extension still load, as in the reader"
+    );
+}
+
+#[test]
+fn a_probe_before_initialization_reports_what_migration_then_rewrites() {
+    let roots = Roots::new();
+    roots.data("library.json", r#"{"favorites":[]}"#);
+    let before = roots.probe();
+    hypercolor_daemon::library::JsonLibraryStore::open(roots.roots.data.join("library.json"))
+        .expect("the library opens and migrates in place");
+    let rewritten: Value =
+        serde_json::from_slice(&fs::read(roots.roots.data.join("library.json")).expect("library"))
+            .expect("library JSON");
+    assert_eq!(rewritten["version"], 2, "opening rewrote the store");
+    assert_eq!(
+        found(&before, "library"),
+        StoreFound::Schema(1),
+        "the report keeps what was on disk before the store opened"
+    );
+    assert_eq!(found(&roots.probe(), "library"), StoreFound::Schema(2));
+}

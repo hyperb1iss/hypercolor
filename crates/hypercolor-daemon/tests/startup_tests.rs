@@ -533,6 +533,51 @@ async fn daemon_initialization_relocates_machine_state_out_of_data() {
     }
 }
 
+#[tokio::test]
+async fn daemon_initialization_reports_each_store_before_it_migrates() {
+    let guard = TestDataDirGuard::new().await;
+    std::fs::create_dir_all(&guard.data_dir).expect("data directory should be created");
+    let library = guard.data_dir.join("library.json");
+    std::fs::write(&library, br#"{"favorites":[]}"#).expect("a schema 1 library");
+    std::fs::write(
+        guard.legacy_state_path("device-settings.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 3,
+            "global_brightness": 0.5,
+            "devices": {},
+            "driver_controls": {},
+        }))
+        .expect("device settings"),
+    )
+    .expect("device settings in the data root");
+
+    let config = default_config();
+    let temp = temp_config_file();
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
+
+    let rewritten: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&library).expect("library")).expect("library JSON");
+    assert_eq!(rewritten["version"], 2, "opening migrated the library");
+    assert!(guard.state_path("device-settings.json").exists());
+    let report = &state.durable_store_report;
+    use hypercolor_daemon::durable_stores::StoreFound;
+    assert_eq!(
+        report.found("library"),
+        Some(&StoreFound::Schema(1)),
+        "the report holds what was on disk before the library migrated"
+    );
+    assert_eq!(
+        report.found("device-settings"),
+        Some(&StoreFound::Schema(3))
+    );
+    assert_eq!(report.found("config"), Some(&StoreFound::Schema(5)));
+    assert_eq!(report.found("scenes"), Some(&StoreFound::Absent));
+}
+
 /// Create a temp file pre-populated with valid minimal TOML config.
 /// A boot config for a test that synthesized its own settings.
 ///
