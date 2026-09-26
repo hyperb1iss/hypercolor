@@ -424,6 +424,52 @@ pub(super) fn remove_owned_directory_tree(
     parent.sync_all()
 }
 
+/// Prove an owned tree removable without changing it.
+///
+/// Every entry must belong to the effective user; directories are walked,
+/// single-link regular files and symbolic links are accepted, and special
+/// files or multiply linked regular files are refused. Nothing is followed.
+pub(super) fn validate_owned_directory_tree(
+    parent: &File,
+    name: &OsStr,
+    expected: DirectoryEntryMetadata,
+) -> io::Result<()> {
+    if expected.kind != DirectoryEntryKind::Directory || !expected.is_owned_by_current_user() {
+        return Err(unsafe_entry("owned tree root is not an owned directory"));
+    }
+    let directory = open_directory_at(parent, name)?;
+    require_same_entry(
+        expected,
+        metadata_for_file(&directory)?,
+        "owned tree directory changed during validation",
+    )?;
+    for child in directory_entries(&directory)? {
+        let child_name = child.as_os_str();
+        let Some(metadata) = entry_metadata_at(&directory, child_name)? else {
+            continue;
+        };
+        if !metadata.is_owned_by_current_user() {
+            return Err(unsafe_entry("owned tree contains a foreign entry"));
+        }
+        match metadata.kind {
+            DirectoryEntryKind::Directory => {
+                validate_owned_directory_tree(&directory, child_name, metadata)?;
+            }
+            DirectoryEntryKind::RegularFile if metadata.link_count == 1 => {}
+            DirectoryEntryKind::SymbolicLink => {}
+            DirectoryEntryKind::RegularFile => {
+                return Err(unsafe_entry(
+                    "owned tree contains a multiply linked regular file",
+                ));
+            }
+            DirectoryEntryKind::Special => {
+                return Err(unsafe_entry("owned tree contains a special file"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn open_owned_tree_directory(
     parent: &File,
     name: &OsStr,
@@ -432,28 +478,16 @@ fn open_owned_tree_directory(
     if expected.kind != DirectoryEntryKind::Directory || !expected.is_owned_by_current_user() {
         return Err(unsafe_entry("owned tree root is not an owned directory"));
     }
-    // Read-only immutable directories must become searchable and writable
-    // before their entries can be unlinked; chmod never follows the name.
-    rustix::fs::chmodat(
-        parent,
-        name,
-        rustix_mode(PRIVATE_DIRECTORY_MODE)?,
-        AtFlags::empty(),
-    )
-    .map_err(io::Error::from)?;
-    let directory = openat(
-        parent,
-        name,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )
-    .map(File::from)
-    .map_err(io::Error::from)?;
+    let directory = open_directory_at(parent, name)?;
     require_same_entry(
         expected,
         metadata_for_file(&directory)?,
         "owned tree directory changed during removal",
     )?;
+    // Read-only immutable directories must become writable before their
+    // entries can be unlinked. The mode changes through the proven handle,
+    // never through a name that could have been swapped for a link.
+    set_exact_mode(&directory, PRIVATE_DIRECTORY_MODE)?;
     Ok(directory)
 }
 

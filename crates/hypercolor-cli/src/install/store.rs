@@ -287,6 +287,33 @@ impl InstallStore {
         Ok(lock)
     }
 
+    /// Take the per-user bootstrap lock every installer takes before it
+    /// bootstraps a store beneath `anchor`, without creating any store.
+    ///
+    /// # Errors
+    /// Returns an error for an unsafe anchor, contention, or lock failure.
+    pub(crate) fn acquire_bootstrap_gate(
+        &self,
+        anchor: &Path,
+    ) -> Result<ExclusiveDirectory, InstallStoreError> {
+        validate_bootstrap_root(anchor)?;
+        let preflight =
+            ReadOnlyDirectoryAuthority::open(anchor).map_err(InstallStoreError::BootstrapRoot)?;
+        let metadata = preflight
+            .metadata()
+            .map_err(InstallStoreError::BootstrapRoot)?;
+        require_safe_bootstrap_directory(
+            &self.ownership,
+            &preflight,
+            metadata,
+            anchor,
+            DirectoryRole::Ancestor,
+        )?;
+        ExclusiveDirectory::try_acquire(anchor, Path::new(ANCHORED_INSTALL_LOCK_FILE))
+            .map_err(InstallStoreError::AcquireLock)?
+            .ok_or(InstallStoreError::LockContended)
+    }
+
     pub fn active_unit(&self, lock: &InstallLock) -> Result<Option<UnitId>, InstallStoreError> {
         let directory = self.authority(lock)?;
         let Some(target) = directory

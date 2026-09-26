@@ -370,6 +370,12 @@ do_install() {
 RAW_INSTALL_ROOT="${INSTALL_PREFIX}/lib/hypercolor"
 RAW_INSTALL_LOCATOR="${RAW_INSTALL_ROOT}/install-journal.json"
 
+# Whether the locator names a managed install (schema 2) rather than the
+# historical journal.
+managed_locator_present() {
+    [[ -f "$RAW_INSTALL_LOCATOR" ]] && grep -q '"schema_version":2' "$RAW_INSTALL_LOCATOR"
+}
+
 # Print the release root a managed install recorded, if any. Recorded roots are
 # validated as plain [A-Za-z0-9/._-] paths, so no JSON unescaping is needed.
 recorded_release_root() {
@@ -407,7 +413,7 @@ uninstall_raw_linux() {
         success "Removed the recorded installation"
         return 0
     fi
-    if [[ -n "$(recorded_release_root)" ]]; then
+    if managed_locator_present; then
         fatal "A managed install is recorded in ${RAW_INSTALL_LOCATOR}, but no installed CLI can remove it. Reinstall the same release, then run --uninstall again."
     fi
 

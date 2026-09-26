@@ -74,6 +74,8 @@ pub trait LinuxUninstallHost {
 pub struct LinuxUninstallRun {
     /// The outcome of an interrupted transaction settled before removal.
     pub recovered: Option<InstallOutcome>,
+    /// Why an interrupted transaction could not settle before removal.
+    pub unsettled: Option<String>,
     /// Installer-owned paths removed by this run.
     pub removed: Vec<PathBuf>,
     /// User data and configuration roots left in place.
@@ -95,15 +97,15 @@ pub fn run_linux_uninstall<H: LinuxUninstallHost>(
 ) -> Result<LinuxUninstallRun, LinuxInstallCommandError> {
     let lib = home.join(".local/lib");
     let legacy_root = lib.join("hypercolor");
+    let old = InstallStore::new(&legacy_root, MAX_INSTALL_JOURNAL_BYTES)
+        .with_ownership_policy(ownership.clone());
     match std::fs::symlink_metadata(&legacy_root) {
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(LinuxUninstallRun::default());
+            return finish_interrupted_removal(home, &old, &lib, &legacy_root);
         }
         Err(error) => return Err(InstallPlatformError::new(error.to_string()).into()),
     }
-    let old = InstallStore::new(&legacy_root, MAX_INSTALL_JOURNAL_BYTES)
-        .with_ownership_policy(ownership.clone());
     let mut old_lock = old.acquire_anchored_lock(home)?;
     let locator =
         LinuxInstallLocator::retain(home, &old_lock).map_err(LinuxInstallCommandError::Election)?;
@@ -133,7 +135,7 @@ pub fn run_linux_uninstall<H: LinuxUninstallHost>(
     match authority {
         LinuxInstallAuthority::Legacy(journal) => {
             if journal.as_ref().is_some_and(pending) {
-                run.recovered = Some(settle(home, host, &old, &mut old_lock, false)?);
+                settle_or_note(home, host, &old, &mut old_lock, false, &mut run);
             }
             stop(host, LinuxUninstallCheckpoint::Settled)?;
             remove_platform(home, host, &old, &old_lock, &[old.active_path()])?;
@@ -187,7 +189,7 @@ fn uninstall_managed<H: LinuxUninstallHost>(
         .with_ownership_policy(old.ownership_policy().clone());
         let mut lock = store.acquire_lock()?;
         if store.load_journal(&lock)?.as_ref().is_some_and(pending) {
-            run.recovered = Some(settle(home, host, &store, &mut lock, true)?);
+            settle_or_note(home, host, &store, &mut lock, true, run);
         }
         stop(host, LinuxUninstallCheckpoint::Settled)?;
         remove_platform(home, host, &store, &lock, &active_roots)?;
@@ -241,6 +243,70 @@ fn remove_prepared_roots(
         }
     }
     Ok(())
+}
+
+/// Finish removing a historical root an interrupted run already hid.
+///
+/// Without any installation root, only a leftover removal tombstone can
+/// remain. It is cleared under the per-user bootstrap lock, so no installer
+/// bootstraps a new root meanwhile; nothing is created when none exists.
+fn finish_interrupted_removal(
+    home: &Path,
+    old: &InstallStore,
+    lib: &Path,
+    legacy_root: &Path,
+) -> Result<LinuxUninstallRun, LinuxInstallCommandError> {
+    let leftover = std::fs::read_dir(lib).ok().is_some_and(|entries| {
+        entries.flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".hypercolor-removing-hypercolor.")
+        })
+    });
+    let mut run = LinuxUninstallRun::default();
+    if !leftover {
+        return Ok(run);
+    }
+    let gate = old.acquire_bootstrap_gate(home)?;
+    let parent = gate
+        .open_public_directory(lib)
+        .map_err(|error| InstallPlatformError::new(error.to_string()))?;
+    let metadata = parent
+        .metadata()
+        .map_err(|error| InstallPlatformError::new(error.to_string()))?;
+    old.ownership_policy()
+        .require_trusted_ancestor(&parent, metadata)
+        .map_err(|refusal| LinuxInstallCommandError::UnsafeDirectory(lib.to_path_buf(), refusal))?;
+    if parent
+        .durable_remove_child_tree(Path::new("hypercolor"))
+        .map_err(|error| {
+            InstallPlatformError::new(format!("failed to remove hypercolor: {error}"))
+        })?
+    {
+        run.removed.push(legacy_root.to_path_buf());
+    }
+    Ok(run)
+}
+
+/// Settle an interrupted transaction, or note why it could not settle.
+///
+/// Uninstall removes every store afterwards, so a journal that recovery
+/// cannot finish (after a restart changed the service, say) does not block
+/// it. The removal below still refuses anything this installer did not
+/// generate.
+fn settle_or_note<H: LinuxUninstallHost>(
+    home: &Path,
+    host: &mut H,
+    store: &InstallStore,
+    lock: &mut InstallLock,
+    managed: bool,
+    run: &mut LinuxUninstallRun,
+) {
+    match settle(home, host, store, lock, managed) {
+        Ok(outcome) => run.recovered = Some(outcome),
+        Err(error) => run.unsettled = Some(error.to_string()),
+    }
 }
 
 fn settle<H: LinuxUninstallHost>(
@@ -389,24 +455,19 @@ fn remove_empty_container(
     lock: &InstallLock,
     container: &Path,
 ) -> Result<bool, LinuxInstallCommandError> {
-    let Some(parent) = container.parent() else {
+    let Some(parent_path) = container.parent() else {
         return Ok(false);
     };
-    let name = file_name(container)?;
-    let directory = match lock.open_public_directory(container) {
-        Ok(directory) => directory,
+    let parent = match lock.open_public_directory(parent_path) {
+        Ok(parent) => parent,
         Err(error) if not_found(&error) => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    let empty = directory
-        .into_directory_authority()
-        .and_then(|directory| directory.entries())
-        .map_err(|error| InstallPlatformError::new(error.to_string()))?
-        .is_empty();
-    if !empty {
-        return Ok(false);
-    }
-    remove_child_tree(lock, parent, name)
+    require_trusted_path(lock, parent_path)?;
+    // The kernel refuses atomically if the daemon created anything meanwhile.
+    parent
+        .durable_remove_empty_child(Path::new(file_name(container)?))
+        .map_err(|error| InstallPlatformError::new(error.to_string()).into())
 }
 
 /// Refuse removal beneath a directory another principal could rename.

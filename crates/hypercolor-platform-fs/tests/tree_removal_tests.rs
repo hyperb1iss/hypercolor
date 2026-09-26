@@ -169,3 +169,83 @@ fn owned_tree_removal_refuses_a_replaced_ancestry() {
         fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).expect("cleanup");
     }
 }
+
+#[test]
+fn owned_tree_removal_hides_the_name_first_and_finishes_leftover_tombstones() {
+    let fixture = Fixture::new();
+    let tree = fixture.populate();
+    // An interrupted earlier removal left a tombstone behind.
+    let leftover = fixture
+        .public
+        .join(".hypercolor-removing-releases.4242-7/units/a");
+    fs::create_dir_all(&leftover).expect("leftover tombstone");
+    fs::write(leftover.join("daemon"), b"old").expect("leftover member");
+    fs::set_permissions(&leftover, fs::Permissions::from_mode(0o555)).expect("read-only");
+    let unrelated = fixture.public.join(".hypercolor-removing-other.1-1");
+    fs::create_dir(&unrelated).expect("unrelated tombstone");
+    let authority = fixture.authority();
+    assert!(
+        authority
+            .durable_remove_child_tree(Path::new("releases"))
+            .expect("remove tree and leftovers")
+    );
+    assert!(!tree.exists());
+    let remaining: Vec<_> = fs::read_dir(&fixture.public)
+        .expect("public entries")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    assert_eq!(
+        remaining,
+        vec![unrelated.file_name().expect("name").to_owned()]
+    );
+
+    // A leftover alone is still finished when the public name is gone.
+    let orphan = fixture.public.join(".hypercolor-removing-releases.9-9");
+    fs::create_dir(&orphan).expect("orphan tombstone");
+    assert!(
+        authority
+            .durable_remove_child_tree(Path::new("releases"))
+            .expect("finish orphan")
+    );
+    assert!(!orphan.exists());
+    assert!(
+        !authority
+            .durable_remove_child_tree(Path::new("releases"))
+            .expect("nothing left")
+    );
+}
+
+#[test]
+fn empty_child_removal_never_deletes_contents() {
+    let fixture = Fixture::new();
+    let empty = fixture.public.join("empty");
+    let full = fixture.public.join("full");
+    fs::create_dir(&empty).expect("empty");
+    fs::create_dir(&full).expect("full");
+    fs::write(full.join("keep"), b"keep").expect("content");
+    symlink(&fixture.outside, fixture.public.join("link")).expect("link");
+    let authority = fixture.authority();
+    assert!(
+        authority
+            .durable_remove_empty_child(Path::new("empty"))
+            .expect("empty removed")
+    );
+    assert!(!empty.exists());
+    assert!(
+        !authority
+            .durable_remove_empty_child(Path::new("full"))
+            .expect("full kept")
+    );
+    assert_eq!(fs::read(full.join("keep")).expect("content kept"), b"keep");
+    assert!(
+        !authority
+            .durable_remove_empty_child(Path::new("absent"))
+            .expect("absent")
+    );
+    assert!(
+        authority
+            .durable_remove_empty_child(Path::new("link"))
+            .is_err()
+    );
+    assert!(fixture.outside.join("keep").exists());
+}

@@ -46,7 +46,10 @@ pub(super) fn execute_uninstall(home: &Path) -> Result<()> {
     if let Some(outcome) = &run.recovered {
         println!("Settled an interrupted installation before removal: {outcome:?}");
     }
-    if run.removed.is_empty() && run.recovered.is_none() {
+    if let Some(reason) = &run.unsettled {
+        println!("Removed an interrupted installation that could not settle: {reason}");
+    }
+    if run.removed.is_empty() && run.recovered.is_none() && run.unsettled.is_none() {
         println!("No raw Hypercolor installation is recorded for this user.");
     }
     for path in &run.removed {

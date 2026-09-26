@@ -1533,15 +1533,20 @@ fn uninstall_resumes_after_loss_at_every_checkpoint() {
             run_linux_uninstall(&fixture.home, &fixture.private(), &mut host).is_err(),
             "{checkpoint:?}"
         );
-        // An old or new installer never sees an independent store meanwhile.
+        // An installer never elects an independent store meanwhile: the
+        // recorded authority stays elected while both roots exist, and once
+        // either is gone election refuses rather than falling back.
+        let both_roots = matches!(
+            checkpoint,
+            LinuxUninstallCheckpoint::Settled | LinuxUninstallCheckpoint::PlatformRemoved
+        );
         match elect_linux_installation_with(&fixture.home, &fixture.private()) {
-            Ok(LinuxInstallElection::Managed { authority, .. }) => {
+            Ok(LinuxInstallElection::Managed { authority, .. }) if both_roots => {
                 assert_eq!(authority.location().state_root(), location.state_root());
             }
-            Ok(LinuxInstallElection::Legacy { .. }) => {
-                panic!("{checkpoint:?}: authority fell back")
-            }
-            Err(_) => {}
+            Err(_) if !both_roots => {}
+            Ok(_) => panic!("{checkpoint:?}: unexpected authority"),
+            Err(error) => panic!("{checkpoint:?}: unexpected refusal {error}"),
         }
         host.stop_at = None;
         run_linux_uninstall(&fixture.home, &fixture.private(), &mut host)
@@ -2128,4 +2133,76 @@ fn uninstall_after_an_unpublished_loss_removes_the_prepared_roots() {
             .expect("fresh install after uninstall");
         fixture.assert_managed(&fresh, &fixture.v2.id);
     }
+}
+
+#[test]
+fn uninstall_finishes_a_hidden_historical_root_and_never_blocks_a_new_install() {
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    fixture
+        .run(&fixture.v1, Some(location.clone()), &fixture.private())
+        .expect("install");
+    let mut host = UninstallHost {
+        world: Rc::clone(&fixture.world),
+        stop_at: Some(LinuxUninstallCheckpoint::StateRemoved),
+    };
+    assert!(run_linux_uninstall(&fixture.home, &fixture.private(), &mut host).is_err());
+    // Model a loss right after the historical root was renamed away.
+    let lib = fixture.home.join(".local/lib");
+    fs::rename(
+        lib.join("hypercolor"),
+        lib.join(".hypercolor-removing-hypercolor.77-1"),
+    )
+    .expect("tombstone");
+    host.stop_at = None;
+    let run = run_linux_uninstall(&fixture.home, &fixture.private(), &mut host)
+        .expect("finish the hidden root");
+    assert_eq!(run.removed, vec![lib.join("hypercolor")]);
+    assert_eq!(
+        fs::read_dir(&lib).expect("lib").count(),
+        0,
+        "no tombstone remains"
+    );
+
+    // A tombstone never blocks a new install, and the next uninstall sweeps it.
+    fs::create_dir(lib.join(".hypercolor-removing-hypercolor.78-1")).expect("tombstone");
+    fixture
+        .run(&fixture.v2, Some(location.clone()), &fixture.private())
+        .expect("fresh install beside a tombstone");
+    fixture.assert_managed(&location, &fixture.v2.id);
+    run_linux_uninstall(&fixture.home, &fixture.private(), &mut host).expect("uninstall");
+    assert_eq!(fs::read_dir(&lib).expect("lib").count(), 0);
+}
+
+#[test]
+fn uninstall_removes_an_install_whose_journal_cannot_settle() {
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    fixture
+        .run(&fixture.v1, Some(location.clone()), &fixture.private())
+        .expect("install");
+    let performed = fixture.world.borrow().effects.len();
+    fixture.world.borrow_mut().crash = Some(Crash::After(performed + 1));
+    let crashed = catch_unwind(AssertUnwindSafe(|| {
+        fixture.run(&fixture.v2, None, &fixture.private())
+    }));
+    assert!(crashed.is_err());
+    // A restart brings the stopped service back behind the journal's back.
+    fixture.world.borrow_mut().start();
+    assert!(
+        fixture.run(&fixture.v2, None, &fixture.private()).is_err(),
+        "recovery cannot settle this drift"
+    );
+    let mut host = UninstallHost {
+        world: Rc::clone(&fixture.world),
+        stop_at: None,
+    };
+    let run = run_linux_uninstall(&fixture.home, &fixture.private(), &mut host)
+        .expect("uninstall despite the unsettled journal");
+    assert!(run.unsettled.is_some());
+    assert!(!location.release_root().exists());
+    assert!(!location.state_root().exists());
+    assert!(!fixture.home.join(".local/lib/hypercolor").exists());
+    let world = fixture.world.borrow();
+    assert!(!world.loaded && !world.active);
 }
