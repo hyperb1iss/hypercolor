@@ -306,8 +306,18 @@ from pathlib import Path
 
 root_name = os.environ["ROOT_NAME"]
 root = Path(os.environ["ROOT_DIR"])
+def unique_keys(pairs):
+    # The Rust validator rejects a duplicated field; keep the two in step
+    # instead of silently taking the last value.
+    keys = [key for key, _ in pairs]
+    duplicated = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicated:
+        raise SystemExit(f"duplicated keys: {duplicated}")
+    return dict(pairs)
+
+
 with open(os.environ["MANIFEST"], encoding="utf-8") as handle:
-    manifest = json.load(handle)
+    manifest = json.load(handle, object_pairs_hook=unique_keys)
 
 name = manifest.get("name")
 version = manifest.get("version")
@@ -431,13 +441,6 @@ if actual_paths != expected_paths:
 # shape: one entry per store, each reading the schema it writes.
 inventory_path = "share/hypercolor/durable-stores.json"
 if inventory_path in expected_paths:
-    def unique_keys(pairs):
-        keys = [key for key, _ in pairs]
-        duplicated = sorted({key for key in keys if keys.count(key) > 1})
-        if duplicated:
-            raise SystemExit(f"{inventory_path} has duplicated keys: {duplicated}")
-        return dict(pairs)
-
     def whole(value, what):
         if type(value) is not int or value < 0 or value > 0xFFFFFFFF:
             raise SystemExit(f"{what} must be a whole number in 0..=4294967295")

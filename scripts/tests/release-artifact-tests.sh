@@ -281,7 +281,14 @@ class ReleaseArtifactTests(unittest.TestCase):
             duplicated = text.replace('"stores": [', '"stores": [], "stores": [', 1)
             self.assertNotEqual(duplicated, text)
             self.write_inventory(duplicated)
-            self.assert_rejected("has duplicated keys")
+            self.assert_rejected("duplicated keys: ['stores']")
+
+    def test_duplicated_manifest_keys_are_rejected(self):
+        text = json.dumps(self.manifest(), indent=2)
+        duplicated = text.replace('"name": "hypercolor"', '"name": "hypercolor", "name": "hypercolor"', 1)
+        self.assertNotEqual(duplicated, text)
+        (self.payload / "manifest.json").write_text(duplicated + "\n")
+        self.assert_rejected("duplicated keys: ['name']")
 
     def test_a_downstream_build_adds_its_own_stores_once(self):
         overlay = self.directory / "private-stores.json"
