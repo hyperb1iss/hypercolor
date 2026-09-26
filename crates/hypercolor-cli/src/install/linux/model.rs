@@ -357,8 +357,10 @@ pub fn parse_systemd_show(bytes: &[u8]) -> Result<LinuxSystemdObservation, Insta
     } else {
         let parsed = parse_systemd_exec(fields["ExecStart"])?;
         // A stopped service keeps its last exec status, including that run's
-        // pid, until the unit reloads. Only a running service must agree.
-        if main_pid != 0 && parsed.runtime_pid != main_pid {
+        // pid, until the unit reloads, and a reload while it runs forgets the
+        // pid (it reads 0). Only a running service with a recorded pid must
+        // agree.
+        if main_pid != 0 && parsed.runtime_pid != 0 && parsed.runtime_pid != main_pid {
             return Err(error("systemd ExecStart pid disagrees with MainPID"));
         }
         parsed.canonical_argv
@@ -377,13 +379,57 @@ pub fn parse_systemd_show(bytes: &[u8]) -> Result<LinuxSystemdObservation, Insta
     Ok(observation)
 }
 
+/// Where `hypercolor.service` stands in its lifecycle.
+///
+/// Only the running and stopped phases are checkpoints. A service between
+/// them has a job or an automatic restart in flight, which the executor
+/// settles first; one that is still transitioning afterwards is treated as
+/// running, never as stopped, so a transaction never mutates under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxServicePhase {
+    /// `active/running`: a main process that has reported readiness.
+    Running,
+    /// `inactive/dead` or `failed/failed`: no process and nothing pending.
+    Stopped,
+    /// Activating, deactivating, reloading, or waiting to restart.
+    Transitional,
+}
+
+const MAX_SYSTEMD_STATE_BYTES: usize = 64;
+
 impl LinuxSystemdObservation {
+    #[must_use]
+    pub fn phase(&self) -> LinuxServicePhase {
+        match (self.active_state.as_str(), self.sub_state.as_str()) {
+            ("active", "running") => LinuxServicePhase::Running,
+            ("inactive", "dead") | ("failed", "failed") => LinuxServicePhase::Stopped,
+            _ => LinuxServicePhase::Transitional,
+        }
+    }
+
     pub(super) fn validate(&self) -> Result<(), InstallPlatformError> {
         if !matches!(self.load_state.as_str(), "loaded" | "not-found")
-            || !matches!(self.active_state.as_str(), "active" | "inactive")
-            || !matches!(self.sub_state.as_str(), "running" | "dead")
+            || !matches!(
+                self.active_state.as_str(),
+                "active"
+                    | "inactive"
+                    | "failed"
+                    | "activating"
+                    | "deactivating"
+                    | "reloading"
+                    | "maintenance"
+                    | "refreshing"
+            )
+            || self.sub_state.is_empty()
+            || self.sub_state.len() > MAX_SYSTEMD_STATE_BYTES
+            || !self
+                .sub_state
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
         {
-            return Err(error("systemctl show reported an unsupported third state"));
+            return Err(error(
+                "systemctl show reported an unsupported service state",
+            ));
         }
         if (self.load_state == "loaded"
             && !matches!(self.unit_file_state.as_str(), "enabled" | "disabled"))
@@ -393,11 +439,19 @@ impl LinuxSystemdObservation {
                 "systemctl unit-file state is inconsistent with load state",
             ));
         }
-        let active = self.active_state == "active";
-        if active != (self.sub_state == "running")
-            || active != (self.main_pid != 0)
-            || active && self.invocation_id.is_empty()
-        {
+        let phase = self.phase();
+        // Activating, deactivating and reloading carry systemd's own sub
+        // states; the steady active states and the stopped ones must agree
+        // with their process fields.
+        let consistent = match self.active_state.as_str() {
+            "active" => {
+                self.sub_state == "running" && self.main_pid != 0 && !self.invocation_id.is_empty()
+            }
+            "inactive" => self.main_pid == 0,
+            "failed" => self.main_pid == 0 && self.sub_state.starts_with("failed"),
+            _ => true,
+        };
+        if !consistent {
             return Err(error("systemctl runtime fields are inconsistent"));
         }
         if !self.invocation_id.is_empty()
@@ -412,7 +466,9 @@ impl LinuxSystemdObservation {
             ));
         }
         if self.load_state == "not-found"
-            && (!self.fragment_path.is_empty() || !self.exec_start.is_empty() || active)
+            && (!self.fragment_path.is_empty()
+                || !self.exec_start.is_empty()
+                || phase != LinuxServicePhase::Stopped)
         {
             return Err(error("absent systemd unit has loaded fields"));
         }

@@ -23,9 +23,11 @@ use super::legacy_validation::{
 use super::model::{
     LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
     LinuxHttpResponse, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacySnapshot,
-    LinuxProcessExecutable, MAX_SYSTEMD_SHOW_BYTES, error, parse_systemd_show,
+    LinuxProcessExecutable, LinuxServicePhase, MAX_SYSTEMD_SHOW_BYTES, error, parse_systemd_show,
 };
-use super::runtime::{LinuxRuntimeManager, LinuxSystemdConnection, RuntimeJobOutcome};
+use super::runtime::{
+    LinuxRuntimeManager, LinuxRuntimeSettlement, LinuxSystemdConnection, RuntimeJobOutcome,
+};
 
 const SYSTEMCTL: &str = "/usr/bin/systemctl";
 const TIMEOUT: &str = "/usr/bin/timeout";
@@ -62,6 +64,13 @@ pub trait LinuxInstallExecutor {
         Ok(None)
     }
     fn active_unit(&mut self) -> Result<Option<UnitId>, InstallPlatformError>;
+    /// Wait until `hypercolor.service` has no queued or running job and is
+    /// not stopping, bounded by the deadlines its own unit declares.
+    ///
+    /// Inspection calls this first, so a checkpoint never mistakes a queued
+    /// start (which leaves the service reading `inactive`) or a stop in
+    /// flight for a settled state.
+    fn settle_runtime(&mut self) -> Result<LinuxRuntimeSettlement, InstallPlatformError>;
     fn systemd_show(&mut self, max_bytes: usize) -> Result<Vec<u8>, InstallPlatformError>;
     fn launcher_entry(
         &mut self,
@@ -97,6 +106,8 @@ pub trait LinuxInstallExecutor {
     ) -> Result<(), InstallPlatformError>;
     fn reload_manager(&mut self) -> Result<(), InstallPlatformError>;
     fn set_autostart(&mut self, enabled: bool) -> Result<(), InstallPlatformError>;
+    /// Start or stop the service, fenced at the unit's own start or stop
+    /// timeout. Starting resets a failed service first.
     fn set_runtime(&mut self, running: bool) -> Result<(), InstallPlatformError>;
     fn process_executable(
         &mut self,
@@ -265,6 +276,10 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
         parse_active_target(&target).map(Some)
     }
 
+    fn settle_runtime(&mut self) -> Result<LinuxRuntimeSettlement, InstallPlatformError> {
+        self.runtime_manager.settle()
+    }
+
     fn systemd_show(&mut self, max_bytes: usize) -> Result<Vec<u8>, InstallPlatformError> {
         run_systemctl(
             &self.systemd_connection,
@@ -383,15 +398,14 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
             ],
             MAX_SYSTEMD_SHOW_BYTES,
         )?)?;
-        let stable = if running {
-            observation.active_state == "active"
-                && observation.sub_state == "running"
-                && observation.main_pid != 0
-        } else {
-            observation.active_state == "inactive"
-                && observation.sub_state == "dead"
-                && observation.main_pid == 0
-        };
+        // A daemon that exits nonzero on SIGTERM ends `failed`, which is
+        // still stopped; the next start resets it.
+        let stable = observation.phase()
+            == if running {
+                LinuxServicePhase::Running
+            } else {
+                LinuxServicePhase::Stopped
+            };
         if outcome == RuntimeJobOutcome::Done && stable {
             Ok(())
         } else if outcome == RuntimeJobOutcome::Cancelled {

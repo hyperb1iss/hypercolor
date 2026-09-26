@@ -11,8 +11,8 @@ use super::executor::LinuxInstallExecutor;
 use super::model::{
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LINUX_RECEIPT_SCHEMA_VERSION,
     LINUX_RECORD_SCHEMA_VERSION, LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
-    LinuxLayoutEffect, LinuxLayoutOperation, LinuxRecord, MAX_HTTP_RESPONSE_BYTES,
-    MAX_LAUNCHER_BYTES, error,
+    LinuxLayoutEffect, LinuxLayoutOperation, LinuxRecord, LinuxServicePhase,
+    MAX_HTTP_RESPONSE_BYTES, MAX_LAUNCHER_BYTES, error,
 };
 use super::proof::{candidate_systemd, prior_systemd, require_notify_launcher, systemd_equivalent};
 use super::state::consistent_platform_unit;
@@ -77,6 +77,117 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
     }
 }
 
+/// Whether a static comparison also requires the expected service phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Runtime {
+    Compared,
+    Ignored,
+}
+
+impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
+    /// Compare the last inspection with a checkpoint's layout, launcher and
+    /// service definition, and with its service phase when `runtime` asks.
+    fn static_state_matches(
+        &self,
+        checkpoint: PlatformCheckpoint,
+        expected: &PlatformState,
+        layout_operation_index: u16,
+        record: &LinuxRecord,
+        runtime: Runtime,
+    ) -> Result<bool, InstallPlatformError> {
+        let inspection = self
+            .last_inspection
+            .as_ref()
+            .ok_or_else(|| error("exact checkpoint requires a preceding inspection"))?;
+        if !Self::expected_layout_matches(inspection, record, layout_operation_index, checkpoint) {
+            return Ok(false);
+        }
+        let candidate_launcher = candidate_launcher_entry(record.candidate_launcher.as_ref());
+        let launcher_expected = match checkpoint {
+            PlatformCheckpoint::CandidateLauncher
+            | PlatformCheckpoint::CandidateActive
+            | PlatformCheckpoint::CandidateManager
+            | PlatformCheckpoint::CandidateAutostart
+            | PlatformCheckpoint::CandidateRuntime
+            | PlatformCheckpoint::PriorActiveRestored => candidate_launcher,
+            _ => record.prior_launcher.clone(),
+        };
+        if inspection.launcher != launcher_expected {
+            return Ok(false);
+        }
+        let same = |actual: &super::model::LinuxSystemdObservation,
+                    wanted: &super::model::LinuxSystemdObservation| match runtime
+        {
+            Runtime::Compared => systemd_equivalent(actual, wanted),
+            Runtime::Ignored => same_definition(actual, wanted),
+        };
+        let candidate_side = matches!(
+            checkpoint,
+            PlatformCheckpoint::CandidateActive
+                | PlatformCheckpoint::CandidateManager
+                | PlatformCheckpoint::CandidateAutostart
+                | PlatformCheckpoint::CandidateRuntime
+                | PlatformCheckpoint::PriorActiveRestored
+                | PlatformCheckpoint::PriorLauncherRestored
+                | PlatformCheckpoint::PriorLayoutRestored
+        );
+        let expected_systemd = if candidate_side {
+            candidate_systemd(
+                record,
+                &self.config.direct_fragment_path,
+                expected.running_unit.is_some(),
+                expected.autostart_enabled,
+            )
+        } else {
+            prior_systemd(
+                record,
+                expected.running_unit.is_some(),
+                expected.autostart_enabled,
+            )?
+        };
+        let early_rollback_prior_manager = matches!(
+            checkpoint,
+            PlatformCheckpoint::CandidateActive
+                | PlatformCheckpoint::PriorActiveRestored
+                | PlatformCheckpoint::PriorLauncherRestored
+                | PlatformCheckpoint::PriorLayoutRestored
+        ) && prior_systemd(
+            record,
+            expected.running_unit.is_some(),
+            expected.autostart_enabled,
+        )
+        .is_ok_and(|prior| same(&inspection.systemd, &prior));
+        // Querying a newly published unit can load it before daemon-reload.
+        // Its exact inactive candidate identity is valid only after publication.
+        let discovered_candidate_launcher = checkpoint == PlatformCheckpoint::CandidateLauncher
+            && expected.running_unit.is_none()
+            && record.candidate_launcher.is_some()
+            && same(
+                &inspection.systemd,
+                &candidate_systemd(
+                    record,
+                    &self.config.direct_fragment_path,
+                    false,
+                    expected.autostart_enabled,
+                ),
+            );
+        Ok(same(&inspection.systemd, &expected_systemd)
+            || early_rollback_prior_manager
+            || discovered_candidate_launcher)
+    }
+}
+
+/// The same service definition, whatever the service is doing.
+fn same_definition(
+    actual: &super::model::LinuxSystemdObservation,
+    expected: &super::model::LinuxSystemdObservation,
+) -> bool {
+    actual.load_state == expected.load_state
+        && actual.unit_file_state == expected.unit_file_state
+        && actual.fragment_path == expected.fragment_path
+        && actual.exec_start == expected.exec_start
+}
+
 impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
     fn inspect(&mut self) -> Result<PlatformState, InstallPlatformError> {
         let inspection = self.inspect_exact()?;
@@ -97,6 +208,12 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
             .ok_or_else(|| error("prepare requires an exact prior inspection"))?;
         if self.state_from(&inspection)? != prior.platform {
             return Err(error("prior Linux inspection changed before preparation"));
+        }
+        if inspection.systemd.phase() == LinuxServicePhase::Transitional {
+            return Err(error(
+                "hypercolor.service is still starting, stopping or restarting after its \
+                 unit's own deadline; wait for it to settle or stop it, then rerun",
+            ));
         }
         if inspection.systemd.load_state == "loaded"
             && matches!(inspection.launcher, LinuxExactEntry::Absent)
@@ -285,82 +402,19 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
     ) -> Result<bool, InstallPlatformError> {
         let record = self.validated_record(platform_record)?;
         let receipt = self.validated_receipt(&record, candidate_owner_receipt)?;
+        if !self.static_state_matches(
+            checkpoint,
+            expected,
+            layout_operation_index,
+            &record,
+            Runtime::Compared,
+        )? {
+            return Ok(false);
+        }
         let inspection = self
             .last_inspection
             .as_ref()
             .ok_or_else(|| error("exact checkpoint requires a preceding inspection"))?;
-        if !Self::expected_layout_matches(inspection, &record, layout_operation_index, checkpoint) {
-            return Ok(false);
-        }
-        let candidate_launcher = candidate_launcher_entry(record.candidate_launcher.as_ref());
-        let launcher_expected = match checkpoint {
-            PlatformCheckpoint::CandidateLauncher
-            | PlatformCheckpoint::CandidateActive
-            | PlatformCheckpoint::CandidateManager
-            | PlatformCheckpoint::CandidateAutostart
-            | PlatformCheckpoint::CandidateRuntime
-            | PlatformCheckpoint::PriorActiveRestored => candidate_launcher,
-            _ => record.prior_launcher.clone(),
-        };
-        if inspection.launcher != launcher_expected {
-            return Ok(false);
-        }
-        let candidate_side = matches!(
-            checkpoint,
-            PlatformCheckpoint::CandidateActive
-                | PlatformCheckpoint::CandidateManager
-                | PlatformCheckpoint::CandidateAutostart
-                | PlatformCheckpoint::CandidateRuntime
-                | PlatformCheckpoint::PriorActiveRestored
-                | PlatformCheckpoint::PriorLauncherRestored
-                | PlatformCheckpoint::PriorLayoutRestored
-        );
-        let expected_systemd = if candidate_side {
-            candidate_systemd(
-                &record,
-                &self.config.direct_fragment_path,
-                expected.running_unit.is_some(),
-                expected.autostart_enabled,
-            )
-        } else {
-            prior_systemd(
-                &record,
-                expected.running_unit.is_some(),
-                expected.autostart_enabled,
-            )?
-        };
-        let early_rollback_prior_manager = matches!(
-            checkpoint,
-            PlatformCheckpoint::CandidateActive
-                | PlatformCheckpoint::PriorActiveRestored
-                | PlatformCheckpoint::PriorLauncherRestored
-                | PlatformCheckpoint::PriorLayoutRestored
-        ) && prior_systemd(
-            &record,
-            expected.running_unit.is_some(),
-            expected.autostart_enabled,
-        )
-        .is_ok_and(|prior| systemd_equivalent(&inspection.systemd, &prior));
-        // Querying a newly published unit can load it before daemon-reload.
-        // Its exact inactive candidate identity is valid only after publication.
-        let discovered_candidate_launcher = checkpoint == PlatformCheckpoint::CandidateLauncher
-            && expected.running_unit.is_none()
-            && record.candidate_launcher.is_some()
-            && systemd_equivalent(
-                &inspection.systemd,
-                &candidate_systemd(
-                    &record,
-                    &self.config.direct_fragment_path,
-                    false,
-                    expected.autostart_enabled,
-                ),
-            );
-        if !systemd_equivalent(&inspection.systemd, &expected_systemd)
-            && !early_rollback_prior_manager
-            && !discovered_candidate_launcher
-        {
-            return Ok(false);
-        }
         let Some(running_unit) = &expected.running_unit else {
             return Ok(true);
         };
@@ -399,6 +453,23 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
             return Ok(false);
         }
         Ok(true)
+    }
+
+    fn matches_exact_state_except_runtime(
+        &mut self,
+        checkpoint: PlatformCheckpoint,
+        expected: &PlatformState,
+        layout_operation_index: u16,
+        platform_record: &PlatformTransactionRecord,
+    ) -> Result<bool, InstallPlatformError> {
+        let record = self.validated_record(platform_record)?;
+        self.static_state_matches(
+            checkpoint,
+            expected,
+            layout_operation_index,
+            &record,
+            Runtime::Ignored,
+        )
     }
 
     fn capture_candidate_owner_receipt(
@@ -609,5 +680,113 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
         let receipt = self.validated_receipt(&record, candidate_owner_receipt)?;
         self.prove_owner(checkpoint, expected, &record, receipt.as_ref())
             .map(|_| ())
+    }
+
+    fn stop_unjournaled_runtime(
+        &mut self,
+        platform_record: &PlatformTransactionRecord,
+    ) -> Result<bool, InstallPlatformError> {
+        let record = self.validated_record(platform_record)?;
+        let inspection = self.inspect_exact()?;
+        if inspection.systemd.phase() != LinuxServicePhase::Stopped {
+            self.require_on_disk_service(&inspection, &record)?;
+            self.executor.set_runtime(false)?;
+        }
+        self.last_inspection = None;
+        Ok(true)
+    }
+
+    fn matches_untouched_prior(
+        &mut self,
+        prior: &PlatformState,
+        platform_record: &PlatformTransactionRecord,
+        restarted: bool,
+    ) -> Result<bool, InstallPlatformError> {
+        let record = self.validated_record(platform_record)?;
+        let inspection = self.inspect_exact()?;
+        let state = self.state_from(&inspection)?;
+        let baseline = &record.baseline_systemd;
+        let untouched = Self::expected_layout_matches(
+            &inspection,
+            &record,
+            0,
+            PlatformCheckpoint::PriorOriginal,
+        ) && inspection.launcher == record.prior_launcher
+            && inspection.launcher_bytes == record.prior_launcher_bytes
+            && state.layout_unit == prior.layout_unit
+            && state.launcher_unit == prior.launcher_unit
+            && inspection.systemd.load_state == baseline.load_state
+            && inspection.systemd.unit_file_state == baseline.unit_file_state
+            && inspection.systemd.fragment_path == baseline.fragment_path
+            && inspection.systemd.exec_start == baseline.exec_start
+            && (!restarted
+                || inspection.systemd.phase() == LinuxServicePhase::Running
+                    && inspection.systemd.invocation_id != baseline.invocation_id);
+        self.last_inspection = Some(inspection);
+        Ok(untouched)
+    }
+}
+
+impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
+    /// Prove the service that runs outside the journal is exactly the one
+    /// on disk: this installer's fragment running the launcher on disk,
+    /// which is one side of this transaction, and a main process (when there
+    /// is one) that is the daemon of the unit the active pointer names.
+    fn require_on_disk_service(
+        &mut self,
+        inspection: &LinuxInspection,
+        record: &LinuxRecord,
+    ) -> Result<(), InstallPlatformError> {
+        let systemd = &inspection.systemd;
+        let launcher_is_ours = !matches!(inspection.launcher, LinuxExactEntry::Absent)
+            && (inspection.launcher_bytes == record.prior_launcher_bytes
+                || record
+                    .candidate_launcher
+                    .as_ref()
+                    .is_some_and(|launcher| inspection.launcher_bytes == launcher.bytes));
+        if systemd.load_state != "loaded"
+            || systemd.fragment_path != self.config.direct_fragment_path
+            || !launcher_is_ours
+            || systemd.exec_start != require_notify_launcher(&inspection.launcher_bytes)?
+        {
+            return Err(error(
+                "the running service is not the one this installer's on-disk \
+                 definition starts",
+            ));
+        }
+        let unit = self
+            .state_from(inspection)?
+            .running_unit
+            .ok_or_else(|| error("the running service names no on-disk unit"))?;
+        let binding = if unit == record.candidate.unit {
+            &record.candidate
+        } else {
+            record
+                .prior
+                .as_ref()
+                .filter(|prior| prior.unit == unit)
+                .ok_or_else(|| {
+                    error("the running service's unit belongs to neither side of this transaction")
+                })?
+        };
+        if systemd.main_pid == 0 {
+            // Waiting to restart, or collecting a process that already
+            // exited: there is no process to identify beyond the unit.
+            return Ok(());
+        }
+        let process = self
+            .executor
+            .process_executable(systemd.main_pid, binding.daemon_size)?;
+        if process.path != binding.daemon_path
+            || process.sha256 != binding.daemon_sha256
+            || !unit.as_str().starts_with("legacy-")
+                && (process.device != binding.daemon_device
+                    || process.inode != binding.daemon_inode)
+        {
+            return Err(error(
+                "the running service's process is not the daemon its on-disk unit names",
+            ));
+        }
+        Ok(())
     }
 }

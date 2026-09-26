@@ -6,6 +6,9 @@ use super::model::{
 use super::store::{InstallLock, InstallStore, InstallStoreError};
 
 const MAX_FAILURE_DETAIL_BYTES: usize = 4_096;
+/// A candidate that keeps changing state while rollback binds its stop
+/// authority gets this many attempts before recovery reports it.
+const MAX_ROLLBACK_ENTRY_ATTEMPTS: usize = 3;
 
 pub trait InstallPlatform {
     fn inspect(&mut self) -> Result<PlatformState, InstallPlatformError>;
@@ -97,6 +100,77 @@ pub trait InstallPlatform {
         record: &PlatformTransactionRecord,
         candidate_owner_receipt: Option<&PlatformOwnerReceipt>,
     ) -> Result<(), InstallPlatformError>;
+
+    /// Stop a service that runs, or is still changing state, where the next
+    /// checkpoint expects it stopped and nothing else differs from it (the
+    /// coordinator proves that first through
+    /// [`Self::matches_exact_state_except_runtime`]).
+    ///
+    /// This is how recovery meets a service the platform started on its own
+    /// from the on-disk active pointer and service definition, for example
+    /// at login after a power loss, or a candidate that restarted after its
+    /// owner receipt. Implementations must first prove the running service
+    /// is exactly the one those on-disk records name, as either side of this
+    /// transaction, and refuse anything else.
+    ///
+    /// `Ok(false)` declines without any effect, and the coordinator reports
+    /// the drift as before. `Ok(true)` means the service is now stopped.
+    ///
+    /// # Errors
+    /// Returns an error when the running service is not provably this
+    /// transaction's, or when stopping it fails.
+    fn stop_unjournaled_runtime(
+        &mut self,
+        record: &PlatformTransactionRecord,
+    ) -> Result<bool, InstallPlatformError> {
+        let _ = record;
+        Ok(false)
+    }
+
+    /// Whether the last inspection matches `expected` at `checkpoint` in
+    /// everything except the service runtime: whether it runs, and under
+    /// which invocation.
+    ///
+    /// The coordinator relies on it to tell a service that merely restarted,
+    /// stopped or started on its own from any other drift, and never stops a
+    /// service unless stopping it would reach the expected checkpoint. The
+    /// default declines, so such drift stays drift.
+    ///
+    /// # Errors
+    /// Returns an error when the platform record cannot be read.
+    fn matches_exact_state_except_runtime(
+        &mut self,
+        checkpoint: PlatformCheckpoint,
+        expected: &PlatformState,
+        layout_operation_index: u16,
+        record: &PlatformTransactionRecord,
+    ) -> Result<bool, InstallPlatformError> {
+        let _ = (checkpoint, expected, layout_operation_index, record);
+        Ok(false)
+    }
+
+    /// Whether the platform still holds the prior exactly as prepared apart
+    /// from its runtime: its launcher, public layout and service definition.
+    /// The coordinator checks the active pointer itself.
+    ///
+    /// A transaction whose baseline runtime identity was lost before the
+    /// prior was unloaded (a crash and restart, or a power loss) cannot prove
+    /// its baseline any more; when this holds it is abandoned without any
+    /// effect instead of stopping with drift. With `restarted`, the prior
+    /// must also be running, steadily, under an identity other than its
+    /// baseline, which proves the transaction's own unload never took hold.
+    ///
+    /// # Errors
+    /// Returns an error when the platform cannot be inspected.
+    fn matches_untouched_prior(
+        &mut self,
+        prior: &PlatformState,
+        record: &PlatformTransactionRecord,
+        restarted: bool,
+    ) -> Result<bool, InstallPlatformError> {
+        let _ = (prior, record, restarted);
+        Ok(false)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -273,6 +347,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             InstallDisposition::RolledBack => Ok(InstallOutcome::RolledBack {
                 active_unit: journal.prior_active_unit,
                 failure: journal.failure.unwrap_or_default(),
+                abandoned: journal.abandoned,
             }),
         }
     }
@@ -321,29 +396,41 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                         return self.drive_rollback(journal, lock);
                     }
                     Err(StepError::Fatal(error)) => return Err(error),
+                    Err(StepError::Abandon(detail)) => {
+                        return Err(InstallCoordinatorError::InvalidAbandonment(detail));
+                    }
                 }
                 continue;
             }
 
-            match self.reconcile_action(&journal, action, lock) {
+            let mut step = self.reconcile_action(&journal, action, lock);
+            if step.is_ok() && action == InstallAction::RestoreCandidateRuntime {
+                // A candidate that dies between its start job and this
+                // receipt is a candidate failure, not drift.
+                step = self.capture_candidate_owner_receipt(&mut journal, lock);
+            }
+            match step {
                 Ok(()) => {
-                    if action == InstallAction::RestoreCandidateRuntime {
-                        self.capture_candidate_owner_receipt(&mut journal, lock)?;
-                    }
                     journal.advance(InstallDisposition::Forward, Some(next_forward(action)?))?;
                     self.store.write_journal(&journal, lock)?;
                 }
                 Err(StepError::Effect(error)) => {
                     let failure = truncate_detail(error.to_string());
-                    let next_action = self.rollback_entry_action(&journal, action, lock)?;
-                    if next_action == InstallAction::UnloadCandidateRuntime {
-                        self.capture_candidate_owner_receipt(&mut journal, lock)?;
+                    match self.enter_rollback(&mut journal, action, lock)? {
+                        RollbackEntry::Action(next_action) => {
+                            journal.failure = Some(failure);
+                            journal.advance(InstallDisposition::Rollback, Some(next_action))?;
+                            self.store.write_journal(&journal, lock)?;
+                            return self.drive_rollback(journal, lock);
+                        }
+                        RollbackEntry::Abandon(detail) => {
+                            // Keep the step's own failure beside the reason,
+                            // so a restart reads apart from a failed proof.
+                            return self.abandon(journal, format!("{detail}: {failure}"), lock);
+                        }
                     }
-                    journal.failure = Some(failure);
-                    journal.advance(InstallDisposition::Rollback, Some(next_action))?;
-                    self.store.write_journal(&journal, lock)?;
-                    return self.drive_rollback(journal, lock);
                 }
+                Err(StepError::Abandon(detail)) => return self.abandon(journal, detail, lock),
                 Err(StepError::Fatal(error)) => return Err(error),
             }
         }
@@ -353,36 +440,114 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         &mut self,
         journal: &mut InstallJournalV1,
         lock: &super::store::InstallLock,
-    ) -> Result<(), InstallCoordinatorError> {
+    ) -> Result<(), StepError> {
         if journal.target_platform.running_unit.is_none()
             || journal.candidate_owner_receipt.is_some()
         {
             return Ok(());
         }
-        let actual = self.inspect_state(lock)?;
+        let actual = self.inspect_state(lock).map_err(StepError::Fatal)?;
         let expected = Checkpoints::new(journal).candidate_runtime;
-        if !self.matches_checkpoint_at(
-            &actual,
-            &expected,
-            PlatformCheckpoint::CandidateRuntime,
-            journal.layout_operation_index,
-            &journal.platform_record,
-            None,
-        )? {
-            return Err(state_drift(
+        if !self
+            .matches_checkpoint_at(
+                &actual,
+                &expected,
+                PlatformCheckpoint::CandidateRuntime,
+                journal.layout_operation_index,
+                &journal.platform_record,
+                None,
+            )
+            .map_err(StepError::Fatal)?
+        {
+            return Err(StepError::Effect(state_drift(
                 InstallAction::RestoreCandidateRuntime,
                 expected.clone(),
                 expected,
                 actual,
-            ));
+            )));
         }
+        // The candidate matched just above; a failure to read its receipt
+        // now is the platform's, not the candidate's, and recovery retries it.
         let receipt = self
             .platform
             .capture_candidate_owner_receipt(&journal.target_platform, &journal.platform_record)
-            .map_err(|source| platform_error(InstallAction::RestoreCandidateRuntime, source))?;
-        receipt.validate()?;
+            .map_err(|source| {
+                StepError::Fatal(platform_error(
+                    InstallAction::RestoreCandidateRuntime,
+                    source,
+                ))
+            })?;
+        receipt
+            .validate()
+            .map_err(|source| StepError::Fatal(source.into()))?;
         journal.candidate_owner_receipt = Some(receipt);
         Ok(())
+    }
+
+    /// Choose the rollback entry for a failed forward action and bind the
+    /// candidate's stop authority when the entry needs it.
+    ///
+    /// Before the prior is unloaded, a failure whose platform no longer shows
+    /// the prepared baseline abandons the transaction instead: nothing was
+    /// changed, and the baseline a rollback would restore cannot be proven.
+    fn enter_rollback(
+        &mut self,
+        journal: &mut InstallJournalV1,
+        failed_action: InstallAction,
+        lock: &super::store::InstallLock,
+    ) -> Result<RollbackEntry, InstallCoordinatorError> {
+        let mut attempts = 0;
+        loop {
+            let next_action = match self.rollback_entry_action(journal, failed_action, lock) {
+                Ok(next_action) => next_action,
+                Err(drift @ InstallCoordinatorError::StateDrift { .. })
+                    if is_baseline_step(failed_action) =>
+                {
+                    let actual = self.inspect_state(lock)?;
+                    return match self.abandonment(journal, failed_action, &actual)? {
+                        Some(detail) => Ok(RollbackEntry::Abandon(detail)),
+                        None => Err(drift),
+                    };
+                }
+                Err(error) => return Err(error),
+            };
+            if next_action != InstallAction::UnloadCandidateRuntime {
+                return Ok(RollbackEntry::Action(next_action));
+            }
+            match self.capture_candidate_owner_receipt(journal, lock) {
+                Ok(()) => return Ok(RollbackEntry::Action(next_action)),
+                // The candidate stopped or restarted after it matched; choose
+                // again, which stops it whatever its invocation.
+                Err(StepError::Effect(error)) => {
+                    attempts += 1;
+                    if attempts == MAX_ROLLBACK_ENTRY_ATTEMPTS {
+                        return Err(error);
+                    }
+                }
+                Err(StepError::Fatal(error)) => return Err(error),
+                Err(StepError::Abandon(detail)) => {
+                    return Err(InstallCoordinatorError::InvalidAbandonment(detail));
+                }
+            }
+        }
+    }
+
+    /// End a transaction that never unloaded the prior, with no effect.
+    fn abandon(
+        &mut self,
+        mut journal: InstallJournalV1,
+        detail: String,
+        lock: &super::store::InstallLock,
+    ) -> Result<InstallOutcome, InstallCoordinatorError> {
+        journal.failure = Some(truncate_detail(detail));
+        journal.abandoned = true;
+        journal.advance(InstallDisposition::RolledBack, None)?;
+        self.store.write_journal(&journal, lock)?;
+        Ok(InstallOutcome::RolledBack {
+            active_unit: journal.prior_active_unit,
+            failure: journal.failure.unwrap_or_default(),
+            abandoned: true,
+        })
     }
 
     fn drive_rollback(
@@ -400,6 +565,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 return Ok(InstallOutcome::RolledBack {
                     active_unit: journal.prior_active_unit,
                     failure: journal.failure.unwrap_or_default(),
+                    abandoned: false,
                 });
             }
 
@@ -415,8 +581,10 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                         journal.advance(InstallDisposition::Rollback, Some(next_action))?;
                         self.store.write_journal(&journal, lock)?;
                     }
-                    Err(StepError::Effect(error)) => return Err(error),
-                    Err(StepError::Fatal(error)) => return Err(error),
+                    Err(StepError::Effect(error) | StepError::Fatal(error)) => return Err(error),
+                    Err(StepError::Abandon(detail)) => {
+                        return Err(InstallCoordinatorError::InvalidAbandonment(detail));
+                    }
                 }
                 continue;
             }
@@ -427,6 +595,9 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                     self.store.write_journal(&journal, lock)?;
                 }
                 Err(StepError::Effect(error) | StepError::Fatal(error)) => return Err(error),
+                Err(StepError::Abandon(detail)) => {
+                    return Err(InstallCoordinatorError::InvalidAbandonment(detail));
+                }
             }
         }
     }
@@ -486,27 +657,48 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                     InstallAction::RestorePriorLayout,
                 )
             };
-        let actual = self.inspect_state(lock).map_err(StepError::Fatal)?;
-        let before_matches = self
-            .matches_checkpoint_at(
-                &actual,
-                before,
-                before_checkpoint,
-                current_index,
-                &journal.platform_record,
-                journal.candidate_owner_receipt.as_ref(),
-            )
-            .map_err(StepError::Fatal)?;
-        let after_matches = self
-            .matches_checkpoint_at(
-                &actual,
-                after,
-                after_checkpoint,
-                after_index,
-                &journal.platform_record,
-                journal.candidate_owner_receipt.as_ref(),
-            )
-            .map_err(StepError::Fatal)?;
+        let mut stopped = false;
+        let (actual, before_matches, after_matches) = loop {
+            let actual = self.inspect_state(lock).map_err(StepError::Fatal)?;
+            let before_matches = self
+                .matches_checkpoint_at(
+                    &actual,
+                    before,
+                    before_checkpoint,
+                    current_index,
+                    &journal.platform_record,
+                    journal.candidate_owner_receipt.as_ref(),
+                )
+                .map_err(StepError::Fatal)?;
+            let after_matches = self
+                .matches_checkpoint_at(
+                    &actual,
+                    after,
+                    after_checkpoint,
+                    after_index,
+                    &journal.platform_record,
+                    journal.candidate_owner_receipt.as_ref(),
+                )
+                .map_err(StepError::Fatal)?;
+            if before_matches
+                || after_matches
+                || stopped
+                || !self
+                    .stop_first(
+                        journal,
+                        action,
+                        &actual,
+                        &[
+                            (before, before_checkpoint, current_index),
+                            (after, after_checkpoint, after_index),
+                        ],
+                    )
+                    .map_err(StepError::Fatal)?
+            {
+                break (actual, before_matches, after_matches);
+            }
+            stopped = true;
+        };
         if after_matches {
             return Ok(());
         }
@@ -595,36 +787,85 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         lock: &super::store::InstallLock,
     ) -> Result<(), StepError> {
         let transition = Transition::for_action(journal, action).map_err(StepError::Fatal)?;
-        let actual = self.inspect_state(lock).map_err(StepError::Fatal)?;
-        let before_matches = self
-            .matches_checkpoint_at(
-                &actual,
-                &transition.before,
-                transition.before_checkpoint,
-                journal.layout_operation_index,
-                &journal.platform_record,
-                journal.candidate_owner_receipt.as_ref(),
-            )
-            .map_err(StepError::Fatal)?;
-        let after_matches = self
-            .matches_checkpoint_at(
-                &actual,
-                &transition.after,
-                transition.after_checkpoint,
-                journal.layout_operation_index,
-                &journal.platform_record,
-                journal.candidate_owner_receipt.as_ref(),
-            )
-            .map_err(StepError::Fatal)?;
+        // Before the prior is unloaded, a lost baseline abandons the
+        // transaction instead; everywhere else a service that the platform
+        // restarted on its own is stopped before the step resumes.
+        let baseline_step = is_baseline_step(action);
+        // The stopped states this step can resume from once a service the
+        // platform started on its own is stopped.
+        let stopped_targets: Vec<_> = [
+            (&transition.before, transition.before_checkpoint),
+            (&transition.after, transition.after_checkpoint),
+        ]
+        .into_iter()
+        .filter(|(state, _)| !baseline_step && state.platform.running_unit.is_none())
+        .map(|(state, checkpoint)| (state, checkpoint, journal.layout_operation_index))
+        .collect();
+        let mut stopped = false;
+        let (actual, before_matches, after_matches) = loop {
+            let actual = self.inspect_state(lock).map_err(StepError::Fatal)?;
+            let before_matches = self
+                .matches_checkpoint_at(
+                    &actual,
+                    &transition.before,
+                    transition.before_checkpoint,
+                    journal.layout_operation_index,
+                    &journal.platform_record,
+                    journal.candidate_owner_receipt.as_ref(),
+                )
+                .map_err(StepError::Fatal)?;
+            let after_matches = self
+                .matches_checkpoint_at(
+                    &actual,
+                    &transition.after,
+                    transition.after_checkpoint,
+                    journal.layout_operation_index,
+                    &journal.platform_record,
+                    journal.candidate_owner_receipt.as_ref(),
+                )
+                .map_err(StepError::Fatal)?;
+            if before_matches
+                || after_matches
+                || stopped
+                || !self
+                    .stop_first(journal, action, &actual, &stopped_targets)
+                    .map_err(StepError::Fatal)?
+            {
+                break (actual, before_matches, after_matches);
+            }
+            stopped = true;
+        };
+        if baseline_step
+            && !before_matches
+            && !after_matches
+            && let Some(detail) = self
+                .abandonment(journal, action, &actual)
+                .map_err(StepError::Fatal)?
+        {
+            return Err(StepError::Abandon(detail));
+        }
 
         if transition.kind != TransitionKind::Mutation {
             if !before_matches {
-                return Err(StepError::Fatal(state_drift(
-                    action,
-                    transition.before,
-                    transition.after,
-                    actual,
-                )));
+                // A candidate that restarted, stopped or is still changing
+                // state after its receipt, with nothing else changed, failed
+                // its proof. Any other difference stays drift.
+                let candidate_failed = action == InstallAction::ProveCandidate
+                    && self
+                        .matches_except_runtime(
+                            &actual,
+                            &transition.before,
+                            transition.before_checkpoint,
+                            journal.layout_operation_index,
+                            &journal.platform_record,
+                        )
+                        .map_err(StepError::Fatal)?;
+                let drift = state_drift(action, transition.before, transition.after, actual);
+                return Err(if candidate_failed {
+                    StepError::Effect(drift)
+                } else {
+                    StepError::Fatal(drift)
+                });
             }
             let check = match transition.kind {
                 TransitionKind::Preflight => self.platform.preflight_authority(
@@ -775,9 +1016,73 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         failed_action: InstallAction,
         lock: &super::store::InstallLock,
     ) -> Result<InstallAction, InstallCoordinatorError> {
-        let actual = self.inspect_state(lock)?;
+        let mut stopped = false;
+        loop {
+            let actual = self.inspect_state(lock)?;
+            if let Some(action) = self.rollback_entry_for(journal, &actual)? {
+                return Ok(action);
+            }
+            // No entry names a service that restarted, flaps or is still
+            // changing state. When stopping it would reach a stopped entry,
+            // stop it whatever its invocation, then choose. Never before the
+            // prior is unloaded: there a lost baseline abandons instead.
+            let checkpoints = Checkpoints::new(journal);
+            let index = journal.layout_operation_index;
+            let mut targets = vec![
+                (
+                    &checkpoints.candidate_autostart,
+                    PlatformCheckpoint::CandidateAutostart,
+                    index,
+                ),
+                (
+                    &checkpoints.candidate_manager,
+                    PlatformCheckpoint::CandidateManager,
+                    index,
+                ),
+                (
+                    &checkpoints.candidate_active,
+                    PlatformCheckpoint::CandidateActive,
+                    index,
+                ),
+                (
+                    &checkpoints.candidate_launcher,
+                    PlatformCheckpoint::CandidateLauncher,
+                    index,
+                ),
+            ];
+            if index > 0 {
+                targets.push((
+                    &checkpoints.candidate_layout,
+                    PlatformCheckpoint::CandidateLayout,
+                    index,
+                ));
+            }
+            targets.push((
+                &checkpoints.prior_unloaded,
+                PlatformCheckpoint::PriorUnloaded,
+                index,
+            ));
+            if stopped
+                || is_baseline_step(failed_action)
+                || !self.stop_first(journal, failed_action, &actual, &targets)?
+            {
+                return Err(state_drift(
+                    failed_action,
+                    Transition::for_action(journal, failed_action)?.before,
+                    Transition::for_action(journal, failed_action)?.after,
+                    actual,
+                ));
+            }
+            stopped = true;
+        }
+    }
+
+    fn rollback_entry_for(
+        &mut self,
+        journal: &InstallJournalV1,
+        actual: &InstallationState,
+    ) -> Result<Option<InstallAction>, InstallCoordinatorError> {
         let checkpoints = Checkpoints::new(journal);
-        let mut candidate_unload = None;
         for (state, checkpoint, action) in [
             (
                 &checkpoints.candidate_runtime,
@@ -801,21 +1106,18 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             ),
         ] {
             if self.matches_checkpoint_at(
-                &actual,
+                actual,
                 state,
                 checkpoint,
                 journal.layout_operation_index,
                 &journal.platform_record,
                 journal.candidate_owner_receipt.as_ref(),
             )? {
-                candidate_unload = Some(action);
-                break;
+                return Ok(Some(action));
             }
         }
-        let action = if let Some(action) = candidate_unload {
-            action
-        } else if self.matches_checkpoint_at(
-            &actual,
+        let action = if self.matches_checkpoint_at(
+            actual,
             &checkpoints.candidate_launcher,
             PlatformCheckpoint::CandidateLauncher,
             journal.layout_operation_index,
@@ -825,7 +1127,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             InstallAction::RestorePriorLauncher
         } else if journal.layout_operation_index > 0
             && self.matches_checkpoint_at(
-                &actual,
+                actual,
                 &checkpoints.candidate_layout,
                 PlatformCheckpoint::CandidateLayout,
                 journal.layout_operation_index,
@@ -835,7 +1137,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         {
             InstallAction::RestorePriorLayout
         } else if self.matches_checkpoint_at(
-            &actual,
+            actual,
             &checkpoints.prior_unloaded,
             PlatformCheckpoint::PriorUnloaded,
             journal.layout_operation_index,
@@ -844,7 +1146,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         )? {
             InstallAction::ReloadPriorManager
         } else if self.matches_checkpoint_at(
-            &actual,
+            actual,
             &checkpoints.prior,
             PlatformCheckpoint::PriorOriginal,
             journal.layout_operation_index,
@@ -853,14 +1155,112 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         )? {
             InstallAction::FinishRollback
         } else {
-            return Err(state_drift(
-                failed_action,
-                Transition::for_action(journal, failed_action)?.before,
-                Transition::for_action(journal, failed_action)?.after,
-                actual,
-            ));
+            return Ok(None);
         };
-        Ok(action)
+        Ok(Some(action))
+    }
+
+    /// Stop a service the platform started outside the journal when that
+    /// alone would reach one of `targets`, stopped states this step could
+    /// resume from. Returns whether it stopped one.
+    fn stop_first(
+        &mut self,
+        journal: &InstallJournalV1,
+        action: InstallAction,
+        actual: &InstallationState,
+        targets: &[(&InstallationState, PlatformCheckpoint, u16)],
+    ) -> Result<bool, InstallCoordinatorError> {
+        if actual.platform.running_unit.is_none() {
+            return Ok(false);
+        }
+        let mut reachable = false;
+        for (target, checkpoint, index) in targets {
+            if target.platform.running_unit.is_none()
+                && self.matches_except_runtime(
+                    actual,
+                    target,
+                    *checkpoint,
+                    *index,
+                    &journal.platform_record,
+                )?
+            {
+                reachable = true;
+                break;
+            }
+        }
+        if !reachable {
+            return Ok(false);
+        }
+        self.platform
+            .stop_unjournaled_runtime(&journal.platform_record)
+            .map_err(|source| platform_error(action, source))
+    }
+
+    /// Whether `actual` matches `expected` in everything but the runtime.
+    fn matches_except_runtime(
+        &mut self,
+        actual: &InstallationState,
+        expected: &InstallationState,
+        checkpoint: PlatformCheckpoint,
+        layout_operation_index: u16,
+        record: &PlatformTransactionRecord,
+    ) -> Result<bool, InstallCoordinatorError> {
+        let layout_checkpoint = matches!(
+            checkpoint,
+            PlatformCheckpoint::CandidateLayout | PlatformCheckpoint::PriorLayoutRestored
+        );
+        if actual.active_unit != expected.active_unit
+            || actual.platform.launcher_unit != expected.platform.launcher_unit
+            || actual.platform.autostart_enabled != expected.platform.autostart_enabled
+            || !layout_checkpoint && actual.platform.layout_unit != expected.platform.layout_unit
+        {
+            return Ok(false);
+        }
+        self.platform
+            .matches_exact_state_except_runtime(
+                checkpoint,
+                &expected.platform,
+                layout_operation_index,
+                record,
+            )
+            .map_err(InstallCoordinatorError::InspectPlatform)
+    }
+
+    /// The failure detail for abandoning a transaction whose prior was never
+    /// unloaded and whose baseline service identity is gone.
+    fn abandonment(
+        &mut self,
+        journal: &InstallJournalV1,
+        action: InstallAction,
+        actual: &InstallationState,
+    ) -> Result<Option<String>, InstallCoordinatorError> {
+        // At UnloadPrior a stopped or still stopping prior may be this
+        // transaction's own stop, so only a prior running steadily under a
+        // new invocation proves nothing was changed; any other difference
+        // there is drift.
+        let at_unload = action == InstallAction::UnloadPrior;
+        if journal.disposition != InstallDisposition::Forward
+            || !is_baseline_step(action)
+            || journal.layout_operation_index != 0
+            || journal.candidate_owner_receipt.is_some()
+            || at_unload && actual.platform.running_unit.is_none()
+            || actual.active_unit != journal.prior_active_unit
+            || !self
+                .platform
+                .matches_untouched_prior(
+                    &journal.prior_platform,
+                    &journal.platform_record,
+                    at_unload,
+                )
+                .map_err(InstallCoordinatorError::InspectPlatform)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "abandoned at {action:?}: the running release restarted or stopped before \
+             it was unloaded, so its original service could no longer be proven; \
+             nothing had changed"
+        )))
     }
 
     fn require_state(
@@ -940,10 +1340,29 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
     }
 }
 
+/// Where a failed forward action goes next.
+#[derive(Debug)]
+enum RollbackEntry {
+    Action(InstallAction),
+    Abandon(String),
+}
+
+/// The steps before the prior is unloaded, where a lost baseline abandons
+/// the transaction and no service is ever stopped outside the journal.
+fn is_baseline_step(action: InstallAction) -> bool {
+    matches!(
+        action,
+        InstallAction::PreflightCandidate | InstallAction::UnloadPrior
+    )
+}
+
 #[derive(Debug)]
 enum StepError {
     Effect(InstallCoordinatorError),
     Fatal(InstallCoordinatorError),
+    /// The transaction never unloaded the prior, lost the baseline it would
+    /// need to, and can end without any effect.
+    Abandon(String),
 }
 
 #[derive(Debug)]
@@ -1348,6 +1767,8 @@ pub enum InstallCoordinatorError {
     },
     #[error("install journal has no next action while nonterminal")]
     MissingNextAction,
+    #[error("install transaction cannot be abandoned after it changed the platform: {0}")]
+    InvalidAbandonment(String),
     #[error("install action {0:?} is invalid for the current disposition")]
     InvalidAction(InstallAction),
 }

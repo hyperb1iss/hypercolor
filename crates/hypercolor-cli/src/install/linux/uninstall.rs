@@ -18,7 +18,7 @@ use super::super::{
 };
 use super::command::{LinuxInstallCommandError, PlatformInputs, pending, platform_with, recover};
 use super::model::{
-    LINUX_LAYOUT_ITEMS, LinuxExactEntry, LinuxLayoutItem, MAX_LAUNCHER_BYTES,
+    LINUX_LAYOUT_ITEMS, LinuxExactEntry, LinuxLayoutItem, LinuxServicePhase, MAX_LAUNCHER_BYTES,
     MAX_SYSTEMD_SHOW_BYTES, parse_systemd_show,
 };
 use super::proof::{layout_target_for, render_launcher};
@@ -355,6 +355,7 @@ fn remove_platform<H: LinuxUninstallHost>(
         .ok_or_else(|| InstallPlatformError::new("Linux HOME must be exact UTF-8"))?
         .to_owned();
     let mut executor = host.executor(store, lock, tree)?;
+    executor.settle_runtime()?;
     let systemd = parse_systemd_show(&executor.systemd_show(MAX_SYSTEMD_SHOW_BYTES)?)?;
     let (launcher, launcher_bytes) = executor.launcher_entry(MAX_LAUNCHER_BYTES)?;
     let mut layout = BTreeMap::new();
@@ -382,7 +383,9 @@ fn remove_platform<H: LinuxUninstallHost>(
         return Err(LinuxInstallCommandError::ForeignInstallation(foreign));
     }
 
-    if loaded && systemd.active_state == "active" {
+    // Running, restarting or still changing state: stop it. A `failed`
+    // service is already stopped.
+    if loaded && systemd.phase() != LinuxServicePhase::Stopped {
         executor.set_runtime(false)?;
     }
     if loaded && systemd.unit_file_state == "enabled" {

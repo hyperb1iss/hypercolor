@@ -90,11 +90,18 @@ fn require_candidate_committed(
         crate::install::InstallOutcome::RolledBack {
             active_unit,
             failure,
+            abandoned,
         } => {
             let action = if recovery { "recovery" } else { "installation" };
             let restored = active_unit
                 .as_ref()
                 .map_or("none", crate::install::UnitId::as_str);
+            if abandoned {
+                bail!(
+                    "release {action} stopped before changing anything; {restored} is still \
+                     installed, so rerun the installer: {failure}"
+                )
+            }
             bail!("release {action} rolled back to {restored}: {failure}")
         }
     }
@@ -255,6 +262,7 @@ mod tests {
             InstallOutcome::RolledBack {
                 active_unit: None,
                 failure: "candidate owner proof failed".to_owned(),
+                abandoned: false,
             },
             &candidate,
             false,
@@ -265,5 +273,22 @@ mod tests {
                 .to_string()
                 .contains("candidate owner proof failed")
         );
+
+        let abandoned = require_candidate_committed(
+            InstallOutcome::RolledBack {
+                active_unit: Some(UnitId::new("c".repeat(64)).expect("prior unit")),
+                failure: "baseline lost".to_owned(),
+                abandoned: true,
+            },
+            &candidate,
+            true,
+        )
+        .expect_err("an abandoned transaction is not a successful install")
+        .to_string();
+        assert!(
+            abandoned.contains("before changing anything"),
+            "{abandoned}"
+        );
+        assert!(abandoned.contains("rerun the installer"), "{abandoned}");
     }
 }
