@@ -316,8 +316,9 @@ colors, every session: identity without a stored palette.
 than Inter, tighter metrics, and an excellent weight range. It reads as
 *designed*. **JetBrains Mono** carries every number, metric, hex value, and code
 fragment. **Sora** is the display face and does one job, the page title (§5.2).
-All three load from Bunny Fonts (privacy-respecting, no Google tracking), and
-they are the only faces the app fetches.
+Satoshi loads from Fontshare and the other two from Bunny Fonts (both
+privacy-respecting, no Google tracking); they are the only faces the app
+fetches.
 
 The root is set to `font-size: 112.5%` (an 18px base), so `1rem` is 18px. Body
 text runs `letter-spacing: -0.01em` with `line-height: 1.5`; headings tighten to
@@ -345,10 +346,14 @@ The shipped page title is `.page-title`: 21px, weight 500, +0.02em, in Sora
 
 ### 5.2 Display Faces
 
-Exactly three families load, all from Bunny Fonts in `index.html`: **Satoshi**
-(400/500/600/700), **JetBrains Mono** (400/500/600 plus 400 italic), and
-**Sora** (400/500/600). Nothing else is fetched, so any face named in a stack
-without one of those three behind it silently falls back.
+Exactly three families load in `index.html`: **Satoshi** (the variable
+face, weight axis 300 to 900, upright and italic, from Fontshare, which is the
+only CDN that carries it; Bunny Fonts does not, and a request there returns no
+faces), **JetBrains Mono** (400/500/600 plus 400 italic, from Bunny), and
+**Sora** (400/500/600, from Bunny). Nothing else is fetched, so any face named
+in a stack without one of those three behind it silently falls back. Because
+Satoshi is variable, every weight the type scale asks for (including 600)
+renders as a true instance rather than a synthesized one.
 
 **Sora** is the display face, and it has exactly one job: `.page-title` in
 `input.css`, at 21px, weight 500, +0.02em tracking, with an accent-forward

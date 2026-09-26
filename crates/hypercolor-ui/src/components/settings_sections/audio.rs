@@ -193,7 +193,7 @@ pub fn AudioSection(
             />
             <SettingDropdown
                 label="Device"
-                description="Audio source for reactive effects; applies live when the daemon can switch safely"
+                description="Audio source for reactive effects; applies live when Hypercolor can switch safely"
                 key="audio.device"
                 value=device
                 options=audio_devices

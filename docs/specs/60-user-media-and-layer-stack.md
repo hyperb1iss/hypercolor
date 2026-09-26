@@ -730,7 +730,7 @@ or audio band can drive playback rate at runtime.
 | 1    | APNG                 | `image` + `png` (APNG support)            | CPU         | Same as GIF.                                  |
 | 1    | PNG sequence (dir)   | `image`                                  | CPU         | Discovery + ordering policy needed.           |
 | 2    | Animated WebP        | `image-webp` / `webp-animation`           | CPU         | WebP-VP8L vs VP8 path differences.            |
-| 3    | MP4 / WebM video     | `gstreamer-rs` (Linux first)              | GPU upload  | LGPL surface; codec packages required.        |
+| 3    | MP4 / WebM video     | `gstreamer-rs`                            | GPU upload  | LGPL surface; codec packages required.        |
 | 4    | Lottie               | `rlottie`                                | CPU         | Native C++ dependency. Rasterizes per frame.   |
 | 5    | HTTP / HLS livestream| `gstreamer-rs` `playbin`                  | GPU upload  | Network failure model; reconnect policy.       |
 

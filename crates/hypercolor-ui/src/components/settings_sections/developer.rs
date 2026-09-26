@@ -46,7 +46,7 @@ pub fn DeveloperSection(
             <div class="text-xs text-fg-tertiary/50 -mt-2 mb-4">"Advanced options for development and debugging"</div>
             <SettingDropdown
                 label="Log Level"
-                description="Daemon logging verbosity"
+                description="Hypercolor logging verbosity"
                 key="daemon.log_level"
                 value=log_level
                 options=Signal::stored(log_options)

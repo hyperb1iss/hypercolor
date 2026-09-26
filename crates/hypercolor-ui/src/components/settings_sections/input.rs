@@ -154,7 +154,7 @@ pub fn InputSection(
                     on_change=on_change
                 />
                 <SettingDropdown
-                    label="Daemon effects"
+                    label="Effects on the connected computer"
                     description="Choose which interaction source authoritative device output receives"
                     key="input.daemon_route"
                     value=daemon_route

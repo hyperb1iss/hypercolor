@@ -1533,7 +1533,7 @@ pub enum EngineCommand {
 
 ## 8. Cross-Platform Considerations
 
-Hypercolor is Linux-first, but the architecture isolates platform-specific code behind trait boundaries. This section catalogs what is universal and what needs platform-specific implementations.
+Hypercolor runs on Linux, Windows, and macOS, and the architecture isolates platform-specific code behind trait boundaries. This section catalogs what is universal and what needs platform-specific implementations.
 
 ### 8.1 Platform Matrix
 

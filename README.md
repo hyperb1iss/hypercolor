@@ -1,12 +1,14 @@
 <p align="center">
-  <img src="docs/images/dashboard.png" alt="Hypercolor dashboard running the Neon City effect" width="800">
+  <img src="assets/brand/social/hypercolor-banner.png" alt="Hypercolor" width="800">
 </p>
-
-<h1 align="center">Hypercolor</h1>
 
 <p align="center">
   <strong>Open-source RGB lighting engine for Linux, Windows, and macOS</strong><br>
   <sub>✦ Your world is a canvas: paint every pixel. ✦</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="Hypercolor dashboard running the Neon City effect" width="800">
 </p>
 
 <p align="center">
@@ -311,7 +313,10 @@ themselves.
 
 Debian and Ubuntu users can install the `.deb` from the releases page. Arch users have
 [`hypercolor-bin`](https://aur.archlinux.org/packages/hypercolor-bin) on the AUR, and the
-Homebrew formula works on Linux too: `brew install hyperb1iss/tap/hypercolor`.
+Homebrew formula works on Linux too: `brew install hyperb1iss/tap/hypercolor`. NixOS users
+get a flake with a `services.hypercolor` module; `nix run github:hyperb1iss/hypercolor`
+tries the CLI without installing anything (details on the
+[download page](https://hyperb1iss.github.io/hypercolor/download/)).
 
 Building from source instead:
 

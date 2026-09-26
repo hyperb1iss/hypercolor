@@ -110,6 +110,7 @@ jobs:
       ui: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.ui }}
       compat: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.compat }}
       docs: ${{ steps.filter.outputs.docs }}
+      nix: ${{ steps.filter.outputs.nix }}
       workflow: ${{ steps.filter.outputs.workflow }}
     steps:
       - uses: actions/checkout@v7
@@ -211,6 +212,12 @@ jobs:
               - 'scripts/tests/release-workflow.test.mjs'
               - 'scripts/tests/resolve-release-version.test.mjs'
               - 'packaging/homebrew/**'
+            nix:
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'nix/**'
+              - 'udev/**'
+              - '.github/workflows/ci.yml'
 
   # ── Workflow Lint ─────────────────────────────────────────────
   workflow-lint:
@@ -282,6 +289,9 @@ jobs:
 
       - name: Check macOS GPU-only architecture
         run: ./scripts/check-macos-gpu-only.sh
+
+      - name: Refuse new raw HTML sinks
+        run: ./scripts/check-ui-html-sinks.sh
 
       - name: Test local build fabric
         run: |
@@ -941,6 +951,35 @@ jobs:
       - name: Verify compatibility matrix is current
         run: bun scripts/gen-compat.ts --check
 
+  # ── Nix Flake ───────────────────────────────────────────────────
+  nix:
+    name: Nix Flake
+    needs: changes
+    if: needs.changes.outputs.nix == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Check flake formatting
+        run: nix run nixpkgs#nixfmt-tree -- --ci
+      - name: Build package and evaluate the NixOS module
+        run: nix flake check --print-build-logs
+      - name: Smoke-test the built package
+        run: |
+          set -euo pipefail
+          nix build .#hypercolor --print-build-logs
+          ./result/bin/hypercolor --version
+          ./result/bin/hypercolor-daemon --help >/dev/null
+          test -f ./result/lib/udev/rules.d/99-hypercolor.rules
+          test -f ./result/lib/udev/rules.d/70-hypercolor-input.rules
+          test -f ./result/share/hypercolor/ui/index.html
+          test -d ./result/share/hypercolor/effects/bundled
+
   # ── Python Client ────────────────────────────────────────────────
   python:
     name: Python Client
@@ -1499,7 +1538,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
+    needs: [release-credentials, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -1727,6 +1766,45 @@ jobs:
             --app "$app" --dmg "$dmg" --provenance "${dmg}.notarization.json" \
             --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
 
+      - name: Assemble signed macOS distribution
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          # The sidecars use the host profile; Tauri builds the app with an
+          # explicit target. Package those exact binaries without recompiling.
+          bin_dir="${RUNNER_TEMP}/macos-release-binaries"
+          mkdir -p "${bin_dir}"
+          install -m755 "${CARGO_TARGET_DIR}/release/hypercolor-daemon" "${bin_dir}/hypercolor-daemon"
+          install -m755 "${CARGO_TARGET_DIR}/release/hypercolor" "${bin_dir}/hypercolor"
+          install -m755 "${CARGO_TARGET_DIR}/${{ matrix.rust-target }}/release/hypercolor-app" "${bin_dir}/hypercolor-app"
+          bash scripts/with-macos-signing.sh scripts/dist.sh --ci --skip-docs \
+            --web-assets web-assets --target '${{ matrix.rust-target }}' \
+            --bin-dir "${bin_dir}" --version '${{ steps.version.outputs.version }}'
+          platform="macos-arm64"
+          if [[ '${{ matrix.cask_arch }}' == 'x86_64' ]]; then platform="macos-amd64"; fi
+          dist_name="hypercolor-${{ steps.version.outputs.version }}-${platform}"
+          ./scripts/sign-macos-artifacts.sh verify-standalone \
+            --directory "dist/${dist_name}" \
+            --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
+          (cd dist && shasum -a 256 "${dist_name}.tar.gz" > "${dist_name}.tar.gz.sha256")
+
+      - name: Upload macOS release tarball
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hypercolor-tarball-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          path: |
+            dist/hypercolor-*.tar.gz
+            dist/hypercolor-*.tar.gz.sha256
+          if-no-files-found: error
+
       - name: Upload native release bundle
         uses: actions/upload-artifact@v7
         with:
@@ -1857,7 +1935,7 @@ jobs:
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts == 'full')
-    needs: [release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
+    needs: [release-credentials, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -1868,28 +1946,12 @@ jobs:
           - target: linux-arm64
             os: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-gnu
-          - target: macos-arm64
-            os: macos-26
-            rust-target: aarch64-apple-darwin
-          - target: macos-amd64
-            os: macos-26-intel
-            rust-target: x86_64-apple-darwin
     # A full workflow_dispatch on the default branch warms these release
     # shapes. Tags restore that trusted cache; they never publish cache state.
     timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Qualify macOS runner and SDK
-        if: runner.os == 'macOS'
-        run: |
-          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
-          test "$(xcrun --show-sdk-version | cut -d. -f1)" = "26"
-
-      - name: Install NASM for Intel macOS
-        if: matrix.target == 'macos-amd64'
-        run: brew install nasm
 
       - name: Report runner capacity
         shell: bash
@@ -1994,24 +2056,6 @@ jobs:
             --version "${{ steps.version.outputs.version }}"
           test -f "dist/${{ steps.version.outputs.dist_name }}.tar.gz"
 
-      - name: Assemble signed macOS distribution
-        if: runner.os == 'macOS'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-        run: |
-          bash scripts/with-macos-signing.sh scripts/dist.sh --ci --skip-docs \
-            --web-assets web-assets --target '${{ matrix.target }}' \
-            --version '${{ steps.version.outputs.version }}'
-          ./scripts/sign-macos-artifacts.sh verify-standalone \
-            --directory 'dist/${{ steps.version.outputs.dist_name }}' \
-            --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
-
       # Memory exhaustion can take down the VM before this step runs.
       - name: Report runner capacity after failure
         if: failure()
@@ -2088,11 +2132,12 @@ jobs:
   # Accepts workflow_dispatch as well as push: release.yml pushes tags
   # with GITHUB_TOKEN (which never fires `on: push`) and then dispatches
   # this workflow on the tag ref.
+  # Compilation runs alongside validation; only publication waits for both.
   create-release:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/')
-    needs: [build-release, build-native-app, python, python-generated]
+    needs: [build-release, build-native-app, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -2447,3 +2492,123 @@ jobs:
             -m "hypercolor: update to ${VERSION}" \
             -m "Update formula and cask from the published release checksums."
           git push
+
+  # ── Update Nix Release Pin ───────────────────────────────────────
+  # Mirrors update-aur: the flake wraps the published tarballs, so the
+  # version and checksums in nix/release.json move after every stable
+  # release. Lands as a pull request so main keeps the review gate. GitHub
+  # never runs pull_request workflows for PRs opened with GITHUB_TOKEN, so
+  # the job builds the flake against the new pin itself before opening it.
+  update-nix:
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      startsWith(github.ref, 'refs/tags/') &&
+      !contains(github.ref_name, '-')
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Determine version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release artifacts and compute checksums
+        id: checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          for platform in linux-amd64 linux-arm64; do
+            tarball="hypercolor-${VERSION}-${platform}.tar.gz"
+            gh release download "v${VERSION}" \
+              --repo "${{ github.repository }}" \
+              --pattern "${tarball}" \
+              --dir release-artifacts
+            sha=$(sha256sum "release-artifacts/${tarball}" | cut -d' ' -f1)
+            echo "sha256_${platform//-/_}=${sha}" >> "$GITHUB_OUTPUT"
+            echo "  ${platform}: ${sha}"
+          done
+
+      - name: Write nix/release.json
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA_AMD64: ${{ steps.checksums.outputs.sha256_linux_amd64 }}
+          SHA_ARM64: ${{ steps.checksums.outputs.sha256_linux_arm64 }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg version "$VERSION" \
+            --arg amd64 "$SHA_AMD64" \
+            --arg arm64 "$SHA_ARM64" \
+            '{version: $version, sha256: {"x86_64-linux": $amd64, "aarch64-linux": $arm64}}' \
+            > nix/release.json
+          cat nix/release.json
+
+      - name: Check whether the pin moved
+        id: pin
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- nix/release.json; then
+            echo "nix/release.json already points at ${VERSION}; nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: cachix/install-nix-action@v31
+        if: steps.pin.outputs.changed == 'true'
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build the flake against the new pin
+        if: steps.pin.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          nix flake check --print-build-logs
+          nix build .#hypercolor --print-build-logs
+          ./result/bin/hypercolor --version | grep -F "${VERSION}"
+
+      - name: Open pull request
+        if: steps.pin.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          branch="ci/nix-release-${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${branch}"
+          git add nix/release.json
+          git commit -F - <<EOF
+          chore(nix): pin flake to release ${VERSION}
+
+          Automated after the v${VERSION} tarballs were published. The flake
+          wraps those artifacts, so the version and per-architecture
+          checksums in nix/release.json follow every stable release.
+          EOF
+          # The branch is bot-owned, so a rerun of the tag lane replaces it.
+          git push --force origin "${branch}"
+          existing="$(gh pr list --head "${branch}" --state open --json number --jq 'length')"
+          if [[ "${existing}" != "0" ]]; then
+            echo "Pull request already open for ${branch}; the force-push refreshed it."
+            exit 0
+          fi
+          gh pr create \
+            --base main \
+            --head "${branch}" \
+            --title "chore(nix): pin flake to release ${VERSION}" \
+            --body "Automated pin of the Nix flake to the v${VERSION} release tarballs. Checksums come straight from the published GitHub Release assets."

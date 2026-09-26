@@ -152,7 +152,7 @@ pub fn InstallEffectPanel() -> impl IntoView {
                     <div class="flex items-center justify-between gap-3 border-b border-edge-subtle/70 px-4 py-3">
                         <div>
                             <div class="text-sm font-semibold text-fg-primary">"Install Custom Effect"</div>
-                            <div class="text-[11px] text-fg-tertiary">"Preview the artifact metadata before uploading it to the daemon."</div>
+                            <div class="text-[11px] text-fg-tertiary">"Preview the artifact metadata before adding it to Hypercolor."</div>
                         </div>
                         <button
                             type="button"
@@ -283,7 +283,7 @@ pub fn InstallEffectPanel() -> impl IntoView {
                             <span class=("inline-flex", true) class=("animate-spin", move || is_uploading.get())>
                                 <Icon icon=if is_uploading.get() { LuLoader } else { LuCheck } width="14px" height="14px" />
                             </span>
-                            <span>{move || if is_uploading.get() { "Uploading…" } else { "Install to Daemon" }}</span>
+                            <span>{move || if is_uploading.get() { "Uploading…" } else { "Install in Hypercolor" }}</span>
                         </button>
                     </div>
                 </div>

@@ -59,6 +59,58 @@ The `hypercolor-bin` AUR package updates automatically on every tagged release:
 yay -S hypercolor-bin
 ```
 
+### NixOS and Nix
+
+The repository is a flake that wraps the same release tarball and ships a
+NixOS module. Try it without installing anything:
+
+```bash
+nix run github:hyperb1iss/hypercolor -- devices
+```
+
+On NixOS, add the flake as an input and enable the module. It installs the
+package, the udev rules, the `i2c-dev` kernel module, and a hardened systemd
+user service that starts the daemon with every graphical login:
+
+```nix
+{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.hypercolor.url = "github:hyperb1iss/hypercolor";
+
+  outputs = { nixpkgs, hypercolor, ... }: {
+    nixosConfigurations.rig = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        hypercolor.nixosModules.default
+        { services.hypercolor.enable = true; }
+      ];
+    };
+  };
+}
+```
+
+Options live under `services.hypercolor`: `autoStart` (default `true`),
+`logLevel`, `extraArgs`, `smbus.enable` (default `true`), and
+`input.allDevices` (default `false`; grants every keyboard and mouse event
+node to the seated user, which is a session-wide keylogging grant, so read the
+description before turning it on). Screen-reactive effects on Wayland capture
+through the desktop portal, so the module enables `xdg.portal` by default.
+Log out and back in after the first rebuild so logind replays the device ACLs.
+
+Outside NixOS, `nix profile install github:hyperb1iss/hypercolor` installs the
+binaries, and the package ships a user unit with store paths already filled
+in. systemd does not scan the Nix profile, so link the unit in and copy the
+udev rules yourself:
+
+```bash
+mkdir -p ~/.config/systemd/user
+ln -sf ~/.nix-profile/lib/systemd/user/hypercolor.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now hypercolor.service
+sudo cp ~/.nix-profile/lib/udev/rules.d/*hypercolor*.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+```
+
 ## Windows
 
 Download the NSIS installer (`Hypercolor_<version>_x64-setup.exe`) from the

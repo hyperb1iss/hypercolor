@@ -51,7 +51,7 @@ pub(super) fn OpenRgbCard(on_change: Callback<(String, serde_json::Value)>) -> i
             {move || match hints.get() {
                 Some(Ok(Some(hints))) => view! {
                     <div class="space-y-2">
-                        <p class="text-xs font-medium text-fg-primary">"Install on this computer"</p>
+                        <p class="text-xs font-medium text-fg-primary">"Install on the connected computer"</p>
                         {hints.into_iter().map(|hint| view! {
                             <div><code class="block break-all text-xs text-fg-primary">{hint.command}</code><p class="text-xs text-fg-secondary">{hint.note}</p></div>
                         }).collect_view()}
@@ -86,7 +86,7 @@ fn OpenRgbStatusView(status: OpenRgbStatus, desktop_hints_ready: Signal<bool>) -
         </div>
         <p class="text-xs text-fg-secondary">{format!("{} routes have output disabled", status.output_disabled_count)}</p>
         <Show when=move || missing && !desktop_hints_ready.get()>
-            <div class="space-y-2"><p class="text-xs font-medium text-fg-primary">"Install on the daemon host"</p>
+            <div class="space-y-2"><p class="text-xs font-medium text-fg-primary">"Install on the connected computer"</p>
                 {host_hints.iter().cloned().map(|hint| view! {
                     <div><code class="block break-all text-xs text-fg-primary">{hint.command}</code><p class="text-xs text-fg-secondary">{hint.note}</p></div>
                 }).collect_view()}

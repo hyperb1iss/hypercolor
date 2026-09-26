@@ -75,9 +75,9 @@ pub struct VendorBrand {
     /// SVGs.
     pub monogram: &'static str,
     pub mark_font: VendorFont,
-    /// Embedded SVG content rendered inline with `currentColor` tinting.
-    /// Preferred over `image_path` when both are set.
-    pub svg_content: Option<&'static str>,
+    /// SVG asset path rendered as a CSS mask so brand tinting does not require
+    /// injecting markup into the document. Preferred over `image_path`.
+    pub svg_path: Option<&'static str>,
     /// Asset path served by Trunk (e.g. `/assets/vendors/nollie.png`). Used
     /// when the brand has a non-SVG image (Nollie's gradient wordmark PNG).
     pub image_path: Option<&'static str>,
@@ -96,7 +96,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "192, 249, 75",
         monogram: "ABL",
         mark_font: VendorFont::Sans,
-        svg_content: Some(include_str!("../assets/vendors/ableton.svg")),
+        svg_path: Some("/assets/vendors/ableton.svg"),
         image_path: None,
         website: "https://ableton.com",
         aliases: &["ableton", "push2"],
@@ -108,7 +108,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "30, 215, 255",
         monogram: "AW",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/alienware.svg")),
+        svg_path: Some("/assets/vendors/alienware.svg"),
         image_path: None,
         website: "https://dell.com/alienware",
         aliases: &["alienware", "dell"],
@@ -120,7 +120,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "64, 196, 255",
         monogram: "AQUA",
         mark_font: VendorFont::Sans,
-        svg_content: None,
+        svg_path: None,
         image_path: None,
         website: "https://aquacomputer.de",
         aliases: &["aquacomputer", "aqua"],
@@ -132,7 +132,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "96, 165, 220",
         monogram: "AR",
         mark_font: VendorFont::Sans,
-        svg_content: Some(include_str!("../assets/vendors/asrock.svg")),
+        svg_path: Some("/assets/vendors/asrock.svg"),
         image_path: None,
         website: "https://asrock.com",
         aliases: &["asrock"],
@@ -144,7 +144,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "0, 174, 239",
         monogram: "A",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/asus.svg")),
+        svg_path: Some("/assets/vendors/asus.svg"),
         image_path: None,
         website: "https://asus.com",
         aliases: &["asus", "rog"],
@@ -156,7 +156,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "154, 100, 255",
         monogram: "CM",
         mark_font: VendorFont::Sans,
-        svg_content: Some(include_str!("../assets/vendors/coolermaster.svg")),
+        svg_path: Some("/assets/vendors/coolermaster.svg"),
         image_path: None,
         website: "https://coolermaster.com",
         aliases: &["coolermaster", "cooler_master", "cm"],
@@ -168,7 +168,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 200, 0",
         monogram: "C",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/corsair.svg")),
+        svg_path: Some("/assets/vendors/corsair.svg"),
         image_path: None,
         website: "https://corsair.com",
         aliases: &["corsair", "icue"],
@@ -180,7 +180,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 100, 180",
         monogram: "DYG",
         mark_font: VendorFont::Sans,
-        svg_content: None,
+        svg_path: None,
         image_path: None,
         website: "https://dygma.com",
         aliases: &["dygma"],
@@ -192,7 +192,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "80, 150, 220",
         monogram: "E",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/evga.svg")),
+        svg_path: Some("/assets/vendors/evga.svg"),
         image_path: None,
         website: "https://evga.com",
         aliases: &["evga"],
@@ -204,7 +204,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 140, 60",
         monogram: "FN",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/fnatic.svg")),
+        svg_path: Some("/assets/vendors/fnatic.svg"),
         image_path: None,
         website: "https://fnatic.com",
         aliases: &["fnatic"],
@@ -216,7 +216,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "250, 117, 0",
         monogram: "GB",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/gigabyte.svg")),
+        svg_path: Some("/assets/vendors/gigabyte.svg"),
         image_path: None,
         website: "https://gigabyte.com",
         aliases: &["gigabyte", "aorus"],
@@ -228,7 +228,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "215, 195, 130",
         monogram: "GLR",
         mark_font: VendorFont::Sans,
-        svg_content: Some(include_str!("../assets/vendors/glorious.svg")),
+        svg_path: Some("/assets/vendors/glorious.svg"),
         image_path: None,
         website: "https://gloriousgaming.com",
         aliases: &["glorious"],
@@ -240,7 +240,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 130, 60",
         monogram: "GOV",
         mark_font: VendorFont::Sans,
-        svg_content: None,
+        svg_path: None,
         image_path: None,
         website: "https://govee.com",
         aliases: &["govee"],
@@ -252,7 +252,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 80, 90",
         monogram: "HX",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/hyperx.svg")),
+        svg_path: Some("/assets/vendors/hyperx.svg"),
         image_path: None,
         website: "https://hyperx.com",
         aliases: &["hyperx", "kingston"],
@@ -264,7 +264,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "80, 250, 200",
         monogram: "HY",
         mark_font: VendorFont::Display,
-        svg_content: None,
+        svg_path: None,
         image_path: None,
         website: "https://hyte.com",
         aliases: &["hyte"],
@@ -276,7 +276,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 90, 100",
         monogram: "LL",
         mark_font: VendorFont::Sans,
-        svg_content: Some(include_str!("../assets/vendors/lianli.svg")),
+        svg_path: Some("/assets/vendors/lianli.svg"),
         image_path: None,
         website: "https://lian-li.com",
         aliases: &["lianli", "lian_li", "lian-li"],
@@ -288,7 +288,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "80, 220, 255",
         monogram: "L",
         mark_font: VendorFont::Sans,
-        svg_content: Some(include_str!("../assets/vendors/logitech.svg")),
+        svg_path: Some("/assets/vendors/logitech.svg"),
         image_path: None,
         website: "https://logitech.com",
         aliases: &["logitech", "logi", "logitech_g"],
@@ -300,7 +300,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 160, 50",
         monogram: "MTN",
         mark_font: VendorFont::Sans,
-        svg_content: None,
+        svg_path: None,
         image_path: None,
         website: "https://mountain.gg",
         aliases: &["mountain"],
@@ -312,7 +312,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "220, 30, 30",
         monogram: "MSI",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/msi.svg")),
+        svg_path: Some("/assets/vendors/msi.svg"),
         image_path: None,
         website: "https://msi.com",
         aliases: &["msi"],
@@ -324,7 +324,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 165, 60",
         monogram: "NANO",
         mark_font: VendorFont::Sans,
-        svg_content: None,
+        svg_path: None,
         image_path: Some("/assets/vendors/nanoleaf.png"),
         website: "https://nanoleaf.me",
         aliases: &["nanoleaf"],
@@ -336,7 +336,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 106, 193",
         monogram: "N",
         mark_font: VendorFont::Sans,
-        svg_content: None,
+        svg_path: None,
         image_path: Some("/assets/vendors/nollie.png"),
         website: "https://nollie.gg",
         aliases: &["nollie"],
@@ -348,7 +348,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "165, 80, 255",
         monogram: "NZ",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/nzxt.svg")),
+        svg_path: Some("/assets/vendors/nzxt.svg"),
         image_path: None,
         website: "https://nzxt.com",
         aliases: &["nzxt"],
@@ -360,7 +360,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "70, 220, 255",
         monogram: "H",
         mark_font: VendorFont::Sans,
-        svg_content: Some(include_str!("../assets/vendors/philipshue.svg")),
+        svg_path: Some("/assets/vendors/philipshue.svg"),
         image_path: None,
         website: "https://philips-hue.com",
         aliases: &["hue", "philips", "philipshue", "philips_hue", "signify"],
@@ -372,7 +372,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "128, 255, 234",
         monogram: "PRSM",
         mark_font: VendorFont::Display,
-        svg_content: None,
+        svg_path: None,
         image_path: None,
         website: "",
         aliases: &["prismrgb", "prism_rgb", "prism"],
@@ -384,7 +384,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "100, 175, 255",
         monogram: "Q",
         mark_font: VendorFont::Mono,
-        svg_content: Some(include_str!("../assets/vendors/qmk.svg")),
+        svg_path: Some("/assets/vendors/qmk.svg"),
         image_path: None,
         website: "https://qmk.fm",
         aliases: &["qmk", "vial"],
@@ -396,7 +396,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "100, 240, 80",
         monogram: "R",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/razer.svg")),
+        svg_path: Some("/assets/vendors/razer.svg"),
         image_path: None,
         website: "https://razer.com",
         aliases: &["razer", "chroma"],
@@ -408,7 +408,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "60, 180, 240",
         monogram: "ROC",
         mark_font: VendorFont::Display,
-        svg_content: None,
+        svg_path: None,
         image_path: Some("/assets/vendors/roccat.png"),
         website: "https://roccat.com",
         aliases: &["roccat"],
@@ -420,7 +420,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "50, 160, 240",
         monogram: "S",
         mark_font: VendorFont::Sans,
-        svg_content: Some(include_str!("../assets/vendors/sony.svg")),
+        svg_path: Some("/assets/vendors/sony.svg"),
         image_path: None,
         website: "https://sony.com",
         aliases: &["sony", "playstation", "ps"],
@@ -432,7 +432,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 140, 50",
         monogram: "SS",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/steelseries.svg")),
+        svg_path: Some("/assets/vendors/steelseries.svg"),
         image_path: None,
         website: "https://steelseries.com",
         aliases: &["steelseries", "steel_series"],
@@ -444,7 +444,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 90, 90",
         monogram: "TT",
         mark_font: VendorFont::Display,
-        svg_content: Some(include_str!("../assets/vendors/thermaltake.svg")),
+        svg_path: Some("/assets/vendors/thermaltake.svg"),
         image_path: None,
         website: "https://thermaltake.com",
         aliases: &["thermaltake", "tt"],
@@ -456,7 +456,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "80, 220, 240",
         monogram: "WLED",
         mark_font: VendorFont::Mono,
-        svg_content: None,
+        svg_path: None,
         image_path: Some("/assets/vendors/wled.png"),
         website: "https://kno.wled.ge",
         aliases: &["wled"],
@@ -468,7 +468,7 @@ pub const VENDORS: &[VendorBrand] = &[
         secondary_rgb: "255, 150, 60",
         monogram: "WOOT",
         mark_font: VendorFont::Display,
-        svg_content: None,
+        svg_path: None,
         image_path: None,
         website: "https://wooting.io",
         aliases: &["wooting"],
@@ -564,10 +564,13 @@ pub fn VendorMark(
          box-shadow: inset 0 0 8px rgba({primary}, 0.10), 0 0 8px rgba({primary}, 0.18)"
     );
 
-    if let Some(svg) = vendor.svg_content {
+    if let Some(svg_path) = vendor.svg_path {
+        let svg_href = crate::route_ui::asset_href(svg_path);
         let svg_style = format!(
             "width: {inner_px}px; height: {inner_px}px; color: rgb({primary}); \
-             display: flex; align-items: center; justify-content: center; \
+             background-color: currentColor; \
+             mask: url('{svg_href}') center / contain no-repeat; \
+             -webkit-mask: url('{svg_href}') center / contain no-repeat; \
              filter: drop-shadow(0 0 3px rgba({primary}, 0.35))"
         );
         return view! {
@@ -576,7 +579,7 @@ pub fn VendorMark(
                 style=chip_style
                 title=display_name
             >
-                <div class="vendor-mark-svg" style=svg_style inner_html=svg />
+                <span class="vendor-mark-svg" style=svg_style aria-hidden="true" />
             </div>
         }
         .into_any();
@@ -687,14 +690,19 @@ mod tests {
     }
 
     #[test]
-    fn embedded_svgs_are_non_empty() {
-        let with_svg = VENDORS.iter().filter(|v| v.svg_content.is_some()).count();
+    fn svg_mask_assets_are_present_and_tintable() {
+        let with_svg = VENDORS.iter().filter(|v| v.svg_path.is_some()).count();
         assert!(
             with_svg >= 18,
-            "expected ≥18 vendors with embedded SVGs, got {with_svg}"
+            "expected ≥18 vendors with SVG masks, got {with_svg}"
         );
         for v in VENDORS {
-            if let Some(svg) = v.svg_content {
+            if let Some(path) = v.svg_path {
+                assert!(path.starts_with("/assets/vendors/"));
+                let asset = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join(path.trim_start_matches('/'));
+                let svg = std::fs::read_to_string(&asset)
+                    .unwrap_or_else(|error| panic!("{}: {error}", asset.display()));
                 assert!(svg.contains("<svg"), "{} svg missing root element", v.slug);
                 assert!(
                     svg.contains("currentColor"),

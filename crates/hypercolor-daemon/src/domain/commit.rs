@@ -42,9 +42,9 @@ pub enum CommitDurability {
     /// The payload replaced the destination and its durability barrier
     /// completed.
     Written,
-    /// A newer admitted generation won the destination first. The newer
-    /// payload is authoritative and already contains this commit's
-    /// changes, so this commit's own bytes will never be written.
+    /// A newer admitted generation won the destination first. This commit's
+    /// own bytes will never be written; the newer payload may have overwritten
+    /// its fields and is not proof that this commit's changes became durable.
     Superseded,
     /// The write did not prove durable on this attempt. The payload
     /// stays the destination's newest admitted intent and the retry

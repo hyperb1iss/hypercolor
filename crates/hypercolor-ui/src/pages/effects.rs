@@ -368,13 +368,13 @@ pub fn EffectsPage() -> impl IntoView {
             effect.name,
             match effect_error.fallback.as_deref() {
                 Some("clear_zones") => {
-                    "The daemon cleared this effect from the active scene after a render failure."
+                    "Hypercolor cleared this effect from the active scene after a render failure."
                         .to_owned()
                 }
                 Some(fallback) if !fallback.is_empty() => {
-                    format!("The daemon applied fallback \"{fallback}\" after a render failure.")
+                    format!("Hypercolor applied fallback \"{fallback}\" after a render failure.")
                 }
-                _ => "The daemon reported a render failure for this effect.".to_owned(),
+                _ => "Hypercolor reported a render failure for this effect.".to_owned(),
             },
         ))
     });

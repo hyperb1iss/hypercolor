@@ -251,22 +251,59 @@ fn connection_icon(device: &DeviceSummary) -> icondata_core::Icon {
     }
 }
 
-/// Zone topology → inline SVG shape hint for zone display.
-pub fn topology_shape_svg(topology: &str) -> &'static str {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TopologyShapeKind {
+    Strip,
+    Ring,
+    Matrix,
+    Point,
+    Other,
+}
+
+/// Zone topology to a typed SVG shape hint for zone display.
+pub fn topology_shape_kind(topology: &str) -> TopologyShapeKind {
     match topology {
-        "strip" => {
-            r#"<rect x="1" y="5" width="14" height="6" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#
+        "strip" => TopologyShapeKind::Strip,
+        "ring" | "concentric_rings" => TopologyShapeKind::Ring,
+        "matrix" | "perimeter_loop" => TopologyShapeKind::Matrix,
+        "point" => TopologyShapeKind::Point,
+        _ => TopologyShapeKind::Other,
+    }
+}
+
+#[component]
+pub fn TopologyShape(kind: TopologyShapeKind, size: u32) -> impl IntoView {
+    let shape = match kind {
+        TopologyShapeKind::Strip => view! {
+            <rect x="1" y="5" width="14" height="6" rx="2" fill="none"
+                stroke="currentColor" stroke-width="1.2" opacity="0.6" />
         }
-        "ring" | "concentric_rings" => {
-            r#"<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#
+        .into_any(),
+        TopologyShapeKind::Ring => view! {
+            <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor"
+                stroke-width="1.2" opacity="0.6" />
         }
-        "matrix" | "perimeter_loop" => {
-            r#"<rect x="2" y="2" width="12" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#
+        .into_any(),
+        TopologyShapeKind::Matrix => view! {
+            <rect x="2" y="2" width="12" height="12" rx="1" fill="none"
+                stroke="currentColor" stroke-width="1.2" opacity="0.6" />
         }
-        "point" => r#"<circle cx="8" cy="8" r="3" fill="currentColor" opacity="0.4"/>"#,
-        _ => {
-            r#"<rect x="3" y="3" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1" opacity="0.4"/>"#
+        .into_any(),
+        TopologyShapeKind::Point => view! {
+            <circle cx="8" cy="8" r="3" fill="currentColor" opacity="0.4" />
         }
+        .into_any(),
+        TopologyShapeKind::Other => view! {
+            <rect x="3" y="3" width="10" height="10" rx="2" fill="none"
+                stroke="currentColor" stroke-width="1" opacity="0.4" />
+        }
+        .into_any(),
+    };
+
+    view! {
+        <svg viewBox="0 0 16 16" width=size height=size aria-hidden="true">
+            {shape}
+        </svg>
     }
 }
 
@@ -341,14 +378,14 @@ pub fn DeviceCard(
         "225, 53, 255",
         "110, 180, 255",
     ];
-    let zone_previews: Vec<(&'static str, usize, &'static str)> = device
+    let zone_previews: Vec<(TopologyShapeKind, usize, &'static str)> = device
         .segments
         .iter()
         .take(5)
         .enumerate()
         .map(|(i, z)| {
             (
-                topology_shape_svg(&z.topology),
+                topology_shape_kind(&z.topology),
                 z.led_count as usize,
                 zone_palette[i % zone_palette.len()],
             )
@@ -543,7 +580,7 @@ pub fn DeviceCard(
                 {if zone_count > 0 {
                     Some(view! {
                         <div class="flex items-center gap-1 flex-wrap">
-                            {zone_previews.into_iter().map(|(svg, led_count, zrgb)| {
+                            {zone_previews.into_iter().map(|(shape, led_count, zrgb)| {
                                 view! {
                                     <div class="flex items-center gap-1 px-1.5 py-[2px] rounded"
                                          style=format!(
@@ -551,8 +588,9 @@ pub fn DeviceCard(
                                               border: 1px solid rgba({zrgb}, 0.15)"
                                          )
                                          title=format!("{led_count} LEDs")>
-                                        <div class="w-3 h-3 shrink-0" style=format!("color: rgba({zrgb}, 0.85)")
-                                             inner_html=format!(r#"<svg viewBox="0 0 16 16" width="12" height="12">{svg}</svg>"#) />
+                                        <div class="w-3 h-3 shrink-0" style=format!("color: rgba({zrgb}, 0.85)")>
+                                            <TopologyShape kind=shape size=12 />
+                                        </div>
                                         <span class="text-[9px] font-mono tabular-nums"
                                               style=format!("color: rgba({zrgb}, 0.75)")>{led_count}</span>
                                     </div>

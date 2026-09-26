@@ -261,7 +261,7 @@ Complaints:
 1. **The web-face model itself is validated.** NZXT proved that "embedded browser
    renders HTML to a small LCD" is a shippable, mainstream-loved product feature.
    Hypercolor's Servo pipeline is the same bet with a better engine story (in-process,
-   GPU-interop, Linux-first). Lean into it.
+   GPU-interop, cross-platform). Lean into it.
 2. **Tiny versioned injected API** — `window.nzxt.v1` with a static display
    descriptor (`width/height/shape/targetFps`) plus a typed npm package is exactly
    the right shape. Hypercolor's face context should expose geometry + shape +

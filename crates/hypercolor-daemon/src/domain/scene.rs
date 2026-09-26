@@ -159,10 +159,10 @@ pub struct ScenePlanReader(Arc<SceneServiceInner>);
 /// Named scene library and activation authority shared by every transport.
 #[derive(Clone)]
 pub struct SceneLibraryContext {
-    scene: SceneContext,
+    pub(super) scene: SceneContext,
     effects: crate::domain::effect::EffectContext,
-    layout: LayoutContext,
-    output: OutputContext,
+    pub(super) layout: LayoutContext,
+    pub(super) output: OutputContext,
     event_bus: Arc<HypercolorBus>,
 }
 
@@ -193,6 +193,15 @@ impl ScenePlanReader {
 }
 
 impl SceneService {
+    pub(crate) async fn guard_definition(
+        &self,
+        expected: &super::scene_activation::ObservedScene,
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, SceneManager>, DomainError> {
+        let manager = self.0.manager.read().await;
+        expected.validate(&manager, self.0.commits.revision())?;
+        Ok(manager)
+    }
+
     /// Own a non-durable scene manager for isolated consumers.
     #[must_use]
     pub fn in_memory(manager: SceneManager, event_bus: Arc<HypercolorBus>) -> Self {
@@ -683,6 +692,7 @@ impl SceneService {
         store.write().await.save_reserved(pending).map(Some)
     }
 
+    #[cfg(test)]
     pub(crate) async fn publish_layout_activation<F>(
         &self,
         spatial_engine: &SpatialService,
@@ -695,7 +705,38 @@ impl SceneService {
     where
         F: FnOnce(SpatialEngine) -> Result<(), LayoutTransactionRejection>,
     {
+        self.publish_guarded_layout_activation(
+            spatial_engine,
+            candidate_spatial_engine,
+            expected_layout,
+            expected_active_scene_id,
+            expected_resolved_zones_revision,
+            None,
+            publish_renderer_state,
+        )
+        .await
+    }
+
+    pub(crate) async fn publish_guarded_layout_activation<F>(
+        &self,
+        spatial_engine: &SpatialService,
+        candidate_spatial_engine: SpatialEngine,
+        expected_layout: &SpatialLayout,
+        expected_active_scene_id: Option<SceneId>,
+        expected_resolved_zones_revision: u64,
+        fence: Option<&super::scene_activation::LayoutSceneFence>,
+        publish_renderer_state: F,
+    ) -> Result<(), LayoutTransactionRejection>
+    where
+        F: FnOnce(SpatialEngine) -> Result<(), LayoutTransactionRejection>,
+    {
         let mut manager = self.0.manager.write().await;
+        if let Some(fence) = fence {
+            fence
+                .expected
+                .validate(&manager, self.0.commits.revision())
+                .map_err(|_| LayoutTransactionRejection::Superseded)?;
+        }
         let source_is_current = manager.active_scene_id().copied() == expected_active_scene_id
             && manager.resolved_zones_revision() == expected_resolved_zones_revision
             && spatial_engine.has_layout(expected_layout);
@@ -710,6 +751,9 @@ impl SceneService {
             .plan
             .store(Arc::new(manager.plan_snapshot(ticket.generation())));
         spatial_engine.replace(candidate_spatial_engine);
+        if let Some(fence) = fence {
+            fence.publish(&manager, ticket.generation());
+        }
         ticket.release(Vec::new());
         Ok(())
     }
@@ -1388,6 +1432,49 @@ impl SceneMutation {
         let zone = zone.clone();
         self.persists_scene_content = true;
         self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Created);
+        Ok(zone)
+    }
+
+    /// Replace the layers of one exact live lighting zone in this candidate.
+    ///
+    /// # Errors
+    ///
+    /// Refuses stale revisions, a different active scene, snapshot scenes,
+    /// missing zones and display-owned zones before changing the candidate.
+    pub fn set_runtime_zone_color(
+        &mut self,
+        target: super::runtime_zone::RuntimeZoneTarget,
+        color: hypercolor_color::Rgb,
+    ) -> Result<Zone, DomainError> {
+        super::scene_tree::check_scene_revision(self, Some(target.revision))?;
+        let scene_id = self.active_scene_for_runtime_mutation("setting a zone color")?;
+        if scene_id != target.scene_id {
+            return Err(DomainError::conflict(
+                "the requested scene is no longer active",
+            ));
+        }
+        super::scene_tree::ensure_live_zone_mutable(self, target.zone_id)?;
+        let linear = color.to_linear();
+        let layer = SceneLayer {
+            id: SceneLayerId::new(),
+            name: None,
+            source: hypercolor_types::layer::LayerSource::ColorFill {
+                rgba: [linear.r, linear.g, linear.b, linear.a],
+            },
+            blend: hypercolor_types::layer::BlendMode::Replace,
+            opacity: 1.0,
+            transform: hypercolor_types::layer::LayerTransform::default(),
+            adjust: hypercolor_types::layer::LayerAdjust::default(),
+            bindings: Vec::new(),
+            enabled: true,
+        };
+        let (zone, _) = self
+            .candidate
+            .replace_zone_layer_stack(scene_id, target.zone_id, vec![layer])
+            .map_err(|error| DomainError::Internal(anyhow::anyhow!("{error:?}")))?;
+        let zone = zone.clone();
+        self.persists_scene_content = true;
+        self.record_layer_change(scene_id, &zone, LayerStackChangeKind::Updated);
         Ok(zone)
     }
 

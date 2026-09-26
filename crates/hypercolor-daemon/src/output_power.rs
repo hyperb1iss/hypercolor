@@ -197,19 +197,10 @@ impl OutputPower {
         before_events: impl FnOnce(),
     ) -> anyhow::Result<f32> {
         let brightness = brightness.clamp(0.0, 1.0);
-        let _transition = self.inner.transition.lock().await;
-        let previous_live = self.global_brightness();
-        let mut settings = self.inner.settings.write().await;
-        let persistence =
-            settings.persist_global_brightness(&self.inner.brightness_authority, brightness)?;
-        drop(settings);
-        self.update_state(|state| state.global_brightness = brightness);
-        before_events();
-        event_bus.publish(HypercolorEvent::DeviceSettingsChanged { key: None });
-        event_bus.publish(HypercolorEvent::BrightnessChanged {
-            old: brightness_percent(previous_live),
-            new_value: brightness_percent(brightness),
-        });
+        let transition = self.transition().await;
+        let (previous_live, persistence) = transition
+            .set_brightness_observed(event_bus, brightness, before_events)
+            .await?;
         if let BrightnessPersistence::Retrying(error) = persistence {
             warn!(%error, "Global brightness persistence will retry");
         }
@@ -350,6 +341,28 @@ impl OutputPower {
 }
 
 impl OutputPowerGuard<'_> {
+    pub(crate) async fn set_brightness_observed(
+        &self,
+        event_bus: &HypercolorBus,
+        brightness: f32,
+        before_events: impl FnOnce(),
+    ) -> anyhow::Result<(f32, BrightnessPersistence)> {
+        let previous_live = self.power.global_brightness();
+        let mut settings = self.power.inner.settings.write().await;
+        let persistence = settings
+            .persist_global_brightness(&self.power.inner.brightness_authority, brightness)?;
+        drop(settings);
+        self.power
+            .update_state(|state| state.global_brightness = brightness);
+        before_events();
+        event_bus.publish(HypercolorEvent::DeviceSettingsChanged { key: None });
+        event_bus.publish(HypercolorEvent::BrightnessChanged {
+            old: brightness_percent(previous_live),
+            new_value: brightness_percent(brightness),
+        });
+        Ok((previous_live, persistence))
+    }
+
     #[must_use]
     pub(crate) fn snapshot(&self) -> OutputPowerState {
         self.power.snapshot()

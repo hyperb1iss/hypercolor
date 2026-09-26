@@ -1179,6 +1179,33 @@ impl SceneManager {
         })
     }
 
+    /// Replace only a zone's authored layer stack, preserving its other fields.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing targets, duplicate identities or invalid layer values
+    /// before changing the stack.
+    pub fn replace_zone_layer_stack(
+        &mut self,
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        layers: Vec<SceneLayer>,
+    ) -> Result<(&Zone, u64), LayerMutationError> {
+        let mut ids = HashSet::new();
+        for layer in &layers {
+            if !ids.insert(layer.id) {
+                return Err(LayerMutationError::DuplicateLayer { layer_id: layer.id });
+            }
+            layer
+                .validate()
+                .map_err(|errors| LayerMutationError::InvalidLayer { errors })?;
+        }
+        self.mutate_zone_layers(scene_id, zone_id, None, |zone| {
+            zone.layers = layers;
+            Ok(())
+        })
+    }
+
     pub fn remove_zone_layer(
         &mut self,
         scene_id: SceneId,

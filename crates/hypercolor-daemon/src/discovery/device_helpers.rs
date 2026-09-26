@@ -75,7 +75,7 @@ pub(super) async fn refresh_connected_device_info(
             .fingerprint_for_id(&device_id)
             .await
             .context("connected device has no registered fingerprint")?;
-        let mut info = maybe_info.unwrap_or(tracked.info);
+        let mut info = maybe_info.unwrap_or_else(|| tracked.observed_info());
         info.id = device_id;
         runtime
             .device_registry

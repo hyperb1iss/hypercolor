@@ -141,13 +141,11 @@ impl PreparedDaemon {
             self.options.macos_owner_snapshot,
             self.options.service_status.take(),
         )?;
+        let ui_dir = resolve_ui_dir(self.options.ui_dir.clone());
         daemon_state.session_monitors = self.options.session_monitors.take();
-        for installer in extension_installers {
-            installer.install(&mut daemon_state)?;
-        }
+        install_extensions(&mut daemon_state, ui_dir.clone(), extension_installers)?;
         Box::pin(daemon_state.start()).await?;
 
-        let ui_dir = resolve_ui_dir(self.options.ui_dir.clone());
         let app_state = Arc::new(api::build_state(
             &daemon_state,
             macos_daemon_session_attestation.as_ref(),
@@ -193,6 +191,18 @@ impl PreparedDaemon {
         info!("Hypercolor daemon exited cleanly");
         Ok(())
     }
+}
+
+fn install_extensions(
+    daemon: &mut DaemonState,
+    ui_dir: Option<PathBuf>,
+    extension_installers: &[&dyn DaemonExtensionInstaller],
+) -> Result<()> {
+    daemon.ui_dir = ui_dir;
+    for installer in extension_installers {
+        installer.install(daemon)?;
+    }
+    Ok(())
 }
 
 pub trait DaemonExtensionInstaller: Send + Sync {
@@ -373,6 +383,11 @@ fn resolve_ui_dir(explicit: Option<PathBuf>) -> Option<PathBuf> {
         .metadata()
         .ok()
         .and_then(|meta| meta.modified().ok())
+        // Reproducible package stores (Nix, Guix) normalize every mtime to
+        // one second past the Unix epoch, which would read as decades stale.
+        // Treat anything that early as an unknown build time rather than a
+        // rebuild nag on every boot.
+        .filter(|modified| *modified > std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
         .and_then(|modified| modified.elapsed().ok());
 
     let age_label = match age {
@@ -851,8 +866,9 @@ mod tests {
     use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
 
     use super::{
-        bind_api_listener, bind_api_listener_with_lease, default_env_filter,
-        notify_api_ready_extensions, resolve_log_level, serve_api_listeners_with_shutdown_timeout,
+        DaemonExtensionInstaller, bind_api_listener, bind_api_listener_with_lease,
+        default_env_filter, install_extensions, notify_api_ready_extensions, resolve_log_level,
+        serve_api_listeners_with_shutdown_timeout,
     };
     use crate::app_state::AppState;
     use crate::extensions::DaemonLifecycleExtension;
@@ -877,6 +893,19 @@ mod tests {
         name: &'static str,
         expected_state: Arc<AppState>,
         calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    struct UiDirProbe(Arc<Mutex<Option<std::path::PathBuf>>>);
+
+    impl DaemonExtensionInstaller for UiDirProbe {
+        fn install(&self, daemon: &mut DaemonState) -> anyhow::Result<()> {
+            *self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                daemon.ui_dir().map(std::path::Path::to_path_buf);
+            Ok(())
+        }
     }
 
     #[async_trait::async_trait]
@@ -1011,6 +1040,36 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_slice(),
             ["first", "second"]
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_installers_observe_the_same_resolved_ui_directory_as_the_router() {
+        let directory = tempfile::tempdir().expect("daemon test directory should be created");
+        let _data_dir = DataDirOverride::install(directory.path().join("data"));
+        let mut config = default_config();
+        config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
+        let config_manager = Arc::new(ConfigManager::from_config_unchecked(
+            directory.path().join("hypercolor.toml"),
+            config.clone(),
+        ));
+        let mut daemon =
+            DaemonState::initialize(BootConfig::from_config_unchecked(config), config_manager)
+                .expect("daemon test state should initialize");
+        let observed = Arc::new(Mutex::new(None));
+        let probe = UiDirProbe(Arc::clone(&observed));
+        let ui_dir = directory.path().join("ui");
+
+        install_extensions(&mut daemon, Some(ui_dir.clone()), &[&probe])
+            .expect("extension installation should succeed");
+
+        assert_eq!(daemon.ui_dir(), Some(ui_dir.as_path()));
+        assert_eq!(
+            observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_deref(),
+            Some(ui_dir.as_path())
         );
     }
 }

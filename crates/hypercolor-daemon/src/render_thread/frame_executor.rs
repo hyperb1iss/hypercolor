@@ -64,6 +64,7 @@ pub(crate) async fn service_scene_transactions(
             }
             LayoutActivationDecision::Commit => {
                 let PreparedLayoutActivation {
+                    scene_fence,
                     spatial_engine,
                     expected_layout,
                     active_scene_id,
@@ -103,12 +104,13 @@ pub(crate) async fn service_scene_transactions(
                     LayoutPublicationMode::AuthorityAndRenderer => {
                         state
                             .scene_manager
-                            .publish_layout_activation(
+                            .publish_guarded_layout_activation(
                                 &state.spatial_engine,
                                 spatial_engine,
                                 &expected_layout,
                                 active_scene_id,
                                 source_resolved_zones_revision,
+                                scene_fence.as_deref(),
                                 publish_renderer_state,
                             )
                             .await
@@ -281,6 +283,7 @@ pub(crate) async fn service_scene_transactions(
                     }
                 };
                 render.pending_layout_activation = Some(PreparedLayoutActivation {
+                    scene_fence: transaction.scene_fence(),
                     spatial_engine,
                     expected_layout,
                     active_scene_id,
@@ -948,11 +951,21 @@ async fn force_static_sleep_snapshot(
         .note_canvas_frame(frame_number, elapsed_ms);
 }
 
+/// Whether a frame admitted while awake should end as a static sleep frame.
+///
+/// Only the static off behavior can be satisfied by writing one off-color
+/// frame here. A release sleep has to clear the published zones and stop
+/// driving devices, which the sleep throttle path owns; taking the static
+/// shortcut for it would latch the sleep frame as pushed with populated
+/// zones still on the bus, so release lets this frame finish and the next
+/// frame runs the release path.
 fn should_switch_to_late_sleep_frame(
     frame_output_power: crate::output_power::OutputPowerState,
     latest_output_power: crate::output_power::OutputPowerState,
 ) -> bool {
-    !frame_output_power.sleeping() && latest_output_power.sleeping()
+    !frame_output_power.sleeping()
+        && latest_output_power.sleeping()
+        && latest_output_power.effective_off_output_behavior() == OffOutputBehavior::Static
 }
 
 const fn output_frame_source_kind(source: OutputFrameSource) -> OutputFrameSourceKind {
@@ -1077,6 +1090,24 @@ mod tests {
             sleeping, sleeping
         ));
         assert!(!super::should_switch_to_late_sleep_frame(running, running));
+    }
+
+    #[test]
+    fn late_sleep_frame_leaves_release_sleep_to_the_throttle_path() {
+        let running = OutputPowerState::default();
+        let releasing = OutputPowerState {
+            session_sleeping: true,
+            session_brightness: 0.0,
+            off_output_behavior: OffOutputBehavior::Release,
+            ..OutputPowerState::default()
+        };
+
+        assert!(!super::should_switch_to_late_sleep_frame(
+            running, releasing
+        ));
+        assert!(!super::should_switch_to_late_sleep_frame(
+            releasing, releasing
+        ));
     }
 
     fn sample_layout(zone_ids: &[&str]) -> SpatialLayout {

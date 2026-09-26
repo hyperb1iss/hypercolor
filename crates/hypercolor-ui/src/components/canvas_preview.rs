@@ -1082,7 +1082,7 @@ pub fn CanvasPreview(
                     title=move || if interactive_active.get() {
                         "Stop driving the effect from the preview"
                     } else {
-                        "Drive the effect — send preview clicks, keys, and wheel to the daemon"
+                        "Drive the effect with preview clicks, keys, and wheel input"
                     }
                     aria-label=move || if interactive_active.get() {
                         "Disable interactive preview input"

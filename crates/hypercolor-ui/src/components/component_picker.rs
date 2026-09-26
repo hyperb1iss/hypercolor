@@ -17,43 +17,57 @@ use crate::icons::*;
 
 // ── Category shape SVGs ─────────────────────────────────────────────────────
 
-fn category_shape_svg(category: &str, size: u32) -> String {
+#[component]
+fn CategoryShape(category: String, size: u32) -> impl IntoView {
     let s = size;
     let half = s / 2;
     let r = half.saturating_sub(2).max(3);
     let inner_r = r / 3;
-    match category {
-        "fan" | "aio" | "ring" | "heatsink" => {
-            format!(
-                r#"<svg viewBox="0 0 {s} {s}" width="{s}" height="{s}"><circle cx="{half}" cy="{half}" r="{r}" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.6"/><circle cx="{half}" cy="{half}" r="{inner_r}" fill="currentColor" opacity="0.25"/></svg>"#
-            )
+    let shape = match category.as_str() {
+        "fan" | "aio" | "ring" | "heatsink" => view! {
+            <circle cx=half cy=half r=r fill="none" stroke="currentColor"
+                stroke-width="1.5" opacity="0.6" />
+            <circle cx=half cy=half r=inner_r fill="currentColor" opacity="0.25" />
         }
+        .into_any(),
         "strip" | "radiator" | "case" => {
             let y = half.saturating_sub(2);
             let w = s.saturating_sub(4);
-            format!(
-                r#"<svg viewBox="0 0 {s} {s}" width="{s}" height="{s}"><rect x="2" y="{y}" width="{w}" height="5" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.6"/></svg>"#
-            )
+            view! {
+                <rect x="2" y=y width=w height="5" rx="2" fill="none"
+                    stroke="currentColor" stroke-width="1.5" opacity="0.6" />
+            }
+            .into_any()
         }
         "strimer" => {
             let y = half.saturating_sub(3);
             let w = s.saturating_sub(4);
-            format!(
-                r#"<svg viewBox="0 0 {s} {s}" width="{s}" height="{s}"><rect x="2" y="{y}" width="{w}" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.6" stroke-dasharray="3 1.5"/></svg>"#
-            )
+            view! {
+                <rect x="2" y=y width=w height="7" rx="1" fill="none"
+                    stroke="currentColor" stroke-width="1.5" opacity="0.6"
+                    stroke-dasharray="3 1.5" />
+            }
+            .into_any()
         }
         "matrix" => {
             let p = 3_u32;
             let sz = s.saturating_sub(p * 2);
-            format!(
-                r#"<svg viewBox="0 0 {s} {s}" width="{s}" height="{s}"><rect x="{p}" y="{p}" width="{sz}" height="{sz}" rx="1" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.6"/></svg>"#
-            )
+            view! {
+                <rect x=p y=p width=sz height=sz rx="1" fill="none"
+                    stroke="currentColor" stroke-width="1.5" opacity="0.6" />
+            }
+            .into_any()
         }
-        _ => {
-            format!(
-                r#"<svg viewBox="0 0 {s} {s}" width="{s}" height="{s}"><circle cx="{half}" cy="{half}" r="{inner_r}" fill="currentColor" opacity="0.35"/></svg>"#
-            )
+        _ => view! {
+            <circle cx=half cy=half r=inner_r fill="currentColor" opacity="0.35" />
         }
+        .into_any(),
+    };
+
+    view! {
+        <svg viewBox=format!("0 0 {s} {s}") width=s height=s aria-hidden="true">
+            {shape}
+        </svg>
     }
 }
 
@@ -300,7 +314,6 @@ pub fn ComponentPicker(
                                     );
                                     results.into_iter().enumerate().map(|(index, t)| {
                                         let is_selected = selected_index == Some(index);
-                                        let svg = category_shape_svg(t.category.as_str(), 16);
                                         let tid = t.id.clone();
                                         let tname = t.name.clone();
                                         let tname_display = tname.clone();
@@ -329,7 +342,9 @@ pub fn ComponentPicker(
                                                 }
                                             >
                                                 <div class="w-4 h-4 shrink-0 flex items-center justify-center"
-                                                     style="color: rgba(128, 255, 234, 0.4)" inner_html=svg />
+                                                     style="color: rgba(128, 255, 234, 0.4)">
+                                                    <CategoryShape category=category.clone() size=16 />
+                                                </div>
                                                 <div class="flex-1 min-w-0">
                                                     <div class="text-[11px] text-fg-primary leading-tight">{tname_display}</div>
                                                     <div class="text-[9px] text-fg-tertiary/40">

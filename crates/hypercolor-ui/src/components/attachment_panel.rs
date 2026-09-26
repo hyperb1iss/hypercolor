@@ -16,7 +16,7 @@ use crate::async_helpers::spawn_identify;
 use crate::channel_names;
 use crate::components::attachment_editor;
 use crate::components::component_picker::ComponentPicker;
-use crate::components::device_card::topology_shape_svg;
+use crate::components::device_card::{TopologyShape, topology_shape_kind};
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::layout_utils::channel_name_matches_slot_alias;
@@ -159,9 +159,9 @@ pub fn WiringPanel(
                                                     )
                                                 })
                                                 .cloned();
-                                            let zone_svg = zone_match.as_ref()
-                                                .map(|z| topology_shape_svg(&z.topology))
-                                                .unwrap_or_else(|| topology_shape_svg("strip"));
+                                            let zone_shape = zone_match.as_ref()
+                                                .map(|z| topology_shape_kind(&z.topology))
+                                                .unwrap_or_else(|| topology_shape_kind("strip"));
                                             let zone_id = zone_match.as_ref().map(|z| z.id.clone());
 
                                             // Channel name: localStorage → layout zone name → driver default
@@ -243,8 +243,9 @@ pub fn WiringPanel(
                                                                  "color: rgba({accent}, 0.95); \
                                                                   background: rgba({accent}, 0.08); \
                                                                   box-shadow: inset 0 0 8px rgba({accent}, 0.12)"
-                                                             )
-                                                             inner_html=format!(r#"<svg viewBox="0 0 16 16" width="14" height="14">{zone_svg}</svg>"#) />
+                                                             )>
+                                                            <TopologyShape kind=zone_shape size=14 />
+                                                        </div>
 
 
                                                         // Editable name
