@@ -25,7 +25,12 @@ const DAEMON_RELATIVE_PATH: [&str; 2] = ["bin", "hypercolor-daemon"];
 /// What is recorded for one user's Linux installation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinuxInstallObservation {
-    /// No release installer has recorded an installation for this user.
+    /// No release installer has recorded an installation for this user:
+    /// no locator, no historical journal and no historical `active`
+    /// pointer. Binaries placed by other means (a distribution package, a
+    /// source build, or a script from before the release installer kept a
+    /// journal) are not installations this observes; callers classify
+    /// those by where the running executable lives.
     Absent,
     /// A raw installation under the historical `~/.local/lib/hypercolor`
     /// root that no managed-aware installer has adopted yet.
