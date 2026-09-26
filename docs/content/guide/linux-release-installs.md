@@ -21,6 +21,7 @@ record.
 | Releases | `${XDG_DATA_HOME:-~/.local/share}/hypercolor/releases` | One read-only directory per installed release, plus an `active` link to the running one |
 | Update state | `${XDG_STATE_HOME:-~/.local/state}/hypercolor/update` | Transaction journal, lock and installation record, private to you |
 | Locator | `~/.local/lib/hypercolor/install-journal.json` | Points every installer at the recorded locations |
+| Upgrade target | `~/.local/lib/hypercolor/managed-adoption.json` | Written before an upgrade from an older install creates anything |
 | Commands | `~/.local/bin/hypercolor` and friends | Links into the active release |
 | Service | `~/.config/systemd/user/hypercolor.service` | Generated user unit that starts the active release |
 | Your data | `${XDG_DATA_HOME:-~/.local/share}/hypercolor` | Scenes, layouts, credentials, user effects |
@@ -40,8 +41,9 @@ all follow the recorded locations, even if those variables change later. To
 move an install, uninstall it and install again with the new values.
 
 Each recorded location must be an absolute path of at most 512 bytes, and your
-home directory at most 256 bytes. Longer paths are refused before anything is
-written, because every transaction record has to carry them.
+home directory at most 256 bytes. Both may contain only letters, digits, `/`,
+`.`, `_` and `-`, because they are written verbatim into the generated systemd
+unit. Other paths are refused before anything is written.
 
 ## Upgrades from older installs
 
@@ -60,7 +62,11 @@ The next install adopts that setup in place:
 
 If the process dies at any step, run the installer again. Before the locator
 switches, the old install is still the one in charge and nothing visible has
-changed. After it switches, recovery always continues in the new layout.
+changed. The rerun keeps the locations recorded when the upgrade started, even
+if your `XDG_*` variables changed since, and prepares the upgrade again if the
+daemon restarted, a different release is being installed, or an older
+installer touched the old install in the meantime. After the locator switches,
+recovery always continues in the new layout.
 
 Once an install has switched, older copies of the installer stop before they
 change the service, launcher, command links or locator, instead of managing a
@@ -78,6 +84,10 @@ trusts. The rules are:
   directories the daemon shares) must be owned by you and not writable by
   everyone. They may also be writable by their group, but only when that group
   is your private group.
+- Every existing directory above those, up to `/`, must be owned by root and
+  writable by nobody else, or owned by you under the same rules. The service
+  reaches the daemon by path, so another account must not be able to rename
+  anything on the way.
 
 Many distributions give each user a private group and a umask of `002`, so
 `~/.local` and the daemon's own directories often end up as `0775`. That is
@@ -101,10 +111,13 @@ hide accounts from a listing, so they refuse the group exception.
 | --- | --- | --- |
 | Directory is group-writable and the group is not proven private | Other group members could replace installed files | `chmod g-w` the named directory |
 | Directory is writable by everyone, or sticky like `/tmp` | Any account could replace installed files | Use a directory only you can write |
+| A directory above a location is writable by another account | That account could rename the path the service runs from | Fix its permissions, or choose another location |
 | Directory is owned by another account | That account controls what the installer trusts | Choose a location you own |
 | Group-writable directory carries an extended ACL | An ACL entry can grant another account write access | `chmod g-w` it, or remove the ACL with `setfacl -b` |
 | Group lookup fails, or a directory service is configured | The installer cannot prove no one else is in the group | `chmod g-w` the named directory |
 | Location or home path is too long | The transaction record could not carry it | Use shorter locations |
+| Location or home path has other characters | systemd would read the generated unit differently | Use a path of letters, digits, `/`, `.`, `_` and `-` |
+| The service is `failed`, `activating` or restarting | The installer does not act on a service mid-transition yet | Wait, or run `systemctl --user reset-failed hypercolor.service` |
 | Locator from an unknown or newer installer | Guessing would risk managing the wrong install | Use the current installer |
 | Uninstall finds a service, unit or link this installer did not generate | It belongs to a package, another install or a local edit | Remove it with its owner, then rerun |
 | Another install or uninstall is running | Two writers would corrupt the journal | Wait for it to finish |
@@ -121,12 +134,14 @@ curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/
 The script runs the installed `hypercolor __uninstall-release`, which follows
 the recorded locations:
 
-- it finishes any interrupted transaction first;
+- it finishes any interrupted transaction first, and if that cannot finish it
+  says so and removes the install anyway;
 - it stops and disables the service and removes the generated unit;
 - it removes only the command links, desktop entry, icons and completions this
   installer generated;
 - it removes the releases directory, the update state and
-  `~/.local/lib/hypercolor`.
+  `~/.local/lib/hypercolor`, including locations an interrupted upgrade had
+  prepared.
 
 It keeps your data directory (everything except `releases`), your runtime
 state beside `update`, and your configuration directory. If the service,
