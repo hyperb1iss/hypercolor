@@ -161,19 +161,21 @@ impl InstallStore {
 
     /// The units directory through a removal-capable handle, or `None`
     /// when no unit was ever installed.
+    ///
+    /// It is opened beneath the store root the lock retained (proven to be
+    /// the same inode as the canonical path), never by reresolving the
+    /// units path, so a root replaced under the path cannot redirect a
+    /// removal.
     fn units_directory(
         &self,
         lock: &InstallLock,
     ) -> Result<Option<PublicDirectoryAuthority>, InstallStoreError> {
         self.authority(lock)?;
-        match lock.open_public_directory(&self.root.join(UNITS_DIRECTORY)) {
+        let root = lock.open_store_public_directory()?;
+        match root.open_child_directory(Path::new(UNITS_DIRECTORY)) {
             Ok(units) => Ok(Some(units)),
-            Err(InstallStoreError::OpenPublicDirectory(error))
-                if error.kind() == io::ErrorKind::NotFound =>
-            {
-                Ok(None)
-            }
-            Err(error) => Err(error),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(InstallStoreError::OpenUnits(error)),
         }
     }
 }
