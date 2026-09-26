@@ -50,7 +50,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         record.baseline_systemd.validate()?;
         validate_prior_launcher_entry(&record.prior_launcher, &record.prior_launcher_bytes)?;
         if let Some(launcher) = &record.candidate_launcher
-            && launcher != &self.candidate_launcher()?
+            && launcher != &self.rerender_service(&record.candidate.unit, &launcher.bytes)?
         {
             return Err(error("candidate launcher binding is not exact"));
         }

@@ -76,6 +76,13 @@ pub enum InstallLocationError {
     #[error("installation roots overlap protected or legacy installation state")]
     OverlappingRoots,
     #[error(
+        "installation root {} cannot be sandboxed: configuration and data roots must be \
+         <base>/hypercolor, the update state root <base>/hypercolor/update, and none may \
+         hold your home, ~/.local/bin or ~/.local/lib",
+        .0.display()
+    )]
+    UnsandboxableRoot(PathBuf),
+    #[error(
         "installation path {path} is longer than {limit} bytes, the most a transaction record can carry",
         path = .path.display()
     )]
@@ -172,6 +179,7 @@ impl LinuxInstallLocation {
             launcher_contract: LAUNCHER_CONTRACT,
         };
         location.validate(home)?;
+        location.validate_sandbox(home)?;
         Ok(location)
     }
 
@@ -246,6 +254,61 @@ impl LinuxInstallLocation {
         Ok(())
     }
 
+    /// Whether the generated service can confine the daemon to these roots.
+    ///
+    /// The service makes the configuration, data and daemon state roots
+    /// writable and hands their bases to the daemon as XDG directories, so
+    /// each must be a `hypercolor` directory that grants nothing else: never
+    /// the home directory or an ancestor, never a directory holding or
+    /// inside `~/.local/bin` or `~/.local/lib`, and never one strictly
+    /// holding or inside another writable root, whose parent the daemon
+    /// could then replace before the unsandboxed pre-start step. A shared
+    /// XDG base makes two of them the same directory, which is fine.
+    ///
+    /// A new location must pass. A recorded one is still decoded without it,
+    /// so it can be recovered and uninstalled; installing into it refuses.
+    ///
+    /// # Errors
+    /// Returns [`InstallLocationError::UnsandboxableRoot`] for the first root
+    /// that fails.
+    pub fn validate_sandbox(&self, home: &Path) -> Result<(), InstallLocationError> {
+        let named = |root: &Path, suffix: &[&str]| {
+            let mut components = root.components().rev();
+            suffix.iter().rev().all(|expected| {
+                components
+                    .next()
+                    .is_some_and(|component| component.as_os_str() == *expected)
+            })
+        };
+        if !named(&self.config_root, &["hypercolor"])
+            || !named(&self.data_root, &["hypercolor"])
+            || !named(&self.state_root, &["hypercolor", "update"])
+        {
+            let root = [&self.config_root, &self.data_root]
+                .into_iter()
+                .find(|root| !named(root, &["hypercolor"]))
+                .unwrap_or(&self.state_root);
+            return Err(InstallLocationError::UnsandboxableRoot(root.clone()));
+        }
+        let protected = [home.join(".local/bin"), home.join(".local/lib")];
+        let writable = [
+            self.config_root.as_path(),
+            self.data_root.as_path(),
+            self.daemon_state_root(),
+        ];
+        for (index, root) in writable.iter().enumerate() {
+            if home.starts_with(root)
+                || protected.iter().any(|path| overlaps(root, path))
+                || writable[index + 1..]
+                    .iter()
+                    .any(|other| root != other && overlaps(root, other))
+            {
+                return Err(InstallLocationError::UnsandboxableRoot(root.to_path_buf()));
+            }
+        }
+        Ok(())
+    }
+
     /// Stable installation identity, independent of a selected release.
     #[must_use]
     pub fn installation_id(&self) -> Uuid {
@@ -280,6 +343,15 @@ impl LinuxInstallLocation {
     #[must_use]
     pub fn config_root(&self) -> &Path {
         &self.config_root
+    }
+
+    /// The daemon's own state directory, which holds the recorded update
+    /// state root (`<state base>/hypercolor/update`).
+    #[must_use]
+    pub fn daemon_state_root(&self) -> &Path {
+        self.state_root
+            .parent()
+            .expect("a validated state root is an absolute path below /")
     }
 }
 

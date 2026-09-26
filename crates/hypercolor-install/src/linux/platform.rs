@@ -306,7 +306,7 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
         let candidate_launcher = target
             .launcher_unit
             .as_ref()
-            .map(|_| self.candidate_launcher())
+            .map(|_| self.service_for_unit(candidate.id()))
             .transpose()?;
         let mut layout = LINUX_DIRECTORY_ITEMS
             .into_iter()
@@ -753,10 +753,12 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
 }
 
 impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
-    /// Prove the service that runs outside the journal is exactly the one
-    /// on disk: this installer's fragment running the launcher on disk,
-    /// which is one side of this transaction, and a main process (when there
-    /// is one) that is the daemon of the unit the active pointer names.
+    /// Prove the service that runs outside the journal is this
+    /// transaction's: this installer's fragment, a unit on disk that is one
+    /// side of the transaction, a loaded command that is one side's too (a
+    /// manager not yet reloaded still runs the other side's), and a main
+    /// process (when there is one) that is the daemon of the unit that
+    /// command starts.
     fn require_on_disk_service(
         &mut self,
         inspection: &LinuxInspection,
@@ -769,10 +771,18 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                     .candidate_launcher
                     .as_ref()
                     .is_some_and(|launcher| inspection.launcher_bytes == launcher.bytes));
+        let loaded_is_ours = systemd.exec_start
+            == require_notify_launcher(&inspection.launcher_bytes)?
+            || (!matches!(record.prior_launcher, LinuxExactEntry::Absent)
+                && systemd.exec_start == require_notify_launcher(&record.prior_launcher_bytes)?)
+            || record
+                .candidate_launcher
+                .as_ref()
+                .is_some_and(|launcher| systemd.exec_start == launcher.exec_start);
         if systemd.load_state != "loaded"
             || systemd.fragment_path != self.config.direct_fragment_path
             || !launcher_is_ours
-            || systemd.exec_start != require_notify_launcher(&inspection.launcher_bytes)?
+            || !loaded_is_ours
         {
             return Err(error(
                 "the running service is not the one this installer's on-disk \

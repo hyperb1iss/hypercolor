@@ -23,7 +23,8 @@ use super::model::{
     LINUX_LAYOUT_ITEMS, LinuxExactEntry, LinuxLayoutItem, LinuxServicePhase, MAX_LAUNCHER_BYTES,
     MAX_SYSTEMD_SHOW_BYTES, parse_systemd_show,
 };
-use super::proof::{layout_target_for, render_launcher};
+use super::proof::{layout_target_for, render_direct, render_managed};
+use super::service::{LinuxServiceRenderer, unit_contract};
 use super::{
     LinuxInstallAuthority, LinuxInstallExecutor, LinuxInstallLocation, LinuxInstallLocator,
     LinuxPublicTree,
@@ -57,6 +58,13 @@ pub trait LinuxUninstallHost {
         lock: &InstallLock,
         tree: LinuxPublicTree,
     ) -> Result<Self::Executor, InstallPlatformError>;
+
+    /// The renderer for a managed installation's service unit, which
+    /// settles a pending transaction and recognizes the unit it wrote. A
+    /// build that renders its own unit returns its renderer here.
+    fn service_renderer(&self) -> LinuxServiceRenderer {
+        LinuxServiceRenderer::PUBLIC
+    }
 
     /// Observe one durable boundary.
     ///
@@ -137,10 +145,10 @@ pub fn run_linux_uninstall<H: LinuxUninstallHost>(
     match authority {
         LinuxInstallAuthority::Legacy(journal) => {
             if journal.as_ref().is_some_and(pending) {
-                settle_or_note(home, host, &old, &mut old_lock, false, &mut run);
+                settle_or_note(home, host, &old, &mut old_lock, None, &mut run);
             }
             stop(host, LinuxUninstallCheckpoint::Settled)?;
-            remove_platform(home, host, &old, &old_lock, &[old.active_path()])?;
+            remove_platform(home, host, &old, &old_lock, &[old.active_path()], None)?;
             stop(host, LinuxUninstallCheckpoint::PlatformRemoved)?;
             if let Some(prepared) = &intent {
                 remove_prepared_roots(&old_lock, prepared, &mut run)?;
@@ -191,14 +199,14 @@ fn uninstall_managed<H: LinuxUninstallHost>(
         .with_ownership_policy(old.ownership_policy().clone());
         let mut lock = store.acquire_lock()?;
         if store.load_journal(&lock)?.as_ref().is_some_and(pending) {
-            settle_or_note(home, host, &store, &mut lock, true, run);
+            settle_or_note(home, host, &store, &mut lock, Some(location), run);
         }
         stop(host, LinuxUninstallCheckpoint::Settled)?;
-        remove_platform(home, host, &store, &lock, &active_roots)?;
+        remove_platform(home, host, &store, &lock, &active_roots, Some(location))?;
         Some(lock)
     } else {
         stop(host, LinuxUninstallCheckpoint::Settled)?;
-        remove_platform(home, host, old, old_lock, &active_roots)?;
+        remove_platform(home, host, old, old_lock, &active_roots, Some(location))?;
         None
     };
     stop(host, LinuxUninstallCheckpoint::PlatformRemoved)?;
@@ -304,7 +312,7 @@ fn settle_or_note<H: LinuxUninstallHost>(
     host: &mut H,
     store: &InstallStore,
     lock: &mut InstallLock,
-    managed: bool,
+    managed: Option<&LinuxInstallLocation>,
     run: &mut LinuxUninstallRun,
 ) {
     match settle(home, host, store, lock, managed) {
@@ -318,11 +326,12 @@ fn settle<H: LinuxUninstallHost>(
     host: &mut H,
     store: &InstallStore,
     lock: &mut InstallLock,
-    managed: bool,
+    managed: Option<&LinuxInstallLocation>,
 ) -> Result<InstallOutcome, LinuxInstallCommandError> {
     let journal = store
         .load_journal(lock)?
         .ok_or(LinuxInstallCommandError::MissingJournal)?;
+    let service = host.service_renderer();
     let mut platform = bind_linux_platform(
         home,
         |store, lock, tree| host.executor(store, lock, tree),
@@ -336,6 +345,7 @@ fn settle<H: LinuxUninstallHost>(
             // Removal follows, but a transaction settled here must still
             // meet the rule every other run applies before it commits.
             probation: super::DEFAULT_PROBATION_WINDOW,
+            service,
         },
     )?;
     Ok(recover(store, lock, &mut platform)?.outcome)
@@ -344,14 +354,16 @@ fn settle<H: LinuxUninstallHost>(
 /// Remove the generated service, launcher and public layout entries.
 ///
 /// Every observed entry must be absent or exactly what this installer renders
-/// for one of `active_roots`. Anything else refuses the whole removal before
-/// the first write.
+/// for one of `active_roots` (and, for a managed installation, the service
+/// unit its recorded location renders for the release that unit names).
+/// Anything else refuses the whole removal before the first write.
 fn remove_platform<H: LinuxUninstallHost>(
     home: &Path,
     host: &mut H,
     store: &InstallStore,
     lock: &InstallLock,
     active_roots: &[PathBuf],
+    managed: Option<&LinuxInstallLocation>,
 ) -> Result<(), LinuxInstallCommandError> {
     let tree = LinuxPublicTree::new(lock, home)?;
     let direct_fragment = home
@@ -376,7 +388,14 @@ fn remove_platform<H: LinuxUninstallHost>(
             systemd.fragment_path
         ));
     }
-    if !owned_launcher(&launcher, &launcher_bytes, active_roots)? {
+    let renderers = [host.service_renderer(), LinuxServiceRenderer::PUBLIC];
+    if !owned_launcher(
+        &launcher,
+        &launcher_bytes,
+        active_roots,
+        managed,
+        &renderers,
+    )? {
         foreign.push(direct_fragment.clone());
     }
     for (item, entry) in &layout {
@@ -411,24 +430,50 @@ fn remove_platform<H: LinuxUninstallHost>(
     Ok(())
 }
 
+/// Whether the unit file is one this installer wrote: the direct unit for
+/// one of `active_roots`, or, for a managed installation, the unit a known
+/// contract renders for the release its `ExecStart` names.
 fn owned_launcher(
     launcher: &LinuxExactEntry,
     bytes: &[u8],
     active_roots: &[PathBuf],
+    managed: Option<&LinuxInstallLocation>,
+    renderers: &[LinuxServiceRenderer],
 ) -> Result<bool, InstallPlatformError> {
-    match launcher {
-        LinuxExactEntry::Absent => Ok(true),
-        LinuxExactEntry::Symlink { .. } => Ok(false),
-        LinuxExactEntry::RegularFile { mode, .. } => {
-            for root in active_roots {
-                let rendered = render_launcher(root)?;
-                if *mode == rendered.mode && bytes == rendered.bytes.as_slice() {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
+    let LinuxExactEntry::RegularFile { mode, .. } = launcher else {
+        return Ok(matches!(launcher, LinuxExactEntry::Absent));
+    };
+    let mut rendered = active_roots
+        .iter()
+        .map(|root| render_direct(root))
+        .collect::<Result<Vec<_>, _>>()?;
+    if let (Some(location), Some(contract)) = (managed, unit_contract(bytes))
+        && let Some(renderer) = renderers
+            .iter()
+            .find(|renderer| renderer.contract() == contract)
+        && let Some(unit) = named_release(bytes, location)
+    {
+        let units_root = location.release_root().join("units");
+        rendered.push(render_managed(renderer, &units_root, &unit, location)?.0);
     }
+    Ok(rendered
+        .iter()
+        .any(|rendered| *mode == rendered.mode && bytes == rendered.bytes.as_slice()))
+}
+
+/// The release a managed unit's `ExecStart` names beneath the recorded
+/// release root, in its program or any separate argument (a renderer may
+/// start a wrapper that takes the release directory as an argument),
+/// whether or not that release is still on disk.
+fn named_release(bytes: &[u8], location: &LinuxInstallLocation) -> Option<super::super::UnitId> {
+    let exec_start = super::proof::require_notify_launcher(bytes).ok()?;
+    let words: Vec<String> = serde_json::from_str(&exec_start).ok()?;
+    let units_root = location.release_root().join("units");
+    words.iter().find_map(|word| {
+        let unit = Path::new(word).strip_prefix(&units_root).ok()?;
+        let id = unit.components().next()?.as_os_str().to_str()?;
+        super::super::UnitId::new(id).ok()
+    })
 }
 
 fn owned_layout(item: LinuxLayoutItem, entry: &LinuxExactEntry, active_roots: &[PathBuf]) -> bool {
@@ -528,4 +573,68 @@ fn stop<H: LinuxUninstallHost>(
 ) -> Result<(), LinuxInstallCommandError> {
     host.checkpoint(checkpoint)
         .map_err(|source| LinuxInstallCommandError::UninstallStopped(checkpoint, source))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::MetadataExt;
+
+    use super::named_release;
+    use crate::linux::LinuxInstallLocation;
+
+    fn unit(exec_start: &str) -> Vec<u8> {
+        format!("[Service]\nType=notify\nExecStart={exec_start}\n").into_bytes()
+    }
+
+    #[test]
+    fn a_unit_names_its_release_in_its_program_or_any_argument() {
+        let home = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).expect("home");
+        let uid = std::fs::metadata(home.path()).expect("owner").uid();
+        let location = LinuxInstallLocation::new(
+            home.path(),
+            &home.path().join("data"),
+            &home.path().join("state"),
+            &home.path().join("config"),
+            uid,
+        )
+        .expect("location");
+        let id = "ab".repeat(32);
+        let release = location.release_root().join("units").join(&id);
+        let release = release.to_str().expect("UTF-8");
+        let named = |exec_start: &str| {
+            named_release(&unit(exec_start), &location).map(|id| id.as_str().to_owned())
+        };
+
+        assert_eq!(
+            named(&format!(
+                "{release}/bin/hypercolor-daemon --ui-dir {release}/ui"
+            ))
+            .as_deref(),
+            Some(id.as_str())
+        );
+        assert_eq!(
+            named(&format!("/usr/libexec/wrapper --release {release}")).as_deref(),
+            Some(id.as_str()),
+            "a wrapper that takes the release as an argument"
+        );
+        assert_eq!(
+            named(&format!("/usr/libexec/wrapper --release={release}")),
+            None,
+            "a release joined to an option is not a separate argument"
+        );
+        let active = location.release_root().join("active");
+        assert_eq!(
+            named(&format!(
+                "{}/bin/hypercolor-daemon",
+                active.to_str().expect("UTF-8")
+            )),
+            None,
+            "the direct unit names no release"
+        );
+        assert_eq!(
+            named(&format!("/opt/hypercolor/units/{id}/bin/hypercolor-daemon")),
+            None,
+            "a release outside the recorded root is not ours"
+        );
+    }
 }

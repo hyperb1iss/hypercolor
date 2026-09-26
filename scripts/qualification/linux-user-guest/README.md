@@ -105,6 +105,11 @@ Faults are per version, read at every start from
 | `crash_after_ready_ms` | Abort this long after `READY=1` |
 | `hang_http_after_ready_ms` | Stop answering HTTP (the watchdog keeps pinging) |
 | `report_version` | Answer HTTP with another version |
+| `probe_writes` | At start, try to write into every directory the service sandbox allows or denies |
+
+`GET /qual/launch` reports how the daemon was started: its resolved
+executable, its arguments, the XDG variables its unit set, and the write
+probes (`hc-guest-driver launch-report` prints it).
 
 The harness writes fault files with `podman exec -i ... tee` (without `-i`
 the file comes out empty).
@@ -147,6 +152,9 @@ kernel; page-cache loss needs a virtual machine.
 | `probation-installer-killed` | Installer killed 30 s into the window; installer rerun | The candidate keeps its invocation; the rerun watches a whole window again and commits |
 | `probation-power-cut` | Power cut 20 s into the window | The candidate autostarts under a new invocation; recovery rolls back and names the prior |
 | `units-collected` | Three installs, with a leftover staging tree planted before the third | Only the active release and the one it replaced remain; the leftover is gone |
+| `hardened-unit` | Fresh install with write probes; another build then creates `coordinator/` and `activator/`; then an upgrade | The unit names its contract and its release directory and carries its sandbox; the daemon, its UI and effects come from that release with the recorded XDG bases (`/proc` agrees); it can write exactly config, data, daemon state, cache and a private `/tmp`, and cannot create `coordinator/`; once that exists it is writable and `activator/` is not |
+| `config-reset` | The configuration directory is deleted while the service is stopped, then the service starts | The unit's `ExecStartPre=+mkdir` step recreates it 0700 before the sandbox, and the daemon answers `/health` |
+| `active-swap` | `active` flips between two releases continuously while the service restarts 24 times | Every start runs the release the unit names, whole, whatever `active` says |
 
 Every scenario whose rollback restarts the prior also checks the
 installer's report of the release that runs again against the service's
