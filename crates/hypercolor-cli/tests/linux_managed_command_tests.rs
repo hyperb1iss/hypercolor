@@ -5133,6 +5133,87 @@ fn an_install_from_before_the_launcher_gains_it_and_its_rollback_restores_the_di
     );
 }
 
+/// Run an install of `release` under `policy`.
+fn run_policy(
+    fixture: &Fixture,
+    release: &Release,
+    location: Option<LinuxInstallLocation>,
+    policy: InstallTargetPolicy,
+) -> Result<hypercolor_cli::install::LinuxInstallRun, LinuxInstallCommandError> {
+    let mut host = Host::new(&fixture.world, release, location);
+    run_linux_install(
+        &fixture.home,
+        &release.request(policy),
+        &fixture.private(),
+        &mut host,
+    )
+}
+
+/// The user deletes the service unit file and the manager forgets it.
+fn delete_service_unit(fixture: &Fixture) {
+    let mut world = fixture.world.borrow_mut();
+    world.stop();
+    world.launcher = LinuxExactEntry::Absent;
+    world.launcher_bytes.clear();
+    world.loaded = false;
+    world.enabled = false;
+}
+
+#[test]
+fn a_launcher_stays_settled_when_a_later_commit_carries_no_service_unit() {
+    // A fresh install with no service unit commits without one; the
+    // launcher it published is still settled from that commit on.
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    let run = run_policy(
+        &fixture,
+        &fixture.v1,
+        Some(location.clone()),
+        InstallTargetPolicy::Preserve,
+    )
+    .expect("install without a service");
+    assert!(matches!(run.outcome, InstallOutcome::Committed { .. }));
+    assert_eq!(run.settled_launcher, Some(Ok(())));
+    fixture.update(&fixture.v2).expect("a normal install");
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        release_cli(&fixture.v1),
+        "a launcher settled by a unitless commit is never replaced"
+    );
+
+    // Settled through a unit, then the user deletes the unit file: neither
+    // a unitless install nor a failed one that rolls back to no unit
+    // unsettles it.
+    let (fixture, location) = managed_v1();
+    let settled = fs::read(launcher_path(&location)).expect("launcher");
+    delete_service_unit(&fixture);
+    run_policy(&fixture, &fixture.v2, None, InstallTargetPolicy::Preserve)
+        .expect("install without a service");
+    fixture.update(&fixture.v3).expect("a normal install");
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        settled
+    );
+
+    let (fixture, location) = managed_v1();
+    let settled = fs::read(launcher_path(&location)).expect("launcher");
+    delete_service_unit(&fixture);
+    fixture
+        .world
+        .borrow_mut()
+        .failing_starts
+        .insert("9.8.8".to_owned());
+    let run = fixture.update(&fixture.v2).expect("the run settles");
+    assert!(matches!(run.outcome, InstallOutcome::RolledBack { .. }));
+    fixture.world.borrow_mut().failing_starts.clear();
+    fixture.update(&fixture.v3).expect("a normal install");
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        settled,
+        "a rollback to no unit does not unsettle it"
+    );
+}
+
 #[test]
 fn a_launcher_settles_at_its_first_commit_and_stays_settled() {
     // An upgrade while the service is stopped still commits the unit that

@@ -17,6 +17,7 @@ use super::super::{
 };
 use super::bootstrap::{
     ensure_linux_launcher, ensure_linux_update_directories, inspect_linux_launcher,
+    record_linux_launcher_settled,
 };
 use super::{
     LinuxAdoption, LinuxAdoptionError, LinuxInstallConfig, LinuxInstallElection,
@@ -133,6 +134,10 @@ pub struct LinuxInstallRun {
     /// or why it could not. `None` when it did not collect: the run
     /// settled the historical root, whose next install adopts it.
     pub collection: Option<Result<UnitCollection, String>>,
+    /// Whether a committed managed run recorded its launcher as settled,
+    /// or why it could not. `None` when the run did not commit a managed
+    /// installation.
+    pub settled_launcher: Option<Result<(), String>>,
 }
 
 /// A run that could not settle, with the stage that refused it.
@@ -272,7 +277,7 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 .confirm_durable()
                 .map_err(LinuxInstallCommandError::Authority)?;
             let run = recover(&store, &mut lock, &mut platform)?;
-            Ok(collect_settled(&store, &lock, run))
+            Ok(collect_settled(&store, &lock, authority.location(), run))
         }
         LinuxInstallElection::Managed {
             store,
@@ -302,7 +307,7 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                     },
                 )?;
                 let run = recover(&store, &mut lock, &mut platform)?;
-                return Ok(collect_settled(&store, &lock, run));
+                return Ok(collect_settled(&store, &lock, authority.location(), run));
             }
             let candidate = host.stage_candidate(&store, &lock)?;
             require_managed_candidate(&candidate, authority.location())?;
@@ -333,10 +338,12 @@ pub fn run_linux_install<H: LinuxInstallHost>(
             Ok(collect_settled(
                 &store,
                 &lock,
+                authority.location(),
                 LinuxInstallRun {
                     outcome,
                     recovered: false,
                     collection: None,
+                    settled_launcher: None,
                 },
             ))
         }
@@ -415,7 +422,12 @@ pub fn run_linux_recovery<H: LinuxInstallHost>(
                 },
             )?;
             let run = recover(&store, &mut lock, &mut platform)?;
-            Ok(Some(collect_settled(&store, &lock, run)))
+            Ok(Some(collect_settled(
+                &store,
+                &lock,
+                authority.location(),
+                run,
+            )))
         }
     }
 }
@@ -552,6 +564,7 @@ pub(super) fn recover<E: LinuxInstallExecutor>(
         outcome,
         recovered: true,
         collection: None,
+        settled_launcher: None,
     })
 }
 
@@ -565,8 +578,15 @@ pub(super) fn recover<E: LinuxInstallExecutor>(
 fn collect_settled(
     store: &InstallStore,
     lock: &InstallLock,
+    location: &LinuxInstallLocation,
     mut run: LinuxInstallRun,
 ) -> LinuxInstallRun {
+    // A commit makes the installation's launcher its own for good; record
+    // that before anything else acts on it.
+    if matches!(run.outcome, InstallOutcome::Committed { .. }) {
+        run.settled_launcher =
+            Some(record_linux_launcher_settled(lock, location).map_err(|error| error.to_string()));
+    }
     let collection = store
         .load_journal(lock)
         .map_err(|error| error.to_string())

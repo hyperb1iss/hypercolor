@@ -5,12 +5,12 @@
 //! contract it implements. It sits beside `units/`, outside every release
 //! directory, so the releases it selects between can never replace it. It is
 //! published atomically from the candidate of the first managed install or
-//! adoption, before that candidate starts. Once an install commits with
-//! the service unit starting it, it is the installation's for good: every
-//! later run only proves it unchanged, and an ordinary install never
-//! rewrites it. Until then it came from a candidate whose install rolled
-//! back or never finished, so the next install replaces it with its own
-//! candidate's CLI. Replacing a settled
+//! adoption, before that candidate starts. Once an install commits after
+//! publishing it, it is the installation's for good, recorded durably in
+//! the update state root: every later run only proves it unchanged, and an
+//! ordinary install never rewrites it. Until then it came from a candidate
+//! whose install rolled back or never finished, so the next install
+//! replaces it with its own candidate's CLI. Replacing a settled
 //! launcher is a launcher contract change, which contract 1 does not define.
 
 use std::io::{self, Read};
@@ -211,7 +211,9 @@ pub fn ensure_linux_launcher(
         .is_some()
     {
         let existing = prove(location, false)?;
-        if existing.source_unit() == candidate.id() || launcher_settled(store, lock, location)? {
+        if existing.source_unit() == candidate.id()
+            || launcher_settled(store, lock, location, &existing)?
+        {
             return Ok(existing);
         }
         lock.open_store_public_directory()
@@ -407,25 +409,114 @@ fn prove(
     })
 }
 
-/// Whether the launcher is the installation's for good: the journal's last
-/// transaction committed with a service unit that starts the launcher, or
-/// rolled back to one.
+/// The update state record that names the settled launcher.
+const SETTLED_NAME: &str = "launcher-settled.json";
+const SETTLED_MODE: u32 = 0o600;
+const SETTLED_SCHEMA_VERSION: u32 = 1;
+const MAX_SETTLED_BYTES: u64 = 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettledRecord {
+    schema_version: u32,
+    program_sha256: String,
+}
+
+/// Record that the installation's launcher is settled: an install committed
+/// after it was published, so no later install may replace it.
 ///
-/// Every unit a managed installation renders starts the launcher, so once
-/// one install commits through it, every later journal names such a unit
-/// as its target or its prior, whether or not the service was running:
-/// the launcher stays settled across stopped upgrades and rollbacks. A
-/// launcher can only be unsettled when no install ever committed through
-/// it (its install rolled back to a direct unit, or never wrote a
-/// journal). The unit is matched by its `ExecStart` naming this
-/// installation's launcher, not by its whole text. Anything the journal
-/// cannot settle (a transaction still pending, or a record this build
-/// cannot read) counts as settled, so doubt never replaces a launcher.
+/// The record names the launcher program's digest and lives in the update
+/// state root, which the service cannot write, so it holds across every
+/// later journal, whatever unit each transaction carries, until uninstall
+/// removes the state root. A launcher published again after a user
+/// removed it has a new record to earn. Writing a record that already names
+/// this launcher changes nothing.
+///
+/// # Errors
+/// Refuses a launcher that cannot be proven, and a record that cannot be
+/// written durably.
+pub fn record_linux_launcher_settled(
+    lock: &InstallLock,
+    location: &LinuxInstallLocation,
+) -> Result<(), InstallPlatformError> {
+    let Some(launcher) = inspect_linux_launcher(location)? else {
+        return Ok(());
+    };
+    let bytes = serde_json::to_vec(&SettledRecord {
+        schema_version: SETTLED_SCHEMA_VERSION,
+        program_sha256: launcher.sha256().to_owned(),
+    })
+    .map_err(|source| error(format!("encode the settled launcher record: {source}")))?;
+    let state = lock
+        .open_public_directory(location.state_root())
+        .map_err(|source| error(source.to_string()))?;
+    let observed = state
+        .observe_entry(Path::new(SETTLED_NAME))
+        .map_err(io_error("inspect the settled launcher record"))?;
+    if let hypercolor_platform_fs::ExactEntry::RegularFile { sha256, mode, .. } = &observed
+        && *mode == SETTLED_MODE
+        && sha256[..] == Sha256::digest(&bytes)[..]
+    {
+        return Ok(());
+    }
+    state
+        .durable_replace_entry(
+            Path::new(SETTLED_NAME),
+            &observed,
+            hypercolor_platform_fs::EntryReplacement::RegularFile {
+                mode: SETTLED_MODE,
+                contents: &bytes,
+            },
+        )
+        .map(drop)
+        .map_err(io_error("write the settled launcher record"))
+}
+
+/// Whether the settled launcher record names `launcher`.
+fn recorded_settled(location: &LinuxInstallLocation, launcher: &LinuxLauncherProgram) -> bool {
+    let Ok(state) = ReadOnlyDirectoryAuthority::open(location.state_root()) else {
+        return false;
+    };
+    let Ok(mut record) = state.open_regular_file(Path::new(SETTLED_NAME)) else {
+        return false;
+    };
+    let mut bytes = Vec::new();
+    if record
+        .file_mut()
+        .take(MAX_SETTLED_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_SETTLED_BYTES
+    {
+        return false;
+    }
+    serde_json::from_slice::<SettledRecord>(&bytes).is_ok_and(|record| {
+        record.schema_version == SETTLED_SCHEMA_VERSION
+            && record.program_sha256 == launcher.sha256()
+    })
+}
+
+/// Whether the launcher is the installation's for good.
+///
+/// The settled record decides when it names this launcher. Without one
+/// (a crash between a commit and writing it), the journal decides: its
+/// last transaction committed with a service unit that starts the
+/// launcher, or rolled back to one, so an install did commit through it.
+/// The unit is matched by its `ExecStart` naming this installation's
+/// launcher, not by its whole text. Anything the journal cannot settle (a
+/// transaction still pending, or a record this build cannot read) counts
+/// as settled, so doubt never replaces a launcher. Only a launcher that no
+/// install ever committed after (its install rolled back or never wrote a
+/// journal) is unsettled.
 fn launcher_settled(
     store: &InstallStore,
     lock: &InstallLock,
     location: &LinuxInstallLocation,
+    launcher: &LinuxLauncherProgram,
 ) -> Result<bool, InstallPlatformError> {
+    if recorded_settled(location, launcher) {
+        return Ok(true);
+    }
     let journal = match store.load_journal(lock) {
         Ok(Some(journal)) => journal,
         Ok(None) => return Ok(false),

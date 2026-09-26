@@ -39,6 +39,7 @@ pub use bootstrap::{
     LINUX_ACTIVATOR_DIRECTORY, LINUX_COORDINATOR_DIRECTORY, LINUX_LAUNCH_COMMAND,
     LINUX_LAUNCHER_DIRECTORY, LINUX_LAUNCHER_PROGRAM, LinuxLauncherProgram, ensure_linux_launcher,
     ensure_linux_update_directories, inspect_linux_launcher, linux_launcher_path,
+    record_linux_launcher_settled,
 };
 pub use command::{
     LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallHost, LinuxInstallRequest,

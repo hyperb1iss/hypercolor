@@ -61,10 +61,10 @@ that release's daemon, passing the UI and bundled effects from the same
 release. An upgrade that switches `active` while the daemon starts can never
 leave it running one release's code with another's UI or effects. The
 launcher is a copy of the CLI from the first release installed this way. Once
-an install commits with the service set up to start through it, no later
-install rewrites it, and an install refuses to continue if it changed. If that
-first install rolled back instead, the next install replaces the launcher with
-its own release's CLI.
+that install commits, with or without the service, no later install rewrites
+it (the update state records it as settled), and an install refuses to
+continue if it changed. If that first install rolled back instead, the next
+install replaces the launcher with its own release's CLI.
 
 The service runs sandboxed. The whole system is read-only to it except your
 configuration, data and runtime state directories (the recorded ones above)

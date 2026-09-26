@@ -64,7 +64,17 @@ pub(super) fn execute(
             eprintln!("warning: left {} in place: {reason}", path.display());
         }
     }
+    warn_unsettled_launcher(run.settled_launcher.as_ref());
     super::require_candidate_committed(run.outcome, &args.expected_manifest_sha256, run.recovered)
+}
+
+/// A commit whose launcher could not be recorded as settled leaves the
+/// journal to decide, which the next install still reads correctly unless
+/// this commit carried no service unit.
+fn warn_unsettled_launcher(settled: Option<&Result<(), String>>) {
+    if let Some(Err(error)) = settled {
+        eprintln!("warning: the launcher was not recorded as settled: {error}");
+    }
 }
 
 pub(super) fn execute_recover(home: &Path, probation_seconds: u64) -> Result<()> {
@@ -78,6 +88,7 @@ pub(super) fn execute_recover(home: &Path, probation_seconds: u64) -> Result<()>
         println!("No unsettled install to recover.");
         return Ok(());
     };
+    warn_unsettled_launcher(run.settled_launcher.as_ref());
     match &run.outcome {
         crate::install::InstallOutcome::Committed { active_unit } => {
             println!("Recovered: release {} is committed.", active_unit.as_str());
