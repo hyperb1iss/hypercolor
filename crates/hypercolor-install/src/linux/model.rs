@@ -235,7 +235,7 @@ pub struct LinuxLegacySnapshot {
 }
 
 /// How long a started candidate must stay up, unchanged, before the
-/// installer commits it (owner decision D2 in the managed update design).
+/// installer commits it.
 ///
 /// Long enough to catch a crash soon after readiness, an early device
 /// backend or first-render failure, and one full watchdog interval.

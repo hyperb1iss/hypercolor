@@ -148,8 +148,10 @@ kernel; page-cache loss needs a virtual machine.
 | `probation-power-cut` | Power cut 20 s into the window | The candidate autostarts under a new invocation; recovery rolls back and names the prior |
 | `units-collected` | Three installs, with a leftover staging tree planted before the third | Only the active release and the one it replaced remain; the leftover is gone |
 
-Every rollback scenario also checks the installer's report of the release
-that runs again against the service's `MainPID` and `InvocationID`.
+Every scenario whose rollback restarts the prior also checks the
+installer's report of the release that runs again against the service's
+`MainPID` and `InvocationID`. An abandonment restarts nothing, so it has no
+such report.
 The probation and collection scenarios install their first releases with
 `--probation-seconds 0` to stay short. Every other install uses the
 installer's default window, so the recovery scenarios run with probation on.
