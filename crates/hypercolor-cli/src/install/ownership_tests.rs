@@ -361,6 +361,10 @@ mod nss {
             "passwd: files\npasswd: files\n",
             "passwd: files [NOTFOUND=return\n",
             "passwd: files ]\n",
+            "passwd: sss[NOTFOUND=return] files\n",
+            "passwd: files ldap[UNAVAIL=return]\n",
+            "passwd: files [SUCCESS=merge]winbind\n",
+            "passwd: files\tnis\n",
         ] {
             assert!(
                 enumerable_sources(refused, "passwd").is_err(),
@@ -368,6 +372,11 @@ mod nss {
             );
         }
         assert_eq!(enumerable_sources("passwd: files sss\n", "group"), Ok(()));
+        assert!(enumerable_sources("initgroups: files sss\n", "initgroups").is_err());
+        assert_eq!(
+            enumerable_sources("group: files[SUCCESS=merge] systemd\n", "group"),
+            Ok(())
+        );
     }
 
     #[test]

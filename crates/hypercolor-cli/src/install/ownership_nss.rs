@@ -62,6 +62,9 @@ impl PrincipalDatabase for NssPrincipalDatabase {
 
     fn all_groups(&self) -> io::Result<Vec<PrincipalGroup>> {
         require_enumerable_database("group")?;
+        // Login group membership comes from initgroups, which may consult a
+        // directory service even when the group listing does not.
+        require_enumerable_database("initgroups")?;
         let bytes = getent(&["group"])?.ok_or_else(|| invalid("group enumeration failed"))?;
         parse_group(&bytes)
     }
@@ -147,8 +150,9 @@ fn require_enumerable_database(database: &str) -> io::Result<()> {
 /// Accept one database line only when every source enumerates completely.
 ///
 /// Action blocks such as `[NOTFOUND=return]` or `[SUCCESS=merge]` are
-/// skipped. A missing line means the libc default of `files`. Repeated lines
-/// are ambiguous and refused.
+/// skipped wherever they appear, including glued to a source name as in
+/// `sss[NOTFOUND=return]`, which glibc accepts. A missing line means the libc
+/// default of `files`. Repeated lines are ambiguous and refused.
 pub(super) fn enumerable_sources(contents: &str, database: &str) -> Result<(), String> {
     let mut seen = false;
     for line in contents.lines() {
@@ -165,30 +169,47 @@ pub(super) fn enumerable_sources(contents: &str, database: &str) -> Result<(), S
             ));
         }
         seen = true;
-        let mut depth = 0_usize;
-        for token in sources.split_whitespace() {
-            let opens = token.matches('[').count();
-            let closes = token.matches(']').count();
-            let in_action = depth > 0 || opens > 0;
-            depth = (depth + opens)
-                .checked_sub(closes)
-                .ok_or_else(|| format!("nsswitch.conf {database} line has unbalanced actions"))?;
-            if in_action {
-                continue;
-            }
-            if !ENUMERABLE_SOURCES.contains(&token) {
+        for source in source_names(sources)
+            .ok_or_else(|| format!("nsswitch.conf {database} line has unbalanced actions"))?
+        {
+            if !ENUMERABLE_SOURCES.contains(&source.as_str()) {
                 return Err(format!(
-                    "{database} source {token} cannot prove a complete enumeration"
+                    "{database} source {source} cannot prove a complete enumeration"
                 ));
             }
         }
-        if depth != 0 {
-            return Err(format!(
-                "nsswitch.conf {database} line has unbalanced actions"
-            ));
-        }
     }
     Ok(())
+}
+
+/// Split a database line into service names, dropping bracketed actions.
+fn source_names(sources: &str) -> Option<Vec<String>> {
+    let mut names = Vec::new();
+    let mut name = String::new();
+    let mut depth = 0_usize;
+    for character in sources.chars() {
+        match character {
+            '[' => depth += 1,
+            ']' => depth = depth.checked_sub(1)?,
+            _ if depth > 0 => {}
+            character if character.is_whitespace() => {
+                if !name.is_empty() {
+                    names.push(std::mem::take(&mut name));
+                }
+            }
+            character => name.push(character),
+        }
+        if depth > 0 && !name.is_empty() {
+            names.push(std::mem::take(&mut name));
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    if !name.is_empty() {
+        names.push(name);
+    }
+    Some(names)
 }
 
 pub(super) fn parse_passwd(bytes: &[u8]) -> io::Result<Vec<PrincipalUser>> {
