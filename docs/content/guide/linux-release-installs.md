@@ -126,6 +126,23 @@ meantime:
   about to stop. It ends without changing anything and says so; run the
   installer again to upgrade.
 
+## What a release says about your data
+
+Every Linux release tarball declares, in its `manifest.json`, which installer
+owns it and every durable store it reads or writes: your configuration,
+scenes, layouts, library, device settings and the rest. For each store it
+names the schema it writes and the oldest and newest it can read. Stores
+without a version field on disk declare schema `0`, their only shape so far.
+The daemon also records, each time it starts, the schema it found in each
+store before opening it.
+
+These declarations let an update decide whether the release it replaces could
+still read your data after a rollback. A release from before this contract
+declares nothing: it still installs as a rollback target and uninstalls
+normally, but any update that would have to cross it is treated as needing
+you to decide, never as automatic. The installer refuses a new Linux release
+whose declaration is missing, incomplete or from an unknown future contract.
+
 ## Directory permissions and private groups
 
 Another account must not be able to change the directories the installer
@@ -177,6 +194,7 @@ hide accounts from a listing, so they refuse the group exception.
 | `XDG_RUNTIME_DIR` has no `systemd/private` socket you own | The installer drives the service through your user manager's private socket, never the session bus | Run it in your own login session, or keep the user manager running with `loginctl enable-linger` |
 | The service is still starting, stopping or restarting after its own timeout | A service that keeps changing state is not a safe starting point | Wait for it to settle, or stop it with `systemctl --user stop hypercolor.service`, then rerun |
 | Locator from an unknown or newer installer | Guessing would risk managing the wrong install | Use the current installer |
+| Release manifest lacks a complete `managed_package` declaration | The installer could not tell what the release does to your data | Install an official release tarball |
 | Uninstall finds a service, unit or link this installer did not generate | It belongs to a package, another install or a local edit | Remove it with its owner, then rerun |
 | Another install or uninstall is running | Two writers would corrupt the journal | Wait for it to finish |
 
