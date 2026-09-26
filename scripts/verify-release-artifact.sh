@@ -307,7 +307,14 @@ from pathlib import Path
 root_name = os.environ["ROOT_NAME"]
 root = Path(os.environ["ROOT_DIR"])
 with open(os.environ["MANIFEST"], encoding="utf-8") as handle:
-    manifest = json.load(handle)
+    def unique_keys(pairs):
+        keys = [key for key, _ in pairs]
+        duplicated = sorted({key for key in keys if keys.count(key) > 1})
+        if duplicated:
+            raise SystemExit(f"manifest has duplicated keys: {duplicated}")
+        return dict(pairs)
+
+    manifest = json.load(handle, object_pairs_hook=unique_keys)
 
 name = manifest.get("name")
 version = manifest.get("version")
@@ -438,9 +445,17 @@ if actual_paths != expected_paths:
 # Linux release must declare it; any release that does must declare it
 # exactly, with components bound to members and one entry per durable store.
 managed = manifest.get("managed_package")
+macos_release = platform.startswith("macos-") and rust_target.endswith("-apple-darwin")
 if managed is None:
-    if platform.startswith("linux-"):
-        raise SystemExit("a Linux release must declare its managed_package contract")
+    if not macos_release:
+        raise SystemExit(
+            "a Linux release must declare its managed_package contract "
+            f"(only a macOS release may omit it; this one is {platform} for {rust_target})"
+        )
+elif not platform.startswith("linux-"):
+    raise SystemExit(
+        f"managed_package is the Linux per-user contract; a {platform} release cannot declare it"
+    )
 else:
     def whole(value, what):
         if type(value) is not int or value < 0 or value > 0xFFFFFFFF:

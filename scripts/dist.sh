@@ -27,6 +27,7 @@ RUST_TARGET=""
 RELEASE_VERSION=""
 BUILD_ROOT=""
 TCC_CANARY=0
+DURABLE_STORE_OVERLAYS=()
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
 CARGO_CACHE_BUILD="${ROOT_DIR}/scripts/cargo-cache-build.sh"
@@ -78,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --tcc-canary)       TCC_CANARY=1; shift ;;
     --target)           RUST_TARGET="$(normalize_target "$2")"; shift 2 ;;
     --version)          RELEASE_VERSION="$2"; shift 2 ;;
+    --durable-stores)   DURABLE_STORE_OVERLAYS+=("$2"); shift 2 ;;
     -h|--help)
       cat <<'EOF'
 Usage: ./scripts/dist.sh [options]
@@ -94,6 +96,11 @@ Options:
                        building them (absolute path; must contain the three
                        release binaries)
   --tcc-canary         Include the signed physical TCC canary surface
+  --durable-stores <file>
+                       Add the stores a downstream build reads or writes to
+                       the managed package's compatibility inventory
+                       (JSON {"stores": [...]}; repeatable; a store already
+                       declared is refused)
   -h, --help           Show this help
 EOF
       exit 0
@@ -135,6 +142,9 @@ case "${RUST_TARGET}" in
   aarch64-unknown-linux-gnu)   PLATFORM="linux-arm64" ;;
   aarch64-apple-darwin)        PLATFORM="macos-arm64" ;;
   x86_64-apple-darwin)         PLATFORM="macos-amd64" ;;
+  # A Linux release must be named linux-*: the installer only accepts a
+  # managed package from a release so named.
+  *linux*) die "no release platform name for Linux target ${RUST_TARGET}; add it above" ;;
   *)                           PLATFORM="${RUST_TARGET}" ;;
 esac
 
@@ -374,8 +384,9 @@ fi
 cp LICENSE NOTICE README.md "${DIST_DIR}/"
 
 DIST_DIR="${DIST_DIR}" VERSION="${VERSION}" PLATFORM="${PLATFORM}" \
-RUST_TARGET="${RUST_TARGET}" \
-DURABLE_STORES="${ROOT_DIR}/packaging/managed/durable-stores.json" python3 - <<'PY'
+RUST_TARGET="${RUST_TARGET}" IS_LINUX="${IS_LINUX}" \
+DURABLE_STORES="${ROOT_DIR}/packaging/managed/durable-stores.json" \
+DURABLE_STORE_OVERLAYS="$(printf '%s\n' "${DURABLE_STORE_OVERLAYS[@]}")" python3 - <<'PY'
 import hashlib
 import json
 import os
@@ -441,9 +452,22 @@ manifest = {
 # live (their bytes are already bound by `members`), and the compatibility
 # of every durable store, from the inventory the daemon keeps equal to its
 # code (crates/hypercolor-daemon/src/durable_stores.rs).
-if os.environ["PLATFORM"].startswith("linux-"):
+if os.environ["IS_LINUX"] == "1":
     with open(os.environ["DURABLE_STORES"], encoding="utf-8") as handle:
         compatibility = json.load(handle)
+    # A downstream build (the official package) adds the stores its own
+    # code reads and writes; one name is one store, declared once.
+    for overlay in filter(None, os.environ["DURABLE_STORE_OVERLAYS"].split("\n")):
+        with open(overlay, encoding="utf-8") as handle:
+            extra = json.load(handle)
+        if not isinstance(extra, dict) or set(extra) != {"stores"}:
+            raise SystemExit(f"{overlay} must hold exactly {{\"stores\": [...]}}")
+        declared = {store["name"] for store in compatibility["stores"]}
+        for store in extra["stores"]:
+            if store.get("name") in declared:
+                raise SystemExit(f"{overlay} declares store {store.get('name')!r} again")
+            declared.add(store.get("name"))
+            compatibility["stores"].append(store)
     manifest["managed_package"] = {
         "schema_version": 1,
         "owner": "linux-user-tarball",

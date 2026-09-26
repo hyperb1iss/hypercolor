@@ -183,15 +183,40 @@ class ReleaseArtifactTests(unittest.TestCase):
             env={**os.environ, "HOME": str(home)},
         )
 
-    def assert_rejected(self, manifest, message):
+    def assert_rejected(self, manifest, message, rust):
+        """Both validators refuse `manifest`, each for the named reason."""
         self.save_manifest(manifest)
         result = self.repack()
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(message, result.stderr)
         if REAL_CLI:
-            rust = self.rust_validate()
-            self.assertNotEqual(rust.returncode, 0, rust.stdout + rust.stderr)
-            self.assertIn("invalid release manifest", rust.stderr)
+            validated = self.rust_validate()
+            self.assertNotEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+            self.assertIn("release candidate validation failed", validated.stderr)
+            self.assertIn(rust, validated.stderr)
+
+    def relabel(self, platform, rust_target):
+        """Rename the payload so its archive root matches another label."""
+        manifest = self.manifest()
+        manifest["platform"] = platform
+        manifest["rust_target"] = rust_target
+        renamed = self.directory / f"hypercolor-{manifest['version']}-{platform}"
+        self.payload.rename(renamed)
+        self.payload = renamed
+        return manifest
+
+    def dist(self, *extra):
+        """Run the producer on the class fixture tree with extra options."""
+        fixture = self.root / "source"
+        return subprocess.run(
+            [
+                "bash", str(fixture / "scripts/dist.sh"), "--ci", "--skip-docs",
+                "--web-assets", str(self.root / "web-assets"),
+                "--bin-dir", str(self.root / "probe-binaries"),
+                "--version", "1.0.0-overlay", *extra,
+            ],
+            capture_output=True, text=True, check=False,
+        )
 
     def test_producer_declares_the_managed_package_from_the_store_inventory(self):
         managed = self.manifest()["managed_package"]
@@ -212,59 +237,106 @@ class ReleaseArtifactTests(unittest.TestCase):
 
     @unittest.skipUnless(REAL_CLI, "HYPERCOLOR_RELEASE_TEST_CLI is not set")
     def test_rust_validator_accepts_the_producer_output(self):
-        rust = self.rust_validate()
-        self.assertEqual(rust.returncode, 0, rust.stdout + rust.stderr)
+        validated = self.rust_validate()
+        self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
 
     def test_linux_release_without_managed_package_is_rejected(self):
         manifest = self.manifest()
         del manifest["managed_package"]
-        self.assert_rejected(manifest, "a Linux release must declare its managed_package")
+        self.assert_rejected(
+            manifest, "a Linux release must declare its managed_package",
+            "must declare its managed_package",
+        )
+
+    def test_any_label_but_macos_must_carry_the_block(self):
+        original = self.manifest()
+        for platform, target in (
+            ("x86_64-unknown-linux-musl", "x86_64-unknown-linux-musl"),
+            ("macos-arm64", "x86_64-unknown-linux-gnu"),
+        ):
+            with self.subTest(platform=platform, target=target):
+                self.save_manifest(original)
+                manifest = self.relabel(platform, target)
+                del manifest["managed_package"]
+                self.assert_rejected(
+                    manifest, "only a macOS release may omit it",
+                    "must declare its managed_package",
+                )
+
+    def test_only_a_linux_label_may_carry_the_block(self):
+        manifest = self.relabel("macos-arm64", "aarch64-apple-darwin")
+        self.save_manifest(manifest)
+        result = self.repack()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("a macos-arm64 release cannot declare it", result.stderr)
+
+    def test_duplicated_keys_are_rejected(self):
+        text = json.dumps(self.manifest(), indent=2)
+        duplicated = text.replace(
+            '"owner": "linux-user-tarball"',
+            '"owner": "linux-user-tarball",\n    "owner": "linux-user-tarball"',
+            1,
+        )
+        self.assertNotEqual(duplicated, text)
+        (self.payload / "manifest.json").write_text(duplicated + "\n")
+        result = self.repack()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("manifest has duplicated keys", result.stderr)
+        if REAL_CLI:
+            validated = self.rust_validate()
+            self.assertNotEqual(validated.returncode, 0)
+            self.assertIn("duplicate field `owner`", validated.stderr)
 
     def test_unknown_top_level_fields_are_rejected(self):
         manifest = self.manifest()
         manifest["channel"] = "stable"
-        self.save_manifest(manifest)
-        result = self.repack()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("manifest has unknown fields", result.stderr)
-        if REAL_CLI:
-            rust = self.rust_validate()
-            self.assertNotEqual(rust.returncode, 0, rust.stdout + rust.stderr)
-            self.assertIn("unknown field", rust.stderr)
+        self.assert_rejected(manifest, "manifest has unknown fields", "unknown field `channel`")
 
     def test_missing_wrong_and_unknown_components_are_rejected(self):
         original = self.manifest()
         cases = {
-            "missing": (lambda c: c.pop("ui"), "must name exactly"),
-            "extra": (lambda c: c.update(app="bin/hypercolor-app"), "must name exactly"),
+            "missing": (
+                lambda c: c.pop("ui"), "must name exactly", "missing field `ui`",
+            ),
+            "extra": (
+                lambda c: c.update(app="bin/hypercolor-app"), "must name exactly",
+                "unknown field `app`",
+            ),
             "wrong daemon": (
-                lambda c: c.update(daemon="bin/hypercolor-app"), "must be bin/hypercolor-daemon",
+                lambda c: c.update(daemon="bin/hypercolor-app"),
+                "must be bin/hypercolor-daemon", "must be bin/hypercolor-daemon",
             ),
             "wrong tree": (
-                lambda c: c.update(ui="share/hypercolor/site"), "must be share/hypercolor/ui",
+                lambda c: c.update(ui="share/hypercolor/site"),
+                "must be share/hypercolor/ui", "must be share/hypercolor/ui",
             ),
         }
-        for label, (mutate, message) in cases.items():
+        for label, (mutate, message, rust) in cases.items():
             with self.subTest(case=label):
                 manifest = json.loads(json.dumps(original))
                 mutate(manifest["managed_package"]["components"])
-                self.assert_rejected(manifest, message)
+                self.assert_rejected(manifest, message, rust)
         self.save_manifest(original)
 
     def test_unknown_contract_owner_and_schema_are_rejected(self):
         original = self.manifest()
-        for field, value, message in (
-            ("schema_version", 2, "schema_version must be 1"),
-            ("launcher_contract", 2, "launcher_contract must be 1"),
-            ("owner", "distribution-package", "owner must be linux-user-tarball"),
+        for field, value, message, rust in (
+            ("schema_version", 2, "schema_version must be 1", "schema_version 2 is not"),
+            ("launcher_contract", 2, "launcher_contract must be 1", "launcher_contract 2 is not"),
+            (
+                "owner", "distribution-package", "owner must be linux-user-tarball",
+                "is not \"linux-user-tarball\"",
+            ),
         ):
             with self.subTest(field=field):
                 manifest = json.loads(json.dumps(original))
                 manifest["managed_package"][field] = value
-                self.assert_rejected(manifest, message)
+                self.assert_rejected(manifest, message, rust)
         manifest = json.loads(json.dumps(original))
         manifest["managed_package"]["signature"] = "unsigned"
-        self.assert_rejected(manifest, "exactly its five contract fields")
+        self.assert_rejected(
+            manifest, "exactly its five contract fields", "unknown field `signature`",
+        )
         self.save_manifest(original)
 
     def test_store_declarations_are_validated(self):
@@ -276,29 +348,67 @@ class ReleaseArtifactTests(unittest.TestCase):
             return entry
 
         cases = {
-            "empty": ([], "must declare 1..=64 stores"),
-            "duplicate": ([store(), store()], "is declared twice"),
+            "empty": ([], "must declare 1..=64 stores", "must declare 1..=64 stores"),
+            "duplicate": ([store(), store()], "is declared twice", "is declared twice"),
             "inverted range": (
                 [store(readable_schema_min=3, readable_schema_max=2, written_schema=2)],
-                "must read the schema it writes",
+                "must read the schema it writes", "must read the schema it writes",
             ),
             "writes outside range": (
                 [store(readable_schema_min=1, readable_schema_max=2, written_schema=3)],
-                "must read the schema it writes",
+                "must read the schema it writes", "must read the schema it writes",
             ),
-            "unknown mode": ([store(migration_mode="eventually")], "unknown migration_mode"),
-            "boolean schema": ([store(written_schema=True)], "must be a whole number"),
-            "negative schema": ([store(readable_schema_min=-1)], "must be a whole number"),
-            "bad name": ([store(name="Library")], "durable store name"),
-            "bad format": ([store(storage_format="json lines")], "storage_format"),
-            "extra field": ([dict(store(), note="x")], "exactly its six fields"),
+            "unknown mode": (
+                [store(migration_mode="eventually")], "unknown migration_mode",
+                "unknown variant `eventually`",
+            ),
+            "boolean schema": (
+                [store(written_schema=True)], "must be a whole number", "invalid type: boolean",
+            ),
+            "negative schema": (
+                [store(readable_schema_min=-1)], "must be a whole number", "invalid value",
+            ),
+            "bad name": ([store(name="Library")], "durable store name", "durable store name"),
+            "bad format": (
+                [store(storage_format="json lines")], "storage_format", "storage_format",
+            ),
+            "extra field": (
+                [dict(store(), note="x")], "exactly its six fields", "unknown field `note`",
+            ),
         }
-        for label, (stores, message) in cases.items():
+        for label, (stores, message, rust) in cases.items():
             with self.subTest(case=label):
                 manifest = json.loads(json.dumps(original))
                 manifest["managed_package"]["compatibility"]["stores"] = stores
-                self.assert_rejected(manifest, message)
+                self.assert_rejected(manifest, message, rust)
         self.save_manifest(original)
+
+    def test_a_downstream_build_adds_its_own_stores_once(self):
+        overlay = self.directory / "private-stores.json"
+        extra = {
+            "name": "cloud-state", "storage_format": "json", "readable_schema_min": 1,
+            "readable_schema_max": 1, "written_schema": 1,
+            "migration_mode": "backward_compatible",
+        }
+        overlay.write_text(json.dumps({"stores": [extra]}))
+        result = self.dist("--target", "linux-amd64", "--durable-stores", str(overlay))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        produced = self.root / "source/dist/hypercolor-1.0.0-overlay-linux-amd64"
+        stores = json.loads((produced / "manifest.json").read_text())[
+            "managed_package"]["compatibility"]["stores"]
+        self.assertEqual(stores[-1], extra)
+        inventory = json.loads((SOURCE / "packaging/managed/durable-stores.json").read_text())
+        self.assertEqual(stores[:-1], inventory["stores"])
+
+        overlay.write_text(json.dumps({"stores": [dict(extra, name="config")]}))
+        result = self.dist("--target", "linux-amd64", "--durable-stores", str(overlay))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("declares store 'config' again", result.stdout + result.stderr)
+
+    def test_an_unnamed_linux_target_is_refused_by_the_producer(self):
+        result = self.dist("--target", "x86_64-unknown-linux-musl")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no release platform name", result.stdout + result.stderr)
 
     def test_both_packaged_user_units_declare_user_service_identity(self):
         declaration = "Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service"
