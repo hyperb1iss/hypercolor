@@ -21,7 +21,7 @@ record.
 | Releases | `${XDG_DATA_HOME:-~/.local/share}/hypercolor/releases` | One read-only directory per installed release, plus an `active` link to the running one |
 | Update state | `${XDG_STATE_HOME:-~/.local/state}/hypercolor/update` | Transaction journal, lock and installation record, private to you |
 | Locator | `~/.local/lib/hypercolor/install-journal.json` | Points every installer at the recorded locations |
-| Upgrade target | `~/.local/lib/hypercolor/managed-adoption.json` | Written before an upgrade from an older install creates anything |
+| Upgrade target | `~/.local/lib/hypercolor/managed-adoption.json` | Written once an upgrade from an older install has proven its locations, before it copies or prepares anything there |
 | Commands | `~/.local/bin/hypercolor` and friends | Links into the active release |
 | Service | `~/.config/systemd/user/hypercolor.service` | Generated user unit that starts the active release |
 | Your data | `${XDG_DATA_HOME:-~/.local/share}/hypercolor` | Scenes, layouts, credentials, user effects |
@@ -88,6 +88,9 @@ trusts. The rules are:
   writable by nobody else, or owned by you under the same rules. The service
   reaches the daemon by path, so another account must not be able to rename
   anything on the way.
+- The same rule covers your home directory and the public directories the
+  installer writes into, such as `~/.local/bin` and `~/.config/systemd/user`,
+  because systemd and your shell run what they contain.
 
 Many distributions give each user a private group and a umask of `002`, so
 `~/.local` and the daemon's own directories often end up as `0775`. That is
@@ -111,7 +114,7 @@ hide accounts from a listing, so they refuse the group exception.
 | --- | --- | --- |
 | Directory is group-writable and the group is not proven private | Other group members could replace installed files | `chmod g-w` the named directory |
 | Directory is writable by everyone, or sticky like `/tmp` | Any account could replace installed files | Use a directory only you can write |
-| A directory above a location is writable by another account | That account could rename the path the service runs from | Fix its permissions, or choose another location |
+| A directory above a location, or a public directory such as `~/.local/bin`, is writable by another account | That account could rename the path the service runs from or replace a command | Fix its permissions, or choose another location |
 | Directory is owned by another account | That account controls what the installer trusts | Choose a location you own |
 | Group-writable directory carries an extended ACL | An ACL entry can grant another account write access | `chmod g-w` it, or remove the ACL with `setfacl -b` |
 | Group lookup fails, or a directory service is configured | The installer cannot prove no one else is in the group | `chmod g-w` the named directory |
