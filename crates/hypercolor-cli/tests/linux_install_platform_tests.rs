@@ -665,6 +665,12 @@ fn systemd_show_parser_is_strict_and_rejects_third_states() {
     ] {
         assert!(parse_systemd_show(&invalid).is_err());
     }
+    // Observed on Ubuntu 24.04 user systemd: a clean stop keeps the last
+    // run's pid and exit status in ExecStart while MainPID returns to 0.
+    let stopped = b"LoadState=loaded\nActiveState=inactive\nSubState=dead\nUnitFileState=enabled\nFragmentPath=/home/test/.config/systemd/user/hypercolor.service\nExecStart={ path=/daemon ; argv[]=/daemon --flag value ; ignore_errors=no ; start_time=[Sat 2026-09-26 04:17:52 UTC] ; stop_time=[Sat 2026-09-26 04:17:54 UTC] ; pid=1478 ; code=exited ; status=0 }\nMainPID=0\nInvocationID=\n";
+    let stopped = parse_systemd_show(stopped).expect("stopped service with retained exec status");
+    assert_eq!(stopped.main_pid, 0);
+    assert_eq!(stopped.active_state, "inactive");
     let absent = b"LoadState=not-found\nActiveState=inactive\nSubState=dead\nUnitFileState=\nFragmentPath=\nExecStart=\nMainPID=0\nInvocationID=\n";
     assert!(parse_systemd_show(absent).is_ok());
     let absent_disabled = String::from_utf8(absent.to_vec())

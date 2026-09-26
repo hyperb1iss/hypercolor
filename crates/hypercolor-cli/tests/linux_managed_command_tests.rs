@@ -155,6 +155,7 @@ struct World {
     enabled: bool,
     exec_start: String,
     pid: u32,
+    last_pid: u32,
     invocation: u32,
     process: Option<Process>,
     historical: Vec<UnitRecord>,
@@ -185,6 +186,7 @@ impl World {
             enabled: false,
             exec_start: String::new(),
             pid: 0,
+            last_pid: 0,
             invocation: 0,
             process: None,
             historical: Vec::new(),
@@ -224,10 +226,28 @@ impl World {
                 .split_ascii_whitespace()
                 .next()
                 .expect("executable");
+            // Like user systemd, a stopped service keeps its last exec status
+            // until the unit reloads.
+            let (times, pid, code) = match (self.active, self.last_pid) {
+                (true, _) => (
+                    "start_time=[Sat 2026-09-26 04:17:52 UTC] ; stop_time=[n/a]",
+                    self.pid,
+                    "code=(null) ; status=0/0",
+                ),
+                (false, 0) => (
+                    "start_time=[n/a] ; stop_time=[n/a]",
+                    0,
+                    "code=(null) ; status=0/0",
+                ),
+                (false, last) => (
+                    "start_time=[Sat 2026-09-26 04:17:52 UTC] ; stop_time=[Sat 2026-09-26 04:17:54 UTC]",
+                    last,
+                    "code=exited ; status=0",
+                ),
+            };
             format!(
-                "{{ path={executable} ; argv[]={command} ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid={pid} ; code=(null) ; status=0/0 }}",
+                "{{ path={executable} ; argv[]={command} ; ignore_errors=no ; {times} ; pid={pid} ; {code} }}",
                 command = self.exec_start,
-                pid = self.pid,
             )
         } else {
             String::new()
@@ -279,6 +299,7 @@ impl World {
 
     fn stop(&mut self) {
         self.active = false;
+        self.last_pid = self.pid;
         self.pid = 0;
         self.process = None;
     }
@@ -471,6 +492,10 @@ impl LinuxInstallExecutor for SimExecutor {
         } else {
             world.loaded = true;
             world.exec_start = launcher_exec(&world.launcher_bytes);
+        }
+        // A reload rebuilds the exec command and forgets the last run.
+        if !world.active {
+            world.last_pid = 0;
         }
         world.settle(crash);
         Ok(())

@@ -356,7 +356,9 @@ pub fn parse_systemd_show(bytes: &[u8]) -> Result<LinuxSystemdObservation, Insta
         String::new()
     } else {
         let parsed = parse_systemd_exec(fields["ExecStart"])?;
-        if parsed.runtime_pid != main_pid {
+        // A stopped service keeps its last exec status, including that run's
+        // pid, until the unit reloads. Only a running service must agree.
+        if main_pid != 0 && parsed.runtime_pid != main_pid {
             return Err(error("systemd ExecStart pid disagrees with MainPID"));
         }
         parsed.canonical_argv
