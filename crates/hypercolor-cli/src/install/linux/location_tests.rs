@@ -248,3 +248,51 @@ fn home_and_recorded_roots_are_bounded_before_any_write() {
         Err(InstallLocationError::PathTooLong { limit: 256, .. })
     ));
 }
+
+#[test]
+fn recorded_roots_are_limited_to_bytes_systemd_never_reinterprets() {
+    let home = Path::new("/home/test");
+    for data in [
+        "/home/test/My Data",
+        "/home/test/%h",
+        "/home/test/$HOME",
+        "/home/test/a\\b",
+        "/home/test/quote\"d",
+        "/home/test/semi;colon",
+        "/home/test/caf\u{e9}",
+    ] {
+        assert!(
+            matches!(
+                LinuxInstallLocation::new(
+                    home,
+                    Path::new(data),
+                    Path::new("/home/test/state"),
+                    Path::new("/home/test/config"),
+                    1000,
+                ),
+                Err(InstallLocationError::InvalidPath(_))
+            ),
+            "{data:?} was accepted"
+        );
+    }
+    assert!(matches!(
+        LinuxInstallLocation::new(
+            Path::new("/home/te st"),
+            Path::new("/data"),
+            Path::new("/state"),
+            Path::new("/config"),
+            1000,
+        ),
+        Err(InstallLocationError::InvalidPath(_))
+    ));
+    assert!(
+        LinuxInstallLocation::new(
+            home,
+            Path::new("/srv/users/test-1.data_home"),
+            Path::new("/home/test/.local/state"),
+            Path::new("/home/test/.config"),
+            1000,
+        )
+        .is_ok()
+    );
+}

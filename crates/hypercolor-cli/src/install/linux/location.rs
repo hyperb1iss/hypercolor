@@ -66,7 +66,10 @@ pub enum InstallLocationError {
     Decode(#[from] serde_json::Error),
     #[error("unsupported managed installation contract")]
     UnsupportedContract,
-    #[error("installation root must be a bounded normalized absolute path: {}", .0.display())]
+    #[error(
+        "installation path must be a bounded normalized absolute path of letters, digits, '/', '.', '_' and '-': {}",
+        .0.display()
+    )]
     InvalidPath(PathBuf),
     #[error("installation roots overlap protected or legacy installation state")]
     OverlappingRoots,
@@ -335,6 +338,13 @@ fn overlaps(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
 
+/// Recorded roots reach generated unit `ExecStart` lines and the public
+/// layout verbatim, so they are limited to bytes systemd never reinterprets:
+/// no spaces, quotes, escapes, `%` specifiers or `$` variables.
+fn is_systemd_safe_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"/._-".contains(&byte)
+}
+
 fn validate_path(path: &Path) -> Result<(), InstallLocationError> {
     let Some(text) = path.to_str() else {
         return Err(InstallLocationError::InvalidPath(path.to_path_buf()));
@@ -344,7 +354,7 @@ fn validate_path(path: &Path) -> Result<(), InstallLocationError> {
         || text.contains("//")
         || (text.len() > 1 && text.ends_with('/'))
         || text.split('/').any(|part| matches!(part, "." | ".."))
-        || text.bytes().any(|byte| byte < b' ' || byte == 127)
+        || !text.bytes().all(is_systemd_safe_byte)
         || path
             .components()
             .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
