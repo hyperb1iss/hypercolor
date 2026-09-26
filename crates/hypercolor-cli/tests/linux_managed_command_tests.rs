@@ -2056,6 +2056,14 @@ fn write_release(root: &Path, version: &str, daemon: &[u8]) {
         "binaries":["hypercolor-daemon","hypercolor","hypercolor-app","hypercolor-tui","hypercolor-open"],
         "assets":{"ui_files":1,"bundled_effect_files":1,"docs_files":0,"skill_files":1,
             "user_skill_files":1,"agent_files":1,"site_files":0},
+        "managed_package":{
+            "schema_version":1,"owner":"linux-user-tarball","launcher_contract":1,
+            "components":{"daemon":"bin/hypercolor-daemon","cli":"bin/hypercolor",
+                "ui":"share/hypercolor/ui","bundled_effects":"share/hypercolor/effects/bundled"},
+            "compatibility":{"stores":[{"name":"config","storage_format":"toml",
+                "readable_schema_min":4,"readable_schema_max":5,"written_schema":5,
+                "migration_mode":"backward_compatible"}]},
+        },
         "members":members,
     }))
     .expect("manifest JSON");

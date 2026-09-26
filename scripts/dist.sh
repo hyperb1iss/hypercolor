@@ -374,7 +374,8 @@ fi
 cp LICENSE NOTICE README.md "${DIST_DIR}/"
 
 DIST_DIR="${DIST_DIR}" VERSION="${VERSION}" PLATFORM="${PLATFORM}" \
-RUST_TARGET="${RUST_TARGET}" python3 - <<'PY'
+RUST_TARGET="${RUST_TARGET}" \
+DURABLE_STORES="${ROOT_DIR}/packaging/managed/durable-stores.json" python3 - <<'PY'
 import hashlib
 import json
 import os
@@ -435,6 +436,26 @@ manifest = {
     },
     "members": members,
 }
+# A managed per-user Linux package also declares who installs it, the
+# launcher contract its service runs under, where its required components
+# live (their bytes are already bound by `members`), and the compatibility
+# of every durable store, from the inventory the daemon keeps equal to its
+# code (crates/hypercolor-daemon/src/durable_stores.rs).
+if os.environ["PLATFORM"].startswith("linux-"):
+    with open(os.environ["DURABLE_STORES"], encoding="utf-8") as handle:
+        compatibility = json.load(handle)
+    manifest["managed_package"] = {
+        "schema_version": 1,
+        "owner": "linux-user-tarball",
+        "launcher_contract": 1,
+        "components": {
+            "daemon": "bin/hypercolor-daemon",
+            "cli": "bin/hypercolor",
+            "ui": "share/hypercolor/ui",
+            "bundled_effects": "share/hypercolor/effects/bundled",
+        },
+        "compatibility": compatibility,
+    }
 (root / "manifest.json").write_text(
     json.dumps(manifest, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",

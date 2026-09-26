@@ -2,9 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use super::ReleasePayloadError;
+use super::managed::{DeclaredCompatibility, ManagedPolicy, read_managed_package};
 use crate::model::UnitId;
 
 /// Maximum accepted byte length of `manifest.json`.
@@ -37,17 +39,46 @@ pub(super) struct ValidatedManifest {
     pub(super) rust_target: String,
     pub(super) members: BTreeMap<String, ValidatedMember>,
     pub(super) children: BTreeMap<String, Vec<String>>,
+    /// What the release declares about its durable data.
+    pub(super) compatibility: DeclaredCompatibility,
 }
 
+/// Top-level manifest fields this build reads. An installed manifest may
+/// carry others a newer release added; a candidate may not.
+const MANIFEST_FIELDS: [&str; 8] = [
+    "name",
+    "version",
+    "platform",
+    "rust_target",
+    "binaries",
+    "assets",
+    "members",
+    "managed_package",
+];
+
 impl ValidatedManifest {
+    /// Parse a new candidate: every field must be one this build knows, a
+    /// Linux release must declare its managed package, and bundled user
+    /// skills must be counted.
     pub(super) fn parse(bytes: Vec<u8>) -> Result<Self, ReleasePayloadError> {
         let raw: RawManifest = serde_json::from_slice(&bytes)?;
-        raw.validate(bytes, true)
+        raw.validate(bytes, ManagedPolicy::Candidate)
     }
 
+    /// Parse an installed release, which a newer or older release may have
+    /// written. Top-level fields this build does not know are ignored, a
+    /// missing managed package is undeclared and one it cannot interpret is
+    /// unrecognized; the member inventory stays exact, so the installed
+    /// tree is still validated byte for byte.
     pub(super) fn parse_installed(bytes: Vec<u8>) -> Result<Self, ReleasePayloadError> {
-        let raw: RawManifest = serde_json::from_slice(&bytes)?;
-        raw.validate(bytes, false)
+        let Value::Object(mut fields) = serde_json::from_slice::<Value>(&bytes)? else {
+            return Err(ReleasePayloadError::InvalidManifest(
+                "release manifest must be a JSON object".to_owned(),
+            ));
+        };
+        fields.retain(|name, _| MANIFEST_FIELDS.contains(&name.as_str()));
+        let raw: RawManifest = serde_json::from_value(Value::Object(fields))?;
+        raw.validate(bytes, ManagedPolicy::Installed)
     }
 }
 
@@ -79,14 +110,16 @@ struct RawManifest {
     binaries: Vec<String>,
     assets: RawAssets,
     members: Vec<RawMember>,
+    managed_package: Option<Value>,
 }
 
 impl RawManifest {
     fn validate(
         self,
         bytes: Vec<u8>,
-        require_user_skills: bool,
+        policy: ManagedPolicy,
     ) -> Result<ValidatedManifest, ReleasePayloadError> {
+        let require_user_skills = policy == ManagedPolicy::Candidate;
         if self.name != "hypercolor"
             || !valid_identity(&self.version)
             || !valid_identity(&self.platform)
@@ -158,6 +191,12 @@ impl RawManifest {
             }
         }
         validate_asset_counts(&members, &self.assets)?;
+        let compatibility = read_managed_package(
+            self.managed_package,
+            policy,
+            self.platform.starts_with("linux-"),
+            &members,
+        )?;
 
         let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for path in members.keys() {
@@ -180,6 +219,7 @@ impl RawManifest {
             rust_target: self.rust_target,
             members,
             children,
+            compatibility,
         })
     }
 }

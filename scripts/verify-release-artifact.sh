@@ -106,12 +106,10 @@ if [[ -z "${tarball}" ]]; then
   exit 2
 fi
 
-for cmd in python3; do
-  command -v "${cmd}" >/dev/null 2>&1 || {
-    echo "missing required command: ${cmd}" >&2
-    exit 1
-  }
-done
+command -v python3 >/dev/null 2>&1 || {
+  echo "missing required command: python3" >&2
+  exit 1
+}
 
 [[ -s "${tarball}" ]] || {
   echo "release tarball is missing or empty: ${tarball}" >&2
@@ -365,7 +363,15 @@ for key, relative_root in asset_roots.items():
 members = manifest.get("members")
 if not isinstance(members, list) or not members:
     raise SystemExit("manifest members must be a non-empty array")
+known_fields = {
+    "name", "version", "platform", "rust_target", "binaries", "assets", "members",
+    "managed_package",
+}
+unknown_fields = sorted(set(manifest) - known_fields)
+if unknown_fields:
+    raise SystemExit(f"manifest has unknown fields: {unknown_fields}")
 expected_paths = set()
+member_kinds = {}
 for member in members:
     if not isinstance(member, dict):
         raise SystemExit("manifest member must be an object")
@@ -384,6 +390,7 @@ for member in members:
     if type(mode) is not int or mode < 0 or mode > 0o777:
         raise SystemExit(f"manifest mode is invalid for {relative}")
     expected_paths.add(relative)
+    member_kinds[relative] = (member_type, mode)
     path = root / relative
     metadata = path.lstat()
     if stat.S_IMODE(metadata.st_mode) != mode:
@@ -426,6 +433,103 @@ if actual_paths != expected_paths:
     raise SystemExit(
         f"manifest member set mismatch: missing={missing}, unexpected={unexpected}"
     )
+
+# The managed package contract (hypercolor-install payload/managed.rs). A
+# Linux release must declare it; any release that does must declare it
+# exactly, with components bound to members and one entry per durable store.
+managed = manifest.get("managed_package")
+if managed is None:
+    if platform.startswith("linux-"):
+        raise SystemExit("a Linux release must declare its managed_package contract")
+else:
+    def whole(value, what):
+        if type(value) is not int or value < 0 or value > 0xFFFFFFFF:
+            raise SystemExit(f"{what} must be a whole number in 0..=4294967295")
+        return value
+
+    def token(value, limit, what):
+        if (
+            not isinstance(value, str)
+            or len(value) > limit
+            or re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", value) is None
+        ):
+            raise SystemExit(
+                f"{what} must be 1..={limit} lowercase letters, digits and '-': {value!r}"
+            )
+        return value
+
+    if not isinstance(managed, dict) or set(managed) != {
+        "schema_version", "owner", "launcher_contract", "components", "compatibility",
+    }:
+        raise SystemExit("managed_package must declare exactly its five contract fields")
+    if whole(managed["schema_version"], "managed_package.schema_version") != 1:
+        raise SystemExit("managed_package.schema_version must be 1")
+    if managed["owner"] != "linux-user-tarball":
+        raise SystemExit("managed_package.owner must be linux-user-tarball")
+    if whole(managed["launcher_contract"], "managed_package.launcher_contract") != 1:
+        raise SystemExit("managed_package.launcher_contract must be 1")
+    components = {
+        "daemon": ("bin/hypercolor-daemon", "file"),
+        "cli": ("bin/hypercolor", "file"),
+        "ui": ("share/hypercolor/ui", "directory"),
+        "bundled_effects": ("share/hypercolor/effects/bundled", "directory"),
+    }
+    declared = managed["components"]
+    if not isinstance(declared, dict) or set(declared) != set(components):
+        raise SystemExit(
+            f"managed_package.components must name exactly {sorted(components)}"
+        )
+    for component, (relative, kind) in components.items():
+        if declared[component] != relative:
+            raise SystemExit(
+                f"managed_package component {component} must be {relative}, "
+                f"not {declared[component]!r}"
+            )
+        if kind == "file":
+            bound = member_kinds.get(relative) == ("file", 0o755)
+        else:
+            bound = member_kinds.get(relative, ("",))[0] == "directory" and any(
+                path.startswith(relative + "/") and entry[0] == "file"
+                for path, entry in member_kinds.items()
+            )
+        if not bound:
+            raise SystemExit(
+                f"managed_package component {component} does not bind "
+                f"{'a 0755 file' if kind == 'file' else 'a directory holding files'} "
+                f"at {relative}"
+            )
+    compatibility = managed["compatibility"]
+    if not isinstance(compatibility, dict) or set(compatibility) != {"stores"}:
+        raise SystemExit("managed_package.compatibility must declare exactly its stores")
+    stores = compatibility["stores"]
+    if not isinstance(stores, list) or not 1 <= len(stores) <= 64:
+        raise SystemExit("managed_package.compatibility.stores must declare 1..=64 stores")
+    store_fields = {
+        "name", "storage_format", "readable_schema_min", "readable_schema_max",
+        "written_schema", "migration_mode",
+    }
+    names = set()
+    for store in stores:
+        if not isinstance(store, dict) or set(store) != store_fields:
+            raise SystemExit("a durable store must declare exactly its six fields")
+        name = token(store["name"], 64, "durable store name")
+        if name in names:
+            raise SystemExit(f"durable store {name} is declared twice")
+        names.add(name)
+        token(store["storage_format"], 32, f"durable store {name} storage_format")
+        low = whole(store["readable_schema_min"], f"{name}.readable_schema_min")
+        high = whole(store["readable_schema_max"], f"{name}.readable_schema_max")
+        written = whole(store["written_schema"], f"{name}.written_schema")
+        if not low <= written <= high:
+            raise SystemExit(
+                f"durable store {name} must read the schema it writes: "
+                f"{low}..={high} does not hold {written}"
+            )
+        if store["migration_mode"] not in {"backward_compatible", "staged", "manual"}:
+            raise SystemExit(
+                f"durable store {name} has an unknown migration_mode "
+                f"{store['migration_mode']!r}"
+            )
 PY
 
 platform="$(MANIFEST="${manifest}" python3 - <<'PY'

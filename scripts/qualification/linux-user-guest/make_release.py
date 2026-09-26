@@ -8,6 +8,11 @@ Every other byte, mode and asset count is the published release's, so the
 installer validates the archive exactly as it validates a real one. Distinct
 versions give distinct manifest digests and therefore distinct units.
 
+A published release from before the managed package contract carries no
+``managed_package`` block; the manifest gains the one ``scripts/dist.sh``
+writes, with the store inventory from ``--stores``, because the installer
+under test refuses a Linux candidate without it.
+
 Prints the SHA-256 of the new ``manifest.json`` (the installer's expected
 manifest digest) and writes it beside the archive.
 """
@@ -37,6 +42,12 @@ def main() -> int:
     parser.add_argument("--daemon", type=Path, required=True, help="qualification daemon")
     parser.add_argument("--version", required=True, help="qualification release version")
     parser.add_argument("--out", type=Path, required=True, help="output .tar.gz")
+    parser.add_argument(
+        "--stores",
+        type=Path,
+        default=Path(__file__).resolve().parents[3] / "packaging/managed/durable-stores.json",
+        help="durable store inventory for managed_package.compatibility",
+    )
     args = parser.parse_args()
 
     if not VERSION_PATTERN.fullmatch(args.version):
@@ -66,6 +77,19 @@ def main() -> int:
         missing = set(replacements) - seen
         if missing:
             raise SystemExit(f"base manifest lacks {sorted(missing)}")
+        if "managed_package" not in manifest:
+            manifest["managed_package"] = {
+                "schema_version": 1,
+                "owner": "linux-user-tarball",
+                "launcher_contract": 1,
+                "components": {
+                    "daemon": "bin/hypercolor-daemon",
+                    "cli": "bin/hypercolor",
+                    "ui": "share/hypercolor/ui",
+                    "bundled_effects": "share/hypercolor/effects/bundled",
+                },
+                "compatibility": json.loads(args.stores.read_text()),
+            }
         manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
 
         new_root = f"hypercolor-{args.version}-linux-amd64"
