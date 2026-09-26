@@ -11,7 +11,11 @@ use super::systemd::parse_systemd_exec;
 pub(super) const LINUX_RECORD_SCHEMA_VERSION: u32 = 1;
 pub(super) const LINUX_RECEIPT_SCHEMA_VERSION: u32 = 1;
 pub(super) const MAX_SYSTEMD_SHOW_BYTES: usize = 16 * 1024;
-pub(super) const MAX_LAUNCHER_BYTES: usize = 4 * 1024;
+/// Bound for the generated unit file, which spells every recorded root of
+/// a managed installation into its `ExecStart` and sandbox directives.
+pub(super) const MAX_LAUNCHER_BYTES: usize = 8 * 1024;
+/// Bound for `/proc/<pid>/cmdline`.
+pub(super) const MAX_COMMAND_LINE_BYTES: u64 = 64 * 1024;
 pub(super) const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024;
 pub(super) const MAX_MANIFEST_BYTES: usize = 2 * 1024 * 1024;
 pub(super) const DAEMON_RELATIVE_PATH: &str = "bin/hypercolor-daemon";
@@ -95,6 +99,45 @@ impl LinuxDirectoryItem {
     }
 }
 
+impl LinuxDirectoryItem {
+    /// Where this directory lives beneath `home`.
+    #[must_use]
+    pub fn path(self, home: &std::path::Path) -> PathBuf {
+        let mut names = Vec::new();
+        let mut current = Some(self);
+        while let Some(item) = current {
+            names.push(item.name());
+            current = item.parent();
+        }
+        names
+            .iter()
+            .rev()
+            .fold(home.to_path_buf(), |path, name| path.join(name))
+    }
+}
+
+/// Every directory beneath `home` that the installer writes an entry into:
+/// the command links, desktop entry, completions and icons of
+/// [`LINUX_LAYOUT_ITEMS`], and the systemd user directory that holds the
+/// generated service.
+///
+/// A sandboxed unit that drives an install lists these as optional writable
+/// paths: a user may delete any of them, and the unit must still start so a
+/// pending transaction stays recoverable. A transaction that then needs a
+/// missing one fails that effect and rolls back; it never creates a
+/// directory outside its recorded roots.
+#[must_use]
+pub fn linux_layout_directories(home: &std::path::Path) -> Vec<PathBuf> {
+    let mut items: Vec<LinuxDirectoryItem> = LINUX_LAYOUT_ITEMS
+        .into_iter()
+        .map(LinuxLayoutItem::public_directory)
+        .collect();
+    items.push(LinuxDirectoryItem::SystemdUser);
+    items.sort();
+    items.dedup();
+    items.into_iter().map(|item| item.path(home)).collect()
+}
+
 pub const LINUX_DIRECTORY_ITEMS: [LinuxDirectoryItem; 21] = [
     LinuxDirectoryItem::Local,
     LinuxDirectoryItem::LocalBin,
@@ -144,6 +187,25 @@ pub enum LinuxLayoutItem {
 }
 
 impl LinuxLayoutItem {
+    /// The public directory the entry lives in.
+    #[must_use]
+    pub const fn public_directory(self) -> LinuxDirectoryItem {
+        match self {
+            Self::Hypercolor
+            | Self::HypercolorDaemon
+            | Self::HypercolorApp
+            | Self::HypercolorTui
+            | Self::HypercolorOpen => LinuxDirectoryItem::LocalBin,
+            Self::DesktopEntry => LinuxDirectoryItem::Applications,
+            Self::BashCompletion => LinuxDirectoryItem::BashCompletions,
+            Self::ZshCompletion => LinuxDirectoryItem::ZshSiteFunctions,
+            Self::FishCompletion => LinuxDirectoryItem::FishVendorCompletions,
+            Self::Icon48 => LinuxDirectoryItem::Icon48Apps,
+            Self::Icon128 => LinuxDirectoryItem::Icon128Apps,
+            Self::Icon256 => LinuxDirectoryItem::Icon256Apps,
+        }
+    }
+
     pub(super) fn unit_path(self) -> &'static str {
         match self {
             Self::Hypercolor => "bin/hypercolor",
@@ -210,6 +272,9 @@ pub struct LinuxProcessExecutable {
     pub sha256: String,
     pub device: u64,
     pub inode: u64,
+    /// The process's argument vector from `/proc/<pid>/cmdline`, which
+    /// names the UI and effects directories the daemon serves.
+    pub arguments: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,6 +318,10 @@ pub struct LinuxInstallConfig {
     /// identity at `ProveCandidate` before the transaction commits. Zero
     /// commits right after the first proof.
     pub probation: Duration,
+    /// The recorded installation a managed store belongs to. Its service
+    /// runs through the stable launcher inside the recorded sandbox; the
+    /// historical root (`None`) keeps its direct, unsandboxed service.
+    pub managed: Option<super::LinuxInstallLocation>,
 }
 
 /// The running service identity a probation window holds the service to.

@@ -28,13 +28,15 @@ use hypercolor_cli::install::{
     LinuxFilePublication, LinuxHttpResponse, LinuxInstallCheckpoint, LinuxInstallCommandError,
     LinuxInstallConfig, LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost,
     LinuxInstallLocation, LinuxInstallObservation, LinuxInstallPlatform, LinuxInstallRequest,
+    LinuxLaunchError, LinuxLaunchPlan, LinuxLaunchRequest, LinuxLaunchRole, LinuxLaunchSelection,
     LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLocatorError,
     LinuxObservationError, LinuxPlatformInputs, LinuxProcessExecutable, LinuxPublicTree,
     LinuxRuntimeSettlement, LinuxServiceIdentity, LinuxServiceWatch, LinuxUninstallCheckpoint,
     LinuxUninstallHost, OwnershipPolicy, PlatformTransactionRecord, PrincipalDatabase,
     PrincipalGroup, PrincipalUser, RestoredRelease, UnitCollection, UnitId, UnitRecord,
-    bind_linux_platform, elect_linux_installation_with, observe_linux_installation,
-    run_linux_install, run_linux_uninstall, stage_release_payload,
+    bind_linux_platform, elect_linux_installation_with, ensure_linux_launcher,
+    ensure_linux_update_directories, linux_layout_directories, observe_linux_installation,
+    plan_linux_launch, run_linux_install, run_linux_uninstall, stage_release_payload,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -145,10 +147,12 @@ struct Process {
     sha256: String,
     device: u64,
     inode: u64,
+    arguments: Vec<String>,
 }
 
 #[derive(Debug)]
 struct World {
+    home: PathBuf,
     fragment: String,
     legacy_units: PathBuf,
     launcher: LinuxExactEntry,
@@ -195,6 +199,11 @@ struct World {
     /// Every probation window held: the running version, the identity it
     /// was held to, and the window.
     watches: Vec<(String, LinuxServiceIdentity, Duration)>,
+    /// The process is lost right after the next effect of this name.
+    crash_after_effect: Option<String>,
+    /// A daemon of this version starts with these arguments instead of the
+    /// ones its unit gives it.
+    argument_override: Option<(String, Vec<String>)>,
 }
 
 /// An interruption this long into a probation window. One at or past the
@@ -222,6 +231,7 @@ type Shared = Rc<RefCell<World>>;
 impl World {
     fn new(home: &Path) -> Shared {
         Rc::new(RefCell::new(Self {
+            home: home.to_path_buf(),
             fragment: home
                 .join(".config/systemd/user/hypercolor.service")
                 .to_str()
@@ -258,6 +268,8 @@ impl World {
             at_health: None,
             in_probation: None,
             watches: Vec::new(),
+            crash_after_effect: None,
+            argument_override: None,
         }))
     }
 
@@ -273,6 +285,10 @@ impl World {
         if self.crash == Some(Crash::Before(count)) {
             self.crash = None;
             panic!("simulated crash before effect {count} ({name})");
+        }
+        if self.crash_after_effect.as_deref() == Some(name.as_str()) {
+            self.crash_after_effect = None;
+            return Ok(Some(count));
         }
         Ok((self.crash == Some(Crash::After(count))).then_some(count))
     }
@@ -350,16 +366,38 @@ impl World {
         .into_bytes()
     }
 
+    /// The daemon a start runs now and its arguments. A managed service
+    /// starts the installation's launcher, which this runs for real: it
+    /// reads `active` once and names the daemon, UI and effects of that one
+    /// release. A direct unit runs its `ExecStart` through `active`.
+    fn launch(&self) -> (PathBuf, Vec<String>) {
+        let words: Vec<&str> = self.exec_start.split_ascii_whitespace().collect();
+        if let [launcher, "__launch", "--role", "daemon"] = words.as_slice() {
+            let plan = plan_linux_launch(&LinuxLaunchRequest {
+                home: &self.home,
+                role: LinuxLaunchRole::Daemon,
+                arguments: Vec::new(),
+                launcher: Path::new(launcher),
+            })
+            .expect("the launcher selects a release");
+            let mut arguments = vec![plan.program.to_str().expect("UTF-8").to_owned()];
+            arguments.extend(
+                plan.arguments
+                    .iter()
+                    .map(|argument| argument.to_str().expect("UTF-8").to_owned()),
+            );
+            return (plan.program, arguments);
+        }
+        let resolved = fs::canonicalize(words[0]).expect("launcher executable exists");
+        (
+            resolved,
+            words.iter().map(|word| (*word).to_owned()).collect(),
+        )
+    }
+
     /// The version of the daemon the launcher would start right now.
     fn launch_version(&self) -> String {
-        let executable = Path::new(
-            self.exec_start
-                .split_ascii_whitespace()
-                .next()
-                .expect("launcher executable"),
-        );
-        let resolved = fs::canonicalize(executable).expect("launcher executable exists");
-        unit_version(&resolved)
+        unit_version(&self.launch().0)
     }
 
     /// Run one start job the way the manager would. A daemon that never
@@ -432,13 +470,12 @@ impl World {
     }
 
     fn start(&mut self) {
-        let executable = Path::new(
-            self.exec_start
-                .split_ascii_whitespace()
-                .next()
-                .expect("launcher executable"),
-        );
-        let resolved = fs::canonicalize(executable).expect("launcher executable exists");
+        let (resolved, mut arguments) = self.launch();
+        if let Some((version, replacement)) = &self.argument_override
+            && unit_version(&resolved) == *version
+        {
+            arguments.clone_from(replacement);
+        }
         let bytes = fs::read(&resolved).expect("daemon bytes");
         let metadata = fs::metadata(&resolved).expect("daemon metadata");
         self.process = Some(Process {
@@ -446,6 +483,7 @@ impl World {
             sha256: sha256(&bytes),
             device: metadata.dev(),
             inode: metadata.ino(),
+            arguments,
         });
         self.active = true;
         self.invocation += 1;
@@ -779,6 +817,7 @@ impl LinuxInstallExecutor for SimExecutor {
             sha256: process.sha256,
             device: process.device,
             inode: process.inode,
+            arguments: process.arguments,
         })
     }
 
@@ -1107,6 +1146,7 @@ impl Fixture {
             immutable_units_root: old.root().join("units"),
             active_root: old.active_path(),
             probation: Duration::ZERO,
+            managed: None,
         };
         let executor = SimExecutor {
             world: Rc::clone(&self.world),
@@ -1211,14 +1251,27 @@ impl Fixture {
             "running {} instead of the recorded release root",
             process.path
         );
-        assert!(
-            launcher_exec(&world.launcher_bytes).starts_with(
-                location
-                    .release_root()
-                    .join("active/bin/hypercolor-daemon")
-                    .to_str()
-                    .expect("UTF-8")
-            )
+        let launcher = location.release_root().join("launcher/hypercolor");
+        assert_eq!(
+            launcher_exec(&world.launcher_bytes),
+            format!("{} __launch --role daemon", launcher.display()),
+            "the service starts the installation's launcher"
+        );
+        let release = location
+            .release_root()
+            .join("units")
+            .join(expected.as_str());
+        assert_eq!(
+            process.arguments,
+            [
+                release.join("bin/hypercolor-daemon"),
+                PathBuf::from("--ui-dir"),
+                release.join("share/hypercolor/ui"),
+                PathBuf::from("--effects-dir"),
+                release.join("share/hypercolor/effects/bundled"),
+            ]
+            .map(|argument| argument.to_str().expect("UTF-8").to_owned()),
+            "the daemon, its UI and its effects all come from the active release"
         );
     }
 }
@@ -2066,9 +2119,10 @@ fn write_release_with(
         "share/hypercolor/skills",
         "share/hypercolor/site",
     ];
+    let cli = format!("hypercolor cli {version}");
     let files = [
         ("bin/hypercolor-daemon", daemon),
-        ("bin/hypercolor", b"candidate".as_slice()),
+        ("bin/hypercolor", cli.as_bytes()),
         ("bin/hypercolor-app", b"app".as_slice()),
         ("bin/hypercolor-tui", b"tui".as_slice()),
         ("bin/hypercolor-open", b"open".as_slice()),
@@ -3913,6 +3967,12 @@ fn a_library_caller_prepares_binds_writes_and_drives_its_own_transaction() {
         panic!("expected managed authority");
     };
     let candidate = fixture.v2.stage(&store, &lock);
+    // The launcher and update directories exist from the first install;
+    // a library host proves them before it binds.
+    let launcher = ensure_linux_launcher(&store, &lock, authority.location(), &candidate)
+        .expect("the installation's launcher");
+    assert!(!launcher.published(), "the first install published it");
+    ensure_linux_update_directories(&lock, authority.location()).expect("update directories");
     let world = Rc::clone(&fixture.world);
     let mut platform = bind_linux_platform(
         &fixture.home,
@@ -3927,7 +3987,7 @@ fn a_library_caller_prepares_binds_writes_and_drives_its_own_transaction() {
         LinuxPlatformInputs {
             candidate: Some(&candidate),
             journal: None,
-            managed: true,
+            managed: Some(authority.location()),
             original: None,
             probation: DEFAULT_PROBATION_WINDOW,
         },
@@ -3976,6 +4036,79 @@ fn a_library_caller_prepares_binds_writes_and_drives_its_own_transaction() {
         fixture.journal().transaction_id.as_str(),
         "update-01JZQ3V8ZK6F2N7QK9X4W5T1AB"
     );
+}
+
+#[test]
+fn a_library_caller_cannot_bind_a_candidate_the_launcher_would_not_run() {
+    let (fixture, _location, _) = managed_v1_without_launcher();
+    let source = fixture
+        .v1
+        .source
+        .parent()
+        .expect("fixture root")
+        .join("source-undeclared");
+    write_release_with(&source, "9.9.1", b"daemon-undeclared", |manifest| {
+        manifest["platform"] = json!("macos-arm64");
+        manifest["rust_target"] = json!("aarch64-apple-darwin");
+        manifest
+            .as_object_mut()
+            .expect("object")
+            .remove("managed_package");
+    });
+    let undeclared = Release {
+        id: UnitId::new(sha256(
+            &fs::read(source.join("manifest.json")).expect("manifest"),
+        ))
+        .expect("unit ID"),
+        source,
+    };
+    let LinuxInstallElection::Managed {
+        store,
+        lock,
+        authority,
+    } = elect_linux_installation_with(&fixture.home, &fixture.private()).expect("election")
+    else {
+        panic!("expected managed authority");
+    };
+    let bind = |candidate: &UnitRecord| {
+        let world = Rc::clone(&fixture.world);
+        bind_linux_platform(
+            &fixture.home,
+            |_, _, _| {
+                Ok(SimExecutor {
+                    world,
+                    active_root: None,
+                })
+            },
+            &store,
+            &lock,
+            LinuxPlatformInputs {
+                candidate: Some(candidate),
+                journal: None,
+                managed: Some(authority.location()),
+                original: None,
+                probation: DEFAULT_PROBATION_WINDOW,
+            },
+        )
+        .map(drop)
+        .map_err(|error| error.to_string())
+    };
+
+    let error = bind(&undeclared.stage(&store, &lock))
+        .expect_err("a release that declares no contract never binds");
+    assert!(
+        error.contains("must declare its managed_package contract"),
+        "{error}"
+    );
+    let candidate = fixture.v2.stage(&store, &lock);
+    let error = bind(&candidate).expect_err("no launcher is published yet");
+    assert!(
+        error.contains("publish the installation's launcher"),
+        "{error}"
+    );
+    ensure_linux_launcher(&store, &lock, authority.location(), &candidate)
+        .expect("publish the launcher");
+    bind(&candidate).expect("with its launcher published, the candidate binds");
 }
 
 #[test]
@@ -4073,4 +4206,735 @@ fn an_install_from_before_the_contract_adopts_and_rolls_back_exactly() {
             );
         }
     }
+}
+
+// ── Launcher and sandbox ────────────────────────────────────────────────
+
+fn launcher_path(location: &LinuxInstallLocation) -> PathBuf {
+    location.release_root().join("launcher/hypercolor")
+}
+
+fn plan(
+    fixture: &Fixture,
+    location: &LinuxInstallLocation,
+    role: LinuxLaunchRole,
+) -> Result<LinuxLaunchPlan, LinuxLaunchError> {
+    plan_linux_launch(&LinuxLaunchRequest {
+        home: &fixture.home,
+        role,
+        arguments: Vec::new(),
+        launcher: &launcher_path(location),
+    })
+}
+
+fn release_cli(release: &Release) -> Vec<u8> {
+    fs::read(release.source.join("bin/hypercolor")).expect("release CLI")
+}
+
+/// The generated unit a managed installation at `location` runs under.
+fn sandboxed_unit(location: &LinuxInstallLocation) -> String {
+    let path = |path: &Path| path.to_str().expect("UTF-8").to_owned();
+    format!(
+        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={launcher} __launch --role daemon\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\nProtectSystem=strict\nProtectHome=read-only\nPrivateTmp=true\nNoNewPrivileges=true\nReadWritePaths={config} {data} {daemon_state} -{state}/coordinator\nReadOnlyPaths={releases} {state}\n\n[Install]\nWantedBy=default.target\n",
+        launcher = path(&launcher_path(location)),
+        config = path(location.config_root()),
+        data = path(location.data_root()),
+        daemon_state = path(location.state_root().parent().expect("state parent")),
+        state = path(location.state_root()),
+        releases = path(location.release_root()),
+    )
+}
+
+fn directives<'a>(unit: &'a str, key: &str) -> Vec<&'a str> {
+    unit.lines()
+        .filter_map(|line| line.strip_prefix(key))
+        .flat_map(str::split_ascii_whitespace)
+        .collect()
+}
+
+#[test]
+fn a_managed_install_runs_its_daemon_through_the_launcher_inside_the_recorded_sandbox() {
+    for (data, state, config) in [
+        (".local/share", ".local/state", ".config"),
+        ("xdg/data", "xdg/state", "xdg/config"),
+    ] {
+        let fixture = Fixture::new();
+        let location = fixture.location(data, state, config);
+        fixture
+            .run(&fixture.v1, Some(location.clone()), &fixture.private())
+            .expect("managed install");
+        fixture.assert_managed(&location, &fixture.v1.id);
+        let unit = String::from_utf8(fixture.world.borrow().launcher_bytes.clone()).expect("UTF-8");
+        assert_eq!(unit, sandboxed_unit(&location));
+
+        // Writable: exactly the recorded configuration, data and daemon
+        // state roots, and the coordinator's directory. Nothing under the
+        // command links, libraries, releases or the rest of update state.
+        let writable = directives(&unit, "ReadWritePaths=");
+        let read_only = directives(&unit, "ReadOnlyPaths=");
+        let state_root = location.state_root().to_str().expect("UTF-8");
+        let release_root = location.release_root().to_str().expect("UTF-8");
+        for path in &writable {
+            let path = Path::new(path.trim_start_matches('-'));
+            for forbidden in [".local/bin", ".local/lib"] {
+                assert!(
+                    !path.starts_with(fixture.home.join(forbidden))
+                        && !fixture.home.join(forbidden).starts_with(path),
+                    "{} would make {forbidden} writable",
+                    path.display()
+                );
+            }
+            assert!(!path.starts_with(release_root), "{}", path.display());
+            assert!(
+                !path.starts_with(state_root) || path.ends_with("coordinator"),
+                "{}",
+                path.display()
+            );
+        }
+        assert_eq!(read_only, [release_root, state_root]);
+        for nested in [release_root, state_root] {
+            assert!(
+                writable
+                    .iter()
+                    .any(|path| Path::new(nested).starts_with(path.trim_start_matches('-'))),
+                "{nested} is read-only beneath a writable root, so the nesting matters"
+            );
+        }
+
+        // Update state directories exist, private, before the daemon runs.
+        for name in ["coordinator", "activator"] {
+            assert_eq!(mode(&location.state_root().join(name)), 0o700, "{name}");
+        }
+    }
+}
+
+#[test]
+fn the_first_install_publishes_the_launcher_and_no_update_rewrites_it() {
+    let (fixture, location) = managed_v1();
+    let launcher = launcher_path(&location);
+    assert_eq!(
+        fs::read(&launcher).expect("launcher"),
+        release_cli(&fixture.v1)
+    );
+    assert_eq!(mode(&launcher), 0o555);
+    assert_eq!(mode(launcher.parent().expect("launcher directory")), 0o555);
+    let contract: serde_json::Value = serde_json::from_slice(
+        &fs::read(location.release_root().join("launcher/contract.json")).expect("contract"),
+    )
+    .expect("contract JSON");
+    assert_eq!(contract["launcher_contract"], 1);
+    assert_eq!(contract["source_unit"], fixture.v1.id.as_str());
+    assert_eq!(
+        contract["program_sha256"],
+        sha256(&release_cli(&fixture.v1))
+    );
+    let inode = fs::metadata(&launcher).expect("launcher").ino();
+
+    for release in [&fixture.v2, &fixture.v3] {
+        let run = fixture.update(release).expect("update");
+        assert_eq!(
+            run.outcome,
+            InstallOutcome::Committed {
+                active_unit: release.id.clone()
+            }
+        );
+        fixture.assert_managed(&location, &release.id);
+        assert_eq!(
+            fs::read(&launcher).expect("launcher"),
+            release_cli(&fixture.v1),
+            "an update never rewrites the launcher"
+        );
+        assert_eq!(fs::metadata(&launcher).expect("launcher").ino(), inode);
+    }
+    assert_ne!(release_cli(&fixture.v1), release_cli(&fixture.v3));
+}
+
+#[test]
+fn a_changed_launcher_refuses_the_next_install_before_any_service_change() {
+    let (fixture, location) = managed_v1();
+    let launcher = launcher_path(&location);
+    let directory = launcher.parent().expect("launcher directory").to_path_buf();
+    for tamper in ["bytes", "mode", "contract"] {
+        let original = fs::read(&launcher).expect("launcher");
+        let contract = fs::read(directory.join("contract.json")).expect("contract");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).expect("thaw");
+        match tamper {
+            "bytes" => {
+                fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).expect("thaw");
+                fs::write(&launcher, b"not the launcher").expect("tamper bytes");
+                fs::set_permissions(&launcher, fs::Permissions::from_mode(0o555)).expect("mode");
+            }
+            "mode" => {
+                fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).expect("mode");
+            }
+            _ => {
+                fs::set_permissions(
+                    directory.join("contract.json"),
+                    fs::Permissions::from_mode(0o644),
+                )
+                .expect("thaw");
+                let mut record: serde_json::Value =
+                    serde_json::from_slice(&contract).expect("contract JSON");
+                record["launcher_contract"] = json!(2);
+                fs::write(
+                    directory.join("contract.json"),
+                    serde_json::to_vec(&record).expect("encode"),
+                )
+                .expect("tamper contract");
+                fs::set_permissions(
+                    directory.join("contract.json"),
+                    fs::Permissions::from_mode(0o444),
+                )
+                .expect("freeze");
+            }
+        }
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o555)).expect("freeze");
+        let before = fixture.snapshot();
+        let effects = fixture.world.borrow().effects.len();
+        let error = fixture
+            .update(&fixture.v2)
+            .expect_err("a changed launcher refuses the install")
+            .to_string();
+        assert!(error.contains("launcher"), "{tamper}: {error}");
+        assert_eq!(fixture.snapshot(), before, "{tamper}: nothing changed");
+        assert_eq!(fixture.world.borrow().effects.len(), effects, "{tamper}");
+
+        // Restore the published launcher exactly, and the install proceeds.
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).expect("thaw");
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).expect("thaw");
+        fs::write(&launcher, &original).expect("restore bytes");
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o555)).expect("mode");
+        fs::set_permissions(
+            directory.join("contract.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .expect("thaw");
+        fs::write(directory.join("contract.json"), &contract).expect("restore contract");
+        fs::set_permissions(
+            directory.join("contract.json"),
+            fs::Permissions::from_mode(0o444),
+        )
+        .expect("freeze");
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o555)).expect("freeze");
+    }
+    fixture
+        .update(&fixture.v2)
+        .expect("the restored launcher proves");
+    fixture.assert_managed(&location, &fixture.v2.id);
+}
+
+#[test]
+fn a_launcher_lost_to_the_user_is_published_again_and_stale_stages_go() {
+    let (fixture, location) = managed_v1();
+    let directory = location.release_root().join("launcher");
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).expect("thaw");
+    fs::remove_dir_all(&directory).expect("user removes the launcher");
+    let stale = location
+        .release_root()
+        .join(".hypercolor-stage-launcher-1-0");
+    fs::create_dir(&stale).expect("stale stage");
+    fs::write(stale.join("hypercolor"), b"half").expect("stale program");
+    fixture.update(&fixture.v2).expect("update republishes");
+    fixture.assert_managed(&location, &fixture.v2.id);
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        release_cli(&fixture.v2)
+    );
+    assert!(!stale.exists(), "the stale stage is removed");
+}
+
+#[test]
+fn an_install_lost_right_after_publishing_the_launcher_resumes_cleanly() {
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    let mut host = Host::new(&fixture.world, &fixture.v1, Some(location.clone()));
+    host.stop_at = Some(LinuxInstallCheckpoint::LauncherReady);
+    run_linux_install(
+        &fixture.home,
+        &fixture
+            .v1
+            .request(InstallTargetPolicy::EnableOnFirstInstall),
+        &fixture.private(),
+        &mut host,
+    )
+    .expect_err("the run stops once the launcher is ready");
+    assert!(launcher_path(&location).exists());
+    assert!(
+        fixture.world.borrow().effects.is_empty(),
+        "no service change yet"
+    );
+    fixture
+        .run(&fixture.v1, Some(location.clone()), &fixture.private())
+        .expect("the rerun installs");
+    fixture.assert_managed(&location, &fixture.v1.id);
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        release_cli(&fixture.v1)
+    );
+}
+
+#[test]
+fn the_daemon_role_names_one_release_for_executable_ui_and_effects() {
+    let (fixture, location) = managed_v1();
+    let daemon = plan(&fixture, &location, LinuxLaunchRole::Daemon).expect("daemon plan");
+    let release = location
+        .release_root()
+        .join("units")
+        .join(fixture.v1.id.as_str());
+    assert_eq!(daemon.unit, fixture.v1.id);
+    assert_eq!(daemon.selection, LinuxLaunchSelection::Active);
+    assert_eq!(daemon.program, release.join("bin/hypercolor-daemon"));
+    assert_eq!(
+        daemon.arguments,
+        [
+            PathBuf::from("--ui-dir"),
+            release.join("share/hypercolor/ui"),
+            PathBuf::from("--effects-dir"),
+            release.join("share/hypercolor/effects/bundled"),
+        ]
+        .map(std::ffi::OsString::from)
+        .to_vec()
+    );
+    let state_base = location
+        .state_root()
+        .parent()
+        .and_then(Path::parent)
+        .expect("state base");
+    assert_eq!(
+        daemon.environment,
+        [
+            ("XDG_CONFIG_HOME", fixture.home.join(".config")),
+            ("XDG_DATA_HOME", fixture.home.join(".local/share")),
+            ("XDG_STATE_HOME", state_base.to_path_buf()),
+            ("XDG_CACHE_HOME", state_base.join("hypercolor/cache")),
+        ]
+        .map(|(name, value)| (name.into(), value.into_os_string()))
+        .to_vec(),
+        "the daemon resolves exactly the recorded roots, and caches inside them"
+    );
+    let cli = plan(&fixture, &location, LinuxLaunchRole::Cli).expect("CLI plan");
+    assert_eq!(cli.program, release.join("bin/hypercolor"));
+    assert!(cli.environment.is_empty());
+}
+
+#[test]
+fn the_launcher_resolves_active_once_while_it_swaps_underneath() {
+    let (fixture, location) = managed_v1();
+    fixture.update(&fixture.v2).expect("second release");
+    let releases = location.release_root().to_path_buf();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let swapper = {
+        let stop = Arc::clone(&stop);
+        let releases = releases.clone();
+        let units = [fixture.v1.id.clone(), fixture.v2.id.clone()];
+        std::thread::spawn(move || {
+            let mut swaps = 0_usize;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let target = Path::new("units").join(units[swaps % 2].as_str());
+                let staged = releases.join(".active-swap");
+                let _ = fs::remove_file(&staged);
+                std::os::unix::fs::symlink(&target, &staged).expect("stage pointer");
+                fs::rename(&staged, releases.join("active")).expect("swap pointer");
+                swaps += 1;
+            }
+            swaps
+        })
+    };
+    let mut selected = BTreeSet::new();
+    for _ in 0..2000 {
+        let plan = plan(&fixture, &location, LinuxLaunchRole::Daemon).expect("a plan");
+        let release = releases.join("units").join(plan.unit.as_str());
+        assert_eq!(plan.program, release.join("bin/hypercolor-daemon"));
+        assert_eq!(
+            plan.arguments[1],
+            release.join("share/hypercolor/ui").into_os_string(),
+            "the UI comes from the release whose daemon runs"
+        );
+        assert_eq!(
+            plan.arguments[3],
+            release
+                .join("share/hypercolor/effects/bundled")
+                .into_os_string(),
+            "the effects come from the release whose daemon runs"
+        );
+        for argument in &plan.arguments {
+            assert!(
+                !Path::new(argument).starts_with(releases.join("active")),
+                "no path traverses the pointer after selection"
+            );
+        }
+        selected.insert(plan.unit.as_str().to_owned());
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let swaps = swapper.join().expect("swapper");
+    assert!(swaps > 100, "the pointer really swapped ({swaps} times)");
+    assert_eq!(
+        selected.len(),
+        2,
+        "both releases were selected under the swaps"
+    );
+    let _ = fs::remove_file(releases.join("active"));
+    std::os::unix::fs::symlink(
+        Path::new("units").join(fixture.v2.id.as_str()),
+        releases.join("active"),
+    )
+    .expect("restore the pointer");
+}
+
+#[test]
+fn the_update_executor_runs_the_prior_while_an_install_is_unsettled() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().crash_after_effect = Some("runtime:true".to_owned());
+    let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+    assert!(crashed.is_err(), "the installer is lost after starting v2");
+    let pointer = fs::read_link(location.release_root().join("active")).expect("active");
+    assert_eq!(pointer, Path::new("units").join(fixture.v2.id.as_str()));
+    let journal: serde_json::Value = serde_json::from_slice(
+        &fs::read(location.state_root().join("install-journal.json")).expect("journal"),
+    )
+    .expect("journal JSON");
+    assert_eq!(journal["disposition"], "forward");
+    assert_eq!(journal["prior_active_unit"], fixture.v1.id.as_str());
+
+    let executor = plan(&fixture, &location, LinuxLaunchRole::UpdateExecutor).expect("executor");
+    assert_eq!(
+        executor.unit, fixture.v1.id,
+        "recovery runs the prior's code"
+    );
+    assert_eq!(
+        executor.selection,
+        LinuxLaunchSelection::PendingTransactionPrior
+    );
+    assert_eq!(
+        executor.program,
+        location
+            .release_root()
+            .join("units")
+            .join(fixture.v1.id.as_str())
+            .join("bin/hypercolor")
+    );
+    let cli = plan(&fixture, &location, LinuxLaunchRole::Cli).expect("CLI");
+    assert_eq!(
+        cli.unit, fixture.v2.id,
+        "ordinary commands run the active release"
+    );
+
+    let run = fixture.update(&fixture.v2).expect("recovery settles");
+    assert!(run.recovered);
+    let executor = plan(&fixture, &location, LinuxLaunchRole::UpdateExecutor).expect("executor");
+    assert_eq!(executor.selection, LinuxLaunchSelection::Active);
+    let active = fs::read_link(location.release_root().join("active")).expect("active");
+    assert_eq!(
+        Path::new("units").join(executor.unit.as_str()),
+        active,
+        "once settled, the executor is the active release"
+    );
+}
+
+#[test]
+fn the_daemon_role_never_reads_the_journal() {
+    let (fixture, location) = managed_v1();
+    let path = location.state_root().join("install-journal.json");
+    let original = fs::read(&path).expect("journal");
+    fs::write(&path, br#"{"disposition":"paused","schema_version":99}"#).expect("future journal");
+    let error = plan(&fixture, &location, LinuxLaunchRole::UpdateExecutor)
+        .expect_err("an unknown disposition stops recovery from guessing");
+    assert!(matches!(error, LinuxLaunchError::Journal(_)), "{error}");
+    plan(&fixture, &location, LinuxLaunchRole::Daemon)
+        .expect("lighting never depends on the journal format");
+    fs::write(&path, original).expect("restore journal");
+}
+
+#[test]
+fn the_update_executor_runs_only_a_release_that_declares_its_launcher_contract() {
+    let (fixture, location) = managed_v1();
+    let undeclared = plant_unit(
+        &location,
+        &[
+            ("bin/hypercolor-daemon", b"daemon"),
+            ("bin/hypercolor", b"cli"),
+            ("share/hypercolor/ui/index.html", b"ui"),
+            ("share/hypercolor/effects/bundled/effect.html", b"fx"),
+        ],
+        0o555,
+    );
+    let path = location.state_root().join("install-journal.json");
+    let original = fs::read(&path).expect("journal");
+    let mut journal: serde_json::Value = serde_json::from_slice(&original).expect("journal JSON");
+    journal["disposition"] = json!("forward");
+    journal["prior_active_unit"] = json!(undeclared.as_str());
+    fs::write(&path, serde_json::to_vec(&journal).expect("bytes")).expect("pending journal");
+
+    let executor = plan(&fixture, &location, LinuxLaunchRole::UpdateExecutor).expect("executor");
+    assert_eq!(
+        (executor.unit, executor.selection),
+        (fixture.v1.id.clone(), LinuxLaunchSelection::Active),
+        "a prior whose CLI has no executor commands is never run as the executor"
+    );
+
+    point_active(&location, &format!("units/{}", undeclared.as_str()));
+    let error = plan(&fixture, &location, LinuxLaunchRole::UpdateExecutor)
+        .expect_err("neither is an active release without the contract");
+    assert!(error.to_string().contains("launcher contract"), "{error}");
+    assert_eq!(
+        plan(&fixture, &location, LinuxLaunchRole::Cli)
+            .expect("ordinary commands need no declaration")
+            .unit,
+        undeclared
+    );
+    plan(&fixture, &location, LinuxLaunchRole::Daemon)
+        .expect("lighting never depends on the declaration");
+
+    point_active(&location, &format!("units/{}", fixture.v1.id.as_str()));
+    fs::write(&path, original).expect("restore journal");
+    let root = location
+        .release_root()
+        .join("units")
+        .join(undeclared.as_str());
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("thaw");
+    fs::remove_dir_all(&root).expect("remove planted unit");
+}
+
+/// Plant a directory beneath `units/` named for its own manifest digest.
+fn plant_unit(location: &LinuxInstallLocation, files: &[(&str, &[u8])], unit_mode: u32) -> UnitId {
+    let manifest = format!("{{\"planted\":{}}}", files.len()).into_bytes();
+    let id = UnitId::new(sha256(&manifest)).expect("digest");
+    let root = location.release_root().join("units").join(id.as_str());
+    fs::set_permissions(
+        root.parent().expect("units"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("units writable");
+    fs::create_dir(&root).expect("planted unit");
+    fs::write(root.join("manifest.json"), &manifest).expect("manifest");
+    for (path, bytes) in files {
+        let file = root.join(path);
+        fs::create_dir_all(file.parent().expect("parent")).expect("directories");
+        fs::write(&file, bytes).expect("file");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o555)).expect("mode");
+    }
+    fs::set_permissions(&root, fs::Permissions::from_mode(unit_mode)).expect("unit mode");
+    id
+}
+
+fn point_active(location: &LinuxInstallLocation, target: &str) {
+    let active = location.release_root().join("active");
+    fs::remove_file(&active).expect("remove pointer");
+    std::os::unix::fs::symlink(target, &active).expect("pointer");
+}
+
+#[test]
+fn the_launcher_refuses_what_it_cannot_prove() {
+    let (fixture, location) = managed_v1();
+    let good = format!("units/{}", fixture.v1.id.as_str());
+
+    let foreign = plan_linux_launch(&LinuxLaunchRequest {
+        home: &fixture.home,
+        role: LinuxLaunchRole::Daemon,
+        arguments: Vec::new(),
+        launcher: &fixture.home.join("elsewhere/hypercolor"),
+    })
+    .expect_err("another copy of the CLI is not this installation's launcher");
+    assert!(matches!(foreign, LinuxLaunchError::ForeignLauncher { .. }));
+
+    let arguments = plan_linux_launch(&LinuxLaunchRequest {
+        home: &fixture.home,
+        role: LinuxLaunchRole::Daemon,
+        arguments: vec!["--ui-dir".into(), "/tmp".into()],
+        launcher: &launcher_path(&location),
+    })
+    .expect_err("the daemon's paths are the release's, never the caller's");
+    assert!(matches!(arguments, LinuxLaunchError::Arguments(_)));
+
+    let incomplete = plant_unit(&location, &[("bin/hypercolor-daemon", b"daemon")], 0o555);
+    point_active(&location, &format!("units/{}", incomplete.as_str()));
+    let error = plan(&fixture, &location, LinuxLaunchRole::Daemon)
+        .expect_err("a release without its UI and effects never launches");
+    assert!(error.to_string().contains("share/hypercolor/ui"), "{error}");
+    let error = plan(&fixture, &location, LinuxLaunchRole::Cli)
+        .expect_err("a release without its CLI never launches");
+    assert!(error.to_string().contains("bin/hypercolor"), "{error}");
+
+    let writable = plant_unit(
+        &location,
+        &[
+            ("bin/hypercolor-daemon", b"daemon"),
+            ("bin/hypercolor", b"cli"),
+            ("share/hypercolor/ui/index.html", b"ui"),
+            ("share/hypercolor/effects/bundled/effect.html", b"fx"),
+        ],
+        0o755,
+    );
+    point_active(&location, &format!("units/{}", writable.as_str()));
+    let error = plan(&fixture, &location, LinuxLaunchRole::Daemon)
+        .expect_err("a writable release is not immutable");
+    assert!(error.to_string().contains("read-only"), "{error}");
+
+    let misnamed = location.release_root().join("units").join("a".repeat(64));
+    fs::create_dir(&misnamed).expect("misnamed unit");
+    fs::write(misnamed.join("manifest.json"), b"{}").expect("manifest");
+    fs::set_permissions(&misnamed, fs::Permissions::from_mode(0o555)).expect("mode");
+    point_active(&location, &format!("units/{}", "a".repeat(64)));
+    let error = plan(&fixture, &location, LinuxLaunchRole::Daemon)
+        .expect_err("a directory whose manifest is another release's never launches");
+    assert!(error.to_string().contains("named for"), "{error}");
+
+    point_active(&location, &format!("units/legacy-{}", "b".repeat(64)));
+    let error = plan(&fixture, &location, LinuxLaunchRole::Daemon)
+        .expect_err("a legacy snapshot is not launchable");
+    assert!(error.to_string().contains("legacy"), "{error}");
+
+    point_active(&location, "../elsewhere");
+    assert!(matches!(
+        plan(&fixture, &location, LinuxLaunchRole::Daemon),
+        Err(LinuxLaunchError::ActivePointer(_))
+    ));
+
+    point_active(&location, &good);
+    plan(&fixture, &location, LinuxLaunchRole::Daemon).expect("the real release launches");
+    for unit in [&incomplete, &writable] {
+        let root = location.release_root().join("units").join(unit.as_str());
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("thaw");
+        fs::remove_dir_all(&root).expect("remove planted unit");
+    }
+    fs::set_permissions(&misnamed, fs::Permissions::from_mode(0o755)).expect("thaw");
+    fs::remove_dir_all(&misnamed).expect("remove misnamed unit");
+}
+
+#[test]
+fn only_a_managed_installation_launches() {
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    assert!(matches!(
+        plan(&fixture, &location, LinuxLaunchRole::Daemon),
+        Err(LinuxLaunchError::NotManaged)
+    ));
+    fixture.legacy_install(&fixture.v1);
+    assert!(matches!(
+        plan(&fixture, &location, LinuxLaunchRole::Daemon),
+        Err(LinuxLaunchError::NotManaged)
+    ));
+}
+
+#[test]
+fn a_daemon_started_with_another_releases_assets_fails_its_proof_and_rolls_back() {
+    let (fixture, location) = managed_v1();
+    let prior = location
+        .release_root()
+        .join("units")
+        .join(fixture.v1.id.as_str());
+    let candidate = location
+        .release_root()
+        .join("units")
+        .join(fixture.v2.id.as_str());
+    let mixed = [
+        candidate.join("bin/hypercolor-daemon"),
+        PathBuf::from("--ui-dir"),
+        prior.join("share/hypercolor/ui"),
+        PathBuf::from("--effects-dir"),
+        candidate.join("share/hypercolor/effects/bundled"),
+    ]
+    .map(|argument| argument.to_str().expect("UTF-8").to_owned())
+    .to_vec();
+    fixture.world.borrow_mut().argument_override = Some(("9.8.8".to_owned(), mixed));
+    let run = fixture.update(&fixture.v2).expect("the run settles");
+    let InstallOutcome::RolledBack { failure, .. } = run.outcome else {
+        panic!("a mixed daemon must not commit: {:?}", run.outcome);
+    };
+    assert!(failure.contains("runs with arguments"), "{failure}");
+    fixture.assert_managed(&location, &fixture.v1.id);
+}
+
+/// A managed installation from before the launcher: its unit runs the
+/// daemon straight through `active`, and it has no launcher directory.
+fn managed_v1_without_launcher() -> (Fixture, LinuxInstallLocation, Vec<u8>) {
+    let (fixture, location) = managed_v1();
+    let directory = location.release_root().join("launcher");
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).expect("thaw");
+    fs::remove_dir_all(&directory).expect("remove launcher");
+    let active = location.release_root().join("active");
+    let active = active.to_str().expect("UTF-8");
+    let direct = format!(
+        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={active}/bin/hypercolor-daemon --ui-dir {active}/share/hypercolor/ui --effects-dir {active}/share/hypercolor/effects/bundled\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n\n[Install]\nWantedBy=default.target\n"
+    )
+    .into_bytes();
+    {
+        let mut world = fixture.world.borrow_mut();
+        world.launcher_bytes.clone_from(&direct);
+        world.launcher = LinuxExactEntry::RegularFile {
+            mode: 0o644,
+            sha256: sha256(&direct),
+            snapshot_unit: None,
+            snapshot_path: None,
+        };
+        world.exec_start = launcher_exec(&direct);
+        world.restart_service();
+    }
+    (fixture, location, direct)
+}
+
+#[test]
+fn an_install_from_before_the_launcher_gains_it_and_its_rollback_restores_the_direct_unit() {
+    let (fixture, location, _) = managed_v1_without_launcher();
+    fixture.update(&fixture.v2).expect("update");
+    fixture.assert_managed(&location, &fixture.v2.id);
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        release_cli(&fixture.v2)
+    );
+
+    let (fixture, location, direct) = managed_v1_without_launcher();
+    fixture
+        .world
+        .borrow_mut()
+        .failing_starts
+        .insert("9.8.8".to_owned());
+    let run = fixture.update(&fixture.v2).expect("the run settles");
+    assert!(matches!(run.outcome, InstallOutcome::RolledBack { .. }));
+    let world = fixture.world.borrow();
+    assert_eq!(world.launcher_bytes, direct, "the direct unit comes back");
+    assert_eq!(world.running_version(), "9.8.7");
+    assert_eq!(
+        world.process.as_ref().expect("prior runs").arguments[0],
+        format!(
+            "{}/bin/hypercolor-daemon",
+            location.release_root().join("active").display()
+        ),
+        "the restored prior runs with its own direct arguments"
+    );
+    assert!(
+        launcher_path(&location).exists(),
+        "the launcher stays for the next install"
+    );
+}
+
+#[test]
+fn the_published_layout_directories_are_every_directory_the_installer_writes() {
+    let (fixture, location) = managed_v1();
+    let directories = linux_layout_directories(&fixture.home);
+    let mut expected: Vec<PathBuf> = [
+        ".local/bin",
+        ".local/share/applications",
+        ".local/share/bash-completion/completions",
+        ".local/share/zsh/site-functions",
+        ".local/share/fish/vendor_completions.d",
+        ".local/share/icons/hicolor/48x48/apps",
+        ".local/share/icons/hicolor/128x128/apps",
+        ".local/share/icons/hicolor/256x256/apps",
+        ".config/systemd/user",
+    ]
+    .iter()
+    .map(|path| fixture.home.join(path))
+    .collect();
+    expected.sort();
+    let mut actual = directories.clone();
+    actual.sort();
+    assert_eq!(actual, expected);
+    assert!(
+        Path::new(&fixture.world.borrow().fragment)
+            .parent()
+            .is_some_and(|parent| directories.iter().any(|directory| directory == parent)),
+        "the service fragment's directory is listed"
+    );
+    let _ = location;
 }

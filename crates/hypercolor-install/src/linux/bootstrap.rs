@@ -1,0 +1,418 @@
+//! The installer-owned launcher a managed service starts through.
+//!
+//! `<release root>/launcher/` holds one copy of the CLI (`hypercolor`) and a
+//! `contract.json` naming its digest, size, source release and the launcher
+//! contract it implements. It sits beside `units/`, outside every release
+//! directory, so the releases it selects between can never replace it. It is
+//! published once, atomically, from the first release a managed install or
+//! adoption activates, and every later run only proves it unchanged: an
+//! ordinary install never rewrites it. Replacing it is a launcher contract
+//! change, which contract 1 does not define.
+
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+
+use super::super::{InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord};
+use super::LinuxInstallLocation;
+use super::model::error;
+use hypercolor_platform_fs::{DirectoryEntryKind, ReadOnlyDirectoryAuthority};
+
+/// The launcher directory beneath the release root.
+pub const LINUX_LAUNCHER_DIRECTORY: &str = "launcher";
+/// The launcher program inside [`LINUX_LAUNCHER_DIRECTORY`].
+pub const LINUX_LAUNCHER_PROGRAM: &str = "hypercolor";
+/// The CLI command the launcher program runs as.
+pub const LINUX_LAUNCH_COMMAND: &str = "__launch";
+
+const CONTRACT_NAME: &str = "contract.json";
+const CONTRACT_SCHEMA_VERSION: u32 = 1;
+const LAUNCHER_STAGE_PREFIX: &str = ".hypercolor-stage-launcher-";
+const DIRECTORY_MODE: u32 = 0o555;
+const PROGRAM_MODE: u32 = 0o555;
+const CONTRACT_MODE: u32 = 0o444;
+const MAX_PROGRAM_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_CONTRACT_BYTES: u64 = 4 * 1024;
+static LAUNCHER_STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContractRecord {
+    schema_version: u32,
+    launcher_contract: u32,
+    program_sha256: String,
+    program_size: u64,
+    source_unit: UnitId,
+}
+
+/// A managed installation's proven launcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxLauncherProgram {
+    path: PathBuf,
+    sha256: String,
+    size: u64,
+    source_unit: UnitId,
+    published: bool,
+}
+
+impl LinuxLauncherProgram {
+    /// Where the launcher program lives.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// SHA-256 of the launcher program.
+    #[must_use]
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    /// Size of the launcher program in bytes.
+    #[must_use]
+    pub const fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// The release whose CLI the launcher was copied from.
+    #[must_use]
+    pub fn source_unit(&self) -> &UnitId {
+        &self.source_unit
+    }
+
+    /// Whether this run published the launcher, rather than proving the one
+    /// an earlier run published.
+    #[must_use]
+    pub const fn published(&self) -> bool {
+        self.published
+    }
+}
+
+/// The update state directory the daemon's update coordinator writes.
+pub const LINUX_COORDINATOR_DIRECTORY: &str = "coordinator";
+/// The update state directory the update activator writes.
+pub const LINUX_ACTIVATOR_DIRECTORY: &str = "activator";
+const UPDATE_DIRECTORY_MODE: u32 = 0o700;
+
+/// Make sure the update state root holds its `coordinator/` and
+/// `activator/` directories, each `0700` and owned by the recorded user.
+///
+/// The generated service can write only `coordinator/` inside an otherwise
+/// read-only update state root, so neither the daemon nor the activator can
+/// create its own directory there; the installer creates both, whatever the
+/// umask, and never changes one that exists.
+///
+/// # Errors
+/// Refuses a directory entry of another kind, mode or owner.
+pub fn ensure_linux_update_directories(
+    lock: &InstallLock,
+    location: &LinuxInstallLocation,
+) -> Result<(), InstallPlatformError> {
+    let state = lock
+        .open_public_directory(location.state_root())
+        .map_err(|source| error(source.to_string()))?;
+    for name in [LINUX_COORDINATOR_DIRECTORY, LINUX_ACTIVATOR_DIRECTORY] {
+        let directory = state
+            .durable_ensure_child_directory(Path::new(name), UPDATE_DIRECTORY_MODE)
+            .map_err(|source| {
+                error(format!(
+                    "{} must be a {UPDATE_DIRECTORY_MODE:o} directory: {source}",
+                    location.state_root().join(name).display()
+                ))
+            })?;
+        let metadata = directory
+            .metadata()
+            .map_err(io_error("inspect an update state directory"))?;
+        if metadata.owner_uid() != location.uid() || metadata.mode() != UPDATE_DIRECTORY_MODE {
+            return Err(error(format!(
+                "{} must be a {UPDATE_DIRECTORY_MODE:o} directory owned by uid {}",
+                location.state_root().join(name).display(),
+                location.uid()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Where a managed installation's launcher program lives.
+#[must_use]
+pub fn linux_launcher_path(location: &LinuxInstallLocation) -> PathBuf {
+    location
+        .release_root()
+        .join(LINUX_LAUNCHER_DIRECTORY)
+        .join(LINUX_LAUNCHER_PROGRAM)
+}
+
+/// Prove the installation's launcher, publishing it from `candidate`'s CLI
+/// when the installation has none yet.
+///
+/// A published launcher is never replaced: one that differs from its own
+/// contract record, carries another launcher contract, or has lost its
+/// modes or owner refuses the whole run before any service change.
+///
+/// # Errors
+/// Refuses a store or lock of another installation, a candidate that runs
+/// under another launcher contract, and a launcher that cannot be published
+/// or proven exact.
+pub fn ensure_linux_launcher(
+    store: &InstallStore,
+    lock: &InstallLock,
+    location: &LinuxInstallLocation,
+    candidate: &UnitRecord,
+) -> Result<LinuxLauncherProgram, InstallPlatformError> {
+    require_store(store, location)?;
+    let declared = super::super::read_declared_compatibility(candidate)
+        .map_err(|source| error(format!("cannot read the candidate's contract: {source}")))?;
+    match declared.declared() {
+        Some(package) if package.launcher_contract() == location.launcher_contract() => {}
+        Some(package) => {
+            return Err(error(format!(
+                "the candidate runs under launcher contract {}, but this installation \
+                 has contract {}; changing contracts is not supported",
+                package.launcher_contract(),
+                location.launcher_contract()
+            )));
+        }
+        None => {
+            return Err(error(
+                "the candidate declares no managed package contract to launch under",
+            ));
+        }
+    }
+    let root = store
+        .root_authority(lock)
+        .map_err(|source| error(source.to_string()))?;
+    if root
+        .entry_metadata(Path::new(LINUX_LAUNCHER_DIRECTORY))
+        .map_err(io_error("inspect the launcher"))?
+        .is_some()
+    {
+        return prove(location, false);
+    }
+    remove_leftover_stages(lock)?;
+    let sequence = LAUNCHER_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let staging = root
+        .create_private_staging_directory(Path::new(&format!(
+            "{LAUNCHER_STAGE_PREFIX}{}-{sequence}",
+            std::process::id()
+        )))
+        .map_err(io_error("create the launcher staging directory"))?;
+    let populated = populate(staging.directory(), location, candidate);
+    if let Err(failure) = populated {
+        return match staging.remove() {
+            Ok(()) => Err(failure),
+            Err(cleanup) => Err(error(format!(
+                "{failure}; removing the launcher staging directory also failed: {cleanup}"
+            ))),
+        };
+    }
+    staging
+        .publish_or_remove(Path::new(LINUX_LAUNCHER_DIRECTORY))
+        .map_err(io_error("publish the launcher"))?;
+    prove(location, true)
+}
+
+/// Prove the installation's launcher without publishing one.
+///
+/// # Errors
+/// Refuses a launcher that exists but is not exact.
+pub fn inspect_linux_launcher(
+    location: &LinuxInstallLocation,
+) -> Result<Option<LinuxLauncherProgram>, InstallPlatformError> {
+    match std::fs::symlink_metadata(location.release_root().join(LINUX_LAUNCHER_DIRECTORY)) {
+        Ok(_) => prove(location, false).map(Some),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(error(format!("cannot inspect the launcher: {source}"))),
+    }
+}
+
+fn require_store(
+    store: &InstallStore,
+    location: &LinuxInstallLocation,
+) -> Result<(), InstallPlatformError> {
+    if store.root() != location.release_root() || store.state_root() != location.state_root() {
+        return Err(error(
+            "the launcher belongs to another installation's release root",
+        ));
+    }
+    Ok(())
+}
+
+fn populate(
+    staging: &hypercolor_platform_fs::DirectoryAuthority,
+    location: &LinuxInstallLocation,
+    candidate: &UnitRecord,
+) -> Result<(), InstallPlatformError> {
+    let mut source = candidate
+        .directory()
+        .open_child_directory(Path::new("bin"))
+        .and_then(|bin| bin.open_regular_file(Path::new(LINUX_LAUNCHER_PROGRAM)))
+        .map_err(io_error("open the candidate CLI"))?;
+    let size = source.metadata().size();
+    if size == 0 || size > MAX_PROGRAM_BYTES {
+        return Err(error("the candidate CLI is empty or too large to launch"));
+    }
+    let mut hashing = HashingReader {
+        inner: source.file_mut(),
+        hasher: Sha256::new(),
+    };
+    staging
+        .create_regular_file(
+            Path::new(LINUX_LAUNCHER_PROGRAM),
+            PROGRAM_MODE,
+            size,
+            &mut hashing,
+        )
+        .map_err(io_error("copy the candidate CLI into the launcher"))?;
+    let record = ContractRecord {
+        schema_version: CONTRACT_SCHEMA_VERSION,
+        launcher_contract: location.launcher_contract(),
+        program_sha256: hex::encode(hashing.hasher.finalize()),
+        program_size: size,
+        source_unit: candidate.id().clone(),
+    };
+    let bytes = serde_json::to_vec_pretty(&record)
+        .map_err(|source| error(format!("encode the launcher contract: {source}")))?;
+    staging
+        .create_regular_file(
+            Path::new(CONTRACT_NAME),
+            CONTRACT_MODE,
+            bytes.len() as u64,
+            &mut bytes.as_slice(),
+        )
+        .map_err(io_error("write the launcher contract"))?;
+    staging
+        .set_mode(DIRECTORY_MODE)
+        .map_err(io_error("seal the launcher directory"))
+}
+
+fn prove(
+    location: &LinuxInstallLocation,
+    published: bool,
+) -> Result<LinuxLauncherProgram, InstallPlatformError> {
+    let directory_path = location.release_root().join(LINUX_LAUNCHER_DIRECTORY);
+    let directory =
+        ReadOnlyDirectoryAuthority::open(&directory_path).map_err(io_error("open the launcher"))?;
+    let metadata = directory
+        .metadata()
+        .map_err(io_error("inspect the launcher"))?;
+    if metadata.owner_uid() != location.uid() || metadata.mode() != DIRECTORY_MODE {
+        return Err(error(format!(
+            "{} must be a {DIRECTORY_MODE:o} directory owned by uid {}",
+            directory_path.display(),
+            location.uid()
+        )));
+    }
+    let names: Vec<_> = directory.entries().map_err(io_error("list the launcher"))?;
+    let mut expected = vec![
+        std::ffi::OsString::from(CONTRACT_NAME),
+        std::ffi::OsString::from(LINUX_LAUNCHER_PROGRAM),
+    ];
+    expected.sort();
+    if names != expected {
+        return Err(error(format!(
+            "{} holds entries other than its program and contract",
+            directory_path.display()
+        )));
+    }
+    let mut contract = directory
+        .open_regular_file(Path::new(CONTRACT_NAME))
+        .map_err(io_error("open the launcher contract"))?;
+    let contract_metadata = contract.metadata();
+    if contract_metadata.mode() != CONTRACT_MODE
+        || contract_metadata.owner_uid() != location.uid()
+        || contract_metadata.size() > MAX_CONTRACT_BYTES
+    {
+        return Err(error("the launcher contract record is not exact"));
+    }
+    let mut bytes = Vec::new();
+    contract
+        .file_mut()
+        .take(MAX_CONTRACT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io_error("read the launcher contract"))?;
+    let record: ContractRecord = serde_json::from_slice(&bytes)
+        .map_err(|source| error(format!("the launcher contract record is invalid: {source}")))?;
+    if record.schema_version != CONTRACT_SCHEMA_VERSION
+        || record.launcher_contract != location.launcher_contract()
+    {
+        return Err(error(format!(
+            "the launcher implements contract {} (record schema {}), not this installation's {}",
+            record.launcher_contract,
+            record.schema_version,
+            location.launcher_contract()
+        )));
+    }
+    let mut program = directory
+        .open_regular_file(Path::new(LINUX_LAUNCHER_PROGRAM))
+        .map_err(io_error("open the launcher program"))?;
+    let program_metadata = program.metadata();
+    if program_metadata.kind() != DirectoryEntryKind::RegularFile
+        || program_metadata.mode() != PROGRAM_MODE
+        || program_metadata.owner_uid() != location.uid()
+        || program_metadata.link_count() != 1
+        || program_metadata.size() != record.program_size
+    {
+        return Err(error(
+            "the launcher program's mode, owner, links or size changed since it was published",
+        ));
+    }
+    let mut hasher = Sha256::new();
+    let copied = io::copy(
+        &mut program.file_mut().take(record.program_size + 1),
+        &mut super::model::Sha256Writer(&mut hasher),
+    )
+    .map_err(io_error("hash the launcher program"))?;
+    if copied != record.program_size || hex::encode(hasher.finalize()) != record.program_sha256 {
+        return Err(error(
+            "the launcher program's bytes changed since it was published",
+        ));
+    }
+    Ok(LinuxLauncherProgram {
+        path: directory_path.join(LINUX_LAUNCHER_PROGRAM),
+        sha256: record.program_sha256,
+        size: record.program_size,
+        source_unit: record.source_unit,
+        published,
+    })
+}
+
+/// Remove launcher staging directories a crashed run left beside `units/`.
+fn remove_leftover_stages(lock: &InstallLock) -> Result<(), InstallPlatformError> {
+    let root = lock
+        .open_store_public_directory()
+        .map_err(|source| error(source.to_string()))?;
+    for name in root
+        .child_names()
+        .map_err(io_error("list the release root"))?
+    {
+        if name
+            .to_str()
+            .is_some_and(|name| name.starts_with(LAUNCHER_STAGE_PREFIX))
+        {
+            root.durable_remove_child_tree(Path::new(&name))
+                .map_err(io_error("remove a leftover launcher stage"))?;
+        }
+    }
+    Ok(())
+}
+
+struct HashingReader<'a> {
+    inner: &'a mut std::fs::File,
+    hasher: Sha256,
+}
+
+impl Read for HashingReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.hasher.update(&buffer[..read]);
+        Ok(read)
+    }
+}
+
+fn io_error(operation: &'static str) -> impl Fn(io::Error) -> InstallPlatformError {
+    move |source| error(format!("failed to {operation}: {source}"))
+}

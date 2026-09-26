@@ -1,5 +1,6 @@
 mod adoption;
 mod adoption_roots;
+mod bootstrap;
 mod command;
 mod directory;
 mod effects;
@@ -7,6 +8,7 @@ mod executor;
 #[cfg(test)]
 mod executor_tests;
 mod http;
+mod launch;
 mod legacy;
 #[cfg(test)]
 mod legacy_tests;
@@ -33,12 +35,21 @@ use std::collections::BTreeMap;
 use super::{InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord};
 
 pub use adoption::{LinuxAdoption, LinuxAdoptionError};
+pub use bootstrap::{
+    LINUX_ACTIVATOR_DIRECTORY, LINUX_COORDINATOR_DIRECTORY, LINUX_LAUNCH_COMMAND,
+    LINUX_LAUNCHER_DIRECTORY, LINUX_LAUNCHER_PROGRAM, LinuxLauncherProgram, ensure_linux_launcher,
+    ensure_linux_update_directories, inspect_linux_launcher, linux_launcher_path,
+};
 pub use command::{
     LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallHost, LinuxInstallRequest,
     LinuxInstallRun, LinuxPlatformInputs, bind_linux_platform, run_linux_install,
 };
 pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};
+pub use launch::{
+    LinuxLaunchError, LinuxLaunchPlan, LinuxLaunchRequest, LinuxLaunchRole, LinuxLaunchSelection,
+    plan_linux_launch,
+};
 pub use location::{InstallLocationError, LinuxInstallLocation, RetainedLinuxInstallLocation};
 pub use locator::{
     LinuxInstallAuthority, LinuxInstallElection, LinuxInstallLocator, LinuxInstallObservation,
@@ -50,7 +61,8 @@ pub use model::{
     LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse,
     LinuxInstallConfig, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile,
     LinuxLegacySnapshot, LinuxProcessExecutable, LinuxServiceIdentity, LinuxServicePhase,
-    LinuxServiceWatch, LinuxSystemdObservation, MAX_PROBATION_WINDOW, parse_systemd_show,
+    LinuxServiceWatch, LinuxSystemdObservation, MAX_PROBATION_WINDOW, linux_layout_directories,
+    parse_systemd_show,
 };
 pub use runtime::{LinuxRuntimeSettlement, LinuxSystemdConnection};
 pub use uninstall::{
@@ -150,6 +162,14 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         {
             return Err(model::error(
                 "Linux install roots do not share one exact topology",
+            ));
+        }
+        if let Some(location) = &config.managed
+            && (config.immutable_units_root != location.release_root().join("units")
+                || config.active_root != location.release_root().join("active"))
+        {
+            return Err(model::error(
+                "Linux install roots are not the recorded managed release root",
             ));
         }
         executor.validate_topology(&config)?;

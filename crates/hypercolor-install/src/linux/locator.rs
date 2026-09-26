@@ -20,6 +20,7 @@ mod election;
 mod observation;
 #[path = "locator_preparation.rs"]
 mod preparation;
+pub(in crate::linux) use election::read_hint;
 pub use election::{
     LinuxInstallElection, LinuxManagedAuthority, elect_linux_installation,
     elect_linux_installation_with,

@@ -214,6 +214,7 @@ fn native_topology_rejects_a_fragment_outside_the_retained_home() {
         immutable_units_root: store.root().join("units"),
         active_root: store.active_path(),
         probation: std::time::Duration::ZERO,
+        managed: None,
     };
 
     let error = LinuxInstallPlatform::new(executor, config, [])

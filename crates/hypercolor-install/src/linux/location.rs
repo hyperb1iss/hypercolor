@@ -282,6 +282,15 @@ impl LinuxInstallLocation {
         &self.config_root
     }
 
+    /// The daemon's own state directory, which holds the recorded update
+    /// state root (`<state base>/hypercolor/update`).
+    #[must_use]
+    pub fn daemon_state_root(&self) -> &Path {
+        self.state_root
+            .parent()
+            .expect("a validated state root is an absolute path below /")
+    }
+
     /// The launcher contract the installation's service runs under.
     #[must_use]
     pub const fn launcher_contract(&self) -> u32 {

@@ -31,7 +31,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
     }
 
     pub(super) fn candidate_launcher(&self) -> Result<LinuxLauncher, InstallPlatformError> {
-        render_launcher(&self.config.active_root)
+        render_launcher(&self.config.active_root, self.config.managed.as_ref())
     }
 
     pub(super) fn layout_target(
@@ -44,19 +44,65 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
     }
 }
 
-/// Render the exact generated launcher for one active root.
+/// Render the exact generated service unit.
+///
+/// The historical root's unit runs the daemon straight through `active`.
+/// A managed installation's unit runs it through the installation's stable
+/// launcher, which selects one release and derives the daemon's UI and
+/// effects directories from that same release, inside a sandbox that makes
+/// everything read-only except the recorded configuration, data and daemon
+/// state roots and the coordinator's directory, with the release root and
+/// the update state root read-only beneath them. The text depends only on
+/// the recorded location, so it is the same for every release of launcher
+/// contract 1.
 ///
 /// # Errors
 /// Refuses a non-UTF-8 root or a launcher that exceeds its byte bound.
-pub(super) fn render_launcher(active_root: &Path) -> Result<LinuxLauncher, InstallPlatformError> {
-    let active = active_root
-        .to_str()
-        .ok_or_else(|| error("Linux install roots must be exact UTF-8"))?;
-    let launcher_exec = format!(
-        "{active}/bin/hypercolor-daemon --ui-dir {active}/share/hypercolor/ui --effects-dir {active}/share/hypercolor/effects/bundled"
-    );
+pub(super) fn render_launcher(
+    active_root: &Path,
+    managed: Option<&super::LinuxInstallLocation>,
+) -> Result<LinuxLauncher, InstallPlatformError> {
+    let text = |path: &Path| {
+        path.to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| error("Linux install roots must be exact UTF-8"))
+    };
+    let (launcher_exec, sandbox) = match managed {
+        None => {
+            let active = text(active_root)?;
+            (
+                format!(
+                    "{active}/bin/hypercolor-daemon --ui-dir {active}/share/hypercolor/ui --effects-dir {active}/share/hypercolor/effects/bundled"
+                ),
+                String::new(),
+            )
+        }
+        Some(location) => {
+            if active_root != location.release_root().join("active") {
+                return Err(error(
+                    "the managed service must select the recorded release root",
+                ));
+            }
+            let launcher = text(&super::bootstrap::linux_launcher_path(location))?;
+            let state = text(location.state_root())?;
+            (
+                format!(
+                    "{launcher} {} --role {}",
+                    super::bootstrap::LINUX_LAUNCH_COMMAND,
+                    super::launch::LinuxLaunchRole::Daemon.as_str()
+                ),
+                format!(
+                    "ProtectSystem=strict\nProtectHome=read-only\nPrivateTmp=true\nNoNewPrivileges=true\nReadWritePaths={config} {data} {daemon_state} -{state}/coordinator\nReadOnlyPaths={releases} {state}\n",
+                    config = text(location.config_root())?,
+                    data = text(location.data_root())?,
+                    daemon_state = text(location.daemon_state_root())?,
+                    releases = text(location.release_root())?,
+                ),
+            )
+        }
+    };
     let bytes = format!(
-        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={launcher_exec}\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={launcher_exec}\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n{sandbox}\n[Install]\nWantedBy=default.target\n"
     )
     .into_bytes();
     if bytes.len() > super::model::MAX_LAUNCHER_BYTES {
@@ -157,6 +203,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                 "/proc executable identity does not match the immutable unit",
             ));
         }
+        self.require_daemon_arguments(&process, &before.exec_start, binding)?;
         verify_http(
             self.executor.http_get("/health", MAX_HTTP_RESPONSE_BYTES)?,
             self.executor
@@ -288,6 +335,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                 "prior /proc executable identity does not match its retained unit",
             ));
         }
+        self.require_daemon_arguments(&process, &before.exec_start, binding)?;
         verify_http(
             self.executor.http_get("/health", MAX_HTTP_RESPONSE_BYTES)?,
             self.executor
@@ -300,6 +348,74 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         }
         Ok(())
     }
+}
+
+impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
+    /// Prove the daemon runs with the UI and effects directories of the
+    /// same release its executable belongs to.
+    ///
+    /// Under the launcher, every path comes from the one release it
+    /// selected, so the arguments name exactly that release's directories.
+    /// Under a direct unit they are the unit's own `ExecStart` arguments.
+    /// Legacy snapshots, whose historical units this installer did not
+    /// write, keep only the executable proof.
+    pub(super) fn require_daemon_arguments(
+        &self,
+        process: &super::model::LinuxProcessExecutable,
+        exec_start: &str,
+        binding: &LinuxUnitBinding,
+    ) -> Result<(), InstallPlatformError> {
+        if binding.unit.as_str().starts_with("legacy-") {
+            return Ok(());
+        }
+        let expected =
+            expected_daemon_arguments(exec_start, self.config.managed.as_ref(), binding)?;
+        if process.arguments != expected {
+            return Err(error(format!(
+                "the daemon of {} runs with arguments {:?}, not {:?}",
+                binding.unit.as_str(),
+                process.arguments,
+                expected
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// The argument vector the daemon of `binding` runs with when its service's
+/// canonical `ExecStart` is `exec_start`.
+pub(super) fn expected_daemon_arguments(
+    exec_start: &str,
+    managed: Option<&super::LinuxInstallLocation>,
+    binding: &LinuxUnitBinding,
+) -> Result<Vec<String>, InstallPlatformError> {
+    let words: Vec<String> = serde_json::from_str(exec_start)
+        .map_err(|_| error("canonical ExecStart argument vector is malformed"))?;
+    let launched = managed.is_some_and(|location| {
+        super::bootstrap::linux_launcher_path(location).to_str()
+            == words.first().map(String::as_str)
+            && words[1..]
+                == [
+                    super::bootstrap::LINUX_LAUNCH_COMMAND,
+                    "--role",
+                    super::launch::LinuxLaunchRole::Daemon.as_str(),
+                ]
+    });
+    if !launched {
+        return Ok(words);
+    }
+    let release = Path::new(&binding.daemon_path)
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::to_str)
+        .ok_or_else(|| error("the daemon path names no release directory"))?;
+    Ok(vec![
+        binding.daemon_path.clone(),
+        "--ui-dir".to_owned(),
+        format!("{release}/share/hypercolor/ui"),
+        "--effects-dir".to_owned(),
+        format!("{release}/share/hypercolor/effects/bundled"),
+    ])
 }
 
 pub(super) fn retained_unit_binding(

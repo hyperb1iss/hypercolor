@@ -221,6 +221,17 @@ impl FakeExecutor {
     }
 }
 
+impl FakeExecutor {
+    /// A direct unit's daemon runs with exactly its `ExecStart` arguments.
+    fn exec_arguments(&self) -> Vec<String> {
+        self.systemd
+            .exec_start
+            .split_ascii_whitespace()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
 impl LinuxInstallExecutor for FakeExecutor {
     fn validate_topology(
         &mut self,
@@ -520,7 +531,11 @@ impl LinuxInstallExecutor for FakeExecutor {
     ) -> Result<LinuxProcessExecutable, hypercolor_cli::install::InstallPlatformError> {
         self.process_calls += 1;
         if let Some(process) = &self.process_override {
-            return Ok(process.clone());
+            let mut process = process.clone();
+            if process.arguments.is_empty() {
+                process.arguments = self.exec_arguments();
+            }
+            return Ok(process);
         }
         if let Some((prior, root)) = &self.expected_prior
             && self.systemd.exec_start.starts_with(
@@ -547,6 +562,7 @@ impl LinuxInstallExecutor for FakeExecutor {
                 sha256: self.daemon_digest.clone(),
                 device: executable.metadata().device(),
                 inode: executable.metadata().inode(),
+                arguments: self.exec_arguments(),
             });
         }
         let unit = self.active().expect("running unit");
@@ -578,6 +594,7 @@ impl LinuxInstallExecutor for FakeExecutor {
                             mismatch.0 == unit.as_str() && mismatch.1 == self.process_calls
                         }),
                 ),
+            arguments: self.exec_arguments(),
         })
     }
 
@@ -1244,6 +1261,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         immutable_units_root: old.root().join("units"),
         active_root: old.active_path(),
         probation: Duration::ZERO,
+        managed: None,
     };
     let mut executor = FakeExecutor::absent(old.active_path(), sha256(b"daemon"));
     executor.expected_topology = Some(old_config.clone());
@@ -1285,6 +1303,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         immutable_units_root: adoption.store().root().join("units"),
         active_root: adoption.store().active_path(),
         probation: Duration::ZERO,
+        managed: None,
     };
     executor.active_path = adoption.store().active_path();
     executor.expected_topology = Some(new_config.clone());
@@ -1301,6 +1320,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         sha256: sha256(b"daemon"),
         device: metadata.dev(),
         inode: metadata.ino(),
+        arguments: Vec::new(),
     });
     let mut platform = LinuxInstallPlatform::new(executor, new_config.clone(), [copied.clone()])
         .expect("managed platform")
@@ -1483,6 +1503,7 @@ fn copied_same_id_keeps_the_original_prior_inode_and_path() {
         sha256: original.daemon_digest.clone(),
         device: metadata.dev(),
         inode: metadata.ino(),
+        arguments: Vec::new(),
     });
     let mut platform = LinuxInstallPlatform::new(executor, config(), [copied.candidate.clone()])
         .expect("candidate authority")
@@ -2190,6 +2211,7 @@ fn byte_identical_unit_from_a_split_root_is_rejected_before_inspection() {
         immutable_units_root: PathBuf::from("/tmp/foreign/units"),
         active_root: PathBuf::from("/tmp/foreign/active"),
         probation: Duration::ZERO,
+        managed: None,
     };
     let Err(error) = LinuxInstallPlatform::new(executor, split_config, []) else {
         panic!("split config topology must fail before inspection");
@@ -2205,6 +2227,7 @@ fn systemd_unsafe_or_lossy_install_roots_are_rejected_before_inspection() {
             immutable_units_root: PathBuf::from(root).join("units"),
             active_root: PathBuf::from(root).join("active"),
             probation: Duration::ZERO,
+            managed: None,
         };
         let executor = FakeExecutor::absent(PathBuf::from(root).join("active"), "00".repeat(32));
         let error = LinuxInstallPlatform::new(executor, config, [])
@@ -2225,6 +2248,7 @@ fn systemd_unsafe_or_lossy_install_roots_are_rejected_before_inspection() {
             immutable_units_root: parent.join("units"),
             active_root: parent.join("active"),
             probation: Duration::ZERO,
+            managed: None,
         };
         let executor = FakeExecutor::absent(config.active_root.clone(), "00".repeat(32));
         let error = LinuxInstallPlatform::new(executor, config, [])
@@ -2478,6 +2502,7 @@ fn raw_conversion_executor(fixture: &Fixture) -> (FakeExecutor, Vec<u8>) {
         sha256: sha256(legacy_daemon),
         device: legacy_metadata.dev(),
         inode: legacy_metadata.ino(),
+        arguments: Vec::new(),
     });
     executor.legacy_snapshot_root = Some(legacy_root);
     (executor, launcher_bytes)
@@ -2551,6 +2576,7 @@ fn config_with_probation(probation: Duration) -> LinuxInstallConfig {
         immutable_units_root: PathBuf::from(UNITS_ROOT),
         active_root: PathBuf::from(ACTIVE_ROOT),
         probation,
+        managed: None,
     }
 }
 

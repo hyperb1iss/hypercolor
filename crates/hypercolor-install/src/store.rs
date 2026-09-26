@@ -434,6 +434,14 @@ impl InstallStore {
         Ok(&lock.directory)
     }
 
+    /// The release root this transaction's lock retained.
+    pub(crate) fn root_authority<'a>(
+        &self,
+        lock: &'a InstallLock,
+    ) -> Result<&'a DirectoryAuthority, InstallStoreError> {
+        self.authority(lock)
+    }
+
     fn state_authority<'a>(
         &self,
         lock: &'a InstallLock,

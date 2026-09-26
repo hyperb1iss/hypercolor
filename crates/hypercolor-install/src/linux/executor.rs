@@ -468,6 +468,7 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
             sha256: hex::encode(hasher.finalize()),
             device: metadata.dev(),
             inode: metadata.ino(),
+            arguments: process_arguments(pid)?,
         })
     }
 
@@ -545,20 +546,7 @@ fn parse_active_target(target: &Path) -> Result<UnitId, InstallPlatformError> {
 }
 
 pub(super) fn public_parent(item: LinuxLayoutItem) -> LinuxDirectoryItem {
-    match item {
-        LinuxLayoutItem::Hypercolor
-        | LinuxLayoutItem::HypercolorDaemon
-        | LinuxLayoutItem::HypercolorApp
-        | LinuxLayoutItem::HypercolorTui
-        | LinuxLayoutItem::HypercolorOpen => LinuxDirectoryItem::LocalBin,
-        LinuxLayoutItem::DesktopEntry => LinuxDirectoryItem::Applications,
-        LinuxLayoutItem::BashCompletion => LinuxDirectoryItem::BashCompletions,
-        LinuxLayoutItem::ZshCompletion => LinuxDirectoryItem::ZshSiteFunctions,
-        LinuxLayoutItem::FishCompletion => LinuxDirectoryItem::FishVendorCompletions,
-        LinuxLayoutItem::Icon48 => LinuxDirectoryItem::Icon48Apps,
-        LinuxLayoutItem::Icon128 => LinuxDirectoryItem::Icon128Apps,
-        LinuxLayoutItem::Icon256 => LinuxDirectoryItem::Icon256Apps,
-    }
+    item.public_directory()
 }
 
 pub(super) fn public_name(item: LinuxLayoutItem) -> &'static str {
@@ -752,4 +740,27 @@ fn hex_array(bytes: [u8; 32]) -> String {
         write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
     }
     encoded
+}
+
+/// The argument vector of one process, from `/proc/<pid>/cmdline`.
+fn process_arguments(pid: u32) -> Result<Vec<String>, InstallPlatformError> {
+    let mut bytes = Vec::new();
+    File::open(format!("/proc/{pid}/cmdline"))
+        .map_err(io_error)?
+        .take(super::model::MAX_COMMAND_LINE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    if bytes.len() as u64 > super::model::MAX_COMMAND_LINE_BYTES {
+        return Err(error("/proc command line exceeds its byte bound"));
+    }
+    let Some(arguments) = bytes.strip_suffix(&[0]) else {
+        return Err(error("/proc command line is empty or unterminated"));
+    };
+    arguments
+        .split(|byte| *byte == 0)
+        .map(|argument| {
+            String::from_utf8(argument.to_vec())
+                .map_err(|_| error("/proc command line is not UTF-8"))
+        })
+        .collect()
 }

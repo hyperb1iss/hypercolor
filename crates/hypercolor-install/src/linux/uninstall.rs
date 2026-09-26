@@ -137,10 +137,10 @@ pub fn run_linux_uninstall<H: LinuxUninstallHost>(
     match authority {
         LinuxInstallAuthority::Legacy(journal) => {
             if journal.as_ref().is_some_and(pending) {
-                settle_or_note(home, host, &old, &mut old_lock, false, &mut run);
+                settle_or_note(home, host, &old, &mut old_lock, None, &mut run);
             }
             stop(host, LinuxUninstallCheckpoint::Settled)?;
-            remove_platform(home, host, &old, &old_lock, &[old.active_path()])?;
+            remove_platform(home, host, &old, &old_lock, &[old.active_path()], None)?;
             stop(host, LinuxUninstallCheckpoint::PlatformRemoved)?;
             if let Some(prepared) = &intent {
                 remove_prepared_roots(&old_lock, prepared, &mut run)?;
@@ -191,14 +191,14 @@ fn uninstall_managed<H: LinuxUninstallHost>(
         .with_ownership_policy(old.ownership_policy().clone());
         let mut lock = store.acquire_lock()?;
         if store.load_journal(&lock)?.as_ref().is_some_and(pending) {
-            settle_or_note(home, host, &store, &mut lock, true, run);
+            settle_or_note(home, host, &store, &mut lock, Some(location), run);
         }
         stop(host, LinuxUninstallCheckpoint::Settled)?;
-        remove_platform(home, host, &store, &lock, &active_roots)?;
+        remove_platform(home, host, &store, &lock, &active_roots, Some(location))?;
         Some(lock)
     } else {
         stop(host, LinuxUninstallCheckpoint::Settled)?;
-        remove_platform(home, host, old, old_lock, &active_roots)?;
+        remove_platform(home, host, old, old_lock, &active_roots, Some(location))?;
         None
     };
     stop(host, LinuxUninstallCheckpoint::PlatformRemoved)?;
@@ -304,7 +304,7 @@ fn settle_or_note<H: LinuxUninstallHost>(
     host: &mut H,
     store: &InstallStore,
     lock: &mut InstallLock,
-    managed: bool,
+    managed: Option<&LinuxInstallLocation>,
     run: &mut LinuxUninstallRun,
 ) {
     match settle(home, host, store, lock, managed) {
@@ -318,7 +318,7 @@ fn settle<H: LinuxUninstallHost>(
     host: &mut H,
     store: &InstallStore,
     lock: &mut InstallLock,
-    managed: bool,
+    managed: Option<&LinuxInstallLocation>,
 ) -> Result<InstallOutcome, LinuxInstallCommandError> {
     let journal = store
         .load_journal(lock)?
@@ -344,14 +344,16 @@ fn settle<H: LinuxUninstallHost>(
 /// Remove the generated service, launcher and public layout entries.
 ///
 /// Every observed entry must be absent or exactly what this installer renders
-/// for one of `active_roots`. Anything else refuses the whole removal before
-/// the first write.
+/// for one of `active_roots` (and, for a managed installation, the launcher
+/// service its recorded location renders). Anything else refuses the whole
+/// removal before the first write.
 fn remove_platform<H: LinuxUninstallHost>(
     home: &Path,
     host: &mut H,
     store: &InstallStore,
     lock: &InstallLock,
     active_roots: &[PathBuf],
+    managed: Option<&LinuxInstallLocation>,
 ) -> Result<(), LinuxInstallCommandError> {
     let tree = LinuxPublicTree::new(lock, home)?;
     let direct_fragment = home
@@ -376,7 +378,7 @@ fn remove_platform<H: LinuxUninstallHost>(
             systemd.fragment_path
         ));
     }
-    if !owned_launcher(&launcher, &launcher_bytes, active_roots)? {
+    if !owned_launcher(&launcher, &launcher_bytes, active_roots, managed)? {
         foreign.push(direct_fragment.clone());
     }
     for (item, entry) in &layout {
@@ -415,18 +417,25 @@ fn owned_launcher(
     launcher: &LinuxExactEntry,
     bytes: &[u8],
     active_roots: &[PathBuf],
+    managed: Option<&LinuxInstallLocation>,
 ) -> Result<bool, InstallPlatformError> {
     match launcher {
         LinuxExactEntry::Absent => Ok(true),
         LinuxExactEntry::Symlink { .. } => Ok(false),
         LinuxExactEntry::RegularFile { mode, .. } => {
-            for root in active_roots {
-                let rendered = render_launcher(root)?;
-                if *mode == rendered.mode && bytes == rendered.bytes.as_slice() {
-                    return Ok(true);
-                }
+            let mut rendered = active_roots
+                .iter()
+                .map(|root| render_launcher(root, None))
+                .collect::<Result<Vec<_>, _>>()?;
+            if let Some(location) = managed {
+                rendered.push(render_launcher(
+                    &location.release_root().join("active"),
+                    Some(location),
+                )?);
             }
-            Ok(false)
+            Ok(rendered
+                .iter()
+                .any(|rendered| *mode == rendered.mode && bytes == rendered.bytes.as_slice()))
         }
     }
 }
