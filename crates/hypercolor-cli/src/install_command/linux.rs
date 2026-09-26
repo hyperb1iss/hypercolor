@@ -36,7 +36,7 @@ pub(super) fn execute(
     };
     if args.probation_seconds > 0 {
         println!(
-            "A newly started release must stay up for {} seconds before the install commits it.",
+            "A release this install starts must stay up for {} seconds before the install commits it.",
             args.probation_seconds
         );
     }
@@ -58,6 +58,11 @@ pub(super) fn execute(
         ),
         Some(Err(error)) => eprintln!("warning: older releases were not removed: {error}"),
         _ => {}
+    }
+    if let Some(Ok(collection)) = &run.collection {
+        for (path, reason) in &collection.refused {
+            eprintln!("warning: left {} in place: {reason}", path.display());
+        }
     }
     super::require_candidate_committed(run.outcome, &args.expected_manifest_sha256, run.recovered)
 }

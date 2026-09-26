@@ -21,13 +21,18 @@ use super::{INSTALL_JOURNAL_FILE, InstallLock, InstallStore, InstallStoreError, 
 /// lock, so any found while holding it belong to a process that died.
 const LEFTOVER_UNIT_PREFIXES: [&str; 2] = [".hypercolor-stage-", ".hypercolor-removing-"];
 
-/// What one collection removed.
+/// What one collection removed, and what it could not.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnitCollection {
     /// Installed units removed because nothing references them.
     pub removed_units: Vec<UnitId>,
     /// Leftovers of interrupted staging, removal and journal writes.
     pub removed_leftovers: Vec<PathBuf>,
+    /// Entries that looked like the installer's but could not be removed
+    /// (for example not a directory, not owned by this user, or holding a
+    /// multiply linked file), with the reason. Collection goes on past
+    /// them, so one odd entry never stops the rest.
+    pub refused: Vec<(PathBuf, String)>,
 }
 
 impl InstallStore {
@@ -87,11 +92,14 @@ impl InstallStore {
     /// then every leftover of interrupted staging, removal and journal
     /// writes.
     ///
-    /// Entries whose names this installer never creates are left alone.
+    /// Entries whose names this installer never creates are left alone. An
+    /// entry that refuses removal is reported in
+    /// [`UnitCollection::refused`] and collection continues.
     ///
     /// # Errors
-    /// Returns the first failure. What was removed before it stays removed,
-    /// and a later collection finishes the rest.
+    /// Returns an error for a foreign lock, unreadable records, or a
+    /// directory that cannot be listed. What was removed before it stays
+    /// removed, and a later collection finishes the rest.
     pub fn collect_units(
         &self,
         lock: &InstallLock,
@@ -107,21 +115,25 @@ impl InstallStore {
                 let Some(name) = name.to_str() else {
                     continue;
                 };
-                if let Ok(unit) = UnitId::new(name) {
-                    if referenced.contains(&unit) || retain.contains(&unit) {
-                        continue;
-                    }
-                    if remove_tree(&units, name)? {
-                        collection.removed_units.push(unit);
-                    }
-                } else if LEFTOVER_UNIT_PREFIXES
+                let path = self.root.join(UNITS_DIRECTORY).join(name);
+                let unit = UnitId::new(name).ok();
+                let leftover = LEFTOVER_UNIT_PREFIXES
                     .iter()
-                    .any(|prefix| name.starts_with(prefix))
-                    && remove_tree(&units, name)?
+                    .any(|prefix| name.starts_with(prefix));
+                if unit
+                    .as_ref()
+                    .is_some_and(|unit| referenced.contains(unit) || retain.contains(unit))
+                    || unit.is_none() && !leftover
                 {
-                    collection
-                        .removed_leftovers
-                        .push(self.root.join(UNITS_DIRECTORY).join(name));
+                    continue;
+                }
+                match units.durable_remove_child_tree(Path::new(name)) {
+                    Ok(false) => {}
+                    Ok(true) => match unit {
+                        Some(unit) => collection.removed_units.push(unit),
+                        None => collection.removed_leftovers.push(path),
+                    },
+                    Err(error) => collection.refused.push((path, error.to_string())),
                 }
             }
         }
@@ -134,17 +146,14 @@ impl InstallStore {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if name.starts_with(&journal_stage_prefix)
-                && state
-                    .durable_remove_file(Path::new(name))
-                    .map_err(|source| InstallStoreError::RemoveUnit {
-                        name: name.to_owned(),
-                        source,
-                    })?
-            {
-                collection
-                    .removed_leftovers
-                    .push(self.state_root.join(name));
+            if !name.starts_with(&journal_stage_prefix) {
+                continue;
+            }
+            let path = self.state_root.join(name);
+            match state.durable_remove_file(Path::new(name)) {
+                Ok(false) => {}
+                Ok(true) => collection.removed_leftovers.push(path),
+                Err(error) => collection.refused.push((path, error.to_string())),
             }
         }
         Ok(collection)
@@ -167,15 +176,6 @@ impl InstallStore {
             Err(error) => Err(error),
         }
     }
-}
-
-fn remove_tree(units: &PublicDirectoryAuthority, name: &str) -> Result<bool, InstallStoreError> {
-    units
-        .durable_remove_child_tree(Path::new(name))
-        .map_err(|source| InstallStoreError::RemoveUnit {
-            name: name.to_owned(),
-            source,
-        })
 }
 
 /// Every unit a journal names: both sides and every platform state.

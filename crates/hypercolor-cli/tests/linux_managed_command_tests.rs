@@ -3756,6 +3756,9 @@ fn collection_finishes_interrupted_staging_and_removal_and_leaves_foreign_entrie
     let tombstone = units.join(format!(".hypercolor-removing-{}.4242-3", "e".repeat(64)));
     fs::create_dir_all(tombstone.join("share")).expect("interrupted removal");
     fs::write(units.join("notes.txt"), b"not ours").expect("foreign file");
+    // A file with a unit's name refuses removal, and collection goes on.
+    let odd = units.join("f".repeat(64));
+    fs::write(&odd, b"not a unit").expect("file named like a unit");
     fs::create_dir(units.join("keep-me")).expect("foreign directory");
     let journal_stage = location.state_root().join(".install-journal.json.4242.9");
     fs::write(&journal_stage, b"{}").expect("interrupted journal write");
@@ -3772,10 +3775,19 @@ fn collection_finishes_interrupted_staging_and_removal_and_leaves_foreign_entrie
         assert!(!leftover.exists(), "{} survived", leftover.display());
     }
     assert_eq!(
+        collection
+            .refused
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>(),
+        std::slice::from_ref(&odd)
+    );
+    assert!(odd.exists());
+    assert_eq!(
         unit_entries(&location),
         names(&[&fixture.v1.id, &fixture.v2.id])
             .into_iter()
-            .chain(["keep-me".to_owned(), "notes.txt".to_owned()])
+            .chain(["f".repeat(64), "keep-me".to_owned(), "notes.txt".to_owned()])
             .collect()
     );
 }
