@@ -1163,10 +1163,13 @@ mod tests {
             RuntimeJobOutcome::Done
         );
         server.join().expect("fake manager thread");
-        let calls = service.lock().expect("fake service").calls.clone();
         assert_eq!(
-            calls.last(),
-            Some(&("StartUnit".to_owned(), "fail".to_owned()))
+            service.lock().expect("fake service").calls,
+            [
+                ("LoadUnit".to_owned(), String::new()),
+                ("ResetFailedUnit".to_owned(), String::new()),
+                ("StartUnit".to_owned(), "fail".to_owned()),
+            ]
         );
     }
 

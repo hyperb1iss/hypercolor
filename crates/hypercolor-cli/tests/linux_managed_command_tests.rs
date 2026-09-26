@@ -2755,6 +2755,55 @@ fn a_prior_that_restarted_before_it_was_unloaded_abandons_without_any_effect() {
 }
 
 #[test]
+fn a_prior_waiting_to_restart_at_unload_is_drift_until_it_settles() {
+    let (fixture, location) = managed_v1();
+    let before = fixture.world.borrow().effects.len();
+    // Die right after the prior's stop, before the journal records it.
+    fixture.world.borrow_mut().crash = Some(Crash::After(before + 1));
+    let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+    assert!(crashed.is_err());
+    let pending = fixture.journal();
+    assert_eq!(pending.next_action, Some(InstallAction::UnloadPrior));
+    // The prior came back and crashed again, so the manager is waiting to
+    // restart it: not stopped, and not running under a new invocation
+    // either, so nothing proves the transaction never changed anything.
+    {
+        let mut world = fixture.world.borrow_mut();
+        world.start();
+        world.crash_to_auto_restart();
+    }
+    let effects = fixture.world.borrow().effects.len();
+    let error = fixture
+        .update(&fixture.v2)
+        .expect_err("a restarting prior is neither untouched nor unloaded");
+    assert!(error.to_string().contains("drift"), "{error}");
+    assert_eq!(fixture.journal(), pending, "the journal did not move");
+    assert_eq!(fixture.world.borrow().effects.len(), effects);
+    assert!(fixture.world.borrow().auto_restart, "nothing was stopped");
+
+    // The prior hits its start limit and ends failed, which is the stopped
+    // state the unload step expects, so the update resumes and commits.
+    {
+        let mut world = fixture.world.borrow_mut();
+        world.auto_restart = false;
+        world.failed = true;
+    }
+    let run = fixture
+        .update(&fixture.v2)
+        .expect("resume once the prior settled");
+    assert!(run.recovered);
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v2.id.clone()
+        }
+    );
+    assert!(!fixture.journal().abandoned);
+    fixture.assert_managed(&location, &fixture.v2.id);
+    fixture.assert_settled_service("after the prior settled");
+}
+
+#[test]
 fn stop_first_refuses_a_service_that_is_not_the_on_disk_unit() {
     let (fixture, _) = managed_v1();
     let before = fixture.world.borrow().effects.len();

@@ -3145,6 +3145,46 @@ fn a_prior_that_restarts_during_its_preflight_abandons_without_a_stop() {
 }
 
 #[test]
+fn a_prior_that_stopped_before_its_preflight_resumed_abandons_without_a_start() {
+    // Before the prior is unloaded, a stopped prior is still an untouched
+    // one: abandonment there never asks for a restart.
+    let fixture = Fixture::new();
+    let mut platform = FakePlatform::new(fixture.prior_state(), &fixture.store);
+    platform.inject(InstallAction::PreflightCandidate, InjectionKind::PanicAfter);
+    let crashed = catch_unwind(AssertUnwindSafe(|| {
+        drop(InstallCoordinator::new(&fixture.store, &mut platform).install(fixture.request()));
+    }));
+    assert!(crashed.is_err());
+    assert_eq!(
+        fixture.journal().next_action,
+        Some(InstallAction::PreflightCandidate)
+    );
+    platform.state.running_unit = None;
+    platform.effects.clear();
+    platform.untouched_prior = true;
+    platform.stops_unjournaled_runtime = true;
+
+    let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
+        .recover()
+        .expect("abandon")
+        .expect("recovered outcome");
+    let InstallOutcome::RolledBack {
+        abandoned, failure, ..
+    } = outcome
+    else {
+        panic!("expected abandonment: {outcome:?}");
+    };
+    assert!(abandoned, "{failure}");
+    assert!(
+        failure.contains("abandoned at PreflightCandidate"),
+        "{failure}"
+    );
+    assert!(platform.effects.is_empty(), "abandonment changes nothing");
+    assert_eq!(platform.unjournaled_stops, 0);
+    assert_eq!(platform.state.running_unit, None, "the prior stays stopped");
+}
+
+#[test]
 fn a_prior_still_under_its_baseline_at_unload_is_never_abandoned() {
     // A stop that outlived its fence can leave the prior running (or still
     // stopping) under its baseline identity; that is this transaction's own
