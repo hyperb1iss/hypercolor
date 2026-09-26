@@ -367,97 +367,6 @@ do_install() {
 
 # ─── Uninstall ────────────────────────────────────────────────────────────────
 
-RAW_INSTALL_ROOT="${INSTALL_PREFIX}/lib/hypercolor"
-RAW_INSTALL_LOCATOR="${RAW_INSTALL_ROOT}/install-journal.json"
-
-# Whether the locator names a managed install (schema 2) rather than the
-# historical journal.
-managed_locator_present() {
-    [[ -f "$RAW_INSTALL_LOCATOR" ]] && grep -q '"schema_version":2' "$RAW_INSTALL_LOCATOR"
-}
-
-# Print the release root a managed install recorded, if any. Recorded roots are
-# validated as plain [A-Za-z0-9/._-] paths, so no JSON unescaping is needed.
-recorded_release_root() {
-    [[ -f "$RAW_INSTALL_LOCATOR" ]] || return 0
-    sed -n 's/.*"release_root":"\([^"]*\)".*/\1/p' "$RAW_INSTALL_LOCATOR"
-}
-
-RAW_INSTALL_INTENT="${RAW_INSTALL_ROOT}/managed-adoption.json"
-
-# Print the release root an interrupted upgrade recorded, if any.
-intended_release_root() {
-    [[ -f "$RAW_INSTALL_INTENT" ]] || return 0
-    sed -n 's/.*"release_root":"\([^"]*\)".*/\1/p' "$RAW_INSTALL_INTENT"
-}
-
-# Find an installed CLI that implements the recorded-roots uninstall protocol.
-# An upgrade interrupted before it switched staged its CLI in the recorded
-# release root, so its units are searched too.
-uninstall_capable_cli() {
-    local release_root intended candidate
-    release_root="$(recorded_release_root)"
-    intended="$(intended_release_root)"
-    for candidate in \
-        "${INSTALL_DIR}/hypercolor" \
-        "${release_root:+${release_root}/active/bin/hypercolor}" \
-        "${RAW_INSTALL_ROOT}/active/bin/hypercolor" \
-        ${intended:+"${intended}"/units/*/bin/hypercolor}; do
-        [[ -n "$candidate" && -x "$candidate" ]] || continue
-        if "$candidate" __uninstall-release --help >/dev/null 2>&1; then
-            printf "%s" "$candidate"
-            return 0
-        fi
-    done
-}
-
-# Remove a raw Linux install through the authority it recorded. The CLI stops
-# the service, removes only the entries it generated, and deletes the release,
-# update-state and locator roots while preserving data and configuration.
-uninstall_raw_linux() {
-    local cli
-    cli="$(uninstall_capable_cli)"
-    if [[ -n "$cli" ]]; then
-        info "Removing the recorded installation with ${cli}..."
-        "$cli" __uninstall-release \
-            --install-prefix "$INSTALL_PREFIX" \
-            --install-dir "$INSTALL_DIR"
-        success "Removed the recorded installation"
-        return 0
-    fi
-    if managed_locator_present || [[ -f "$RAW_INSTALL_INTENT" ]]; then
-        fatal "A managed install or an interrupted upgrade is recorded in ${RAW_INSTALL_ROOT}, but no installed CLI can remove it. Run the installer again, then run --uninstall."
-    fi
-
-    # Installs from before the recorded-roots protocol: remove the historical
-    # store and the entries the old installer created.
-    if command -v systemctl >/dev/null 2>&1; then
-        info "Stopping and disabling systemd service..."
-        systemctl --user stop hypercolor.service 2>/dev/null || true
-        systemctl --user disable hypercolor.service 2>/dev/null || true
-        rm -f "${SYSTEMD_DIR}/hypercolor.service"
-        systemctl --user daemon-reload 2>/dev/null || true
-        success "Removed systemd service"
-    fi
-    rm -f "${INSTALL_DIR}/hypercolor"
-    rm -f "${INSTALL_DIR}/hypercolor-daemon"
-    rm -f "${INSTALL_DIR}/hypercolor-app"
-    rm -f "${INSTALL_DIR}/hypercolor-tui"
-    rm -f "${INSTALL_DIR}/hypercolor-open"
-    rm -f "${DESKTOP_DIR}/hypercolor.desktop"
-    rm -f "${BASH_COMPLETION_DIR}/hypercolor"
-    rm -f "${ZSH_COMPLETION_DIR}/_hypercolor"
-    rm -f "${INSTALL_PREFIX}/share/fish/vendor_completions.d/hypercolor.fish"
-    rm -f "${ICONS_DIR}/hicolor/48x48/apps/hypercolor.png"
-    rm -f "${ICONS_DIR}/hicolor/128x128/apps/hypercolor.png"
-    rm -f "${ICONS_DIR}/hicolor/256x256/apps/hypercolor.png"
-    if [[ -d "$RAW_INSTALL_ROOT" ]]; then
-        chmod -R u+w "$RAW_INSTALL_ROOT"
-        rm -rf "$RAW_INSTALL_ROOT"
-    fi
-    success "Removed the historical installation"
-}
-
 do_uninstall() {
     banner
 
@@ -558,6 +467,99 @@ do_uninstall() {
         info "To remove it: rm -rf ~/.config/hypercolor"
     fi
     printf "\n"
+}
+
+# ─── Raw Linux uninstall ──────────────────────────────────────────────────────
+
+RAW_INSTALL_ROOT="${INSTALL_PREFIX}/lib/hypercolor"
+RAW_INSTALL_LOCATOR="${RAW_INSTALL_ROOT}/install-journal.json"
+
+# Whether the locator names a managed install (schema 2) rather than the
+# historical journal.
+managed_locator_present() {
+    [[ -f "$RAW_INSTALL_LOCATOR" ]] && grep -q '"schema_version":2' "$RAW_INSTALL_LOCATOR"
+}
+
+# Print the release root a managed install recorded, if any. Recorded roots are
+# validated as plain [A-Za-z0-9/._-] paths, so no JSON unescaping is needed.
+recorded_release_root() {
+    [[ -f "$RAW_INSTALL_LOCATOR" ]] || return 0
+    sed -n 's/.*"release_root":"\([^"]*\)".*/\1/p' "$RAW_INSTALL_LOCATOR"
+}
+
+RAW_INSTALL_INTENT="${RAW_INSTALL_ROOT}/managed-adoption.json"
+
+# Print the release root an interrupted upgrade recorded, if any.
+intended_release_root() {
+    [[ -f "$RAW_INSTALL_INTENT" ]] || return 0
+    sed -n 's/.*"release_root":"\([^"]*\)".*/\1/p' "$RAW_INSTALL_INTENT"
+}
+
+# Find an installed CLI that implements the recorded-roots uninstall protocol.
+# An upgrade interrupted before it switched staged its CLI in the recorded
+# release root, so its units are searched too.
+uninstall_capable_cli() {
+    local release_root intended candidate
+    release_root="$(recorded_release_root)"
+    intended="$(intended_release_root)"
+    for candidate in \
+        "${INSTALL_DIR}/hypercolor" \
+        "${release_root:+${release_root}/active/bin/hypercolor}" \
+        "${RAW_INSTALL_ROOT}/active/bin/hypercolor" \
+        ${intended:+"${intended}"/units/*/bin/hypercolor}; do
+        [[ -n "$candidate" && -x "$candidate" ]] || continue
+        if "$candidate" __uninstall-release --help >/dev/null 2>&1; then
+            printf "%s" "$candidate"
+            return 0
+        fi
+    done
+}
+
+# Remove a raw Linux install through the authority it recorded. The CLI stops
+# the service, removes only the entries it generated, and deletes the release,
+# update-state and locator roots while preserving data and configuration.
+uninstall_raw_linux() {
+    local cli
+    cli="$(uninstall_capable_cli)"
+    if [[ -n "$cli" ]]; then
+        info "Removing the recorded installation with ${cli}..."
+        "$cli" __uninstall-release \
+            --install-prefix "$INSTALL_PREFIX" \
+            --install-dir "$INSTALL_DIR"
+        success "Removed the recorded installation"
+        return 0
+    fi
+    if managed_locator_present || [[ -f "$RAW_INSTALL_INTENT" ]]; then
+        fatal "A managed install or an interrupted upgrade is recorded in ${RAW_INSTALL_ROOT}, but no installed CLI can remove it. Run the installer again, then run --uninstall."
+    fi
+
+    # Installs from before the recorded-roots protocol: remove the historical
+    # store and the entries the old installer created.
+    if command -v systemctl >/dev/null 2>&1; then
+        info "Stopping and disabling systemd service..."
+        systemctl --user stop hypercolor.service 2>/dev/null || true
+        systemctl --user disable hypercolor.service 2>/dev/null || true
+        rm -f "${SYSTEMD_DIR}/hypercolor.service"
+        systemctl --user daemon-reload 2>/dev/null || true
+        success "Removed systemd service"
+    fi
+    rm -f "${INSTALL_DIR}/hypercolor"
+    rm -f "${INSTALL_DIR}/hypercolor-daemon"
+    rm -f "${INSTALL_DIR}/hypercolor-app"
+    rm -f "${INSTALL_DIR}/hypercolor-tui"
+    rm -f "${INSTALL_DIR}/hypercolor-open"
+    rm -f "${DESKTOP_DIR}/hypercolor.desktop"
+    rm -f "${BASH_COMPLETION_DIR}/hypercolor"
+    rm -f "${ZSH_COMPLETION_DIR}/_hypercolor"
+    rm -f "${INSTALL_PREFIX}/share/fish/vendor_completions.d/hypercolor.fish"
+    rm -f "${ICONS_DIR}/hicolor/48x48/apps/hypercolor.png"
+    rm -f "${ICONS_DIR}/hicolor/128x128/apps/hypercolor.png"
+    rm -f "${ICONS_DIR}/hicolor/256x256/apps/hypercolor.png"
+    if [[ -d "$RAW_INSTALL_ROOT" ]]; then
+        chmod -R u+w "$RAW_INSTALL_ROOT"
+        rm -rf "$RAW_INSTALL_ROOT"
+    fi
+    success "Removed the historical installation"
 }
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
