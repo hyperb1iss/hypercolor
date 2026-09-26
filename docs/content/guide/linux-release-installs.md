@@ -74,9 +74,11 @@ though they sit inside those directories, and `~/.local/bin` and
 `~/.local/lib` are never writable. Caches the daemon and its graphics
 libraries write go to `${XDG_STATE_HOME:-~/.local/state}/hypercolor/cache`.
 Before the sandbox is built, the service runs the launcher once more,
-unsandboxed, to recreate any of the configuration, data or state directories
-you deleted, so removing `~/.config/hypercolor` to reset your settings still
-lets the daemon start.
+unsandboxed, to recreate the configuration directory if you deleted it, so
+removing `~/.config/hypercolor` to reset your settings still lets the daemon
+start. The data and state directories hold the releases, the launcher and the
+update records, so deleting either one removes the installation; install again
+after that.
 
 ## Upgrades from older installs
 
