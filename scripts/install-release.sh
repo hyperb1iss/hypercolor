@@ -383,14 +383,26 @@ recorded_release_root() {
     sed -n 's/.*"release_root":"\([^"]*\)".*/\1/p' "$RAW_INSTALL_LOCATOR"
 }
 
+RAW_INSTALL_INTENT="${RAW_INSTALL_ROOT}/managed-adoption.json"
+
+# Print the release root an interrupted upgrade recorded, if any.
+intended_release_root() {
+    [[ -f "$RAW_INSTALL_INTENT" ]] || return 0
+    sed -n 's/.*"release_root":"\([^"]*\)".*/\1/p' "$RAW_INSTALL_INTENT"
+}
+
 # Find an installed CLI that implements the recorded-roots uninstall protocol.
+# An upgrade interrupted before it switched staged its CLI in the recorded
+# release root, so its units are searched too.
 uninstall_capable_cli() {
-    local release_root candidate
+    local release_root intended candidate
     release_root="$(recorded_release_root)"
+    intended="$(intended_release_root)"
     for candidate in \
         "${INSTALL_DIR}/hypercolor" \
         "${release_root:+${release_root}/active/bin/hypercolor}" \
-        "${RAW_INSTALL_ROOT}/active/bin/hypercolor"; do
+        "${RAW_INSTALL_ROOT}/active/bin/hypercolor" \
+        ${intended:+"${intended}"/units/*/bin/hypercolor}; do
         [[ -n "$candidate" && -x "$candidate" ]] || continue
         if "$candidate" __uninstall-release --help >/dev/null 2>&1; then
             printf "%s" "$candidate"
@@ -413,8 +425,8 @@ uninstall_raw_linux() {
         success "Removed the recorded installation"
         return 0
     fi
-    if managed_locator_present; then
-        fatal "A managed install is recorded in ${RAW_INSTALL_LOCATOR}, but no installed CLI can remove it. Reinstall the same release, then run --uninstall again."
+    if managed_locator_present || [[ -f "$RAW_INSTALL_INTENT" ]]; then
+        fatal "A managed install or an interrupted upgrade is recorded in ${RAW_INSTALL_ROOT}, but no installed CLI can remove it. Run the installer again, then run --uninstall."
     fi
 
     # Installs from before the recorded-roots protocol: remove the historical
