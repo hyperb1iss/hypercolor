@@ -424,7 +424,9 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                             return self.drive_rollback(journal, lock);
                         }
                         RollbackEntry::Abandon(detail) => {
-                            return self.abandon(journal, detail, lock);
+                            // Keep the step's own failure beside the reason,
+                            // so a restart reads apart from a failed proof.
+                            return self.abandon(journal, format!("{detail}: {failure}"), lock);
                         }
                     }
                 }

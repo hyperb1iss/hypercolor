@@ -3129,6 +3129,14 @@ fn a_prior_that_restarts_during_its_preflight_abandons_without_a_stop() {
         panic!("expected abandonment: {outcome:?}");
     };
     assert!(abandoned, "{failure}");
+    assert!(
+        failure.starts_with("abandoned at PreflightCandidate"),
+        "{failure}"
+    );
+    assert!(
+        failure.contains("prior owner changed during its baseline proof"),
+        "the step's own failure is kept: {failure}"
+    );
     assert_eq!(platform.unjournaled_stops, 0, "the prior keeps running");
     assert_eq!(
         platform.state.running_unit,
