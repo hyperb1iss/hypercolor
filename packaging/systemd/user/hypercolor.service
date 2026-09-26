@@ -18,7 +18,10 @@ Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service
 MemoryMax=512M
 CPUQuota=25%
 
-# Security hardening
+# Security hardening. systemd refuses to build the sandbox around a
+# ReadWritePaths entry that does not exist, so the directories are created
+# first, outside the sandbox (+), on a fresh account or after a reset.
+ExecStartPre=+mkdir -p -m 0700 %h/.config/hypercolor %h/.local/share/hypercolor %h/.local/state/hypercolor
 ProtectHome=read-only
 ProtectSystem=strict
 ReadWritePaths=%h/.config/hypercolor %h/.local/share/hypercolor %h/.local/state/hypercolor

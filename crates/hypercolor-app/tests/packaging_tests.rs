@@ -492,6 +492,33 @@ fn every_launcher_declares_a_neutral_service_identity() {
     ));
 }
 
+#[test]
+fn packaged_user_units_create_every_writable_directory_before_their_sandbox() {
+    for (name, unit) in [
+        ("hypercolor.service", SYSTEMD_USER_UNIT),
+        ("hypercolor.service.system", SYSTEMD_PACKAGED_USER_UNIT),
+    ] {
+        let writable: Vec<&str> = unit
+            .lines()
+            .filter_map(|line| line.strip_prefix("ReadWritePaths="))
+            .flat_map(str::split_ascii_whitespace)
+            .collect();
+        assert!(!writable.is_empty(), "{name} grants writable paths");
+        let prepared: Vec<&str> = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("ExecStartPre=+mkdir -p -m 0700 "))
+            .unwrap_or_else(|| panic!("{name} creates its directories before the sandbox"))
+            .split_ascii_whitespace()
+            .collect();
+        for path in &writable {
+            assert!(
+                path.starts_with('-') || prepared.contains(path),
+                "{name} would fail to start without {path}"
+            );
+        }
+    }
+}
+
 const UNINSTALL_SH: &str = include_str!("../../../scripts/uninstall.sh");
 const INSTALL_RELEASE_SH_FOR_LAUNCHD: &str = include_str!("../../../scripts/install-release.sh");
 
