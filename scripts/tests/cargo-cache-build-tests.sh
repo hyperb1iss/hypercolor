@@ -35,6 +35,9 @@ cat >"$SANDBOX/bin/cargo" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$@" >"$FAKE_CARGO_LOG.args"
 printf '%s\n' "${CARGO_INCREMENTAL:-unset}" "${RUSTC_WRAPPER:-unset}" >"$FAKE_CARGO_LOG.mode"
+# Distinguishes an unset RUSTC_WRAPPER from one set to an empty string;
+# only the empty string overrides a build.rustc-wrapper from Cargo config.
+printf '%s\n' "${RUSTC_WRAPPER-<unset>}" >"$FAKE_CARGO_LOG.wrapper-raw"
 if [ -v CARGO_TARGET_DIR ]; then
   printf '%s\n' "$CARGO_TARGET_DIR" >"$FAKE_CARGO_LOG.target-env"
 else
@@ -179,6 +182,22 @@ assert_mode release-build 0 "$SANDBOX/bin/sccache" "$WRAPPER" cargo build --rele
 assert_mode override-ci 1 unset env CI=true HYPERCOLOR_ITERATE=1 "$WRAPPER" cargo build
 assert_mode override-force 1 unset env CARGO_INCREMENTAL=1 HYPERCOLOR_FORCE_SCCACHE=1 "$WRAPPER" cargo test
 assert_mode ambient-wrapper 1 unset env RUSTC_WRAPPER="$SANDBOX/bin/sccache" "$WRAPPER" cargo build
+
+# Incremental mode must neutralize a config-level sccache wrapper (for
+# example a workstation ~/.cargo/config.toml), which refuses every compile
+# while CARGO_INCREMENTAL=1 is set. Cargo only lets an empty RUSTC_WRAPPER
+# override the config, so the variable must be set and empty, not unset.
+assert_wrapper_raw() {
+  local name="$1" expected="$2"
+  printf '%s\n' "$expected" >"$SANDBOX/expected-wrapper-raw"
+  diff -u "$SANDBOX/expected-wrapper-raw" "$SANDBOX/$name.wrapper-raw"
+}
+assert_wrapper_raw local-check ""
+assert_wrapper_raw local-build ""
+assert_wrapper_raw ambient-wrapper ""
+assert_mode other-wrapper 1 /usr/bin/env env RUSTC_WRAPPER=/usr/bin/env "$WRAPPER" cargo check
+assert_wrapper_raw other-wrapper /usr/bin/env
+assert_wrapper_raw release-build "$SANDBOX/bin/sccache"
 
 relative_target="$SANDBOX/caller/relative-target"
 (

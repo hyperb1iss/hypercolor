@@ -534,12 +534,18 @@ if [ -n "$SCCACHE_BIN" ] && [ "$WANTS_SCCACHE" -eq 1 ]; then
   echo "[cargo-cache] sccache mode: Rust cached, incremental off (cap $SCCACHE_CACHE_SIZE)"
   echo "[cargo-cache] SCCACHE_DIR=$SCCACHE_DIR (HYPERCOLOR_NO_SCCACHE=1 or HYPERCOLOR_ITERATE=1 to disable)"
 else
-  # An ambient sccache RUSTC_WRAPPER combined with incremental hard-fails
-  # every compile; drop it rather than let the build die.
+  # sccache refuses every compile while CARGO_INCREMENTAL=1 is set. Clear an
+  # ambient sccache RUSTC_WRAPPER, and when no wrapper is set in the
+  # environment, set it to an empty string: Cargo reads that as "no
+  # wrapper" and it overrides a build.rustc-wrapper from any Cargo config,
+  # such as a workstation-wide ~/.cargo/config.toml. Other wrappers stay.
   case "$(basename "${RUSTC_WRAPPER:-}")" in
     sccache*)
-      unset RUSTC_WRAPPER
-      echo "[cargo-cache] unset ambient sccache RUSTC_WRAPPER for incremental mode"
+      export RUSTC_WRAPPER=""
+      echo "[cargo-cache] cleared ambient sccache RUSTC_WRAPPER for incremental mode"
+      ;;
+    "")
+      export RUSTC_WRAPPER=""
       ;;
   esac
   export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
