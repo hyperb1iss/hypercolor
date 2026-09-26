@@ -43,7 +43,10 @@ fn native_command_constructor_binds_initial_and_recorded_prior_exactly_once() {
     let runtime = home.path().join("runtime");
     fs::create_dir(&runtime).expect("runtime");
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).expect("private runtime");
-    let _bus = UnixListener::bind(runtime.join("bus")).expect("isolated bus endpoint");
+    fs::create_dir(runtime.join("systemd")).expect("manager directory");
+    fs::set_permissions(runtime.join("systemd"), fs::Permissions::from_mode(0o755))
+        .expect("manager directory mode");
+    let _manager = UnixListener::bind(runtime.join("systemd/private")).expect("manager socket");
     let connection = LinuxSystemdConnection::from_runtime_directory(
         &runtime,
         fs::metadata(&runtime).expect("owner").uid(),

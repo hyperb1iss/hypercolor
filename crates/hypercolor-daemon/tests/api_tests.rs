@@ -1472,6 +1472,45 @@ async fn health_check_returns_200() {
 }
 
 #[tokio::test]
+async fn health_check_reports_the_served_identity_version() {
+    // A build that extends the daemon serves its own release version in the
+    // identity. `/health` must report that version, not this crate's, so an
+    // install proof that compares both fields accepts the extended build.
+    let mut state = isolated_state();
+    state.server_identity.version = "98.76.5-extended".to_owned();
+    assert_ne!(state.server_identity.version, env!("CARGO_PKG_VERSION"));
+    let app = test_app_with_state(Arc::new(state));
+
+    let health = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(health.status(), StatusCode::OK);
+    let health = body_json(health).await;
+
+    let system = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/system")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(system.status(), StatusCode::OK);
+    let system = body_json(system).await;
+
+    assert_eq!(health["version"], "98.76.5-extended");
+    assert_eq!(system["data"]["identity"]["version"], health["version"]);
+}
+
+#[tokio::test]
 async fn health_check_reports_stopped_render_loop_as_degraded() {
     let state = Arc::new(isolated_state());
     {

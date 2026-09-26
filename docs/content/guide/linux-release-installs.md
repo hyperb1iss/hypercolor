@@ -120,6 +120,7 @@ hide accounts from a listing, so they refuse the group exception.
 | Group lookup fails, or a directory service is configured | The installer cannot prove no one else is in the group | `chmod g-w` the named directory |
 | Location or home path is too long | The transaction record could not carry it | Use shorter locations |
 | Location or home path has other characters | systemd would read the generated unit differently | Use a path of letters, digits, `/`, `.`, `_` and `-` |
+| `XDG_RUNTIME_DIR` has no `systemd/private` socket you own | The installer drives the service through your user manager's private socket, never the session bus | Run it in your own login session, or keep the user manager running with `loginctl enable-linger` |
 | The service is `failed`, `activating` or restarting | The installer does not act on a service mid-transition yet | Wait, or run `systemctl --user reset-failed hypercolor.service` |
 | Locator from an unknown or newer installer | Guessing would risk managing the wrong install | Use the current installer |
 | Uninstall finds a service, unit or link this installer did not generate | It belongs to a package, another install or a local edit | Remove it with its owner, then rerun |

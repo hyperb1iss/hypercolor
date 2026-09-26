@@ -16,6 +16,7 @@ mod location;
 mod location_tests;
 mod locator;
 mod locator_receipt;
+mod manager_bus;
 mod model;
 mod platform;
 mod prior;
