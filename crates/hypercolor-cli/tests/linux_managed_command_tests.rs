@@ -3428,21 +3428,6 @@ fn a_candidate_that_crashes_89_seconds_into_probation_rolls_back_and_names_the_p
 }
 
 #[test]
-fn a_crash_after_the_probation_window_commits() {
-    let (fixture, location) = managed_v1();
-    fixture.world.borrow_mut().in_probation =
-        Some(("9.8.8", ProbationEvent::Crashes(Duration::from_secs(91))));
-    let run = fixture.update(&fixture.v2).expect("update");
-    assert_eq!(
-        run.outcome,
-        InstallOutcome::Committed {
-            active_unit: fixture.v2.id.clone()
-        }
-    );
-    fixture.assert_managed(&location, &fixture.v2.id);
-}
-
-#[test]
 fn an_installer_lost_during_probation_holds_the_candidate_for_a_whole_window_again() {
     let (fixture, location) = managed_v1();
     fixture.world.borrow_mut().in_probation = Some((

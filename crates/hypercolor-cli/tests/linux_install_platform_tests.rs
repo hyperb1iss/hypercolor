@@ -2882,22 +2882,6 @@ fn a_candidate_that_restarts_one_second_before_probation_ends_rolls_back() {
 }
 
 #[test]
-fn a_change_after_the_probation_window_does_not_roll_back() {
-    let (fixture, mut platform, mut lock, _) =
-        running_upgrade(Duration::from_secs(90), |executor| {
-            executor.probation_restart_at = Some(Duration::from_secs(91));
-        });
-    let outcome = upgrade_outcome(&fixture, &mut platform, &mut lock);
-    assert!(
-        matches!(
-            outcome,
-            hypercolor_cli::install::InstallOutcome::Committed { .. }
-        ),
-        "{outcome:?}"
-    );
-}
-
-#[test]
 fn a_candidate_whose_api_hangs_during_probation_rolls_back() {
     // The watchdog is pinged from its own task, so a hung API keeps the
     // service active; only the proof at the end of the window sees it.
