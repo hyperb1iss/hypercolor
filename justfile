@@ -805,6 +805,11 @@ e2e-build-cpu:
 e2e *args='':
     cd e2e && npm test -- {{ args }}
 
+# Prove the Linux release installer in a rootless systemd guest
+[linux]
+linux-guest-proof *args='list':
+    ./scripts/qualification/linux-user-guest/guest-proof.sh {{ args }}
+
 # Run the standalone UI crate tests
 [unix]
 ui-test:
