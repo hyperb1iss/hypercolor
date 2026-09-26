@@ -80,8 +80,16 @@ Before the sandbox is built, the service recreates the configuration
 directory if you deleted it, so removing `~/.config/hypercolor` to reset your
 settings still lets the daemon start. The data and state directories hold the
 releases and the update records, so deleting either one breaks the
-installation itself. If that happens, run the uninstall below (it still
-recognizes what this installer wrote), then install again.
+installation itself. If you deleted the state directory, run the uninstall
+below, then install again. If you deleted the data directory, the installed
+`hypercolor` command went with it, so the uninstall script finds nothing to
+run. Download and unpack a Linux release archive instead, run its CLI
+directly, then install again:
+
+```bash
+./hypercolor-<version>-linux-<arch>/bin/hypercolor __uninstall-release \
+  --install-prefix ~/.local --install-dir ~/.local/bin
+```
 
 ## Upgrades from older installs
 

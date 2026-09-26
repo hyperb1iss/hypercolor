@@ -54,9 +54,10 @@ impl<'a> LinuxServiceInput<'a> {
 #[non_exhaustive]
 pub struct LinuxRenderedService {
     /// The unit file text. It must be a `Type=notify` service with exactly
-    /// one `ExecStart`, which names the release directory in its program or
-    /// an argument (so uninstall can tell which release the unit runs); the
-    /// installer prepends the contract line.
+    /// one `ExecStart`, which names the release directory in its program's
+    /// path or as a separate argument, not joined to an option such as
+    /// `--release=<dir>` (uninstall reads it to tell which release the unit
+    /// runs); the installer prepends the contract line.
     pub unit: String,
     /// The argument vector the daemon runs with once the service started,
     /// which the installer's owner proof requires of the running process.

@@ -4611,3 +4611,31 @@ fn uninstall_removes_an_install_whose_update_state_was_deleted() {
         "the releases are removed"
     );
 }
+
+#[test]
+fn uninstall_removes_an_install_whose_data_directory_was_deleted() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().stop();
+    let data = location.data_root();
+    for inner in walk(data) {
+        fs::set_permissions(&inner, fs::Permissions::from_mode(0o755)).expect("thaw");
+    }
+    fs::remove_dir_all(data).expect("the user deletes the data directory");
+    run_linux_uninstall(
+        &fixture.home,
+        &fixture.private(),
+        &mut UninstallHost {
+            world: Rc::clone(&fixture.world),
+            stop_at: None,
+        },
+    )
+    .expect("a CLI from outside the install still removes it");
+    assert!(
+        matches!(fixture.world.borrow().launcher, LinuxExactEntry::Absent),
+        "the unit is removed"
+    );
+    assert!(
+        !location.state_root().exists(),
+        "the update state is removed"
+    );
+}

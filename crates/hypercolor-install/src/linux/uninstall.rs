@@ -462,9 +462,9 @@ fn owned_launcher(
 }
 
 /// The release a managed unit's `ExecStart` names beneath the recorded
-/// release root, in its program or any argument (a renderer may start a
-/// wrapper that takes the release directory as an argument), whether or
-/// not that release is still on disk.
+/// release root, in its program or any separate argument (a renderer may
+/// start a wrapper that takes the release directory as an argument),
+/// whether or not that release is still on disk.
 fn named_release(bytes: &[u8], location: &LinuxInstallLocation) -> Option<super::super::UnitId> {
     let exec_start = super::proof::require_notify_launcher(bytes).ok()?;
     let words: Vec<String> = serde_json::from_str(&exec_start).ok()?;
@@ -616,6 +616,11 @@ mod tests {
             named(&format!("/usr/libexec/wrapper --release {release}")).as_deref(),
             Some(id.as_str()),
             "a wrapper that takes the release as an argument"
+        );
+        assert_eq!(
+            named(&format!("/usr/libexec/wrapper --release={release}")),
+            None,
+            "a release joined to an option is not a separate argument"
         );
         let active = location.release_root().join("active");
         assert_eq!(
