@@ -80,6 +80,17 @@ start. The data and state directories hold the releases, the launcher and the
 update records, so deleting either one removes the installation; install again
 after that.
 
+### Companion units
+
+A release can ship systemd user unit templates beside the service, such as
+the units an official build uses to apply updates. The installer renders them
+with the recorded locations when it publishes the launcher, keeps the
+rendered text with the launcher, and after an install commits it puts any that
+are missing into `~/.config/systemd/user` and enables the ones the release asks
+for. Like the launcher, an ordinary install never changes them, so a release
+cannot change the unit its own recovery runs under. A unit file someone edited
+is left alone and reported, and uninstall refuses to remove it.
+
 ## Upgrades from older installs
 
 Releases before this layout kept everything under `~/.local/lib/hypercolor`.
@@ -228,6 +239,7 @@ hide accounts from a listing, so they refuse the group exception.
 | The service is still starting, stopping or restarting after its own timeout | A service that keeps changing state is not a safe starting point | Wait for it to settle, or stop it with `systemctl --user stop hypercolor.service`, then rerun |
 | Locator from an unknown or newer installer | Guessing would risk managing the wrong install | Use the current installer |
 | Release manifest lacks a complete `managed_package` declaration | The installer could not tell what the release does to your data | Install an official release tarball |
+| Uninstall finds a companion unit that differs from what the installer rendered | Someone edited it, so it is no longer the installer's | Remove or restore it, then rerun |
 | The launcher changed since it was published | The service would start a program the installer never checked | Run `chmod -R u+w` on `releases/launcher`, remove it, and rerun; the install publishes it again |
 | The service fails to start through the launcher | The launcher was published by a release whose CLI cannot launch, during an install that committed with the service stopped | Run `chmod -R u+w` on `releases/launcher`, remove it, and rerun the install; it publishes the launcher from the new release |
 | An XDG base directory would put a writable root at your home, `~/.local/bin` or `~/.local/lib` | The service sandbox could not keep the daemon out of your commands and libraries | Point that variable at another directory and rerun |
