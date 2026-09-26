@@ -102,8 +102,9 @@ in
 
     # ProtectHome=read-only plus ReadWritePaths= needs every listed path to
     # exist before systemd builds the mount namespace, and nothing else
-    # creates them on a fresh NixOS login (the deb and AUR installers do it
-    # at install time). User tmpfiles run at session start, ahead of the unit.
+    # creates them on a fresh NixOS login (the packaged unit for deb, rpm and
+    # AUR does it in ExecStartPre). User tmpfiles run at session start, ahead
+    # of the unit.
     systemd.user.tmpfiles.rules = [
       "d %h/.config/hypercolor 0700 - - -"
       "d %h/.local/share/hypercolor 0700 - - -"
