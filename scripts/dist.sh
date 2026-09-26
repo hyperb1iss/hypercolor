@@ -386,7 +386,7 @@ cp LICENSE NOTICE README.md "${DIST_DIR}/"
 DIST_DIR="${DIST_DIR}" VERSION="${VERSION}" PLATFORM="${PLATFORM}" \
 RUST_TARGET="${RUST_TARGET}" IS_LINUX="${IS_LINUX}" \
 DURABLE_STORES="${ROOT_DIR}/packaging/managed/durable-stores.json" \
-DURABLE_STORE_OVERLAYS="$(printf '%s\n' "${DURABLE_STORE_OVERLAYS[@]}")" python3 - <<'PY'
+DURABLE_STORE_OVERLAYS="$(printf '%s\n' ${DURABLE_STORE_OVERLAYS[@]+"${DURABLE_STORE_OVERLAYS[@]}"})" python3 - <<'PY'
 import hashlib
 import json
 import os
