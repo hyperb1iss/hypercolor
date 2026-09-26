@@ -1,0 +1,423 @@
+#!/usr/bin/env bash
+# Ordinary-user systemd guest proofs for the Linux release installer.
+#
+# Each scenario boots a fresh rootless podman Ubuntu 24.04 guest with systemd
+# as PID 1, installs qualification releases as uid 1100 through the release
+# installer built from this checkout, injects faults, kills the installer at
+# journal actions, cuts power, and checks where the installation ends up.
+# See README.md in this directory.
+set -Eeuo pipefail
+trap 'printf "guest-proof: command failed at line %s: %s\n" "${LINENO}" "${BASH_COMMAND}" >&2' ERR
+
+HARNESS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${HARNESS_DIR}/../../.." && pwd)"
+WORK="${REPO_ROOT}/target/linux-user-guest"
+RECEIPT_ROOT="${HC_GUEST_RECEIPTS:-${HARNESS_DIR}/receipts}"
+BASE_VERSION="${HC_GUEST_BASE_VERSION:-0.5.1}"
+GUEST_UID=1100
+GUEST_HOME=/home/qualification
+GUEST_RUNTIME="/run/user/${GUEST_UID}"
+
+V_A="${BASE_VERSION}-qual.1"
+V_B="${BASE_VERSION}-qual.2"
+V_C="${BASE_VERSION}-qual.3"
+
+GUEST=""
+RECEIPT=""
+STEP=0
+
+# shellcheck source-path=SCRIPTDIR source=scenarios.sh
+source "${HARNESS_DIR}/scenarios.sh"
+
+# ─── Output ──────────────────────────────────────────────────────────────────
+
+log() {
+    local line
+    line="$(date -u +%H:%M:%S.%3N) $*"
+    printf '%s\n' "${line}"
+    if [[ -n "${RECEIPT}" ]]; then
+        printf '%s\n' "${line}" >>"${RECEIPT}/steps.log"
+    fi
+}
+
+fail() {
+    log "FAIL: $*"
+    exit 1
+}
+
+usage() {
+    cat <<USAGE
+Usage: $(basename "$0") <command>
+
+  list                 List scenarios
+  build                Build the guest images, the installer CLI and releases
+  run <scenario>...    Run scenarios, each in a fresh guest
+  all                  Run every scenario
+  clean                Remove guests this harness left behind
+
+Environment:
+  HC_GUEST_BASE_VERSION  Published release the archives start from ($BASE_VERSION)
+  HC_GUEST_KEEP=1        Keep each guest running after its scenario
+  HC_GUEST_RECEIPTS      Receipt directory (${HARNESS_DIR}/receipts)
+USAGE
+}
+
+# ─── Build ───────────────────────────────────────────────────────────────────
+
+toolchain() {
+    sed -n 's/^channel *= *"\(.*\)"/\1/p' "${REPO_ROOT}/rust-toolchain.toml"
+}
+
+content_tag() {
+    cat "$@" | sha256sum | cut -c1-16
+}
+
+guest_image() {
+    printf 'localhost/hypercolor-linux-user-guest:%s' \
+        "$(content_tag "${HARNESS_DIR}/guest.Containerfile")"
+}
+
+builder_image() {
+    printf 'localhost/hypercolor-linux-user-builder:%s' \
+        "$(printf '%s\n' "$(toolchain)" | content_tag "${HARNESS_DIR}/builder.Containerfile" -)"
+}
+
+ensure_image() {
+    local tag="$1" file="$2"
+    shift 2
+    if ! podman image exists "${tag}"; then
+        log "building image ${tag}"
+        podman build --pull=missing -f "${file}" -t "${tag}" "$@" "${HARNESS_DIR}"
+    fi
+}
+
+build() {
+    mkdir -p "${WORK}/downloads" "${WORK}/releases" "${WORK}/bin" "${WORK}/cargo-home"
+    ensure_image "$(guest_image)" "${HARNESS_DIR}/guest.Containerfile"
+    ensure_image "$(builder_image)" "${HARNESS_DIR}/builder.Containerfile" \
+        --build-arg "RUST_TOOLCHAIN=$(toolchain)"
+
+    local tarball="hypercolor-${BASE_VERSION}-linux-amd64.tar.gz"
+    if [[ ! -f "${WORK}/downloads/${tarball}" ]]; then
+        log "downloading ${tarball}"
+        local url="https://github.com/hyperb1iss/hypercolor/releases/download/v${BASE_VERSION}/${tarball}"
+        curl -fsSL -o "${WORK}/downloads/${tarball}.partial" "${url}"
+        curl -fsSL -o "${WORK}/downloads/${tarball}.sha256" "${url}.sha256"
+        mv "${WORK}/downloads/${tarball}.partial" "${WORK}/downloads/${tarball}"
+    fi
+    (cd "${WORK}/downloads" && sha256sum --quiet -c "${tarball}.sha256")
+
+    log "building the installer CLI and qualification daemon in $(builder_image)"
+    podman run --rm --userns=keep-id \
+        -v "${REPO_ROOT}:/src:ro" -v "${WORK}:/work" \
+        -e CARGO_HOME=/work/cargo-home -e "RUSTUP_TOOLCHAIN=$(toolchain)" \
+        -e CARGO_TERM_COLOR=never -w /src "$(builder_image)" bash -c '
+            set -euo pipefail
+            cargo build --locked -p hypercolor-cli --bin hypercolor \
+                --target-dir /work/cargo-target
+            install -m 0755 /work/cargo-target/debug/hypercolor /work/bin/hypercolor
+            strip /work/bin/hypercolor
+            rustc --edition 2024 -O -o /work/bin/hc-qual-daemon \
+                /src/scripts/qualification/linux-user-guest/hc-qual-daemon.rs
+            strip /work/bin/hc-qual-daemon
+            ldd --version | sed -n 1p'
+
+    local inputs
+    inputs="$(cat "${WORK}/bin/hypercolor" "${WORK}/bin/hc-qual-daemon" \
+        "${HARNESS_DIR}/make_release.py" "${WORK}/downloads/${tarball}" | sha256sum | cut -c1-64)"
+    if [[ "$(cat "${WORK}/releases/inputs" 2>/dev/null)" != "${inputs}" ]]; then
+        rm -f "${WORK}/releases/"*
+        local version
+        for version in "${V_A}" "${V_B}" "${V_C}"; do
+            log "packing qualification release ${version}"
+            python3 "${HARNESS_DIR}/make_release.py" \
+                --base "${WORK}/downloads/${tarball}" \
+                --cli "${WORK}/bin/hypercolor" \
+                --daemon "${WORK}/bin/hc-qual-daemon" \
+                --version "${version}" \
+                --out "${WORK}/releases/hypercolor-${version}-linux-amd64.tar.gz" >/dev/null
+        done
+        printf '%s\n' "${inputs}" >"${WORK}/releases/inputs"
+    fi
+    local version
+    for version in "${V_A}" "${V_B}" "${V_C}"; do
+        log "release ${version} unit $(unit_of "${version}")"
+    done
+}
+
+unit_of() {
+    cat "${WORK}/releases/hypercolor-$1-linux-amd64.tar.gz.manifest-sha256"
+}
+
+# ─── Guest ───────────────────────────────────────────────────────────────────
+
+groot() {
+    podman exec "${GUEST}" "$@"
+}
+
+gx() {
+    podman exec --user "${GUEST_UID}" -w "${GUEST_HOME}" \
+        -e "HOME=${GUEST_HOME}" -e "XDG_RUNTIME_DIR=${GUEST_RUNTIME}" \
+        "${GUEST}" "$@"
+}
+
+wait_boot() {
+    local deadline=$((SECONDS + 90)) state=""
+    while ((SECONDS < deadline)); do
+        state="$(groot systemctl is-system-running 2>/dev/null || true)"
+        if [[ "${state}" == running || "${state}" == degraded ]] &&
+            groot test -S "${GUEST_RUNTIME}/systemd/private" 2>/dev/null; then
+            hide_bus
+            return 0
+        fi
+        sleep 0.5
+    done
+    fail "guest did not boot (system state ${state:-unknown})"
+}
+
+# Only the manager's private socket stays reachable, as in the activator
+# units, so an installer that reached for the session bus fails here.
+hide_bus() {
+    if gx test -e "${GUEST_RUNTIME}/bus"; then
+        gx mv "${GUEST_RUNTIME}/bus" "${GUEST_RUNTIME}/bus.hidden"
+    fi
+}
+
+guest_up() {
+    local name
+    name="hc-guest-proof-$1-$(date -u +%Y%m%d%H%M%S)"
+    podman run -d --name "${name}" --label hypercolor.qualification=linux-user-guest \
+        --systemd=always --cgroupns=private --pid=private --network=none \
+        -v "${WORK}/releases:/releases:ro" "$(guest_image)" >/dev/null
+    GUEST="${name}"
+    podman cp "${HARNESS_DIR}/guest-driver.sh" "${GUEST}:/usr/local/bin/hc-guest-driver"
+    groot chmod 0755 /usr/local/bin/hc-guest-driver
+    wait_boot
+    gx mkdir -p "${GUEST_HOME}/hc-qual/faults"
+    log "guest ${GUEST} up: $(groot systemctl --version | head -n 1)"
+}
+
+guest_down() {
+    [[ -n "${GUEST}" ]] || return 0
+    if [[ "${HC_GUEST_KEEP:-0}" == 1 ]]; then
+        log "keeping guest ${GUEST}"
+    else
+        podman rm -f -t 0 "${GUEST}" >/dev/null 2>&1 || true
+    fi
+    GUEST=""
+}
+
+# Power cut: kill the whole guest, then boot it again from its disk. The
+# user manager autostarts an enabled hypercolor.service from the on-disk
+# pointer and fragment before anything inspects it.
+power_cut() {
+    log "power cut"
+    podman kill --signal KILL "${GUEST}" >/dev/null
+    podman wait "${GUEST}" >/dev/null 2>&1 || true
+    podman start "${GUEST}" >/dev/null
+    wait_boot
+    log "guest booted again"
+}
+
+set_faults() {
+    local version="$1"
+    shift
+    log "faults ${version}: $*"
+    printf '%s\n' "$@" | podman exec -i --user "${GUEST_UID}" "${GUEST}" \
+        tee "${GUEST_HOME}/hc-qual/faults/${version}" >/dev/null
+}
+
+clear_faults() {
+    gx rm -f "${GUEST_HOME}/hc-qual/faults/$1"
+}
+
+# ─── Steps and expectations ──────────────────────────────────────────────────
+
+DRIVER_EXIT=""
+DRIVER_ELAPSED_MS=""
+DRIVER_ACTED_AT=""
+DRIVER_ACTION=""
+LAST_INSTALL_OUTPUT=""
+
+install_run() {
+    local label="$1" version="$2"
+    shift 2
+    STEP=$((STEP + 1))
+    local output
+    output="${RECEIPT}/$(printf '%02d' "${STEP}")-install-${label}.log"
+    hide_bus
+    log "install ${label}: ${version} $*"
+    gx hc-guest-driver install "${version}" "$@" >"${output}" 2>&1 || true
+    local driver
+    driver="$(sed -n 's/^DRIVER //p' "${output}" | tail -n 1)"
+    [[ -n "${driver}" ]] || fail "driver produced no result for ${label} (see ${output})"
+    DRIVER_EXIT="$(json_field "${driver}" exit)"
+    DRIVER_ELAPSED_MS="$(json_field "${driver}" elapsed_ms)"
+    DRIVER_ACTED_AT="$(json_field "${driver}" acted_at)"
+    DRIVER_ACTION="$(json_field "${driver}" action)"
+    LAST_INSTALL_OUTPUT="${output}"
+    log "  exit=${DRIVER_EXIT} elapsed_ms=${DRIVER_ELAPSED_MS} action=${DRIVER_ACTION} at=${DRIVER_ACTED_AT}"
+    snapshot "after-${label}"
+}
+
+json_field() {
+    python3 -c 'import json,sys; v=json.loads(sys.argv[1]).get(sys.argv[2]); print("" if v is None else v)' "$1" "$2"
+}
+
+snapshot() {
+    STEP=$((STEP + 1))
+    gx hc-guest-driver state >"${RECEIPT}/$(printf '%02d' "${STEP}")-state-$1.txt" 2>&1 || true
+}
+
+journal_field() {
+    local path="${GUEST_HOME}/.local/state/hypercolor/update/install-journal.json"
+    gx python3 -c 'import json,sys; j=json.load(open(sys.argv[1])); v=j.get(sys.argv[2]); print("" if v is None else ("true" if v is True else ("false" if v is False else v)))' \
+        "${path}" "$1"
+}
+
+service_prop() {
+    gx systemctl --user show hypercolor.service -p "$1" --value
+}
+
+expect_exit() {
+    case "$1" in
+        0) [[ "${DRIVER_EXIT}" == 0 ]] || fail "installer exited ${DRIVER_EXIT}, expected success" ;;
+        nonzero) [[ "${DRIVER_EXIT}" != 0 ]] || fail "installer succeeded, expected a failure exit" ;;
+    esac
+    log "  ok: installer exit ${DRIVER_EXIT}"
+}
+
+expect_acted() {
+    [[ "${DRIVER_ACTION}" == "$1" ]] ||
+        fail "driver did not ${1//_/ } at its kill point (action '${DRIVER_ACTION}'); rerun"
+    log "  ok: ${1//_/ } at ${DRIVER_ACTED_AT}"
+}
+
+expect_journal() {
+    local disposition="$1" abandoned="${2:-false}"
+    local actual
+    actual="$(journal_field disposition)"
+    [[ "${actual}" == "${disposition}" ]] || fail "journal disposition ${actual}, expected ${disposition}"
+    actual="$(journal_field abandoned)"
+    [[ "${actual:-false}" == "${abandoned}" ]] || fail "journal abandoned=${actual:-false}, expected ${abandoned}"
+    log "  ok: journal ${disposition} abandoned=${abandoned}"
+}
+
+expect_active() {
+    local actual
+    actual="$(gx readlink "${GUEST_HOME}/.local/share/hypercolor/releases/active" || true)"
+    [[ "${actual}" == "units/$(unit_of "$1")" ]] || fail "active pointer ${actual}, expected $1"
+    log "  ok: active pointer names $1"
+}
+
+expect_health() {
+    local version="$1" deadline=$((SECONDS + 30)) body=""
+    while ((SECONDS < deadline)); do
+        body="$(gx hc-guest-driver health)"
+        if [[ "${body}" == *"\"version\":\"${version}\""* ]]; then
+            log "  ok: /health answers ${version}"
+            return 0
+        fi
+        sleep 0.5
+    done
+    fail "/health answered ${body}, expected ${version}"
+}
+
+expect_prop() {
+    local actual
+    actual="$(service_prop "$1")"
+    [[ "${actual}" == "$2" ]] || fail "hypercolor.service $1=${actual}, expected $2"
+    log "  ok: $1=$2"
+}
+
+expect_output() {
+    grep -qF -- "$1" "${LAST_INSTALL_OUTPUT}" || fail "installer output lacks: $1"
+    log "  ok: installer said: $1"
+}
+
+wait_active() {
+    local deadline=$((SECONDS + ${1:-60}))
+    while ((SECONDS < deadline)); do
+        if [[ "$(service_prop ActiveState)" == active ]]; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    fail "hypercolor.service never became active"
+}
+
+# ─── Scenario runner ─────────────────────────────────────────────────────────
+
+list_scenarios() {
+    declare -F | sed -n 's/^declare -f scenario_//p' | tr '_' '-'
+}
+
+run_one() {
+    local name="$1" fn="scenario_${1//-/_}"
+    declare -F "${fn}" >/dev/null || { printf 'unknown scenario %s\n' "${name}" >&2; return 2; }
+    RECEIPT="${RECEIPT_ROOT}/$(date -u +%Y%m%dT%H%M%SZ)-${name}"
+    STEP=0
+    mkdir -p "${RECEIPT}"
+    {
+        printf 'scenario: %s\n' "${name}"
+        printf 'source: %s%s\n' "$(git -C "${REPO_ROOT}" rev-parse HEAD)" \
+            "$(git -C "${REPO_ROOT}" diff --quiet HEAD -- || printf ' (dirty)')"
+        printf 'cli_sha256: %s\n' "$(sha256sum "${WORK}/bin/hypercolor" | cut -c1-64)"
+        printf 'guest_image: %s %s\n' "$(guest_image)" "$(podman image inspect "$(guest_image)" --format '{{.Id}}')"
+        printf 'releases: %s=%s %s=%s %s=%s\n' "${V_A}" "$(unit_of "${V_A}")" \
+            "${V_B}" "$(unit_of "${V_B}")" "${V_C}" "$(unit_of "${V_C}")"
+    } >"${RECEIPT}/receipt.txt"
+    log "scenario ${name}"
+    local status
+    set +e
+    (
+        set -e
+        trap 'guest_down' EXIT
+        guest_up "${name}"
+        printf 'guest_systemd: %s\n' "$(groot systemctl --version | head -n 1)" >>"${RECEIPT}/receipt.txt"
+        "${fn}"
+        gx journalctl --user -u hypercolor.service --no-pager -o short-monotonic \
+            >"${RECEIPT}/service-journal.txt" 2>&1 || true
+    )
+    status=$?
+    set -e
+    if ((status == 0)); then
+        printf 'verdict: PASS\n' >>"${RECEIPT}/receipt.txt"
+        log "PASS ${name} (receipts: ${RECEIPT})"
+    else
+        printf 'verdict: FAIL\n' >>"${RECEIPT}/receipt.txt"
+        log "FAIL ${name} (receipts: ${RECEIPT})"
+    fi
+    RECEIPT=""
+    return "${status}"
+}
+
+run_many() {
+    build
+    local name failed=()
+    for name in "$@"; do
+        run_one "${name}" || failed+=("${name}")
+    done
+    if ((${#failed[@]})); then
+        log "failed: ${failed[*]}"
+        return 1
+    fi
+    log "all passed: $*"
+}
+
+main() {
+    command -v podman >/dev/null || { echo "podman is required" >&2; exit 2; }
+    local command="${1:-}"
+    shift || true
+    case "${command}" in
+        list) list_scenarios ;;
+        build) build ;;
+        run) (($#)) || { usage; exit 2; }; run_many "$@" ;;
+        all) mapfile -t names < <(list_scenarios); run_many "${names[@]}" ;;
+        clean) podman ps -a --filter label=hypercolor.qualification=linux-user-guest -q |
+            xargs -r podman rm -f -t 0 ;;
+        *) usage; exit 2 ;;
+    esac
+}
+
+main "$@"

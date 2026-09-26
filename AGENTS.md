@@ -30,6 +30,7 @@ just effect-build X  # Build single effect by name
 just test            # All workspace tests
 just test-crate X    # Test specific crate
 just test-one X      # Run single test by name pattern
+just linux-guest-proof run X  # Linux installer scenario in a rootless systemd guest
 
 # Quality
 just lint            # Clippy with -D warnings
