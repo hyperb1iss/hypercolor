@@ -29,11 +29,12 @@ use hypercolor_cli::install::{
     LinuxInstallConfig, LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost,
     LinuxInstallLocation, LinuxInstallObservation, LinuxInstallPlatform, LinuxInstallRequest,
     LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLocatorError,
-    LinuxObservationError, LinuxProcessExecutable, LinuxPublicTree, LinuxRuntimeSettlement,
-    LinuxServiceIdentity, LinuxServiceWatch, LinuxUninstallCheckpoint, LinuxUninstallHost,
-    OwnershipPolicy, PlatformTransactionRecord, PrincipalDatabase, PrincipalGroup, PrincipalUser,
-    RestoredRelease, UnitCollection, UnitId, UnitRecord, elect_linux_installation_with,
-    observe_linux_installation, run_linux_install, run_linux_uninstall, stage_release_payload,
+    LinuxObservationError, LinuxPlatformInputs, LinuxProcessExecutable, LinuxPublicTree,
+    LinuxRuntimeSettlement, LinuxServiceIdentity, LinuxServiceWatch, LinuxUninstallCheckpoint,
+    LinuxUninstallHost, OwnershipPolicy, PlatformTransactionRecord, PrincipalDatabase,
+    PrincipalGroup, PrincipalUser, RestoredRelease, UnitCollection, UnitId, UnitRecord,
+    bind_linux_platform, elect_linux_installation_with, observe_linux_installation,
+    run_linux_install, run_linux_uninstall, stage_release_payload,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -3829,5 +3830,88 @@ fn collection_never_removes_a_unit_an_unsettled_transaction_names() {
     assert_eq!(
         unit_entries(&location),
         names(&[&fixture.v2.id, &fixture.v3.id])
+    );
+}
+
+// ── Library use ─────────────────────────────────────────────────────────
+
+#[test]
+fn a_library_caller_prepares_binds_writes_and_drives_its_own_transaction() {
+    // The shape an update activator uses: elect authority, stage the
+    // candidate, bind the platform, prepare a journal under its own
+    // transaction ID, bind the exact initial journal to its own record,
+    // write it, then let the coordinator drive it. No CLI involved.
+    let (fixture, location) = managed_v1();
+    let LinuxInstallElection::Managed {
+        store,
+        mut lock,
+        authority,
+    } = elect_linux_installation_with(&fixture.home, &fixture.private()).expect("election")
+    else {
+        panic!("expected managed authority");
+    };
+    let candidate = fixture.v2.stage(&store, &lock);
+    let world = Rc::clone(&fixture.world);
+    let mut platform = bind_linux_platform(
+        &fixture.home,
+        |_, _, _| {
+            Ok(SimExecutor {
+                world,
+                active_root: None,
+            })
+        },
+        &store,
+        &lock,
+        LinuxPlatformInputs {
+            candidate: Some(&candidate),
+            journal: None,
+            managed: true,
+            original: None,
+            probation: DEFAULT_PROBATION_WINDOW,
+        },
+    )
+    .expect("bind the platform");
+    authority.confirm_durable().expect("durable authority");
+
+    let mut coordinator = InstallCoordinator::new(&store, &mut platform);
+    let journal = coordinator
+        .prepare_with_lock(
+            InstallRequest {
+                transaction_id: InstallTransactionId::new("update-01JZQ3V8ZK6F2N7QK9X4W5T1AB")
+                    .expect("transaction ID"),
+                candidate,
+                target_policy: InstallTargetPolicy::Preserve,
+            },
+            &lock,
+        )
+        .expect("prepare");
+    let bound = sha256(&serde_json::to_vec(&journal).expect("encode the initial journal"));
+    store.write_journal(&journal, &lock).expect("write");
+    let written = store.load_journal(&lock).expect("read").expect("present");
+    assert_eq!(
+        sha256(&serde_json::to_vec(&written).expect("encode")),
+        bound,
+        "the written journal is exactly the one the caller bound"
+    );
+    let outcome = coordinator
+        .recover_with_lock(&mut lock)
+        .expect("drive")
+        .expect("outcome");
+    assert_eq!(
+        outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v2.id.clone()
+        }
+    );
+    drop((platform, authority, lock, store));
+    fixture.assert_managed(&location, &fixture.v2.id);
+    assert_eq!(
+        fixture.watches_for("9.8.8").len(),
+        1,
+        "the library path holds the same probation window"
+    );
+    assert_eq!(
+        fixture.journal().transaction_id.as_str(),
+        "update-01JZQ3V8ZK6F2N7QK9X4W5T1AB"
     );
 }
