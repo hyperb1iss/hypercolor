@@ -109,6 +109,15 @@ pub fn run_linux_uninstall<H: LinuxUninstallHost>(
         LinuxInstallLocator::retain(home, &old_lock).map_err(LinuxInstallCommandError::Election)?;
     let authority = locator.read().map_err(LinuxInstallCommandError::Election)?;
     drop(locator);
+    // Prove every removal parent before the first write, so an unsafe
+    // ancestor refuses the whole uninstall instead of stranding it midway.
+    require_trusted_path(&old_lock, &lib)?;
+    if let LinuxInstallAuthority::Managed(location) = &authority {
+        require_trusted_path(&old_lock, location.data_root())?;
+        if let Some(container) = location.state_root().parent() {
+            require_trusted_path(&old_lock, container)?;
+        }
+    }
     let mut run = LinuxUninstallRun::default();
     match authority {
         LinuxInstallAuthority::Legacy(journal) => {
@@ -317,11 +326,13 @@ fn remove_child_tree(
     parent: &Path,
     name: &str,
 ) -> Result<bool, LinuxInstallCommandError> {
+    let parent_path = parent;
     let parent = match lock.open_public_directory(parent) {
         Ok(parent) => parent,
         Err(error) if not_found(&error) => return Ok(false),
         Err(error) => return Err(error.into()),
     };
+    require_trusted_path(lock, parent_path)?;
     parent
         .durable_remove_child_tree(Path::new(name))
         .map_err(|error| InstallPlatformError::new(format!("failed to remove {name}: {error}")))
@@ -352,6 +363,34 @@ fn remove_empty_container(
         return Ok(false);
     }
     remove_child_tree(lock, parent, name)
+}
+
+/// Refuse removal beneath a directory another principal could rename.
+///
+/// `path` and every directory above it, except `/`, must be root-owned and
+/// writable by nobody else, or owned by the installing user under the
+/// ancestor rule.
+fn require_trusted_path(lock: &InstallLock, path: &Path) -> Result<(), LinuxInstallCommandError> {
+    for directory in path.ancestors() {
+        if directory.parent().is_none() {
+            continue;
+        }
+        let authority = match lock.open_public_directory(directory) {
+            Ok(authority) => authority,
+            // An interrupted run may already have removed the deeper part.
+            Err(error) if not_found(&error) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let metadata = authority
+            .metadata()
+            .map_err(|error| InstallPlatformError::new(error.to_string()))?;
+        lock.ownership_policy()
+            .require_trusted_ancestor(&authority, metadata)
+            .map_err(|refusal| {
+                LinuxInstallCommandError::UnsafeDirectory(directory.to_path_buf(), refusal)
+            })?;
+    }
+    Ok(())
 }
 
 fn file_name(path: &Path) -> Result<&str, InstallPlatformError> {

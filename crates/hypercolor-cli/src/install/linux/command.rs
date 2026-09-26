@@ -148,6 +148,12 @@ pub enum LinuxInstallCommandError {
         .0.join(", ")
     )]
     ForeignInstallation(Vec<String>),
+    #[error(
+        "refusing to remove beneath {path}: {refusal}",
+        path = .0.display(),
+        refusal = .1
+    )]
+    UnsafeDirectory(std::path::PathBuf, crate::install::DirectoryRefusal),
 }
 
 /// Elect authority, adopt or recover, and settle one install request.

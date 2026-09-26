@@ -83,6 +83,8 @@ pub enum DirectoryRefusal {
     ExtendedAcl,
     #[error("it is group-writable by gid {gid}, which is not proven private: {reason}")]
     SharedGroup { gid: u32, reason: String },
+    #[error("it is a root-owned directory that other principals can write")]
+    WritableSystemDirectory,
 }
 
 /// One user record from the system principal database.
@@ -195,10 +197,50 @@ impl OwnershipPolicy {
         self.require_writable_only_by_owner(metadata, role, || directory.extended_access_acl())
     }
 
+    /// Require that no principal other than root or the installing user can
+    /// rename or replace entries in an existing ancestor directory.
+    ///
+    /// Root-owned system directories are trusted when nobody else can write
+    /// them. The installing user's own ancestors follow the ancestor rule
+    /// without requiring owner write access, because nothing is created in
+    /// them.
+    ///
+    /// # Errors
+    /// Returns the first reason another principal might modify the directory.
+    pub(crate) fn require_trusted_ancestor(
+        &self,
+        directory: &impl AclProbe,
+        metadata: DirectoryEntryMetadata,
+    ) -> Result<(), DirectoryRefusal> {
+        if metadata.kind() != DirectoryEntryKind::Directory {
+            return Err(DirectoryRefusal::NotDirectory);
+        }
+        if metadata.owner_uid() == 0 && !metadata.is_owned_by_current_user() {
+            return if metadata.mode() & (GROUP_WRITE | OTHER_WRITE) == 0 {
+                Ok(())
+            } else {
+                Err(DirectoryRefusal::WritableSystemDirectory)
+            };
+        }
+        self.check(metadata, DirectoryRole::Ancestor, false, || {
+            directory.extended_access_acl()
+        })
+    }
+
     pub(crate) fn require_writable_only_by_owner(
         &self,
         metadata: DirectoryEntryMetadata,
         role: DirectoryRole,
+        extended_acl: impl FnOnce() -> io::Result<bool>,
+    ) -> Result<(), DirectoryRefusal> {
+        self.check(metadata, role, true, extended_acl)
+    }
+
+    fn check(
+        &self,
+        metadata: DirectoryEntryMetadata,
+        role: DirectoryRole,
+        owner_access: bool,
         extended_acl: impl FnOnce() -> io::Result<bool>,
     ) -> Result<(), DirectoryRefusal> {
         if metadata.kind() != DirectoryEntryKind::Directory {
@@ -207,7 +249,7 @@ impl OwnershipPolicy {
         if !metadata.is_owned_by_current_user() {
             return Err(DirectoryRefusal::ForeignOwner(metadata.owner_uid()));
         }
-        if metadata.mode() & OWNER_ACCESS != OWNER_ACCESS {
+        if owner_access && metadata.mode() & OWNER_ACCESS != OWNER_ACCESS {
             return Err(DirectoryRefusal::OwnerAccess);
         }
         if metadata.mode() & OTHER_WRITE != 0 {

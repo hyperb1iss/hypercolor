@@ -2,7 +2,9 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use hypercolor_platform_fs::PublicDirectoryAuthority;
+use std::collections::BTreeMap;
+
+use hypercolor_platform_fs::{PublicDirectoryAuthority, ReadOnlyDirectoryAuthority};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -105,7 +107,25 @@ impl LinuxInstallLocation {
     ) -> Result<RetainedLinuxInstallLocation, InstallLocationError> {
         self.validate(home)?;
         let legacy = home.join(".local/lib/hypercolor");
+        let mut ancestors = BTreeMap::new();
+        for root in [
+            &self.data_root,
+            &self.state_root,
+            &self.release_root,
+            &self.config_root,
+            &legacy,
+        ] {
+            for ancestor in root.ancestors().skip(1) {
+                if ancestor.parent().is_some() && !ancestors.contains_key(ancestor) {
+                    ancestors.insert(
+                        ancestor.to_path_buf(),
+                        gate.open_public_directory(ancestor)?,
+                    );
+                }
+            }
+        }
         let retained = RetainedLinuxInstallLocation {
+            ancestors,
             uid: self.uid,
             ownership: gate.ownership_policy().clone(),
             data: gate.open_public_directory(&self.data_root)?,
@@ -270,6 +290,8 @@ impl LinuxInstallLocation {
 #[derive(Debug)]
 pub struct RetainedLinuxInstallLocation {
     uid: u32,
+    /// Every existing directory above a recorded root, excluding `/`.
+    ancestors: BTreeMap<PathBuf, PublicDirectoryAuthority>,
     ownership: OwnershipPolicy,
     paths: [PathBuf; 5],
     data: PublicDirectoryAuthority,
@@ -310,6 +332,17 @@ impl RetainedLinuxInstallLocation {
             }
             self.ownership
                 .require_owner_only(root, metadata, role)
+                .map_err(|refusal| InstallLocationError::InvalidOwner(path.clone(), refusal))?;
+        }
+        // The unit and public links reach each root by path, so no other
+        // principal may be able to rename any directory on the way there.
+        let system_root = ReadOnlyDirectoryAuthority::open(Path::new("/"))?;
+        self.ownership
+            .require_trusted_ancestor(&system_root, system_root.metadata()?)
+            .map_err(|refusal| InstallLocationError::InvalidOwner(PathBuf::from("/"), refusal))?;
+        for (path, ancestor) in &self.ancestors {
+            self.ownership
+                .require_trusted_ancestor(ancestor, ancestor.metadata()?)
                 .map_err(|refusal| InstallLocationError::InvalidOwner(path.clone(), refusal))?;
         }
         for (left, right) in [

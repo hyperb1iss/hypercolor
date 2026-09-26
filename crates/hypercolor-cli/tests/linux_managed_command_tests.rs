@@ -1857,3 +1857,100 @@ fn longest_supported_roots_fit_the_transaction_record_and_longer_ones_refuse_ear
         Err(hypercolor_cli::install::InstallLocationError::PathTooLong { limit: 256, .. })
     ));
 }
+
+// ── Existing ancestors above recorded roots ─────────────────────────────
+
+fn existing_ancestor_fixture(ancestor: &str, mode: u32, root: &str) -> Fixture {
+    let fixture = Fixture::new();
+    let root = fixture.home.join(root);
+    fs::create_dir_all(&root).expect("existing root");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("root mode");
+    fs::set_permissions(
+        fixture.home.join(ancestor),
+        fs::Permissions::from_mode(mode),
+    )
+    .expect("ancestor mode");
+    fixture
+}
+
+#[test]
+fn existing_ancestors_above_recorded_roots_must_be_trusted() {
+    // World-writable above an already existing data root.
+    let fixture = existing_ancestor_fixture(".local/share", 0o777, ".local/share/hypercolor");
+    let error = fixture
+        .run(
+            &fixture.v1,
+            Some(fixture.default_location()),
+            &fixture.private(),
+        )
+        .expect_err("world-writable ancestor");
+    assert!(
+        error.to_string().contains("writable by every user"),
+        "{error}"
+    );
+    assert_legacy_untouched(&fixture);
+    fs::set_permissions(
+        fixture.home.join(".local/share"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("cleanup");
+
+    // A custom XDG base inside a world-writable, non-sticky directory.
+    let fixture = existing_ancestor_fixture("shared", 0o777, "shared/data");
+    let custom = fixture.location("shared/data", ".local/state", ".config");
+    let error = fixture
+        .run(&fixture.v1, Some(custom), &fixture.private())
+        .expect_err("world-writable custom base");
+    assert!(error.to_string().contains("shared"), "{error}");
+    assert_legacy_untouched(&fixture);
+    fs::set_permissions(
+        fixture.home.join("shared"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("cleanup");
+
+    // A shared group above an existing root, and the same mode when the
+    // group is private.
+    let fixture = existing_ancestor_fixture(".local/share", 0o775, ".local/share/hypercolor");
+    let shared = policy(Principals::shared(fixture.uid, fixture.gid));
+    let error = fixture
+        .run(&fixture.v1, Some(fixture.default_location()), &shared)
+        .expect_err("shared-group ancestor");
+    assert!(error.to_string().contains("neighbor"), "{error}");
+    assert_legacy_untouched(&fixture);
+    fixture
+        .run(
+            &fixture.v1,
+            Some(fixture.default_location()),
+            &fixture.private(),
+        )
+        .expect("private-group ancestor");
+    fixture.assert_managed(&fixture.default_location(), &fixture.v1.id);
+
+    // An ancestor that turns world-writable after install stops the next run
+    // and the uninstall before either writes.
+    fs::set_permissions(
+        fixture.home.join(".local/share"),
+        fs::Permissions::from_mode(0o777),
+    )
+    .expect("later world-writable ancestor");
+    let before = fixture.snapshot();
+    assert!(fixture.run(&fixture.v2, None, &fixture.private()).is_err());
+    let mut host = UninstallHost {
+        world: Rc::clone(&fixture.world),
+        stop_at: None,
+    };
+    let error = run_linux_uninstall(&fixture.home, &fixture.private(), &mut host)
+        .expect_err("uninstall under an untrusted ancestor");
+    assert!(
+        matches!(error, LinuxInstallCommandError::UnsafeDirectory(..)),
+        "{error}"
+    );
+    assert_eq!(fixture.snapshot(), before, "nothing changed");
+    assert!(fixture.default_location().release_root().exists());
+    fs::set_permissions(
+        fixture.home.join(".local/share"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("cleanup");
+}
