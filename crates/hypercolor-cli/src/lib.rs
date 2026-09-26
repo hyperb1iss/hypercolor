@@ -12,6 +12,8 @@ pub mod config;
 pub use hypercolor_install as install;
 #[cfg(unix)]
 mod install_command;
+#[cfg(unix)]
+mod launch_command;
 pub mod output;
 
 use std::future::Future;
@@ -334,6 +336,15 @@ pub async fn run() -> Result<()> {
 }
 
 pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()> {
+    #[cfg(unix)]
+    match launch_command::parse_launch_invocation(std::env::args_os()) {
+        Some(Ok(invocation)) => launch_command::execute(invocation),
+        Some(Err(usage)) => {
+            eprintln!("{usage}");
+            std::process::exit(launch_command::EX_USAGE);
+        }
+        None => {}
+    }
     #[cfg(unix)]
     match parse_install_release_invocation(std::env::args_os()) {
         Some(Ok(args)) => return install_command::execute(&args),
