@@ -47,6 +47,7 @@ pub use linux::{
     linux_layout_directories, observe_linux_installation, parse_systemd_show, plan_linux_launch,
     prepare_linux_launch_roots, record_linux_launcher_settled, render_linux_companion_unit,
     retain_linux_unit, run_linux_install, run_linux_recovery, run_linux_uninstall,
+    validate_linux_companion_template,
 };
 pub use model::{
     INSTALL_JOURNAL_SCHEMA_VERSION, InstallAction, InstallDisposition, InstallJournalV1,

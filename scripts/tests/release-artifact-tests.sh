@@ -250,6 +250,47 @@ class ReleaseArtifactTests(unittest.TestCase):
             validated = self.rust_validate()
             self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
 
+    def test_companion_templates_must_render(self):
+        spec = self.directory / "companions-relative.json"
+        good = self.directory / "good.service.in"
+        good.write_text("[Service]\nExecStart=@LAUNCHER@ --role update-executor\n")
+        spec.write_text(json.dumps({"units": [{
+            "unit": "hypercolor-update-recover.service", "source": "good.service.in",
+            "enable": True,
+        }]}))
+        result = self.dist(
+            "--target", "linux-amd64", "--companion-units", str(spec),
+            version="1.0.0-relative",
+        )
+        self.assertEqual(result.returncode, 0, "a source relative to its spec file resolves: "
+                         + result.stdout + result.stderr)
+
+        bad = self.directory / "bad.service.in"
+        bad.write_text("[Service]\nExecStart=@NOPE@\n")
+        spec.write_text(json.dumps({"units": [{
+            "unit": "hypercolor-update-recover.service", "source": str(bad), "enable": True,
+        }]}))
+        result = self.dist(
+            "--target", "linux-amd64", "--companion-units", str(spec),
+            version="1.0.0-unrenderable",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown placeholder @NOPE@", result.stdout + result.stderr)
+
+        produced = self.root / "source/dist/hypercolor-1.0.0-relative-linux-amd64"
+        payload = self.directory / produced.name
+        shutil.copytree(produced, payload)
+        self.payload = payload
+        shipped = "share/hypercolor/systemd/hypercolor-update-recover.service.in"
+        (payload / shipped).write_text("[Service]\nExecStart=@NOPE@\n")
+        manifest = self.manifest()
+        for member in manifest["members"]:
+            if member["path"] == shipped:
+                data = (payload / shipped).read_bytes()
+                member["size"] = len(data)
+                member["sha256"] = hashlib.sha256(data).hexdigest()
+        self.assert_rejected(manifest, "unknown placeholder @NOPE@", "unknown placeholder @NOPE@")
+
     def test_companion_unit_declarations_are_validated(self):
         original = self.manifest()
         ui = "share/hypercolor/ui/index.html"

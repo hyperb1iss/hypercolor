@@ -172,10 +172,11 @@ pub const MAX_COMPANION_TEMPLATE_BYTES: u64 = 16 * 1024;
 /// to render with the installation's recorded paths.
 ///
 /// Companion units belong to the installer contract, like the launcher:
-/// they are rendered when an installation publishes its launcher (a fresh
-/// install, an adoption, or a launcher lost to the user) and never by an
-/// ordinary install, so a release can never change the unit text its own
-/// recovery runs under.
+/// they are rendered when an installation publishes its launcher (a first
+/// managed install or adoption, a launcher no service has run through yet,
+/// or one the user removed) and never by an ordinary install over a settled
+/// launcher, so a release cannot change the unit text its own recovery
+/// runs under. Every install still checks that its templates render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompanionUnitDeclaration {
     unit: String,

@@ -65,6 +65,7 @@ pub(super) fn execute(
         }
     }
     warn_unsettled_launcher(run.settled_launcher.as_ref());
+    report_companions(run.companions.as_ref());
     super::require_candidate_committed(run.outcome, &args.expected_manifest_sha256, run.recovered)
 }
 
@@ -74,6 +75,26 @@ pub(super) fn execute(
 fn warn_unsettled_launcher(settled: Option<&Result<(), String>>) {
     if let Some(Err(error)) = settled {
         eprintln!("warning: the launcher was not recorded as settled: {error}");
+    }
+}
+
+/// Say what putting the installation's companion units in place did. A
+/// failure is a warning, since the install itself already settled.
+fn report_companions(companions: Option<&Result<crate::install::LinuxCompanionReport, String>>) {
+    match companions {
+        Some(Ok(report)) => {
+            for unit in &report.installed {
+                println!("Installed companion unit {unit}.");
+            }
+            for (unit, reason) in &report.refused {
+                eprintln!("warning: companion unit {unit} was left in place: {reason}");
+            }
+        }
+        Some(Err(error)) => eprintln!(
+            "warning: companion units were not put in place: {error}; the next committed \
+             install tries again"
+        ),
+        None => {}
     }
 }
 
@@ -89,6 +110,7 @@ pub(super) fn execute_recover(home: &Path, probation_seconds: u64) -> Result<()>
         return Ok(());
     };
     warn_unsettled_launcher(run.settled_launcher.as_ref());
+    report_companions(run.companions.as_ref());
     match &run.outcome {
         crate::install::InstallOutcome::Committed { active_unit } => {
             println!("Recovered: release {} is committed.", active_unit.as_str());

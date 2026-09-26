@@ -117,6 +117,12 @@ fn require_linux_managed_package(
         Some(package)
             if package.launcher_contract() == crate::install::MANAGED_LAUNCHER_CONTRACT =>
         {
+            for companion in package.companion_units() {
+                let template = read_release_member(source, companion.template())?;
+                if let Err(error) = crate::install::validate_linux_companion_template(&template) {
+                    bail!("companion unit {}: {error}", companion.unit());
+                }
+            }
             Ok(())
         }
         Some(package) => bail!(
@@ -126,6 +132,40 @@ fn require_linux_managed_package(
         ),
         None => bail!("a Linux release must declare its managed_package contract"),
     }
+}
+
+/// Read one bounded companion template of an unpacked release by its path.
+fn read_release_member(
+    source: &hypercolor_platform_fs::ReadOnlyDirectoryAuthority,
+    path: &str,
+) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+
+    let mut components: Vec<&str> = path.split('/').collect();
+    let name = components
+        .pop()
+        .context("a companion template path is empty")?;
+    let mut file = match components.split_first() {
+        None => source.open_regular_file(Path::new(name)),
+        Some((first, rest)) => {
+            let mut directory = source.open_child_directory(Path::new(first))?;
+            for component in rest {
+                directory = directory.open_child_directory(Path::new(component))?;
+            }
+            directory.open_regular_file(Path::new(name))
+        }
+    }
+    .with_context(|| format!("failed to open the companion template {path}"))?;
+    let limit = crate::install::MAX_COMPANION_TEMPLATE_BYTES;
+    let mut bytes = Vec::new();
+    file.file_mut()
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read the companion template {path}"))?;
+    if bytes.len() as u64 > limit {
+        bail!("the companion template {path} exceeds its byte bound");
+    }
+    Ok(bytes)
 }
 
 pub(crate) fn parse_probation_seconds(value: &str) -> Result<u64, String> {

@@ -228,6 +228,10 @@ pub fn ensure_linux_launcher(
             ));
         }
     };
+    // Every install renders its candidate's templates, whether or not it
+    // publishes them, so a release with a template that could never render
+    // is refused on upgrades too, before any service change.
+    let rendered = render_companions(location, home, candidate, package)?;
     let root = store
         .root_authority(lock)
         .map_err(|source| error(source.to_string()))?;
@@ -255,7 +259,7 @@ pub fn ensure_linux_launcher(
             std::process::id()
         )))
         .map_err(io_error("create the launcher staging directory"))?;
-    let populated = populate(staging.directory(), location, home, candidate, package);
+    let populated = populate(staging.directory(), location, candidate, &rendered);
     if let Err(failure) = populated {
         return match staging.remove() {
             Ok(()) => Err(failure),
@@ -299,11 +303,10 @@ fn require_store(
 fn populate(
     staging: &hypercolor_platform_fs::DirectoryAuthority,
     location: &LinuxInstallLocation,
-    home: &Path,
     candidate: &UnitRecord,
-    package: &crate::ManagedPackage,
+    rendered: &[RenderedCompanion],
 ) -> Result<(), InstallPlatformError> {
-    let companion_units = populate_companions(staging, location, home, candidate, package)?;
+    let companion_units = populate_companions(staging, rendered)?;
     let mut source = candidate
         .directory()
         .open_child_directory(Path::new("bin"))
@@ -349,36 +352,60 @@ fn populate(
 }
 
 /// Render each companion template the candidate ships into `units/`.
-fn populate_companions(
-    staging: &hypercolor_platform_fs::DirectoryAuthority,
+/// One companion template of a candidate, rendered for this installation.
+struct RenderedCompanion {
+    unit: String,
+    enable: bool,
+    text: Vec<u8>,
+}
+
+/// Render every companion template `candidate` declares for `location`.
+fn render_companions(
     location: &LinuxInstallLocation,
     home: &Path,
     candidate: &UnitRecord,
     package: &crate::ManagedPackage,
+) -> Result<Vec<RenderedCompanion>, InstallPlatformError> {
+    package
+        .companion_units()
+        .iter()
+        .map(|declared| {
+            let template = read_unit_member(candidate, declared.template())?;
+            let text = super::companion::render_linux_companion_unit(&template, location, home)
+                .map_err(|source| error(format!("companion unit {}: {source}", declared.unit())))?;
+            Ok(RenderedCompanion {
+                unit: declared.unit().to_owned(),
+                enable: declared.enable(),
+                text,
+            })
+        })
+        .collect()
+}
+
+fn populate_companions(
+    staging: &hypercolor_platform_fs::DirectoryAuthority,
+    rendered: &[RenderedCompanion],
 ) -> Result<Vec<CompanionRecord>, InstallPlatformError> {
-    if package.companion_units().is_empty() {
+    if rendered.is_empty() {
         return Ok(Vec::new());
     }
     let units = staging
         .create_child_directory(Path::new(COMPANION_DIRECTORY))
         .map_err(io_error("create the companion unit directory"))?;
     let mut records = Vec::new();
-    for declared in package.companion_units() {
-        let template = read_unit_member(candidate, declared.template())?;
-        let rendered = super::companion::render_linux_companion_unit(&template, location, home)
-            .map_err(|source| error(format!("companion unit {}: {source}", declared.unit())))?;
+    for companion in rendered {
         units
             .create_regular_file(
-                Path::new(declared.unit()),
+                Path::new(&companion.unit),
                 COMPANION_MODE,
-                rendered.len() as u64,
-                &mut rendered.as_slice(),
+                companion.text.len() as u64,
+                &mut companion.text.as_slice(),
             )
             .map_err(io_error("write a companion unit"))?;
         records.push(CompanionRecord {
-            unit: declared.unit().to_owned(),
-            sha256: hex::encode(Sha256::digest(&rendered)),
-            enable: declared.enable(),
+            unit: companion.unit.clone(),
+            sha256: hex::encode(Sha256::digest(&companion.text)),
+            enable: companion.enable,
         });
     }
     units
@@ -393,18 +420,22 @@ fn read_unit_member(unit: &UnitRecord, path: &str) -> Result<Vec<u8>, InstallPla
     let name = components
         .pop()
         .ok_or_else(|| error("a companion template path is empty"))?;
-    let mut directory = unit
-        .directory()
-        .open_child_directory(Path::new(components.first().copied().unwrap_or(".")))
-        .map_err(io_error("open a companion template"))?;
-    for component in components.iter().skip(1) {
-        directory = directory
-            .open_child_directory(Path::new(component))
-            .map_err(io_error("open a companion template"))?;
+    let mut opened = match components.split_first() {
+        None => unit.directory().open_regular_file(Path::new(name)),
+        Some((first, rest)) => {
+            let mut directory = unit
+                .directory()
+                .open_child_directory(Path::new(first))
+                .map_err(io_error("open a companion template"))?;
+            for component in rest {
+                directory = directory
+                    .open_child_directory(Path::new(component))
+                    .map_err(io_error("open a companion template"))?;
+            }
+            directory.open_regular_file(Path::new(name))
+        }
     }
-    let mut opened = directory
-        .open_regular_file(Path::new(name))
-        .map_err(io_error("open a companion template"))?;
+    .map_err(io_error("open a companion template"))?;
     let mut bytes = Vec::new();
     let limit = crate::MAX_COMPANION_TEMPLATE_BYTES;
     opened
@@ -586,6 +617,54 @@ fn prove(
         published,
         companion_units,
     })
+}
+
+/// A companion unit the launcher's contract record says the installer
+/// rendered for this installation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RecordedCompanion {
+    pub(super) unit: String,
+    pub(super) sha256: String,
+    pub(super) enable: bool,
+}
+
+/// The companion units the launcher's contract record names, read without
+/// proving the launcher program, so uninstall can still find them when the
+/// launcher changed. `None` when there is no readable record: the launcher
+/// is gone, or its record is not one this build can read.
+pub(super) fn recorded_companion_units(
+    location: &LinuxInstallLocation,
+) -> Option<Vec<RecordedCompanion>> {
+    #[derive(Deserialize)]
+    struct Recorded {
+        #[serde(default)]
+        companion_units: Vec<CompanionRecord>,
+    }
+    let directory =
+        ReadOnlyDirectoryAuthority::open(&location.release_root().join(LINUX_LAUNCHER_DIRECTORY))
+            .ok()?;
+    let mut contract = directory.open_regular_file(Path::new(CONTRACT_NAME)).ok()?;
+    let mut bytes = Vec::new();
+    contract
+        .file_mut()
+        .take(MAX_CONTRACT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_CONTRACT_BYTES {
+        return None;
+    }
+    let recorded: Recorded = serde_json::from_slice(&bytes).ok()?;
+    Some(
+        recorded
+            .companion_units
+            .into_iter()
+            .map(|record| RecordedCompanion {
+                unit: record.unit,
+                sha256: record.sha256,
+                enable: record.enable,
+            })
+            .collect(),
+    )
 }
 
 /// The update state record that names the settled launcher.

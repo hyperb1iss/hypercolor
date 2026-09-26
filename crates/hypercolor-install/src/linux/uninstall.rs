@@ -8,6 +8,7 @@
 //! preserved. Every step is replayable: a run interrupted anywhere continues
 //! from whatever state the previous run left.
 
+use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -355,14 +356,19 @@ fn remove_platform<H: LinuxUninstallHost>(
     active_roots: &[PathBuf],
     managed: Option<&LinuxInstallLocation>,
 ) -> Result<(), LinuxInstallCommandError> {
-    // The companion units this installation rendered, from its launcher;
-    // an installation without one has none.
-    let companions = match managed {
-        Some(location) => super::bootstrap::inspect_linux_launcher(location)?
-            .map(|launcher| launcher.companion_units().to_vec())
-            .unwrap_or_default(),
-        None => Vec::new(),
-    };
+    // The companion units this installation rendered, from its launcher's
+    // record, which uninstall reads without proving the launcher program so
+    // a changed launcher never blocks it. The historical root has none.
+    let recorded = managed.map(|location| {
+        (
+            super::bootstrap::recorded_companion_units(location),
+            format!(
+                "{} {}",
+                super::bootstrap::linux_launcher_path(location).display(),
+                super::bootstrap::LINUX_LAUNCH_COMMAND
+            ),
+        )
+    });
     let tree = LinuxPublicTree::new(lock, home)?;
     let direct_fragment = home
         .join(".config/systemd/user/hypercolor.service")
@@ -394,20 +400,7 @@ fn remove_platform<H: LinuxUninstallHost>(
             foreign.push(format!("public layout entry {item:?}"));
         }
     }
-    let mut installed_companions = Vec::new();
-    for unit in &companions {
-        let (entry, bytes) = executor
-            .companion_unit_entry(unit.name(), super::companion::MAX_COMPANION_UNIT_BYTES)?;
-        match entry {
-            LinuxExactEntry::Absent => {}
-            LinuxExactEntry::RegularFile { .. } if bytes == unit.text() => {
-                installed_companions.push((unit, entry));
-            }
-            LinuxExactEntry::RegularFile { .. } | LinuxExactEntry::Symlink { .. } => {
-                foreign.push(format!("companion unit {}", unit.name()));
-            }
-        }
-    }
+    let installed_companions = owned_companions(&mut executor, recorded.as_ref(), &mut foreign)?;
     if !foreign.is_empty() {
         return Err(LinuxInstallCommandError::ForeignInstallation(foreign));
     }
@@ -425,11 +418,11 @@ fn remove_platform<H: LinuxUninstallHost>(
             executor.replace_layout(*item, entry, None)?;
         }
     }
-    for (unit, entry) in &installed_companions {
-        if unit.enable() {
-            executor.enable_companion_unit(unit.name(), false)?;
+    for (name, enabled, entry) in &installed_companions {
+        if *enabled {
+            executor.enable_companion_unit(name, false)?;
         }
-        executor.replace_companion_unit(unit.name(), entry, None)?;
+        executor.replace_companion_unit(name, entry, None)?;
     }
     let launcher_present = !matches!(launcher, LinuxExactEntry::Absent);
     if launcher_present {
@@ -439,6 +432,61 @@ fn remove_platform<H: LinuxUninstallHost>(
         executor.reload_manager()?;
     }
     Ok(())
+}
+
+/// The companion unit files this installation put in place, each with
+/// whether to disable it first; files that differ from what it rendered are
+/// listed in `foreign` instead.
+///
+/// With a readable launcher record, a unit is this installation's when its
+/// bytes hash to the recorded digest. Without one (the launcher is gone),
+/// only companion-named units that start this installation's launcher are.
+fn owned_companions<E: LinuxInstallExecutor>(
+    executor: &mut E,
+    recorded: Option<&(Option<Vec<super::bootstrap::RecordedCompanion>>, String)>,
+    foreign: &mut Vec<String>,
+) -> Result<Vec<(String, bool, LinuxExactEntry)>, InstallPlatformError> {
+    let Some((recorded, launcher)) = recorded else {
+        return Ok(Vec::new());
+    };
+    let mut owned = Vec::new();
+    let read = |executor: &mut E, name: &str| {
+        executor.companion_unit_entry(name, super::companion::MAX_COMPANION_UNIT_BYTES)
+    };
+    match recorded {
+        Some(units) => {
+            for unit in units {
+                match read(executor, &unit.unit) {
+                    Ok((LinuxExactEntry::Absent, _)) => {}
+                    Ok((entry @ LinuxExactEntry::RegularFile { .. }, bytes))
+                        if hex::encode(Sha256::digest(&bytes)) == unit.sha256 =>
+                    {
+                        owned.push((unit.unit.clone(), unit.enable, entry));
+                    }
+                    Ok(_) => foreign.push(format!("companion unit {}", unit.unit)),
+                    Err(error) => foreign.push(format!("companion unit {}: {error}", unit.unit)),
+                }
+            }
+        }
+        None => {
+            for name in executor.companion_unit_names()? {
+                let Ok((entry @ LinuxExactEntry::RegularFile { .. }, bytes)) =
+                    read(executor, &name)
+                else {
+                    continue;
+                };
+                let text = String::from_utf8_lossy(&bytes);
+                let starts_launcher = text.lines().any(|line| {
+                    line.trim_start().starts_with("Exec") && line.contains(launcher.as_str())
+                });
+                if starts_launcher {
+                    let installable = text.lines().any(|line| line.trim() == "[Install]");
+                    owned.push((name.clone(), installable && !name.contains('@'), entry));
+                }
+            }
+        }
+    }
+    Ok(owned)
 }
 
 fn owned_launcher(

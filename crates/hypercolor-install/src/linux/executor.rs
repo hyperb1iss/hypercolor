@@ -145,6 +145,11 @@ pub trait LinuxInstallExecutor {
         let _ = (name, max_bytes);
         Err(error("this executor manages no companion units"))
     }
+    /// The names of the companion-named unit files in the systemd user
+    /// directory. An executor that manages no companion units has none.
+    fn companion_unit_names(&mut self) -> Result<Vec<String>, InstallPlatformError> {
+        Ok(Vec::new())
+    }
     /// Replace one companion unit file exactly as observed.
     fn replace_companion_unit(
         &mut self,
@@ -496,6 +501,24 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
             .public_tree
             .open_directory(LinuxDirectoryItem::SystemdUser)?;
         read_exact_entry(&directory, name, max_bytes)
+    }
+
+    fn companion_unit_names(&mut self) -> Result<Vec<String>, InstallPlatformError> {
+        if self.public_tree.state(LinuxDirectoryItem::SystemdUser)? == LinuxDirectoryState::Absent {
+            return Ok(Vec::new());
+        }
+        let directory = self
+            .public_tree
+            .open_directory(LinuxDirectoryItem::SystemdUser)?;
+        let mut names: Vec<String> = directory
+            .child_names()
+            .map_err(|source| error(format!("cannot list the systemd user directory: {source}")))?
+            .into_iter()
+            .filter_map(|name| name.into_string().ok())
+            .filter(|name| require_companion_name(name).is_ok())
+            .collect();
+        names.sort();
+        Ok(names)
     }
 
     fn replace_companion_unit(

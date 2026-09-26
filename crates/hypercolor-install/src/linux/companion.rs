@@ -5,10 +5,11 @@
 //! renders them when it publishes the launcher and keeps the rendered text
 //! inside the launcher directory, so an ordinary install, whatever templates
 //! its release ships, never changes the unit text a recovery runs under.
-//! After a managed install settles on a release, the installer puts every
-//! rendered unit that is missing into the systemd user directory and enables
-//! the ones the release asked for; a unit file that differs from the
-//! rendered text is left alone and reported.
+//! After a managed install commits, the installer puts every rendered unit
+//! that is missing into the systemd user directory and enables the ones the
+//! release asked for; a unit file that differs from the rendered text, or
+//! cannot be read, is left alone and reported. A placement that fails is
+//! retried by the next install that commits.
 //!
 //! Templates name paths only through placeholders:
 //!
@@ -117,6 +118,50 @@ pub fn render_linux_companion_unit(
         ("USER_UNIT_DIR", text(&home.join(".config/systemd/user"))?),
         ("OPTIONAL_LAYOUT_PATHS", layout),
     ];
+    let rendered = expand(template, |token| {
+        values
+            .iter()
+            .find(|(name, _)| *name == token)
+            .map(|(_, value)| value.clone())
+    })?;
+    if rendered.len() > MAX_COMPANION_UNIT_BYTES {
+        return Err(error("a rendered companion unit exceeds its byte bound"));
+    }
+    Ok(rendered.into_bytes())
+}
+
+/// The placeholders a companion template may name.
+const PLACEHOLDERS: [&str; 8] = [
+    "LAUNCHER",
+    "RELEASE_ROOT",
+    "STATE_ROOT",
+    "DATA_ROOT",
+    "CONFIG_ROOT",
+    "DAEMON_STATE_ROOT",
+    "USER_UNIT_DIR",
+    "OPTIONAL_LAYOUT_PATHS",
+];
+
+/// Check a companion template the way rendering reads it, without an
+/// installation: it must be UTF-8 and name only known placeholders.
+///
+/// # Errors
+/// Refuses a template that is not UTF-8 or names an unknown placeholder.
+pub fn validate_linux_companion_template(template: &[u8]) -> Result<(), InstallPlatformError> {
+    let template =
+        std::str::from_utf8(template).map_err(|_| error("a companion template is not UTF-8"))?;
+    expand(template, |token| {
+        PLACEHOLDERS.contains(&token).then(String::new)
+    })
+    .map(drop)
+}
+
+/// Replace every `@NAME@` token (uppercase letters and `_`) with its value,
+/// keeping any other `@` literally.
+fn expand(
+    template: &str,
+    value: impl Fn(&str) -> Option<String>,
+) -> Result<String, InstallPlatformError> {
     let mut rendered = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(start) = rest.find('@') {
@@ -128,16 +173,12 @@ pub fn render_linux_companion_unit(
             .count();
         if token_length > 0 && after.as_bytes().get(token_length) == Some(&b'@') {
             let token = &after[..token_length];
-            let value = values
-                .iter()
-                .find(|(name, _)| *name == token)
-                .map(|(_, value)| value)
-                .ok_or_else(|| {
-                    error(format!(
-                        "a companion template names the unknown placeholder @{token}@"
-                    ))
-                })?;
-            rendered.push_str(value);
+            let replacement = value(token).ok_or_else(|| {
+                error(format!(
+                    "a companion template names the unknown placeholder @{token}@"
+                ))
+            })?;
+            rendered.push_str(&replacement);
             rest = &after[token_length + 1..];
         } else {
             rendered.push('@');
@@ -145,28 +186,38 @@ pub fn render_linux_companion_unit(
         }
     }
     rendered.push_str(rest);
-    if rendered.len() > MAX_COMPANION_UNIT_BYTES {
-        return Err(error("a rendered companion unit exceeds its byte bound"));
-    }
-    Ok(rendered.into_bytes())
+    Ok(rendered)
 }
 
 /// Put every companion unit an installation's launcher carries in place.
 ///
-/// A missing unit is written; an identical one is kept; one that differs
-/// is left alone and reported, since a person or a package made it. Units
-/// asked for are enabled, and the manager reloads when anything changed.
+/// A missing unit is written; an identical one is kept; one that differs,
+/// or cannot be read, is left alone and reported, since a person or a
+/// package made it. Units asked for are enabled every time, so a committed
+/// install re-enables one a user disabled, and the manager reloads when
+/// anything changed.
 ///
 /// # Errors
-/// Returns an executor error; units handled before it stay handled.
+/// Returns an error writing or enabling a unit; units handled before it
+/// stay handled.
 pub fn apply_linux_companion_units<E: LinuxInstallExecutor>(
     executor: &mut E,
     units: &[LinuxCompanionUnit],
 ) -> Result<LinuxCompanionReport, InstallPlatformError> {
     let mut report = LinuxCompanionReport::default();
     for unit in units {
+        // A file that cannot be read as a unit (too large, or not a plain
+        // file) is someone else's; it is reported, and the rest go on.
         let (entry, bytes) =
-            executor.companion_unit_entry(unit.name(), MAX_COMPANION_UNIT_BYTES)?;
+            match executor.companion_unit_entry(unit.name(), MAX_COMPANION_UNIT_BYTES) {
+                Ok(observed) => observed,
+                Err(error) => {
+                    report
+                        .refused
+                        .push((unit.name().to_owned(), format!("cannot be read: {error}")));
+                    continue;
+                }
+            };
         match &entry {
             LinuxExactEntry::Absent => {
                 executor.replace_companion_unit(

@@ -759,6 +759,10 @@ impl LinuxInstallExecutor for SimExecutor {
         })
     }
 
+    fn companion_unit_names(&mut self) -> Result<Vec<String>, InstallPlatformError> {
+        Ok(self.world.borrow().companions.keys().cloned().collect())
+    }
+
     fn replace_companion_unit(
         &mut self,
         name: &str,
@@ -5568,10 +5572,20 @@ fn companion_units_render_once_and_install_after_the_install_commits() {
             true,
         )],
     );
+    let rendered_units = location
+        .release_root()
+        .join("launcher/units/hypercolor-qual-recover.service");
+    let rendered_before = fs::read(&rendered_units).expect("rendered unit");
     let run = fixture.update(&changed).expect("update");
     fixture.assert_managed(&location, &changed.id);
     let report = run.companions.expect("settled").expect("in place");
     assert!(report.installed.is_empty(), "{report:?}");
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert_eq!(
+        fs::read(&rendered_units).expect("rendered unit"),
+        rendered_before,
+        "the launcher's rendered unit is untouched"
+    );
     assert_eq!(
         fixture.world.borrow().companions["hypercolor-qual-recover.service"],
         recover
@@ -5718,6 +5732,166 @@ fn uninstall_removes_the_companion_units_it_rendered() {
 }
 
 #[test]
+fn a_changed_rendered_companion_unit_refuses_the_next_install_before_any_service_change() {
+    for tamper in ["bytes", "missing", "extra", "mode"] {
+        let fixture = Fixture::new();
+        let location = installed_with_recover_unit(&fixture);
+        let units = location.release_root().join("launcher/units");
+        let rendered = units.join("hypercolor-qual-recover.service");
+        let launcher = location.release_root().join("launcher");
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).expect("thaw");
+        fs::set_permissions(&units, fs::Permissions::from_mode(0o755)).expect("thaw units");
+        match tamper {
+            "bytes" => {
+                fs::set_permissions(&rendered, fs::Permissions::from_mode(0o644)).expect("thaw");
+                fs::write(&rendered, b"[Service]\nExecStart=/bin/false\n").expect("tamper");
+                fs::set_permissions(&rendered, fs::Permissions::from_mode(0o444)).expect("freeze");
+            }
+            "missing" => fs::remove_file(&rendered).expect("remove"),
+            "extra" => fs::write(units.join("hypercolor-extra.service"), b"x").expect("extra"),
+            _ => fs::set_permissions(&rendered, fs::Permissions::from_mode(0o644)).expect("mode"),
+        }
+        fs::set_permissions(&units, fs::Permissions::from_mode(0o555)).expect("freeze units");
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o555)).expect("freeze");
+        let before = fixture.snapshot();
+        let effects = fixture.world.borrow().effects.len();
+        let error = fixture
+            .update(&fixture.v2)
+            .expect_err("a changed rendered unit refuses the run")
+            .to_string();
+        assert!(
+            error.contains("companion") || error.contains("launcher"),
+            "{tamper}: {error}"
+        );
+        assert_eq!(fixture.snapshot(), before, "{tamper}: nothing changed");
+        assert_eq!(
+            fixture.world.borrow().effects.len(),
+            effects,
+            "{tamper}: no service change"
+        );
+    }
+}
+
+#[test]
+fn an_upgrade_whose_template_cannot_render_refuses_before_any_service_change() {
+    let fixture = Fixture::new();
+    installed_with_recover_unit(&fixture);
+    let broken = companion_release(
+        &fixture,
+        "9.8.30",
+        &[(
+            "hypercolor-qual-recover.service",
+            "[Service]\nExecStart=@NOPE@\n",
+            true,
+        )],
+    );
+    let before = fixture.snapshot();
+    let effects = fixture.world.borrow().effects.len();
+    let error = fixture
+        .update(&broken)
+        .expect_err("the launcher is settled, but the template is still checked")
+        .to_string();
+    assert!(error.contains("unknown placeholder @NOPE@"), "{error}");
+    assert_eq!(fixture.snapshot(), before);
+    assert_eq!(fixture.world.borrow().effects.len(), effects);
+}
+
+#[test]
+fn companion_templates_are_checked_the_way_they_render() {
+    use hypercolor_cli::install::validate_linux_companion_template as check;
+    for accepted in [
+        &b"ExecStart=@LAUNCHER@ --role update-executor"[..],
+        b"Description=mail me @ home, or @@, or @lower@, or @",
+        b"ReadWritePaths=@STATE_ROOT@ @OPTIONAL_LAYOUT_PATHS@",
+    ] {
+        check(accepted)
+            .unwrap_or_else(|error| panic!("{}: {error}", String::from_utf8_lossy(accepted)));
+    }
+    for (refused, reason) in [
+        (&b"ExecStart=@NOPE@"[..], "unknown placeholder @NOPE@"),
+        (b"x=@_@", "unknown placeholder @_@"),
+        (b"x=@@LAUNCHERS@", "unknown placeholder @LAUNCHERS@"),
+        (b"\xff\xfe", "not UTF-8"),
+    ] {
+        let error = check(refused).expect_err("refused").to_string();
+        assert!(error.contains(reason), "{error}");
+    }
+}
+
+/// Install a release with the recover companion unit and return the
+/// installation's location.
+fn installed_with_recover_unit(fixture: &Fixture) -> LinuxInstallLocation {
+    let location = fixture.default_location();
+    let release = companion_release(
+        fixture,
+        "9.8.10",
+        &[("hypercolor-qual-recover.service", RECOVER_TEMPLATE, true)],
+    );
+    fixture
+        .run(&release, Some(location.clone()), &fixture.private())
+        .expect("fresh install");
+    assert!(
+        fixture
+            .world
+            .borrow()
+            .enabled_companions
+            .contains("hypercolor-qual-recover.service")
+    );
+    location
+}
+
+fn uninstall(
+    fixture: &Fixture,
+) -> Result<hypercolor_cli::install::LinuxUninstallRun, LinuxInstallCommandError> {
+    run_linux_uninstall(
+        &fixture.home,
+        &fixture.private(),
+        &mut UninstallHost {
+            world: Rc::clone(&fixture.world),
+            stop_at: None,
+        },
+    )
+}
+
+#[test]
+fn uninstall_removes_companion_units_even_when_the_launcher_changed() {
+    let fixture = Fixture::new();
+    let location = installed_with_recover_unit(&fixture);
+    let directory = location.release_root().join("launcher");
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).expect("thaw");
+    let program = directory.join("hypercolor");
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).expect("thaw program");
+    fs::write(&program, b"someone else's program").expect("tamper");
+    uninstall(&fixture).expect("a changed launcher never blocks uninstall");
+    let world = fixture.world.borrow();
+    assert!(world.companions.is_empty(), "the rendered unit is removed");
+    assert!(world.enabled_companions.is_empty(), "and disabled");
+}
+
+#[test]
+fn uninstall_removes_companion_units_that_start_a_deleted_launcher() {
+    let fixture = Fixture::new();
+    let location = installed_with_recover_unit(&fixture);
+    let directory = location.release_root().join("launcher");
+    for thawed in [directory.clone(), directory.join("units")] {
+        fs::set_permissions(&thawed, fs::Permissions::from_mode(0o755)).expect("thaw");
+    }
+    fs::remove_dir_all(&directory).expect("the user removes the launcher");
+    fixture.world.borrow_mut().companions.insert(
+        "hypercolor-mine.service".to_owned(),
+        b"[Service]\nExecStart=/usr/bin/true\n".to_vec(),
+    );
+    uninstall(&fixture).expect("uninstall");
+    let world = fixture.world.borrow();
+    assert_eq!(
+        world.companions.keys().collect::<Vec<_>>(),
+        ["hypercolor-mine.service"],
+        "only the unit that starts this installation's launcher is removed"
+    );
+    assert!(world.enabled_companions.is_empty(), "and it was disabled");
+}
+
+#[test]
 fn uninstall_refuses_a_companion_unit_someone_edited() {
     let fixture = Fixture::new();
     let location = fixture.default_location();
@@ -5749,4 +5923,15 @@ fn uninstall_refuses_a_companion_unit_someone_edited() {
         "{error}"
     );
     assert_eq!(fixture.snapshot(), before, "nothing was removed");
+    let world = fixture.world.borrow();
+    assert_eq!(
+        world.companions["hypercolor-qual-recover.service"], b"edited",
+        "the edited unit stays"
+    );
+    assert!(
+        world
+            .enabled_companions
+            .contains("hypercolor-qual-recover.service"),
+        "and stays enabled"
+    );
 }

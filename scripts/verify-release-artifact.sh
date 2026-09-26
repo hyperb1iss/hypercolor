@@ -545,6 +545,10 @@ else:
                 f"durable store {name} has an unknown migration_mode "
                 f"{store['migration_mode']!r}"
             )
+    COMPANION_PLACEHOLDERS = {
+        "LAUNCHER", "RELEASE_ROOT", "STATE_ROOT", "DATA_ROOT", "CONFIG_ROOT",
+        "DAEMON_STATE_ROOT", "USER_UNIT_DIR", "OPTIONAL_LAYOUT_PATHS",
+    }
     companions = managed.get("companion_units", [])
     if not isinstance(companions, list) or len(companions) > 8:
         raise SystemExit("managed_package.companion_units may declare at most 8 units")
@@ -576,6 +580,15 @@ else:
                 f"companion unit {unit} template {template!r} must be a declared file "
                 "of at most 16384 bytes"
             )
+        try:
+            text = (root / template).read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            raise SystemExit(f"companion unit {unit} template {template} is not UTF-8")
+        for token in re.findall(r"@([A-Z_]+)@", text):
+            if token not in COMPANION_PLACEHOLDERS:
+                raise SystemExit(
+                    f"companion unit {unit} template names the unknown placeholder @{token}@"
+                )
 PY
 
 platform="$(MANIFEST="${manifest}" python3 - <<'PY'

@@ -398,6 +398,7 @@ COMPANION_UNITS="${COMPANION_UNITS}" python3 - <<'PY'
 import hashlib
 import json
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -413,14 +414,44 @@ if os.environ["COMPANION_UNITS"]:
         spec = json.load(handle)
     if not isinstance(spec, dict) or set(spec) != {"units"}:
         raise SystemExit("--companion-units must hold exactly {\"units\": [...]}")
+    # Sources are relative to the spec file, and each template is checked
+    # the way the installer renders it, so a bad one never ships.
+    spec_directory = Path(os.environ["COMPANION_UNITS"]).resolve().parent
+    known_placeholders = {
+        "LAUNCHER", "RELEASE_ROOT", "STATE_ROOT", "DATA_ROOT", "CONFIG_ROOT",
+        "DAEMON_STATE_ROOT", "USER_UNIT_DIR", "OPTIONAL_LAYOUT_PATHS",
+    }
     templates = root / "share/hypercolor/systemd"
     templates.mkdir(mode=0o755, parents=True, exist_ok=True)
     templates.chmod(0o755)
+    if not isinstance(spec["units"], list):
+        raise SystemExit("--companion-units must hold a list of units")
     for unit in spec["units"]:
         if not isinstance(unit, dict) or set(unit) != {"unit", "source", "enable"}:
             raise SystemExit("a companion unit must name exactly unit, source and enable")
-        target = templates / f"{unit['unit']}.in"
-        target.write_bytes(Path(unit["source"]).read_bytes())
+        name = unit["unit"]
+        named = re.fullmatch(r"hypercolor-([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(@?)\.service", name) \
+            if isinstance(name, str) else None
+        if named is None or len(named.group(1)) > 48:
+            raise SystemExit(
+                f"companion unit {name!r} must be named hypercolor-<name>.service "
+                "or hypercolor-<name>@.service"
+            )
+        if type(unit["enable"]) is not bool or (named.group(2) and unit["enable"]):
+            raise SystemExit(f"companion unit {name} enable must be false for a template")
+        source = spec_directory / unit["source"]
+        text = source.read_bytes()
+        try:
+            decoded = text.decode("utf-8")
+        except UnicodeDecodeError:
+            raise SystemExit(f"companion unit {name} template {source} is not UTF-8")
+        for token in re.findall(r"@([A-Z_]+)@", decoded):
+            if token not in known_placeholders:
+                raise SystemExit(
+                    f"companion unit {name} template names the unknown placeholder @{token}@"
+                )
+        target = templates / f"{name}.in"
+        target.write_bytes(text)
         target.chmod(0o644)
         companion_units.append({
             "unit": unit["unit"],

@@ -49,7 +49,7 @@ pub use command::{
 };
 pub use companion::{
     LinuxCompanionReport, LinuxCompanionUnit, MAX_COMPANION_UNIT_BYTES,
-    apply_linux_companion_units, render_linux_companion_unit,
+    apply_linux_companion_units, render_linux_companion_unit, validate_linux_companion_template,
 };
 pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};
