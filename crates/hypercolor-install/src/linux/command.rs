@@ -631,8 +631,9 @@ fn platform<H: LinuxInstallHost>(
 /// [`InstallCoordinator`] itself (preparing, binding and writing a journal,
 /// then recovering it) gets the same platform the raw installer uses.
 ///
-/// Only the historical root of an installation that has not been adopted
-/// binds without a recorded location; any other store must pass its
+/// Only the historical root of an installation whose locator still says it
+/// was never adopted binds without a recorded location (an unreadable
+/// locator proves nothing, so it refuses too); any other store must pass its
 /// location, so its service is always rendered through the launcher and
 /// its sandbox. A candidate bound for a managed
 /// installation must declare that installation's launcher contract, and
@@ -657,9 +658,9 @@ pub fn bind_linux_platform<E: LinuxInstallExecutor>(
 ) -> Result<LinuxInstallPlatform<E>, LinuxInstallCommandError> {
     if inputs.managed.is_none()
         && (store.root() != home.join(".local/lib/hypercolor")
-            || matches!(
+            || !matches!(
                 super::locator::read_hint(home),
-                Ok(super::LinuxInstallAuthority::Managed(_))
+                Ok(super::LinuxInstallAuthority::Legacy(_))
             ))
     {
         return Err(InstallPlatformError::new(

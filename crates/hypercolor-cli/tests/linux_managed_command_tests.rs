@@ -5182,29 +5182,47 @@ fn an_adopted_historical_root_never_binds_without_a_location() {
         panic!("expected managed authority");
     };
     let historical = InstallStore::new(fixture.home.join(".local/lib/hypercolor"), 64 * 1024);
-    let world = Rc::clone(&fixture.world);
-    let error = bind_linux_platform(
-        &fixture.home,
-        |_, _, _| {
-            Ok(SimExecutor {
-                world,
-                active_root: None,
-            })
-        },
-        &historical,
-        &lock,
-        LinuxPlatformInputs {
-            candidate: None,
-            journal: None,
-            managed: None,
-            original: None,
-            probation: DEFAULT_PROBATION_WINDOW,
-        },
-    )
-    .map(drop)
-    .expect_err("the locator names a managed installation")
-    .to_string();
+    let bind = || {
+        let world = Rc::clone(&fixture.world);
+        bind_linux_platform(
+            &fixture.home,
+            |_, _, _| {
+                Ok(SimExecutor {
+                    world,
+                    active_root: None,
+                })
+            },
+            &historical,
+            &lock,
+            LinuxPlatformInputs {
+                candidate: None,
+                journal: None,
+                managed: None,
+                original: None,
+                probation: DEFAULT_PROBATION_WINDOW,
+            },
+        )
+        .map(drop)
+        .map_err(|error| error.to_string())
+    };
+    let error = bind().expect_err("the locator names a managed installation");
     assert!(error.contains("recorded location"), "{error}");
+
+    // A locator that cannot be read proves nothing about adoption.
+    let locator = fixture
+        .home
+        .join(".local/lib/hypercolor/install-journal.json");
+    let mode = fs::metadata(&locator)
+        .expect("locator")
+        .permissions()
+        .mode();
+    fs::set_permissions(&locator, fs::Permissions::from_mode(0o600)).expect("thaw");
+    let original = fs::read(&locator).expect("locator bytes");
+    fs::write(&locator, b"not a locator").expect("corrupt");
+    let error = bind().expect_err("an unreadable locator refuses too");
+    assert!(error.contains("recorded location"), "{error}");
+    fs::write(&locator, original).expect("restore");
+    fs::set_permissions(&locator, fs::Permissions::from_mode(mode)).expect("mode");
 }
 
 #[test]
