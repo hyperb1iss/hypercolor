@@ -64,16 +64,24 @@ written by a build it does not know.
 
 The service runs sandboxed. The whole system is read-only to it except your
 configuration, data and state directories (the recorded ones above), and it
-gets a private `/tmp`. A systemd user manager builds this sandbox with an
-unprivileged user namespace, and the unit needs systemd 239 or newer. The releases directory and the update state stay
+gets a private `/tmp`. The releases directory and the update state stay
 read-only even though they sit inside those directories, and `~/.local/bin`
 and `~/.local/lib` are never writable. The unit sets the daemon's XDG
 directories to the recorded roots, and caches go to
-`${XDG_STATE_HOME:-~/.local/state}/hypercolor/cache`. Before the sandbox is
-built, the service recreates the configuration directory if you deleted it,
-so removing `~/.config/hypercolor` to reset your settings still lets the
-daemon start. The data and state directories hold the releases and the update
-records, so deleting either one breaks the installation itself.
+`${XDG_STATE_HOME:-~/.local/state}/hypercolor/cache`.
+
+The unit needs systemd 239 or newer. A systemd user manager builds this
+sandbox inside an unprivileged user namespace, so it depends on the kernel
+and its security policy allowing those. Where they are denied, systemd either
+starts the daemon without the sandbox or refuses to start it, depending on
+the system.
+
+Before the sandbox is built, the service recreates the configuration
+directory if you deleted it, so removing `~/.config/hypercolor` to reset your
+settings still lets the daemon start. The data and state directories hold the
+releases and the update records, so deleting either one breaks the
+installation itself. If that happens, run the uninstall below (it still
+recognizes what this installer wrote), then install again.
 
 ## Upgrades from older installs
 

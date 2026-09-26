@@ -355,8 +355,8 @@ fn settle<H: LinuxUninstallHost>(
 ///
 /// Every observed entry must be absent or exactly what this installer renders
 /// for one of `active_roots` (and, for a managed installation, the service
-/// unit its recorded location renders for the release that unit names). Anything else refuses the whole
-/// removal before the first write.
+/// unit its recorded location renders for the release that unit names).
+/// Anything else refuses the whole removal before the first write.
 fn remove_platform<H: LinuxUninstallHost>(
     home: &Path,
     host: &mut H,

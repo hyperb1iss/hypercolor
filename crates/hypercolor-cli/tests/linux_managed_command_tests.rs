@@ -4582,3 +4582,32 @@ fn an_adopted_historical_root_never_binds_without_a_location() {
     fs::write(&locator, original).expect("restore");
     fs::set_permissions(&locator, fs::Permissions::from_mode(mode)).expect("mode");
 }
+
+#[test]
+fn uninstall_removes_an_install_whose_update_state_was_deleted() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().stop();
+    let state = location.state_root();
+    for inner in walk(state) {
+        fs::set_permissions(&inner, fs::Permissions::from_mode(0o755)).expect("thaw");
+    }
+    fs::set_permissions(state, fs::Permissions::from_mode(0o755)).expect("thaw");
+    fs::remove_dir_all(state).expect("the user deletes the update state");
+    run_linux_uninstall(
+        &fixture.home,
+        &fixture.private(),
+        &mut UninstallHost {
+            world: Rc::clone(&fixture.world),
+            stop_at: None,
+        },
+    )
+    .expect("uninstall does not need the update state");
+    assert!(
+        matches!(fixture.world.borrow().launcher, LinuxExactEntry::Absent),
+        "the unit is removed"
+    );
+    assert!(
+        !location.release_root().exists(),
+        "the releases are removed"
+    );
+}
