@@ -570,6 +570,17 @@ mod tests {
         }
     }
 
+    /// Connect under a deadline, so a client that waited for OK before
+    /// sending BEGIN fails here instead of hanging against these fakes.
+    async fn connect(
+        socket: &std::path::Path,
+        uid: u32,
+    ) -> Result<ManagerBus, crate::install::InstallPlatformError> {
+        tokio::time::timeout(Duration::from_secs(5), ManagerBus::connect(socket, uid))
+            .await
+            .expect("authentication finishes without waiting on the peer")
+    }
+
     fn socket_fixture() -> (tempfile::TempDir, std::path::PathBuf, u32) {
         let directory = tempfile::tempdir().expect("socket directory");
         let socket = directory.path().join("private");
@@ -585,7 +596,7 @@ mod tests {
         runtime().block_on(async {
             let listener = tokio::net::UnixListener::bind(&socket).expect("listener");
             let server = tokio::spawn(serve_stamped_manager(listener));
-            let mut bus = ManagerBus::connect(&socket, uid).await.expect("connect");
+            let mut bus = connect(&socket, uid).await.expect("connect");
 
             let job: OwnedObjectPath = bus
                 .call(
@@ -646,7 +657,7 @@ mod tests {
                 foreign.read_to_end(&mut sent).await.expect("hang up");
                 sent
             });
-            let refused = ManagerBus::connect(&socket, uid)
+            let refused = connect(&socket, uid)
                 .await
                 .err()
                 .expect("REJECTED ends the connection");
@@ -654,7 +665,7 @@ mod tests {
                 refused.to_string().contains("refused authentication"),
                 "{refused}"
             );
-            let foreign = ManagerBus::connect(&socket, uid + 1)
+            let foreign = connect(&socket, uid + 1)
                 .await
                 .err()
                 .expect("a manager served by another uid is refused");
@@ -757,6 +768,29 @@ mod tests {
                 error.to_string().contains("closed the connection"),
                 "{error}"
             );
+        });
+    }
+
+    #[test]
+    fn a_signal_sent_with_the_authentication_reply_is_kept() {
+        let (_directory, socket, uid) = socket_fixture();
+        runtime().block_on(async {
+            let listener = tokio::net::UnixListener::bind(&socket).expect("listener");
+            let server = tokio::spawn(async move {
+                // The manager broadcasts to a private connection as soon as
+                // it leaves authentication, so a signal can share the write
+                // that carries OK.
+                let mut reply = b"OK 0123456789abcdef0123456789abcdef\r\n".to_vec();
+                reply.extend(manager_signal(Endian::Little, 1, 44, "done"));
+                accept_authenticated(&listener, &reply).await
+            });
+            let mut bus = connect(&socket, uid).await.expect("connect");
+            let signal = bus.next_signal().await.expect("the signal after OK");
+            assert_eq!(
+                job_removed(&signal),
+                (44, "hypercolor.service".to_owned(), "done".to_owned())
+            );
+            drop(server.await.expect("fake manager"));
         });
     }
 }
