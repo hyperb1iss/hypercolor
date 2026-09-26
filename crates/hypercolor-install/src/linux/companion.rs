@@ -205,6 +205,9 @@ pub fn apply_linux_companion_units<E: LinuxInstallExecutor>(
     units: &[LinuxCompanionUnit],
 ) -> Result<LinuxCompanionReport, InstallPlatformError> {
     let mut report = LinuxCompanionReport::default();
+    // A systemd user directory that cannot be opened fails the whole run
+    // here, so a per-unit read error below is about that unit alone.
+    executor.companion_unit_names()?;
     for unit in units {
         // A file that cannot be read as a unit (too large, or not a plain
         // file) is someone else's; it is reported, and the rest go on.

@@ -228,10 +228,15 @@ pub fn ensure_linux_launcher(
             ));
         }
     };
-    // Every install renders its candidate's templates, whether or not it
+    // Every install checks its candidate's templates, whether or not it
     // publishes them, so a release with a template that could never render
-    // is refused on upgrades too, before any service change.
-    let rendered = render_companions(location, home, candidate, package)?;
+    // is refused on upgrades too, before any service change. Only a
+    // publication renders them for this installation.
+    for declared in package.companion_units() {
+        let template = read_unit_member(candidate, declared.template())?;
+        super::companion::validate_linux_companion_template(&template)
+            .map_err(|source| error(format!("companion unit {}: {source}", declared.unit())))?;
+    }
     let root = store
         .root_authority(lock)
         .map_err(|source| error(source.to_string()))?;
@@ -246,11 +251,14 @@ pub fn ensure_linux_launcher(
         {
             return Ok(existing);
         }
-        lock.open_store_public_directory()
-            .map_err(|source| error(source.to_string()))?
-            .durable_remove_child_tree(Path::new(LINUX_LAUNCHER_DIRECTORY))
-            .map_err(io_error("retire a launcher no settled service started"))?;
     }
+    // Render before retiring anything, so a template that cannot render for
+    // this installation leaves the old launcher where it was.
+    let rendered = render_companions(location, home, candidate, package)?;
+    lock.open_store_public_directory()
+        .map_err(|source| error(source.to_string()))?
+        .durable_remove_child_tree(Path::new(LINUX_LAUNCHER_DIRECTORY))
+        .map_err(io_error("retire a launcher no settled service started"))?;
     remove_leftover_stages(lock)?;
     let sequence = LAUNCHER_STAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let staging = root

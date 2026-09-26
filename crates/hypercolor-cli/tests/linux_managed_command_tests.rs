@@ -5732,6 +5732,51 @@ fn uninstall_removes_the_companion_units_it_rendered() {
 }
 
 #[test]
+fn companion_units_placed_while_stopped_survive_a_different_template_and_uninstall() {
+    // A pre-launcher install, stopped, upgrades to a release with a
+    // companion template: the commit settles the launcher and places the
+    // unit. A later release with different text changes neither, and
+    // uninstall removes what was placed.
+    let (fixture, location, _) = managed_v1_without_launcher();
+    fixture.world.borrow_mut().stop();
+    let first = companion_release(
+        &fixture,
+        "9.8.40",
+        &[("hypercolor-qual-recover.service", RECOVER_TEMPLATE, true)],
+    );
+    let run = fixture.update(&first).expect("upgrade while stopped");
+    assert!(matches!(run.outcome, InstallOutcome::Committed { .. }));
+    let placed = rendered_recover(&fixture, &location);
+    assert_eq!(
+        fixture.world.borrow().companions["hypercolor-qual-recover.service"],
+        placed
+    );
+    let different = companion_release(
+        &fixture,
+        "9.8.41",
+        &[(
+            "hypercolor-qual-recover.service",
+            "[Service]\nType=oneshot\nExecStart=/bin/false\n",
+            true,
+        )],
+    );
+    let run = fixture
+        .update(&different)
+        .expect("upgrade with a different template");
+    let report = run.companions.expect("settled").expect("in place");
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert_eq!(
+        fixture.world.borrow().companions["hypercolor-qual-recover.service"],
+        placed,
+        "the placed unit is untouched"
+    );
+    uninstall(&fixture).expect("uninstall");
+    let world = fixture.world.borrow();
+    assert!(world.companions.is_empty(), "{:?}", world.companions.keys());
+    assert!(world.enabled_companions.is_empty());
+}
+
+#[test]
 fn a_changed_rendered_companion_unit_refuses_the_next_install_before_any_service_change() {
     for tamper in ["bytes", "missing", "extra", "mode"] {
         let fixture = Fixture::new();
@@ -5881,12 +5926,20 @@ fn uninstall_removes_companion_units_that_start_a_deleted_launcher() {
         "hypercolor-mine.service".to_owned(),
         b"[Service]\nExecStart=/usr/bin/true\n".to_vec(),
     );
+    let mentions = format!(
+        "[Service]\nExecStart=/usr/bin/echo {} __launch --role cli\n",
+        launcher_path(&location).display()
+    );
+    fixture.world.borrow_mut().companions.insert(
+        "hypercolor-mentions.service".to_owned(),
+        mentions.into_bytes(),
+    );
     uninstall(&fixture).expect("uninstall");
     let world = fixture.world.borrow();
     assert_eq!(
         world.companions.keys().collect::<Vec<_>>(),
-        ["hypercolor-mine.service"],
-        "only the unit that starts this installation's launcher is removed"
+        ["hypercolor-mentions.service", "hypercolor-mine.service"],
+        "only a unit whose command runs this installation's launcher is removed"
     );
     assert!(world.enabled_companions.is_empty(), "and it was disabled");
 }

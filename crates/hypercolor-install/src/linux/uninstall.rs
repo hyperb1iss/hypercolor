@@ -440,7 +440,9 @@ fn remove_platform<H: LinuxUninstallHost>(
 ///
 /// With a readable launcher record, a unit is this installation's when its
 /// bytes hash to the recorded digest. Without one (the launcher is gone),
-/// only companion-named units that start this installation's launcher are.
+/// only companion-named units with an `Exec*=` command that runs this
+/// installation's launcher in one of its roles are, even if someone edited
+/// them, since they cannot run once the launcher is gone.
 fn owned_companions<E: LinuxInstallExecutor>(
     executor: &mut E,
     recorded: Option<&(Option<Vec<super::bootstrap::RecordedCompanion>>, String)>,
@@ -476,9 +478,7 @@ fn owned_companions<E: LinuxInstallExecutor>(
                     continue;
                 };
                 let text = String::from_utf8_lossy(&bytes);
-                let starts_launcher = text.lines().any(|line| {
-                    line.trim_start().starts_with("Exec") && line.contains(launcher.as_str())
-                });
+                let starts_launcher = text.lines().any(|line| runs_launcher(line, launcher));
                 if starts_launcher {
                     let installable = text.lines().any(|line| line.trim() == "[Install]");
                     owned.push((name.clone(), installable && !name.contains('@'), entry));
@@ -487,6 +487,26 @@ fn owned_companions<E: LinuxInstallExecutor>(
         }
     }
     Ok(owned)
+}
+
+/// Whether one unit file line is an `Exec*=` command that runs `launcher`
+/// (`<launcher path> __launch`) in one of its roles, after systemd's
+/// command prefixes.
+fn runs_launcher(line: &str, launcher: &str) -> bool {
+    let Some((key, command)) = line.trim().split_once('=') else {
+        return false;
+    };
+    if !key.trim_end().starts_with("Exec") {
+        return false;
+    }
+    let command = command
+        .trim_start()
+        .trim_start_matches(['-', '@', ':', '+', '!']);
+    command
+        .strip_prefix(launcher)
+        .and_then(|rest| rest.strip_prefix(" --role "))
+        .and_then(|rest| rest.split_ascii_whitespace().next())
+        .is_some_and(|role| super::LinuxLaunchRole::parse(role).is_some())
 }
 
 fn owned_launcher(

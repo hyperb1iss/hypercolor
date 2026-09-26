@@ -277,6 +277,28 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unknown placeholder @NOPE@", result.stdout + result.stderr)
 
+        twice = {"unit": "hypercolor-update-recover.service", "source": "good.service.in",
+                 "enable": True}
+        spec.write_text(json.dumps({"units": [twice, twice]}))
+        result = self.dist(
+            "--target", "linux-amd64", "--companion-units", str(spec),
+            version="1.0.0-twice",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("declared twice", result.stdout + result.stderr)
+
+        large = self.directory / "large.service.in"
+        large.write_text("[Service]\n" + "#" * (16 * 1024))
+        spec.write_text(json.dumps({"units": [{
+            "unit": "hypercolor-update-recover.service", "source": str(large), "enable": True,
+        }]}))
+        result = self.dist(
+            "--target", "linux-amd64", "--companion-units", str(spec),
+            version="1.0.0-large",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exceeds 16384 bytes", result.stdout + result.stderr)
+
         produced = self.root / "source/dist/hypercolor-1.0.0-relative-linux-amd64"
         payload = self.directory / produced.name
         shutil.copytree(produced, payload)

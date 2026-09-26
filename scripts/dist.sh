@@ -424,8 +424,9 @@ if os.environ["COMPANION_UNITS"]:
     templates = root / "share/hypercolor/systemd"
     templates.mkdir(mode=0o755, parents=True, exist_ok=True)
     templates.chmod(0o755)
-    if not isinstance(spec["units"], list):
-        raise SystemExit("--companion-units must hold a list of units")
+    if not isinstance(spec["units"], list) or len(spec["units"]) > 8:
+        raise SystemExit("--companion-units must hold a list of at most 8 units")
+    declared_names = set()
     for unit in spec["units"]:
         if not isinstance(unit, dict) or set(unit) != {"unit", "source", "enable"}:
             raise SystemExit("a companion unit must name exactly unit, source and enable")
@@ -437,10 +438,15 @@ if os.environ["COMPANION_UNITS"]:
                 f"companion unit {name!r} must be named hypercolor-<name>.service "
                 "or hypercolor-<name>@.service"
             )
+        if name in declared_names:
+            raise SystemExit(f"companion unit {name} is declared twice")
+        declared_names.add(name)
         if type(unit["enable"]) is not bool or (named.group(2) and unit["enable"]):
             raise SystemExit(f"companion unit {name} enable must be false for a template")
         source = spec_directory / unit["source"]
         text = source.read_bytes()
+        if len(text) > 16 * 1024:
+            raise SystemExit(f"companion unit {name} template {source} exceeds 16384 bytes")
         try:
             decoded = text.decode("utf-8")
         except UnicodeDecodeError:
