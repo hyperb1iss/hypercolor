@@ -233,6 +233,7 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 Some(recorded) => recorded,
                 None => host.propose_location(home, uid.owner_uid())?,
             };
+            require_sandboxable(home, &proposed)?;
             let adoption = LinuxAdoption::begin_observed(
                 home,
                 LinuxInstallElection::Legacy {
@@ -243,7 +244,6 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 proposed,
                 &mut |checkpoint| stop(host, checkpoint).map_err(boxed_stop),
             )?;
-            require_sandboxable(home, adoption.location())?;
             let candidate = host.stage_candidate(adoption.store(), adoption.lock())?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
             let (journal, mut platform) =
