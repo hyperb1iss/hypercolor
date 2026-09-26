@@ -616,4 +616,108 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
         self.prove_owner(checkpoint, expected, &record, receipt.as_ref())
             .map(|_| ())
     }
+
+    fn stop_unjournaled_runtime(
+        &mut self,
+        platform_record: &PlatformTransactionRecord,
+    ) -> Result<bool, InstallPlatformError> {
+        let record = self.validated_record(platform_record)?;
+        let inspection = self.inspect_exact()?;
+        if inspection.systemd.phase() != LinuxServicePhase::Stopped {
+            self.require_on_disk_service(&inspection, &record)?;
+            self.executor.set_runtime(false)?;
+        }
+        self.last_inspection = None;
+        Ok(true)
+    }
+
+    fn matches_untouched_prior(
+        &mut self,
+        prior: &PlatformState,
+        platform_record: &PlatformTransactionRecord,
+    ) -> Result<bool, InstallPlatformError> {
+        let record = self.validated_record(platform_record)?;
+        let inspection = self.inspect_exact()?;
+        let state = self.state_from(&inspection)?;
+        let baseline = &record.baseline_systemd;
+        let untouched = Self::expected_layout_matches(
+            &inspection,
+            &record,
+            0,
+            PlatformCheckpoint::PriorOriginal,
+        ) && inspection.launcher == record.prior_launcher
+            && inspection.launcher_bytes == record.prior_launcher_bytes
+            && state.layout_unit == prior.layout_unit
+            && state.launcher_unit == prior.launcher_unit
+            && inspection.systemd.load_state == baseline.load_state
+            && inspection.systemd.unit_file_state == baseline.unit_file_state
+            && inspection.systemd.fragment_path == baseline.fragment_path
+            && inspection.systemd.exec_start == baseline.exec_start;
+        self.last_inspection = Some(inspection);
+        Ok(untouched)
+    }
+}
+
+impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
+    /// Prove the service that runs outside the journal is exactly the one
+    /// on disk: this installer's fragment running the launcher on disk,
+    /// which is one side of this transaction, and a main process (when there
+    /// is one) that is the daemon of the unit the active pointer names.
+    fn require_on_disk_service(
+        &mut self,
+        inspection: &LinuxInspection,
+        record: &LinuxRecord,
+    ) -> Result<(), InstallPlatformError> {
+        let systemd = &inspection.systemd;
+        let launcher_is_ours = !matches!(inspection.launcher, LinuxExactEntry::Absent)
+            && (inspection.launcher_bytes == record.prior_launcher_bytes
+                || record
+                    .candidate_launcher
+                    .as_ref()
+                    .is_some_and(|launcher| inspection.launcher_bytes == launcher.bytes));
+        if systemd.load_state != "loaded"
+            || systemd.fragment_path != self.config.direct_fragment_path
+            || !launcher_is_ours
+            || systemd.exec_start != require_notify_launcher(&inspection.launcher_bytes)?
+        {
+            return Err(error(
+                "the running service is not the one this installer's on-disk \
+                 definition starts",
+            ));
+        }
+        let unit = self
+            .state_from(inspection)?
+            .running_unit
+            .ok_or_else(|| error("the running service names no on-disk unit"))?;
+        let binding = if unit == record.candidate.unit {
+            &record.candidate
+        } else {
+            record
+                .prior
+                .as_ref()
+                .filter(|prior| prior.unit == unit)
+                .ok_or_else(|| {
+                    error("the running service's unit belongs to neither side of this transaction")
+                })?
+        };
+        if systemd.main_pid == 0 {
+            // Waiting to restart, or collecting a process that already
+            // exited: there is no process to identify beyond the unit.
+            return Ok(());
+        }
+        let process = self
+            .executor
+            .process_executable(systemd.main_pid, binding.daemon_size)?;
+        if process.path != binding.daemon_path
+            || process.sha256 != binding.daemon_sha256
+            || !unit.as_str().starts_with("legacy-")
+                && (process.device != binding.daemon_device
+                    || process.inode != binding.daemon_inode)
+        {
+            return Err(error(
+                "the running service's process is not the daemon its on-disk unit names",
+            ));
+        }
+        Ok(())
+    }
 }

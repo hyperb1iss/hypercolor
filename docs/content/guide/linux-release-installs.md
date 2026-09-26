@@ -72,6 +72,32 @@ Once an install has switched, older copies of the installer stop before they
 change the service, launcher, command links or locator, instead of managing a
 second, independent copy. Use a current installer from then on.
 
+## When an upgrade is interrupted
+
+Run the installer again. It finishes the interrupted upgrade or rolls it back
+before it does anything else, and it handles what the system did in the
+meantime:
+
+- **A start or stop still in progress.** The installer first waits for any
+  start or stop systemd already has queued or running for the service. Waits
+  follow the service's own `TimeoutStartSec` and `TimeoutStopSec`, up to three
+  minutes each, so a slow start is never mistaken for a failure.
+- **A service systemd started on its own.** After a power loss or a logout,
+  systemd starts the service again at the next login or boot, from the
+  release the installer last switched to. When the upgrade expects the
+  service stopped at that point, the installer proves the running service is
+  exactly that installed release and stops it, then continues. It never stops
+  a process it cannot identify.
+- **A new release that fails after it started.** A new release that restarts,
+  keeps crashing, stops, or fails before it proves itself healthy is rolled
+  back, and the previous release runs again. If it crashed often enough to hit
+  systemd's start limit, the failure is cleared before the previous release
+  starts.
+- **An upgrade that never got going.** If the running release restarted
+  before the upgrade stopped it, the upgrade can no longer prove what it was
+  about to stop. It ends without changing anything and says so; run the
+  installer again to upgrade.
+
 ## Directory permissions and private groups
 
 Another account must not be able to change the directories the installer
@@ -121,7 +147,7 @@ hide accounts from a listing, so they refuse the group exception.
 | Location or home path is too long | The transaction record could not carry it | Use shorter locations |
 | Location or home path has other characters | systemd would read the generated unit differently | Use a path of letters, digits, `/`, `.`, `_` and `-` |
 | `XDG_RUNTIME_DIR` has no `systemd/private` socket you own | The installer drives the service through your user manager's private socket, never the session bus | Run it in your own login session, or keep the user manager running with `loginctl enable-linger` |
-| The service is `failed`, `activating` or restarting | The installer does not act on a service mid-transition yet | Wait, or run `systemctl --user reset-failed hypercolor.service` |
+| The service is still starting, stopping or restarting after its own timeout | A service that keeps changing state is not a safe starting point | Wait for it to settle, or stop it with `systemctl --user stop hypercolor.service`, then rerun |
 | Locator from an unknown or newer installer | Guessing would risk managing the wrong install | Use the current installer |
 | Uninstall finds a service, unit or link this installer did not generate | It belongs to a package, another install or a local edit | Remove it with its owner, then rerun |
 | Another install or uninstall is running | Two writers would corrupt the journal | Wait for it to finish |

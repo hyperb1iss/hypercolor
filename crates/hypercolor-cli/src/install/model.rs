@@ -491,6 +491,18 @@ pub struct InstallJournalV1 {
     pub platform_record: PlatformTransactionRecord,
     pub candidate_owner_receipt: Option<PlatformOwnerReceipt>,
     pub failure: Option<String>,
+    /// The transaction ended before it unloaded the prior, without any
+    /// effect, because the prior's baseline service identity was lost.
+    ///
+    /// Written only when true, so every other journal keeps its exact
+    /// serialized form.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub abandoned: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl InstallJournalV1 {
@@ -528,6 +540,7 @@ impl InstallJournalV1 {
             platform_record,
             candidate_owner_receipt: None,
             failure: None,
+            abandoned: false,
         })
     }
 
@@ -662,6 +675,13 @@ impl InstallJournalV1 {
         if receipt_required && self.candidate_owner_receipt.is_none() {
             return Err(InstallModelError::InvalidOwnerReceipt);
         }
+        if self.abandoned
+            && (self.disposition != InstallDisposition::RolledBack
+                || self.candidate_owner_receipt.is_some()
+                || self.layout_operation_index != 0)
+        {
+            return Err(InstallModelError::InvalidAbandonment);
+        }
         Ok(())
     }
 
@@ -767,6 +787,9 @@ pub enum InstallOutcome {
     RolledBack {
         active_unit: Option<UnitId>,
         failure: String,
+        /// The transaction ended before it changed anything (see
+        /// [`InstallJournalV1::abandoned`]).
+        abandoned: bool,
     },
 }
 
@@ -814,6 +837,8 @@ pub enum InstallModelError {
     OwnerReceiptTooLarge { limit: usize },
     #[error("platform owner receipt does not match this transaction")]
     InvalidOwnerReceipt,
+    #[error("install journal abandonment is valid only for an effect-free rollback")]
+    InvalidAbandonment,
 }
 
 pub(crate) fn active_target(unit: &UnitId) -> PathBuf {

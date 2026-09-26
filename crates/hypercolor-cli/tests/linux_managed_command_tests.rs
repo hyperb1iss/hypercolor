@@ -9,7 +9,7 @@
 //! simulated daemon runs whatever file its launcher names.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -20,17 +20,18 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use hypercolor_cli::install::{
-    DirectoryRefusal, InstallCoordinator, InstallDisposition, InstallLock, InstallOutcome,
-    InstallPlatformError, InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy,
-    InstallTransactionId, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,
-    LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse, LinuxInstallCheckpoint,
-    LinuxInstallCommandError, LinuxInstallConfig, LinuxInstallElection, LinuxInstallExecutor,
-    LinuxInstallHost, LinuxInstallLocation, LinuxInstallPlatform, LinuxInstallRequest,
-    LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLocatorError,
-    LinuxProcessExecutable, LinuxPublicTree, LinuxRuntimeSettlement, LinuxUninstallCheckpoint,
-    LinuxUninstallHost, OwnershipPolicy, PlatformTransactionRecord, PrincipalDatabase,
-    PrincipalGroup, PrincipalUser, UnitId, UnitRecord, elect_linux_installation_with,
-    run_linux_install, run_linux_uninstall, stage_release_payload,
+    DirectoryRefusal, InstallAction, InstallCoordinator, InstallDisposition, InstallJournalV1,
+    InstallLock, InstallOutcome, InstallPlatformError, InstallRequest, InstallStore,
+    InstallStoreError, InstallTargetPolicy, InstallTransactionId, LINUX_LAYOUT_ITEMS,
+    LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
+    LinuxHttpResponse, LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallConfig,
+    LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost, LinuxInstallLocation,
+    LinuxInstallPlatform, LinuxInstallRequest, LinuxLayoutItem, LinuxLayoutPublication,
+    LinuxLegacyFile, LinuxLocatorError, LinuxProcessExecutable, LinuxPublicTree,
+    LinuxRuntimeSettlement, LinuxUninstallCheckpoint, LinuxUninstallHost, OwnershipPolicy,
+    PlatformTransactionRecord, PrincipalDatabase, PrincipalGroup, PrincipalUser, UnitId,
+    UnitRecord, elect_linux_installation_with, run_linux_install, run_linux_uninstall,
+    stage_release_payload,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -162,6 +163,32 @@ struct World {
     effects: Vec<String>,
     crash: Option<Crash>,
     fault: Option<String>,
+    /// A start job the manager queued on its own (login autostart); it runs
+    /// when the installer settles the service.
+    queued_start: bool,
+    /// Waiting to restart after a crash: `activating/auto-restart`.
+    auto_restart: bool,
+    /// Ended in failure: `failed/failed`.
+    failed: bool,
+    /// Versions whose daemon never reaches readiness, so every start job
+    /// for them fails and the service waits to restart.
+    failing_starts: BTreeSet<String>,
+    /// A failing start ends `failed` (its start limit hit) instead of
+    /// waiting to restart.
+    failing_start_ends_failed: bool,
+    resets: usize,
+    shows: usize,
+    crash_at_show: Option<usize>,
+    /// What happens when the installer next asks the daemon of this version
+    /// for `/health`: the installer dies, or the daemon crashes under it.
+    at_health: Option<(&'static str, HealthEvent)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HealthEvent {
+    InstallerDies,
+    Restarts,
+    CrashLoops,
 }
 
 type Shared = Rc<RefCell<World>>;
@@ -193,6 +220,15 @@ impl World {
             effects: Vec::new(),
             crash: None,
             fault: None,
+            queued_start: false,
+            auto_restart: false,
+            failed: false,
+            failing_starts: BTreeSet::new(),
+            failing_start_ends_failed: false,
+            resets: 0,
+            shows: 0,
+            crash_at_show: None,
+            at_health: None,
         }))
     }
 
@@ -252,11 +288,20 @@ impl World {
         } else {
             String::new()
         };
+        let (active_state, sub_state) = if self.active {
+            ("active", "running")
+        } else if self.auto_restart {
+            ("activating", "auto-restart")
+        } else if self.failed {
+            ("failed", "failed")
+        } else {
+            ("inactive", "dead")
+        };
         format!(
             "LoadState={}\nActiveState={}\nSubState={}\nUnitFileState={}\nFragmentPath={}\nExecStart={}\nMainPID={}\nInvocationID={}\n",
             if self.loaded { "loaded" } else { "not-found" },
-            if self.active { "active" } else { "inactive" },
-            if self.active { "running" } else { "dead" },
+            active_state,
+            sub_state,
             if !self.loaded {
                 ""
             } else if self.enabled {
@@ -274,6 +319,81 @@ impl World {
             },
         )
         .into_bytes()
+    }
+
+    /// The version of the daemon the launcher would start right now.
+    fn launch_version(&self) -> String {
+        let executable = Path::new(
+            self.exec_start
+                .split_ascii_whitespace()
+                .next()
+                .expect("launcher executable"),
+        );
+        let resolved = fs::canonicalize(executable).expect("launcher executable exists");
+        unit_version(&resolved)
+    }
+
+    /// Run one start job the way the manager would. A daemon that never
+    /// reaches readiness fails the job, then waits to restart or, past its
+    /// start limit, ends failed.
+    fn start_job(&mut self) -> Result<(), InstallPlatformError> {
+        self.failed = false;
+        self.auto_restart = false;
+        if self.failing_starts.contains(&self.launch_version()) {
+            self.invocation += 1;
+            self.last_pid = 4000 + self.invocation;
+            if self.failing_start_ends_failed {
+                self.failed = true;
+            } else {
+                self.auto_restart = true;
+            }
+            return Err(InstallPlatformError::new(
+                "systemd job failed with exact result failed",
+            ));
+        }
+        self.start();
+        Ok(())
+    }
+
+    /// The daemon dies and `Restart=on-failure` brings it back under a
+    /// fresh invocation.
+    fn restart_service(&mut self) {
+        assert!(self.active, "only a running daemon can restart");
+        self.stop();
+        self.start();
+    }
+
+    /// The daemon dies and the manager is waiting to restart it.
+    fn crash_to_auto_restart(&mut self) {
+        assert!(self.active, "only a running daemon can crash");
+        self.stop();
+        self.auto_restart = true;
+    }
+
+    /// The daemon dies and hits its start limit.
+    fn crash_to_failed(&mut self) {
+        assert!(self.active, "only a running daemon can crash");
+        self.stop();
+        self.failed = true;
+    }
+
+    /// Power loss: every process is gone, and the user manager comes back,
+    /// loads the on-disk fragment and queues an enabled service's start.
+    fn power_cycle(&mut self) {
+        self.active = false;
+        self.pid = 0;
+        self.last_pid = 0;
+        self.process = None;
+        self.auto_restart = false;
+        self.failed = false;
+        if matches!(self.launcher, LinuxExactEntry::Absent) {
+            self.loaded = false;
+            self.exec_start.clear();
+        } else {
+            self.loaded = true;
+            self.exec_start = launcher_exec(&self.launcher_bytes);
+        }
+        self.queued_start = self.loaded && self.enabled;
     }
 
     fn start(&mut self) {
@@ -298,23 +418,29 @@ impl World {
     }
 
     fn stop(&mut self) {
+        if self.active {
+            self.last_pid = self.pid;
+        }
         self.active = false;
-        self.last_pid = self.pid;
+        self.auto_restart = false;
+        self.queued_start = false;
         self.pid = 0;
         self.process = None;
     }
 
     fn running_version(&self) -> String {
         let process = self.process.as_ref().expect("running daemon");
-        let unit = Path::new(&process.path)
-            .parent()
-            .and_then(Path::parent)
-            .expect("unit root");
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(unit.join("manifest.json")).expect("manifest"))
-                .expect("manifest JSON");
-        manifest["version"].as_str().expect("version").to_owned()
+        unit_version(Path::new(&process.path))
     }
+}
+
+/// The manifest version of the unit whose daemon lives at `daemon`.
+fn unit_version(daemon: &Path) -> String {
+    let unit = daemon.parent().and_then(Path::parent).expect("unit root");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(unit.join("manifest.json")).expect("manifest"))
+            .expect("manifest JSON");
+    manifest["version"].as_str().expect("version").to_owned()
 }
 
 struct SimExecutor {
@@ -393,11 +519,30 @@ impl LinuxInstallExecutor for SimExecutor {
     }
 
     fn settle_runtime(&mut self) -> Result<LinuxRuntimeSettlement, InstallPlatformError> {
-        Ok(LinuxRuntimeSettlement::Settled)
+        let mut world = self.world.borrow_mut();
+        if world.queued_start {
+            world.queued_start = false;
+            // A failed boot start leaves the service waiting to restart.
+            let _ = world.start_job();
+        }
+        Ok(if world.auto_restart {
+            LinuxRuntimeSettlement::Unsettled
+        } else {
+            LinuxRuntimeSettlement::Settled
+        })
     }
 
     fn systemd_show(&mut self, max_bytes: usize) -> Result<Vec<u8>, InstallPlatformError> {
-        let output = self.world.borrow().show();
+        let mut world = self.world.borrow_mut();
+        world.shows += 1;
+        if world.crash_at_show == Some(world.shows) {
+            world.crash_at_show = None;
+            panic!(
+                "simulated installer loss at systemd observation {}",
+                world.shows
+            );
+        }
+        let output = world.show();
         assert!(output.len() <= max_bytes);
         Ok(output)
     }
@@ -516,13 +661,17 @@ impl LinuxInstallExecutor for SimExecutor {
     fn set_runtime(&mut self, running: bool) -> Result<(), InstallPlatformError> {
         let mut world = self.world.borrow_mut();
         let crash = world.effect(format!("runtime:{running}"))?;
-        if running {
-            world.start();
+        let result = if running {
+            if world.failed {
+                world.resets += 1;
+            }
+            world.start_job()
         } else {
             world.stop();
-        }
+            Ok(())
+        };
         world.settle(crash);
-        Ok(())
+        result
     }
 
     fn process_executable(
@@ -549,6 +698,31 @@ impl LinuxInstallExecutor for SimExecutor {
         path: &'static str,
         max_bytes: usize,
     ) -> Result<LinuxHttpResponse, InstallPlatformError> {
+        let targeted = {
+            let world = self.world.borrow();
+            path == "/health"
+                && world.process.is_some()
+                && world
+                    .at_health
+                    .is_some_and(|(version, _)| world.running_version() == version)
+        };
+        if targeted {
+            let event = self
+                .world
+                .borrow_mut()
+                .at_health
+                .take()
+                .map(|(_, event)| event);
+            match event {
+                Some(HealthEvent::InstallerDies) => panic!("simulated installer loss in a proof"),
+                Some(HealthEvent::Restarts) => self.world.borrow_mut().restart_service(),
+                Some(HealthEvent::CrashLoops) => self.world.borrow_mut().crash_to_auto_restart(),
+                None => {}
+            }
+        }
+        if self.world.borrow().process.is_none() {
+            return Err(InstallPlatformError::new("daemon HTTP connection refused"));
+        }
         let version = self.world.borrow().running_version();
         let value = match path {
             "/health" => json!({"status":"healthy","version":version}),
@@ -2207,8 +2381,10 @@ fn uninstall_removes_an_install_whose_journal_cannot_settle() {
         fixture.run(&fixture.v2, None, &fixture.private())
     }));
     assert!(crashed.is_err());
-    // A restart brings the stopped service back behind the journal's back.
-    fixture.world.borrow_mut().start();
+    // Someone toggles autostart behind the journal's back. Unlike a service
+    // restart, no recovery rule explains a changed service definition.
+    let enabled = fixture.world.borrow().enabled;
+    fixture.world.borrow_mut().enabled = !enabled;
     assert!(
         fixture.run(&fixture.v2, None, &fixture.private()).is_err(),
         "recovery cannot settle this drift"
@@ -2333,4 +2509,516 @@ fn public_directories_writable_by_another_account_refuse_before_any_platform_wri
         fs::set_permissions(fixture.home.join(public), fs::Permissions::from_mode(0o755))
             .expect("cleanup");
     }
+}
+
+// ── Restarted, autostarted and transitional services ───────────────────
+
+/// A committed managed install of v1 at the default roots, running.
+fn managed_v1() -> (Fixture, LinuxInstallLocation) {
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    let run = fixture
+        .run(&fixture.v1, Some(location.clone()), &fixture.private())
+        .expect("managed install");
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v1.id.clone()
+        }
+    );
+    (fixture, location)
+}
+
+impl Fixture {
+    fn journal(&self) -> InstallJournalV1 {
+        let LinuxInstallElection::Managed { store, lock, .. } =
+            elect_linux_installation_with(&self.home, &self.private()).expect("managed election")
+        else {
+            panic!("expected managed authority");
+        };
+        store
+            .load_journal(&lock)
+            .expect("journal")
+            .expect("present")
+    }
+
+    fn update(
+        &self,
+        release: &Release,
+    ) -> Result<hypercolor_cli::install::LinuxInstallRun, LinuxInstallCommandError> {
+        self.run(release, None, &self.private())
+    }
+
+    /// The service runs, steadily, whatever recovery just did.
+    fn assert_settled_service(&self, context: &str) {
+        let world = self.world.borrow();
+        assert!(world.active, "{context}: a release runs");
+        assert!(
+            !world.auto_restart && !world.failed && !world.queued_start,
+            "{context}: nothing is left mid-transition"
+        );
+    }
+}
+
+type WorldEvent = fn(&mut World);
+
+/// What happens to a running candidate after its owner receipt.
+fn candidate_events() -> [(&'static str, WorldEvent); 4] {
+    [
+        ("restarts under a new invocation", World::restart_service),
+        ("crash loops", World::crash_to_auto_restart),
+        ("ends failed at its start limit", World::crash_to_failed),
+        ("is stopped", World::stop),
+    ]
+}
+
+#[test]
+fn a_candidate_that_restarts_or_stops_after_its_receipt_rolls_back() {
+    for (name, event) in candidate_events() {
+        let (fixture, location) = managed_v1();
+        fixture.world.borrow_mut().at_health = Some(("9.8.8", HealthEvent::InstallerDies));
+        let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+        assert!(crashed.is_err(), "{name}: the installer died in the proof");
+        let pending = fixture.journal();
+        assert_eq!(
+            (pending.disposition, pending.next_action),
+            (
+                InstallDisposition::Forward,
+                Some(InstallAction::ProveCandidate)
+            ),
+            "{name}"
+        );
+        assert!(pending.candidate_owner_receipt.is_some(), "{name}");
+
+        event(&mut fixture.world.borrow_mut());
+        let run = fixture
+            .update(&fixture.v2)
+            .unwrap_or_else(|error| panic!("{name}: recovery stopped: {error}"));
+        assert!(run.recovered, "{name}");
+        assert!(
+            matches!(
+                run.outcome,
+                InstallOutcome::RolledBack {
+                    abandoned: false,
+                    ..
+                }
+            ),
+            "{name}: {:?}",
+            run.outcome
+        );
+        fixture.assert_managed(&location, &fixture.v1.id);
+        fixture.assert_settled_service(name);
+        assert_eq!(
+            fixture.world.borrow().resets,
+            usize::from(name.contains("failed")),
+            "{name}: only a failed service needs a reset before the prior starts"
+        );
+
+        let retry = fixture.update(&fixture.v2).expect("retry after rollback");
+        assert_eq!(
+            retry.outcome,
+            InstallOutcome::Committed {
+                active_unit: fixture.v2.id.clone()
+            },
+            "{name}"
+        );
+        fixture.assert_managed(&location, &fixture.v2.id);
+    }
+}
+
+#[test]
+fn a_candidate_that_crashes_during_its_proof_rolls_back_in_the_same_run() {
+    for event in [HealthEvent::Restarts, HealthEvent::CrashLoops] {
+        let (fixture, location) = managed_v1();
+        fixture.world.borrow_mut().at_health = Some(("9.8.8", event));
+        let run = fixture
+            .update(&fixture.v2)
+            .unwrap_or_else(|error| panic!("{event:?}: the run stopped: {error}"));
+        assert!(!run.recovered, "{event:?}");
+        assert!(
+            matches!(
+                run.outcome,
+                InstallOutcome::RolledBack {
+                    abandoned: false,
+                    ..
+                }
+            ),
+            "{event:?}: {:?}",
+            run.outcome
+        );
+        fixture.assert_managed(&location, &fixture.v1.id);
+        fixture.assert_settled_service(&format!("{event:?}"));
+    }
+}
+
+#[test]
+fn a_candidate_that_never_becomes_ready_rolls_back_and_resets_a_failed_service() {
+    // A daemon that exits before readiness, or outlives its unit's start
+    // timeout, fails its start job and then waits to restart or, past its
+    // start limit, ends failed.
+    for ends_failed in [false, true] {
+        let (fixture, location) = managed_v1();
+        {
+            let mut world = fixture.world.borrow_mut();
+            world.failing_starts.insert("9.8.8".to_owned());
+            world.failing_start_ends_failed = ends_failed;
+        }
+        let run = fixture
+            .update(&fixture.v2)
+            .unwrap_or_else(|error| panic!("ends_failed={ends_failed}: {error}"));
+        assert!(
+            matches!(
+                run.outcome,
+                InstallOutcome::RolledBack {
+                    abandoned: false,
+                    ..
+                }
+            ),
+            "ends_failed={ends_failed}: {:?}",
+            run.outcome
+        );
+        fixture.assert_managed(&location, &fixture.v1.id);
+        fixture.assert_settled_service("never ready");
+        assert_eq!(
+            fixture.world.borrow().resets,
+            usize::from(ends_failed),
+            "the prior starts only after a failed service is reset"
+        );
+    }
+}
+
+#[test]
+fn a_prior_that_restarted_before_it_was_unloaded_abandons_without_any_effect() {
+    let (fixture, location) = managed_v1();
+    let before = fixture.world.borrow().effects.len();
+    // Die right after the prior's stop, before the journal records it.
+    fixture.world.borrow_mut().crash = Some(Crash::After(before + 1));
+    let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+    assert!(crashed.is_err());
+    assert_eq!(
+        fixture.world.borrow().effects[before],
+        "runtime:false",
+        "the first update effect unloads the prior"
+    );
+    let pending = fixture.journal();
+    assert_eq!(pending.next_action, Some(InstallAction::UnloadPrior));
+    // The prior comes back under a new invocation, so the baseline the
+    // transaction proved is gone.
+    fixture.world.borrow_mut().start();
+    let effects = fixture.world.borrow().effects.len();
+
+    let run = fixture.update(&fixture.v2).expect("abandoned recovery");
+    assert!(run.recovered);
+    let InstallOutcome::RolledBack {
+        active_unit,
+        failure,
+        abandoned,
+    } = run.outcome
+    else {
+        panic!("expected an abandoned rollback: {:?}", run.outcome);
+    };
+    assert!(abandoned);
+    assert_eq!(active_unit, Some(fixture.v1.id.clone()));
+    assert!(failure.contains("abandoned at UnloadPrior"), "{failure}");
+    assert_eq!(
+        fixture.world.borrow().effects.len(),
+        effects,
+        "abandonment changes nothing"
+    );
+    let journal = fixture.journal();
+    assert!(journal.abandoned);
+    assert_eq!(journal.disposition, InstallDisposition::RolledBack);
+    fixture.assert_managed(&location, &fixture.v1.id);
+
+    let retry = fixture
+        .update(&fixture.v2)
+        .expect("retry after abandonment");
+    assert_eq!(
+        retry.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v2.id.clone()
+        }
+    );
+    assert!(!fixture.journal().abandoned);
+}
+
+#[test]
+fn stop_first_refuses_a_service_that_is_not_the_on_disk_unit() {
+    let (fixture, _) = managed_v1();
+    let before = fixture.world.borrow().effects.len();
+    // Die before the second effect. Between releases of one root the
+    // launcher and layout are already exact, so the prior is stopped, the
+    // pointer names the candidate and the manager reload is next.
+    fixture.world.borrow_mut().crash = Some(Crash::Before(before + 2));
+    let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+    assert!(crashed.is_err());
+    let pending = fixture.journal();
+    assert_eq!(
+        pending.next_action,
+        Some(InstallAction::ReloadCandidateManager)
+    );
+    // Something runs as hypercolor.service whose process is not the daemon
+    // the on-disk unit names.
+    {
+        let mut world = fixture.world.borrow_mut();
+        world.start();
+        world
+            .process
+            .as_mut()
+            .expect("running")
+            .sha256
+            .replace_range(.., &"0".repeat(64));
+    }
+    let effects = fixture.world.borrow().effects.len();
+    let error = fixture
+        .update(&fixture.v2)
+        .expect_err("a foreign process is never stopped as ours");
+    assert!(
+        error
+            .to_string()
+            .contains("not the daemon its on-disk unit names"),
+        "{error}"
+    );
+    assert!(
+        fixture.world.borrow().active,
+        "the foreign process still runs"
+    );
+    assert_eq!(fixture.world.borrow().effects.len(), effects);
+    assert_eq!(fixture.journal(), pending, "the journal did not move");
+}
+
+#[test]
+fn a_service_still_restarting_blocks_preparation_without_platform_writes() {
+    let (fixture, _) = managed_v1();
+    fixture.world.borrow_mut().crash_to_auto_restart();
+    let effects = fixture.world.borrow().effects.len();
+    let committed = fixture.journal();
+    let error = fixture
+        .update(&fixture.v2)
+        .expect_err("a transitional prior cannot be a baseline");
+    assert!(
+        error
+            .to_string()
+            .contains("still starting, stopping or restarting"),
+        "{error}"
+    );
+    assert_eq!(fixture.world.borrow().effects.len(), effects);
+    assert_eq!(fixture.journal(), committed);
+
+    // Once the manager brings it back, the update proceeds.
+    {
+        let mut world = fixture.world.borrow_mut();
+        world.auto_restart = false;
+        world.start();
+    }
+    let run = fixture.update(&fixture.v2).expect("update after settling");
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v2.id.clone()
+        }
+    );
+}
+
+#[test]
+fn uninstall_stops_a_service_that_is_waiting_to_restart() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().crash_to_auto_restart();
+    let mut host = UninstallHost {
+        world: Rc::clone(&fixture.world),
+        stop_at: None,
+    };
+    let run = run_linux_uninstall(&fixture.home, &fixture.private(), &mut host)
+        .expect("uninstall a crash-looping service");
+    assert!(run.unsettled.is_none());
+    assert!(!location.release_root().exists());
+    let world = fixture.world.borrow();
+    assert!(!world.active && !world.auto_restart && !world.loaded);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LossPoint {
+    BeforeEffect(usize),
+    AfterEffect(usize),
+    AtObservation(usize),
+}
+
+/// Probe one update's effects and systemd observations.
+fn update_extent(failing_candidate: bool) -> (usize, usize) {
+    let (probe, _) = managed_v1();
+    if failing_candidate {
+        probe
+            .world
+            .borrow_mut()
+            .failing_starts
+            .insert("9.8.8".to_owned());
+    }
+    let (effects, shows) = {
+        let world = probe.world.borrow();
+        (world.effects.len(), world.shows)
+    };
+    probe.update(&probe.v2).expect("uninterrupted update");
+    let world = probe.world.borrow();
+    (world.effects.len() - effects, world.shows - shows)
+}
+
+/// How recoveries in the loss matrix ended.
+#[derive(Debug, Default)]
+struct RecoveryTally {
+    committed: usize,
+    rolled_back: usize,
+    abandoned: usize,
+    /// Recoveries that first stopped a service the manager had started on
+    /// its own, then went forward to commit.
+    stopped_then_committed: usize,
+}
+
+impl RecoveryTally {
+    fn add(&mut self, other: &Self) {
+        self.committed += other.committed;
+        self.rolled_back += other.rolled_back;
+        self.abandoned += other.abandoned;
+        self.stopped_then_committed += other.stopped_then_committed;
+    }
+}
+
+/// Lose the installer at `point` during an update, optionally lose power
+/// too, then recover and prove exactly one release runs, settled.
+fn recover_after_loss(
+    point: LossPoint,
+    power_loss: bool,
+    failing_candidate: bool,
+) -> RecoveryTally {
+    let context =
+        format!("{point:?} power_loss={power_loss} failing_candidate={failing_candidate}");
+    let (fixture, location) = managed_v1();
+    {
+        let mut world = fixture.world.borrow_mut();
+        if failing_candidate {
+            world.failing_starts.insert("9.8.8".to_owned());
+        }
+        let (effects, shows) = (world.effects.len(), world.shows);
+        match point {
+            LossPoint::BeforeEffect(effect) => world.crash = Some(Crash::Before(effects + effect)),
+            LossPoint::AfterEffect(effect) => world.crash = Some(Crash::After(effects + effect)),
+            LossPoint::AtObservation(show) => world.crash_at_show = Some(shows + show),
+        }
+    }
+    let crashed = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+    assert!(crashed.is_err(), "{context}: the loss interrupted the run");
+    {
+        let mut world = fixture.world.borrow_mut();
+        world.crash = None;
+        world.crash_at_show = None;
+        if power_loss {
+            world.power_cycle();
+        }
+    }
+    let effects = fixture.world.borrow().effects.len();
+    let run = fixture
+        .update(&fixture.v2)
+        .unwrap_or_else(|error| panic!("{context}: recovery stopped: {error}"));
+    let recovery_effects = fixture.world.borrow().effects[effects..].to_vec();
+    let mut tally = RecoveryTally::default();
+    match run.outcome {
+        InstallOutcome::Committed { active_unit } => {
+            assert!(
+                !failing_candidate,
+                "{context}: a failing candidate committed"
+            );
+            assert_eq!(active_unit, fixture.v2.id, "{context}");
+            fixture.assert_managed(&location, &fixture.v2.id);
+            tally.committed += 1;
+            if recovery_effects.first().map(String::as_str) == Some("runtime:false")
+                && recovery_effects
+                    .iter()
+                    .any(|effect| effect == "runtime:true")
+            {
+                tally.stopped_then_committed += 1;
+            }
+        }
+        InstallOutcome::RolledBack { abandoned, .. } => {
+            // Losing only the installer never costs a healthy candidate its
+            // update: the service it left behind still proves or resumes.
+            assert!(
+                failing_candidate || power_loss,
+                "{context}: a healthy candidate rolled back after an installer loss"
+            );
+            fixture.assert_managed(&location, &fixture.v1.id);
+            if abandoned {
+                assert!(
+                    recovery_effects.is_empty(),
+                    "{context}: abandonment changes nothing, saw {recovery_effects:?}"
+                );
+                tally.abandoned += 1;
+            } else {
+                tally.rolled_back += 1;
+            }
+        }
+    }
+    fixture.assert_settled_service(&context);
+    assert!(
+        matches!(
+            fixture.journal().disposition,
+            InstallDisposition::Committed | InstallDisposition::RolledBack
+        ),
+        "{context}"
+    );
+    tally
+}
+
+#[test]
+fn loss_and_power_loss_at_every_update_boundary_recover_to_exactly_one_release() {
+    let mut cases = Vec::new();
+    for failing_candidate in [false, true] {
+        let (effects, observations) = update_extent(failing_candidate);
+        assert!(
+            effects >= 3 && observations > effects,
+            "{effects} effects, {observations} observations"
+        );
+        let points = (1..=effects)
+            .flat_map(|effect| {
+                [
+                    LossPoint::BeforeEffect(effect),
+                    LossPoint::AfterEffect(effect),
+                ]
+            })
+            .chain((1..=observations).map(LossPoint::AtObservation));
+        for point in points {
+            for power_loss in [false, true] {
+                cases.push((point, power_loss, failing_candidate));
+            }
+        }
+    }
+    // Every case owns its fixture, so the matrix runs in parallel.
+    let workers = std::thread::available_parallelism().map_or(4, |count| count.get().min(8));
+    let tally = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|worker| {
+                let cases = &cases;
+                scope.spawn(move || {
+                    let mut tally = RecoveryTally::default();
+                    for (point, power_loss, failing_candidate) in
+                        cases.iter().skip(worker).step_by(workers)
+                    {
+                        tally.add(&recover_after_loss(*point, *power_loss, *failing_candidate));
+                    }
+                    tally
+                })
+            })
+            .collect();
+        let mut tally = RecoveryTally::default();
+        for handle in handles {
+            tally.add(&handle.join().expect("loss matrix worker"));
+        }
+        tally
+    });
+    // Every recovery rule is exercised: going forward, rolling back, the
+    // abandonment of an unstarted transaction, and stopping an autostarted
+    // service before going forward.
+    assert!(tally.committed > 0, "{tally:?}");
+    assert!(tally.rolled_back > 0, "{tally:?}");
+    assert!(tally.abandoned > 0, "{tally:?}");
+    assert!(tally.stopped_then_committed > 0, "{tally:?}");
+    eprintln!("{} loss cases recovered: {tally:?}", cases.len());
 }
