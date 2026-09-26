@@ -1158,9 +1158,9 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         Ok(Some(action))
     }
 
-    /// Stop a service the platform started outside the journal (A-10) when
-    /// that alone would reach one of `targets`, stopped states this step
-    /// could resume from. Returns whether it stopped one.
+    /// Stop a service the platform started outside the journal when that
+    /// alone would reach one of `targets`, stopped states this step could
+    /// resume from. Returns whether it stopped one.
     fn stop_first(
         &mut self,
         journal: &InstallJournalV1,
@@ -1225,7 +1225,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
     }
 
     /// The failure detail for abandoning a transaction whose prior was never
-    /// unloaded and whose baseline service identity is gone (A-11).
+    /// unloaded and whose baseline service identity is gone.
     fn abandonment(
         &mut self,
         journal: &InstallJournalV1,
