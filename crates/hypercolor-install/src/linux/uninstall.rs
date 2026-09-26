@@ -462,16 +462,18 @@ fn owned_launcher(
 }
 
 /// The release a managed unit's `ExecStart` names beneath the recorded
-/// release root, whether or not that release is still on disk.
+/// release root, in its program or any argument (a renderer may start a
+/// wrapper that takes the release directory as an argument), whether or
+/// not that release is still on disk.
 fn named_release(bytes: &[u8], location: &LinuxInstallLocation) -> Option<super::super::UnitId> {
-    let executable =
-        super::systemd::canonical_executable(&super::proof::require_notify_launcher(bytes).ok()?)
-            .ok()?;
+    let exec_start = super::proof::require_notify_launcher(bytes).ok()?;
+    let words: Vec<String> = serde_json::from_str(&exec_start).ok()?;
     let units_root = location.release_root().join("units");
-    let unit = Path::new(&executable).strip_prefix(&units_root).ok()?;
-    let mut components = unit.components();
-    let id = components.next()?.as_os_str().to_str()?;
-    super::super::UnitId::new(id).ok()
+    words.iter().find_map(|word| {
+        let unit = Path::new(word).strip_prefix(&units_root).ok()?;
+        let id = unit.components().next()?.as_os_str().to_str()?;
+        super::super::UnitId::new(id).ok()
+    })
 }
 
 fn owned_layout(item: LinuxLayoutItem, entry: &LinuxExactEntry, active_roots: &[PathBuf]) -> bool {
@@ -571,4 +573,63 @@ fn stop<H: LinuxUninstallHost>(
 ) -> Result<(), LinuxInstallCommandError> {
     host.checkpoint(checkpoint)
         .map_err(|source| LinuxInstallCommandError::UninstallStopped(checkpoint, source))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::MetadataExt;
+
+    use super::named_release;
+    use crate::linux::LinuxInstallLocation;
+
+    fn unit(exec_start: &str) -> Vec<u8> {
+        format!("[Service]\nType=notify\nExecStart={exec_start}\n").into_bytes()
+    }
+
+    #[test]
+    fn a_unit_names_its_release_in_its_program_or_any_argument() {
+        let home = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).expect("home");
+        let uid = std::fs::metadata(home.path()).expect("owner").uid();
+        let location = LinuxInstallLocation::new(
+            home.path(),
+            &home.path().join("data"),
+            &home.path().join("state"),
+            &home.path().join("config"),
+            uid,
+        )
+        .expect("location");
+        let id = "ab".repeat(32);
+        let release = location.release_root().join("units").join(&id);
+        let release = release.to_str().expect("UTF-8");
+        let named = |exec_start: &str| {
+            named_release(&unit(exec_start), &location).map(|id| id.as_str().to_owned())
+        };
+
+        assert_eq!(
+            named(&format!(
+                "{release}/bin/hypercolor-daemon --ui-dir {release}/ui"
+            ))
+            .as_deref(),
+            Some(id.as_str())
+        );
+        assert_eq!(
+            named(&format!("/usr/libexec/wrapper --release {release}")).as_deref(),
+            Some(id.as_str()),
+            "a wrapper that takes the release as an argument"
+        );
+        let active = location.release_root().join("active");
+        assert_eq!(
+            named(&format!(
+                "{}/bin/hypercolor-daemon",
+                active.to_str().expect("UTF-8")
+            )),
+            None,
+            "the direct unit names no release"
+        );
+        assert_eq!(
+            named(&format!("/opt/hypercolor/units/{id}/bin/hypercolor-daemon")),
+            None,
+            "a release outside the recorded root is not ours"
+        );
+    }
 }

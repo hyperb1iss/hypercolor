@@ -140,10 +140,7 @@ pub(super) fn render_managed(
     location: &super::LinuxInstallLocation,
 ) -> Result<(LinuxLauncher, Vec<String>), InstallPlatformError> {
     let release = units_root.join(unit.as_str());
-    let rendered = renderer.render(&LinuxServiceInput {
-        release: &release,
-        location,
-    })?;
+    let rendered = renderer.render(&LinuxServiceInput::new(&release, location))?;
     if rendered.daemon_arguments.is_empty() {
         return Err(error("a rendered service names no daemon arguments"));
     }

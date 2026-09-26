@@ -41,12 +41,22 @@ pub struct LinuxServiceInput<'a> {
     pub location: &'a LinuxInstallLocation,
 }
 
+impl<'a> LinuxServiceInput<'a> {
+    /// The input for `release` of the installation at `location`.
+    #[must_use]
+    pub const fn new(release: &'a Path, location: &'a LinuxInstallLocation) -> Self {
+        Self { release, location }
+    }
+}
+
 /// A rendered unit, without its contract line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LinuxRenderedService {
     /// The unit file text. It must be a `Type=notify` service with exactly
-    /// one `ExecStart`; the installer prepends the contract line.
+    /// one `ExecStart`, which names the release directory in its program or
+    /// an argument (so uninstall can tell which release the unit runs); the
+    /// installer prepends the contract line.
     pub unit: String,
     /// The argument vector the daemon runs with once the service started,
     /// which the installer's owner proof requires of the running process.
