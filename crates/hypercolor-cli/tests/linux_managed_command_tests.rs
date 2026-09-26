@@ -27,12 +27,13 @@ use hypercolor_cli::install::{
     LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry,
     LinuxFilePublication, LinuxHttpResponse, LinuxInstallCheckpoint, LinuxInstallCommandError,
     LinuxInstallConfig, LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost,
-    LinuxInstallLocation, LinuxInstallPlatform, LinuxInstallRequest, LinuxLayoutItem,
-    LinuxLayoutPublication, LinuxLegacyFile, LinuxLocatorError, LinuxProcessExecutable,
-    LinuxPublicTree, LinuxRuntimeSettlement, LinuxServiceIdentity, LinuxServiceWatch,
-    LinuxUninstallCheckpoint, LinuxUninstallHost, OwnershipPolicy, PlatformTransactionRecord,
-    PrincipalDatabase, PrincipalGroup, PrincipalUser, RestoredRelease, UnitId, UnitRecord,
-    elect_linux_installation_with, run_linux_install, run_linux_uninstall, stage_release_payload,
+    LinuxInstallLocation, LinuxInstallObservation, LinuxInstallPlatform, LinuxInstallRequest,
+    LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLocatorError,
+    LinuxObservationError, LinuxProcessExecutable, LinuxPublicTree, LinuxRuntimeSettlement,
+    LinuxServiceIdentity, LinuxServiceWatch, LinuxUninstallCheckpoint, LinuxUninstallHost,
+    OwnershipPolicy, PlatformTransactionRecord, PrincipalDatabase, PrincipalGroup, PrincipalUser,
+    RestoredRelease, UnitId, UnitRecord, elect_linux_installation_with, observe_linux_installation,
+    run_linux_install, run_linux_uninstall, stage_release_payload,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -3516,4 +3517,138 @@ fn a_power_cut_during_probation_rolls_back_to_the_prior_and_names_it() {
     fixture.assert_managed(&location, &fixture.v1.id);
     fixture.assert_settled_service("power cut in probation");
     assert_eq!(restored, Some(fixture.running_release(&fixture.v1)));
+}
+
+// ── Read-only observation ───────────────────────────────────────────────
+
+fn daemon_path(location: &LinuxInstallLocation, unit: &UnitId) -> PathBuf {
+    location
+        .release_root()
+        .join("units")
+        .join(unit.as_str())
+        .join("bin/hypercolor-daemon")
+}
+
+#[test]
+fn observation_reads_an_empty_home_then_the_managed_install_it_records() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        observe_linux_installation(&fixture.home).expect("observe"),
+        LinuxInstallObservation::Absent
+    );
+
+    let (fixture, location) = managed_v1();
+    let observation = observe_linux_installation(&fixture.home).expect("observe");
+    let LinuxInstallObservation::Managed {
+        location: observed,
+        records,
+    } = &observation
+    else {
+        panic!("expected a managed installation: {observation:?}");
+    };
+    assert_eq!(observed, &location);
+    assert_eq!(records.release_root, location.release_root());
+    assert_eq!(records.active_unit.as_ref(), Some(&fixture.v1.id));
+    assert_eq!(
+        records.journal.as_ref().map(|journal| journal.disposition),
+        Some(InstallDisposition::Committed)
+    );
+    assert_eq!(records.pending_transaction(), None);
+    assert_eq!(
+        records.runnable_units(),
+        std::slice::from_ref(&fixture.v1.id)
+    );
+    assert_eq!(
+        records.daemon_unit(&daemon_path(&location, &fixture.v1.id)),
+        Some(fixture.v1.id.clone())
+    );
+    // Only a runnable unit's daemon, by its exact resolved path, counts.
+    for foreign in [
+        daemon_path(&location, &fixture.v2.id),
+        location.release_root().join("active/bin/hypercolor-daemon"),
+        daemon_path(&location, &fixture.v1.id).with_file_name("hypercolor"),
+        PathBuf::from("/usr/bin/hypercolor-daemon"),
+    ] {
+        assert_eq!(records.daemon_unit(&foreign), None, "{}", foreign.display());
+    }
+}
+
+#[test]
+fn observation_names_both_units_mid_transaction_and_never_takes_the_lock() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().in_probation = Some((
+        "9.8.8",
+        ProbationEvent::InstallerDies(Duration::from_secs(5)),
+    ));
+    assert!(catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2))).is_err());
+
+    // An installer holds the installation lock while the daemon observes.
+    let held = elect_linux_installation_with(&fixture.home, &fixture.private())
+        .expect("an installer holds the lock");
+    let state_before = directory_listing(location.state_root());
+    let observation = observe_linux_installation(&fixture.home).expect("observe under the lock");
+    assert_eq!(
+        directory_listing(location.state_root()),
+        state_before,
+        "observation writes nothing"
+    );
+    drop(held);
+
+    let records = observation.records().expect("records");
+    let pending = records.pending_transaction().expect("in flight");
+    assert_eq!(pending.next_action, Some(InstallAction::ProveCandidate));
+    assert_eq!(records.active_unit.as_ref(), Some(&fixture.v2.id));
+    assert_eq!(
+        records.runnable_units(),
+        [fixture.v2.id.clone(), fixture.v1.id.clone()],
+        "either side of the transaction may be running"
+    );
+    for unit in [&fixture.v1.id, &fixture.v2.id] {
+        assert_eq!(
+            records.daemon_unit(&daemon_path(&location, unit)).as_ref(),
+            Some(unit)
+        );
+    }
+}
+
+#[test]
+fn observation_of_a_historical_install_is_legacy() {
+    let fixture = Fixture::new();
+    fixture.legacy_install(&fixture.v1);
+    let observation = observe_linux_installation(&fixture.home).expect("observe");
+    let LinuxInstallObservation::Legacy(records) = observation else {
+        panic!("expected a historical install: {observation:?}");
+    };
+    assert_eq!(
+        records.release_root,
+        fixture.home.join(".local/lib/hypercolor")
+    );
+    assert_eq!(records.active_unit, Some(fixture.v1.id.clone()));
+}
+
+#[test]
+fn observation_refuses_a_managed_locator_without_its_recorded_identity() {
+    let (fixture, location) = managed_v1();
+    let identity = location.state_root().join("installation.json");
+    let saved = fs::read(&identity).expect("identity");
+    fs::remove_file(&identity).expect("remove identity");
+    assert!(matches!(
+        observe_linux_installation(&fixture.home),
+        Err(LinuxObservationError::Unprepared(_))
+    ));
+    fs::write(&identity, saved).expect("restore identity");
+}
+
+/// Names, sizes and modification times of a directory's entries.
+fn directory_listing(root: &Path) -> Vec<(PathBuf, u64, i64)> {
+    let mut entries: Vec<_> = fs::read_dir(root)
+        .expect("list")
+        .map(|entry| {
+            let entry = entry.expect("entry");
+            let metadata = entry.metadata().expect("metadata");
+            (entry.path(), metadata.len(), metadata.mtime())
+        })
+        .collect();
+    entries.sort();
+    entries
 }

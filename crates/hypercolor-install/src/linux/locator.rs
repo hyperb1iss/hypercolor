@@ -16,11 +16,16 @@ use super::locator_receipt::{AdoptionPreparation, MAX_PREPARATION_BYTES, RECEIPT
 
 #[path = "election.rs"]
 mod election;
+#[path = "observation.rs"]
+mod observation;
 #[path = "locator_preparation.rs"]
 mod preparation;
 pub use election::{
     LinuxInstallElection, LinuxManagedAuthority, elect_linux_installation,
     elect_linux_installation_with,
+};
+pub use observation::{
+    LinuxInstallObservation, LinuxInstallRecords, LinuxObservationError, observe_linux_installation,
 };
 
 const LOCATOR_NAME: &str = "install-journal.json";

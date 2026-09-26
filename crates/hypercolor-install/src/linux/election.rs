@@ -193,7 +193,7 @@ impl LinuxManagedAuthority {
     }
 }
 
-fn read_hint(home: &Path) -> Result<LinuxInstallAuthority, LinuxLocatorError> {
+pub(super) fn read_hint(home: &Path) -> Result<LinuxInstallAuthority, LinuxLocatorError> {
     let root = match ReadOnlyDirectoryAuthority::open(&home.join(".local/lib/hypercolor")) {
         Ok(root) => root,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {

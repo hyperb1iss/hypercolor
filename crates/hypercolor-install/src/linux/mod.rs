@@ -41,8 +41,9 @@ pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};
 pub use location::{InstallLocationError, LinuxInstallLocation, RetainedLinuxInstallLocation};
 pub use locator::{
-    LinuxInstallAuthority, LinuxInstallElection, LinuxInstallLocator, LinuxLocatorError,
-    LinuxManagedAuthority, elect_linux_installation, elect_linux_installation_with,
+    LinuxInstallAuthority, LinuxInstallElection, LinuxInstallLocator, LinuxInstallObservation,
+    LinuxInstallRecords, LinuxLocatorError, LinuxManagedAuthority, LinuxObservationError,
+    elect_linux_installation, elect_linux_installation_with, observe_linux_installation,
 };
 pub use model::{
     DEFAULT_PROBATION_WINDOW, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem,

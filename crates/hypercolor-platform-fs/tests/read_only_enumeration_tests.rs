@@ -114,3 +114,46 @@ fn read_only_child_names_preserve_non_utf8_names() {
         3
     );
 }
+
+#[test]
+fn read_only_symlink_targets_come_from_the_retained_directory_without_following() {
+    let temporary = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+    let root = temporary.path().join("root");
+    let detached = temporary.path().join("detached");
+    fs::create_dir(&root).expect("create root");
+    std::os::unix::fs::symlink("units/one", root.join("active")).expect("active link");
+    std::os::unix::fs::symlink("/nonexistent/target", root.join("dangling")).expect("link");
+    fs::write(root.join("regular"), b"regular").expect("regular file");
+    let authority = ReadOnlyDirectoryAuthority::open(&root).expect("open read-only authority");
+
+    fs::rename(&root, &detached).expect("detach retained directory");
+    fs::create_dir(&root).expect("replace pathname directory");
+    std::os::unix::fs::symlink("units/attacker", root.join("active")).expect("replacement link");
+
+    assert_eq!(
+        authority
+            .read_symlink(Path::new("active"))
+            .expect("read retained link"),
+        Some("units/one".into())
+    );
+    assert_eq!(
+        authority
+            .read_symlink(Path::new("dangling"))
+            .expect("a dangling link is read, never followed"),
+        Some("/nonexistent/target".into())
+    );
+    assert_eq!(
+        authority
+            .read_symlink(Path::new("missing"))
+            .expect("a missing entry is not an error"),
+        None
+    );
+    let refused = authority
+        .read_symlink(Path::new("regular"))
+        .expect_err("a regular file is not a link");
+    assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
+    assert!(authority.read_symlink(Path::new("../escape")).is_err());
+}
