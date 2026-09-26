@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use futures_util::future::LocalBoxFuture;
 use futures_util::{FutureExt as _, StreamExt as _};
+use zbus::MatchRule;
+use zbus::message::Type as MessageType;
 use zbus::zvariant::OwnedObjectPath;
 
 use super::super::InstallPlatformError;
@@ -14,6 +16,11 @@ use super::model::error;
 const SYSTEMD_DESTINATION: &str = "org.freedesktop.systemd1";
 const SYSTEMD_PATH: &str = "/org/freedesktop/systemd1";
 const SYSTEMD_MANAGER: &str = "org.freedesktop.systemd1.Manager";
+/// The user manager's own socket, relative to `XDG_RUNTIME_DIR`.
+///
+/// It serves the manager's D-Bus API peer to peer, so reaching systemd never
+/// requires the session bus or anything else that listens on it.
+const PRIVATE_SOCKET: &str = "systemd/private";
 const SERVICE: &str = "hypercolor.service";
 const METHOD_TIMEOUT: Duration = Duration::from_secs(5);
 const JOB_TIMEOUT: Duration = Duration::from_secs(10);
@@ -22,7 +29,9 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinuxSystemdConnection {
     runtime_directory: PathBuf,
-    bus_address: String,
+    manager_socket: PathBuf,
+    manager_address: String,
+    manager_uid: u32,
 }
 
 impl LinuxSystemdConnection {
@@ -35,10 +44,14 @@ impl LinuxSystemdConnection {
 
     /// Bind one exact user-manager runtime directory owned by `expected_uid`.
     ///
+    /// The manager is reached through its private socket
+    /// (`systemd/private`), never the session bus, so a sandbox that denies
+    /// the session bus can still drive the service.
+    ///
     /// # Errors
     ///
     /// Returns an error for a noncanonical path, unsafe mode or owner, or a
-    /// missing, foreign, or non-socket session bus endpoint.
+    /// missing, foreign, or non-socket private manager endpoint.
     pub fn from_runtime_directory(
         runtime_directory: &Path,
         expected_uid: u32,
@@ -53,23 +66,66 @@ impl LinuxSystemdConnection {
                 "XDG_RUNTIME_DIR is not an exact private directory owned by the current uid",
             ));
         }
-        let bus = runtime_directory.join("bus");
-        let bus_metadata = fs::symlink_metadata(&bus).map_err(io_error)?;
-        if !bus_metadata.file_type().is_socket() || bus_metadata.uid() != expected_uid {
-            return Err(error("XDG_RUNTIME_DIR bus is not an owned Unix socket"));
+        let manager_directory = runtime_directory.join("systemd");
+        let directory_metadata = fs::symlink_metadata(&manager_directory)
+            .map_err(|source| error(format!("XDG_RUNTIME_DIR systemd is unavailable: {source}")))?;
+        if !directory_metadata.is_dir()
+            || directory_metadata.uid() != expected_uid
+            || directory_metadata.permissions().mode() & 0o022 != 0
+        {
+            return Err(error(
+                "XDG_RUNTIME_DIR systemd is not a directory only the current uid can write",
+            ));
+        }
+        let socket = runtime_directory.join(PRIVATE_SOCKET);
+        let socket_metadata = fs::symlink_metadata(&socket).map_err(|source| {
+            error(format!(
+                "XDG_RUNTIME_DIR systemd/private is unavailable: {source}"
+            ))
+        })?;
+        if !socket_metadata.file_type().is_socket() || socket_metadata.uid() != expected_uid {
+            return Err(error(
+                "XDG_RUNTIME_DIR systemd/private is not an owned Unix socket",
+            ));
         }
         let runtime_text = runtime_directory
             .to_str()
             .ok_or_else(|| error("XDG_RUNTIME_DIR is not UTF-8"))?;
         Ok(Self {
             runtime_directory: runtime_directory.to_owned(),
-            bus_address: format!("unix:path={runtime_text}/bus"),
+            manager_socket: socket,
+            manager_address: format!("unix:path={runtime_text}/{PRIVATE_SOCKET}"),
+            manager_uid: expected_uid,
         })
     }
 
+    /// Environment for `systemctl --user` subprocesses.
+    ///
+    /// `systemctl` reaches the manager through `XDG_RUNTIME_DIR` and its
+    /// private socket first, and falls back to the session bus only when
+    /// that fails. Pointing the session bus address at the private socket
+    /// too leaves that fallback nowhere else to go.
     #[must_use]
-    pub fn command_environment(&self) -> (&'static str, &OsStr) {
-        ("XDG_RUNTIME_DIR", self.runtime_directory.as_os_str())
+    pub fn command_environment(&self) -> [(&'static str, &OsStr); 2] {
+        [
+            ("XDG_RUNTIME_DIR", self.runtime_directory.as_os_str()),
+            (
+                "DBUS_SESSION_BUS_ADDRESS",
+                OsStr::new(self.manager_address.as_str()),
+            ),
+        ]
+    }
+}
+
+/// The manager's socket must be served by the installing uid; anything else
+/// on that path is not this user's systemd.
+fn require_manager_peer(observed_uid: u32, expected_uid: u32) -> Result<(), InstallPlatformError> {
+    if observed_uid == expected_uid {
+        Ok(())
+    } else {
+        Err(error(
+            "user systemd private socket is served by another uid",
+        ))
     }
 }
 
@@ -93,8 +149,8 @@ impl LinuxRuntimeManager {
         &self,
         running: bool,
     ) -> Result<RuntimeJobOutcome, InstallPlatformError> {
-        let address = self.connection.bus_address.clone();
-        let worker = std::thread::spawn(move || run_runtime_job(&address, running));
+        let connection = self.connection.clone();
+        let worker = std::thread::spawn(move || run_runtime_job(&connection, running));
         worker
             .join()
             .map_err(|_| error("systemd D-Bus job worker panicked"))?
@@ -102,7 +158,7 @@ impl LinuxRuntimeManager {
 }
 
 fn run_runtime_job(
-    address: &str,
+    manager: &LinuxSystemdConnection,
     running: bool,
 ) -> Result<RuntimeJobOutcome, InstallPlatformError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -110,40 +166,69 @@ fn run_runtime_job(
         .build()
         .map_err(io_error)?;
     runtime.block_on(async move {
-        let connection = tokio::time::timeout(
-            METHOD_TIMEOUT,
-            zbus::connection::Builder::address(address)
-                .map_err(zbus_error)?
-                .method_timeout(METHOD_TIMEOUT)
-                .build(),
-        )
-        .await
-        .map_err(|_| error("user systemd D-Bus connection exceeded its deadline"))?
-        .map_err(zbus_error)?;
-        let proxy = zbus::Proxy::new(
-            &connection,
-            SYSTEMD_DESTINATION,
-            SYSTEMD_PATH,
-            SYSTEMD_MANAGER,
-        )
-        .await
-        .map_err(zbus_error)?;
-        let mut removed = proxy
-            .receive_signal_with_args("JobRemoved", &[(2, SERVICE)])
+        let connection = connect_manager(manager).await?;
+        // A direct manager connection receives every manager signal without
+        // a bus match or `Subscribe`, and only the manager can send on it,
+        // so the rule names just the object, member and unit.
+        let rule = MatchRule::builder()
+            .msg_type(MessageType::Signal)
+            .path(SYSTEMD_PATH)
+            .map_err(zbus_error)?
+            .interface(SYSTEMD_MANAGER)
+            .map_err(zbus_error)?
+            .member("JobRemoved")
+            .map_err(zbus_error)?
+            .arg(2, SERVICE)
+            .map_err(zbus_error)?
+            .build();
+        let mut removed = zbus::MessageStream::for_match_rule(rule, &connection, None)
             .await
             .map_err(zbus_error)?;
         let method = if running { "StartUnit" } else { "StopUnit" };
-        let job_path: OwnedObjectPath = proxy
-            .call(method, &(SERVICE, "fail"))
+        let job_path: OwnedObjectPath = connection
+            .call_method(
+                Some(SYSTEMD_DESTINATION),
+                SYSTEMD_PATH,
+                Some(SYSTEMD_MANAGER),
+                method,
+                &(SERVICE, "fail"),
+            )
             .await
+            .map_err(zbus_error)?
+            .body()
+            .deserialize()
             .map_err(zbus_error)?;
         let job = owned_job(job_path)?;
         let mut boundary = ZbusJobBoundary {
-            proxy: &proxy,
+            connection: &connection,
             removed: &mut removed,
         };
         fence_owned_job(&mut boundary, &job).await
     })
+}
+
+/// Open a peer-to-peer connection to the user manager's private socket and
+/// prove the peer runs as the expected uid before any D-Bus traffic.
+async fn connect_manager(
+    manager: &LinuxSystemdConnection,
+) -> Result<zbus::Connection, InstallPlatformError> {
+    tokio::time::timeout(METHOD_TIMEOUT, async {
+        let stream = tokio::net::UnixStream::connect(&manager.manager_socket)
+            .await
+            .map_err(io_error)?;
+        require_manager_peer(
+            stream.peer_cred().map_err(io_error)?.uid(),
+            manager.manager_uid,
+        )?;
+        zbus::connection::Builder::unix_stream(stream)
+            .p2p()
+            .method_timeout(METHOD_TIMEOUT)
+            .build()
+            .await
+            .map_err(zbus_error)
+    })
+    .await
+    .map_err(|_| error("user systemd manager connection exceeded its deadline"))?
 }
 
 struct OwnedJob {
@@ -164,12 +249,12 @@ trait RuntimeJobBoundary {
     ) -> LocalBoxFuture<'a, Result<(), InstallPlatformError>>;
 }
 
-struct ZbusJobBoundary<'a, 'proxy> {
-    proxy: &'a zbus::Proxy<'proxy>,
-    removed: &'a mut zbus::proxy::SignalStream<'proxy>,
+struct ZbusJobBoundary<'a> {
+    connection: &'a zbus::Connection,
+    removed: &'a mut zbus::MessageStream,
 }
 
-impl RuntimeJobBoundary for ZbusJobBoundary<'_, '_> {
+impl RuntimeJobBoundary for ZbusJobBoundary<'_> {
     fn wait<'a>(
         &'a mut self,
         job: &'a OwnedJob,
@@ -189,9 +274,16 @@ impl RuntimeJobBoundary for ZbusJobBoundary<'_, '_> {
         job: &'a OwnedJob,
     ) -> LocalBoxFuture<'a, Result<(), InstallPlatformError>> {
         async move {
-            self.proxy
-                .call::<_, _, ()>("CancelJob", &(job.id,))
+            self.connection
+                .call_method(
+                    Some(SYSTEMD_DESTINATION),
+                    SYSTEMD_PATH,
+                    Some(SYSTEMD_MANAGER),
+                    "CancelJob",
+                    &(job.id,),
+                )
                 .await
+                .map(|_| ())
                 .map_err(zbus_error)
         }
         .boxed_local()
@@ -218,10 +310,11 @@ async fn fence_owned_job(
 }
 
 async fn wait_for_job(
-    removed: &mut zbus::proxy::SignalStream<'_>,
+    removed: &mut zbus::MessageStream,
     expected: &OwnedJob,
 ) -> Result<String, InstallPlatformError> {
     while let Some(message) = removed.next().await {
+        let message = message.map_err(zbus_error)?;
         let (id, path, unit, result): (u32, OwnedObjectPath, String, String) =
             message.body().deserialize().map_err(zbus_error)?;
         if let Some(result) = removed_job_result(id, &path, &unit, result, expected)? {
@@ -328,34 +421,249 @@ mod tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     use std::os::unix::net::UnixListener;
 
-    use futures_util::FutureExt as _;
+    use futures_util::{FutureExt as _, StreamExt as _};
     use zbus::zvariant::OwnedObjectPath;
 
     use super::{
-        InstallPlatformError, LinuxSystemdConnection, OwnedJob, RuntimeJobBoundary,
-        RuntimeJobOutcome, SERVICE, fence_owned_job, owned_job, removed_job_result,
+        InstallPlatformError, LinuxRuntimeManager, LinuxSystemdConnection, OwnedJob,
+        RuntimeJobBoundary, RuntimeJobOutcome, SERVICE, fence_owned_job, owned_job,
+        removed_job_result,
     };
 
-    #[test]
-    fn user_manager_coordinate_is_exact_owned_and_private() {
+    /// A runtime directory shaped like a user manager's: private, with a
+    /// `systemd` directory holding the `private` socket.
+    fn runtime_fixture() -> (tempfile::TempDir, u32) {
         let fixture = tempfile::tempdir().expect("fixture");
         fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o700))
             .expect("runtime mode");
-        let _bus = UnixListener::bind(fixture.path().join("bus")).expect("bus socket");
+        fs::create_dir(fixture.path().join("systemd")).expect("manager directory");
+        fs::set_permissions(
+            fixture.path().join("systemd"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .expect("manager directory mode");
         let uid = fs::metadata(fixture.path()).expect("metadata").uid();
+        (fixture, uid)
+    }
+
+    #[test]
+    fn user_manager_coordinate_is_exact_owned_and_private() {
+        let (fixture, uid) = runtime_fixture();
+        let _private =
+            UnixListener::bind(fixture.path().join("systemd/private")).expect("private socket");
         let connection = LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid)
             .expect("connection");
-        let (name, value) = connection.command_environment();
-        assert_eq!(name, "XDG_RUNTIME_DIR");
-        assert_eq!(value, fixture.path().as_os_str());
+        let address = format!("unix:path={}/systemd/private", fixture.path().display());
+        assert_eq!(
+            connection.command_environment(),
+            [
+                ("XDG_RUNTIME_DIR", fixture.path().as_os_str()),
+                ("DBUS_SESSION_BUS_ADDRESS", std::ffi::OsStr::new(&address)),
+            ]
+        );
+        assert_eq!(connection.manager_address, address);
 
         fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o755))
             .expect("unsafe runtime mode");
         assert!(LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid).is_err());
+        fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o700))
+            .expect("private runtime mode");
         assert!(LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid + 1).is_err());
         assert!(
             LinuxSystemdConnection::from_runtime_directory(&fixture.path().join(".."), uid)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn session_bus_alone_never_satisfies_the_manager_coordinate() {
+        let (fixture, uid) = runtime_fixture();
+        let _bus = UnixListener::bind(fixture.path().join("bus")).expect("session bus socket");
+        let error = LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid)
+            .expect_err("a session bus is not the user manager");
+        assert!(
+            error.to_string().contains("systemd/private is unavailable"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn manager_directory_must_be_a_real_directory_only_the_owner_writes() {
+        let (fixture, uid) = runtime_fixture();
+        let _private =
+            UnixListener::bind(fixture.path().join("systemd/private")).expect("private socket");
+        fs::set_permissions(
+            fixture.path().join("systemd"),
+            fs::Permissions::from_mode(0o775),
+        )
+        .expect("group-writable manager directory");
+        assert!(LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid).is_err());
+
+        fs::set_permissions(
+            fixture.path().join("systemd"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .expect("owner-only manager directory");
+        fs::rename(
+            fixture.path().join("systemd"),
+            fixture.path().join("elsewhere"),
+        )
+        .expect("move manager directory");
+        std::os::unix::fs::symlink("elsewhere", fixture.path().join("systemd"))
+            .expect("substituted manager directory");
+        assert!(LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid).is_err());
+
+        fs::remove_file(fixture.path().join("systemd")).expect("remove substitution");
+        fs::create_dir(fixture.path().join("systemd")).expect("manager directory");
+        fs::set_permissions(
+            fixture.path().join("systemd"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .expect("owner-only manager directory");
+        fs::write(fixture.path().join("systemd/private"), b"not a socket")
+            .expect("regular file in place of the socket");
+        let error = LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid)
+            .expect_err("a regular file is not the manager socket");
+        assert!(
+            error.to_string().contains("not an owned Unix socket"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_manager_socket_served_by_another_uid_is_refused() {
+        assert!(super::require_manager_peer(1100, 1100).is_ok());
+        for foreign in [0, 1101] {
+            let error = super::require_manager_peer(foreign, 1100)
+                .expect_err("another uid is not this user's manager");
+            assert!(error.to_string().contains("another uid"), "{error}");
+        }
+    }
+
+    /// Serve the manager's `StartUnit` and `StopUnit` peer to peer the way
+    /// systemd serves its private socket: no bus daemon, no `Hello`, and
+    /// signals without a sender.
+    struct FakeManager {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+    }
+
+    #[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
+    impl FakeManager {
+        async fn start_unit(
+            &self,
+            name: String,
+            mode: String,
+            #[zbus(connection)] connection: &zbus::Connection,
+        ) -> zbus::fdo::Result<OwnedObjectPath> {
+            self.job("StartUnit", name, mode, connection).await
+        }
+
+        async fn stop_unit(
+            &self,
+            name: String,
+            mode: String,
+            #[zbus(connection)] connection: &zbus::Connection,
+        ) -> zbus::fdo::Result<OwnedObjectPath> {
+            self.job("StopUnit", name, mode, connection).await
+        }
+    }
+
+    impl FakeManager {
+        async fn job(
+            &self,
+            method: &str,
+            name: String,
+            mode: String,
+            connection: &zbus::Connection,
+        ) -> zbus::fdo::Result<OwnedObjectPath> {
+            self.calls.lock().expect("fake manager calls").push((
+                method.to_owned(),
+                name.clone(),
+                mode,
+            ));
+            let unrelated = OwnedObjectPath::try_from("/org/freedesktop/systemd1/job/41")
+                .expect("unrelated job path");
+            let owned = OwnedObjectPath::try_from("/org/freedesktop/systemd1/job/42")
+                .expect("owned job path");
+            for (id, path) in [(41_u32, unrelated), (42_u32, owned.clone())] {
+                connection
+                    .emit_signal(
+                        None::<&str>,
+                        "/org/freedesktop/systemd1",
+                        "org.freedesktop.systemd1.Manager",
+                        "JobRemoved",
+                        &(id, path, name.as_str(), "done"),
+                    )
+                    .await
+                    .map_err(|source| zbus::fdo::Error::Failed(source.to_string()))?;
+            }
+            Ok(owned)
+        }
+    }
+
+    #[test]
+    fn runtime_jobs_run_over_the_private_socket_without_a_session_bus() {
+        let (fixture, uid) = runtime_fixture();
+        let socket = fixture.path().join("systemd/private");
+        let listener = UnixListener::bind(&socket).expect("private socket");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let served = std::sync::Arc::clone(&calls);
+        let server = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("server runtime");
+            runtime.block_on(async move {
+                let listener =
+                    tokio::net::UnixListener::from_std(listener).expect("tokio listener");
+                for _ in 0..2 {
+                    let (stream, _) = listener.accept().await.expect("manager client");
+                    let connection = zbus::connection::Builder::unix_stream(stream)
+                        .server(zbus::Guid::generate())
+                        .expect("server guid")
+                        .p2p()
+                        .serve_at(
+                            "/org/freedesktop/systemd1",
+                            FakeManager {
+                                calls: std::sync::Arc::clone(&served),
+                            },
+                        )
+                        .expect("serve manager")
+                        .build()
+                        .await
+                        .expect("peer-to-peer manager connection");
+                    // Keep serving until the client hangs up.
+                    let mut messages = zbus::MessageStream::from(&connection);
+                    while messages.next().await.is_some() {}
+                }
+            });
+        });
+
+        let connection = LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid)
+            .expect("private manager coordinate");
+        let manager = LinuxRuntimeManager::new(connection);
+        assert_eq!(
+            manager.set_runtime(true).expect("start job"),
+            RuntimeJobOutcome::Done
+        );
+        assert_eq!(
+            manager.set_runtime(false).expect("stop job"),
+            RuntimeJobOutcome::Done
+        );
+        server.join().expect("fake manager thread");
+        assert_eq!(
+            *calls.lock().expect("recorded calls"),
+            [
+                (
+                    "StartUnit".to_owned(),
+                    SERVICE.to_owned(),
+                    "fail".to_owned()
+                ),
+                ("StopUnit".to_owned(), SERVICE.to_owned(), "fail".to_owned()),
+            ]
         );
     }
 

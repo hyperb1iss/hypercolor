@@ -32,7 +32,7 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
-zbus = { workspace = true, features = ["blocking-api"] }
+zbus = { workspace = true, features = ["blocking-api", "p2p"] }
 futures-util = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }

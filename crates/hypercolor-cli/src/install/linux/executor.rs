@@ -676,7 +676,6 @@ fn run_systemctl(
 }
 
 pub(super) fn systemctl_command(connection: &LinuxSystemdConnection, args: &[&str]) -> Command {
-    let (connection_name, connection_value) = connection.command_environment();
     let mut command = Command::new(TIMEOUT);
     command
         .args([
@@ -690,7 +689,7 @@ pub(super) fn systemctl_command(connection: &LinuxSystemdConnection, args: &[&st
         .env_clear()
         .env("LANG", "C")
         .env("LC_ALL", "C")
-        .env(connection_name, connection_value)
+        .envs(connection.command_environment())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

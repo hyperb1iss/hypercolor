@@ -1275,7 +1275,14 @@ fn cold_recorded_prior_selects_exact_historical_path_and_original_inode() {
     let runtime = tempfile::tempdir().expect("runtime");
     fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700))
         .expect("private runtime");
-    let _bus = UnixListener::bind(runtime.path().join("bus")).expect("fixture bus");
+    fs::create_dir(runtime.path().join("systemd")).expect("manager directory");
+    fs::set_permissions(
+        runtime.path().join("systemd"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("manager directory mode");
+    let _manager =
+        UnixListener::bind(runtime.path().join("systemd/private")).expect("manager socket");
     let connection = LinuxSystemdConnection::from_runtime_directory(
         runtime.path(),
         fs::metadata(runtime.path()).expect("runtime owner").uid(),

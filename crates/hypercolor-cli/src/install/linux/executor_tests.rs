@@ -29,7 +29,14 @@ fn with_native_public_tree(
     prepare(&home);
     let runtime = tempfile::tempdir().expect("runtime");
     fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700)).expect("runtime mode");
-    let _bus = UnixListener::bind(runtime.path().join("bus")).expect("bus socket");
+    fs::create_dir(runtime.path().join("systemd")).expect("manager directory");
+    fs::set_permissions(
+        runtime.path().join("systemd"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("manager directory mode");
+    let _manager =
+        UnixListener::bind(runtime.path().join("systemd/private")).expect("manager socket");
     let uid = fs::metadata(runtime.path())
         .expect("runtime metadata")
         .uid();
@@ -179,7 +186,10 @@ fn native_topology_rejects_a_fragment_outside_the_retained_home() {
     let runtime = runtime_fixture.path();
     fs::create_dir(&home).expect("home");
     fs::set_permissions(runtime, fs::Permissions::from_mode(0o700)).expect("runtime mode");
-    let _bus = UnixListener::bind(runtime.join("bus")).expect("bus socket");
+    fs::create_dir(runtime.join("systemd")).expect("manager directory");
+    fs::set_permissions(runtime.join("systemd"), fs::Permissions::from_mode(0o755))
+        .expect("manager directory mode");
+    let _manager = UnixListener::bind(runtime.join("systemd/private")).expect("manager socket");
     let uid = fs::metadata(runtime).expect("runtime metadata").uid();
     let connection =
         LinuxSystemdConnection::from_runtime_directory(runtime, uid).expect("connection");
@@ -223,7 +233,10 @@ fn native_constructor_rejects_canonical_store_path_replacement() {
     let runtime = runtime_fixture.path();
     fs::create_dir(&home).expect("home");
     fs::set_permissions(runtime, fs::Permissions::from_mode(0o700)).expect("runtime mode");
-    let _bus = UnixListener::bind(runtime.join("bus")).expect("bus socket");
+    fs::create_dir(runtime.join("systemd")).expect("manager directory");
+    fs::set_permissions(runtime.join("systemd"), fs::Permissions::from_mode(0o755))
+        .expect("manager directory mode");
+    let _manager = UnixListener::bind(runtime.join("systemd/private")).expect("manager socket");
     let uid = fs::metadata(runtime).expect("runtime metadata").uid();
     let connection =
         LinuxSystemdConnection::from_runtime_directory(runtime, uid).expect("connection");
@@ -259,7 +272,14 @@ fn native_constructor_rejects_canonical_store_path_replacement() {
 fn systemctl_command_has_only_fixed_locale_and_bound_connection_environment() {
     let fixture = tempfile::tempdir().expect("fixture");
     fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o700)).expect("runtime mode");
-    let _bus = UnixListener::bind(fixture.path().join("bus")).expect("bus socket");
+    fs::create_dir(fixture.path().join("systemd")).expect("manager directory");
+    fs::set_permissions(
+        fixture.path().join("systemd"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("manager directory mode");
+    let _manager =
+        UnixListener::bind(fixture.path().join("systemd/private")).expect("manager socket");
     let uid = fs::metadata(fixture.path()).expect("metadata").uid();
     let connection =
         LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid).expect("connection");
@@ -281,6 +301,14 @@ fn systemctl_command_has_only_fixed_locale_and_bound_connection_environment() {
             (
                 OsString::from("XDG_RUNTIME_DIR"),
                 fixture.path().as_os_str().to_os_string(),
+            ),
+            // Even systemctl's session-bus fallback lands on the manager.
+            (
+                OsString::from("DBUS_SESSION_BUS_ADDRESS"),
+                OsString::from(format!(
+                    "unix:path={}/systemd/private",
+                    fixture.path().display()
+                )),
             ),
         ])
     );
