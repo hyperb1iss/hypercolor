@@ -344,12 +344,6 @@ impl LinuxInstallLocation {
             .parent()
             .expect("a validated state root is an absolute path below /")
     }
-
-    /// The launcher contract the installation's service runs under.
-    #[must_use]
-    pub const fn launcher_contract(&self) -> u32 {
-        self.launcher_contract
-    }
 }
 
 /// Retained roots whose filesystem identities govern a managed installation.

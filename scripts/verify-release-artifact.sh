@@ -307,14 +307,7 @@ from pathlib import Path
 root_name = os.environ["ROOT_NAME"]
 root = Path(os.environ["ROOT_DIR"])
 with open(os.environ["MANIFEST"], encoding="utf-8") as handle:
-    def unique_keys(pairs):
-        keys = [key for key, _ in pairs]
-        duplicated = sorted({key for key in keys if keys.count(key) > 1})
-        if duplicated:
-            raise SystemExit(f"manifest has duplicated keys: {duplicated}")
-        return dict(pairs)
-
-    manifest = json.load(handle, object_pairs_hook=unique_keys)
+    manifest = json.load(handle)
 
 name = manifest.get("name")
 version = manifest.get("version")
@@ -370,15 +363,7 @@ for key, relative_root in asset_roots.items():
 members = manifest.get("members")
 if not isinstance(members, list) or not members:
     raise SystemExit("manifest members must be a non-empty array")
-known_fields = {
-    "name", "version", "platform", "rust_target", "binaries", "assets", "members",
-    "managed_package",
-}
-unknown_fields = sorted(set(manifest) - known_fields)
-if unknown_fields:
-    raise SystemExit(f"manifest has unknown fields: {unknown_fields}")
 expected_paths = set()
-member_kinds = {}
 for member in members:
     if not isinstance(member, dict):
         raise SystemExit("manifest member must be an object")
@@ -397,7 +382,6 @@ for member in members:
     if type(mode) is not int or mode < 0 or mode > 0o777:
         raise SystemExit(f"manifest mode is invalid for {relative}")
     expected_paths.add(relative)
-    member_kinds[relative] = (member_type, mode)
     path = root / relative
     metadata = path.lstat()
     if stat.S_IMODE(metadata.st_mode) != mode:
@@ -441,22 +425,19 @@ if actual_paths != expected_paths:
         f"manifest member set mismatch: missing={missing}, unexpected={unexpected}"
     )
 
-# The managed package contract (hypercolor-install payload/managed.rs). A
-# Linux release must declare it; any release that does must declare it
-# exactly, with components bound to members and one entry per durable store.
-managed = manifest.get("managed_package")
-macos_release = platform.startswith("macos-") and rust_target.endswith("-apple-darwin")
-if managed is None:
-    if not macos_release:
-        raise SystemExit(
-            "a Linux release must declare its managed_package contract "
-            f"(only a macOS release may omit it; this one is {platform} for {rust_target})"
-        )
-elif not platform.startswith("linux-"):
-    raise SystemExit(
-        f"managed_package is the Linux per-user contract; a {platform} release cannot declare it"
-    )
-else:
+# The durable store inventory a Linux release ships (dist.sh writes it from
+# packaging/managed/durable-stores.json). The installer never reads it, so
+# its absence is not an error here; when present it must be exactly its
+# shape: one entry per store, each reading the schema it writes.
+inventory_path = "share/hypercolor/durable-stores.json"
+if inventory_path in expected_paths:
+    def unique_keys(pairs):
+        keys = [key for key, _ in pairs]
+        duplicated = sorted({key for key in keys if keys.count(key) > 1})
+        if duplicated:
+            raise SystemExit(f"{inventory_path} has duplicated keys: {duplicated}")
+        return dict(pairs)
+
     def whole(value, what):
         if type(value) is not int or value < 0 or value > 0xFFFFFFFF:
             raise SystemExit(f"{what} must be a whole number in 0..=4294967295")
@@ -473,52 +454,13 @@ else:
             )
         return value
 
-    if not isinstance(managed, dict) or set(managed) != {
-        "schema_version", "owner", "launcher_contract", "components", "compatibility",
-    }:
-        raise SystemExit("managed_package must declare exactly its five contract fields")
-    if whole(managed["schema_version"], "managed_package.schema_version") != 1:
-        raise SystemExit("managed_package.schema_version must be 1")
-    if managed["owner"] != "linux-user-tarball":
-        raise SystemExit("managed_package.owner must be linux-user-tarball")
-    if whole(managed["launcher_contract"], "managed_package.launcher_contract") != 1:
-        raise SystemExit("managed_package.launcher_contract must be 1")
-    components = {
-        "daemon": ("bin/hypercolor-daemon", "file"),
-        "cli": ("bin/hypercolor", "file"),
-        "ui": ("share/hypercolor/ui", "directory"),
-        "bundled_effects": ("share/hypercolor/effects/bundled", "directory"),
-    }
-    declared = managed["components"]
-    if not isinstance(declared, dict) or set(declared) != set(components):
-        raise SystemExit(
-            f"managed_package.components must name exactly {sorted(components)}"
-        )
-    for component, (relative, kind) in components.items():
-        if declared[component] != relative:
-            raise SystemExit(
-                f"managed_package component {component} must be {relative}, "
-                f"not {declared[component]!r}"
-            )
-        if kind == "file":
-            bound = member_kinds.get(relative) == ("file", 0o755)
-        else:
-            bound = member_kinds.get(relative, ("",))[0] == "directory" and any(
-                path.startswith(relative + "/") and entry[0] == "file"
-                for path, entry in member_kinds.items()
-            )
-        if not bound:
-            raise SystemExit(
-                f"managed_package component {component} does not bind "
-                f"{'a 0755 file' if kind == 'file' else 'a directory holding files'} "
-                f"at {relative}"
-            )
-    compatibility = managed["compatibility"]
-    if not isinstance(compatibility, dict) or set(compatibility) != {"stores"}:
-        raise SystemExit("managed_package.compatibility must declare exactly its stores")
-    stores = compatibility["stores"]
+    with open(root / inventory_path, encoding="utf-8") as handle:
+        inventory = json.load(handle, object_pairs_hook=unique_keys)
+    if not isinstance(inventory, dict) or set(inventory) != {"stores"}:
+        raise SystemExit(f"{inventory_path} must hold exactly its stores")
+    stores = inventory["stores"]
     if not isinstance(stores, list) or not 1 <= len(stores) <= 64:
-        raise SystemExit("managed_package.compatibility.stores must declare 1..=64 stores")
+        raise SystemExit(f"{inventory_path} must declare 1..=64 stores")
     store_fields = {
         "name", "storage_format", "readable_schema_min", "readable_schema_max",
         "written_schema", "migration_mode",

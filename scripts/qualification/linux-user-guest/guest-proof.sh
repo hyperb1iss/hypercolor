@@ -129,8 +129,7 @@ build() {
 
     local inputs
     inputs="$(cat "${WORK}/bin/hypercolor" "${WORK}/bin/hc-qual-daemon" \
-        "${HARNESS_DIR}/make_release.py" "${REPO_ROOT}/packaging/managed/durable-stores.json" \
-        "${WORK}/downloads/${tarball}" | sha256sum | cut -c1-64)"
+        "${HARNESS_DIR}/make_release.py" "${WORK}/downloads/${tarball}" | sha256sum | cut -c1-64)"
     if [[ "$(cat "${WORK}/releases/inputs" 2>/dev/null)" != "${inputs}" ]]; then
         rm -f "${WORK}/releases/"*
         local version

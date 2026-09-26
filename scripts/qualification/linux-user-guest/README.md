@@ -85,11 +85,7 @@ output stays in `target/linux-user-guest/`.
 members: `bin/hypercolor` becomes the CLI under test,
 `bin/hypercolor-daemon` becomes the qualification daemon, and
 `manifest.json` names a qualification version with both new digests.
-A base release from before the managed package contract also gains the
-`managed_package` block `scripts/dist.sh` writes, with the store inventory
-in `packaging/managed/durable-stores.json`, since the installer refuses a
-Linux candidate without one. Everything else is the published release byte
-for byte. Three versions are
+Everything else is the published release byte for byte. Three versions are
 built (`<base>-qual.1` to `.3`), so each is a distinct unit. The guest
 mounts them read-only at `/releases` and the driver extracts and runs each
 release's own `bin/hypercolor`, as `install.sh` does.

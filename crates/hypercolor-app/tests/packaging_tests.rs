@@ -1029,22 +1029,6 @@ manifest = json.dumps(
             "site_files": 0,
         },
         "members": members,
-        "managed_package": {
-            "schema_version": 1,
-            "owner": "linux-user-tarball",
-            "launcher_contract": 1,
-            "components": {
-                "daemon": "bin/hypercolor-daemon",
-                "cli": "bin/hypercolor",
-                "ui": "share/hypercolor/ui",
-                "bundled_effects": "share/hypercolor/effects/bundled",
-            },
-            "compatibility": {"stores": [{
-                "name": "config", "storage_format": "toml",
-                "readable_schema_min": 4, "readable_schema_max": 5,
-                "written_schema": 5, "migration_mode": "backward_compatible",
-            }]},
-        },
     },
     sort_keys=True,
 ).encode()
@@ -1436,22 +1420,6 @@ manifest = {
         "site_files": 0,
     },
     "members": members,
-    "managed_package": {
-        "schema_version": 1,
-        "owner": "linux-user-tarball",
-        "launcher_contract": 1,
-        "components": {
-            "daemon": "bin/hypercolor-daemon",
-            "cli": "bin/hypercolor",
-            "ui": "share/hypercolor/ui",
-            "bundled_effects": "share/hypercolor/effects/bundled",
-        },
-        "compatibility": {"stores": [{
-            "name": "config", "storage_format": "toml",
-            "readable_schema_min": 4, "readable_schema_max": 5,
-            "written_schema": 5, "migration_mode": "backward_compatible",
-        }]},
-    },
 }
 if case == "binaries-object":
     manifest["binaries"] = {binary: True for binary in manifest["binaries"]}

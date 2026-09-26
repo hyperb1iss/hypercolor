@@ -152,24 +152,17 @@ meantime:
 
 ## What a release says about your data
 
-Every Linux release tarball declares, in its `manifest.json`, which installer
-owns it and every durable store it reads or writes: your configuration,
+Every Linux release tarball ships `share/hypercolor/durable-stores.json`, a
+list of every durable store the release reads or writes: your configuration,
 scenes, layouts, library, device settings and the rest. For each store it
-names the schema it writes and the oldest and newest it can read. Stores
-without a version field on disk declare schema `0`, their only shape so far.
-Each time the daemon starts, it also reads the schema every store holds on
-disk before opening it, and keeps that report for the part of an official
-build that plans updates. The installer's own records (the transaction
-journal, the installation record and the locator) are not in that list:
-their formats belong to the launcher contract the release declares.
+names the schema the release writes and the oldest and newest it can read.
+Stores without a version field on disk declare schema `0`, their only shape so
+far. The values come from each store's own code, and a test keeps the list
+equal to it.
 
-These declarations let an update decide whether the release it replaces could
-still read your data after a rollback. A release from before this contract
-declares nothing: it still installs as a rollback target and uninstalls
-normally, but any update that would have to cross it is treated as needing
-you to decide, never as automatic. The installer refuses a new release
-whose declaration is missing, incomplete or from an unknown future contract,
-whatever platform its manifest names; only a macOS release omits it.
+The installer does not read this file and never refuses a release without it;
+older releases do not have one. It is there for tools that decide whether one
+release can take over another's data.
 
 ## Directory permissions and private groups
 
@@ -222,7 +215,6 @@ hide accounts from a listing, so they refuse the group exception.
 | `XDG_RUNTIME_DIR` has no `systemd/private` socket you own | The installer drives the service through your user manager's private socket, never the session bus | Run it in your own login session, or keep the user manager running with `loginctl enable-linger` |
 | The service is still starting, stopping or restarting after its own timeout | A service that keeps changing state is not a safe starting point | Wait for it to settle, or stop it with `systemctl --user stop hypercolor.service`, then rerun |
 | Locator from an unknown or newer installer | Guessing would risk managing the wrong install | Use the current installer |
-| Release manifest lacks a complete `managed_package` declaration | The installer could not tell what the release does to your data | Install an official release tarball |
 | An XDG base directory would put a writable root at your home, `~/.local/bin` or `~/.local/lib`, or one inside another | The service sandbox could not keep the daemon out of your commands and libraries | Point that variable at another directory and rerun |
 | A pending install was prepared under a service contract this installer does not know | It cannot check a unit another build wrote | Finish it with the installer that started it |
 | Uninstall finds a service, unit or link this installer did not generate | It belongs to a package, another install or a local edit | Remove it with its owner, then rerun |
