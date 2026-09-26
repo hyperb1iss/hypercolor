@@ -107,8 +107,8 @@ pub struct DurableStore {
     pub owner: StoreOwner,
     pub root: StoreRoot,
     pub location: StoreLocation,
-    /// The file's previous home under the data root, which the store still
-    /// reads when its state-root file does not exist yet.
+    /// The file's previous home under the data root. The store's migration
+    /// reads both and takes whichever holds the newer schema.
     pub legacy_data_file: Option<&'static str>,
     pub schema: StoreSchema,
     pub readable_schema_min: u32,
@@ -119,6 +119,7 @@ pub struct DurableStore {
 }
 
 const BACKWARD_COMPATIBLE: &str = "backward_compatible";
+const ATTACHMENT: u32 = hypercolor_types::attachment::CURRENT_ATTACHMENT_SCHEMA_VERSION;
 
 /// Every durable store this release reads or writes.
 pub const DURABLE_STORES: &[DurableStore] = &[
@@ -147,8 +148,9 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         StoreRoot::Data,
         StoreLocation::File("instance_id"),
     ),
-    // The index stamps `version` and its reader defaults a missing one to
-    // the current value; objects are content-addressed blobs.
+    // The index stamps `version`; its reader accepts any value and rebuilds
+    // an index it cannot parse from the content-addressed objects. The
+    // declaration claims only the version this release writes.
     DurableStore {
         name: "asset-library",
         storage_format: "json",
@@ -173,8 +175,8 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         StoreRoot::Data,
         StoreLocation::Directory("effects"),
     ),
-    // Every layout record carries a required `version`, always 1
-    // (hypercolor_types::spatial::SpatialLayout).
+    // Every layout record carries a required `version`, which every writer
+    // sets to 1 (hypercolor_types::spatial::SpatialLayout has no constant).
     DurableStore {
         name: "layouts",
         storage_format: "json",
@@ -264,11 +266,11 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         legacy_data_file: None,
         schema: StoreSchema::TomlDirectoryRecords {
             field: "schema_version",
-            missing: Some(1),
+            missing: Some(ATTACHMENT),
         },
-        readable_schema_min: 1,
-        readable_schema_max: 1,
-        written_schema: 1,
+        readable_schema_min: ATTACHMENT,
+        readable_schema_max: ATTACHMENT,
+        written_schema: ATTACHMENT,
         migration_mode: BACKWARD_COMPATIBLE,
     },
     DurableStore {
@@ -280,11 +282,11 @@ pub const DURABLE_STORES: &[DurableStore] = &[
         legacy_data_file: None,
         schema: StoreSchema::JsonMapRecords {
             field: "schema_version",
-            missing: Some(1),
+            missing: Some(ATTACHMENT),
         },
-        readable_schema_min: 1,
-        readable_schema_max: 1,
-        written_schema: 1,
+        readable_schema_min: ATTACHMENT,
+        readable_schema_max: ATTACHMENT,
+        written_schema: ATTACHMENT,
         migration_mode: BACKWARD_COMPATIBLE,
     },
     DurableStore {
@@ -618,7 +620,9 @@ fn probe_file(path: &Path, schema: StoreSchema) -> StoreFound {
 
 fn probe_directory(path: &Path, schema: StoreSchema) -> StoreFound {
     let toml_only = matches!(schema, StoreSchema::TomlDirectoryRecords { .. });
-    let files = match directory_files(path, toml_only) {
+    // An unversioned store holds schema 0 as soon as it holds one file.
+    let first_only = schema == StoreSchema::Unversioned;
+    let files = match directory_files(path, toml_only, first_only) {
         Ok(Some(files)) => files,
         Ok(None) => return StoreFound::Absent,
         Err(error) => return StoreFound::Unreadable(error),
@@ -733,7 +737,11 @@ fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
 /// The files beneath `root` its reader would load: it follows a symbolic
 /// link at the root, descends only into real directories, and takes every
 /// other entry (`.toml` ones only, ignoring case, for a template store).
-fn directory_files(root: &Path, toml_only: bool) -> Result<Option<Vec<PathBuf>>, String> {
+fn directory_files(
+    root: &Path,
+    toml_only: bool,
+    first_only: bool,
+) -> Result<Option<Vec<PathBuf>>, String> {
     match std::fs::metadata(root) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => return Err(format!("{} is not a directory", root.display())),
@@ -764,6 +772,9 @@ fn directory_files(root: &Path, toml_only: bool) -> Result<Option<Vec<PathBuf>>,
                 continue;
             }
             files.push(path);
+            if first_only {
+                return Ok(Some(files));
+            }
             if files.len() > MAX_PROBED_DIRECTORY_FILES {
                 return Err(format!(
                     "{} holds more than {MAX_PROBED_DIRECTORY_FILES} files",
