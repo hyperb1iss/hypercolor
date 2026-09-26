@@ -32,8 +32,8 @@ use hypercolor_cli::install::{
     LinuxObservationError, LinuxProcessExecutable, LinuxPublicTree, LinuxRuntimeSettlement,
     LinuxServiceIdentity, LinuxServiceWatch, LinuxUninstallCheckpoint, LinuxUninstallHost,
     OwnershipPolicy, PlatformTransactionRecord, PrincipalDatabase, PrincipalGroup, PrincipalUser,
-    RestoredRelease, UnitId, UnitRecord, elect_linux_installation_with, observe_linux_installation,
-    run_linux_install, run_linux_uninstall, stage_release_payload,
+    RestoredRelease, UnitCollection, UnitId, UnitRecord, elect_linux_installation_with,
+    observe_linux_installation, run_linux_install, run_linux_uninstall, stage_release_payload,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -3651,4 +3651,183 @@ fn directory_listing(root: &Path) -> Vec<(PathBuf, u64, i64)> {
         .collect();
     entries.sort();
     entries
+}
+
+// ── Release collection ──────────────────────────────────────────────────
+
+/// Every entry in the release root's units directory.
+fn unit_entries(location: &LinuxInstallLocation) -> BTreeSet<String> {
+    fs::read_dir(location.release_root().join("units"))
+        .expect("units directory")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("UTF-8 name")
+        })
+        .collect()
+}
+
+fn names(units: &[&UnitId]) -> BTreeSet<String> {
+    units.iter().map(|unit| unit.as_str().to_owned()).collect()
+}
+
+fn collected(run: &hypercolor_cli::install::LinuxInstallRun) -> &UnitCollection {
+    run.collection
+        .as_ref()
+        .expect("a settled managed run collects")
+        .as_ref()
+        .expect("collection succeeded")
+}
+
+#[test]
+fn a_settled_upgrade_keeps_only_the_active_release_and_the_one_it_replaced() {
+    let (fixture, location) = managed_v1();
+    let run = fixture.update(&fixture.v2).expect("second release");
+    assert!(collected(&run).removed_units.is_empty());
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v1.id, &fixture.v2.id])
+    );
+
+    let run = fixture.update(&fixture.v3).expect("third release");
+    assert_eq!(
+        collected(&run).removed_units,
+        std::slice::from_ref(&fixture.v1.id)
+    );
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v2.id, &fixture.v3.id])
+    );
+    fixture.assert_managed(&location, &fixture.v3.id);
+}
+
+#[test]
+fn a_rollback_keeps_both_sides_for_the_next_install_and_removes_older_releases() {
+    let (fixture, location) = managed_v1();
+    fixture.update(&fixture.v2).expect("second release");
+    fixture
+        .world
+        .borrow_mut()
+        .failing_starts
+        .insert("9.8.9".to_owned());
+    let run = fixture
+        .update(&fixture.v3)
+        .expect("the failing release settles");
+    assert!(matches!(run.outcome, InstallOutcome::RolledBack { .. }));
+    // The next install proves its prior against this rolled-back record,
+    // which binds both of its units by file identity.
+    assert_eq!(
+        collected(&run).removed_units,
+        std::slice::from_ref(&fixture.v1.id)
+    );
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v2.id, &fixture.v3.id])
+    );
+    fixture.assert_managed(&location, &fixture.v2.id);
+
+    fixture.world.borrow_mut().failing_starts.clear();
+    let run = fixture.update(&fixture.v3).expect("retry");
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v3.id.clone()
+        }
+    );
+    assert!(collected(&run).removed_units.is_empty());
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v2.id, &fixture.v3.id])
+    );
+}
+
+#[test]
+fn collection_finishes_interrupted_staging_and_removal_and_leaves_foreign_entries() {
+    let (fixture, location) = managed_v1();
+    let units = location.release_root().join("units");
+    let staging = units.join(".hypercolor-stage-payload-4242-7");
+    fs::create_dir_all(staging.join("bin")).expect("interrupted staging");
+    fs::write(staging.join("bin/hypercolor-daemon"), b"partial").expect("staged file");
+    fs::set_permissions(staging.join("bin"), fs::Permissions::from_mode(0o555))
+        .expect("finalized staging mode");
+    let tombstone = units.join(format!(".hypercolor-removing-{}.4242-3", "e".repeat(64)));
+    fs::create_dir_all(tombstone.join("share")).expect("interrupted removal");
+    fs::write(units.join("notes.txt"), b"not ours").expect("foreign file");
+    fs::create_dir(units.join("keep-me")).expect("foreign directory");
+    let journal_stage = location.state_root().join(".install-journal.json.4242.9");
+    fs::write(&journal_stage, b"{}").expect("interrupted journal write");
+
+    let run = fixture.update(&fixture.v2).expect("second release");
+    let collection = collected(&run);
+    for leftover in [&staging, &tombstone, &journal_stage] {
+        assert!(
+            collection.removed_leftovers.contains(leftover),
+            "{} not reported in {:?}",
+            leftover.display(),
+            collection.removed_leftovers
+        );
+        assert!(!leftover.exists(), "{} survived", leftover.display());
+    }
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v1.id, &fixture.v2.id])
+            .into_iter()
+            .chain(["keep-me".to_owned(), "notes.txt".to_owned()])
+            .collect()
+    );
+}
+
+#[test]
+fn collection_never_removes_a_unit_an_unsettled_transaction_names() {
+    let (fixture, location) = managed_v1();
+    fixture.update(&fixture.v2).expect("second release");
+    fixture.world.borrow_mut().in_probation = Some((
+        "9.8.9",
+        ProbationEvent::InstallerDies(Duration::from_secs(5)),
+    ));
+    assert!(catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v3))).is_err());
+
+    let LinuxInstallElection::Managed { store, lock, .. } =
+        elect_linux_installation_with(&fixture.home, &fixture.private()).expect("election")
+    else {
+        panic!("expected managed authority");
+    };
+    let referenced = store.referenced_units(&lock).expect("referenced units");
+    for unit in [&fixture.v2.id, &fixture.v3.id] {
+        assert!(referenced.contains(unit), "{} is referenced", unit.as_str());
+        assert!(matches!(
+            store.remove_unit(&lock, unit),
+            Err(InstallStoreError::UnitReferenced(_))
+        ));
+    }
+    let collection = store.collect_units(&lock, &[]).expect("collect");
+    assert_eq!(
+        collection.removed_units,
+        std::slice::from_ref(&fixture.v1.id)
+    );
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v2.id, &fixture.v3.id])
+    );
+    assert!(
+        !store
+            .remove_unit(&lock, &fixture.v1.id)
+            .expect("already gone"),
+        "removing a unit that is not installed reports false"
+    );
+    drop((store, lock));
+
+    let run = fixture.update(&fixture.v3).expect("recovery");
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v3.id.clone()
+        }
+    );
+    assert_eq!(
+        unit_entries(&location),
+        names(&[&fixture.v2.id, &fixture.v3.id])
+    );
 }

@@ -63,4 +63,4 @@ pub use payload::{
 };
 #[cfg(target_os = "macos")]
 pub use payload::{MacosReleaseProvenance, bind_macos_release_provenance};
-pub use store::{InstallLock, InstallStore, InstallStoreError};
+pub use store::{InstallLock, InstallStore, InstallStoreError, UnitCollection};

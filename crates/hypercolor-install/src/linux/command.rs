@@ -12,8 +12,8 @@ use std::time::Duration;
 use super::super::{
     InstallCoordinator, InstallCoordinatorError, InstallDisposition, InstallJournalV1, InstallLock,
     InstallOutcome, InstallPlatformError, InstallRequest, InstallStore, InstallStoreError,
-    InstallTargetPolicy, InstallTransactionId, OwnershipPolicy, PlatformTransactionRecord, UnitId,
-    UnitRecord,
+    InstallTargetPolicy, InstallTransactionId, OwnershipPolicy, PlatformTransactionRecord,
+    UnitCollection, UnitId, UnitRecord,
 };
 use super::{
     LinuxAdoption, LinuxAdoptionError, LinuxInstallConfig, LinuxInstallElection,
@@ -122,6 +122,10 @@ pub struct LinuxInstallRun {
     pub outcome: InstallOutcome,
     /// Whether the run settled a journal instead of preparing a fresh one.
     pub recovered: bool,
+    /// Releases the run removed once it settled a managed installation,
+    /// or why it could not. `None` when it did not collect: the run
+    /// settled the historical root, whose next install adopts it.
+    pub collection: Option<Result<UnitCollection, String>>,
 }
 
 /// A run that could not settle, with the stage that refused it.
@@ -251,7 +255,8 @@ pub fn run_linux_install<H: LinuxInstallHost>(
             authority
                 .confirm_durable()
                 .map_err(LinuxInstallCommandError::Authority)?;
-            recover(&store, &mut lock, &mut platform)
+            let run = recover(&store, &mut lock, &mut platform)?;
+            Ok(collect_settled(&store, &lock, run))
         }
         LinuxInstallElection::Managed {
             store,
@@ -279,7 +284,8 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                         probation: request.probation,
                     },
                 )?;
-                return recover(&store, &mut lock, &mut platform);
+                let run = recover(&store, &mut lock, &mut platform)?;
+                return Ok(collect_settled(&store, &lock, run));
             }
             let candidate = host.stage_candidate(&store, &lock)?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
@@ -303,10 +309,16 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 .map_err(LinuxInstallCommandError::Authority)?;
             let outcome = InstallCoordinator::new(&store, &mut platform)
                 .install_with_lock(install_request(request, candidate), &mut lock)?;
-            Ok(LinuxInstallRun {
-                outcome,
-                recovered: false,
-            })
+            drop(platform);
+            Ok(collect_settled(
+                &store,
+                &lock,
+                LinuxInstallRun {
+                    outcome,
+                    recovered: false,
+                    collection: None,
+                },
+            ))
         }
     }
 }
@@ -413,7 +425,41 @@ pub(super) fn recover<E: LinuxInstallExecutor>(
     Ok(LinuxInstallRun {
         outcome,
         recovered: true,
+        collection: None,
     })
+}
+
+/// Remove the releases a settled managed installation no longer needs.
+///
+/// Keeps the active release and, after a commit, the release it replaced,
+/// so one previous release stays on disk. After a rollback the store keeps
+/// both of its sides anyway (see [`InstallStore::referenced_units`]). A
+/// failure is reported, never raised: the transaction already settled, and
+/// the next run collects again.
+fn collect_settled(
+    store: &InstallStore,
+    lock: &InstallLock,
+    mut run: LinuxInstallRun,
+) -> LinuxInstallRun {
+    let collection = store
+        .load_journal(lock)
+        .map_err(|error| error.to_string())
+        .and_then(|journal| {
+            let retain: Vec<UnitId> = match (&run.outcome, journal) {
+                (InstallOutcome::Committed { .. }, Some(journal)) => {
+                    journal.prior_active_unit.into_iter().collect()
+                }
+                (InstallOutcome::Committed { .. }, None) => {
+                    return Err("the settled install journal is missing".to_owned());
+                }
+                (InstallOutcome::RolledBack { .. }, _) => Vec::new(),
+            };
+            store
+                .collect_units(lock, &retain)
+                .map_err(|error| error.to_string())
+        });
+    run.collection = Some(collection);
+    run
 }
 
 /// What a Linux platform binds to beyond the elected store.

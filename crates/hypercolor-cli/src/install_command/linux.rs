@@ -46,6 +46,19 @@ pub(super) fn execute(
         executable,
     };
     let run = run_linux_install(home, &request, &OwnershipPolicy::system(), &mut host)?;
+    match &run.collection {
+        Some(Ok(collection)) if !collection.removed_units.is_empty() => println!(
+            "Removed {} older release{} that nothing uses any more.",
+            collection.removed_units.len(),
+            if collection.removed_units.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ),
+        Some(Err(error)) => eprintln!("warning: older releases were not removed: {error}"),
+        _ => {}
+    }
     super::require_candidate_committed(run.outcome, &args.expected_manifest_sha256, run.recovered)
 }
 

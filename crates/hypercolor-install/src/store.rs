@@ -780,6 +780,16 @@ pub enum InstallStoreError {
     JournalStageCollisions { attempts: usize },
     #[error("failed to publish install journal: {0}")]
     ReplaceJournal(io::Error),
+    #[error("installed unit {0} is still referenced and cannot be removed")]
+    UnitReferenced(String),
+    #[error("failed to remove {name}: {source}")]
+    RemoveUnit {
+        name: String,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to inspect the install state directory: {0}")]
+    InspectState(io::Error),
 }
 
 #[cfg(test)]
@@ -934,6 +944,10 @@ mod tests {
         }
     }
 }
+
+#[path = "store_collection.rs"]
+mod collection;
+pub use collection::UnitCollection;
 
 #[cfg(test)]
 #[path = "store_acquisition_tests.rs"]
