@@ -316,6 +316,10 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("as an object with a name", result.stdout + result.stderr)
 
+        result = self.dist("--target", "macos-arm64", "--durable-stores", str(overlay))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("applies only to Linux releases", result.stdout + result.stderr)
+
     def test_both_packaged_user_units_declare_user_service_identity(self):
         declaration = "Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service"
         for name in ("hypercolor.service", "hypercolor.service.system"):

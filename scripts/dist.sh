@@ -155,6 +155,9 @@ esac
 if [[ "${TCC_CANARY}" -eq 1 && "${IS_MACOS}" -ne 1 ]]; then
   die "--tcc-canary requires a macOS target"
 fi
+if [[ -n "${DURABLE_STORE_OVERLAYS[*]+x}" && "${IS_LINUX}" -ne 1 ]]; then
+  die "--durable-stores applies only to Linux releases"
+fi
 if [[ "${TCC_CANARY}" -eq 1 && -n "${BIN_DIR}" ]]; then
   die "--tcc-canary cannot verify pre-built binaries from --bin-dir"
 fi
@@ -397,8 +400,6 @@ root = Path(os.environ["DIST_DIR"])
 # the code), as a member like any other file, so its bytes are bound by
 # the manifest. The installer never reads it; tools that decide whether one
 # release can replace another do.
-if os.environ["DURABLE_STORE_OVERLAYS"].strip() and os.environ["IS_LINUX"] != "1":
-    raise SystemExit("--durable-stores applies only to Linux releases")
 if os.environ["IS_LINUX"] == "1":
     with open(os.environ["DURABLE_STORES"], encoding="utf-8") as handle:
         inventory = json.load(handle)
