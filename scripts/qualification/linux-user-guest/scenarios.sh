@@ -530,4 +530,21 @@ scenario_companion_units() {
     [[ "$(gx sha256sum "${unit}" | cut -d' ' -f1)" == "${before}" ]] ||
         fail "an ordinary install changed the companion unit"
     log "  ok: an ordinary install leaves the companion unit exactly as rendered"
+
+    # A later release shipping different text for the same unit changes
+    # neither the installed unit nor the launcher's rendered copy.
+    local rendered="${GUEST_RELEASES}/launcher/units/hypercolor-qual-recover.service"
+    local rendered_before
+    rendered_before="$(gx sha256sum "${rendered}" | cut -d' ' -f1)"
+    install_run upgrade "${V_E}" -- --probation-seconds 0
+    expect_exit 0
+    expect_active "${V_E}"
+    [[ "$(gx sha256sum "${unit}" | cut -d' ' -f1)" == "${before}" ]] ||
+        fail "a release with a different template changed the companion unit"
+    [[ "$(gx sha256sum "${rendered}" | cut -d' ' -f1)" == "${rendered_before}" ]] ||
+        fail "a release with a different template changed the launcher's rendered unit"
+    if grep -qF "warning: companion unit" "${LAST_INSTALL_OUTPUT}"; then
+        fail "the installer refused its own companion unit"
+    fi
+    log "  ok: a release with a different template leaves both copies exactly as rendered"
 }

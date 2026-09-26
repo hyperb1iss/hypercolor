@@ -1,0 +1,6 @@
+[Unit]
+Description=A later release's different recovery unit, which must never replace the first
+
+[Service]
+Type=oneshot
+ExecStart=/bin/false

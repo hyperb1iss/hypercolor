@@ -1,0 +1,9 @@
+{
+  "units": [
+    {
+      "unit": "hypercolor-qual-recover.service",
+      "source": "hypercolor-qual-recover.service.in",
+      "enable": true
+    }
+  ]
+}

@@ -22,8 +22,10 @@ GUEST_UNITS="${GUEST_HOME}/.local/share/hypercolor/releases/units"
 V_A="${BASE_VERSION}-qual.1"
 V_B="${BASE_VERSION}-qual.2"
 V_C="${BASE_VERSION}-qual.3"
-# V_D ships a companion unit template (companions/).
+# V_D ships a companion unit template (companions/); V_E ships a different
+# one under the same name (companions-alt/), which must never replace it.
 V_D="${BASE_VERSION}-qual.4"
+V_E="${BASE_VERSION}-qual.5"
 
 GUEST=""
 RECEIPT=""
@@ -132,15 +134,18 @@ build() {
     local inputs
     inputs="$(cat "${WORK}/bin/hypercolor" "${WORK}/bin/hc-qual-daemon" \
         "${HARNESS_DIR}/make_release.py" "${REPO_ROOT}/packaging/managed/durable-stores.json" \
-        "${HARNESS_DIR}/companions/"* "${WORK}/downloads/${tarball}" | sha256sum | cut -c1-64)"
+        "${HARNESS_DIR}/companions/"* "${HARNESS_DIR}/companions-alt/"* \
+        "${WORK}/downloads/${tarball}" | sha256sum | cut -c1-64)"
     if [[ "$(cat "${WORK}/releases/inputs" 2>/dev/null)" != "${inputs}" ]]; then
         rm -f "${WORK}/releases/"*
         local version
-        for version in "${V_A}" "${V_B}" "${V_C}" "${V_D}"; do
+        for version in "${V_A}" "${V_B}" "${V_C}" "${V_D}" "${V_E}"; do
             log "packing qualification release ${version}"
             local companions=()
             if [[ "${version}" == "${V_D}" ]]; then
                 companions=(--companions "${HARNESS_DIR}/companions/companions.json")
+            elif [[ "${version}" == "${V_E}" ]]; then
+                companions=(--companions "${HARNESS_DIR}/companions-alt/companions.json")
             fi
             python3 "${HARNESS_DIR}/make_release.py" \
                 --base "${WORK}/downloads/${tarball}" \
@@ -152,7 +157,7 @@ build() {
         printf '%s\n' "${inputs}" >"${WORK}/releases/inputs"
     fi
     local version
-    for version in "${V_A}" "${V_B}" "${V_C}" "${V_D}"; do
+    for version in "${V_A}" "${V_B}" "${V_C}" "${V_D}" "${V_E}"; do
         log "release ${version} unit $(unit_of "${version}")"
     done
 }
@@ -523,9 +528,9 @@ run_one() {
             "$(git -C "${REPO_ROOT}" diff --quiet HEAD -- || printf ' (dirty)')"
         printf 'cli_sha256: %s\n' "$(sha256sum "${WORK}/bin/hypercolor" | cut -c1-64)"
         printf 'guest_image: %s %s\n' "$(guest_image)" "$(podman image inspect "$(guest_image)" --format '{{.Id}}')"
-        printf 'releases: %s=%s %s=%s %s=%s %s=%s\n' "${V_A}" "$(unit_of "${V_A}")" \
+        printf 'releases: %s=%s %s=%s %s=%s %s=%s %s=%s\n' "${V_A}" "$(unit_of "${V_A}")" \
             "${V_B}" "$(unit_of "${V_B}")" "${V_C}" "$(unit_of "${V_C}")" \
-            "${V_D}" "$(unit_of "${V_D}")"
+            "${V_D}" "$(unit_of "${V_D}")" "${V_E}" "$(unit_of "${V_E}")"
     } >"${RECEIPT}/receipt.txt"
     log "scenario ${name}"
     local status
