@@ -119,13 +119,12 @@ impl LinuxAdoption {
             copy_installed_release_unit(&store, &lock, prior)?;
             observe(LinuxInstallCheckpoint::PriorCopied)?;
         }
-        match (store.active_unit(&lock)?, &original_id) {
-            (None, Some(id)) => {
-                store.set_active(Some(id), &lock)?;
-                observe(LinuxInstallCheckpoint::PriorActivated)?;
-            }
-            (actual, expected) if actual.as_ref() == expected.as_ref() => {}
-            _ => return Err(LinuxAdoptionError::ConflictingPreparation),
+        // Before publication nothing reads the new pointer, so it simply
+        // follows the historical active unit, including after another
+        // installer changed that unit between interrupted attempts.
+        if store.active_unit(&lock)? != original_id {
+            store.set_active(original_id.as_ref(), &lock)?;
+            observe(LinuxInstallCheckpoint::PriorActivated)?;
         }
         Ok(Self {
             home: home.to_owned(),
@@ -170,6 +169,16 @@ impl LinuxAdoption {
             (Some(receipt), Some(journal)) if receipt == journal => Ok(Some(journal)),
             _ => Err(LinuxAdoptionError::ConflictingPreparation),
         }
+    }
+
+    /// Discard an unpublished preparation that can no longer be resumed.
+    ///
+    /// # Errors
+    /// Refuses once authority is managed or the journal has advanced.
+    pub fn discard_unpublished_preparation(&self) -> Result<(), LinuxAdoptionError> {
+        self.locator
+            .discard_preparation(&self.location, &self.store, &self.lock)?;
+        Ok(())
     }
 
     /// Prepare or resume the identical initial journal and persist its receipt.

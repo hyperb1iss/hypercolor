@@ -29,6 +29,8 @@ use super::{
 pub enum LinuxInstallCheckpoint {
     /// The historical root still holds authority and its lock is held.
     LegacyElected,
+    /// The adoption target is recorded beside the locator.
+    IntentRecorded,
     /// Recorded roots and the installation identity exist.
     RootsBootstrapped,
     /// The historical active unit is copied into the release root.
@@ -204,7 +206,19 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 .map_err(|source| {
                     LinuxInstallCommandError::Election(LinuxLocatorError::Io(source))
                 })?;
-            let proposed = host.propose_location(home, uid.owner_uid())?;
+            // An adoption that already started keeps its recorded roots; only
+            // a first attempt consults the environment.
+            let proposed = match locator
+                .adoption_intent()
+                .map_err(LinuxInstallCommandError::Election)?
+            {
+                Some(recorded) => recorded,
+                None => host.propose_location(home, uid.owner_uid())?,
+            };
+            let proposed = locator
+                .record_adoption_intent(proposed)
+                .map_err(LinuxInstallCommandError::Election)?;
+            stop(host, LinuxInstallCheckpoint::IntentRecorded)?;
             let adoption = LinuxAdoption::begin_observed(
                 home,
                 LinuxInstallElection::Legacy {
@@ -217,20 +231,8 @@ pub fn run_linux_install<H: LinuxInstallHost>(
             )?;
             let candidate = host.stage_candidate(adoption.store(), adoption.lock())?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
-            let prepared = adoption.prepared_journal()?;
-            let mut platform = platform(
-                home,
-                host,
-                adoption.store(),
-                adoption.lock(),
-                PlatformInputs {
-                    candidate: Some(&candidate),
-                    journal: prepared.as_ref(),
-                    managed: true,
-                    original: adoption.original_prior(),
-                },
-            )?;
-            let journal = adoption.prepare(&mut platform, install_request(request, candidate))?;
+            let (journal, mut platform) =
+                prepare_or_replace(home, host, &adoption, request, &candidate)?;
             stop(host, LinuxInstallCheckpoint::AdoptionReceipt)?;
             adoption.store().write_journal(&journal, adoption.lock())?;
             stop(host, LinuxInstallCheckpoint::StateJournal)?;
@@ -300,6 +302,64 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 outcome,
                 recovered: false,
             })
+        }
+    }
+}
+
+/// Resume the unpublished preparation or replace one that cannot resume.
+///
+/// Before the locator publishes, a prepared journal holds no authority and no
+/// platform effect has run for it. One that names another candidate, whose
+/// receipt no longer matches the legacy state, or whose recorded prior no
+/// longer matches the live platform (a restart after a crash, say) is
+/// discarded and prepared again from the present state.
+fn prepare_or_replace<H: LinuxInstallHost>(
+    home: &Path,
+    host: &mut H,
+    adoption: &LinuxAdoption,
+    request: &LinuxInstallRequest,
+    candidate: &UnitRecord,
+) -> Result<(InstallJournalV1, LinuxInstallPlatform<H::Executor>), LinuxInstallCommandError> {
+    let mut replaced = false;
+    loop {
+        let prepared = match adoption.prepared_journal() {
+            Ok(Some(journal)) if journal.candidate_unit == request.candidate => Some(journal),
+            Ok(None) => None,
+            Ok(Some(_))
+            | Err(
+                LinuxAdoptionError::ConflictingPreparation
+                | LinuxAdoptionError::Locator(LinuxLocatorError::Unprepared),
+            ) if !replaced => {
+                adoption.discard_unpublished_preparation()?;
+                replaced = true;
+                continue;
+            }
+            Ok(Some(_)) => return Err(LinuxAdoptionError::ConflictingPreparation.into()),
+            Err(error) => return Err(error.into()),
+        };
+        let resumed = prepared.is_some();
+        let mut platform = platform(
+            home,
+            host,
+            adoption.store(),
+            adoption.lock(),
+            PlatformInputs {
+                candidate: Some(candidate),
+                journal: prepared.as_ref(),
+                managed: true,
+                original: adoption.original_prior(),
+            },
+        )?;
+        match adoption.prepare(&mut platform, install_request(request, candidate.clone())) {
+            Ok(journal) => return Ok((journal, platform)),
+            Err(LinuxAdoptionError::Locator(LinuxLocatorError::Unprepared))
+                if resumed && !replaced =>
+            {
+                drop(platform);
+                adoption.discard_unpublished_preparation()?;
+                replaced = true;
+            }
+            Err(error) => return Err(error.into()),
         }
     }
 }

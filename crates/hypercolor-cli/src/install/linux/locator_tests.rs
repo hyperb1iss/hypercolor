@@ -1,5 +1,5 @@
 use std::fs;
-use std::os::unix::fs::MetadataExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use crate::install::{
     InstallJournalV1, InstallLock, InstallStore, InstallTargetPolicy, InstallTransactionId,
@@ -836,4 +836,108 @@ fn managed_election_refuses_writable_state_journal_and_allows_normal_replacement
         .expect("journal is mutable during recovery");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).expect("late writable journal");
     assert!(authority.confirm_durable().is_err());
+}
+
+#[test]
+fn unpublished_preparation_is_discarded_only_while_initial_and_unpublished() {
+    let fixture = Fixture::new();
+    fixture.prepare();
+    let state = fixture.location.state_root();
+    assert!(state.join("install-journal.json").exists());
+    fixture
+        .locator
+        .discard_preparation(&fixture.location, &fixture.state, &fixture.state_lock)
+        .expect("discard an initial unpublished preparation");
+    assert!(!state.join("install-journal.json").exists());
+    assert!(
+        !state
+            .join(super::super::locator_receipt::RECEIPT_NAME)
+            .exists()
+    );
+    assert!(
+        state.join("installation.json").exists(),
+        "the identity stays"
+    );
+
+    fixture.prepare();
+    let mut advanced = journal();
+    advanced.revision += 1;
+    fixture
+        .state
+        .write_journal(&advanced, &fixture.state_lock)
+        .expect("an advanced journal");
+    assert!(matches!(
+        fixture
+            .locator
+            .discard_preparation(&fixture.location, &fixture.state, &fixture.state_lock),
+        Err(LinuxLocatorError::Unprepared)
+    ));
+    assert!(state.join("install-journal.json").exists());
+
+    let fixture = Fixture::new();
+    fixture.prepare();
+    fixture
+        .locator
+        .publish_prepared(
+            &fixture.location,
+            &fixture.state,
+            &fixture.state_lock,
+            &mut PriorProof::valid(),
+        )
+        .expect("publish");
+    assert!(matches!(
+        fixture
+            .locator
+            .discard_preparation(&fixture.location, &fixture.state, &fixture.state_lock),
+        Err(LinuxLocatorError::AlreadyManaged)
+    ));
+    assert!(state_journal_exists(&fixture));
+}
+
+fn state_journal_exists(fixture: &Fixture) -> bool {
+    fixture
+        .location
+        .state_root()
+        .join("install-journal.json")
+        .exists()
+}
+
+#[test]
+fn adoption_intent_is_recorded_once_and_wins_over_later_proposals() {
+    let fixture = Fixture::new();
+    assert!(fixture.locator.adoption_intent().expect("absent").is_none());
+    let recorded = fixture
+        .locator
+        .record_adoption_intent(fixture.location.clone())
+        .expect("record");
+    assert_eq!(recorded, fixture.location);
+    let other = LinuxInstallLocation::new(
+        fixture.home.path(),
+        &fixture.home.path().join("other-data"),
+        &fixture.home.path().join("other-state"),
+        &fixture.home.path().join("other-config"),
+        fixture.location.uid(),
+    )
+    .expect("other");
+    assert_eq!(
+        fixture
+            .locator
+            .record_adoption_intent(other)
+            .expect("existing intent wins"),
+        fixture.location
+    );
+    assert_eq!(
+        fixture.locator.adoption_intent().expect("read"),
+        Some(fixture.location.clone())
+    );
+    let intent = fixture
+        .home
+        .path()
+        .join(".local/lib/hypercolor/managed-adoption.json");
+    assert_eq!(
+        fs::metadata(&intent).expect("intent").permissions().mode() & 0o777,
+        0o600
+    );
+    fs::write(&intent, b"{\"schema_version\":2}").expect("corrupt intent");
+    assert!(fixture.locator.adoption_intent().is_err());
 }

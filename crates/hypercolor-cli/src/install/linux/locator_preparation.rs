@@ -119,6 +119,41 @@ impl LinuxInstallLocator {
         Ok(Some(receipt.initial_journal))
     }
 
+    /// Discard an unpublished preparation that can no longer be resumed.
+    ///
+    /// The historical lock proves the locator still selects legacy authority,
+    /// so nothing references the prepared journal and no platform effect has
+    /// run for it. Only an initial journal is discarded; anything that has
+    /// advanced is refused. The journal goes first, so an interruption leaves
+    /// at most a receipt, which the next run validates or discards again.
+    ///
+    /// # Errors
+    /// Refuses managed authority, a journal past its initial action, or a
+    /// failed durable removal.
+    pub fn discard_preparation(
+        &self,
+        location: &LinuxInstallLocation,
+        state_store: &InstallStore,
+        state_lock: &InstallLock,
+    ) -> Result<(), LinuxLocatorError> {
+        require_state(location, state_store, state_lock)?;
+        if matches!(self.read()?, LinuxInstallAuthority::Managed(_)) {
+            return Err(LinuxLocatorError::AlreadyManaged);
+        }
+        match state_store.load_journal(state_lock) {
+            Ok(Some(journal)) => require_initial(&journal)?,
+            Ok(None) => {}
+            // An unreadable journal is never discarded blindly.
+            Err(error) => return Err(error.into()),
+        }
+        let state = state_lock
+            .open_public_directory(location.state_root())?
+            .into_directory_authority()?;
+        state.durable_remove_file(Path::new("install-journal.json"))?;
+        state.durable_remove_file(Path::new(RECEIPT_NAME))?;
+        Ok(())
+    }
+
     pub(super) fn capture_preparation(
         &self,
         location: &LinuxInstallLocation,

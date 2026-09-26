@@ -108,11 +108,22 @@ pub fn run_linux_uninstall<H: LinuxUninstallHost>(
     let locator =
         LinuxInstallLocator::retain(home, &old_lock).map_err(LinuxInstallCommandError::Election)?;
     let authority = locator.read().map_err(LinuxInstallCommandError::Election)?;
+    // Roots an interrupted adoption prepared before the locator published.
+    let intent = match &authority {
+        LinuxInstallAuthority::Legacy(_) => locator
+            .adoption_intent()
+            .map_err(LinuxInstallCommandError::Election)?,
+        LinuxInstallAuthority::Managed(_) => None,
+    };
     drop(locator);
     // Prove every removal parent before the first write, so an unsafe
     // ancestor refuses the whole uninstall instead of stranding it midway.
     require_trusted_path(&old_lock, &lib)?;
-    if let LinuxInstallAuthority::Managed(location) = &authority {
+    let recorded = match &authority {
+        LinuxInstallAuthority::Managed(location) => Some(location),
+        LinuxInstallAuthority::Legacy(_) => intent.as_ref(),
+    };
+    if let Some(location) = recorded {
         require_trusted_path(&old_lock, location.data_root())?;
         if let Some(container) = location.state_root().parent() {
             require_trusted_path(&old_lock, container)?;
@@ -127,6 +138,9 @@ pub fn run_linux_uninstall<H: LinuxUninstallHost>(
             stop(host, LinuxUninstallCheckpoint::Settled)?;
             remove_platform(home, host, &old, &old_lock, &[old.active_path()])?;
             stop(host, LinuxUninstallCheckpoint::PlatformRemoved)?;
+            if let Some(prepared) = &intent {
+                remove_prepared_roots(&old_lock, prepared, &mut run)?;
+            }
         }
         LinuxInstallAuthority::Managed(location) => {
             uninstall_managed(home, host, &old, &mut old_lock, &location, &mut run)?;
@@ -195,6 +209,36 @@ fn uninstall_managed<H: LinuxUninstallHost>(
     stop(host, LinuxUninstallCheckpoint::StateRemoved)?;
     if remove_empty_container(old_lock, state_container)? {
         run.removed.push(state_container.to_path_buf());
+    }
+    Ok(())
+}
+
+/// Remove roots an unpublished adoption prepared; they never held authority.
+///
+/// The historical lock is held, so no installer can resume that adoption
+/// while its roots go. The unpublished journal is never settled.
+fn remove_prepared_roots(
+    old_lock: &InstallLock,
+    location: &LinuxInstallLocation,
+    run: &mut LinuxUninstallRun,
+) -> Result<(), LinuxInstallCommandError> {
+    if remove_child_tree(old_lock, location.data_root(), "releases")? {
+        run.removed.push(location.release_root().to_path_buf());
+    }
+    let container = location
+        .state_root()
+        .parent()
+        .ok_or_else(|| InstallPlatformError::new("recorded state root has no parent"))?;
+    if remove_child_tree(old_lock, container, file_name(location.state_root())?)? {
+        run.removed.push(location.state_root().to_path_buf());
+    }
+    if remove_empty_container(old_lock, container)? {
+        run.removed.push(container.to_path_buf());
+    }
+    for root in [location.data_root(), location.config_root()] {
+        if root.exists() {
+            run.preserved.push(root.to_path_buf());
+        }
     }
     Ok(())
 }

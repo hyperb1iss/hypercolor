@@ -717,6 +717,7 @@ struct Fixture {
     world: Shared,
     v1: Release,
     v2: Release,
+    v3: Release,
 }
 
 impl Fixture {
@@ -744,6 +745,7 @@ impl Fixture {
         let metadata = fs::metadata(&home).expect("home metadata");
         let v1 = Release::write(&root, "9.8.7", b"daemon-one");
         let v2 = Release::write(&root, "9.8.8", b"daemon-two");
+        let v3 = Release::write(&root, "9.8.9", b"daemon-three");
         Self {
             world: World::new(&home),
             uid: metadata.uid(),
@@ -752,6 +754,7 @@ impl Fixture {
             home,
             v1,
             v2,
+            v3,
         }
     }
 
@@ -794,8 +797,14 @@ impl Fixture {
             world: Rc::clone(&self.world),
             active_root: None,
         };
+        let known: Vec<UnitRecord> = old
+            .active_unit(&lock)
+            .expect("historical pointer")
+            .map(|id| hypercolor_cli::install::retain_linux_unit(&old, &lock, &id).expect("prior"))
+            .into_iter()
+            .collect();
         let mut platform =
-            LinuxInstallPlatform::new(executor, config, []).expect("legacy platform");
+            LinuxInstallPlatform::new(executor, config, known).expect("legacy platform");
         let outcome = InstallCoordinator::new(&old, &mut platform)
             .install_with_lock(
                 InstallRequest {
@@ -1174,8 +1183,9 @@ fn changed_xdg_after_install_follows_the_recorded_roots() {
 
 // ── Crash at every migration checkpoint ─────────────────────────────────
 
-const ADOPTION_CHECKPOINTS: [LinuxInstallCheckpoint; 9] = [
+const ADOPTION_CHECKPOINTS: [LinuxInstallCheckpoint; 10] = [
     LinuxInstallCheckpoint::LegacyElected,
+    LinuxInstallCheckpoint::IntentRecorded,
     LinuxInstallCheckpoint::RootsBootstrapped,
     LinuxInstallCheckpoint::PriorCopied,
     LinuxInstallCheckpoint::PriorActivated,
@@ -1953,4 +1963,169 @@ fn existing_ancestors_above_recorded_roots_must_be_trusted() {
         fs::Permissions::from_mode(0o755),
     )
     .expect("cleanup");
+}
+
+// ── Loss before publication, then the world changes ─────────────────────
+
+const UNPUBLISHED: [LinuxInstallCheckpoint; 6] = [
+    LinuxInstallCheckpoint::RootsBootstrapped,
+    LinuxInstallCheckpoint::PriorCopied,
+    LinuxInstallCheckpoint::PriorActivated,
+    LinuxInstallCheckpoint::CandidateStaged,
+    LinuxInstallCheckpoint::AdoptionReceipt,
+    LinuxInstallCheckpoint::StateJournal,
+];
+
+impl Fixture {
+    /// Adopt with `release` into `location`, stopping at `checkpoint`.
+    fn interrupted_adoption(
+        &self,
+        release: &Release,
+        location: &LinuxInstallLocation,
+        checkpoint: LinuxInstallCheckpoint,
+    ) {
+        let mut host = Host::new(&self.world, release, Some(location.clone()));
+        host.stop_at = Some(checkpoint);
+        assert!(
+            run_linux_install(
+                &self.home,
+                &release.request(InstallTargetPolicy::Preserve),
+                &self.private(),
+                &mut host,
+            )
+            .is_err(),
+            "{checkpoint:?} did not stop the run"
+        );
+        assert!(matches!(
+            elect_linux_installation_with(&self.home, &self.private()).expect("election"),
+            LinuxInstallElection::Legacy { .. }
+        ));
+    }
+
+    fn adopt(&self, release: &Release, proposal: Option<LinuxInstallLocation>) -> usize {
+        let mut host = Host::new(&self.world, release, proposal);
+        let run = run_linux_install(
+            &self.home,
+            &release.request(InstallTargetPolicy::Preserve),
+            &self.private(),
+            &mut host,
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "adoption after an unpublished loss: {error:?}; seen {:?}",
+                host.seen
+            )
+        });
+        assert_eq!(
+            run.outcome,
+            InstallOutcome::Committed {
+                active_unit: release.id.clone()
+            }
+        );
+        host.proposals
+    }
+}
+
+#[test]
+fn unpublished_loss_then_a_service_restart_prepares_again() {
+    for checkpoint in UNPUBLISHED {
+        let fixture = Fixture::new();
+        fixture.legacy_install(&fixture.v1);
+        let location = fixture.default_location();
+        fixture.interrupted_adoption(&fixture.v2, &location, checkpoint);
+        // A reboot or crash restarts the historical daemon under a new
+        // invocation, so a recorded prior no longer matches the platform.
+        {
+            let mut world = fixture.world.borrow_mut();
+            world.stop();
+            world.start();
+        }
+        fixture.adopt(&fixture.v2, Some(location.clone()));
+        fixture.assert_managed(&location, &fixture.v2.id);
+    }
+}
+
+#[test]
+fn unpublished_loss_then_changed_xdg_resumes_the_recorded_target() {
+    for checkpoint in UNPUBLISHED {
+        let fixture = Fixture::new();
+        fixture.legacy_install(&fixture.v1);
+        let recorded = fixture.location("xdg-a/data", "xdg-a/state", "xdg-a/config");
+        fixture.interrupted_adoption(&fixture.v2, &recorded, checkpoint);
+        let changed = fixture.location("xdg-b/data", "xdg-b/state", "xdg-b/config");
+        assert_eq!(
+            fixture.adopt(&fixture.v2, Some(changed)),
+            0,
+            "{checkpoint:?}"
+        );
+        fixture.assert_managed(&recorded, &fixture.v2.id);
+        assert!(!fixture.home.join("xdg-b").exists(), "{checkpoint:?}");
+    }
+}
+
+#[test]
+fn unpublished_loss_then_another_candidate_or_historical_install_prepares_again() {
+    for checkpoint in UNPUBLISHED {
+        // A newer candidate arrives before the rerun.
+        let fixture = Fixture::new();
+        fixture.legacy_install(&fixture.v1);
+        let location = fixture.default_location();
+        fixture.interrupted_adoption(&fixture.v2, &location, checkpoint);
+        fixture.adopt(&fixture.v3, None);
+        fixture.assert_managed(&location, &fixture.v3.id);
+
+        // An older installer changes the historical install in between.
+        let fixture = Fixture::new();
+        let location = fixture.default_location();
+        fixture.legacy_install(&fixture.v1);
+        fixture.interrupted_adoption(&fixture.v2, &location, checkpoint);
+        fixture.legacy_install(&fixture.v3);
+        fixture.adopt(&fixture.v2, None);
+        fixture.assert_managed(&location, &fixture.v2.id);
+        let old = fixture.legacy();
+        let lock = old.acquire_lock().expect("historical lock");
+        assert_eq!(
+            old.active_unit(&lock).expect("pointer"),
+            Some(fixture.v3.id.clone()),
+            "{checkpoint:?}: the historical pointer the older installer set is kept"
+        );
+    }
+}
+
+#[test]
+fn uninstall_after_an_unpublished_loss_removes_the_prepared_roots() {
+    for checkpoint in UNPUBLISHED {
+        let fixture = Fixture::new();
+        fixture.legacy_install(&fixture.v1);
+        let location = fixture.location("xdg-a/data", "xdg-a/state", "xdg-a/config");
+        fixture.interrupted_adoption(&fixture.v2, &location, checkpoint);
+        let mut host = UninstallHost {
+            world: Rc::clone(&fixture.world),
+            stop_at: None,
+        };
+        let run =
+            run_linux_uninstall(&fixture.home, &fixture.private(), &mut host).expect("uninstall");
+        for removed in [
+            fixture.home.join(".local/lib/hypercolor"),
+            location.state_root().to_path_buf(),
+        ] {
+            assert!(!removed.exists(), "{checkpoint:?}: {removed:?}");
+            assert!(
+                run.removed.contains(&removed),
+                "{checkpoint:?}: {:?}",
+                run.removed
+            );
+        }
+        assert!(!location.release_root().exists(), "{checkpoint:?}");
+        assert!(
+            location.data_root().exists(),
+            "{checkpoint:?}: data is preserved"
+        );
+        // A fresh install afterwards is not blocked by leftovers.
+        let fresh = fixture.location("xdg-a/data", "xdg-a/state", "xdg-a/config");
+        fixture
+            .run(&fixture.v2, Some(fresh.clone()), &fixture.private())
+            .expect("fresh install after uninstall");
+        fixture.assert_managed(&fresh, &fixture.v2.id);
+    }
 }

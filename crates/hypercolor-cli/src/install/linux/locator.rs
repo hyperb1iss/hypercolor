@@ -24,6 +24,12 @@ pub use election::{
 };
 
 const LOCATOR_NAME: &str = "install-journal.json";
+/// Adoption target recorded beside the locator before any new root exists.
+///
+/// Only managed-aware installers read it. It keeps an interrupted adoption on
+/// the roots it started with, whatever the environment says on a rerun, and
+/// lets uninstall find roots prepared before the locator was published.
+const INTENT_NAME: &str = "managed-adoption.json";
 const MAX_LOCATOR_BYTES: u64 = MAX_INSTALL_JOURNAL_BYTES as u64;
 
 #[cfg(test)]
@@ -230,6 +236,57 @@ impl LinuxInstallLocator {
         publish(&self.directory, &staging, Path::new(LOCATOR_NAME))?;
         self.public.validate_ancestry()?;
         Ok(())
+    }
+
+    /// The adoption target recorded before any new root was prepared.
+    ///
+    /// # Errors
+    /// Refuses a foreign-owned, writable, oversized or invalid intent.
+    pub fn adoption_intent(&self) -> Result<Option<LinuxInstallLocation>, LinuxLocatorError> {
+        let mut file = match self.public.open_regular_file(Path::new(INTENT_NAME)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut bytes = Vec::new();
+        file.file_mut()
+            .take(MAX_LOCATOR_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_LOCATOR_BYTES {
+            return Err(LinuxLocatorError::InvalidLocator);
+        }
+        let location = LinuxInstallLocation::parse(&bytes, &self.home)?;
+        preparation::require_file_owner(file.metadata(), location.uid())?;
+        Ok(Some(location))
+    }
+
+    /// Durably record `proposed` as the adoption target unless one exists.
+    ///
+    /// Returns the recorded target, which wins over `proposed`. The caller
+    /// holds the historical lock, so no other installer races the record.
+    ///
+    /// # Errors
+    /// Refuses managed authority or a failed durable write.
+    pub fn record_adoption_intent(
+        &self,
+        proposed: LinuxInstallLocation,
+    ) -> Result<LinuxInstallLocation, LinuxLocatorError> {
+        if matches!(self.read()?, LinuxInstallAuthority::Managed(_)) {
+            return Err(LinuxLocatorError::AlreadyManaged);
+        }
+        if let Some(recorded) = self.adoption_intent()? {
+            return Ok(recorded);
+        }
+        let bytes = serde_json::to_vec(&proposed)?;
+        self.public.validate_ancestry()?;
+        self.directory.create_regular_file(
+            Path::new(INTENT_NAME),
+            0o600,
+            bytes.len() as u64,
+            &mut bytes.as_slice(),
+        )?;
+        self.public.validate_ancestry()?;
+        Ok(proposed)
     }
 
     /// Retry the locator directory barrier before any managed transitions.
