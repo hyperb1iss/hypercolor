@@ -390,23 +390,6 @@ expect_units() {
 
 GUEST_RELEASES="${GUEST_HOME}/.local/share/hypercolor/releases"
 
-# Run the installation's launcher as a recovery unit would: update-executor
-# role, __recover-release. Sets DRIVER_EXIT and LAST_INSTALL_OUTPUT.
-recover_run() {
-    local label="$1"
-    shift
-    STEP=$((STEP + 1))
-    local output
-    output="${RECEIPT}/$(printf '%02d' "${STEP}")-recover-${label}.log"
-    hide_bus
-    log "recover ${label}: $*"
-    gx hc-guest-driver recover "$@" >"${output}" 2>&1 || true
-    DRIVER_EXIT="$(sed -n 's/^DRIVER //p' "${output}" | tail -n 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["exit"])')"
-    LAST_INSTALL_OUTPUT="${output}"
-    log "  exit=${DRIVER_EXIT}"
-    snapshot "after-${label}"
-}
-
 # Save and print the qualification daemon's launch report.
 launch_report() {
     STEP=$((STEP + 1))
@@ -418,7 +401,8 @@ launch_report() {
 
 # The running daemon, its UI and its effects all come from VERSION's own
 # release directory, never through the active pointer, both as the daemon
-# reports itself and as /proc shows its main process.
+# reports itself and as /proc shows its main process, and its XDG bases
+# are the recorded roots' with caches under the recorded daemon state.
 expect_launch() {
     local version="$1" unit report pid
     unit="${GUEST_RELEASES}/units/$(unit_of "${version}")"
@@ -427,11 +411,11 @@ expect_launch() {
     local exe cmdline
     exe="$(gx readlink "/proc/${pid}/exe")"
     cmdline="$(gx cat "/proc/${pid}/cmdline" | tr '\0' ' ')"
-    python3 - "${report}" "${unit}" "${exe}" "${cmdline}" <<'PY' || fail "the running daemon is not ${version}'s whole release"
+    python3 - "${report}" "${unit}" "${exe}" "${cmdline}" "${GUEST_HOME}" <<'PY' || fail "the running daemon is not ${version}'s whole release"
 import json
 import sys
 
-report, unit, exe, cmdline = sys.argv[1:5]
+report, unit, exe, cmdline, home = sys.argv[1:6]
 launch = json.loads(report)
 argv = launch["argv"]
 expected = [
@@ -439,6 +423,12 @@ expected = [
     "--ui-dir", f"{unit}/share/hypercolor/ui",
     "--effects-dir", f"{unit}/share/hypercolor/effects/bundled",
 ]
+environment = {
+    "XDG_CONFIG_HOME": f"{home}/.config",
+    "XDG_DATA_HOME": f"{home}/.local/share",
+    "XDG_STATE_HOME": f"{home}/.local/state",
+    "XDG_CACHE_HOME": f"{home}/.local/state/hypercolor/cache",
+}
 problems = []
 if launch["exe"] != expected[0]:
     problems.append(f"reported exe {launch['exe']}")
@@ -448,37 +438,51 @@ if argv != expected:
     problems.append(f"argv {argv}")
 if cmdline.split() != expected:
     problems.append(f"/proc cmdline {cmdline}")
+for name, value in environment.items():
+    if launch["env"].get(name) != value:
+        problems.append(f"{name}={launch['env'].get(name)}")
 if problems:
     sys.exit("; ".join(problems))
 PY
-    log "  ok: ${version}'s daemon runs with its own UI and effects (/proc agrees)"
+    log "  ok: ${version}'s daemon runs with its own UI and effects and the recorded roots (/proc agrees)"
 }
 
 # Every directory the sandbox must let the daemon write is writable, and
-# every other one is not.
+# every other one is not. With MODE absent, no coordinator/ or activator/
+# exists and the daemon cannot create them; with MODE present another
+# build created both, and only coordinator/ becomes writable.
 expect_writes() {
-    local report
-    report="$(launch_report writes)"
-    python3 - "${report}" <<'PY' || fail "the sandbox's writable set is wrong"
+    local mode="$1" report
+    report="$(launch_report "writes-${mode}")"
+    python3 - "${report}" "${mode}" <<'PY' || fail "the sandbox's writable set is wrong (${mode})"
 import json
 import sys
 
 writes = json.loads(sys.argv[1])["writes"]
-writable = {"config", "data", "daemon_state", "coordinator", "cache", "tmp", "var_tmp"}
+mode = sys.argv[2]
+writable = {"config", "data", "daemon_state", "cache", "tmp", "var_tmp"}
 denied = {"releases", "update_state", "activator", "local_bin", "legacy_lib", "user_units", "home"}
+if mode == "present":
+    writable.add("coordinator")
+else:
+    denied.add("coordinator")
 problems = [f"{label}={writes.get(label)}" for label in sorted(writable) if writes.get(label) != "ok"]
 problems += [
     f"{label}={writes.get(label)}"
     for label in sorted(denied)
     if not str(writes.get(label, "")).startswith("denied")
 ]
+if not str(writes.get("update_state", "")).startswith("denied: ReadOnlyFilesystem"):
+    problems.append(f"update_state={writes.get('update_state')}")
+if mode == "present" and not str(writes.get("activator", "")).startswith("denied: ReadOnlyFilesystem"):
+    problems.append(f"activator={writes.get('activator')}")
 if set(writes) != writable | denied:
     problems.append(f"probed {sorted(writes)}")
 print(json.dumps(writes, indent=2))
 if problems:
     sys.exit("; ".join(problems))
 PY
-    log "  ok: writable exactly config, data, daemon state, coordinator, cache and private tmp"
+    log "  ok: writable exactly config, data, daemon state, cache and private tmp$([[ "${mode}" == present ]] && printf ', coordinator')"
 }
 
 wait_active() {

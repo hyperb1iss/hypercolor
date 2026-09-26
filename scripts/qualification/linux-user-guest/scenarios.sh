@@ -307,10 +307,12 @@ scenario_units_collected() {
     expect_units "${V_B}" "${V_C}"
 }
 
-# A managed install runs its daemon through the installation's launcher
-# inside the sandbox: healthy, from its own release only, able to write
-# exactly the recorded configuration, data and daemon state roots and the
-# coordinator's directory, with a private /tmp.
+# A managed install runs its daemon from its own release directory inside
+# the sandbox: healthy, able to write exactly the recorded configuration,
+# data and daemon state roots, with a private /tmp and its XDG bases pinned
+# to the recorded roots. The update state stays read-only, so the daemon
+# cannot create a coordinator directory; once another build has created
+# one, the unit makes it writable and nothing else in update state.
 scenario_hardened_unit() {
     set_faults "${V_A}" probe_writes=1
     install_run fresh "${V_A}" -- --probation-seconds 0
@@ -320,19 +322,22 @@ scenario_hardened_unit() {
     expect_health "${V_A}"
 
     local fragment="${GUEST_HOME}/.config/systemd/user/hypercolor.service"
-    local launcher="${GUEST_RELEASES}/launcher/hypercolor"
+    local unit_a
+    unit_a="${GUEST_RELEASES}/units/$(unit_of "${V_A}")"
     gx cat "${fragment}" >"${RECEIPT}/unit.service"
-    grep -qxF "ExecStart=${launcher} __launch --role daemon" "${RECEIPT}/unit.service" ||
-        fail "the unit does not start the launcher"
-    grep -qxF "ExecStartPre=+${launcher} __launch --role prepare-roots" "${RECEIPT}/unit.service" ||
-        fail "the unit does not prepare its roots before the sandbox"
+    head -n 1 "${RECEIPT}/unit.service" | grep -qxF "# Hypercolor service contract: hypercolor-public-1" ||
+        fail "the unit does not name its service contract"
+    grep -qxF "ExecStart=${unit_a}/bin/hypercolor-daemon --ui-dir ${unit_a}/share/hypercolor/ui --effects-dir ${unit_a}/share/hypercolor/effects/bundled" \
+        "${RECEIPT}/unit.service" || fail "the unit does not name its release directory"
+    grep -qxF "ExecStartPre=+mkdir -p -m 0700 ${GUEST_HOME}/.config/hypercolor" "${RECEIPT}/unit.service" ||
+        fail "the unit does not recreate its configuration root before the sandbox"
     local directive
     for directive in ProtectSystem=strict ProtectHome=read-only PrivateTmp=true \
         NoNewPrivileges=true Type=notify WatchdogSec=30 \
         Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service; do
         grep -qxF "${directive}" "${RECEIPT}/unit.service" || fail "the unit lacks ${directive}"
     done
-    log "  ok: the unit starts the launcher with its sandbox"
+    log "  ok: the unit names its release and carries its sandbox"
     gx systemctl --user show hypercolor.service -p ProtectSystem -p ProtectHome \
         -p PrivateTmp -p NoNewPrivileges -p ReadWritePaths -p ReadOnlyPaths \
         >"${RECEIPT}/sandbox-properties.txt"
@@ -342,7 +347,7 @@ scenario_hardened_unit() {
     expect_prop NoNewPrivileges yes
 
     expect_launch "${V_A}"
-    expect_writes
+    expect_writes absent
     local pid
     pid="$(service_prop MainPID)"
     if gx test -e "/tmp/hc-qual-private-${pid}"; then
@@ -351,12 +356,19 @@ scenario_hardened_unit() {
     log "  ok: the daemon's /tmp is private"
     local name
     for name in coordinator activator; do
-        [[ "$(gx stat -c %a "${GUEST_HOME}/.local/state/hypercolor/update/${name}")" == 700 ]] ||
-            fail "${name}/ is not 0700"
+        if gx test -e "${GUEST_HOME}/.local/state/hypercolor/update/${name}"; then
+            fail "the public installer created ${name}/"
+        fi
     done
-    log "  ok: coordinator/ and activator/ exist, 0700"
-    [[ "$(gx stat -c %a "${launcher}")" == 555 ]] || fail "the launcher is not 0555"
-    log "  ok: the launcher is read-only"
+    log "  ok: the public installer creates no coordinator/ or activator/"
+
+    log "another build creates coordinator/ and activator/; restarting"
+    gx mkdir -m 0700 "${GUEST_HOME}/.local/state/hypercolor/update/coordinator" \
+        "${GUEST_HOME}/.local/state/hypercolor/update/activator"
+    gx systemctl --user restart hypercolor.service
+    wait_active
+    expect_health "${V_A}"
+    expect_writes present
 
     install_run upgrade "${V_B}" -- --probation-seconds 0
     expect_exit 0
@@ -366,8 +378,8 @@ scenario_hardened_unit() {
 
 # Deleting the configuration directory to reset it, as the uninstall guide
 # suggests, must not keep the sandboxed service from starting: its
-# prepare-roots step recreates the recorded root before systemd builds the
-# sandbox around it.
+# ExecStartPre=+mkdir step recreates the recorded root before systemd builds
+# the sandbox around it.
 scenario_config_reset() {
     install_run fresh "${V_A}" -- --probation-seconds 0
     expect_exit 0
@@ -383,17 +395,14 @@ scenario_config_reset() {
     wait_active
     expect_health "${V_A}"
     [[ "$(gx stat -c %a "${config}")" == 700 ]] || fail "the configuration root was not recreated 0700"
-    gx journalctl --user -u hypercolor.service --no-pager -o cat \
-        >"${RECEIPT}/service-journal.txt" 2>&1 || true
-    grep -qF "hypercolor launcher: created ${config}" "${RECEIPT}/service-journal.txt" ||
-        fail "the launcher did not report recreating the root"
     log "  ok: the service recreated the deleted configuration root and started"
 }
 
 # The active pointer swaps between two releases as fast as the guest can
-# while the service restarts again and again; every start runs one whole
-# release, and both releases get selected.
-scenario_launcher_swap() {
+# while the service restarts again and again. The unit names one release's
+# directory, so every start runs that release, whole, whatever active says
+# at that moment.
+scenario_active_swap() {
     install_run fresh "${V_A}" -- --probation-seconds 0
     expect_exit 0
     install_run upgrade "${V_B}" -- --probation-seconds 0
@@ -410,69 +419,16 @@ scenario_launcher_swap() {
             ln -s units/${unit_a} active.swap && mv -T active.swap active
             ln -s units/${unit_b} active.swap && mv -T active.swap active
         done"
-    local round seen_a=0 seen_b=0 report unit
-    for round in $(seq 1 24); do
+    local _
+    for _ in $(seq 1 24); do
         # Reset the start rate limit, which counts manual restarts too.
         gx systemctl --user reset-failed hypercolor.service
         gx systemctl --user restart hypercolor.service
         wait_active
-        report="$(launch_report "round-${round}")"
-        unit="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["exe"])' "${report}")"
-        python3 - "${report}" <<'PY' || fail "round ${round} mixed two releases"
-import json
-import sys
-
-launch = json.loads(sys.argv[1])
-argv = launch["argv"]
-release = launch["exe"].rsplit("/bin/", 1)[0]
-expected = [
-    f"{release}/bin/hypercolor-daemon",
-    "--ui-dir", f"{release}/share/hypercolor/ui",
-    "--effects-dir", f"{release}/share/hypercolor/effects/bundled",
-]
-if argv != expected or "/active/" in " ".join(argv):
-    sys.exit(f"argv {argv} for {launch['exe']}")
-PY
-        case "${unit}" in
-            */units/${unit_a}/*) seen_a=$((seen_a + 1)) ;;
-            */units/${unit_b}/*) seen_b=$((seen_b + 1)) ;;
-            *) fail "round ${round} ran ${unit}" ;;
-        esac
+        expect_launch "${V_B}"
     done
     groot rm -f /tmp/hc-qual-swapping
     sleep 1
     gx bash -c "cd ${GUEST_RELEASES} && ln -s units/${unit_b} active.swap && mv -T active.swap active"
-    log "  starts: ${seen_a} from ${V_A}, ${seen_b} from ${V_B}"
-    ((seen_a > 0 && seen_b > 0)) || fail "the swaps never reached both releases"
-    log "  ok: every start ran one whole release, and both were selected"
-}
-
-# The installer dies during the candidate's proof. A recovery run through
-# the launcher's update-executor role executes the prior release's CLI,
-# which finds the candidate wrong and rolls back.
-scenario_recovery_role() {
-    install_run fresh "${V_A}" -- --probation-seconds 0
-    expect_exit 0
-    set_faults "${V_B}" health_delay_ms=3000 report_version=0.0.0-wrong
-
-    install_run interrupted "${V_B}" --kill-at prove_candidate --with-receipt --delay-ms 500 -- --probation-seconds 0
-    expect_acted kill_installer
-    expect_journal forward
-    expect_active "${V_B}"
-
-    recover_run recovery --probation-seconds 0
-    expect_exit 0
-    local unit_a
-    unit_a="$(unit_of "${V_A}")"
-    expect_output "update-executor from release ${unit_a}, the prior of the unsettled install"
-    expect_output "Recovering with ${GUEST_RELEASES}/units/${unit_a}/bin/hypercolor"
-    expect_journal rolled_back
-    expect_active "${V_A}"
-    expect_health "${V_A}"
-    expect_restored_receipt "${V_A}"
-
-    recover_run settled
-    expect_exit 0
-    expect_output "update-executor from release ${unit_a}"
-    expect_output "No unsettled install to recover."
+    log "  ok: all 24 starts ran ${V_B} whole while active flipped underneath"
 }

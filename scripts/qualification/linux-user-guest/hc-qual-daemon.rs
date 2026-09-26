@@ -23,7 +23,7 @@
 //!   generated service's sandbox allows or denies, and report the results.
 //!
 //! `GET /qual/launch` reports how this process was started: its resolved
-//! executable, its arguments, the XDG variables the launcher set, and the
+//! executable, its arguments, the XDG variables its unit set, and the
 //! write probes. A probe leaves nothing behind except
 //! `/tmp/hc-qual-private-<pid>`, which shows whether `/tmp` is private.
 //!

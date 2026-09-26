@@ -17,10 +17,6 @@
 #       Print /health, or "unreachable".
 #   hc-guest-driver launch-report
 #       Print the qualification daemon's /qual/launch report.
-#   hc-guest-driver recover [ARGS...]
-#       Run the installation's launcher in its update-executor role with
-#       __recover-release ARGS, as a recovery unit would, and print a DRIVER
-#       line with its exit status.
 set -euo pipefail
 
 RELEASES=/releases
@@ -28,7 +24,6 @@ CANDIDATES="${HOME}/candidates"
 STATE_ROOT="${HOME}/.local/state/hypercolor/update"
 JOURNAL="${STATE_ROOT}/install-journal.json"
 ACTIVE="${HOME}/.local/share/hypercolor/releases/active"
-LAUNCHER="${HOME}/.local/share/hypercolor/releases/launcher/hypercolor"
 
 die() {
     printf 'hc-guest-driver: %s\n' "$*" >&2
@@ -92,12 +87,6 @@ PY
 launch_report() {
     curl -fsS --max-time 5 http://127.0.0.1:9420/qual/launch 2>/dev/null || printf 'unreachable'
     printf '\n'
-}
-
-recover() {
-    local status=0
-    "${LAUNCHER}" __launch --role update-executor -- __recover-release "$@" || status=$?
-    printf 'DRIVER {"exit": %d}\n' "${status}"
 }
 
 install() {
@@ -208,6 +197,5 @@ case "${command}" in
     state) state ;;
     health) health ;;
     launch-report) launch_report ;;
-    recover) recover "$@" ;;
-    *) die "usage: hc-guest-driver install|state|health|launch-report|recover" ;;
+    *) die "usage: hc-guest-driver install|state|health|launch-report" ;;
 esac
