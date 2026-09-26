@@ -5777,6 +5777,57 @@ fn companion_units_placed_while_stopped_survive_a_different_template_and_uninsta
 }
 
 #[test]
+fn a_unitless_first_install_places_units_from_a_launcher_that_then_stays() {
+    // `--no-service` on a fresh machine: the commit carries no service
+    // unit, but it records the launcher as settled before placing units,
+    // so no later install replaces the launcher those units run.
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    let first = companion_release(
+        &fixture,
+        "9.8.50",
+        &[("hypercolor-qual-recover.service", RECOVER_TEMPLATE, true)],
+    );
+    let run = run_policy(
+        &fixture,
+        &first,
+        Some(location.clone()),
+        InstallTargetPolicy::Preserve,
+    )
+    .expect("install without a service");
+    assert_eq!(run.settled_launcher, Some(Ok(())));
+    let report = run.companions.expect("placed").expect("in place");
+    assert_eq!(report.installed, ["hypercolor-qual-recover.service"]);
+    let launcher = fs::read(launcher_path(&location)).expect("launcher");
+    let placed = fixture.world.borrow().companions["hypercolor-qual-recover.service"].clone();
+
+    let different = companion_release(
+        &fixture,
+        "9.8.51",
+        &[(
+            "hypercolor-qual-recover.service",
+            "[Service]\nType=oneshot\nExecStart=/bin/false\n",
+            true,
+        )],
+    );
+    let run = fixture.update(&different).expect("a normal install");
+    let report = run.companions.expect("settled").expect("in place");
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        launcher
+    );
+    assert_eq!(
+        fixture.world.borrow().companions["hypercolor-qual-recover.service"],
+        placed
+    );
+    uninstall(&fixture).expect("uninstall");
+    let world = fixture.world.borrow();
+    assert!(world.companions.is_empty(), "{:?}", world.companions.keys());
+    assert!(world.enabled_companions.is_empty());
+}
+
+#[test]
 fn a_changed_rendered_companion_unit_refuses_the_next_install_before_any_service_change() {
     for tamper in ["bytes", "missing", "extra", "mode"] {
         let fixture = Fixture::new();

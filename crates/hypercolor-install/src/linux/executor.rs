@@ -150,6 +150,11 @@ pub trait LinuxInstallExecutor {
     fn companion_unit_names(&mut self) -> Result<Vec<String>, InstallPlatformError> {
         Ok(Vec::new())
     }
+    /// Prove the systemd user directory companion units live in can be
+    /// opened, when it exists.
+    fn open_companion_directory(&mut self) -> Result<(), InstallPlatformError> {
+        Ok(())
+    }
     /// Replace one companion unit file exactly as observed.
     fn replace_companion_unit(
         &mut self,
@@ -501,6 +506,15 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
             .public_tree
             .open_directory(LinuxDirectoryItem::SystemdUser)?;
         read_exact_entry(&directory, name, max_bytes)
+    }
+
+    fn open_companion_directory(&mut self) -> Result<(), InstallPlatformError> {
+        if self.public_tree.state(LinuxDirectoryItem::SystemdUser)? == LinuxDirectoryState::Absent {
+            return Ok(());
+        }
+        self.public_tree
+            .open_directory(LinuxDirectoryItem::SystemdUser)
+            .map(drop)
     }
 
     fn companion_unit_names(&mut self) -> Result<Vec<String>, InstallPlatformError> {
