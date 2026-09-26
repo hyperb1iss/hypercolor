@@ -87,9 +87,12 @@ the units an official build uses to apply updates. The installer renders them
 with the recorded locations when it publishes the launcher, keeps the
 rendered text with the launcher, and after an install commits it puts any that
 are missing into `~/.config/systemd/user` and enables the ones the release asks
-for. Like the launcher, an ordinary install never changes them, so a release
+for, every time an install commits, so one you disabled comes back enabled.
+Like the launcher, an ordinary install never changes them, so a release
 cannot change the unit its own recovery runs under. A unit file someone edited
-is left alone and reported, and uninstall refuses to remove it.
+is left alone and reported, and uninstall refuses to remove it. Uninstall still
+removes the units the installer put in place when the launcher changed or was
+removed.
 
 ## Upgrades from older installs
 
