@@ -133,15 +133,19 @@ owns it and every durable store it reads or writes: your configuration,
 scenes, layouts, library, device settings and the rest. For each store it
 names the schema it writes and the oldest and newest it can read. Stores
 without a version field on disk declare schema `0`, their only shape so far.
-The daemon also records, each time it starts, the schema it found in each
-store before opening it.
+Each time the daemon starts, it also reads the schema every store holds on
+disk before opening it, and keeps that report for the part of an official
+build that plans updates. The installer's own records (the transaction
+journal, the installation record and the locator) are not in that list:
+their formats belong to the launcher contract the release declares.
 
 These declarations let an update decide whether the release it replaces could
 still read your data after a rollback. A release from before this contract
 declares nothing: it still installs as a rollback target and uninstalls
 normally, but any update that would have to cross it is treated as needing
-you to decide, never as automatic. The installer refuses a new Linux release
-whose declaration is missing, incomplete or from an unknown future contract.
+you to decide, never as automatic. The installer refuses a new release
+whose declaration is missing, incomplete or from an unknown future contract,
+whatever platform its manifest names; only a macOS release omits it.
 
 ## Directory permissions and private groups
 
