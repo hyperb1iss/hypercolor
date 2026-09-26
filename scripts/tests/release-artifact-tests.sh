@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Packaging tests for scripts/dist.sh and scripts/verify-release-artifact.sh.
+#
+# Set HYPERCOLOR_RELEASE_TEST_CLI to a built `hypercolor` CLI for this host
+# to package it as the fixture's bin/hypercolor; the tests then also run the
+# Rust candidate validator on the producer's output, with and without the
+# durable store inventory.
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -15,6 +21,7 @@ import unittest
 from pathlib import Path
 
 SOURCE = Path(os.environ["ROOT_DIR"])
+REAL_CLI = os.environ.get("HYPERCOLOR_RELEASE_TEST_CLI", "")
 ASSET_ROOTS = {
     "ui_files": "share/hypercolor/ui",
     "bundled_effect_files": "share/hypercolor/effects/bundled",
@@ -35,7 +42,7 @@ class ReleaseArtifactTests(unittest.TestCase):
         fixture = cls.root / "source"
         (fixture / "scripts").mkdir(parents=True)
         shutil.copy2(SOURCE / "scripts/dist.sh", fixture / "scripts/dist.sh")
-        for directory in ("bin", "desktop", "icons", "modules-load", "systemd"):
+        for directory in ("bin", "desktop", "icons", "managed", "modules-load", "systemd"):
             shutil.copytree(SOURCE / "packaging" / directory, fixture / "packaging" / directory)
         shutil.copytree(SOURCE / "udev", fixture / "udev")
         for name in ("LICENSE", "NOTICE", "README.md"):
@@ -54,6 +61,9 @@ class ReleaseArtifactTests(unittest.TestCase):
             file = binaries / name
             file.write_text("#!/usr/bin/env sh\nexit 0\n")
             file.chmod(0o755)
+        if REAL_CLI:
+            shutil.copyfile(REAL_CLI, binaries / "hypercolor")
+            (binaries / "hypercolor").chmod(0o755)
         assets = cls.root / "web-assets"
         for path in ("ui/index.html", "effects/probe.html"):
             file = assets / path
@@ -156,6 +166,155 @@ class ReleaseArtifactTests(unittest.TestCase):
         result = self.repack()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("manifest asset root is missing or not a directory", result.stderr)
+
+    def rust_validate(self):
+        """Run the packaged CLI's own candidate validator on this payload."""
+        home = self.directory / "home"
+        home.mkdir(exist_ok=True)
+        digest = hashlib.sha256((self.payload / "manifest.json").read_bytes()).hexdigest()
+        return subprocess.run(
+            [
+                str(self.payload / "bin/hypercolor"), "__install-release",
+                "--install-prefix", str(home / ".local"),
+                "--install-dir", str(home / ".local/bin"),
+                "--expected-manifest-sha256", digest, "--validate-only",
+            ],
+            capture_output=True, text=True, check=False,
+            env={**os.environ, "HOME": str(home)},
+        )
+
+    INVENTORY = "share/hypercolor/durable-stores.json"
+
+    def write_inventory(self, text):
+        """Replace the shipped inventory and rebind its member entry."""
+        path = self.payload / self.INVENTORY
+        path.chmod(0o644)
+        path.write_text(text)
+        manifest = self.manifest()
+        data = path.read_bytes()
+        for member in manifest["members"]:
+            if member["path"] == self.INVENTORY:
+                member["size"] = len(data)
+                member["sha256"] = hashlib.sha256(data).hexdigest()
+        self.save_manifest(manifest)
+
+    def assert_rejected(self, message):
+        result = self.repack()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(message, result.stderr)
+
+    def dist(self, *extra):
+        """Run the producer on the class fixture tree with extra options."""
+        fixture = self.root / "source"
+        return subprocess.run(
+            [
+                "bash", str(fixture / "scripts/dist.sh"), "--ci", "--skip-docs",
+                "--web-assets", str(self.root / "web-assets"),
+                "--bin-dir", str(self.root / "probe-binaries"),
+                "--version", "1.0.0-overlay", *extra,
+            ],
+            capture_output=True, text=True, check=False,
+        )
+
+    def test_producer_ships_the_durable_store_inventory(self):
+        shipped = json.loads((self.payload / self.INVENTORY).read_text())
+        inventory = json.loads((SOURCE / "packaging/managed/durable-stores.json").read_text())
+        self.assertEqual(shipped, inventory)
+        self.assertGreater(len(inventory["stores"]), 0)
+        member = next(m for m in self.manifest()["members"] if m["path"] == self.INVENTORY)
+        self.assertEqual((member["type"], member["mode"]), ("file", 0o644))
+        self.assertNotIn("managed_package", self.manifest())
+        result = self.repack()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipUnless(REAL_CLI, "HYPERCOLOR_RELEASE_TEST_CLI is not set")
+    def test_rust_validator_accepts_the_producer_output(self):
+        validated = self.rust_validate()
+        self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+
+    def test_a_release_without_the_inventory_still_verifies(self):
+        (self.payload / self.INVENTORY).unlink()
+        manifest = self.manifest()
+        manifest["members"] = [m for m in manifest["members"] if m["path"] != self.INVENTORY]
+        self.save_manifest(manifest)
+        result = self.repack()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if REAL_CLI:
+            validated = self.rust_validate()
+            self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+
+    def test_store_declarations_are_validated(self):
+        original = json.loads((self.payload / self.INVENTORY).read_text())
+
+        def store(**changes):
+            entry = dict(original["stores"][0])
+            entry.update(changes)
+            return entry
+
+        cases = {
+            "empty": ([], "must declare 1..=64 stores"),
+            "duplicate": ([store(), store()], "is declared twice"),
+            "inverted range": (
+                [store(readable_schema_min=3, readable_schema_max=2, written_schema=2)],
+                "must read the schema it writes",
+            ),
+            "writes outside range": (
+                [store(readable_schema_min=1, readable_schema_max=2, written_schema=3)],
+                "must read the schema it writes",
+            ),
+            "unknown mode": ([store(migration_mode="eventually")], "unknown migration_mode"),
+            "boolean schema": ([store(written_schema=True)], "must be a whole number"),
+            "negative schema": ([store(readable_schema_min=-1)], "must be a whole number"),
+            "bad name": ([store(name="Library")], "durable store name"),
+            "bad format": ([store(storage_format="json lines")], "storage_format"),
+            "extra field": ([dict(store(), note="x")], "exactly its six fields"),
+        }
+        for label, (stores, message) in cases.items():
+            with self.subTest(case=label):
+                self.write_inventory(json.dumps({"stores": stores}))
+                self.assert_rejected(message)
+        with self.subTest(case="extra top-level field"):
+            self.write_inventory(json.dumps(dict(original, owner="x")))
+            self.assert_rejected("must hold exactly its stores")
+        with self.subTest(case="duplicated key"):
+            text = json.dumps(original, indent=2)
+            duplicated = text.replace('"stores": [', '"stores": [], "stores": [', 1)
+            self.assertNotEqual(duplicated, text)
+            self.write_inventory(duplicated)
+            self.assert_rejected("duplicated keys: ['stores']")
+
+    def test_duplicated_manifest_keys_are_rejected(self):
+        text = json.dumps(self.manifest(), indent=2)
+        duplicated = text.replace('"name": "hypercolor"', '"name": "hypercolor", "name": "hypercolor"', 1)
+        self.assertNotEqual(duplicated, text)
+        (self.payload / "manifest.json").write_text(duplicated + "\n")
+        self.assert_rejected("duplicated keys: ['name']")
+
+    def test_a_downstream_build_adds_its_own_stores_once(self):
+        overlay = self.directory / "private-stores.json"
+        extra = {
+            "name": "cloud-state", "storage_format": "json", "readable_schema_min": 1,
+            "readable_schema_max": 1, "written_schema": 1,
+            "migration_mode": "backward_compatible",
+        }
+        overlay.write_text(json.dumps({"stores": [extra]}))
+        result = self.dist("--target", "linux-amd64", "--durable-stores", str(overlay))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        produced = self.root / "source/dist/hypercolor-1.0.0-overlay-linux-amd64"
+        stores = json.loads((produced / self.INVENTORY).read_text())["stores"]
+        self.assertEqual(stores[-1], extra)
+        inventory = json.loads((SOURCE / "packaging/managed/durable-stores.json").read_text())
+        self.assertEqual(stores[:-1], inventory["stores"])
+
+        overlay.write_text(json.dumps({"stores": [dict(extra, name="config")]}))
+        result = self.dist("--target", "linux-amd64", "--durable-stores", str(overlay))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("declares store 'config' again", result.stdout + result.stderr)
+
+        overlay.write_text(json.dumps({"stores": ["cloud-state"]}))
+        result = self.dist("--target", "linux-amd64", "--durable-stores", str(overlay))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("as an object with a name", result.stdout + result.stderr)
 
     def test_both_packaged_user_units_declare_user_service_identity(self):
         declaration = "Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service"

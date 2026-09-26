@@ -27,6 +27,7 @@ RUST_TARGET=""
 RELEASE_VERSION=""
 BUILD_ROOT=""
 TCC_CANARY=0
+DURABLE_STORE_OVERLAYS=()
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
 CARGO_CACHE_BUILD="${ROOT_DIR}/scripts/cargo-cache-build.sh"
@@ -78,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --tcc-canary)       TCC_CANARY=1; shift ;;
     --target)           RUST_TARGET="$(normalize_target "$2")"; shift 2 ;;
     --version)          RELEASE_VERSION="$2"; shift 2 ;;
+    --durable-stores)   DURABLE_STORE_OVERLAYS+=("$2"); shift 2 ;;
     -h|--help)
       cat <<'EOF'
 Usage: ./scripts/dist.sh [options]
@@ -94,6 +96,11 @@ Options:
                        building them (absolute path; must contain the three
                        release binaries)
   --tcc-canary         Include the signed physical TCC canary surface
+  --durable-stores <file>
+                       Add the stores a downstream build reads or writes to
+                       the durable store inventory a Linux release ships
+                       (JSON {"stores": [...]}; repeatable; a store already
+                       declared is refused)
   -h, --help           Show this help
 EOF
       exit 0
@@ -374,7 +381,9 @@ fi
 cp LICENSE NOTICE README.md "${DIST_DIR}/"
 
 DIST_DIR="${DIST_DIR}" VERSION="${VERSION}" PLATFORM="${PLATFORM}" \
-RUST_TARGET="${RUST_TARGET}" python3 - <<'PY'
+RUST_TARGET="${RUST_TARGET}" IS_LINUX="${IS_LINUX}" \
+DURABLE_STORES="${ROOT_DIR}/packaging/managed/durable-stores.json" \
+DURABLE_STORE_OVERLAYS="$(printf '%s\n' ${DURABLE_STORE_OVERLAYS[@]+"${DURABLE_STORE_OVERLAYS[@]}"})" python3 - <<'PY'
 import hashlib
 import json
 import os
@@ -382,6 +391,39 @@ import stat
 from pathlib import Path
 
 root = Path(os.environ["DIST_DIR"])
+
+# A Linux release ships the inventory of every durable store it reads or
+# writes (crates/hypercolor-daemon/src/durable_stores.rs keeps it equal to
+# the code), as a member like any other file, so its bytes are bound by
+# the manifest. The installer never reads it; tools that decide whether one
+# release can replace another do.
+if os.environ["DURABLE_STORE_OVERLAYS"].strip() and os.environ["IS_LINUX"] != "1":
+    raise SystemExit("--durable-stores applies only to Linux releases")
+if os.environ["IS_LINUX"] == "1":
+    with open(os.environ["DURABLE_STORES"], encoding="utf-8") as handle:
+        inventory = json.load(handle)
+    # A downstream build (the official package) adds the stores its own
+    # code reads and writes; one name is one store, declared once.
+    for overlay in filter(None, os.environ["DURABLE_STORE_OVERLAYS"].split("\n")):
+        with open(overlay, encoding="utf-8") as handle:
+            extra = json.load(handle)
+        if not isinstance(extra, dict) or set(extra) != {"stores"}:
+            raise SystemExit(f"{overlay} must hold exactly {{\"stores\": [...]}}")
+        if not isinstance(extra["stores"], list) or not all(
+            isinstance(store, dict) and isinstance(store.get("name"), str)
+            for store in extra["stores"]
+        ):
+            raise SystemExit(f"{overlay} must declare each store as an object with a name")
+        declared = {store["name"] for store in inventory["stores"]}
+        for store in extra["stores"]:
+            if store.get("name") in declared:
+                raise SystemExit(f"{overlay} declares store {store.get('name')!r} again")
+            declared.add(store.get("name"))
+            inventory["stores"].append(store)
+    shipped = root / "share/hypercolor/durable-stores.json"
+    shipped.write_text(json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    shipped.chmod(0o644)
+
 members = []
 for path in sorted(root.rglob("*")):
     relative = path.relative_to(root).as_posix()
