@@ -281,12 +281,6 @@ impl LinuxInstallLocation {
     pub fn config_root(&self) -> &Path {
         &self.config_root
     }
-
-    /// The launcher contract the installation's service runs under.
-    #[must_use]
-    pub const fn launcher_contract(&self) -> u32 {
-        self.launcher_contract
-    }
 }
 
 /// Retained roots whose filesystem identities govern a managed installation.

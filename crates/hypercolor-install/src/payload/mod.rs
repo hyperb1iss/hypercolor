@@ -9,18 +9,11 @@ use hypercolor_platform_fs::{
 
 #[cfg(target_os = "macos")]
 mod macos;
-mod managed;
 mod manifest;
 mod tree;
 
 #[cfg(target_os = "macos")]
 pub use macos::{MacosReleaseProvenance, bind_macos_release_provenance};
-pub use managed::{
-    CompatibilityDecision, CompatibilityRefusal, DeclaredCompatibility, DurableStoreDeclaration,
-    LINUX_USER_TARBALL_OWNER, MANAGED_LAUNCHER_CONTRACT, MANAGED_PACKAGE_SCHEMA_VERSION,
-    MAX_DURABLE_STORES, ManagedComponent, ManagedPackage, MigrationMode, ObservedStores,
-    evaluate_data_compatibility,
-};
 pub use manifest::{
     MAX_RELEASE_MANIFEST_BYTES, MAX_RELEASE_MEMBER_BYTES, MAX_RELEASE_MEMBERS,
     MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES,
@@ -122,52 +115,12 @@ pub(crate) fn validate_installed_release_record(
     validated_installed_manifest(source).map(drop)
 }
 
-/// Read what one retained release unit declares about its durable data.
-///
-/// The unit's manifest is read the way every installed manifest is: a
-/// release from before the managed package contract is
-/// [`DeclaredCompatibility::Undeclared`], and one whose declaration this
-/// build cannot interpret is [`DeclaredCompatibility::Unrecognized`]. The
-/// manifest must still be the unit's own (its digest is the unit ID) and
-/// its member inventory valid.
-///
-/// # Errors
-/// Returns an error when the manifest cannot be read, does not hash to the
-/// unit ID, or is not a valid release manifest.
-pub fn read_declared_compatibility(
-    unit: &UnitRecord,
-) -> Result<DeclaredCompatibility, ReleasePayloadError> {
-    let manifest =
-        ValidatedManifest::parse_installed(tree::read_retained_manifest_bytes(unit.directory())?)?;
-    if manifest.unit_id != *unit.id() {
-        return Err(ReleasePayloadError::UnexpectedManifestDigest {
-            expected: unit.id().as_str().to_owned(),
-            actual: manifest.unit_id.as_str().to_owned(),
-        });
-    }
-    Ok(manifest.compatibility)
-}
-
-/// Read what a release manifest declares about its durable data.
-///
-/// `manifest` is read the way an installed release's is (see
-/// [`read_declared_compatibility`]), without the tree it describes: the
-/// member inventory must be well formed, but nothing on disk is checked.
-///
-/// # Errors
-/// Returns an error when the bytes are not a valid release manifest.
-pub fn declared_compatibility_from_manifest(
-    manifest: Vec<u8>,
-) -> Result<DeclaredCompatibility, ReleasePayloadError> {
-    ValidatedManifest::parse_installed(manifest).map(|manifest| manifest.compatibility)
-}
-
 /// Validate a retained release through the installed-manifest rules.
 ///
 /// Adoption copies the historical active release, and recovery rebinds a
 /// recorded prior; both are installed releases, which may predate the
-/// current candidate requirements (bundled user skills, the managed
-/// package block), so they are never judged as new candidates.
+/// current candidate requirements (bundled user skills), so they are never
+/// judged as new candidates.
 fn validated_installed_manifest(
     source: &UnitRecord,
 ) -> Result<ValidatedManifest, ReleasePayloadError> {

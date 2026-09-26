@@ -56,14 +56,10 @@ pub use ownership::{
 };
 #[cfg(unix)]
 pub use payload::{
-    CompatibilityDecision, CompatibilityRefusal, DeclaredCompatibility, DurableStoreDeclaration,
-    LINUX_USER_TARBALL_OWNER, MANAGED_LAUNCHER_CONTRACT, MANAGED_PACKAGE_SCHEMA_VERSION,
-    MAX_DURABLE_STORES, MAX_RELEASE_MANIFEST_BYTES, MAX_RELEASE_MEMBER_BYTES, MAX_RELEASE_MEMBERS,
-    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, ManagedComponent, ManagedPackage,
-    MigrationMode, ObservedStores, ReleasePayloadError, copy_installed_release_unit,
-    declared_compatibility_from_manifest, evaluate_data_compatibility, read_declared_compatibility,
-    stage_release_payload, stage_release_payload_from_authority, validate_release_payload,
-    validate_release_payload_from_authority,
+    MAX_RELEASE_MANIFEST_BYTES, MAX_RELEASE_MEMBER_BYTES, MAX_RELEASE_MEMBERS,
+    MAX_RELEASE_PATH_BYTES, MAX_RELEASE_PAYLOAD_BYTES, ReleasePayloadError,
+    copy_installed_release_unit, stage_release_payload, stage_release_payload_from_authority,
+    validate_release_payload, validate_release_payload_from_authority,
 };
 #[cfg(target_os = "macos")]
 pub use payload::{MacosReleaseProvenance, bind_macos_release_provenance};

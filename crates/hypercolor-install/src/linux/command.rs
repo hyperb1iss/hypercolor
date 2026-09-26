@@ -237,7 +237,6 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 &mut |checkpoint| stop(host, checkpoint).map_err(boxed_stop),
             )?;
             let candidate = host.stage_candidate(adoption.store(), adoption.lock())?;
-            require_managed_candidate(&candidate, adoption.location())?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
             let (journal, mut platform) =
                 prepare_or_replace(home, host, &adoption, request, &candidate)?;
@@ -289,7 +288,6 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 return Ok(collect_settled(&store, &lock, run));
             }
             let candidate = host.stage_candidate(&store, &lock)?;
-            require_managed_candidate(&candidate, authority.location())?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
             let prior_record =
                 (journal.disposition == InstallDisposition::RolledBack).then_some(&journal);
@@ -381,35 +379,6 @@ fn prepare_or_replace<H: LinuxInstallHost>(
             }
             Err(error) => return Err(error.into()),
         }
-    }
-}
-
-/// Refuse a candidate that does not declare the managed package contract
-/// this installation runs under.
-///
-/// The manifest parser already requires the block from every release that
-/// is not labeled macOS; this binds the requirement to the Linux installer
-/// itself, whatever label a candidate carries.
-fn require_managed_candidate(
-    candidate: &UnitRecord,
-    location: &LinuxInstallLocation,
-) -> Result<(), LinuxInstallCommandError> {
-    let declared = super::super::read_declared_compatibility(candidate).map_err(|source| {
-        InstallPlatformError::new(format!("cannot read the candidate's contract: {source}"))
-    })?;
-    match declared.declared() {
-        Some(package) if package.launcher_contract() == location.launcher_contract() => Ok(()),
-        Some(package) => Err(InstallPlatformError::new(format!(
-            "the candidate runs under launcher contract {}, but this installation has \
-             contract {}",
-            package.launcher_contract(),
-            location.launcher_contract()
-        ))
-        .into()),
-        None => Err(InstallPlatformError::new(
-            "a Linux release must declare its managed_package contract",
-        )
-        .into()),
     }
 }
 

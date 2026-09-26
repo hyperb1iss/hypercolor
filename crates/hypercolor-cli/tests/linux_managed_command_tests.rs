@@ -1059,9 +1059,10 @@ impl Fixture {
         self.legacy_activate(unit)
     }
 
-    /// Install `release` the way a historical installer from before the
-    /// managed package contract did: its manifest carries no block.
-    fn legacy_install_before_contract(&self, release: &Release) -> UnitRecord {
+    /// Install `release` the way a historical installer from before bundled
+    /// user skills did: its manifest counts none and ships none, which a
+    /// new candidate may not do but an installed release may.
+    fn legacy_install_before_user_skills(&self, release: &Release) -> UnitRecord {
         let scratch = release
             .source
             .parent()
@@ -1076,15 +1077,31 @@ impl Fixture {
         let path = root.join("manifest.json");
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).expect("manifest")).expect("manifest JSON");
-        manifest
+        manifest["assets"]
             .as_object_mut()
-            .expect("object")
-            .remove("managed_package");
+            .expect("assets")
+            .remove("user_skill_files");
+        manifest["members"]
+            .as_array_mut()
+            .expect("members")
+            .retain(|member| {
+                !member["path"]
+                    .as_str()
+                    .expect("path")
+                    .starts_with("share/hypercolor/skills")
+            });
         let bytes = serde_json::to_vec_pretty(&manifest).expect("encode");
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("thaw");
+        let share = root.join("share/hypercolor");
+        let skills = share.join("skills");
+        let share_mode = fs::metadata(&share).expect("share").permissions().mode();
+        for thawed in [&root, &share, &skills] {
+            fs::set_permissions(thawed, fs::Permissions::from_mode(0o755)).expect("thaw");
+        }
+        fs::remove_dir_all(&skills).expect("remove the user skills");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("thaw");
         fs::write(&path, &bytes).expect("rewrite manifest");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).expect("freeze");
+        fs::set_permissions(&share, fs::Permissions::from_mode(share_mode)).expect("freeze");
         fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).expect("freeze");
         let id = UnitId::new(sha256(&bytes)).expect("digest");
         fs::rename(&root, staging.unit_path(&id)).expect("rename");
@@ -1093,7 +1110,7 @@ impl Fixture {
         let old = self.legacy();
         let lock = old.acquire_anchored_lock(&self.home).expect("legacy lock");
         let unit = hypercolor_cli::install::copy_installed_release_unit(&old, &lock, &retained)
-            .expect("the historical installer held a release from before the contract");
+            .expect("the historical installer held a release from before user skills");
         drop(lock);
         self.legacy_activate(unit)
     }
@@ -2042,16 +2059,6 @@ fn same_entry(left: &LinuxExactEntry, right: &LinuxExactEntry) -> bool {
 }
 
 fn write_release(root: &Path, version: &str, daemon: &[u8]) {
-    write_release_with(root, version, daemon, |_| {});
-}
-
-/// A release whose manifest `edit` changed before it was written.
-fn write_release_with(
-    root: &Path,
-    version: &str,
-    daemon: &[u8],
-    edit: impl FnOnce(&mut serde_json::Value),
-) {
     let directories = [
         "bin",
         "share",
@@ -2106,24 +2113,15 @@ fn write_release_with(
         }));
     }
     members.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
-    let mut manifest = json!({
+    let manifest = serde_json::to_vec_pretty(&json!({
         "name":"hypercolor","version":version,"platform":"linux-x86_64",
         "rust_target":"x86_64-unknown-linux-gnu",
         "binaries":["hypercolor-daemon","hypercolor","hypercolor-app","hypercolor-tui","hypercolor-open"],
         "assets":{"ui_files":1,"bundled_effect_files":1,"docs_files":0,"skill_files":1,
             "user_skill_files":1,"agent_files":1,"site_files":0},
-        "managed_package":{
-            "schema_version":1,"owner":"linux-user-tarball","launcher_contract":1,
-            "components":{"daemon":"bin/hypercolor-daemon","cli":"bin/hypercolor",
-                "ui":"share/hypercolor/ui","bundled_effects":"share/hypercolor/effects/bundled"},
-            "compatibility":{"stores":[{"name":"config","storage_format":"toml",
-                "readable_schema_min":4,"readable_schema_max":5,"written_schema":5,
-                "migration_mode":"backward_compatible"}]},
-        },
         "members":members,
-    });
-    edit(&mut manifest);
-    let manifest = serde_json::to_vec_pretty(&manifest).expect("manifest JSON");
+    }))
+    .expect("manifest JSON");
     fs::write(root.join("manifest.json"), manifest).expect("manifest");
     fs::set_permissions(
         root.join("manifest.json"),
@@ -3979,68 +3977,10 @@ fn a_library_caller_prepares_binds_writes_and_drives_its_own_transaction() {
 }
 
 #[test]
-fn the_linux_installer_refuses_a_release_without_a_managed_package_whatever_its_label() {
-    let (fixture, location) = managed_v1();
-    let root = fixture
-        .v1
-        .source
-        .parent()
-        .expect("fixture root")
-        .to_path_buf();
-    let source = root.join("source-labelled-macos");
-    write_release_with(&source, "9.9.0", b"daemon-macos", |manifest| {
-        manifest["platform"] = json!("macos-arm64");
-        manifest["rust_target"] = json!("aarch64-apple-darwin");
-        manifest
-            .as_object_mut()
-            .expect("object")
-            .remove("managed_package");
-    });
-    let release = Release {
-        id: UnitId::new(sha256(
-            &fs::read(source.join("manifest.json")).expect("manifest"),
-        ))
-        .expect("unit ID"),
-        source,
-    };
-    let before = fixture.snapshot();
-    let error = fixture
-        .update(&release)
-        .expect_err("a release that declares no managed package never installs")
-        .to_string();
-    assert!(
-        error.contains("must declare its managed_package contract"),
-        "{error}"
-    );
-    assert_eq!(fixture.snapshot(), before, "nothing changed");
-    fixture.assert_managed(&location, &fixture.v1.id);
-
-    let adopting = Fixture::new();
-    adopting.legacy_install(&adopting.v1);
-    let error = adopting
-        .run(
-            &release,
-            Some(adopting.default_location()),
-            &adopting.private(),
-        )
-        .expect_err("adoption refuses it too")
-        .to_string();
-    assert!(
-        error.contains("must declare its managed_package contract"),
-        "{error}"
-    );
-}
-
-#[test]
-fn an_install_from_before_the_contract_adopts_and_rolls_back_exactly() {
+fn an_install_from_before_user_skills_adopts_and_rolls_back_exactly() {
     for failing in [false, true] {
         let fixture = Fixture::new();
-        let original = fixture.legacy_install_before_contract(&fixture.v1);
-        assert_eq!(
-            hypercolor_cli::install::read_declared_compatibility(&original).expect("read"),
-            hypercolor_cli::install::DeclaredCompatibility::Undeclared,
-            "the historical release declares nothing"
-        );
+        fixture.legacy_install_before_user_skills(&fixture.v1);
         let snapshot = fixture.snapshot();
         if failing {
             fixture.world.borrow_mut().fault = Some("runtime:true".to_owned());
@@ -4054,7 +3994,7 @@ fn an_install_from_before_the_contract_adopts_and_rolls_back_exactly() {
             assert_eq!(
                 fixture.snapshot(),
                 snapshot,
-                "the release from before the contract runs again, exactly"
+                "the release from before user skills runs again, exactly"
             );
         } else {
             assert_eq!(
