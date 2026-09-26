@@ -235,7 +235,11 @@ pub fn plan_linux_launch(
 /// The service therefore runs this role unsandboxed before the daemon. It
 /// reads only the locator, creates each missing root (and any missing
 /// parent) with mode `0700`, and leaves every existing entry alone,
-/// whatever its kind.
+/// whatever its kind. Only the configuration root can go missing while the
+/// installation survives: the data and daemon state roots hold the
+/// releases, the launcher and the update state, so after deleting one of
+/// those the service still cannot start until the installation is
+/// reinstalled.
 ///
 /// # Errors
 /// Refuses an unmanaged installation, a foreign launcher, any argument, and

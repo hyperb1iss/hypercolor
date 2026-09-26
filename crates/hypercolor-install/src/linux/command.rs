@@ -631,9 +631,10 @@ fn platform<H: LinuxInstallHost>(
 /// [`InstallCoordinator`] itself (preparing, binding and writing a journal,
 /// then recovering it) gets the same platform the raw installer uses.
 ///
-/// Only the historical root binds without a recorded location; any other
-/// store must pass its location, so its service is always rendered through
-/// the launcher and its sandbox. A candidate bound for a managed
+/// Only the historical root of an installation that has not been adopted
+/// binds without a recorded location; any other store must pass its
+/// location, so its service is always rendered through the launcher and
+/// its sandbox. A candidate bound for a managed
 /// installation must declare that installation's launcher contract, and
 /// the installation's launcher must already be published and exact, so a
 /// host that skips [`ensure_linux_launcher`] still cannot start a release
@@ -654,9 +655,15 @@ pub fn bind_linux_platform<E: LinuxInstallExecutor>(
     lock: &InstallLock,
     inputs: LinuxPlatformInputs<'_>,
 ) -> Result<LinuxInstallPlatform<E>, LinuxInstallCommandError> {
-    if inputs.managed.is_none() && store.root() != home.join(".local/lib/hypercolor") {
+    if inputs.managed.is_none()
+        && (store.root() != home.join(".local/lib/hypercolor")
+            || matches!(
+                super::locator::read_hint(home),
+                Ok(super::LinuxInstallAuthority::Managed(_))
+            ))
+    {
         return Err(InstallPlatformError::new(
-            "a store outside the historical root must be bound with its recorded location",
+            "a managed installation must be bound with its recorded location",
         )
         .into());
     }

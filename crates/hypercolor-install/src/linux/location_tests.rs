@@ -153,6 +153,18 @@ fn roots_the_service_sandbox_cannot_confine_are_refused() {
         ),
         // The daemon state root would be home itself.
         ("/home/test/.local/share", "/home", "/home/test/.config"),
+        // The configuration root would sit inside the data root.
+        (
+            "/home/test/.local/share",
+            "/home/test/.local/state",
+            "/home/test/.local/share/hypercolor/settings",
+        ),
+        // The data root would sit inside the configuration root.
+        (
+            "/home/test/.config/hypercolor",
+            "/home/test/.local/state",
+            "/home/test/.config",
+        ),
     ] {
         let home = if state == "/home" {
             Path::new("/home/hypercolor")

@@ -257,8 +257,11 @@ impl LinuxInstallLocation {
     /// state roots writable and the launcher hands their bases to the
     /// daemon as XDG directories, so each must be a `hypercolor` directory
     /// that grants nothing else: never the home directory or an ancestor,
-    /// and never a directory holding or inside `~/.local/bin` or
-    /// `~/.local/lib`.
+    /// never a directory holding or inside `~/.local/bin` or `~/.local/lib`,
+    /// and never one strictly holding or inside another writable root, whose
+    /// parent the daemon could then replace before the unsandboxed prepare
+    /// step. A shared XDG base makes two of them the same directory, which is
+    /// fine.
     fn validate_sandbox(&self, home: &Path) -> Result<(), InstallLocationError> {
         let named = |root: &Path, suffix: &[&str]| {
             let mut components = root.components().rev();
@@ -279,12 +282,18 @@ impl LinuxInstallLocation {
             return Err(InstallLocationError::UnsandboxableRoot(root.clone()));
         }
         let protected = [home.join(".local/bin"), home.join(".local/lib")];
-        for root in [
+        let writable = [
             self.config_root.as_path(),
             self.data_root.as_path(),
             self.daemon_state_root(),
-        ] {
-            if home.starts_with(root) || protected.iter().any(|path| overlaps(root, path)) {
+        ];
+        for (index, root) in writable.iter().enumerate() {
+            if home.starts_with(root)
+                || protected.iter().any(|path| overlaps(root, path))
+                || writable[index + 1..]
+                    .iter()
+                    .any(|other| root != other && overlaps(root, other))
+            {
                 return Err(InstallLocationError::UnsandboxableRoot(root.to_path_buf()));
             }
         }

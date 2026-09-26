@@ -6,7 +6,7 @@
 //! directory, so the releases it selects between can never replace it. It is
 //! published atomically from the candidate of the first managed install or
 //! adoption, before that candidate starts. Once an install settles with the
-//! service starting through it, it is the installation's for good: every
+//! service running through it, it is the installation's for good: every
 //! later run only proves it unchanged, and an ordinary install never
 //! rewrites it. Until then it came from a candidate that never ran as the
 //! settled service (its install rolled back or never finished), so the next
@@ -408,12 +408,15 @@ fn prove(
 }
 
 /// Whether a settled service already starts through the launcher: the
-/// journal's last transaction committed with the launcher's unit, or rolled
-/// back to a prior that ran through it.
+/// journal's last transaction committed with the service running under a
+/// unit that starts the launcher, or rolled back to a prior that ran under
+/// one.
 ///
-/// Anything the journal cannot settle (a transaction still pending, or a
-/// record this build cannot read) counts as settled, so doubt never
-/// replaces a launcher.
+/// The unit is matched by its `ExecStart` naming this installation's
+/// launcher, not by its whole text, so a settled launcher stays settled
+/// whatever else a later build writes into the unit. Anything the journal
+/// cannot settle (a transaction still pending, or a record this build
+/// cannot read) counts as settled, so doubt never replaces a launcher.
 fn launcher_settled(
     store: &InstallStore,
     lock: &InstallLock,
@@ -427,14 +430,25 @@ fn launcher_settled(
     let Ok(record) = super::record::decode_record(&journal.platform_record) else {
         return Ok(true);
     };
-    let unit =
-        super::proof::render_launcher(&location.release_root().join("active"), Some(location))?;
-    let settled = match journal.disposition {
-        InstallDisposition::Committed => record.candidate_launcher.map(|launcher| launcher.bytes),
-        InstallDisposition::RolledBack => Some(record.prior_launcher_bytes),
-        _ => return Ok(true),
+    let expected =
+        super::proof::render_launcher(&location.release_root().join("active"), Some(location))?
+            .exec_start;
+    let starts_launcher = |unit: &[u8]| {
+        super::proof::require_notify_launcher(unit).is_ok_and(|exec| exec == expected)
     };
-    Ok(settled.as_deref() == Some(unit.bytes.as_slice()))
+    Ok(match journal.disposition {
+        InstallDisposition::Committed => {
+            journal.target_platform.running_unit.is_some()
+                && record
+                    .candidate_launcher
+                    .is_some_and(|launcher| starts_launcher(&launcher.bytes))
+        }
+        InstallDisposition::RolledBack => {
+            journal.prior_platform.running_unit.is_some()
+                && starts_launcher(&record.prior_launcher_bytes)
+        }
+        _ => true,
+    })
 }
 
 /// Remove launcher staging directories a crashed run left beside `units/`,

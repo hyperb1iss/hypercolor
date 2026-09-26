@@ -5134,6 +5134,80 @@ fn an_install_from_before_the_launcher_gains_it_and_its_rollback_restores_the_di
 }
 
 #[test]
+fn a_launcher_only_settles_once_the_service_runs_through_it() {
+    // An upgrade while the service is stopped commits without starting it,
+    // so no service has run through the launcher it published yet.
+    let (fixture, location, _) = managed_v1_without_launcher();
+    fixture.world.borrow_mut().stop();
+    let run = fixture.update(&fixture.v2).expect("upgrade while stopped");
+    assert!(matches!(run.outcome, InstallOutcome::Committed { .. }));
+    assert!(
+        !fixture.world.borrow().active,
+        "the stopped service stays stopped"
+    );
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        release_cli(&fixture.v2)
+    );
+    fixture
+        .update(&fixture.v3)
+        .expect("another upgrade while stopped");
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        release_cli(&fixture.v3),
+        "a launcher no service ran through is replaced"
+    );
+
+    // Once an install commits with the service running through it, the
+    // launcher is the installation's for good.
+    fixture.world.borrow_mut().start();
+    fixture.update(&fixture.v2).expect("upgrade while running");
+    fixture.assert_managed(&location, &fixture.v2.id);
+    let settled = fs::read(launcher_path(&location)).expect("launcher");
+    assert_eq!(settled, release_cli(&fixture.v2));
+    fixture.update(&fixture.v3).expect("a later upgrade");
+    assert_eq!(
+        fs::read(launcher_path(&location)).expect("launcher"),
+        settled,
+        "a settled launcher is never replaced"
+    );
+}
+
+#[test]
+fn an_adopted_historical_root_never_binds_without_a_location() {
+    let (fixture, _location) = managed_v1();
+    let LinuxInstallElection::Managed { lock, .. } =
+        elect_linux_installation_with(&fixture.home, &fixture.private()).expect("election")
+    else {
+        panic!("expected managed authority");
+    };
+    let historical = InstallStore::new(fixture.home.join(".local/lib/hypercolor"), 64 * 1024);
+    let world = Rc::clone(&fixture.world);
+    let error = bind_linux_platform(
+        &fixture.home,
+        |_, _, _| {
+            Ok(SimExecutor {
+                world,
+                active_root: None,
+            })
+        },
+        &historical,
+        &lock,
+        LinuxPlatformInputs {
+            candidate: None,
+            journal: None,
+            managed: None,
+            original: None,
+            probation: DEFAULT_PROBATION_WINDOW,
+        },
+    )
+    .map(drop)
+    .expect_err("the locator names a managed installation")
+    .to_string();
+    assert!(error.contains("recorded location"), "{error}");
+}
+
+#[test]
 fn the_published_layout_directories_are_every_directory_the_installer_writes() {
     let (fixture, location) = managed_v1();
     let directories = linux_layout_directories(&fixture.home);
