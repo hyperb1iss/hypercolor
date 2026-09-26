@@ -115,6 +115,14 @@ impl LinuxAdoption {
         let (location, store, lock) =
             super::adoption_roots::prepare_roots(home, &old_lock, proposed)?;
         observe(LinuxInstallCheckpoint::RootsBootstrapped)?;
+        // Record the target only once its roots, ancestry and identity are
+        // proven, so a refused proposal never pins later attempts to it. The
+        // record exists before anything is copied or prepared there.
+        let recorded = locator.record_adoption_intent(location.clone())?;
+        if recorded != location {
+            return Err(LinuxAdoptionError::ConflictingPreparation);
+        }
+        observe(LinuxInstallCheckpoint::IntentRecorded)?;
         if let Some(prior) = &prior {
             copy_installed_release_unit(&store, &lock, prior)?;
             observe(LinuxInstallCheckpoint::PriorCopied)?;

@@ -29,10 +29,10 @@ use super::{
 pub enum LinuxInstallCheckpoint {
     /// The historical root still holds authority and its lock is held.
     LegacyElected,
-    /// The adoption target is recorded beside the locator.
-    IntentRecorded,
     /// Recorded roots and the installation identity exist.
     RootsBootstrapped,
+    /// The proven adoption target is recorded beside the locator.
+    IntentRecorded,
     /// The historical active unit is copied into the release root.
     PriorCopied,
     /// The new release root's pointer names the copied historical unit.
@@ -215,10 +215,6 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 Some(recorded) => recorded,
                 None => host.propose_location(home, uid.owner_uid())?,
             };
-            let proposed = locator
-                .record_adoption_intent(proposed)
-                .map_err(LinuxInstallCommandError::Election)?;
-            stop(host, LinuxInstallCheckpoint::IntentRecorded)?;
             let adoption = LinuxAdoption::begin_observed(
                 home,
                 LinuxInstallElection::Legacy {

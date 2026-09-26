@@ -1185,8 +1185,8 @@ fn changed_xdg_after_install_follows_the_recorded_roots() {
 
 const ADOPTION_CHECKPOINTS: [LinuxInstallCheckpoint; 10] = [
     LinuxInstallCheckpoint::LegacyElected,
-    LinuxInstallCheckpoint::IntentRecorded,
     LinuxInstallCheckpoint::RootsBootstrapped,
+    LinuxInstallCheckpoint::IntentRecorded,
     LinuxInstallCheckpoint::PriorCopied,
     LinuxInstallCheckpoint::PriorActivated,
     LinuxInstallCheckpoint::CandidateStaged,
@@ -1972,8 +1972,9 @@ fn existing_ancestors_above_recorded_roots_must_be_trusted() {
 
 // ── Loss before publication, then the world changes ─────────────────────
 
-const UNPUBLISHED: [LinuxInstallCheckpoint; 6] = [
+const UNPUBLISHED: [LinuxInstallCheckpoint; 7] = [
     LinuxInstallCheckpoint::RootsBootstrapped,
+    LinuxInstallCheckpoint::IntentRecorded,
     LinuxInstallCheckpoint::PriorCopied,
     LinuxInstallCheckpoint::PriorActivated,
     LinuxInstallCheckpoint::CandidateStaged,
@@ -2058,6 +2059,16 @@ fn unpublished_loss_then_changed_xdg_resumes_the_recorded_target() {
         let recorded = fixture.location("xdg-a/data", "xdg-a/state", "xdg-a/config");
         fixture.interrupted_adoption(&fixture.v2, &recorded, checkpoint);
         let changed = fixture.location("xdg-b/data", "xdg-b/state", "xdg-b/config");
+        if checkpoint == LinuxInstallCheckpoint::RootsBootstrapped {
+            // The target is recorded only after its roots are proven, so a
+            // loss before that leaves the environment in charge and the
+            // bootstrapped roots inert: no journal, receipt or unit.
+            assert_eq!(fixture.adopt(&fixture.v2, Some(changed.clone())), 1);
+            fixture.assert_managed(&changed, &fixture.v2.id);
+            assert!(!recorded.state_root().join("install-journal.json").exists());
+            assert!(!recorded.release_root().join("units").exists());
+            continue;
+        }
         assert_eq!(
             fixture.adopt(&fixture.v2, Some(changed)),
             0,
@@ -2076,7 +2087,7 @@ fn unpublished_loss_then_another_candidate_or_historical_install_prepares_again(
         fixture.legacy_install(&fixture.v1);
         let location = fixture.default_location();
         fixture.interrupted_adoption(&fixture.v2, &location, checkpoint);
-        fixture.adopt(&fixture.v3, None);
+        fixture.adopt(&fixture.v3, Some(location.clone()));
         fixture.assert_managed(&location, &fixture.v3.id);
 
         // An older installer changes the historical install in between.
@@ -2085,7 +2096,7 @@ fn unpublished_loss_then_another_candidate_or_historical_install_prepares_again(
         fixture.legacy_install(&fixture.v1);
         fixture.interrupted_adoption(&fixture.v2, &location, checkpoint);
         fixture.legacy_install(&fixture.v3);
-        fixture.adopt(&fixture.v2, None);
+        fixture.adopt(&fixture.v2, Some(location.clone()));
         fixture.assert_managed(&location, &fixture.v2.id);
         let old = fixture.legacy();
         let lock = old.acquire_lock().expect("historical lock");
@@ -2110,18 +2121,23 @@ fn uninstall_after_an_unpublished_loss_removes_the_prepared_roots() {
         };
         let run =
             run_linux_uninstall(&fixture.home, &fixture.private(), &mut host).expect("uninstall");
-        for removed in [
-            fixture.home.join(".local/lib/hypercolor"),
-            location.state_root().to_path_buf(),
-        ] {
-            assert!(!removed.exists(), "{checkpoint:?}: {removed:?}");
+        let legacy = fixture.home.join(".local/lib/hypercolor");
+        assert!(!legacy.exists(), "{checkpoint:?}");
+        assert!(run.removed.contains(&legacy), "{checkpoint:?}");
+        if checkpoint == LinuxInstallCheckpoint::RootsBootstrapped {
+            // Unrecorded, the bootstrapped roots stay behind holding only
+            // empty directories and their identity, never a journal.
+            assert!(!location.state_root().join("install-journal.json").exists());
+        } else {
+            let state = location.state_root().to_path_buf();
+            assert!(!state.exists(), "{checkpoint:?}");
             assert!(
-                run.removed.contains(&removed),
+                run.removed.contains(&state),
                 "{checkpoint:?}: {:?}",
                 run.removed
             );
+            assert!(!location.release_root().exists(), "{checkpoint:?}");
         }
-        assert!(!location.release_root().exists(), "{checkpoint:?}");
         assert!(
             location.data_root().exists(),
             "{checkpoint:?}: data is preserved"
@@ -2205,4 +2221,68 @@ fn uninstall_removes_an_install_whose_journal_cannot_settle() {
     assert!(!fixture.home.join(".local/lib/hypercolor").exists());
     let world = fixture.world.borrow();
     assert!(!world.loaded && !world.active);
+}
+
+#[test]
+fn a_refused_proposal_never_pins_later_attempts_or_blocks_uninstall() {
+    let fixture = Fixture::new();
+    fixture.legacy_install(&fixture.v1);
+    fs::create_dir_all(fixture.home.join("shared/data")).expect("unsafe base");
+    fs::set_permissions(
+        fixture.home.join("shared"),
+        fs::Permissions::from_mode(0o777),
+    )
+    .expect("world-writable parent");
+    let unsafe_target = fixture.location("shared/data", ".local/state", ".config");
+    assert!(
+        fixture
+            .run(&fixture.v2, Some(unsafe_target), &fixture.private())
+            .is_err()
+    );
+    assert!(
+        !fixture
+            .home
+            .join(".local/lib/hypercolor/managed-adoption.json")
+            .exists(),
+        "a refused proposal is never recorded"
+    );
+    let safe = fixture.default_location();
+    let mut host = Host::new(&fixture.world, &fixture.v2, Some(safe.clone()));
+    run_linux_install(
+        &fixture.home,
+        &fixture.v2.request(InstallTargetPolicy::Preserve),
+        &fixture.private(),
+        &mut host,
+    )
+    .expect("a safe environment proceeds");
+    fixture.assert_managed(&safe, &fixture.v2.id);
+
+    // The same refusal against a still-historical install leaves uninstall
+    // free to remove it.
+    let fixture = Fixture::new();
+    fixture.legacy_install(&fixture.v1);
+    fs::create_dir_all(fixture.home.join("shared/data")).expect("unsafe base");
+    fs::set_permissions(
+        fixture.home.join("shared"),
+        fs::Permissions::from_mode(0o777),
+    )
+    .expect("world-writable parent");
+    let unsafe_target = fixture.location("shared/data", ".local/state", ".config");
+    assert!(
+        fixture
+            .run(&fixture.v2, Some(unsafe_target), &fixture.private())
+            .is_err()
+    );
+    let mut uninstall = UninstallHost {
+        world: Rc::clone(&fixture.world),
+        stop_at: None,
+    };
+    run_linux_uninstall(&fixture.home, &fixture.private(), &mut uninstall)
+        .expect("uninstall the historical install");
+    assert!(!fixture.home.join(".local/lib/hypercolor").exists());
+    fs::set_permissions(
+        fixture.home.join("shared"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("cleanup");
 }
