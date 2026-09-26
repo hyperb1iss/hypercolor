@@ -10,8 +10,8 @@ use crate::InstallReleaseArgs;
 use crate::install::{
     InstallLock, InstallPlatformError, InstallStore, InstallTargetPolicy, LinuxInstallHost,
     LinuxInstallLocation, LinuxInstallRequest, LinuxNativeExecutor, LinuxPublicTree,
-    LinuxUninstallHost, OwnershipPolicy, UnitRecord, run_linux_install, run_linux_uninstall,
-    stage_release_payload_from_authority,
+    LinuxUninstallHost, OwnershipPolicy, UnitRecord, run_linux_install, run_linux_recovery,
+    run_linux_uninstall, stage_release_payload_from_authority,
 };
 
 pub(super) fn execute(
@@ -65,6 +65,80 @@ pub(super) fn execute(
         }
     }
     super::require_candidate_committed(run.outcome, &args.expected_manifest_sha256, run.recovered)
+}
+
+pub(super) fn execute_recover(home: &Path, probation_seconds: u64) -> Result<()> {
+    let run = run_linux_recovery(
+        home,
+        Duration::from_secs(probation_seconds),
+        &OwnershipPolicy::system(),
+        &mut RecoveryHost,
+    )?;
+    let Some(run) = run else {
+        println!("No unsettled install to recover.");
+        return Ok(());
+    };
+    match &run.outcome {
+        crate::install::InstallOutcome::Committed { active_unit } => {
+            println!("Recovered: release {} is committed.", active_unit.as_str());
+        }
+        crate::install::InstallOutcome::RolledBack {
+            active_unit,
+            failure,
+            restored,
+            ..
+        } => match restored {
+            Some(release) => println!(
+                "Recovered: rolled back: {version} (unit {unit}) runs again as pid {pid}, \
+                 invocation {instance}: {failure}",
+                version = release.version,
+                unit = release.unit.as_str(),
+                pid = release.process_id,
+                instance = release.instance,
+            ),
+            None => println!(
+                "Recovered: rolled back to {}: {failure}",
+                active_unit
+                    .as_ref()
+                    .map_or("none", crate::install::UnitId::as_str)
+            ),
+        },
+    }
+    Ok(())
+}
+
+/// Recovery stages nothing and never consults the environment for roots.
+struct RecoveryHost;
+
+impl LinuxInstallHost for RecoveryHost {
+    type Executor = LinuxNativeExecutor;
+
+    fn propose_location(
+        &mut self,
+        _home: &Path,
+        _uid: u32,
+    ) -> Result<LinuxInstallLocation, InstallPlatformError> {
+        Err(InstallPlatformError::new(
+            "recovery never proposes installation roots",
+        ))
+    }
+
+    fn stage_candidate(
+        &mut self,
+        _store: &InstallStore,
+        _lock: &InstallLock,
+    ) -> Result<UnitRecord, InstallPlatformError> {
+        Err(InstallPlatformError::new("recovery never stages a release"))
+    }
+
+    fn executor(
+        &mut self,
+        store: &InstallStore,
+        lock: &InstallLock,
+        tree: LinuxPublicTree,
+    ) -> Result<LinuxNativeExecutor, InstallPlatformError> {
+        native_executor(store, lock, tree)
+    }
 }
 
 pub(super) fn execute_uninstall(home: &Path) -> Result<()> {

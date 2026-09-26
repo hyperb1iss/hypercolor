@@ -36,7 +36,8 @@ use hypercolor_cli::install::{
     PrincipalGroup, PrincipalUser, RestoredRelease, UnitCollection, UnitId, UnitRecord,
     bind_linux_platform, elect_linux_installation_with, ensure_linux_launcher,
     ensure_linux_update_directories, linux_layout_directories, observe_linux_installation,
-    plan_linux_launch, run_linux_install, run_linux_uninstall, stage_release_payload,
+    plan_linux_launch, run_linux_install, run_linux_recovery, run_linux_uninstall,
+    stage_release_payload,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -4619,8 +4620,43 @@ fn the_update_executor_runs_the_prior_while_an_install_is_unsettled() {
         "ordinary commands run the active release"
     );
 
-    let run = fixture.update(&fixture.v2).expect("recovery settles");
+    // What the recovery unit runs: settle, staging and proposing nothing.
+    let mut host = Host::new(&fixture.world, &fixture.v3, None);
+    let run = run_linux_recovery(
+        &fixture.home,
+        DEFAULT_PROBATION_WINDOW,
+        &fixture.private(),
+        &mut host,
+    )
+    .expect("recovery settles")
+    .expect("a transaction was pending");
     assert!(run.recovered);
+    assert_eq!(host.proposals, 0);
+    assert!(
+        !host.seen.contains(&LinuxInstallCheckpoint::CandidateStaged),
+        "recovery stages nothing"
+    );
+    assert!(
+        !location
+            .release_root()
+            .join("units")
+            .join(fixture.v3.id.as_str())
+            .exists(),
+        "no release but the transaction's own is touched"
+    );
+    fixture.assert_settled_service("after recovery");
+    let mut host = Host::new(&fixture.world, &fixture.v3, None);
+    assert!(
+        run_linux_recovery(
+            &fixture.home,
+            DEFAULT_PROBATION_WINDOW,
+            &fixture.private(),
+            &mut host,
+        )
+        .expect("nothing to recover")
+        .is_none(),
+        "a settled install has nothing to recover"
+    );
     let executor = plan(&fixture, &location, LinuxLaunchRole::UpdateExecutor).expect("executor");
     assert_eq!(executor.selection, LinuxLaunchSelection::Active);
     let active = fs::read_link(location.release_root().join("active")).expect("active");

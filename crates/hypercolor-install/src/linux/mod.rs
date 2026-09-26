@@ -43,6 +43,7 @@ pub use bootstrap::{
 pub use command::{
     LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallHost, LinuxInstallRequest,
     LinuxInstallRun, LinuxPlatformInputs, bind_linux_platform, run_linux_install,
+    run_linux_recovery,
 };
 pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};

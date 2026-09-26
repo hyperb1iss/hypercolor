@@ -343,6 +343,83 @@ pub fn run_linux_install<H: LinuxInstallHost>(
     }
 }
 
+/// Settle an unsettled install, staging and proposing nothing.
+///
+/// Elects authority exactly as an install does. When its journal is still
+/// forward or rolling back, recovers it (with the historical root's own
+/// rules before adoption) and, on a managed installation, collects the
+/// releases nothing needs any more. Returns `None` when nothing was
+/// pending. This is what a recovery unit runs, through the launcher's
+/// update-executor role, so a transaction left unsettled by a candidate is
+/// resumed by the prior release's code; `host` is asked only for its
+/// executor, never to propose roots or stage a candidate.
+///
+/// # Errors
+/// Returns the first refusal; a later run resumes from the durable state.
+pub fn run_linux_recovery<H: LinuxInstallHost>(
+    home: &Path,
+    probation: Duration,
+    ownership: &OwnershipPolicy,
+    host: &mut H,
+) -> Result<Option<LinuxInstallRun>, LinuxInstallCommandError> {
+    match elect_linux_installation_with(home, ownership)
+        .map_err(LinuxInstallCommandError::Election)?
+    {
+        LinuxInstallElection::Legacy {
+            store, mut lock, ..
+        } => {
+            let Some(journal) = store.load_journal(&lock)?.filter(pending) else {
+                return Ok(None);
+            };
+            let mut platform = platform(
+                home,
+                host,
+                &store,
+                &lock,
+                LinuxPlatformInputs {
+                    candidate: None,
+                    journal: Some(&journal),
+                    managed: None,
+                    original: None,
+                    probation,
+                },
+            )?;
+            recover(&store, &mut lock, &mut platform).map(Some)
+        }
+        LinuxInstallElection::Managed {
+            store,
+            mut lock,
+            authority,
+        } => {
+            let journal = store
+                .load_journal(&lock)?
+                .ok_or(LinuxInstallCommandError::MissingJournal)?;
+            authority
+                .confirm_durable()
+                .map_err(LinuxInstallCommandError::Authority)?;
+            ensure_linux_update_directories(&lock, authority.location())?;
+            if !pending(&journal) {
+                return Ok(None);
+            }
+            let mut platform = platform(
+                home,
+                host,
+                &store,
+                &lock,
+                LinuxPlatformInputs {
+                    candidate: None,
+                    journal: Some(&journal),
+                    managed: Some(authority.location()),
+                    original: None,
+                    probation,
+                },
+            )?;
+            let run = recover(&store, &mut lock, &mut platform)?;
+            Ok(Some(collect_settled(&store, &lock, run)))
+        }
+    }
+}
+
 /// Resume the unpublished preparation or replace one that cannot resume.
 ///
 /// Before the locator publishes, a prepared journal holds no authority and no

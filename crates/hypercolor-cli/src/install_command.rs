@@ -2,7 +2,7 @@ use std::path::{Component, Path};
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::{InstallReleaseArgs, UninstallReleaseArgs};
+use crate::{InstallReleaseArgs, RecoverReleaseArgs, UninstallReleaseArgs};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -30,6 +30,26 @@ pub(crate) fn execute_uninstall(args: &UninstallReleaseArgs) -> Result<()> {
     require_bounded_absolute(&home, "HOME")?;
     LinuxInstallTopology::new(&args.install_prefix, &args.install_dir, &home)?;
     linux::execute_uninstall(&home)
+}
+
+/// Settle an unsettled install with this release's code.
+///
+/// Managed recovery units run this through the launcher's update-executor
+/// role, which picks the release an unsettled transaction would roll back
+/// to, so the running executable is reported first.
+#[cfg(target_os = "linux")]
+pub(crate) fn execute_recover(args: &RecoverReleaseArgs) -> Result<()> {
+    let home = linux_home()?;
+    require_bounded_absolute(&home, "HOME")?;
+    let executable = std::fs::read_link("/proc/self/exe")
+        .context("failed to resolve the recovering executable")?;
+    println!("Recovering with {}", executable.display());
+    linux::execute_recover(&home, args.probation_seconds)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub(crate) fn execute_recover(_args: &RecoverReleaseArgs) -> Result<()> {
+    bail!("raw release recovery is supported only for per-user Linux installs")
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
