@@ -115,8 +115,9 @@ its `next_action` is that action (optionally only after the candidate's
 owner receipt is recorded, and after `--delay-ms`), sends `SIGKILL` to the
 installer, or with `--kill-service` to the daemon's main process instead.
 The `DRIVER` line records the watched action, the action the journal named
-when the driver acted, and the one it names once the installer is gone; a
-scenario fails unless all three match. Only the installer process is
+when the driver acted, and the one it names once the installer is gone. A
+scenario fails unless the driver acted at the watched action and, when it
+killed the installer, the journal still names that action afterwards. Only the installer process is
 killed, so a `systemctl` child it was waiting on can still finish, as after
 any single-process crash.
 
