@@ -347,7 +347,8 @@ trait WatchBoundary {
     ) -> LocalBoxFuture<'_, Result<bool, InstallPlatformError>>;
 }
 
-/// Hold the service to `expected` until `window` passes or it changes.
+/// Hold the service to `expected` from `started` until `deadline` or its
+/// first change.
 ///
 /// Every signal about the service rereads its identity, so a change that
 /// leaves and returns between two reads (a restart) still shows as a new
@@ -356,10 +357,9 @@ trait WatchBoundary {
 async fn watch_service(
     boundary: &mut impl WatchBoundary,
     expected: &LinuxServiceIdentity,
-    window: Duration,
+    started: tokio::time::Instant,
+    deadline: tokio::time::Instant,
 ) -> Result<LinuxServiceWatch, InstallPlatformError> {
-    let started = tokio::time::Instant::now();
-    let deadline = started + window;
     loop {
         let identity = boundary.identity().await?;
         if !identity.holds(expected) {
@@ -475,40 +475,74 @@ fn run_settle(
     })
 }
 
+/// How many times one probation window reconnects to the manager after
+/// losing its connection (a `daemon-reexec` closes it) before it reports
+/// the failure.
+const MAX_WATCH_RECONNECTS: usize = 3;
+const WATCH_RECONNECT_DELAY: Duration = Duration::from_millis(250);
+
 fn run_watch(
     manager: &LinuxSystemdConnection,
     expected: &LinuxServiceIdentity,
     window: Duration,
 ) -> Result<LinuxServiceWatch, InstallPlatformError> {
     current_thread_runtime()?.block_on(async move {
-        // A direct manager connection receives every manager signal without
-        // `Subscribe` or a bus match, so the watch misses no change between
-        // its first read and its first wait.
-        let mut bus = connect_manager(manager).await?;
-        let unit = match within_method_deadline(bus.call::<_, OwnedObjectPath>(
-            SYSTEMD_PATH,
-            SYSTEMD_MANAGER,
-            "GetUnit",
-            &(SERVICE,),
-        ))
-        .await?
-        {
-            Ok(unit) => unit,
-            // An unloaded unit runs nothing, so the proven service is gone.
-            Err(ManagerCallError::Refused { name, .. }) if name == NO_SUCH_UNIT => {
-                return Ok(LinuxServiceWatch::Changed {
-                    after: Duration::ZERO,
-                    observed: "hypercolor.service is no longer loaded".to_owned(),
-                });
+        let started = tokio::time::Instant::now();
+        let deadline = started + window;
+        let mut reconnects = 0;
+        loop {
+            match watch_connection(manager, expected, started, deadline).await {
+                // Losing the manager says nothing about the candidate. A new
+                // connection reads the identity again before it waits, so a
+                // restart while disconnected still shows as a new
+                // invocation, and the window keeps its original deadline.
+                Err(_)
+                    if reconnects < MAX_WATCH_RECONNECTS
+                        && tokio::time::Instant::now() < deadline =>
+                {
+                    reconnects += 1;
+                    tokio::time::sleep(WATCH_RECONNECT_DELAY).await;
+                }
+                outcome => return outcome,
             }
-            Err(refused) => return Err(refused.into_platform()),
-        };
-        let mut boundary = BusSettleBoundary {
-            bus: &mut bus,
-            unit,
-        };
-        watch_service(&mut boundary, expected, window).await
+        }
     })
+}
+
+/// Watch the service over one manager connection until `deadline`.
+async fn watch_connection(
+    manager: &LinuxSystemdConnection,
+    expected: &LinuxServiceIdentity,
+    started: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+) -> Result<LinuxServiceWatch, InstallPlatformError> {
+    // A direct manager connection receives every manager signal without
+    // `Subscribe` or a bus match, so the watch misses no change between its
+    // first read and its first wait.
+    let mut bus = connect_manager(manager).await?;
+    let unit = match within_method_deadline(bus.call::<_, OwnedObjectPath>(
+        SYSTEMD_PATH,
+        SYSTEMD_MANAGER,
+        "GetUnit",
+        &(SERVICE,),
+    ))
+    .await?
+    {
+        Ok(unit) => unit,
+        // An unloaded unit runs nothing, so the proven service is gone.
+        Err(ManagerCallError::Refused { name, .. }) if name == NO_SUCH_UNIT => {
+            return Ok(LinuxServiceWatch::Changed {
+                after: started.elapsed(),
+                observed: "hypercolor.service is no longer loaded".to_owned(),
+            });
+        }
+        Err(refused) => return Err(refused.into_platform()),
+    };
+    let mut boundary = BusSettleBoundary {
+        bus: &mut bus,
+        unit,
+    };
+    watch_service(&mut boundary, expected, started, deadline).await
 }
 
 fn run_runtime_job(
@@ -967,6 +1001,11 @@ mod tests {
         /// The daemon crashes this long after a client connects, and
         /// `Restart=on-failure` brings it back under a new invocation.
         restart_after: Option<std::time::Duration>,
+        /// The manager drops the next client this long after it connects,
+        /// as a `daemon-reexec` does; with `restart_on_disconnect` the
+        /// daemon also restarts while the client is away.
+        disconnect_after: Option<std::time::Duration>,
+        restart_on_disconnect: bool,
     }
 
     #[derive(Debug, zbus::DBusError)]
@@ -1298,11 +1337,31 @@ mod tests {
                                 .expect("announce the new invocation");
                         }
                     };
-                    // Keep serving until the client hangs up.
+                    let disconnect = service
+                        .lock()
+                        .expect("fake service")
+                        .disconnect_after
+                        .take();
+                    let disconnector = {
+                        let service = std::sync::Arc::clone(&service);
+                        async move {
+                            let Some(delay) = disconnect else {
+                                return std::future::pending::<()>().await;
+                            };
+                            tokio::time::sleep(delay).await;
+                            let mut service = service.lock().expect("fake service");
+                            if service.restart_on_disconnect {
+                                service.invocation.iter_mut().for_each(|byte| *byte ^= 0xff);
+                                service.main_pid += 1;
+                            }
+                        }
+                    };
+                    // Keep serving until the client hangs up, or drop it.
                     let mut messages = zbus::MessageStream::from(&connection);
                     let serve = async { while messages.next().await.is_some() {} };
                     tokio::select! {
                         () = serve => {}
+                        () = disconnector => {}
                         () = async { finisher.await; std::future::pending::<()>().await } => {}
                         () = async { restarter.await; std::future::pending::<()>().await } => {}
                     }
@@ -1323,6 +1382,8 @@ mod tests {
             invocation: vec![0x11; 16],
             main_pid: 4242,
             restart_after: None,
+            disconnect_after: None,
+            restart_on_disconnect: false,
         }))
     }
 
@@ -1807,9 +1868,15 @@ mod tests {
                 started: tokio::time::Instant::now(),
             };
             let started = std::time::Instant::now();
-            let outcome = watch_service(&mut boundary, &proven(), WINDOW)
-                .await
-                .expect("watch");
+            let window_start = tokio::time::Instant::now();
+            let outcome = watch_service(
+                &mut boundary,
+                &proven(),
+                window_start,
+                window_start + WINDOW,
+            )
+            .await
+            .expect("watch");
             (outcome, started.elapsed())
         })
     }
@@ -1893,6 +1960,68 @@ mod tests {
                 service.lock().expect("fake service").calls,
                 [("GetUnit".to_owned(), String::new())],
                 "the watch only reads; it never starts, stops or reloads"
+            );
+        }
+    }
+
+    #[test]
+    fn a_change_after_the_window_ends_is_not_seen() {
+        let running = identity("active", "running", &"11".repeat(16), 4242);
+        let restarted = identity("active", "running", &"ee".repeat(16), 4243);
+        let (outcome, elapsed) = watch(
+            vec![running, restarted],
+            vec![WINDOW + std::time::Duration::from_millis(200)],
+        );
+        assert_eq!(outcome, LinuxServiceWatch::Steady);
+        assert!(
+            elapsed >= WINDOW && elapsed < WINDOW + std::time::Duration::from_millis(150),
+            "the watch returned at its deadline, not at the later change: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_watch_that_loses_the_manager_reconnects_and_keeps_its_deadline() {
+        // Long enough that the reconnect lands inside the window.
+        let window = std::time::Duration::from_millis(900);
+        for restart_on_disconnect in [false, true] {
+            let (fixture, uid) = runtime_fixture();
+            let listener =
+                UnixListener::bind(fixture.path().join("systemd/private")).expect("private socket");
+            let service = fake_service("active", "running");
+            {
+                let mut service = service.lock().expect("fake service");
+                service.disconnect_after = Some(std::time::Duration::from_millis(100));
+                service.restart_on_disconnect = restart_on_disconnect;
+            }
+            let server = serve_fake_manager(listener, std::sync::Arc::clone(&service), 2);
+            let manager = LinuxRuntimeManager::new(
+                LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid)
+                    .expect("private manager coordinate"),
+            );
+            let started = std::time::Instant::now();
+            let outcome = manager.watch(proven(), window).expect("watch");
+            let elapsed = started.elapsed();
+            server.join().expect("fake manager thread");
+            if restart_on_disconnect {
+                assert!(
+                    matches!(outcome, LinuxServiceWatch::Changed { .. }),
+                    "a restart while disconnected is a change: {outcome:?}"
+                );
+                assert!(elapsed < window, "returned after {elapsed:?}");
+            } else {
+                assert_eq!(outcome, LinuxServiceWatch::Steady);
+                assert!(
+                    elapsed >= window && elapsed < window + std::time::Duration::from_millis(200),
+                    "the reconnected watch kept the original deadline: {elapsed:?}"
+                );
+            }
+            assert_eq!(
+                service.lock().expect("fake service").calls,
+                [
+                    ("GetUnit".to_owned(), String::new()),
+                    ("GetUnit".to_owned(), String::new())
+                ],
+                "one reconnect"
             );
         }
     }
