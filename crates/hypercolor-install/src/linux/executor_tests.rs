@@ -14,7 +14,7 @@ use super::effects::autostart_operation;
 use super::executor::{LinuxInstallExecutor as _, LinuxNativeExecutor, SERVICE, systemctl_command};
 use super::model::{LinuxInstallConfig, parse_systemd_show};
 use super::runtime::LinuxSystemdConnection;
-use crate::install::InstallStore;
+use crate::InstallStore;
 
 fn with_native_public_tree(
     prepare: impl FnOnce(&Path),
@@ -414,7 +414,7 @@ fn public_exact_read_rejects_growth_after_the_metadata_bound() {
 #[test]
 fn historical_prior_authority_rejects_copy_and_replaced_ancestor() {
     use super::executor::LinuxInstallExecutor as _;
-    use crate::install::{UnitId, UnitRecord};
+    use crate::{UnitId, UnitRecord};
     use hypercolor_platform_fs::ReadOnlyDirectoryAuthority;
 
     let id = UnitId::new("a".repeat(64)).expect("unit ID");

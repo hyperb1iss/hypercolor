@@ -146,6 +146,7 @@ hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
 hypercolor-persistence = { path = "crates/hypercolor-persistence" }
 hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs" }
+hypercolor-install = { path = "crates/hypercolor-install" }
 hypercolor-worker-retention = { path = "crates/hypercolor-worker-retention" }
 hypercolor-gpu-frame = { path = "crates/hypercolor-gpu-frame" }
 hypercolor-linux-input = { path = "crates/hypercolor-linux-input" }

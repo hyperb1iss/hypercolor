@@ -10,8 +10,8 @@ use super::{
     LinuxInstallLocator, LinuxLocatorError, MAX_INSTALL_JOURNAL_BYTES, MAX_LOCATOR_BYTES,
     MAX_MANAGED_INSTALL_JOURNAL_BYTES,
 };
-use crate::install::OwnershipPolicy;
-use crate::install::linux::RetainedLinuxInstallLocation;
+use crate::OwnershipPolicy;
+use crate::linux::RetainedLinuxInstallLocation;
 
 /// The exclusive authority selected after rereading the permanent locator.
 #[derive(Debug)]

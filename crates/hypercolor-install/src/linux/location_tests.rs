@@ -4,7 +4,7 @@ use super::location::{InstallLocationError, LinuxInstallLocation};
 
 #[test]
 fn retained_location_rejects_changed_ancestry_after_acquisition() {
-    use crate::install::InstallStore;
+    use crate::InstallStore;
     use std::fs;
     use std::os::unix::fs::MetadataExt as _;
 
@@ -45,7 +45,7 @@ fn retained_location_rejects_changed_ancestry_after_acquisition() {
 
 #[test]
 fn recorded_owner_must_match_retained_root_owner() {
-    use crate::install::InstallStore;
+    use crate::InstallStore;
     use std::fs;
     use std::os::unix::fs::MetadataExt as _;
 
@@ -76,7 +76,7 @@ fn recorded_owner_must_match_retained_root_owner() {
         location.retain_existing(home, &gate),
         Err(InstallLocationError::InvalidOwner(
             _,
-            crate::install::DirectoryRefusal::RecordedOwnerMismatch { .. }
+            crate::DirectoryRefusal::RecordedOwnerMismatch { .. }
         ))
     ));
 }

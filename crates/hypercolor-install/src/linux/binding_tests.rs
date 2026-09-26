@@ -7,9 +7,9 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
 use super::*;
-use crate::install::{
-    LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryState, LinuxSystemdConnection,
-    PlatformTransactionRecord, UnitId, bind_platform, copy_installed_release_unit,
+use crate::{
+    LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryState, LinuxNativeExecutor,
+    LinuxSystemdConnection, PlatformTransactionRecord, UnitId, copy_installed_release_unit,
     stage_release_payload,
 };
 

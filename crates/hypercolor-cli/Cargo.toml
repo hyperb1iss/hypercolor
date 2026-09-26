@@ -24,15 +24,12 @@ hypercolor-openrgb-host = { workspace = true }
 hypercolor-color = { workspace = true }
 hypercolor-core = { workspace = true }
 hypercolor-platform-fs = { workspace = true }
+hypercolor-install = { workspace = true }
 hypercolor-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
-zbus = { workspace = true, features = ["blocking-api"] }
 futures-util = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
@@ -44,17 +41,15 @@ opaline = { workspace = true }
 owo-colors = { workspace = true }
 unicode-width = { workspace = true }
 toml = { workspace = true }
-uuid = { workspace = true }
 hypercolor-tui = { workspace = true, optional = true }
 
 [dev-dependencies]
-# Tests serve an independent peer-to-peer manager to the client.
-zbus = { workspace = true, features = ["p2p"] }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-daemon = { path = "../hypercolor-daemon", default-features = false }
 tempfile = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 axum = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 hypercolor-macos-owner = { workspace = true }
-security-framework = "3.7.0"

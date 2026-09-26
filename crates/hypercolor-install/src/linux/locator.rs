@@ -59,7 +59,7 @@ pub enum LinuxLocatorError {
         path = .0.display(),
         refusal = .1
     )]
-    UnsafeDirectory(PathBuf, crate::install::DirectoryRefusal),
+    UnsafeDirectory(PathBuf, crate::DirectoryRefusal),
     #[error("installation locator filesystem operation failed: {0}")]
     Io(#[from] io::Error),
     #[error("installation locator JSON is invalid: {0}")]

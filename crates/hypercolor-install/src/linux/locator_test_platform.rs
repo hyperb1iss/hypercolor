@@ -1,4 +1,4 @@
-use crate::install::{
+use crate::{
     InstallPlatform, InstallPlatformError, InstallationState, PlatformCheckpoint,
     PlatformOwnerReceipt, PlatformState, PlatformTransactionRecord, PlatformTransitionStates,
     PreparedPlatformTransaction, UnitId, UnitRecord,

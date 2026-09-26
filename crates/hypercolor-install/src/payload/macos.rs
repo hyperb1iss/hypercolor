@@ -10,7 +10,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::manifest::{MAX_RELEASE_PATH_BYTES, ValidatedManifest, ValidatedMember};
 use super::{ReleasePayloadError, tree};
-use crate::install::UnitRecord;
+use crate::UnitRecord;
 
 const PROVENANCE_PATH: &str = "share/hypercolor/macos-notarization.json";
 const DAEMON_PATH: &str = "bin/hypercolor-daemon";
@@ -288,7 +288,7 @@ fn bind_retained_file_identity(
             "installed content mismatch for {path}"
         )));
     }
-    let cdhash = crate::install::macos::thin_macho_cdhash(opened.file_mut(), *size)
+    let cdhash = crate::macos::thin_macho_cdhash(opened.file_mut(), *size)
         .map_err(|source| ReleasePayloadError::InvalidUnit(source.to_string()))?;
     let after = opened
         .file()

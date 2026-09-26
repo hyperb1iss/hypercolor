@@ -575,7 +575,7 @@ mod tests {
     async fn connect(
         socket: &std::path::Path,
         uid: u32,
-    ) -> Result<ManagerBus, crate::install::InstallPlatformError> {
+    ) -> Result<ManagerBus, crate::InstallPlatformError> {
         tokio::time::timeout(Duration::from_secs(5), ManagerBus::connect(socket, uid))
             .await
             .expect("authentication finishes without waiting on the peer")

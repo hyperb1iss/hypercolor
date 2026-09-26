@@ -70,6 +70,7 @@ crates/
   hypercolor-windows-telemetry/    # Windows WMI/PawnIO sensors and board identity (stubs elsewhere)
   hypercolor-windows-helper/       # Signed elevated helper for Windows privileged operations
   hypercolor-platform-fs/          # Audited platform filesystem operations
+  hypercolor-install/              # Transactional release installer library: install journal, coordinator, Linux systemd and macOS launchd platforms, payload validation
   hypercolor-persistence/          # Durable file replacement and the process-wide flush registry every store writes through
   hypercolor-driver-api/           # Stable trait/type boundary between the daemon and all driver implementations
   hypercolor-driver-support/       # Native credential and discovery services layered on the driver API
@@ -140,6 +141,8 @@ graph TD
     CORE & DAPI & HAL & HUE & NL & WLED & GV & ORD & DS --> DB[hypercolor-driver-builtin]
     CORE & DAPI & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
+    PFS --> INST[hypercolor-install] --> CLI
+    MO -.->|macOS only| INST
     T --> TUI[hypercolor-tui]
     TUI -.->|optional| CLI
     CORE & T --> APP[hypercolor-app]

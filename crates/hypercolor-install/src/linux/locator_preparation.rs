@@ -1,7 +1,7 @@
 use std::io::{self, Read as _};
 use std::path::Path;
 
-use crate::install::{
+use crate::{
     InstallAction, InstallDisposition, InstallJournalV1, InstallLock, InstallPlatform,
     InstallStore, PlatformCheckpoint,
 };

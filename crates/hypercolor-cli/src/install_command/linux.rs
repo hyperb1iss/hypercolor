@@ -159,7 +159,3 @@ fn proposed_location_with(
 #[cfg(test)]
 #[path = "linux_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "linux_binding_tests.rs"]
-mod binding_tests;

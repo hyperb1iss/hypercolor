@@ -9,7 +9,7 @@ pub mod commands;
 pub mod config;
 #[cfg(unix)]
 #[doc(hidden)]
-pub mod install;
+pub use hypercolor_install as install;
 #[cfg(unix)]
 mod install_command;
 pub mod output;

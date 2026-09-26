@@ -80,7 +80,7 @@ fn bootstrap_rejects_a_real_foreign_owner_despite_safe_mode() {
             ),
             Err(InstallStoreError::UnsafeBootstrapDirectory(
                 _,
-                crate::install::DirectoryRefusal::ForeignOwner(_)
+                crate::DirectoryRefusal::ForeignOwner(_)
             ))
         ));
     }

@@ -9,11 +9,11 @@ use super::legacy::{
     LegacyBudget, LegacyFile, LegacyLimits, collect_public_legacy_inventory,
     collect_public_legacy_inventory_with, legacy_identity_digest, prepare_legacy_files,
 };
-use crate::install::linux::legacy_validation::{
+use crate::linux::legacy_validation::{
     populate_legacy_stage, validate_legacy_snapshot_binding, validate_legacy_unit,
     validate_legacy_unit_with_budget,
 };
-use crate::install::{
+use crate::{
     InstallStore, LINUX_LAYOUT_ITEMS, LinuxExactEntry, LinuxLayoutItem, LinuxLegacySnapshot,
     LinuxPublicTree, UnitId,
 };

@@ -5,7 +5,7 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
 use super::ReleasePayloadError;
-use crate::install::model::UnitId;
+use crate::model::UnitId;
 
 /// Maximum accepted byte length of `manifest.json`.
 pub const MAX_RELEASE_MANIFEST_BYTES: usize = 2 * 1024 * 1024;

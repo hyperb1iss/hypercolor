@@ -1,7 +1,7 @@
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-use crate::install::{
+use crate::{
     InstallJournalV1, InstallLock, InstallStore, InstallTargetPolicy, InstallTransactionId,
     PlatformState, PlatformTransactionRecord, PlatformTransitionStates, UnitId,
 };
@@ -336,7 +336,7 @@ fn receipt_binds_initial_journal_identity_and_unchanged_legacy_observations() {
             }
             1 => {
                 let mut settled = journal();
-                settled.disposition = crate::install::InstallDisposition::Committed;
+                settled.disposition = crate::InstallDisposition::Committed;
                 settled.next_action = None;
                 settled.layout_operation_index = settled.layout_operation_count;
                 fixture
@@ -661,8 +661,8 @@ fn adoption_refuses_pending_legacy_before_creating_recorded_roots() {
     )
     .expect("location");
     assert!(matches!(
-        crate::install::LinuxAdoption::begin(home.path(), elected, proposed),
-        Err(crate::install::LinuxAdoptionError::LegacyRecoveryRequired)
+        crate::LinuxAdoption::begin(home.path(), elected, proposed),
+        Err(crate::LinuxAdoptionError::LegacyRecoveryRequired)
     ));
     for name in ["new-data", "new-state", "new-config"] {
         assert!(!home.path().join(name).exists());
@@ -682,7 +682,7 @@ fn adoption_reuses_recorded_identity_and_refuses_orphan_state_journal() {
         )
         .expect("location")
     };
-    let adoption = crate::install::LinuxAdoption::begin(
+    let adoption = crate::LinuxAdoption::begin(
         home.path(),
         super::elect_linux_installation(home.path()).expect("election"),
         propose(),
@@ -694,7 +694,7 @@ fn adoption_reuses_recorded_identity_and_refuses_orphan_state_journal() {
         .write_journal(&journal(), adoption.lock())
         .expect("unbound orphan");
     drop(adoption);
-    let adoption = crate::install::LinuxAdoption::begin(
+    let adoption = crate::LinuxAdoption::begin(
         home.path(),
         super::elect_linux_installation(home.path()).expect("cold election"),
         propose(),
@@ -724,7 +724,7 @@ fn managed_election_rechecks_the_locator_after_the_unlocked_hint() {
     drop(fixture.state_lock);
     let result = super::election::elect_with(
         fixture.home.path(),
-        &crate::install::OwnershipPolicy::system(),
+        &crate::OwnershipPolicy::system(),
         || {
             fs::write(
                 fixture.old.root().join("install-journal.json"),
@@ -754,19 +754,16 @@ fn legacy_hint_rechecks_a_concurrently_published_managed_locator() {
         state_lock,
     } = fixture;
     let expected = location.clone();
-    let elected = super::election::elect_with(
-        home.path(),
-        &crate::install::OwnershipPolicy::system(),
-        move || {
+    let elected =
+        super::election::elect_with(home.path(), &crate::OwnershipPolicy::system(), move || {
             locator
                 .publish_prepared(&location, &state, &state_lock, &mut PriorProof::valid())
                 .expect("publish after legacy hint");
             drop(locator);
             drop(state_lock);
             drop(old_lock);
-        },
-    )
-    .expect("reread selects managed authority");
+        })
+        .expect("reread selects managed authority");
     let super::LinuxInstallElection::Managed { authority, .. } = elected else {
         panic!("managed authority")
     };

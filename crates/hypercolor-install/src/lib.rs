@@ -1,3 +1,13 @@
+//! Transactional release installer for Hypercolor.
+//!
+//! One durable install journal drives every install, upgrade, rollback and
+//! recovery through [`InstallCoordinator`]. Platforms apply and prove each
+//! step: [`LinuxInstallPlatform`] drives a per-user systemd service, and the
+//! `macos` module a launchd agent. The raw `hypercolor __install-release`
+//! command is one host of this library; others (an update activator, a
+//! daemon that observes its own installation) link it directly.
+#![cfg(unix)]
+
 mod coordinator;
 #[cfg(unix)]
 mod linux;
@@ -13,8 +23,6 @@ mod store;
 pub use coordinator::{
     InstallCoordinator, InstallCoordinatorError, InstallPlatform, InstallPlatformError,
 };
-#[cfg(all(test, unix))]
-pub(crate) use linux::bind_platform;
 #[cfg(unix)]
 pub use linux::{
     InstallLocationError, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxAdoption,

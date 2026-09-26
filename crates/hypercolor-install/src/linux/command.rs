@@ -155,7 +155,7 @@ pub enum LinuxInstallCommandError {
         path = .0.display(),
         refusal = .1
     )]
-    UnsafeDirectory(std::path::PathBuf, crate::install::DirectoryRefusal),
+    UnsafeDirectory(std::path::PathBuf, crate::DirectoryRefusal),
 }
 
 /// Elect authority, adopt or recover, and settle one install request.
@@ -533,3 +533,7 @@ fn known_units(
     }
     Ok(units)
 }
+
+#[cfg(test)]
+#[path = "binding_tests.rs"]
+mod binding_tests;

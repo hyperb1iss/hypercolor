@@ -4694,6 +4694,7 @@ dependencies = [
  "hypercolor-color",
  "hypercolor-core",
  "hypercolor-daemon",
+ "hypercolor-install",
  "hypercolor-macos-owner",
  "hypercolor-openrgb-host",
  "hypercolor-platform-fs",
@@ -4702,20 +4703,16 @@ dependencies = [
  "opaline",
  "owo-colors",
  "reqwest",
- "security-framework",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
- "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "unicode-width",
- "uuid",
- "zbus",
 ]
 
 [[package]]
@@ -5071,6 +5068,25 @@ dependencies = [
  "tracing",
  "turbojpeg",
  "zerocopy",
+]
+
+[[package]]
+name = "hypercolor-install"
+version = "0.5.1"
+dependencies = [
+ "futures-util",
+ "hex",
+ "hypercolor-macos-owner",
+ "hypercolor-platform-fs",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+ "zbus",
 ]
 
 [[package]]
