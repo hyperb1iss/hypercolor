@@ -13,17 +13,21 @@ mod store;
 pub use coordinator::{
     InstallCoordinator, InstallCoordinatorError, InstallPlatform, InstallPlatformError,
 };
+#[cfg(all(test, unix))]
+pub(crate) use linux::bind_platform;
 #[cfg(unix)]
 pub use linux::{
     InstallLocationError, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxAdoption,
     LinuxAdoptionError, LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry,
-    LinuxFilePublication, LinuxHttpResponse, LinuxInstallAuthority, LinuxInstallConfig,
-    LinuxInstallElection, LinuxInstallExecutor, LinuxInstallLocation, LinuxInstallLocator,
-    LinuxInstallPlatform, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile,
+    LinuxFilePublication, LinuxHttpResponse, LinuxInstallAuthority, LinuxInstallCheckpoint,
+    LinuxInstallCommandError, LinuxInstallConfig, LinuxInstallElection, LinuxInstallExecutor,
+    LinuxInstallHost, LinuxInstallLocation, LinuxInstallLocator, LinuxInstallPlatform,
+    LinuxInstallRequest, LinuxInstallRun, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile,
     LinuxLegacySnapshot, LinuxLocatorError, LinuxManagedAuthority, LinuxNativeExecutor,
     LinuxProcessExecutable, LinuxPublicEntry, LinuxPublicTree, LinuxSystemdConnection,
     LinuxSystemdObservation, RetainedLinuxInstallLocation, bind_linux_retained_unit,
     elect_linux_installation, elect_linux_installation_with, parse_systemd_show, retain_linux_unit,
+    run_linux_install,
 };
 pub use model::{
     INSTALL_JOURNAL_SCHEMA_VERSION, InstallAction, InstallDisposition, InstallJournalV1,

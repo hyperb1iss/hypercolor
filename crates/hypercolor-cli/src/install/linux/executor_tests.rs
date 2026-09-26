@@ -11,7 +11,7 @@ use hypercolor_platform_fs::ExclusiveDirectory;
 use super::LinuxInstallPlatform;
 use super::directory::read_opened_public_bytes;
 use super::effects::autostart_operation;
-use super::executor::{LinuxNativeExecutor, SERVICE, systemctl_command};
+use super::executor::{LinuxInstallExecutor as _, LinuxNativeExecutor, SERVICE, systemctl_command};
 use super::model::{LinuxInstallConfig, parse_systemd_show};
 use super::runtime::LinuxSystemdConnection;
 use crate::install::InstallStore;

@@ -7,6 +7,7 @@ use super::super::{
     InstallPlatform, InstallPlatformError, InstallRequest, InstallStore, InstallStoreError,
     ReleasePayloadError, UnitRecord, copy_installed_release_unit,
 };
+use super::command::LinuxInstallCheckpoint;
 use super::{
     LinuxInstallAuthority, LinuxInstallElection, LinuxInstallLocation, LinuxInstallLocator,
     LinuxLocatorError, LinuxManagedAuthority, retain_linux_unit,
@@ -28,6 +29,8 @@ pub enum LinuxAdoptionError {
     Platform(#[from] InstallPlatformError),
     #[error(transparent)]
     Coordinator(#[from] InstallCoordinatorError),
+    #[error("adoption stopped at a durable checkpoint: {0}")]
+    Stopped(String),
 }
 
 /// A private managed preparation retaining old then new locks until publication.
@@ -53,6 +56,23 @@ impl LinuxAdoption {
         home: &Path,
         elected: LinuxInstallElection,
         proposed: LinuxInstallLocation,
+    ) -> Result<Self, LinuxAdoptionError> {
+        Self::begin_observed(home, elected, proposed, &mut |_| Ok(()))
+    }
+
+    /// Begin adoption and report each durable preparation boundary.
+    ///
+    /// `observe` runs after the recorded roots and identity, the copied prior
+    /// unit, and the new prior pointer each become durable. An observer error
+    /// stops preparation at that boundary without further writes.
+    ///
+    /// # Errors
+    /// Returns the same refusals as [`Self::begin`] or the observer's error.
+    pub fn begin_observed(
+        home: &Path,
+        elected: LinuxInstallElection,
+        proposed: LinuxInstallLocation,
+        observe: &mut dyn FnMut(LinuxInstallCheckpoint) -> Result<(), LinuxAdoptionError>,
     ) -> Result<Self, LinuxAdoptionError> {
         let LinuxInstallElection::Legacy {
             store: old,
@@ -94,11 +114,16 @@ impl LinuxAdoption {
             .transpose()?;
         let (location, store, lock) =
             super::adoption_roots::prepare_roots(home, &old_lock, proposed)?;
+        observe(LinuxInstallCheckpoint::RootsBootstrapped)?;
         if let Some(prior) = &prior {
             copy_installed_release_unit(&store, &lock, prior)?;
+            observe(LinuxInstallCheckpoint::PriorCopied)?;
         }
         match (store.active_unit(&lock)?, &original_id) {
-            (None, Some(id)) => store.set_active(Some(id), &lock)?,
+            (None, Some(id)) => {
+                store.set_active(Some(id), &lock)?;
+                observe(LinuxInstallCheckpoint::PriorActivated)?;
+            }
             (actual, expected) if actual.as_ref() == expected.as_ref() => {}
             _ => return Err(LinuxAdoptionError::ConflictingPreparation),
         }

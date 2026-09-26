@@ -1254,7 +1254,9 @@ fn installed_copy_crosses_filesystems_without_renaming_source() {
 
 #[test]
 fn cold_recorded_prior_selects_exact_historical_path_and_original_inode() {
-    use hypercolor_cli::install::{LinuxNativeExecutor, LinuxPublicTree, LinuxSystemdConnection};
+    use hypercolor_cli::install::{
+        LinuxInstallExecutor as _, LinuxNativeExecutor, LinuxPublicTree, LinuxSystemdConnection,
+    };
     let home = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).expect("owned home");
     let old = InstallStore::new(home.path().join(".local/lib/hypercolor"), 64 * 1024);
     let old_lock = old.acquire_anchored_lock(home.path()).expect("old lock");

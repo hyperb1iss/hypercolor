@@ -28,7 +28,7 @@ impl LinuxNativeExecutor {
     /// # Errors
     ///
     /// Refuses missing, replaced, aliased, or already bound historical roots.
-    pub fn retain_prior_units(&mut self) -> Result<(), InstallPlatformError> {
+    pub(super) fn retain_historical_units(&mut self) -> Result<(), InstallPlatformError> {
         if self.prior_units.is_some() {
             return Err(error("historical units authority is already bound"));
         }
@@ -79,7 +79,7 @@ impl LinuxNativeExecutor {
     ///
     /// # Errors
     /// Refuses unknown records, foreign paths and changed original releases.
-    pub fn retain_recorded_prior(
+    pub(super) fn retain_recorded_historical_prior(
         &mut self,
         encoded: &super::super::PlatformTransactionRecord,
     ) -> Result<Option<UnitRecord>, InstallPlatformError> {
@@ -224,7 +224,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
     }
 }
 
-impl LinuxInstallPlatform<LinuxNativeExecutor> {
+impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
     /// Restore prior-role selection and validate a cold transaction record.
     ///
     /// # Errors

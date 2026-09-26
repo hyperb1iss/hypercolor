@@ -1,5 +1,6 @@
 mod adoption;
 mod adoption_roots;
+mod command;
 mod directory;
 mod effects;
 mod executor;
@@ -30,6 +31,12 @@ use std::collections::BTreeMap;
 use super::{InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord};
 
 pub use adoption::{LinuxAdoption, LinuxAdoptionError};
+#[cfg(test)]
+pub(crate) use command::bind_platform;
+pub use command::{
+    LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallHost, LinuxInstallRequest,
+    LinuxInstallRun, run_linux_install,
+};
 pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};
 pub use location::{InstallLocationError, LinuxInstallLocation, RetainedLinuxInstallLocation};

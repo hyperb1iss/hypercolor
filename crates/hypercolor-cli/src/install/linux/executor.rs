@@ -45,6 +45,22 @@ pub trait LinuxInstallExecutor {
     fn prior_units_root(&self, _unit: &UnitRecord) -> Result<PathBuf, InstallPlatformError> {
         Err(error("executor has no retained prior units authority"))
     }
+    /// Retain the historical units root before an original prior role binds.
+    ///
+    /// Executors without historical authority refuse by default.
+    fn retain_prior_units(&mut self) -> Result<(), InstallPlatformError> {
+        Err(error("executor cannot retain historical units authority"))
+    }
+    /// Rebind a cold record's prior when it names a historical release root.
+    ///
+    /// The default binds nothing; record validation then refuses any prior
+    /// whose recorded path lies outside the current units root.
+    fn retain_recorded_prior(
+        &mut self,
+        _record: &super::super::PlatformTransactionRecord,
+    ) -> Result<Option<UnitRecord>, InstallPlatformError> {
+        Ok(None)
+    }
     fn active_unit(&mut self) -> Result<Option<UnitId>, InstallPlatformError>;
     fn systemd_show(&mut self, max_bytes: usize) -> Result<Vec<u8>, InstallPlatformError>;
     fn launcher_entry(
@@ -220,6 +236,17 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
 
     fn prior_units_root(&self, unit: &UnitRecord) -> Result<PathBuf, InstallPlatformError> {
         self.validate_prior_unit(unit)
+    }
+
+    fn retain_prior_units(&mut self) -> Result<(), InstallPlatformError> {
+        self.retain_historical_units()
+    }
+
+    fn retain_recorded_prior(
+        &mut self,
+        record: &super::super::PlatformTransactionRecord,
+    ) -> Result<Option<UnitRecord>, InstallPlatformError> {
+        self.retain_recorded_historical_prior(record)
     }
 
     fn active_unit(&mut self) -> Result<Option<UnitId>, InstallPlatformError> {
