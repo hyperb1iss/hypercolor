@@ -8,8 +8,9 @@ use super::LinuxInstallPlatform;
 use super::executor::LinuxInstallExecutor;
 use super::model::{
     DAEMON_RELATIVE_PATH, LAUNCHER_MODE, LinuxExactEntry, LinuxHttpResponse, LinuxLauncher,
-    LinuxOwnerReceipt, LinuxRecord, LinuxServicePhase, LinuxSystemdObservation, LinuxUnitBinding,
-    MAX_HTTP_RESPONSE_BYTES, MAX_SYSTEMD_SHOW_BYTES, error, parse_systemd_show,
+    LinuxOwnerReceipt, LinuxRecord, LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch,
+    LinuxSystemdObservation, LinuxUnitBinding, MAX_HTTP_RESPONSE_BYTES, MAX_SYSTEMD_SHOW_BYTES,
+    error, parse_systemd_show,
 };
 use super::systemd::canonical_launcher_exec;
 
@@ -171,6 +172,52 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             main_pid: before.main_pid,
             unit: unit.clone(),
         }))
+    }
+
+    /// Hold a proven candidate through its probation window.
+    ///
+    /// The service must keep the identity the proof just established, with
+    /// no change to its state, invocation or main process, for the whole
+    /// window; then the whole proof runs again, which is what catches a
+    /// daemon whose API hung while its watchdog kept pinging. A change ends
+    /// the window at once as a candidate failure, so the transaction rolls
+    /// back. An installer that dies mid-window leaves the journal at
+    /// `ProveCandidate` with the same receipt, and the next run holds the
+    /// candidate through a whole window again.
+    pub(super) fn hold_probation(
+        &mut self,
+        expected: &PlatformState,
+        record: &LinuxRecord,
+        candidate_receipt: Option<&LinuxOwnerReceipt>,
+        owner: &LinuxOwnerReceipt,
+    ) -> Result<(), InstallPlatformError> {
+        let window = self.config.probation;
+        let identity = LinuxServiceIdentity {
+            invocation_id: owner.invocation_id.clone(),
+            main_pid: owner.main_pid,
+        };
+        if let LinuxServiceWatch::Changed { after, observed } =
+            self.executor.watch_service(&identity, window)?
+        {
+            return Err(error(format!(
+                "candidate failed probation {:.1} s into its {} s window: the service went {observed}",
+                after.as_secs_f64(),
+                window.as_secs()
+            )));
+        }
+        self.prove_owner(
+            PlatformCheckpoint::CandidateRuntime,
+            expected,
+            record,
+            candidate_receipt,
+        )
+        .map_err(|source| {
+            error(format!(
+                "candidate failed the proof at the end of its {} s probation window: {source}",
+                window.as_secs()
+            ))
+        })
+        .map(drop)
     }
 
     pub(super) fn capture_stop_authority(

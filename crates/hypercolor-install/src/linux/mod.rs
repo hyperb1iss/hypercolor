@@ -35,7 +35,7 @@ use super::{InstallLock, InstallPlatformError, InstallStore, UnitId, UnitRecord}
 pub use adoption::{LinuxAdoption, LinuxAdoptionError};
 pub use command::{
     LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallHost, LinuxInstallRequest,
-    LinuxInstallRun, run_linux_install,
+    LinuxInstallRun, LinuxPlatformInputs, bind_linux_platform, run_linux_install,
 };
 pub use directory::LinuxPublicTree;
 pub use executor::{LinuxInstallExecutor, LinuxNativeExecutor, LinuxPublicEntry};
@@ -45,10 +45,11 @@ pub use locator::{
     LinuxManagedAuthority, elect_linux_installation, elect_linux_installation_with,
 };
 pub use model::{
-    LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,
-    LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse, LinuxInstallConfig, LinuxLayoutItem,
-    LinuxLayoutPublication, LinuxLegacyFile, LinuxLegacySnapshot, LinuxProcessExecutable,
-    LinuxServicePhase, LinuxSystemdObservation, parse_systemd_show,
+    DEFAULT_PROBATION_WINDOW, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem,
+    LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse,
+    LinuxInstallConfig, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile,
+    LinuxLegacySnapshot, LinuxProcessExecutable, LinuxServiceIdentity, LinuxServicePhase,
+    LinuxServiceWatch, LinuxSystemdObservation, MAX_PROBATION_WINDOW, parse_systemd_show,
 };
 pub use runtime::{LinuxRuntimeSettlement, LinuxSystemdConnection};
 pub use uninstall::{
@@ -111,6 +112,8 @@ pub struct LinuxInstallPlatform<E> {
     prior_unit: Option<prior::PriorUnitAuthority>,
     pub(super) last_inspection: Option<LinuxInspection>,
     pub(super) legacy_unit: Option<super::UnitId>,
+    /// The prior the last `ProvePrior` proof found running, until taken.
+    pub(super) restored: Option<super::RestoredRelease>,
 }
 
 impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
@@ -129,6 +132,12 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             .immutable_units_root
             .parent()
             .ok_or_else(|| model::error("Linux immutable units root has no parent"))?;
+        if config.probation > model::MAX_PROBATION_WINDOW {
+            return Err(model::error(format!(
+                "the probation window may be at most {} seconds",
+                model::MAX_PROBATION_WINDOW.as_secs()
+            )));
+        }
         if config.immutable_units_root.file_name() != Some(std::ffi::OsStr::new("units"))
             || config.active_root != units_parent.join("active")
             || config.immutable_units_root.components().any(|component| {
@@ -170,6 +179,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             prior_unit: None,
             last_inspection: None,
             legacy_unit,
+            restored: None,
         })
     }
 

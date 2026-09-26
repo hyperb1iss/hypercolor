@@ -10,7 +10,7 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::super::InstallPlatformError;
 use super::manager_bus::{ManagerBus, ManagerCallError};
-use super::model::error;
+use super::model::{LinuxServiceIdentity, LinuxServiceWatch, error};
 
 const SYSTEMD_PATH: &str = "/org/freedesktop/systemd1";
 const SYSTEMD_MANAGER: &str = "org.freedesktop.systemd1.Manager";
@@ -158,6 +158,20 @@ impl LinuxRuntimeManager {
         let connection = self.connection.clone();
         on_worker(move || run_settle(&connection))
     }
+
+    /// Hold the service to `expected` for `window`, returning at the first
+    /// change to its `ActiveState`, `SubState`, `InvocationID` or `MainPID`.
+    ///
+    /// The wait is event-driven: the service is read again only when the
+    /// manager signals a change to it, never on a timer.
+    pub(super) fn watch(
+        &self,
+        expected: LinuxServiceIdentity,
+        window: Duration,
+    ) -> Result<LinuxServiceWatch, InstallPlatformError> {
+        let connection = self.connection.clone();
+        on_worker(move || run_watch(&connection, &expected, window))
+    }
 }
 
 /// Run one manager conversation on its own thread and runtime, so callers
@@ -288,6 +302,78 @@ async fn settle_service(
     }
 }
 
+/// The service's runtime identity at one instant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ServiceIdentity {
+    pub(super) active_state: String,
+    pub(super) sub_state: String,
+    /// Lowercase hex, as `systemctl show` prints it.
+    pub(super) invocation_id: String,
+    pub(super) main_pid: u32,
+}
+
+impl ServiceIdentity {
+    fn holds(&self, expected: &LinuxServiceIdentity) -> bool {
+        self.active_state == "active"
+            && self.sub_state == "running"
+            && self.invocation_id == expected.invocation_id
+            && self.main_pid == expected.main_pid
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{}/{} under invocation {} with main pid {}",
+            self.active_state,
+            self.sub_state,
+            if self.invocation_id.is_empty() {
+                "none"
+            } else {
+                self.invocation_id.as_str()
+            },
+            self.main_pid
+        )
+    }
+}
+
+/// What a probation watch needs from the manager.
+trait WatchBoundary {
+    fn identity(&mut self) -> LocalBoxFuture<'_, Result<ServiceIdentity, InstallPlatformError>>;
+
+    /// Wait for the next change to the service. `Ok(false)` means the
+    /// deadline passed first.
+    fn changed(
+        &mut self,
+        deadline: tokio::time::Instant,
+    ) -> LocalBoxFuture<'_, Result<bool, InstallPlatformError>>;
+}
+
+/// Hold the service to `expected` until `window` passes or it changes.
+///
+/// Every signal about the service rereads its identity, so a change that
+/// leaves and returns between two reads (a restart) still shows as a new
+/// invocation. A change arriving between a read and the wait stays queued
+/// in the connection, so none is lost.
+async fn watch_service(
+    boundary: &mut impl WatchBoundary,
+    expected: &LinuxServiceIdentity,
+    window: Duration,
+) -> Result<LinuxServiceWatch, InstallPlatformError> {
+    let started = tokio::time::Instant::now();
+    let deadline = started + window;
+    loop {
+        let identity = boundary.identity().await?;
+        if !identity.holds(expected) {
+            return Ok(LinuxServiceWatch::Changed {
+                after: started.elapsed(),
+                observed: identity.describe(),
+            });
+        }
+        if !boundary.changed(deadline).await? {
+            return Ok(LinuxServiceWatch::Steady);
+        }
+    }
+}
+
 const UNIT_INTERFACE: &str = "org.freedesktop.systemd1.Unit";
 const SERVICE_INTERFACE: &str = "org.freedesktop.systemd1.Service";
 const JOB_INTERFACE: &str = "org.freedesktop.systemd1.Job";
@@ -311,29 +397,49 @@ impl SettleBoundary for BusSettleBoundary<'_> {
         &mut self,
         deadline: tokio::time::Instant,
     ) -> LocalBoxFuture<'_, Result<bool, InstallPlatformError>> {
-        async move {
-            let unit = self.unit.as_str().to_owned();
-            let next = async {
-                loop {
-                    let signal = self.bus.next_signal().await?;
-                    let unit_changed = signal.path.as_deref() == Some(unit.as_str())
-                        && signal.is_signal(PROPERTIES_INTERFACE, "PropertiesChanged");
-                    let job_removed = signal.path.as_deref() == Some(SYSTEMD_PATH)
-                        && signal.is_signal(SYSTEMD_MANAGER, "JobRemoved")
-                        && signal
-                            .body::<(u32, OwnedObjectPath, String, String)>()
-                            .is_ok_and(|(_, _, removed, _)| removed == SERVICE);
-                    if unit_changed || job_removed {
-                        return Ok::<(), InstallPlatformError>(());
-                    }
-                }
-            };
-            match tokio::time::timeout_at(deadline, next).await {
-                Err(_) => Ok(false),
-                Ok(result) => result.map(|()| true),
+        next_service_change(self.bus, &self.unit, deadline).boxed_local()
+    }
+}
+
+impl WatchBoundary for BusSettleBoundary<'_> {
+    fn identity(&mut self) -> LocalBoxFuture<'_, Result<ServiceIdentity, InstallPlatformError>> {
+        async move { read_identity(self.bus, &self.unit).await }.boxed_local()
+    }
+
+    fn changed(
+        &mut self,
+        deadline: tokio::time::Instant,
+    ) -> LocalBoxFuture<'_, Result<bool, InstallPlatformError>> {
+        next_service_change(self.bus, &self.unit, deadline).boxed_local()
+    }
+}
+
+/// Wait for a `PropertiesChanged` on the unit or a `JobRemoved` for the
+/// service. `Ok(false)` means `deadline` passed first.
+async fn next_service_change(
+    bus: &mut ManagerBus,
+    unit: &OwnedObjectPath,
+    deadline: tokio::time::Instant,
+) -> Result<bool, InstallPlatformError> {
+    let unit = unit.as_str().to_owned();
+    let next = async {
+        loop {
+            let signal = bus.next_signal().await?;
+            let unit_changed = signal.path.as_deref() == Some(unit.as_str())
+                && signal.is_signal(PROPERTIES_INTERFACE, "PropertiesChanged");
+            let job_removed = signal.path.as_deref() == Some(SYSTEMD_PATH)
+                && signal.is_signal(SYSTEMD_MANAGER, "JobRemoved")
+                && signal
+                    .body::<(u32, OwnedObjectPath, String, String)>()
+                    .is_ok_and(|(_, _, removed, _)| removed == SERVICE);
+            if unit_changed || job_removed {
+                return Ok::<(), InstallPlatformError>(());
             }
         }
-        .boxed_local()
+    };
+    match tokio::time::timeout_at(deadline, next).await {
+        Err(_) => Ok(false),
+        Ok(result) => result.map(|()| true),
     }
 }
 
@@ -366,6 +472,42 @@ fn run_settle(
             unit,
         };
         settle_service(&mut boundary).await
+    })
+}
+
+fn run_watch(
+    manager: &LinuxSystemdConnection,
+    expected: &LinuxServiceIdentity,
+    window: Duration,
+) -> Result<LinuxServiceWatch, InstallPlatformError> {
+    current_thread_runtime()?.block_on(async move {
+        // A direct manager connection receives every manager signal without
+        // `Subscribe` or a bus match, so the watch misses no change between
+        // its first read and its first wait.
+        let mut bus = connect_manager(manager).await?;
+        let unit = match within_method_deadline(bus.call::<_, OwnedObjectPath>(
+            SYSTEMD_PATH,
+            SYSTEMD_MANAGER,
+            "GetUnit",
+            &(SERVICE,),
+        ))
+        .await?
+        {
+            Ok(unit) => unit,
+            // An unloaded unit runs nothing, so the proven service is gone.
+            Err(ManagerCallError::Refused { name, .. }) if name == NO_SUCH_UNIT => {
+                return Ok(LinuxServiceWatch::Changed {
+                    after: Duration::ZERO,
+                    observed: "hypercolor.service is no longer loaded".to_owned(),
+                });
+            }
+            Err(refused) => return Err(refused.into_platform()),
+        };
+        let mut boundary = BusSettleBoundary {
+            bus: &mut bus,
+            unit,
+        };
+        watch_service(&mut boundary, expected, window).await
     })
 }
 
@@ -476,6 +618,22 @@ async fn read_snapshot(
         active_state,
         sub_state,
         job,
+    })
+}
+
+async fn read_identity(
+    bus: &mut ManagerBus,
+    unit: &OwnedObjectPath,
+) -> Result<ServiceIdentity, InstallPlatformError> {
+    let active_state = property::<String>(bus, unit, UNIT_INTERFACE, "ActiveState").await?;
+    let sub_state = property::<String>(bus, unit, UNIT_INTERFACE, "SubState").await?;
+    let invocation = property::<Vec<u8>>(bus, unit, UNIT_INTERFACE, "InvocationID").await?;
+    let main_pid = property::<u32>(bus, unit, SERVICE_INTERFACE, "MainPID").await?;
+    Ok(ServiceIdentity {
+        active_state,
+        sub_state,
+        invocation_id: hex::encode(invocation),
+        main_pid,
     })
 }
 
@@ -686,10 +844,10 @@ mod tests {
     use zbus::zvariant::OwnedObjectPath;
 
     use super::{
-        InstallPlatformError, LinuxRuntimeManager, LinuxRuntimeSettlement, LinuxSystemdConnection,
-        OwnedJob, RuntimeJobBoundary, RuntimeJobOutcome, SERVICE, ServiceDeadlines,
-        ServiceSnapshot, SettleBoundary, fence_owned_job, owned_job, removed_job_result,
-        settle_service,
+        InstallPlatformError, LinuxRuntimeManager, LinuxRuntimeSettlement, LinuxServiceIdentity,
+        LinuxServiceWatch, LinuxSystemdConnection, OwnedJob, RuntimeJobBoundary, RuntimeJobOutcome,
+        SERVICE, ServiceDeadlines, ServiceIdentity, ServiceSnapshot, SettleBoundary, WatchBoundary,
+        fence_owned_job, owned_job, removed_job_result, settle_service, watch_service,
     };
 
     /// A runtime directory shaped like a user manager's: private, with a
@@ -804,6 +962,11 @@ mod tests {
         /// The manager has garbage-collected the unit between `LoadUnit`
         /// and `ResetFailedUnit`, as a fresh install sees it.
         unloaded_for_reset: bool,
+        invocation: Vec<u8>,
+        main_pid: u32,
+        /// The daemon crashes this long after a client connects, and
+        /// `Restart=on-failure` brings it back under a new invocation.
+        restart_after: Option<std::time::Duration>,
     }
 
     #[derive(Debug, zbus::DBusError)]
@@ -934,6 +1097,15 @@ mod tests {
             self.service.lock().expect("fake service").sub_state.clone()
         }
 
+        #[zbus(property, name = "InvocationID")]
+        fn invocation_id(&self) -> Vec<u8> {
+            self.service
+                .lock()
+                .expect("fake service")
+                .invocation
+                .clone()
+        }
+
         #[zbus(property)]
         fn job(&self) -> (u32, OwnedObjectPath) {
             let service = self.service.lock().expect("fake service");
@@ -961,6 +1133,11 @@ mod tests {
         #[zbus(property, name = "TimeoutStopUSec")]
         fn timeout_stop_usec(&self) -> u64 {
             self.service.lock().expect("fake service").timeout_stop_usec
+        }
+
+        #[zbus(property, name = "MainPID")]
+        fn main_pid(&self) -> u32 {
+            self.service.lock().expect("fake service").main_pid
         }
     }
 
@@ -1086,12 +1263,48 @@ mod tests {
                                 .expect("announce job");
                         }
                     };
+                    let restarter = {
+                        let connection = connection.clone();
+                        let service = std::sync::Arc::clone(&service);
+                        async move {
+                            let delay = service.lock().expect("fake service").restart_after;
+                            let Some(delay) = delay else {
+                                return;
+                            };
+                            tokio::time::sleep(delay).await;
+                            {
+                                let mut service = service.lock().expect("fake service");
+                                service.invocation.iter_mut().for_each(|byte| *byte ^= 0xff);
+                                service.main_pid += 1;
+                            }
+                            // Announce the change by invalidating the
+                            // property, which the watch must read again.
+                            connection
+                                .emit_signal(
+                                    None::<&str>,
+                                    UNIT_PATH,
+                                    "org.freedesktop.DBus.Properties",
+                                    "PropertiesChanged",
+                                    &(
+                                        "org.freedesktop.systemd1.Unit",
+                                        std::collections::HashMap::<
+                                            &str,
+                                            zbus::zvariant::Value<'_>,
+                                        >::new(),
+                                        vec!["InvocationID"],
+                                    ),
+                                )
+                                .await
+                                .expect("announce the new invocation");
+                        }
+                    };
                     // Keep serving until the client hangs up.
                     let mut messages = zbus::MessageStream::from(&connection);
                     let serve = async { while messages.next().await.is_some() {} };
                     tokio::select! {
                         () = serve => {}
                         () = async { finisher.await; std::future::pending::<()>().await } => {}
+                        () = async { restarter.await; std::future::pending::<()>().await } => {}
                     }
                 }
             });
@@ -1107,6 +1320,9 @@ mod tests {
             timeout_stop_usec: 90_000_000,
             calls: Vec::new(),
             unloaded_for_reset: false,
+            invocation: vec![0x11; 16],
+            main_pid: 4242,
+            restart_after: None,
         }))
     }
 
@@ -1518,5 +1734,166 @@ mod tests {
             snapshot("activating", "auto-restart", None),
         ]);
         assert_eq!(settled, LinuxRuntimeSettlement::Unsettled);
+    }
+
+    const WINDOW: std::time::Duration = std::time::Duration::from_millis(300);
+    const LATE: std::time::Duration = std::time::Duration::from_millis(267);
+
+    fn proven() -> LinuxServiceIdentity {
+        LinuxServiceIdentity {
+            invocation_id: "11".repeat(16),
+            main_pid: 4242,
+        }
+    }
+
+    fn identity(active: &str, sub: &str, invocation: &str, pid: u32) -> ServiceIdentity {
+        ServiceIdentity {
+            active_state: active.to_owned(),
+            sub_state: sub.to_owned(),
+            invocation_id: invocation.to_owned(),
+            main_pid: pid,
+        }
+    }
+
+    /// Identities to read in order, and when the manager signals a change.
+    struct ScriptedWatch {
+        identities: VecDeque<ServiceIdentity>,
+        changes: VecDeque<std::time::Duration>,
+        started: tokio::time::Instant,
+    }
+
+    impl WatchBoundary for ScriptedWatch {
+        fn identity(
+            &mut self,
+        ) -> futures_util::future::LocalBoxFuture<'_, Result<ServiceIdentity, InstallPlatformError>>
+        {
+            let identity = self.identities.pop_front().expect("scripted identity");
+            async move { Ok(identity) }.boxed_local()
+        }
+
+        fn changed(
+            &mut self,
+            deadline: tokio::time::Instant,
+        ) -> futures_util::future::LocalBoxFuture<'_, Result<bool, InstallPlatformError>> {
+            let change = self.changes.pop_front().map(|offset| self.started + offset);
+            async move {
+                match change {
+                    Some(at) if at < deadline => {
+                        tokio::time::sleep_until(at).await;
+                        Ok(true)
+                    }
+                    _ => {
+                        tokio::time::sleep_until(deadline).await;
+                        Ok(false)
+                    }
+                }
+            }
+            .boxed_local()
+        }
+    }
+
+    fn watch(
+        identities: Vec<ServiceIdentity>,
+        changes: Vec<std::time::Duration>,
+    ) -> (LinuxServiceWatch, std::time::Duration) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let mut boundary = ScriptedWatch {
+                identities: identities.into(),
+                changes: changes.into(),
+                started: tokio::time::Instant::now(),
+            };
+            let started = std::time::Instant::now();
+            let outcome = watch_service(&mut boundary, &proven(), WINDOW)
+                .await
+                .expect("watch");
+            (outcome, started.elapsed())
+        })
+    }
+
+    #[test]
+    fn a_steady_service_holds_for_the_whole_window() {
+        let running = identity("active", "running", &"11".repeat(16), 4242);
+        let (outcome, elapsed) = watch(vec![running], Vec::new());
+        assert_eq!(outcome, LinuxServiceWatch::Steady);
+        assert!(elapsed >= WINDOW, "returned after {elapsed:?}");
+    }
+
+    #[test]
+    fn a_restart_late_in_the_window_ends_it_at_once() {
+        let running = identity("active", "running", &"11".repeat(16), 4242);
+        let restarted = identity("active", "running", &"ee".repeat(16), 4243);
+        let (outcome, elapsed) = watch(vec![running, restarted], vec![LATE]);
+        let LinuxServiceWatch::Changed { after, observed } = outcome else {
+            panic!("a restart must end the window: {outcome:?}");
+        };
+        assert!(after >= LATE && after < WINDOW, "changed after {after:?}");
+        assert!(elapsed < WINDOW, "the watch returned after {elapsed:?}");
+        assert!(observed.contains(&"ee".repeat(16)), "{observed}");
+    }
+
+    #[test]
+    fn a_signal_that_leaves_the_identity_unchanged_keeps_watching() {
+        let running = identity("active", "running", &"11".repeat(16), 4242);
+        let (outcome, elapsed) = watch(
+            vec![running.clone(), running],
+            vec![std::time::Duration::from_millis(100)],
+        );
+        assert_eq!(outcome, LinuxServiceWatch::Steady);
+        assert!(elapsed >= WINDOW, "returned after {elapsed:?}");
+    }
+
+    #[test]
+    fn a_service_that_already_changed_fails_the_window_before_it_starts() {
+        for changed in [
+            identity("activating", "auto-restart", "", 0),
+            identity("failed", "failed", &"11".repeat(16), 0),
+            identity("active", "running", &"11".repeat(16), 9999),
+        ] {
+            let (outcome, elapsed) = watch(vec![changed.clone()], Vec::new());
+            assert!(
+                matches!(outcome, LinuxServiceWatch::Changed { after, .. } if after < WINDOW),
+                "{changed:?}: {outcome:?}"
+            );
+            assert!(elapsed < WINDOW);
+        }
+    }
+
+    #[test]
+    fn probation_watches_the_real_identity_over_the_private_socket() {
+        for restart_after in [None, Some(LATE)] {
+            let (fixture, uid) = runtime_fixture();
+            let listener =
+                UnixListener::bind(fixture.path().join("systemd/private")).expect("private socket");
+            let service = fake_service("active", "running");
+            service.lock().expect("fake service").restart_after = restart_after;
+            let server = serve_fake_manager(listener, std::sync::Arc::clone(&service), 1);
+            let manager = LinuxRuntimeManager::new(
+                LinuxSystemdConnection::from_runtime_directory(fixture.path(), uid)
+                    .expect("private manager coordinate"),
+            );
+            let started = std::time::Instant::now();
+            let outcome = manager.watch(proven(), WINDOW).expect("watch");
+            let elapsed = started.elapsed();
+            server.join().expect("fake manager thread");
+            if restart_after.is_none() {
+                assert_eq!(outcome, LinuxServiceWatch::Steady);
+                assert!(elapsed >= WINDOW, "returned after {elapsed:?}");
+            } else {
+                assert!(
+                    matches!(outcome, LinuxServiceWatch::Changed { .. }),
+                    "{outcome:?}"
+                );
+                assert!(elapsed < WINDOW, "returned after {elapsed:?}");
+            }
+            assert_eq!(
+                service.lock().expect("fake service").calls,
+                [("GetUnit".to_owned(), String::new())],
+                "the watch only reads; it never starts, stops or reloads"
+            );
+        }
     }
 }

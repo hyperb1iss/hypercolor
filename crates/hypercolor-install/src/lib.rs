@@ -25,18 +25,19 @@ pub use coordinator::{
 };
 #[cfg(unix)]
 pub use linux::{
-    InstallLocationError, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxAdoption,
-    LinuxAdoptionError, LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry,
+    DEFAULT_PROBATION_WINDOW, InstallLocationError, LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS,
+    LinuxAdoption, LinuxAdoptionError, LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry,
     LinuxFilePublication, LinuxHttpResponse, LinuxInstallAuthority, LinuxInstallCheckpoint,
     LinuxInstallCommandError, LinuxInstallConfig, LinuxInstallElection, LinuxInstallExecutor,
     LinuxInstallHost, LinuxInstallLocation, LinuxInstallLocator, LinuxInstallPlatform,
     LinuxInstallRequest, LinuxInstallRun, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile,
     LinuxLegacySnapshot, LinuxLocatorError, LinuxManagedAuthority, LinuxNativeExecutor,
-    LinuxProcessExecutable, LinuxPublicEntry, LinuxPublicTree, LinuxRuntimeSettlement,
-    LinuxServicePhase, LinuxSystemdConnection, LinuxSystemdObservation, LinuxUninstallCheckpoint,
-    LinuxUninstallHost, LinuxUninstallRun, RetainedLinuxInstallLocation, bind_linux_retained_unit,
-    elect_linux_installation, elect_linux_installation_with, parse_systemd_show, retain_linux_unit,
-    run_linux_install, run_linux_uninstall,
+    LinuxPlatformInputs, LinuxProcessExecutable, LinuxPublicEntry, LinuxPublicTree,
+    LinuxRuntimeSettlement, LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch,
+    LinuxSystemdConnection, LinuxSystemdObservation, LinuxUninstallCheckpoint, LinuxUninstallHost,
+    LinuxUninstallRun, MAX_PROBATION_WINDOW, RetainedLinuxInstallLocation, bind_linux_platform,
+    bind_linux_retained_unit, elect_linux_installation, elect_linux_installation_with,
+    parse_systemd_show, retain_linux_unit, run_linux_install, run_linux_uninstall,
 };
 pub use model::{
     INSTALL_JOURNAL_SCHEMA_VERSION, InstallAction, InstallDisposition, InstallJournalV1,
@@ -44,8 +45,8 @@ pub use model::{
     InstallationState, MAX_INSTALL_JOURNAL_BYTES, MAX_LINUX_TRANSACTION_RECORD_BYTES,
     MAX_MANAGED_INSTALL_JOURNAL_BYTES, MAX_PLATFORM_OWNER_RECEIPT_BYTES,
     MAX_PLATFORM_TRANSACTION_RECORD_BYTES, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
-    PlatformTransactionRecord, PlatformTransitionStates, PreparedPlatformTransaction, UnitId,
-    UnitRecord,
+    PlatformTransactionRecord, PlatformTransitionStates, PreparedPlatformTransaction,
+    RestoredRelease, UnitId, UnitRecord,
 };
 #[cfg(unix)]
 pub use ownership::{

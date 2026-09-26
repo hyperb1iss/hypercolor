@@ -15,6 +15,9 @@ use crate::install::{
 };
 
 pub(super) fn execute(args: &InstallReleaseArgs) -> Result<()> {
+    // The launchd platform holds no probation window yet; the flag governs
+    // Linux installs only.
+    let _ = args.probation_seconds;
     let home = macos_home()?;
     require_bounded_absolute(&home, "HOME")?;
     let topology = MacosInstallTopology::new(&args.install_prefix, &args.install_dir, &home)?;

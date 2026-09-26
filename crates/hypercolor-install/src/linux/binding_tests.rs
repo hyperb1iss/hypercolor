@@ -71,6 +71,7 @@ fn native_command_constructor_binds_initial_and_recorded_prior_exactly_once() {
             executor,
             durable_record,
             Some(&original),
+            std::time::Duration::ZERO,
         )
         .expect("single native prior binding");
         drop(platform);

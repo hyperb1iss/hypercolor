@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use hypercolor_cli::install::{
     InstallAction, InstallCoordinator, InstallDisposition, InstallPlatform, InstallRequest,
@@ -11,9 +12,10 @@ use hypercolor_cli::install::{
     LINUX_DIRECTORY_ITEMS, LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState,
     LinuxExactEntry, LinuxFilePublication, LinuxHttpResponse, LinuxInstallConfig,
     LinuxInstallExecutor, LinuxInstallPlatform, LinuxLayoutItem, LinuxLayoutPublication,
-    LinuxLegacyFile, LinuxProcessExecutable, LinuxPublicTree, LinuxServicePhase,
-    PlatformCheckpoint, PlatformOwnerReceipt, PlatformState, PlatformTransactionRecord, UnitId,
-    bind_linux_retained_unit, parse_systemd_show, retain_linux_unit, stage_release_payload,
+    LinuxLegacyFile, LinuxProcessExecutable, LinuxPublicTree, LinuxServiceIdentity,
+    LinuxServicePhase, LinuxServiceWatch, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
+    PlatformTransactionRecord, UnitId, bind_linux_retained_unit, parse_systemd_show,
+    retain_linux_unit, stage_release_payload,
 };
 use hypercolor_platform_fs::ExclusiveDirectory;
 use serde_json::json;
@@ -57,6 +59,15 @@ struct FakeExecutor {
     layout_drift: Option<(LinuxLayoutItem, usize, LinuxExactEntry)>,
     fault: Option<(String, FaultPoint)>,
     secondary_fault: Option<(String, FaultPoint)>,
+    /// Every probation window the platform held a service through.
+    watches: Vec<(LinuxServiceIdentity, Duration)>,
+    /// The daemon dies this long into its probation window, and
+    /// `Restart=on-failure` brings it back under a new invocation.
+    probation_restart_at: Option<Duration>,
+    /// The daemon's API stops answering during probation while the
+    /// service itself stays up, as a hung daemon whose watchdog still pings.
+    http_hangs_in_probation: bool,
+    http_hung: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +134,10 @@ impl FakeExecutor {
             layout_drift: None,
             fault: None,
             secondary_fault: None,
+            watches: Vec::new(),
+            probation_restart_at: None,
+            http_hangs_in_probation: false,
+            http_hung: false,
         }
     }
 
@@ -460,8 +475,42 @@ impl LinuxInstallExecutor for FakeExecutor {
         } else {
             self.systemd.pid = 0;
             self.systemd.invocation.clear();
+            self.http_hung = false;
         }
         Self::finish_effect(fail_after)
+    }
+
+    fn watch_service(
+        &mut self,
+        expected: &LinuxServiceIdentity,
+        window: Duration,
+    ) -> Result<LinuxServiceWatch, hypercolor_cli::install::InstallPlatformError> {
+        self.watches.push((expected.clone(), window));
+        let current = LinuxServiceIdentity {
+            invocation_id: self.systemd.invocation.clone(),
+            main_pid: self.systemd.pid,
+        };
+        if !self.systemd.active || &current != expected {
+            return Ok(LinuxServiceWatch::Changed {
+                after: Duration::ZERO,
+                observed: "another service identity".to_owned(),
+            });
+        }
+        if let Some(after) = self
+            .probation_restart_at
+            .take()
+            .filter(|after| *after < window)
+        {
+            self.invocation += 1;
+            self.systemd.pid = 4000 + self.invocation;
+            self.systemd.invocation = format!("{:032x}", self.invocation);
+            return Ok(LinuxServiceWatch::Changed {
+                after,
+                observed: "active/running under a new invocation".to_owned(),
+            });
+        }
+        self.http_hung = self.http_hangs_in_probation;
+        Ok(LinuxServiceWatch::Steady)
     }
 
     fn process_executable(
@@ -538,6 +587,11 @@ impl LinuxInstallExecutor for FakeExecutor {
         max_bytes: usize,
     ) -> Result<LinuxHttpResponse, hypercolor_cli::install::InstallPlatformError> {
         self.http_calls += 1;
+        if self.http_hung {
+            return Err(hypercolor_cli::install::InstallPlatformError::new(
+                "HTTP owner proof timed out",
+            ));
+        }
         let version = self
             .active()
             .and_then(|unit| self.versions.get(unit.as_str()))
@@ -1189,6 +1243,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         direct_fragment_path: fragment.clone(),
         immutable_units_root: old.root().join("units"),
         active_root: old.active_path(),
+        probation: Duration::ZERO,
     };
     let mut executor = FakeExecutor::absent(old.active_path(), sha256(b"daemon"));
     executor.expected_topology = Some(old_config.clone());
@@ -1229,6 +1284,7 @@ fn cold_managed_adoption(journal_written: bool, rollback: bool) {
         direct_fragment_path: fragment,
         immutable_units_root: adoption.store().root().join("units"),
         active_root: adoption.store().active_path(),
+        probation: Duration::ZERO,
     };
     executor.active_path = adoption.store().active_path();
     executor.expected_topology = Some(new_config.clone());
@@ -2133,6 +2189,7 @@ fn byte_identical_unit_from_a_split_root_is_rejected_before_inspection() {
         direct_fragment_path: FRAGMENT.to_owned(),
         immutable_units_root: PathBuf::from("/tmp/foreign/units"),
         active_root: PathBuf::from("/tmp/foreign/active"),
+        probation: Duration::ZERO,
     };
     let Err(error) = LinuxInstallPlatform::new(executor, split_config, []) else {
         panic!("split config topology must fail before inspection");
@@ -2147,6 +2204,7 @@ fn systemd_unsafe_or_lossy_install_roots_are_rejected_before_inspection() {
             direct_fragment_path: FRAGMENT.to_owned(),
             immutable_units_root: PathBuf::from(root).join("units"),
             active_root: PathBuf::from(root).join("active"),
+            probation: Duration::ZERO,
         };
         let executor = FakeExecutor::absent(PathBuf::from(root).join("active"), "00".repeat(32));
         let error = LinuxInstallPlatform::new(executor, config, [])
@@ -2166,6 +2224,7 @@ fn systemd_unsafe_or_lossy_install_roots_are_rejected_before_inspection() {
             direct_fragment_path: FRAGMENT.to_owned(),
             immutable_units_root: parent.join("units"),
             active_root: parent.join("active"),
+            probation: Duration::ZERO,
         };
         let executor = FakeExecutor::absent(config.active_root.clone(), "00".repeat(32));
         let error = LinuxInstallPlatform::new(executor, config, [])
@@ -2483,10 +2542,15 @@ impl Fixture {
 }
 
 fn config() -> LinuxInstallConfig {
+    config_with_probation(Duration::ZERO)
+}
+
+fn config_with_probation(probation: Duration) -> LinuxInstallConfig {
     LinuxInstallConfig {
         direct_fragment_path: FRAGMENT.to_owned(),
         immutable_units_root: PathBuf::from(UNITS_ROOT),
         active_root: PathBuf::from(ACTIVE_ROOT),
+        probation,
     }
 }
 
@@ -2673,4 +2737,212 @@ fn exact_entries_match(left: &LinuxExactEntry, right: &LinuxExactEntry) -> bool 
         ) => left_mode == right_mode && left_digest == right_digest,
         _ => false,
     }
+}
+
+/// A committed first install, and a platform ready to upgrade it to a
+/// second release with `probation`. Returns the fixture (now naming the
+/// upgrade as its candidate), the platform, its lock and the prior unit.
+fn running_upgrade(
+    probation: Duration,
+    configure: impl FnOnce(&mut FakeExecutor),
+) -> (
+    Fixture,
+    LinuxInstallPlatform<FakeExecutor>,
+    hypercolor_cli::install::InstallLock,
+    UnitId,
+) {
+    let mut fixture = Fixture::new();
+    let executor = FakeExecutor::absent(fixture.store.active_path(), fixture.daemon_digest.clone());
+    let mut first =
+        LinuxInstallPlatform::new(executor, config(), []).expect("first Linux platform");
+    let mut first_lock = fixture.store.acquire_lock().expect("first lock");
+    InstallCoordinator::new(&fixture.store, &mut first)
+        .install_with_lock(
+            fixture.request(InstallTargetPolicy::EnableOnFirstInstall),
+            &mut first_lock,
+        )
+        .expect("first install");
+    drop(first_lock);
+
+    let upgrade = fixture.stage_upgrade();
+    let mut executor = first.into_executor();
+    executor.effects.clear();
+    executor.http_calls = 0;
+    executor.daemon_digests.insert(
+        fixture.candidate.id().as_str().to_owned(),
+        fixture.daemon_digest.clone(),
+    );
+    executor
+        .daemon_digests
+        .insert(upgrade.id().as_str().to_owned(), sha256(b"daemon-upgrade"));
+    executor.versions.insert(
+        fixture.candidate.id().as_str().to_owned(),
+        VERSION.to_owned(),
+    );
+    executor
+        .versions
+        .insert(upgrade.id().as_str().to_owned(), UPGRADE_VERSION.to_owned());
+    executor.expected_topology = Some(config_with_probation(probation));
+    configure(&mut executor);
+    let prior = fixture.candidate.id().clone();
+    fixture.candidate = upgrade.clone();
+    let lock = fixture.store.acquire_lock().expect("upgrade lock");
+    let rebound = retain_linux_unit(&fixture.store, &lock, &prior).expect("prior rebind");
+    let platform = LinuxInstallPlatform::new(
+        executor,
+        config_with_probation(probation),
+        [rebound, upgrade],
+    )
+    .expect("upgrade Linux platform");
+    (fixture, platform, lock, prior)
+}
+
+fn upgrade_outcome(
+    fixture: &Fixture,
+    platform: &mut LinuxInstallPlatform<FakeExecutor>,
+    lock: &mut hypercolor_cli::install::InstallLock,
+) -> hypercolor_cli::install::InstallOutcome {
+    InstallCoordinator::new(&fixture.store, platform)
+        .install_with_lock(
+            fixture.request_for(
+                fixture.candidate.clone(),
+                InstallTargetPolicy::Preserve,
+                "probation",
+            ),
+            lock,
+        )
+        .expect("upgrade settles")
+}
+
+#[test]
+fn probation_holds_the_proven_candidate_for_its_window_then_proves_it_again() {
+    let window = Duration::from_secs(90);
+    let (fixture, mut platform, mut lock, _) = running_upgrade(window, |_| {});
+    let outcome = upgrade_outcome(&fixture, &mut platform, &mut lock);
+    assert!(
+        matches!(
+            outcome,
+            hypercolor_cli::install::InstallOutcome::Committed { .. }
+        ),
+        "{outcome:?}"
+    );
+    let executor = platform.into_executor();
+    assert_eq!(
+        executor.watches,
+        [(
+            LinuxServiceIdentity {
+                invocation_id: executor.systemd.invocation.clone(),
+                main_pid: executor.systemd.pid,
+            },
+            window
+        )],
+        "one window, over exactly the identity the first proof established"
+    );
+    // The prior's baseline proof, the candidate's proof, and the whole proof
+    // again at the end of the window.
+    assert_eq!(executor.http_calls, 6);
+}
+
+#[test]
+fn a_candidate_that_restarts_one_second_before_probation_ends_rolls_back() {
+    let (fixture, mut platform, mut lock, prior) =
+        running_upgrade(Duration::from_secs(90), |executor| {
+            executor.probation_restart_at = Some(Duration::from_secs(89));
+        });
+    let outcome = upgrade_outcome(&fixture, &mut platform, &mut lock);
+    let hypercolor_cli::install::InstallOutcome::RolledBack {
+        active_unit,
+        failure,
+        abandoned,
+        restored,
+    } = outcome
+    else {
+        panic!("expected a rollback: {outcome:?}");
+    };
+    assert!(!abandoned);
+    assert_eq!(active_unit.as_ref(), Some(&prior));
+    assert!(
+        failure.contains("probation 89.0 s into its 90 s window"),
+        "{failure}"
+    );
+    let executor = platform.into_executor();
+    assert!(executor.systemd.active, "the prior runs again");
+    let restored = restored.expect("the rollback names the release it restored");
+    assert_eq!(
+        restored,
+        hypercolor_cli::install::RestoredRelease {
+            unit: prior,
+            version: VERSION.to_owned(),
+            instance: executor.systemd.invocation.clone(),
+            process_id: executor.systemd.pid,
+            executable_sha256: fixture.daemon_digest.clone(),
+        },
+        "the restored release is the running prior, exactly as systemd shows it"
+    );
+}
+
+#[test]
+fn a_change_after_the_probation_window_does_not_roll_back() {
+    let (fixture, mut platform, mut lock, _) =
+        running_upgrade(Duration::from_secs(90), |executor| {
+            executor.probation_restart_at = Some(Duration::from_secs(91));
+        });
+    let outcome = upgrade_outcome(&fixture, &mut platform, &mut lock);
+    assert!(
+        matches!(
+            outcome,
+            hypercolor_cli::install::InstallOutcome::Committed { .. }
+        ),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn a_candidate_whose_api_hangs_during_probation_rolls_back() {
+    // The watchdog is pinged from its own task, so a hung API keeps the
+    // service active; only the proof at the end of the window sees it.
+    let (fixture, mut platform, mut lock, prior) =
+        running_upgrade(Duration::from_secs(90), |executor| {
+            executor.http_hangs_in_probation = true;
+        });
+    let outcome = upgrade_outcome(&fixture, &mut platform, &mut lock);
+    let hypercolor_cli::install::InstallOutcome::RolledBack {
+        failure, restored, ..
+    } = outcome
+    else {
+        panic!("expected a rollback: {outcome:?}");
+    };
+    assert!(
+        failure.contains("at the end of its 90 s probation window"),
+        "{failure}"
+    );
+    assert_eq!(restored.map(|release| release.unit), Some(prior));
+}
+
+#[test]
+fn zero_probation_commits_after_the_first_proof_and_the_bound_is_enforced() {
+    let (fixture, mut platform, mut lock, _) = running_upgrade(Duration::ZERO, |_| {});
+    let outcome = upgrade_outcome(&fixture, &mut platform, &mut lock);
+    assert!(matches!(
+        outcome,
+        hypercolor_cli::install::InstallOutcome::Committed { .. }
+    ));
+    let executor = platform.into_executor();
+    assert!(executor.watches.is_empty());
+    assert_eq!(executor.http_calls, 4);
+
+    let executor = FakeExecutor::absent(PathBuf::from(ACTIVE_ROOT), "00".repeat(32));
+    let refused = LinuxInstallPlatform::new(
+        executor,
+        config_with_probation(
+            hypercolor_cli::install::MAX_PROBATION_WINDOW + Duration::from_secs(1),
+        ),
+        [],
+    )
+    .err()
+    .expect("a window past the bound is refused");
+    assert!(
+        refused.to_string().contains("probation window"),
+        "{refused}"
+    );
 }

@@ -16,7 +16,9 @@ use super::super::{
     InstallLock, InstallOutcome, InstallPlatformError, InstallStore, MAX_INSTALL_JOURNAL_BYTES,
     MAX_MANAGED_INSTALL_JOURNAL_BYTES, OwnershipPolicy,
 };
-use super::command::{LinuxInstallCommandError, PlatformInputs, pending, platform_with, recover};
+use super::command::{
+    LinuxInstallCommandError, LinuxPlatformInputs, bind_linux_platform, pending, recover,
+};
 use super::model::{
     LINUX_LAYOUT_ITEMS, LinuxExactEntry, LinuxLayoutItem, LinuxServicePhase, MAX_LAUNCHER_BYTES,
     MAX_SYSTEMD_SHOW_BYTES, parse_systemd_show,
@@ -321,16 +323,19 @@ fn settle<H: LinuxUninstallHost>(
     let journal = store
         .load_journal(lock)?
         .ok_or(LinuxInstallCommandError::MissingJournal)?;
-    let mut platform = platform_with(
+    let mut platform = bind_linux_platform(
         home,
         |store, lock, tree| host.executor(store, lock, tree),
         store,
         lock,
-        PlatformInputs {
+        LinuxPlatformInputs {
             candidate: None,
             journal: Some(&journal),
             managed,
             original: None,
+            // Removal follows, but a transaction settled here must still
+            // meet the rule every other run applies before it commits.
+            probation: super::DEFAULT_PROBATION_WINDOW,
         },
     )?;
     Ok(recover(store, lock, &mut platform)?.outcome)

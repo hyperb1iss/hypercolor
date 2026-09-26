@@ -6,6 +6,7 @@ use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use hypercolor_platform_fs::{
     DirectoryAuthority, DirectoryEntryKind, EntryReplacement, ExactEntry, PublicDirectoryAuthority,
@@ -23,7 +24,8 @@ use super::legacy_validation::{
 use super::model::{
     LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
     LinuxHttpResponse, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacySnapshot,
-    LinuxProcessExecutable, LinuxServicePhase, MAX_SYSTEMD_SHOW_BYTES, error, parse_systemd_show,
+    LinuxProcessExecutable, LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch,
+    MAX_SYSTEMD_SHOW_BYTES, error, parse_systemd_show,
 };
 use super::runtime::{
     LinuxRuntimeManager, LinuxRuntimeSettlement, LinuxSystemdConnection, RuntimeJobOutcome,
@@ -109,6 +111,15 @@ pub trait LinuxInstallExecutor {
     /// Start or stop the service, fenced at the unit's own start or stop
     /// timeout. Starting resets a failed service first.
     fn set_runtime(&mut self, running: bool) -> Result<(), InstallPlatformError>;
+    /// Hold `hypercolor.service` to `expected` for `window`, returning at
+    /// the first change to its `ActiveState`, `SubState`, `InvocationID` or
+    /// `MainPID`. The wait follows the manager's change signals; it never
+    /// polls the service or its HTTP API.
+    fn watch_service(
+        &mut self,
+        expected: &LinuxServiceIdentity,
+        window: Duration,
+    ) -> Result<LinuxServiceWatch, InstallPlatformError>;
     fn process_executable(
         &mut self,
         pid: u32,
@@ -413,6 +424,14 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
         } else {
             Err(error("systemd runtime job reached the wrong stable state"))
         }
+    }
+
+    fn watch_service(
+        &mut self,
+        expected: &LinuxServiceIdentity,
+        window: Duration,
+    ) -> Result<LinuxServiceWatch, InstallPlatformError> {
+        self.runtime_manager.watch(expected.clone(), window)
     }
 
     fn process_executable(

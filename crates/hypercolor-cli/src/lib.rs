@@ -246,6 +246,16 @@ pub struct InstallReleaseArgs {
 
     #[arg(long)]
     validate_only: bool,
+
+    /// Seconds a started release must stay up, unchanged, before the
+    /// install commits it; 0 commits right after the first health proof.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = install::DEFAULT_PROBATION_WINDOW.as_secs(),
+        value_parser = install_command::parse_probation_seconds
+    )]
+    probation_seconds: u64,
 }
 
 #[cfg(unix)]

@@ -1,7 +1,7 @@
 use super::model::{
     InstallAction, InstallDisposition, InstallJournalV1, InstallModelError, InstallOutcome,
     InstallRequest, InstallationState, PlatformCheckpoint, PlatformOwnerReceipt, PlatformState,
-    PlatformTransactionRecord, PreparedPlatformTransaction, UnitId, UnitRecord,
+    PlatformTransactionRecord, PreparedPlatformTransaction, RestoredRelease, UnitId, UnitRecord,
 };
 use super::store::{InstallLock, InstallStore, InstallStoreError};
 
@@ -170,6 +170,15 @@ pub trait InstallPlatform {
     ) -> Result<bool, InstallPlatformError> {
         let _ = (prior, record, restarted);
         Ok(false)
+    }
+
+    /// The release the last successful `ProvePrior` proof found running,
+    /// taken so each proof is reported once.
+    ///
+    /// The coordinator reports it in [`InstallOutcome::RolledBack`]. The
+    /// default names none.
+    fn take_restored_release(&mut self) -> Option<RestoredRelease> {
+        None
     }
 }
 
@@ -348,6 +357,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                 active_unit: journal.prior_active_unit,
                 failure: journal.failure.unwrap_or_default(),
                 abandoned: journal.abandoned,
+                restored: None,
             }),
         }
     }
@@ -547,6 +557,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
             active_unit: journal.prior_active_unit,
             failure: journal.failure.unwrap_or_default(),
             abandoned: true,
+            restored: None,
         })
     }
 
@@ -555,6 +566,10 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
         mut journal: InstallJournalV1,
         lock: &super::store::InstallLock,
     ) -> Result<InstallOutcome, InstallCoordinatorError> {
+        // Drop any proof an earlier step of this run left, so only this
+        // rollback's own ProvePrior can name the restored release.
+        let _ = self.platform.take_restored_release();
+        let mut restored = None;
         loop {
             let action = journal
                 .next_action
@@ -566,6 +581,7 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
                     active_unit: journal.prior_active_unit,
                     failure: journal.failure.unwrap_or_default(),
                     abandoned: false,
+                    restored,
                 });
             }
 
@@ -591,6 +607,12 @@ impl<'a, P: InstallPlatform> InstallCoordinator<'a, P> {
 
             match self.reconcile_action(&journal, action, lock) {
                 Ok(()) => {
+                    if action == InstallAction::ProvePrior {
+                        // Only the prior this journal restores counts.
+                        restored = self.platform.take_restored_release().filter(|release| {
+                            journal.prior_platform.running_unit.as_ref() == Some(&release.unit)
+                        });
+                    }
                     journal.advance(InstallDisposition::Rollback, Some(next_rollback(action)?))?;
                     self.store.write_journal(&journal, lock)?;
                 }

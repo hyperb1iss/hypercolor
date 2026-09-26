@@ -790,7 +790,33 @@ pub enum InstallOutcome {
         /// The transaction ended before it changed anything (see
         /// [`InstallJournalV1::abandoned`]).
         abandoned: bool,
+        /// The release this run proved running again at `ProvePrior`.
+        ///
+        /// `None` when the rollback restored no running service, when it
+        /// was proven by an earlier run (the journal was already settled or
+        /// past `ProvePrior` when this run began), or on a platform that
+        /// cannot name it. Callers that need the running release then
+        /// observe it themselves.
+        restored: Option<RestoredRelease>,
     },
+}
+
+/// The release a rollback proved running again, and how it was identified.
+///
+/// Every field comes from the same proof that ended the rollback: the
+/// service manager named this instance and process, the process ran this
+/// unit's executable, and the local API reported this version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredRelease {
+    pub unit: UnitId,
+    /// The release version the unit's manifest names and its API reported.
+    pub version: String,
+    /// The service manager's identity for this run of the service (the
+    /// systemd invocation ID on Linux).
+    pub instance: String,
+    pub process_id: u32,
+    /// SHA-256 of the executable the process runs, as lowercase hex.
+    pub executable_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -1,7 +1,7 @@
 use super::super::{
     InstallPlatform, InstallPlatformError, InstallationState, PlatformCheckpoint,
     PlatformOwnerReceipt, PlatformState, PlatformTransactionRecord, PlatformTransitionStates,
-    PreparedPlatformTransaction, UnitId, UnitRecord,
+    PreparedPlatformTransaction, RestoredRelease, UnitId, UnitRecord,
 };
 use super::effects::{
     candidate_launcher_entry, directory_create_effect, launcher_effect, layout_direction,
@@ -678,8 +678,33 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
     ) -> Result<(), InstallPlatformError> {
         let record = self.validated_record(platform_record)?;
         let receipt = self.validated_receipt(&record, candidate_owner_receipt)?;
-        self.prove_owner(checkpoint, expected, &record, receipt.as_ref())
-            .map(|_| ())
+        let owner = self.prove_owner(checkpoint, expected, &record, receipt.as_ref())?;
+        match (checkpoint, owner) {
+            (PlatformCheckpoint::CandidateRuntime, Some(owner))
+                if !self.config.probation.is_zero() =>
+            {
+                self.hold_probation(expected, &record, receipt.as_ref(), &owner)
+            }
+            (PlatformCheckpoint::PriorRestored, Some(owner)) => {
+                self.restored = record
+                    .prior
+                    .as_ref()
+                    .filter(|prior| prior.unit == owner.unit)
+                    .map(|prior| RestoredRelease {
+                        unit: owner.unit.clone(),
+                        version: prior.version.clone(),
+                        instance: owner.invocation_id.clone(),
+                        process_id: owner.main_pid,
+                        executable_sha256: prior.daemon_sha256.clone(),
+                    });
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn take_restored_release(&mut self) -> Option<RestoredRelease> {
+        self.restored.take()
     }
 
     fn stop_unjournaled_runtime(

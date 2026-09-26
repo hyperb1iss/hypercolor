@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::time::Duration;
 
 use super::super::{
     InstallCoordinator, InstallCoordinatorError, InstallDisposition, InstallJournalV1, InstallLock,
@@ -108,6 +109,11 @@ pub struct LinuxInstallRequest {
     pub candidate: UnitId,
     pub transaction_id: InstallTransactionId,
     pub target_policy: InstallTargetPolicy,
+    /// How long a started candidate must stay up before it commits, for this
+    /// run and any transaction it recovers. The raw installer passes
+    /// [`DEFAULT_PROBATION_WINDOW`](super::DEFAULT_PROBATION_WINDOW) unless
+    /// told otherwise.
+    pub probation: Duration,
 }
 
 /// The settled result of one run.
@@ -191,11 +197,12 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                     host,
                     &store,
                     &lock,
-                    PlatformInputs {
+                    LinuxPlatformInputs {
                         candidate: None,
                         journal: Some(journal),
                         managed: false,
                         original: None,
+                        probation: request.probation,
                     },
                 )?;
                 return recover(&store, &mut lock, &mut platform);
@@ -264,11 +271,12 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                     host,
                     &store,
                     &lock,
-                    PlatformInputs {
+                    LinuxPlatformInputs {
                         candidate: None,
                         journal: Some(&journal),
                         managed: true,
                         original: None,
+                        probation: request.probation,
                     },
                 )?;
                 return recover(&store, &mut lock, &mut platform);
@@ -282,11 +290,12 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 host,
                 &store,
                 &lock,
-                PlatformInputs {
+                LinuxPlatformInputs {
                     candidate: Some(&candidate),
                     journal: prior_record,
                     managed: true,
                     original: None,
+                    probation: request.probation,
                 },
             )?;
             authority
@@ -339,11 +348,12 @@ fn prepare_or_replace<H: LinuxInstallHost>(
             host,
             adoption.store(),
             adoption.lock(),
-            PlatformInputs {
+            LinuxPlatformInputs {
                 candidate: Some(candidate),
                 journal: prepared.as_ref(),
                 managed: true,
                 original: adoption.original_prior(),
+                probation: request.probation,
             },
         )?;
         match adoption.prepare(&mut platform, install_request(request, candidate.clone())) {
@@ -406,11 +416,21 @@ pub(super) fn recover<E: LinuxInstallExecutor>(
     })
 }
 
-pub(super) struct PlatformInputs<'a> {
-    pub(super) candidate: Option<&'a UnitRecord>,
-    pub(super) journal: Option<&'a InstallJournalV1>,
-    pub(super) managed: bool,
-    pub(super) original: Option<&'a UnitRecord>,
+/// What a Linux platform binds to beyond the elected store.
+#[derive(Debug, Clone, Copy)]
+pub struct LinuxPlatformInputs<'a> {
+    /// A candidate staged for a new transaction.
+    pub candidate: Option<&'a UnitRecord>,
+    /// The journal to resume, or the last settled one a new transaction
+    /// follows; its units are retained and, for a managed store, its
+    /// recorded prior authority is restored.
+    pub journal: Option<&'a InstallJournalV1>,
+    /// The store is a managed installation rather than the historical root.
+    pub managed: bool,
+    /// The historical unit an adoption copies, before any journal exists.
+    pub original: Option<&'a UnitRecord>,
+    /// How long a started candidate must stay up before it commits.
+    pub probation: Duration,
 }
 
 fn platform<H: LinuxInstallHost>(
@@ -418,9 +438,9 @@ fn platform<H: LinuxInstallHost>(
     host: &mut H,
     store: &InstallStore,
     lock: &InstallLock,
-    inputs: PlatformInputs<'_>,
+    inputs: LinuxPlatformInputs<'_>,
 ) -> Result<LinuxInstallPlatform<H::Executor>, LinuxInstallCommandError> {
-    platform_with(
+    bind_linux_platform(
         home,
         |store, lock, tree| host.executor(store, lock, tree),
         store,
@@ -429,7 +449,18 @@ fn platform<H: LinuxInstallHost>(
     )
 }
 
-pub(super) fn platform_with<E: LinuxInstallExecutor>(
+/// Bind a Linux platform to a store elected through
+/// [`elect_linux_installation`](super::elect_linux_installation).
+///
+/// Retains every unit the inputs and the active pointer name, opens the
+/// public layout through `lock`, builds the executor, and restores the prior
+/// authority a managed journal recorded. A caller that drives
+/// [`InstallCoordinator`] itself (preparing, binding and writing a journal,
+/// then recovering it) gets the same platform the raw installer uses.
+///
+/// # Errors
+/// Refuses units, executors, topology or prior roles that cannot be proven.
+pub fn bind_linux_platform<E: LinuxInstallExecutor>(
     home: &Path,
     executor: impl FnOnce(
         &InstallStore,
@@ -438,7 +469,7 @@ pub(super) fn platform_with<E: LinuxInstallExecutor>(
     ) -> Result<E, InstallPlatformError>,
     store: &InstallStore,
     lock: &InstallLock,
-    inputs: PlatformInputs<'_>,
+    inputs: LinuxPlatformInputs<'_>,
 ) -> Result<LinuxInstallPlatform<E>, LinuxInstallCommandError> {
     let known = known_units(store, lock, inputs.candidate, inputs.journal)?;
     let tree = LinuxPublicTree::new(lock, home)?;
@@ -453,6 +484,7 @@ pub(super) fn platform_with<E: LinuxInstallExecutor>(
             .filter(|_| inputs.managed)
             .map(|journal| &journal.platform_record),
         inputs.original,
+        inputs.probation,
     )?)
 }
 
@@ -467,6 +499,7 @@ pub(crate) fn bind_platform<E: LinuxInstallExecutor>(
     mut executor: E,
     record: Option<&PlatformTransactionRecord>,
     original: Option<&UnitRecord>,
+    probation: Duration,
 ) -> Result<LinuxInstallPlatform<E>, InstallPlatformError> {
     if original.is_some() && record.is_none() {
         executor.retain_prior_units()?;
@@ -479,6 +512,7 @@ pub(crate) fn bind_platform<E: LinuxInstallExecutor>(
             .to_owned(),
         immutable_units_root: store.root().join("units"),
         active_root: store.active_path(),
+        probation,
     };
     let mut platform = LinuxInstallPlatform::new(executor, config, known)?;
     if let Some(original) = original.filter(|_| record.is_none()) {

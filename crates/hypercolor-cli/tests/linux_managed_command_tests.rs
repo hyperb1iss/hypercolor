@@ -18,20 +18,21 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use hypercolor_cli::install::{
-    DirectoryRefusal, InstallAction, InstallCoordinator, InstallDisposition, InstallJournalV1,
-    InstallLock, InstallOutcome, InstallPlatformError, InstallRequest, InstallStore,
-    InstallStoreError, InstallTargetPolicy, InstallTransactionId, LINUX_LAYOUT_ITEMS,
-    LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry, LinuxFilePublication,
-    LinuxHttpResponse, LinuxInstallCheckpoint, LinuxInstallCommandError, LinuxInstallConfig,
-    LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost, LinuxInstallLocation,
-    LinuxInstallPlatform, LinuxInstallRequest, LinuxLayoutItem, LinuxLayoutPublication,
-    LinuxLegacyFile, LinuxLocatorError, LinuxProcessExecutable, LinuxPublicTree,
-    LinuxRuntimeSettlement, LinuxUninstallCheckpoint, LinuxUninstallHost, OwnershipPolicy,
-    PlatformTransactionRecord, PrincipalDatabase, PrincipalGroup, PrincipalUser, UnitId,
-    UnitRecord, elect_linux_installation_with, run_linux_install, run_linux_uninstall,
-    stage_release_payload,
+    DEFAULT_PROBATION_WINDOW, DirectoryRefusal, InstallAction, InstallCoordinator,
+    InstallDisposition, InstallJournalV1, InstallLock, InstallOutcome, InstallPlatformError,
+    InstallRequest, InstallStore, InstallStoreError, InstallTargetPolicy, InstallTransactionId,
+    LINUX_LAYOUT_ITEMS, LinuxDirectoryItem, LinuxDirectoryState, LinuxExactEntry,
+    LinuxFilePublication, LinuxHttpResponse, LinuxInstallCheckpoint, LinuxInstallCommandError,
+    LinuxInstallConfig, LinuxInstallElection, LinuxInstallExecutor, LinuxInstallHost,
+    LinuxInstallLocation, LinuxInstallPlatform, LinuxInstallRequest, LinuxLayoutItem,
+    LinuxLayoutPublication, LinuxLegacyFile, LinuxLocatorError, LinuxProcessExecutable,
+    LinuxPublicTree, LinuxRuntimeSettlement, LinuxServiceIdentity, LinuxServiceWatch,
+    LinuxUninstallCheckpoint, LinuxUninstallHost, OwnershipPolicy, PlatformTransactionRecord,
+    PrincipalDatabase, PrincipalGroup, PrincipalUser, RestoredRelease, UnitId, UnitRecord,
+    elect_linux_installation_with, run_linux_install, run_linux_uninstall, stage_release_payload,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -186,6 +187,25 @@ struct World {
     /// What happens when the installer next asks the daemon of this version
     /// for `/health`: the installer dies, or the daemon crashes under it.
     at_health: Option<(&'static str, HealthEvent)>,
+    /// What happens while the installer next holds the daemon of this
+    /// version through its probation window.
+    in_probation: Option<(&'static str, ProbationEvent)>,
+    /// Every probation window held: the running version, the identity it
+    /// was held to, and the window.
+    watches: Vec<(String, LinuxServiceIdentity, Duration)>,
+}
+
+/// An interruption this long into a probation window. One at or past the
+/// window's end happens after the installer stopped watching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbationEvent {
+    /// The daemon crashes and `Restart=on-failure` brings it back.
+    Crashes(Duration),
+    /// The installer dies mid-window; the daemon keeps running.
+    InstallerDies(Duration),
+    /// Power is lost mid-window; the user manager comes back and queues an
+    /// enabled service's start from disk.
+    PowerCut(Duration),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +254,8 @@ impl World {
             shows: 0,
             crash_at_show: None,
             at_health: None,
+            in_probation: None,
+            watches: Vec::new(),
         }))
     }
 
@@ -686,6 +708,59 @@ impl LinuxInstallExecutor for SimExecutor {
         result
     }
 
+    fn watch_service(
+        &mut self,
+        expected: &LinuxServiceIdentity,
+        window: Duration,
+    ) -> Result<LinuxServiceWatch, InstallPlatformError> {
+        let event = {
+            let mut world = self.world.borrow_mut();
+            let version = world
+                .process
+                .as_ref()
+                .map(|_| world.running_version())
+                .unwrap_or_default();
+            world
+                .watches
+                .push((version.clone(), expected.clone(), window));
+            let current = LinuxServiceIdentity {
+                invocation_id: format!("{:032x}", world.invocation),
+                main_pid: world.pid,
+            };
+            if !world.active || &current != expected {
+                return Ok(LinuxServiceWatch::Changed {
+                    after: Duration::ZERO,
+                    observed: "another service identity".to_owned(),
+                });
+            }
+            if world
+                .in_probation
+                .is_some_and(|(targeted, _)| targeted == version)
+            {
+                world.in_probation.take().map(|(_, event)| event)
+            } else {
+                None
+            }
+        };
+        match event {
+            Some(ProbationEvent::Crashes(after)) if after < window => {
+                self.world.borrow_mut().restart_service();
+                Ok(LinuxServiceWatch::Changed {
+                    after,
+                    observed: "active/running under a new invocation".to_owned(),
+                })
+            }
+            Some(ProbationEvent::InstallerDies(after)) if after < window => {
+                panic!("simulated installer loss {after:?} into probation")
+            }
+            Some(ProbationEvent::PowerCut(after)) if after < window => {
+                self.world.borrow_mut().power_cycle();
+                panic!("simulated power loss {after:?} into probation")
+            }
+            _ => Ok(LinuxServiceWatch::Steady),
+        }
+    }
+
     fn process_executable(
         &mut self,
         pid: u32,
@@ -789,6 +864,7 @@ impl Release {
             ))
             .expect("transaction"),
             target_policy: policy,
+            probation: DEFAULT_PROBATION_WINDOW,
         }
     }
 }
@@ -982,6 +1058,7 @@ impl Fixture {
             direct_fragment_path: self.world.borrow().fragment.clone(),
             immutable_units_root: old.root().join("units"),
             active_root: old.active_path(),
+            probation: Duration::ZERO,
         };
         let executor = SimExecutor {
             world: Rc::clone(&self.world),
@@ -2725,11 +2802,13 @@ fn a_prior_that_restarted_before_it_was_unloaded_abandons_without_any_effect() {
         active_unit,
         failure,
         abandoned,
+        restored,
     } = run.outcome
     else {
         panic!("expected an abandoned rollback: {:?}", run.outcome);
     };
     assert!(abandoned);
+    assert_eq!(restored, None, "an abandonment proves no restored release");
     assert_eq!(active_unit, Some(fixture.v1.id.clone()));
     assert!(failure.contains("abandoned at UnloadPrior"), "{failure}");
     assert_eq!(
@@ -3254,4 +3333,187 @@ fn a_second_power_loss_during_recovery_still_recovers_to_exactly_one_release() {
         }
     });
     eprintln!("{} double-loss cases recovered", cases.len());
+}
+
+// ── Probation ───────────────────────────────────────────────────────────
+
+impl Fixture {
+    /// The release the running service proves to be, as a rollback reports it.
+    fn running_release(&self, release: &Release) -> RestoredRelease {
+        let world = self.world.borrow();
+        let process = world.process.as_ref().expect("a release runs");
+        RestoredRelease {
+            unit: release.id.clone(),
+            version: world.running_version(),
+            instance: format!("{:032x}", world.invocation),
+            process_id: world.pid,
+            executable_sha256: process.sha256.clone(),
+        }
+    }
+
+    /// The probation windows held for `version`.
+    fn watches_for(&self, version: &str) -> Vec<(LinuxServiceIdentity, Duration)> {
+        self.world
+            .borrow()
+            .watches
+            .iter()
+            .filter(|(watched, _, _)| watched == version)
+            .map(|(_, identity, window)| (identity.clone(), *window))
+            .collect()
+    }
+}
+
+#[test]
+fn the_raw_installer_holds_every_started_candidate_for_the_default_window() {
+    let (fixture, location) = managed_v1();
+    let run = fixture.update(&fixture.v2).expect("update");
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v2.id.clone()
+        }
+    );
+    fixture.assert_managed(&location, &fixture.v2.id);
+    let running = fixture.running_release(&fixture.v2);
+    assert_eq!(
+        fixture.watches_for("9.8.8"),
+        [(
+            LinuxServiceIdentity {
+                invocation_id: running.instance,
+                main_pid: running.process_id,
+            },
+            Duration::from_secs(90)
+        )],
+        "one 90 s window over the identity the candidate still runs under"
+    );
+    assert_eq!(
+        fixture.watches_for("9.8.7").len(),
+        1,
+        "the first install's release was held through its window too"
+    );
+}
+
+#[test]
+fn a_candidate_that_crashes_89_seconds_into_probation_rolls_back_and_names_the_prior() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().in_probation =
+        Some(("9.8.8", ProbationEvent::Crashes(Duration::from_secs(89))));
+    let run = fixture
+        .update(&fixture.v2)
+        .expect("the same run settles the crash");
+    assert!(!run.recovered);
+    let InstallOutcome::RolledBack {
+        failure,
+        abandoned,
+        restored,
+        ..
+    } = run.outcome
+    else {
+        panic!("expected a rollback: {:?}", run.outcome);
+    };
+    assert!(!abandoned);
+    assert!(
+        failure.contains("probation 89.0 s into its 90 s window"),
+        "{failure}"
+    );
+    fixture.assert_managed(&location, &fixture.v1.id);
+    fixture.assert_settled_service("crash 89 s into probation");
+    assert_eq!(
+        restored,
+        Some(fixture.running_release(&fixture.v1)),
+        "the rollback names exactly the prior that runs again"
+    );
+}
+
+#[test]
+fn a_crash_after_the_probation_window_commits() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().in_probation =
+        Some(("9.8.8", ProbationEvent::Crashes(Duration::from_secs(91))));
+    let run = fixture.update(&fixture.v2).expect("update");
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v2.id.clone()
+        }
+    );
+    fixture.assert_managed(&location, &fixture.v2.id);
+}
+
+#[test]
+fn an_installer_lost_during_probation_holds_the_candidate_for_a_whole_window_again() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().in_probation = Some((
+        "9.8.8",
+        ProbationEvent::InstallerDies(Duration::from_secs(30)),
+    ));
+    let lost = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+    assert!(lost.is_err(), "the installer died in the window");
+    let pending = fixture.journal();
+    assert_eq!(
+        (pending.disposition, pending.next_action),
+        (
+            InstallDisposition::Forward,
+            Some(InstallAction::ProveCandidate)
+        )
+    );
+    assert!(pending.candidate_owner_receipt.is_some());
+    let effects = fixture.world.borrow().effects.len();
+
+    let run = fixture.update(&fixture.v2).expect("recovery");
+    assert!(run.recovered);
+    assert_eq!(
+        run.outcome,
+        InstallOutcome::Committed {
+            active_unit: fixture.v2.id.clone()
+        },
+        "an installer loss alone never rolls back a healthy candidate"
+    );
+    fixture.assert_managed(&location, &fixture.v2.id);
+    assert_eq!(
+        fixture.world.borrow().effects.len(),
+        effects,
+        "recovery only watched and proved; it changed nothing"
+    );
+    let watches = fixture.watches_for("9.8.8");
+    assert_eq!(watches.len(), 2, "the recovery held a second window");
+    assert_eq!(
+        watches[0], watches[1],
+        "both windows held the same candidate, under the same receipt"
+    );
+    assert_eq!(
+        watches[1].1,
+        Duration::from_secs(90),
+        "a whole window again"
+    );
+}
+
+#[test]
+fn a_power_cut_during_probation_rolls_back_to_the_prior_and_names_it() {
+    let (fixture, location) = managed_v1();
+    fixture.world.borrow_mut().in_probation =
+        Some(("9.8.8", ProbationEvent::PowerCut(Duration::from_secs(20))));
+    let lost = catch_unwind(AssertUnwindSafe(|| fixture.update(&fixture.v2)));
+    assert!(lost.is_err(), "power was lost in the window");
+    assert!(
+        fixture.world.borrow().queued_start,
+        "the user manager queued the candidate's autostart"
+    );
+
+    let run = fixture.update(&fixture.v2).expect("recovery");
+    assert!(run.recovered);
+    let InstallOutcome::RolledBack {
+        abandoned,
+        restored,
+        ..
+    } = run.outcome
+    else {
+        panic!("expected a rollback: {:?}", run.outcome);
+    };
+    // The candidate that autostarted runs under a new invocation, not the
+    // one its receipt and probation named.
+    assert!(!abandoned);
+    fixture.assert_managed(&location, &fixture.v1.id);
+    fixture.assert_settled_service("power cut in probation");
+    assert_eq!(restored, Some(fixture.running_release(&fixture.v1)));
 }

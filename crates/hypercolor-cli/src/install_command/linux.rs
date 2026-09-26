@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use hypercolor_platform_fs::ReadOnlyDirectoryAuthority;
@@ -31,7 +32,14 @@ pub(super) fn execute(
         } else {
             InstallTargetPolicy::EnableOnFirstInstall
         },
+        probation: Duration::from_secs(args.probation_seconds),
     };
+    if args.probation_seconds > 0 {
+        println!(
+            "A newly started release must stay up for {} seconds before the install commits it.",
+            args.probation_seconds
+        );
+    }
     let mut host = NativeHost {
         args,
         source,

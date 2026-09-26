@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -233,11 +234,44 @@ pub struct LinuxLegacySnapshot {
     pub inventory: Vec<LinuxLegacyFile>,
 }
 
+/// How long a started candidate must stay up, unchanged, before the
+/// installer commits it (owner decision D2 in the managed update design).
+///
+/// Long enough to catch a crash soon after readiness, an early device
+/// backend or first-render failure, and one full watchdog interval.
+pub const DEFAULT_PROBATION_WINDOW: Duration = Duration::from_secs(90);
+
+/// The longest probation window an installer accepts.
+pub const MAX_PROBATION_WINDOW: Duration = Duration::from_mins(10);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinuxInstallConfig {
     pub direct_fragment_path: String,
     pub immutable_units_root: PathBuf,
     pub active_root: PathBuf,
+    /// How long a running candidate must keep its first proven service
+    /// identity at `ProveCandidate` before the transaction commits. Zero
+    /// commits right after the first proof.
+    pub probation: Duration,
+}
+
+/// The running service identity a probation window holds the service to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxServiceIdentity {
+    /// The systemd invocation ID, as lowercase hex without dashes.
+    pub invocation_id: String,
+    pub main_pid: u32,
+}
+
+/// How watching a service through its probation window ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinuxServiceWatch {
+    /// The service stayed `active/running` under the same invocation and
+    /// main process for the whole window.
+    Steady,
+    /// The service left that identity `after` the window began; `observed`
+    /// describes what it showed instead.
+    Changed { after: Duration, observed: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
