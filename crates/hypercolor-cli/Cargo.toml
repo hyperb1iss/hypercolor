@@ -32,7 +32,7 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
-zbus = { workspace = true, features = ["blocking-api", "p2p"] }
+zbus = { workspace = true, features = ["blocking-api"] }
 futures-util = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
@@ -48,6 +48,8 @@ uuid = { workspace = true }
 hypercolor-tui = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Tests serve an independent peer-to-peer manager to the client.
+zbus = { workspace = true, features = ["p2p"] }
 hypercolor-core = { path = "../hypercolor-core", default-features = false }
 hypercolor-daemon = { path = "../hypercolor-daemon", default-features = false }
 tempfile = { workspace = true }

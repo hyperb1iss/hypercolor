@@ -4,16 +4,14 @@ use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _}
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+use futures_util::FutureExt as _;
 use futures_util::future::LocalBoxFuture;
-use futures_util::{FutureExt as _, StreamExt as _};
-use zbus::MatchRule;
-use zbus::message::Type as MessageType;
 use zbus::zvariant::OwnedObjectPath;
 
 use super::super::InstallPlatformError;
+use super::manager_bus::{ManagerBus, ManagerCallError};
 use super::model::error;
 
-const SYSTEMD_DESTINATION: &str = "org.freedesktop.systemd1";
 const SYSTEMD_PATH: &str = "/org/freedesktop/systemd1";
 const SYSTEMD_MANAGER: &str = "org.freedesktop.systemd1.Manager";
 /// The user manager's own socket, relative to `XDG_RUNTIME_DIR`.
@@ -117,18 +115,6 @@ impl LinuxSystemdConnection {
     }
 }
 
-/// The manager's socket must be served by the installing uid; anything else
-/// on that path is not this user's systemd.
-fn require_manager_peer(observed_uid: u32, expected_uid: u32) -> Result<(), InstallPlatformError> {
-    if observed_uid == expected_uid {
-        Ok(())
-    } else {
-        Err(error(
-            "user systemd private socket is served by another uid",
-        ))
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct LinuxRuntimeManager {
     connection: LinuxSystemdConnection,
@@ -166,69 +152,43 @@ fn run_runtime_job(
         .build()
         .map_err(io_error)?;
     runtime.block_on(async move {
-        let connection = connect_manager(manager).await?;
-        // A direct manager connection receives every manager signal without
-        // a bus match or `Subscribe`, and only the manager can send on it,
-        // so the rule names just the object, member and unit.
-        let rule = MatchRule::builder()
-            .msg_type(MessageType::Signal)
-            .path(SYSTEMD_PATH)
-            .map_err(zbus_error)?
-            .interface(SYSTEMD_MANAGER)
-            .map_err(zbus_error)?
-            .member("JobRemoved")
-            .map_err(zbus_error)?
-            .arg(2, SERVICE)
-            .map_err(zbus_error)?
-            .build();
-        let mut removed = zbus::MessageStream::for_match_rule(rule, &connection, None)
-            .await
-            .map_err(zbus_error)?;
+        let mut bus = connect_manager(manager).await?;
         let method = if running { "StartUnit" } else { "StopUnit" };
-        let job_path: OwnedObjectPath = connection
-            .call_method(
-                Some(SYSTEMD_DESTINATION),
-                SYSTEMD_PATH,
-                Some(SYSTEMD_MANAGER),
-                method,
-                &(SERVICE, "fail"),
-            )
-            .await
-            .map_err(zbus_error)?
-            .body()
-            .deserialize()
-            .map_err(zbus_error)?;
+        // A direct manager connection receives every manager signal without
+        // a bus match or `Subscribe`; the client keeps any that arrive
+        // before the reply, so the job's JobRemoved cannot be missed.
+        let job_path = within_method_deadline(bus.call::<_, OwnedObjectPath>(
+            SYSTEMD_PATH,
+            SYSTEMD_MANAGER,
+            method,
+            &(SERVICE, "fail"),
+        ))
+        .await?
+        .map_err(ManagerCallError::into_platform)?;
         let job = owned_job(job_path)?;
-        let mut boundary = ZbusJobBoundary {
-            connection: &connection,
-            removed: &mut removed,
-        };
+        let mut boundary = BusJobBoundary { bus: &mut bus };
         fence_owned_job(&mut boundary, &job).await
     })
 }
 
-/// Open a peer-to-peer connection to the user manager's private socket and
-/// prove the peer runs as the expected uid before any D-Bus traffic.
+/// Open the user manager's private socket, proving the peer runs as the
+/// expected uid before any D-Bus traffic.
 async fn connect_manager(
     manager: &LinuxSystemdConnection,
-) -> Result<zbus::Connection, InstallPlatformError> {
-    tokio::time::timeout(METHOD_TIMEOUT, async {
-        let stream = tokio::net::UnixStream::connect(&manager.manager_socket)
-            .await
-            .map_err(io_error)?;
-        require_manager_peer(
-            stream.peer_cred().map_err(io_error)?.uid(),
-            manager.manager_uid,
-        )?;
-        zbus::connection::Builder::unix_stream(stream)
-            .p2p()
-            .method_timeout(METHOD_TIMEOUT)
-            .build()
-            .await
-            .map_err(zbus_error)
-    })
-    .await
-    .map_err(|_| error("user systemd manager connection exceeded its deadline"))?
+) -> Result<ManagerBus, InstallPlatformError> {
+    within_method_deadline(ManagerBus::connect(
+        &manager.manager_socket,
+        manager.manager_uid,
+    ))
+    .await?
+}
+
+async fn within_method_deadline<T>(
+    work: impl std::future::Future<Output = T>,
+) -> Result<T, InstallPlatformError> {
+    tokio::time::timeout(METHOD_TIMEOUT, work)
+        .await
+        .map_err(|_| error("user systemd manager call exceeded its deadline"))
 }
 
 struct OwnedJob {
@@ -249,19 +209,18 @@ trait RuntimeJobBoundary {
     ) -> LocalBoxFuture<'a, Result<(), InstallPlatformError>>;
 }
 
-struct ZbusJobBoundary<'a> {
-    connection: &'a zbus::Connection,
-    removed: &'a mut zbus::MessageStream,
+struct BusJobBoundary<'a> {
+    bus: &'a mut ManagerBus,
 }
 
-impl RuntimeJobBoundary for ZbusJobBoundary<'_> {
+impl RuntimeJobBoundary for BusJobBoundary<'_> {
     fn wait<'a>(
         &'a mut self,
         job: &'a OwnedJob,
         timeout: Duration,
     ) -> LocalBoxFuture<'a, Result<Option<String>, InstallPlatformError>> {
         async move {
-            match tokio::time::timeout(timeout, wait_for_job(self.removed, job)).await {
+            match tokio::time::timeout(timeout, wait_for_job(self.bus, job)).await {
                 Ok(result) => result.map(Some),
                 Err(_) => Ok(None),
             }
@@ -274,17 +233,14 @@ impl RuntimeJobBoundary for ZbusJobBoundary<'_> {
         job: &'a OwnedJob,
     ) -> LocalBoxFuture<'a, Result<(), InstallPlatformError>> {
         async move {
-            self.connection
-                .call_method(
-                    Some(SYSTEMD_DESTINATION),
-                    SYSTEMD_PATH,
-                    Some(SYSTEMD_MANAGER),
-                    "CancelJob",
-                    &(job.id,),
-                )
-                .await
-                .map(|_| ())
-                .map_err(zbus_error)
+            within_method_deadline(self.bus.call::<_, ()>(
+                SYSTEMD_PATH,
+                SYSTEMD_MANAGER,
+                "CancelJob",
+                &(job.id,),
+            ))
+            .await?
+            .map_err(ManagerCallError::into_platform)
         }
         .boxed_local()
     }
@@ -310,20 +266,21 @@ async fn fence_owned_job(
 }
 
 async fn wait_for_job(
-    removed: &mut zbus::MessageStream,
+    bus: &mut ManagerBus,
     expected: &OwnedJob,
 ) -> Result<String, InstallPlatformError> {
-    while let Some(message) = removed.next().await {
-        let message = message.map_err(zbus_error)?;
-        let (id, path, unit, result): (u32, OwnedObjectPath, String, String) =
-            message.body().deserialize().map_err(zbus_error)?;
+    loop {
+        let signal = bus.next_signal().await?;
+        if signal.path.as_deref() != Some(SYSTEMD_PATH)
+            || !signal.is_signal(SYSTEMD_MANAGER, "JobRemoved")
+        {
+            continue;
+        }
+        let (id, path, unit, result): (u32, OwnedObjectPath, String, String) = signal.body()?;
         if let Some(result) = removed_job_result(id, &path, &unit, result, expected)? {
             return Ok(result);
         }
     }
-    Err(error(
-        "systemd JobRemoved stream ended before the owned job",
-    ))
 }
 
 fn removed_job_result(
@@ -404,10 +361,6 @@ fn current_uid() -> Result<u32, InstallPlatformError> {
 #[cfg(not(target_os = "linux"))]
 fn current_uid() -> Result<u32, InstallPlatformError> {
     Err(error("native Linux systemd execution requires Linux"))
-}
-
-fn zbus_error(source: zbus::Error) -> InstallPlatformError {
-    error(source.to_string())
 }
 
 fn io_error(source: std::io::Error) -> InstallPlatformError {
@@ -530,19 +483,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_manager_socket_served_by_another_uid_is_refused() {
-        assert!(super::require_manager_peer(1100, 1100).is_ok());
-        for foreign in [0, 1101] {
-            let error = super::require_manager_peer(foreign, 1100)
-                .expect_err("another uid is not this user's manager");
-            assert!(error.to_string().contains("another uid"), "{error}");
-        }
-    }
-
-    /// Serve the manager's `StartUnit` and `StopUnit` peer to peer the way
-    /// systemd serves its private socket: no bus daemon, no `Hello`, and
-    /// signals without a sender.
+    /// Serve `StartUnit` and `StopUnit` peer to peer with an independent
+    /// D-Bus implementation: no bus daemon and no `Hello`.
     struct FakeManager {
         calls: std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
     }
