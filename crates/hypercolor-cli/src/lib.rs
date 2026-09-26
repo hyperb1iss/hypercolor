@@ -256,6 +256,46 @@ struct InstallReleaseInvocation {
     args: InstallReleaseArgs,
 }
 
+#[doc(hidden)]
+#[cfg(unix)]
+#[derive(Debug, Args)]
+pub struct UninstallReleaseArgs {
+    #[arg(long, value_name = "ABSOLUTE_PATH")]
+    install_prefix: std::path::PathBuf,
+
+    #[arg(long, value_name = "ABSOLUTE_PATH")]
+    install_dir: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+#[derive(Parser)]
+#[command(name = "hypercolor __uninstall-release")]
+struct UninstallReleaseInvocation {
+    #[command(flatten)]
+    args: UninstallReleaseArgs,
+}
+
+#[cfg(unix)]
+fn parse_uninstall_release_invocation<I, T>(
+    raw_args: I,
+) -> Option<std::result::Result<UninstallReleaseArgs, clap::Error>>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString>,
+{
+    let mut raw_args = raw_args.into_iter().map(Into::into);
+    let executable = raw_args.next()?;
+    let command = raw_args.next()?;
+    if command != std::ffi::OsStr::new("__uninstall-release") {
+        return None;
+    }
+
+    Some(
+        UninstallReleaseInvocation::try_parse_from(std::iter::once(executable).chain(raw_args))
+            .map(|invocation| invocation.args),
+    )
+}
+
 #[cfg(unix)]
 fn parse_install_release_invocation<I, T>(
     raw_args: I,
@@ -287,6 +327,12 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
     #[cfg(unix)]
     match parse_install_release_invocation(std::env::args_os()) {
         Some(Ok(args)) => return install_command::execute(&args),
+        Some(Err(error)) => error.exit(),
+        None => {}
+    }
+    #[cfg(unix)]
+    match parse_uninstall_release_invocation(std::env::args_os()) {
+        Some(Ok(args)) => return install_command::execute_uninstall(&args),
         Some(Err(error)) => error.exit(),
         None => {}
     }

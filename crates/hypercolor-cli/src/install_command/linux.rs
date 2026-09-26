@@ -9,7 +9,8 @@ use crate::InstallReleaseArgs;
 use crate::install::{
     InstallLock, InstallPlatformError, InstallStore, InstallTargetPolicy, LinuxInstallHost,
     LinuxInstallLocation, LinuxInstallRequest, LinuxNativeExecutor, LinuxPublicTree,
-    OwnershipPolicy, UnitRecord, run_linux_install, stage_release_payload_from_authority,
+    LinuxUninstallHost, OwnershipPolicy, UnitRecord, run_linux_install, run_linux_uninstall,
+    stage_release_payload_from_authority,
 };
 
 pub(super) fn execute(
@@ -38,6 +39,38 @@ pub(super) fn execute(
     };
     let run = run_linux_install(home, &request, &OwnershipPolicy::system(), &mut host)?;
     super::require_candidate_committed(run.outcome, &args.expected_manifest_sha256, run.recovered)
+}
+
+pub(super) fn execute_uninstall(home: &Path) -> Result<()> {
+    let run = run_linux_uninstall(home, &OwnershipPolicy::system(), &mut NativeUninstallHost)?;
+    if let Some(outcome) = &run.recovered {
+        println!("Settled an interrupted installation before removal: {outcome:?}");
+    }
+    if run.removed.is_empty() && run.recovered.is_none() {
+        println!("No raw Hypercolor installation is recorded for this user.");
+    }
+    for path in &run.removed {
+        println!("Removed {}", path.display());
+    }
+    for path in &run.preserved {
+        println!("Preserved {}", path.display());
+    }
+    Ok(())
+}
+
+struct NativeUninstallHost;
+
+impl LinuxUninstallHost for NativeUninstallHost {
+    type Executor = LinuxNativeExecutor;
+
+    fn executor(
+        &mut self,
+        store: &InstallStore,
+        lock: &InstallLock,
+        tree: LinuxPublicTree,
+    ) -> Result<LinuxNativeExecutor, InstallPlatformError> {
+        native_executor(store, lock, tree)
+    }
 }
 
 fn native_executor(

@@ -137,6 +137,17 @@ pub enum LinuxInstallCommandError {
     AdoptionNotManaged,
     #[error("the run stopped at checkpoint {0:?}: {1}")]
     Stopped(LinuxInstallCheckpoint, InstallPlatformError),
+    #[error("the uninstall stopped at checkpoint {0:?}: {1}")]
+    UninstallStopped(
+        super::uninstall::LinuxUninstallCheckpoint,
+        InstallPlatformError,
+    ),
+    #[error(
+        "refusing to uninstall without writes; these are not the entries this installer \
+         generates, so remove them manually or with the package manager that owns them: {}",
+        .0.join(", ")
+    )]
+    ForeignInstallation(Vec<String>),
 }
 
 /// Elect authority, adopt or recover, and settle one install request.

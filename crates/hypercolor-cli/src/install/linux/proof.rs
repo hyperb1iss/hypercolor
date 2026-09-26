@@ -30,26 +30,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
     }
 
     pub(super) fn candidate_launcher(&self) -> Result<LinuxLauncher, InstallPlatformError> {
-        let active = self
-            .config
-            .active_root
-            .to_str()
-            .expect("Linux install roots were validated as exact UTF-8");
-        let launcher_exec = format!(
-            "{active}/bin/hypercolor-daemon --ui-dir {active}/share/hypercolor/ui --effects-dir {active}/share/hypercolor/effects/bundled"
-        );
-        let bytes = format!(
-            "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={launcher_exec}\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n\n[Install]\nWantedBy=default.target\n"
-        )
-        .into_bytes();
-        if bytes.len() > super::model::MAX_LAUNCHER_BYTES {
-            return Err(error("rendered Linux launcher exceeds its byte bound"));
-        }
-        Ok(LinuxLauncher {
-            mode: LAUNCHER_MODE,
-            bytes,
-            exec_start: canonical_launcher_exec(&launcher_exec)?,
-        })
+        render_launcher(&self.config.active_root)
     }
 
     pub(super) fn layout_target(
@@ -58,13 +39,42 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         item: super::model::LinuxLayoutItem,
     ) -> String {
         let _ = candidate;
-        self.config
-            .active_root
-            .join(item.unit_path())
-            .to_str()
-            .expect("Linux install roots were validated as exact UTF-8")
-            .to_owned()
+        layout_target_for(&self.config.active_root, item)
     }
+}
+
+/// Render the exact generated launcher for one active root.
+///
+/// # Errors
+/// Refuses a non-UTF-8 root or a launcher that exceeds its byte bound.
+pub(super) fn render_launcher(active_root: &Path) -> Result<LinuxLauncher, InstallPlatformError> {
+    let active = active_root
+        .to_str()
+        .ok_or_else(|| error("Linux install roots must be exact UTF-8"))?;
+    let launcher_exec = format!(
+        "{active}/bin/hypercolor-daemon --ui-dir {active}/share/hypercolor/ui --effects-dir {active}/share/hypercolor/effects/bundled"
+    );
+    let bytes = format!(
+        "[Unit]\nDescription=Hypercolor RGB Lighting Daemon\nAfter=graphical-session.target dbus.socket\nWants=graphical-session.target\n\n[Service]\nType=notify\nExecStart={launcher_exec}\nWatchdogSec=30\nRestart=on-failure\nRestartSec=3\nEnvironment=HYPERCOLOR_LOG=info\nEnvironment=RUST_BACKTRACE=1\nEnvironment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n\n[Install]\nWantedBy=default.target\n"
+    )
+    .into_bytes();
+    if bytes.len() > super::model::MAX_LAUNCHER_BYTES {
+        return Err(error("rendered Linux launcher exceeds its byte bound"));
+    }
+    Ok(LinuxLauncher {
+        mode: LAUNCHER_MODE,
+        bytes,
+        exec_start: canonical_launcher_exec(&launcher_exec)?,
+    })
+}
+
+/// The exact public symlink target one layout item names beneath a root.
+pub(super) fn layout_target_for(active_root: &Path, item: super::model::LinuxLayoutItem) -> String {
+    active_root
+        .join(item.unit_path())
+        .to_str()
+        .expect("Linux install roots were validated as exact UTF-8")
+        .to_owned()
 }
 
 impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {

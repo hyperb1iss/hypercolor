@@ -24,6 +24,7 @@ mod record;
 mod runtime;
 mod state;
 mod systemd;
+mod uninstall;
 mod validation;
 
 use std::collections::BTreeMap;
@@ -51,6 +52,9 @@ pub use model::{
     LinuxSystemdObservation, parse_systemd_show,
 };
 pub use runtime::LinuxSystemdConnection;
+pub use uninstall::{
+    LinuxUninstallCheckpoint, LinuxUninstallHost, LinuxUninstallRun, run_linux_uninstall,
+};
 
 /// Retain and validate one installed Linux unit through the transaction lock.
 ///

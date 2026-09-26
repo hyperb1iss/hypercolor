@@ -1,9 +1,9 @@
 #![cfg(target_os = "linux")]
 
-//! Command-level topology, adoption and recovery coverage.
+//! Command-level topology, adoption, recovery and uninstall coverage.
 //!
-//! These suites drive the exact orchestration behind `__install-release`
-//! through a simulated systemd user manager. Real
+//! These suites drive the exact orchestration behind `__install-release` and
+//! `__uninstall-release` through a simulated systemd user manager. Real
 //! stores, recorded roots, locks, journals and immutable units live on disk;
 //! only service, launcher and public-layout effects are modelled, and the
 //! simulated daemon runs whatever file its launcher names.
@@ -27,9 +27,10 @@ use hypercolor_cli::install::{
     LinuxInstallCommandError, LinuxInstallConfig, LinuxInstallElection, LinuxInstallExecutor,
     LinuxInstallHost, LinuxInstallLocation, LinuxInstallPlatform, LinuxInstallRequest,
     LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile, LinuxLocatorError,
-    LinuxProcessExecutable, LinuxPublicTree, OwnershipPolicy, PlatformTransactionRecord,
-    PrincipalDatabase, PrincipalGroup, PrincipalUser, UnitId, UnitRecord,
-    elect_linux_installation_with, run_linux_install, stage_release_payload,
+    LinuxProcessExecutable, LinuxPublicTree, LinuxUninstallCheckpoint, LinuxUninstallHost,
+    OwnershipPolicy, PlatformTransactionRecord, PrincipalDatabase, PrincipalGroup, PrincipalUser,
+    UnitId, UnitRecord, elect_linux_installation_with, run_linux_install, run_linux_uninstall,
+    stage_release_payload,
 };
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
@@ -650,6 +651,37 @@ impl LinuxInstallHost for Host<'_> {
     }
 }
 
+struct UninstallHost {
+    world: Shared,
+    stop_at: Option<LinuxUninstallCheckpoint>,
+}
+
+impl LinuxUninstallHost for UninstallHost {
+    type Executor = SimExecutor;
+
+    fn executor(
+        &mut self,
+        _store: &InstallStore,
+        _lock: &InstallLock,
+        _tree: LinuxPublicTree,
+    ) -> Result<SimExecutor, InstallPlatformError> {
+        Ok(SimExecutor {
+            world: Rc::clone(&self.world),
+            active_root: None,
+        })
+    }
+
+    fn checkpoint(
+        &mut self,
+        checkpoint: LinuxUninstallCheckpoint,
+    ) -> Result<(), InstallPlatformError> {
+        if self.stop_at == Some(checkpoint) {
+            return Err(InstallPlatformError::new("simulated process loss"));
+        }
+        Ok(())
+    }
+}
+
 // ── Fixture ─────────────────────────────────────────────────────────────
 
 struct Fixture {
@@ -1103,6 +1135,16 @@ fn changed_xdg_after_install_follows_the_recorded_roots() {
         !fixture.home.join("xdg-b").exists(),
         "the new environment was never used"
     );
+
+    // Uninstall also follows the record.
+    let mut uninstall = UninstallHost {
+        world: Rc::clone(&fixture.world),
+        stop_at: None,
+    };
+    run_linux_uninstall(&fixture.home, &fixture.private(), &mut uninstall).expect("uninstall");
+    assert!(!recorded.release_root().exists());
+    assert!(!recorded.state_root().exists());
+    assert!(!fixture.home.join("xdg-b").exists());
 }
 
 // ── Crash at every migration checkpoint ─────────────────────────────────
@@ -1370,6 +1412,222 @@ fn duplicate_invocation_is_refused_while_a_run_holds_authority() {
         assert!(refusal.contains("LockContended"), "{refusal}");
     }
     fixture.assert_managed(&location, &fixture.v2.id);
+}
+
+// ── Uninstall ───────────────────────────────────────────────────────────
+
+#[test]
+fn uninstall_follows_recorded_roots_and_preserves_user_data() {
+    let fixture = Fixture::new();
+    umask_002_session(&fixture);
+    let location = fixture.location(".local/share", ".local/state", ".config");
+    fixture
+        .run(&fixture.v1, Some(location.clone()), &fixture.private())
+        .expect("install");
+    let mut host = UninstallHost {
+        world: Rc::clone(&fixture.world),
+        stop_at: None,
+    };
+    let run = run_linux_uninstall(&fixture.home, &fixture.private(), &mut host).expect("uninstall");
+    assert!(run.recovered.is_none());
+    for removed in [
+        location.release_root().to_path_buf(),
+        location.state_root().to_path_buf(),
+        fixture.home.join(".local/state/hypercolor"),
+        fixture.home.join(".local/lib/hypercolor"),
+    ] {
+        assert!(
+            run.removed.contains(&removed),
+            "{removed:?} in {:?}",
+            run.removed
+        );
+        assert!(!removed.exists(), "{removed:?}");
+    }
+    assert_eq!(
+        run.preserved,
+        vec![
+            location.data_root().to_path_buf(),
+            location.config_root().to_path_buf()
+        ]
+    );
+    assert_eq!(
+        fs::read(fixture.home.join(".local/share/hypercolor/scenes.json")).expect("user data"),
+        b"{}"
+    );
+    assert!(
+        fixture
+            .home
+            .join(".config/hypercolor/hypercolor.toml")
+            .exists()
+    );
+    let world = fixture.world.borrow();
+    assert!(!world.loaded && !world.active && !world.enabled);
+    assert!(matches!(world.launcher, LinuxExactEntry::Absent));
+    assert!(
+        world
+            .layout
+            .values()
+            .all(|entry| matches!(entry, LinuxExactEntry::Absent))
+    );
+    drop(world);
+    let again = run_linux_uninstall(&fixture.home, &fixture.private(), &mut host)
+        .expect("uninstall is idempotent");
+    assert!(again.removed.is_empty());
+    assert!(!fixture.home.join(".local/lib/hypercolor").exists());
+}
+
+#[test]
+fn uninstall_resumes_after_loss_at_every_checkpoint() {
+    for checkpoint in [
+        LinuxUninstallCheckpoint::Settled,
+        LinuxUninstallCheckpoint::PlatformRemoved,
+        LinuxUninstallCheckpoint::ReleasesRemoved,
+        LinuxUninstallCheckpoint::StateRemoved,
+    ] {
+        let fixture = Fixture::new();
+        let location = fixture.default_location();
+        fixture.legacy_install(&fixture.v1);
+        fixture
+            .run(&fixture.v2, Some(location.clone()), &fixture.private())
+            .expect("adopted install");
+        let mut host = UninstallHost {
+            world: Rc::clone(&fixture.world),
+            stop_at: Some(checkpoint),
+        };
+        assert!(
+            run_linux_uninstall(&fixture.home, &fixture.private(), &mut host).is_err(),
+            "{checkpoint:?}"
+        );
+        // An old or new installer never sees an independent store meanwhile.
+        match elect_linux_installation_with(&fixture.home, &fixture.private()) {
+            Ok(LinuxInstallElection::Managed { authority, .. }) => {
+                assert_eq!(authority.location().state_root(), location.state_root());
+            }
+            Ok(LinuxInstallElection::Legacy { .. }) => {
+                panic!("{checkpoint:?}: authority fell back")
+            }
+            Err(_) => {}
+        }
+        host.stop_at = None;
+        run_linux_uninstall(&fixture.home, &fixture.private(), &mut host)
+            .unwrap_or_else(|error| panic!("{checkpoint:?}: resume failed: {error}"));
+        assert!(!fixture.home.join(".local/lib/hypercolor").exists());
+        assert!(!location.release_root().exists());
+        assert!(!location.state_root().exists());
+        let world = fixture.world.borrow();
+        assert!(!world.loaded && !world.active);
+    }
+}
+
+#[test]
+fn uninstall_settles_an_interrupted_transaction_first() {
+    let fixture = Fixture::new();
+    let location = fixture.default_location();
+    fixture
+        .run(&fixture.v1, Some(location.clone()), &fixture.private())
+        .expect("install");
+    let installed = fixture.world.borrow().effects.len();
+    fixture.world.borrow_mut().crash = Some(Crash::After(installed + 1));
+    let crashed = catch_unwind(AssertUnwindSafe(|| {
+        fixture.run(&fixture.v2, None, &fixture.private())
+    }));
+    assert!(crashed.is_err(), "{crashed:?}");
+    let mut host = UninstallHost {
+        world: Rc::clone(&fixture.world),
+        stop_at: None,
+    };
+    let run = run_linux_uninstall(&fixture.home, &fixture.private(), &mut host)
+        .expect("uninstall after settling");
+    assert!(run.recovered.is_some());
+    assert!(!fixture.home.join(".local/lib/hypercolor").exists());
+    assert!(!location.release_root().exists());
+}
+
+#[test]
+fn uninstall_refuses_foreign_service_launcher_or_layout_without_writes() {
+    for foreign in ["launcher", "layout", "fragment"] {
+        let fixture = Fixture::new();
+        let location = fixture.default_location();
+        fixture
+            .run(&fixture.v1, Some(location.clone()), &fixture.private())
+            .expect("install");
+        {
+            let mut world = fixture.world.borrow_mut();
+            match foreign {
+                "launcher" => {
+                    world.launcher_bytes.extend_from_slice(b"# local edit\n");
+                    let bytes = world.launcher_bytes.clone();
+                    world.launcher = LinuxExactEntry::RegularFile {
+                        mode: 0o644,
+                        sha256: sha256(&bytes),
+                        snapshot_unit: None,
+                        snapshot_path: None,
+                    };
+                }
+                "layout" => {
+                    world.layout.insert(
+                        LinuxLayoutItem::HypercolorTui,
+                        LinuxExactEntry::Symlink {
+                            target: "/usr/bin/hypercolor-tui".to_owned(),
+                        },
+                    );
+                }
+                _ => world.fragment = "/usr/lib/systemd/user/hypercolor.service".to_owned(),
+            }
+        }
+        let before = fixture.snapshot();
+        let effects = fixture.world.borrow().effects.len();
+        let mut host = UninstallHost {
+            world: Rc::clone(&fixture.world),
+            stop_at: None,
+        };
+        let error =
+            run_linux_uninstall(&fixture.home, &fixture.private(), &mut host).expect_err(foreign);
+        assert!(
+            matches!(error, LinuxInstallCommandError::ForeignInstallation(_)),
+            "{foreign}: {error}"
+        );
+        assert_eq!(fixture.snapshot(), before, "{foreign}");
+        assert_eq!(fixture.world.borrow().effects.len(), effects, "{foreign}");
+        assert!(location.release_root().exists(), "{foreign}");
+        assert!(location.state_root().exists(), "{foreign}");
+        assert!(
+            fixture
+                .home
+                .join(".local/lib/hypercolor/install-journal.json")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn uninstall_without_any_recorded_install_writes_nothing() {
+    let fixture = Fixture::new();
+    let mut host = UninstallHost {
+        world: Rc::clone(&fixture.world),
+        stop_at: None,
+    };
+    let run = run_linux_uninstall(&fixture.home, &fixture.private(), &mut host).expect("empty");
+    assert_eq!(run, hypercolor_cli::install::LinuxUninstallRun::default());
+    assert!(!fixture.home.join(".local").exists());
+}
+
+#[test]
+fn uninstall_removes_a_historical_lib_root_install() {
+    let fixture = Fixture::new();
+    fixture.legacy_install(&fixture.v1);
+    let mut host = UninstallHost {
+        world: Rc::clone(&fixture.world),
+        stop_at: None,
+    };
+    let run = run_linux_uninstall(&fixture.home, &fixture.private(), &mut host).expect("legacy");
+    assert_eq!(
+        run.removed,
+        vec![fixture.home.join(".local/lib/hypercolor")]
+    );
+    assert!(run.preserved.is_empty());
+    assert!(!fixture.home.join(".local/lib/hypercolor").exists());
+    assert!(!fixture.world.borrow().active);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

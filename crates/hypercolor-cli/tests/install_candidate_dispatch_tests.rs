@@ -201,3 +201,87 @@ fn anchored_candidate_store_bootstraps_once_and_uses_one_canonical_lock() {
         Err(InstallStoreError::LockContended)
     ));
 }
+
+#[test]
+fn uninstall_protocol_is_strict_hidden_and_writes_nothing_without_an_install() {
+    use std::fs;
+    use std::process::Command;
+
+    for args in [
+        vec!["__uninstall-release"],
+        vec![
+            "__uninstall-release",
+            "--install-prefix",
+            "/home/test/.local",
+            "--install-prefix",
+            "/home/test/.local",
+            "--install-dir",
+            "/home/test/.local/bin",
+        ],
+        vec![
+            "__uninstall-release",
+            "--install-prefix",
+            "/home/test/.local",
+            "--install-dir",
+            "/home/test/.local/bin",
+            "--purge",
+        ],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_hypercolor"))
+            .args(&args)
+            .output()
+            .expect("run release uninstaller parser");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+    }
+    let help = Cli::command().render_long_help().to_string();
+    assert!(!help.contains("__uninstall-release"));
+
+    let temp = tempfile::Builder::new()
+        .prefix("uninstall-dispatch-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary uninstall fixture");
+    let home = temp.path().join("home");
+    fs::create_dir(&home).expect("HOME");
+    let prefix = home.join(".local");
+    let output = Command::new(env!("CARGO_BIN_EXE_hypercolor"))
+        .args([
+            "__uninstall-release",
+            "--install-prefix",
+            prefix.to_str().expect("UTF-8 prefix"),
+            "--install-dir",
+            prefix
+                .join("bin")
+                .to_str()
+                .expect("UTF-8 install directory"),
+        ])
+        .env("HOME", &home)
+        .output()
+        .expect("run uninstaller");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    #[cfg(target_os = "linux")]
+    {
+        assert!(output.status.success(), "{stderr}");
+        assert!(
+            stdout.contains("No raw Hypercolor installation"),
+            "{stdout}"
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    assert!(!output.status.success(), "{stdout}{stderr}");
+    assert!(!prefix.exists(), "an empty uninstall created scaffolding");
+    assert!(!home.join(".hypercolor-release-install.lock").exists());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_hypercolor"))
+        .args([
+            "__uninstall-release",
+            "--install-prefix",
+            home.join("elsewhere").to_str().expect("UTF-8"),
+            "--install-dir",
+            home.join("elsewhere/bin").to_str().expect("UTF-8"),
+        ])
+        .env("HOME", &home)
+        .output()
+        .expect("run uninstaller with a foreign prefix");
+    assert!(!output.status.success());
+}

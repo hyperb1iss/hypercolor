@@ -10,6 +10,7 @@ mod read;
 mod relationship;
 mod rollback;
 mod staging;
+mod tree_removal;
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;

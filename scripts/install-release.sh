@@ -367,18 +367,90 @@ do_install() {
 
 # ─── Uninstall ────────────────────────────────────────────────────────────────
 
+RAW_INSTALL_ROOT="${INSTALL_PREFIX}/lib/hypercolor"
+RAW_INSTALL_LOCATOR="${RAW_INSTALL_ROOT}/install-journal.json"
+
+# Print the release root a managed install recorded, if any. Recorded roots are
+# validated as plain [A-Za-z0-9/._-] paths, so no JSON unescaping is needed.
+recorded_release_root() {
+    [[ -f "$RAW_INSTALL_LOCATOR" ]] || return 0
+    sed -n 's/.*"release_root":"\([^"]*\)".*/\1/p' "$RAW_INSTALL_LOCATOR"
+}
+
+# Find an installed CLI that implements the recorded-roots uninstall protocol.
+uninstall_capable_cli() {
+    local release_root candidate
+    release_root="$(recorded_release_root)"
+    for candidate in \
+        "${INSTALL_DIR}/hypercolor" \
+        "${release_root:+${release_root}/active/bin/hypercolor}" \
+        "${RAW_INSTALL_ROOT}/active/bin/hypercolor"; do
+        [[ -n "$candidate" && -x "$candidate" ]] || continue
+        if "$candidate" __uninstall-release --help >/dev/null 2>&1; then
+            printf "%s" "$candidate"
+            return 0
+        fi
+    done
+}
+
+# Remove a raw Linux install through the authority it recorded. The CLI stops
+# the service, removes only the entries it generated, and deletes the release,
+# update-state and locator roots while preserving data and configuration.
+uninstall_raw_linux() {
+    local cli
+    cli="$(uninstall_capable_cli)"
+    if [[ -n "$cli" ]]; then
+        info "Removing the recorded installation with ${cli}..."
+        "$cli" __uninstall-release \
+            --install-prefix "$INSTALL_PREFIX" \
+            --install-dir "$INSTALL_DIR"
+        success "Removed the recorded installation"
+        return 0
+    fi
+    if [[ -n "$(recorded_release_root)" ]]; then
+        fatal "A managed install is recorded in ${RAW_INSTALL_LOCATOR}, but no installed CLI can remove it. Reinstall the same release, then run --uninstall again."
+    fi
+
+    # Installs from before the recorded-roots protocol: remove the historical
+    # store and the entries the old installer created.
+    if command -v systemctl >/dev/null 2>&1; then
+        info "Stopping and disabling systemd service..."
+        systemctl --user stop hypercolor.service 2>/dev/null || true
+        systemctl --user disable hypercolor.service 2>/dev/null || true
+        rm -f "${SYSTEMD_DIR}/hypercolor.service"
+        systemctl --user daemon-reload 2>/dev/null || true
+        success "Removed systemd service"
+    fi
+    rm -f "${INSTALL_DIR}/hypercolor"
+    rm -f "${INSTALL_DIR}/hypercolor-daemon"
+    rm -f "${INSTALL_DIR}/hypercolor-app"
+    rm -f "${INSTALL_DIR}/hypercolor-tui"
+    rm -f "${INSTALL_DIR}/hypercolor-open"
+    rm -f "${DESKTOP_DIR}/hypercolor.desktop"
+    rm -f "${BASH_COMPLETION_DIR}/hypercolor"
+    rm -f "${ZSH_COMPLETION_DIR}/_hypercolor"
+    rm -f "${INSTALL_PREFIX}/share/fish/vendor_completions.d/hypercolor.fish"
+    rm -f "${ICONS_DIR}/hicolor/48x48/apps/hypercolor.png"
+    rm -f "${ICONS_DIR}/hicolor/128x128/apps/hypercolor.png"
+    rm -f "${ICONS_DIR}/hicolor/256x256/apps/hypercolor.png"
+    if [[ -d "$RAW_INSTALL_ROOT" ]]; then
+        chmod -R u+w "$RAW_INSTALL_ROOT"
+        rm -rf "$RAW_INSTALL_ROOT"
+    fi
+    success "Removed the historical installation"
+}
+
 do_uninstall() {
     banner
 
     printf "  ${YELLOW}${BOLD}Uninstall Hypercolor${RESET}\n"
     printf "\n"
     printf "  This will remove:\n"
-    printf "    - Binaries from ${INSTALL_DIR}\n"
-    printf "    - Bundled UI/effects from ${DATA_DIR}\n"
-    printf "    - Service configuration (systemd/launchd)\n"
-    printf "    - Desktop entry and shell completions\n"
+    printf "    - The Hypercolor service (systemd/launchd)\n"
+    printf "    - Installed releases, update state and command links\n"
+    printf "    - Desktop entry, icons and shell completions\n"
     printf "\n"
-    printf "  ${DIM}Your configuration (~/.config/hypercolor) will be preserved.${RESET}\n"
+    printf "  ${DIM}Your Linux data (${DATA_DIR}) and configuration (~/.config/hypercolor) will be preserved.${RESET}\n"
     printf "\n"
 
     if [[ "$SKIP_CONFIRM" != true ]]; then
@@ -396,21 +468,9 @@ do_uninstall() {
 
     detect_platform
 
-    # Stop and remove services
     case "$OS" in
         Linux)
-            if command -v systemctl >/dev/null 2>&1; then
-                info "Stopping and disabling systemd service..."
-                systemctl --user stop hypercolor.service 2>/dev/null || true
-                systemctl --user disable hypercolor.service 2>/dev/null || true
-                rm -f "${SYSTEMD_DIR}/hypercolor.service"
-                systemctl --user daemon-reload 2>/dev/null || true
-                success "Removed systemd service"
-            fi
-
-            # Desktop entry
-            rm -f "${DESKTOP_DIR}/hypercolor.desktop"
-            success "Removed desktop entry"
+            uninstall_raw_linux
 
             # udev rules
             if [[ -f "$UDEV_RULES_PATH" ]]; then
@@ -443,42 +503,42 @@ do_uninstall() {
                 rm -f "$LAUNCHD_PLIST"
                 success "Removed launchd agent"
             fi
+            info "Removing binaries..."
+            rm -f "${INSTALL_DIR}/hypercolor"
+            rm -f "${INSTALL_DIR}/hypercolor-daemon"
+            rm -f "${INSTALL_DIR}/hypercolor-app"
+            rm -f "${INSTALL_DIR}/hypercolor-tui"
+            rm -f "${INSTALL_DIR}/hypercolor-open"
+            success "Removed binaries from ${INSTALL_DIR}"
+            # macOS keeps daemon data under ~/Library, so this directory only
+            # ever held bundled assets from script installs.
+            rm -f "${BASH_COMPLETION_DIR}/hypercolor"
+            rm -f "${ZSH_COMPLETION_DIR}/_hypercolor"
+            rm -rf "${DATA_DIR}"
+            rm -f "${DESKTOP_DIR}/hypercolor.desktop"
+            rm -f "${ICONS_DIR}/hicolor/48x48/apps/hypercolor.png"
+            rm -f "${ICONS_DIR}/hicolor/128x128/apps/hypercolor.png"
+            rm -f "${ICONS_DIR}/hicolor/256x256/apps/hypercolor.png"
             ;;
     esac
 
-    # Remove binaries
-    info "Removing binaries..."
-    rm -f "${INSTALL_DIR}/hypercolor"
-    rm -f "${INSTALL_DIR}/hypercolor-daemon"
-    rm -f "${INSTALL_DIR}/hypercolor-app"
-    rm -f "${INSTALL_DIR}/hypercolor-tui"
-    rm -f "${INSTALL_DIR}/hypercolor-open"
-    success "Removed binaries from ${INSTALL_DIR}"
-
-    # Remove completions
-    info "Removing shell completions..."
-    rm -f "${BASH_COMPLETION_DIR}/hypercolor"
-    rm -f "${ZSH_COMPLETION_DIR}/_hypercolor"
-    rm -f "${FISH_COMPLETION_DIR}/hypercolor.fish"
+    # Completions from releases that predate the current names.
     rm -f "${BASH_COMPLETION_DIR}/hyper"
     rm -f "${ZSH_COMPLETION_DIR}/_hyper"
+    rm -f "${FISH_COMPLETION_DIR}/hypercolor.fish"
     rm -f "${FISH_COMPLETION_DIR}/hyper.fish"
-    success "Removed shell completions"
-
-    info "Removing bundled UI/effects and desktop assets..."
-    rm -rf "${DATA_DIR}"
-    rm -f "${DESKTOP_DIR}/hypercolor.desktop"
     rm -f "${ICONS_DIR}/hicolor/scalable/apps/hypercolor.svg"
-    rm -f "${ICONS_DIR}/hicolor/48x48/apps/hypercolor.png"
-    rm -f "${ICONS_DIR}/hicolor/128x128/apps/hypercolor.png"
-    rm -f "${ICONS_DIR}/hicolor/256x256/apps/hypercolor.png"
-    success "Removed installed assets"
 
     printf "\n"
     success "Hypercolor has been uninstalled."
     printf "\n"
-    warn "Configuration preserved at ~/.config/hypercolor"
-    info "To remove it: rm -rf ~/.config/hypercolor"
+    if [[ "$OS" == Linux ]]; then
+        warn "Data preserved at ${DATA_DIR} and configuration at ~/.config/hypercolor"
+        info "To remove them: rm -rf ${DATA_DIR} ~/.config/hypercolor"
+    else
+        warn "Configuration preserved at ~/.config/hypercolor"
+        info "To remove it: rm -rf ~/.config/hypercolor"
+    fi
     printf "\n"
 }
 

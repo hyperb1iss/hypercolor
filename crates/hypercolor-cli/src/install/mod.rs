@@ -25,9 +25,10 @@ pub use linux::{
     LinuxInstallRequest, LinuxInstallRun, LinuxLayoutItem, LinuxLayoutPublication, LinuxLegacyFile,
     LinuxLegacySnapshot, LinuxLocatorError, LinuxManagedAuthority, LinuxNativeExecutor,
     LinuxProcessExecutable, LinuxPublicEntry, LinuxPublicTree, LinuxSystemdConnection,
-    LinuxSystemdObservation, RetainedLinuxInstallLocation, bind_linux_retained_unit,
-    elect_linux_installation, elect_linux_installation_with, parse_systemd_show, retain_linux_unit,
-    run_linux_install,
+    LinuxSystemdObservation, LinuxUninstallCheckpoint, LinuxUninstallHost, LinuxUninstallRun,
+    RetainedLinuxInstallLocation, bind_linux_retained_unit, elect_linux_installation,
+    elect_linux_installation_with, parse_systemd_show, retain_linux_unit, run_linux_install,
+    run_linux_uninstall,
 };
 pub use model::{
     INSTALL_JOURNAL_SCHEMA_VERSION, InstallAction, InstallDisposition, InstallJournalV1,

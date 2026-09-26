@@ -2,7 +2,7 @@ use std::path::{Component, Path};
 
 use anyhow::{Context as _, Result, bail};
 
-use crate::InstallReleaseArgs;
+use crate::{InstallReleaseArgs, UninstallReleaseArgs};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -22,6 +22,19 @@ pub(crate) fn execute(args: &InstallReleaseArgs) -> Result<()> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn execute(_args: &InstallReleaseArgs) -> Result<()> {
     bail!("raw release installation is unsupported on this platform")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn execute_uninstall(args: &UninstallReleaseArgs) -> Result<()> {
+    let home = linux_home()?;
+    require_bounded_absolute(&home, "HOME")?;
+    LinuxInstallTopology::new(&args.install_prefix, &args.install_dir, &home)?;
+    linux::execute_uninstall(&home)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub(crate) fn execute_uninstall(_args: &UninstallReleaseArgs) -> Result<()> {
+    bail!("raw release uninstall is supported only for per-user Linux installs")
 }
 
 pub(crate) fn parse_manifest_digest(value: &str) -> Result<crate::install::UnitId, String> {
