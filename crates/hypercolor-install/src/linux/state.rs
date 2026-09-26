@@ -74,7 +74,14 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             .active_unit
             .clone()
             .or(self.legacy_unit_id(inspection)?);
-        if running && logical_unit.is_none() {
+        // A managed unit names its release, so the release that runs is the
+        // one the manager's loaded command names, whatever `active` says;
+        // before a first conversion switches `active`, that is the only way
+        // to name it.
+        let started = running
+            .then(|| self.unit_started_by(&inspection.systemd.exec_start))
+            .flatten();
+        if running && logical_unit.is_none() && started.is_none() {
             return Err(error("running direct service has no exact logical unit"));
         }
         let (layout_unit, launcher_unit) = if let Some(active) = &inspection.active_unit {
@@ -88,7 +95,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                     && !self.is_candidate_layout_entry(*item, entry)
             });
             let legacy_launcher_present =
-                launcher_present && !self.candidate_launcher_matches(inspection).unwrap_or(false);
+                launcher_present && !self.candidate_launcher_matches(inspection);
             (
                 legacy_layout_present
                     .then(|| logical_unit.clone())
@@ -98,11 +105,16 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                     .flatten(),
             )
         };
+        let running_unit = if running {
+            started.or(logical_unit)
+        } else {
+            None
+        };
         Ok(PlatformState {
             layout_unit,
             launcher_unit,
             loaded: running,
-            running_unit: running.then_some(logical_unit).flatten(),
+            running_unit,
             autostart_enabled: launcher_present && inspection.systemd.unit_file_state == "enabled",
         })
     }
@@ -111,7 +123,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         &self,
         inspection: &LinuxInspection,
     ) -> Result<Option<UnitId>, InstallPlatformError> {
-        if inspection.active_unit.is_some() || self.is_pre_switch_candidate(inspection)? {
+        if inspection.active_unit.is_some() || self.is_pre_switch_candidate(inspection) {
             return Ok(None);
         }
         if matches!(inspection.launcher, LinuxExactEntry::Absent)
@@ -136,15 +148,11 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             .map_err(|source| error(source.to_string()))
     }
 
-    fn is_pre_switch_candidate(
-        &self,
-        inspection: &LinuxInspection,
-    ) -> Result<bool, InstallPlatformError> {
-        let launcher_matches = self.candidate_launcher_matches(inspection)?;
-        if !launcher_matches {
-            return Ok(false);
-        }
-        Ok(self.known_units.iter().any(|unit| {
+    fn is_pre_switch_candidate(&self, inspection: &LinuxInspection) -> bool {
+        for unit in &self.known_units {
+            if !self.launcher_matches_unit(inspection, unit.id()) {
+                continue;
+            }
             let mut artifact_present = !matches!(inspection.launcher, LinuxExactEntry::Absent);
             let layout_matches = inspection.layout.iter().all(|(item, entry)| match entry {
                 LinuxExactEntry::Absent => true,
@@ -156,24 +164,48 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                 }
                 LinuxExactEntry::RegularFile { .. } | LinuxExactEntry::Symlink { .. } => false,
             });
-            layout_matches && artifact_present
-        }))
+            if layout_matches && artifact_present {
+                return true;
+            }
+        }
+        false
     }
 
-    fn candidate_launcher_matches(
-        &self,
-        inspection: &LinuxInspection,
-    ) -> Result<bool, InstallPlatformError> {
-        let launcher = self.candidate_launcher()?;
-        Ok(match &inspection.launcher {
+    /// Whether the unit file on disk is one this installation accepts for
+    /// some unit it knows.
+    fn candidate_launcher_matches(&self, inspection: &LinuxInspection) -> bool {
+        self.known_units
+            .iter()
+            .any(|unit| self.launcher_matches_unit(inspection, unit.id()))
+    }
+
+    /// The known unit whose release unit, under any contract this build
+    /// knows, starts exactly `exec_start`. The historical direct unit runs
+    /// every release through `active`, so it names none.
+    pub(super) fn unit_started_by(&self, exec_start: &str) -> Option<UnitId> {
+        self.config.managed.as_ref()?;
+        self.known_units
+            .iter()
+            .find(|unit| {
+                self.release_services(unit.id())
+                    .iter()
+                    .any(|launcher| launcher.exec_start == exec_start)
+            })
+            .map(|unit| unit.id().clone())
+    }
+
+    fn launcher_matches_unit(&self, inspection: &LinuxInspection, unit: &UnitId) -> bool {
+        match &inspection.launcher {
             LinuxExactEntry::Absent => true,
             LinuxExactEntry::RegularFile { mode, sha256, .. } => {
-                *mode == launcher.mode
-                    && *sha256 == hex_digest(&launcher.bytes)
-                    && inspection.launcher_bytes == launcher.bytes
+                self.accepted_services(unit).iter().any(|launcher| {
+                    *mode == launcher.mode
+                        && *sha256 == hex_digest(&launcher.bytes)
+                        && inspection.launcher_bytes == launcher.bytes
+                })
             }
             LinuxExactEntry::Symlink { .. } => false,
-        })
+        }
     }
 
     fn is_candidate_layout_entry(

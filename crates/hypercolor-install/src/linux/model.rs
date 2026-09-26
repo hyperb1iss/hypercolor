@@ -11,7 +11,15 @@ use super::systemd::parse_systemd_exec;
 pub(super) const LINUX_RECORD_SCHEMA_VERSION: u32 = 1;
 pub(super) const LINUX_RECEIPT_SCHEMA_VERSION: u32 = 1;
 pub(super) const MAX_SYSTEMD_SHOW_BYTES: usize = 16 * 1024;
-pub(super) const MAX_LAUNCHER_BYTES: usize = 4 * 1024;
+/// Bound for the generated unit file, which spells the release directory
+/// and every recorded root of a managed installation into its commands,
+/// environment and sandbox directives. A record carries two units as JSON
+/// integer arrays and the journal carries the record the same way, so two
+/// units at this bound still leave the journal room to grow by an owner
+/// receipt and a failure detail under the managed journal bound.
+pub(super) const MAX_LAUNCHER_BYTES: usize = 10 * 1024;
+/// Bound for `/proc/<pid>/cmdline`.
+pub(super) const MAX_COMMAND_LINE_BYTES: u64 = 64 * 1024;
 pub(super) const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024;
 pub(super) const MAX_MANIFEST_BYTES: usize = 2 * 1024 * 1024;
 pub(super) const DAEMON_RELATIVE_PATH: &str = "bin/hypercolor-daemon";
@@ -210,6 +218,9 @@ pub struct LinuxProcessExecutable {
     pub sha256: String,
     pub device: u64,
     pub inode: u64,
+    /// The process's argument vector from `/proc/<pid>/cmdline`, which
+    /// names the UI and effects directories the daemon serves.
+    pub arguments: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,6 +264,13 @@ pub struct LinuxInstallConfig {
     /// identity at `ProveCandidate` before the transaction commits. Zero
     /// commits right after the first proof.
     pub probation: Duration,
+    /// The recorded installation a managed store belongs to. Its service
+    /// names one release directory and runs inside the recorded sandbox;
+    /// the historical root (`None`) keeps its direct, unsandboxed service
+    /// through `active`.
+    pub managed: Option<super::LinuxInstallLocation>,
+    /// Renders a managed installation's service unit.
+    pub service: super::LinuxServiceRenderer,
 }
 
 /// The running service identity a probation window holds the service to.

@@ -306,3 +306,129 @@ scenario_units_collected() {
     expect_active "${V_C}"
     expect_units "${V_B}" "${V_C}"
 }
+
+# A managed install runs its daemon from its own release directory inside
+# the sandbox: healthy, able to write exactly the recorded configuration,
+# data and daemon state roots, with a private /tmp and its XDG bases pinned
+# to the recorded roots. The update state stays read-only, so the daemon
+# cannot create a coordinator directory; once another build has created
+# one, the unit makes it writable and nothing else in update state.
+scenario_hardened_unit() {
+    set_faults "${V_A}" probe_writes=1
+    install_run fresh "${V_A}" -- --probation-seconds 0
+    expect_exit 0
+    expect_journal committed
+    expect_active "${V_A}"
+    expect_health "${V_A}"
+
+    local fragment="${GUEST_HOME}/.config/systemd/user/hypercolor.service"
+    local unit_a
+    unit_a="${GUEST_RELEASES}/units/$(unit_of "${V_A}")"
+    gx cat "${fragment}" >"${RECEIPT}/unit.service"
+    head -n 1 "${RECEIPT}/unit.service" | grep -qxF "# Hypercolor service contract: hypercolor-public-1" ||
+        fail "the unit does not name its service contract"
+    grep -qxF "ExecStart=${unit_a}/bin/hypercolor-daemon --ui-dir ${unit_a}/share/hypercolor/ui --effects-dir ${unit_a}/share/hypercolor/effects/bundled" \
+        "${RECEIPT}/unit.service" || fail "the unit does not name its release directory"
+    grep -qxF "ExecStartPre=+mkdir -p -m 0700 ${GUEST_HOME}/.config/hypercolor" "${RECEIPT}/unit.service" ||
+        fail "the unit does not recreate its configuration root before the sandbox"
+    local directive
+    for directive in ProtectSystem=strict ProtectHome=read-only PrivateTmp=true \
+        NoNewPrivileges=true Type=notify WatchdogSec=30 \
+        Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service; do
+        grep -qxF "${directive}" "${RECEIPT}/unit.service" || fail "the unit lacks ${directive}"
+    done
+    log "  ok: the unit names its release and carries its sandbox"
+    gx systemctl --user show hypercolor.service -p ProtectSystem -p ProtectHome \
+        -p PrivateTmp -p NoNewPrivileges -p ReadWritePaths -p ReadOnlyPaths \
+        >"${RECEIPT}/sandbox-properties.txt"
+    expect_prop ProtectSystem strict
+    expect_prop ProtectHome read-only
+    expect_prop PrivateTmp yes
+    expect_prop NoNewPrivileges yes
+
+    expect_launch "${V_A}"
+    expect_writes absent
+    local pid
+    pid="$(service_prop MainPID)"
+    if gx test -e "/tmp/hc-qual-private-${pid}"; then
+        fail "the daemon's /tmp is not private"
+    fi
+    log "  ok: the daemon's /tmp is private"
+    local name
+    for name in coordinator activator; do
+        if gx test -e "${GUEST_HOME}/.local/state/hypercolor/update/${name}"; then
+            fail "the public installer created ${name}/"
+        fi
+    done
+    log "  ok: the public installer creates no coordinator/ or activator/"
+
+    log "another build creates coordinator/ and activator/; restarting"
+    gx mkdir -m 0700 "${GUEST_HOME}/.local/state/hypercolor/update/coordinator" \
+        "${GUEST_HOME}/.local/state/hypercolor/update/activator"
+    gx systemctl --user restart hypercolor.service
+    wait_active
+    expect_health "${V_A}"
+    expect_writes present
+
+    install_run upgrade "${V_B}" -- --probation-seconds 0
+    expect_exit 0
+    expect_active "${V_B}"
+    expect_launch "${V_B}"
+}
+
+# Deleting the configuration directory to reset it, as the uninstall guide
+# suggests, must not keep the sandboxed service from starting: its
+# ExecStartPre=+mkdir step recreates the recorded root before systemd builds
+# the sandbox around it.
+scenario_config_reset() {
+    install_run fresh "${V_A}" -- --probation-seconds 0
+    expect_exit 0
+    expect_health "${V_A}"
+    local config="${GUEST_HOME}/.config/hypercolor"
+    gx systemctl --user stop hypercolor.service
+    gx rm -rf "${config}"
+    if gx test -e "${config}"; then
+        fail "the configuration root is still there"
+    fi
+    log "deleted ${config}; starting the service"
+    gx systemctl --user start hypercolor.service || fail "the service did not start after the reset"
+    wait_active
+    expect_health "${V_A}"
+    [[ "$(gx stat -c %a "${config}")" == 700 ]] || fail "the configuration root was not recreated 0700"
+    log "  ok: the service recreated the deleted configuration root and started"
+}
+
+# The active pointer swaps between two releases as fast as the guest can
+# while the service restarts again and again. The unit names one release's
+# directory, so every start runs that release, whole, whatever active says
+# at that moment.
+scenario_active_swap() {
+    install_run fresh "${V_A}" -- --probation-seconds 0
+    expect_exit 0
+    install_run upgrade "${V_B}" -- --probation-seconds 0
+    expect_exit 0
+    expect_active "${V_B}"
+
+    local unit_a unit_b
+    unit_a="$(unit_of "${V_A}")"
+    unit_b="$(unit_of "${V_B}")"
+    log "swapping active between ${V_A} and ${V_B} while restarting"
+    podman exec -d --user "${GUEST_UID}" -w "${GUEST_RELEASES}" "${GUEST}" bash -c "
+        touch /tmp/hc-qual-swapping
+        while [ -e /tmp/hc-qual-swapping ]; do
+            ln -s units/${unit_a} active.swap && mv -T active.swap active
+            ln -s units/${unit_b} active.swap && mv -T active.swap active
+        done"
+    local _
+    for _ in $(seq 1 24); do
+        # Reset the start rate limit, which counts manual restarts too.
+        gx systemctl --user reset-failed hypercolor.service
+        gx systemctl --user restart hypercolor.service
+        wait_active
+        expect_launch "${V_B}"
+    done
+    groot rm -f /tmp/hc-qual-swapping
+    sleep 1
+    gx bash -c "cd ${GUEST_RELEASES} && ln -s units/${unit_b} active.swap && mv -T active.swap active"
+    log "  ok: all 24 starts ran ${V_B} whole while active flipped underneath"
+}

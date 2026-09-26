@@ -51,6 +51,30 @@ home directory at most 256 bytes. Both may contain only letters, digits, `/`,
 `.`, `_` and `-`, because they are written verbatim into the generated systemd
 unit. Other paths are refused before anything is written.
 
+## How the service starts
+
+The generated `hypercolor.service` names one release's directory: its daemon,
+and the UI and bundled effects of that same release. Every install writes a
+new unit for the release it installs, as part of the same transaction, and a
+rollback puts the previous unit back byte for byte. Switching the `active`
+link never changes what the service starts, so a restart can never run one
+release's code with another's UI or effects. The unit's first line names the
+service contract it was written under, so an installer never misjudges a unit
+written by a build it does not know.
+
+The service runs sandboxed. The whole system is read-only to it except your
+configuration, data and state directories (the recorded ones above), and it
+gets a private `/tmp`. A systemd user manager builds this sandbox with an
+unprivileged user namespace, and the unit needs systemd 239 or newer. The releases directory and the update state stay
+read-only even though they sit inside those directories, and `~/.local/bin`
+and `~/.local/lib` are never writable. The unit sets the daemon's XDG
+directories to the recorded roots, and caches go to
+`${XDG_STATE_HOME:-~/.local/state}/hypercolor/cache`. Before the sandbox is
+built, the service recreates the configuration directory if you deleted it,
+so removing `~/.config/hypercolor` to reset your settings still lets the
+daemon start. The data and state directories hold the releases and the update
+records, so deleting either one breaks the installation itself.
+
 ## Upgrades from older installs
 
 Releases before this layout kept everything under `~/.local/lib/hypercolor`.
@@ -191,6 +215,8 @@ hide accounts from a listing, so they refuse the group exception.
 | `XDG_RUNTIME_DIR` has no `systemd/private` socket you own | The installer drives the service through your user manager's private socket, never the session bus | Run it in your own login session, or keep the user manager running with `loginctl enable-linger` |
 | The service is still starting, stopping or restarting after its own timeout | A service that keeps changing state is not a safe starting point | Wait for it to settle, or stop it with `systemctl --user stop hypercolor.service`, then rerun |
 | Locator from an unknown or newer installer | Guessing would risk managing the wrong install | Use the current installer |
+| An XDG base directory would put a writable root at your home, `~/.local/bin` or `~/.local/lib`, or one inside another | The service sandbox could not keep the daemon out of your commands and libraries | For a new install, point that variable at another directory and rerun; for an existing one, uninstall, then install again |
+| A pending install was prepared under a service contract this installer does not know | It cannot check a unit another build wrote | Finish it with the installer that started it |
 | Uninstall finds a service, unit or link this installer did not generate | It belongs to a package, another install or a local edit | Remove it with its owner, then rerun |
 | Another install or uninstall is running | Two writers would corrupt the journal | Wait for it to finish |
 

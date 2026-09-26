@@ -18,7 +18,7 @@ use super::super::{
 use super::{
     LinuxAdoption, LinuxAdoptionError, LinuxInstallConfig, LinuxInstallElection,
     LinuxInstallExecutor, LinuxInstallLocation, LinuxInstallPlatform, LinuxLocatorError,
-    LinuxPublicTree, elect_linux_installation_with, retain_linux_unit,
+    LinuxPublicTree, LinuxServiceRenderer, elect_linux_installation_with, retain_linux_unit,
 };
 
 /// Durable boundaries of one install run where a crash leaves disk state.
@@ -89,6 +89,12 @@ pub trait LinuxInstallHost {
         lock: &InstallLock,
         tree: LinuxPublicTree,
     ) -> Result<Self::Executor, InstallPlatformError>;
+
+    /// The renderer for a managed installation's service unit. A build
+    /// that renders its own unit returns its renderer here.
+    fn service_renderer(&self) -> LinuxServiceRenderer {
+        LinuxServiceRenderer::PUBLIC
+    }
 
     /// Observe one durable boundary.
     ///
@@ -204,9 +210,10 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                     LinuxPlatformInputs {
                         candidate: None,
                         journal: Some(journal),
-                        managed: false,
+                        managed: None,
                         original: None,
                         probation: request.probation,
+                        service: host.service_renderer(),
                     },
                 )?;
                 return recover(&store, &mut lock, &mut platform);
@@ -236,6 +243,7 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 proposed,
                 &mut |checkpoint| stop(host, checkpoint).map_err(boxed_stop),
             )?;
+            require_sandboxable(home, adoption.location())?;
             let candidate = host.stage_candidate(adoption.store(), adoption.lock())?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
             let (journal, mut platform) =
@@ -279,14 +287,16 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                     LinuxPlatformInputs {
                         candidate: None,
                         journal: Some(&journal),
-                        managed: true,
+                        managed: Some(authority.location()),
                         original: None,
                         probation: request.probation,
+                        service: host.service_renderer(),
                     },
                 )?;
                 let run = recover(&store, &mut lock, &mut platform)?;
                 return Ok(collect_settled(&store, &lock, run));
             }
+            require_sandboxable(home, authority.location())?;
             let candidate = host.stage_candidate(&store, &lock)?;
             stop(host, LinuxInstallCheckpoint::CandidateStaged)?;
             let prior_record =
@@ -299,9 +309,10 @@ pub fn run_linux_install<H: LinuxInstallHost>(
                 LinuxPlatformInputs {
                     candidate: Some(&candidate),
                     journal: prior_record,
-                    managed: true,
+                    managed: Some(authority.location()),
                     original: None,
                     probation: request.probation,
+                    service: host.service_renderer(),
                 },
             )?;
             authority
@@ -363,9 +374,10 @@ fn prepare_or_replace<H: LinuxInstallHost>(
             LinuxPlatformInputs {
                 candidate: Some(candidate),
                 journal: prepared.as_ref(),
-                managed: true,
+                managed: Some(adoption.location()),
                 original: adoption.original_prior(),
                 probation: request.probation,
+                service: host.service_renderer(),
             },
         )?;
         match adoption.prepare(&mut platform, install_request(request, candidate.clone())) {
@@ -380,6 +392,20 @@ fn prepare_or_replace<H: LinuxInstallHost>(
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+/// Refuse to install into a recorded location the service sandbox cannot
+/// confine, before anything is staged. Recovery and uninstall still run.
+fn require_sandboxable(
+    home: &Path,
+    location: &LinuxInstallLocation,
+) -> Result<(), LinuxInstallCommandError> {
+    location.validate_sandbox(home).map_err(|source| {
+        InstallPlatformError::new(format!(
+            "{source}; uninstall, then install again with other XDG directories"
+        ))
+        .into()
+    })
 }
 
 fn stop<H: LinuxInstallHost>(
@@ -471,12 +497,15 @@ pub struct LinuxPlatformInputs<'a> {
     /// follows; its units are retained and, for a managed store, its
     /// recorded prior authority is restored.
     pub journal: Option<&'a InstallJournalV1>,
-    /// The store is a managed installation rather than the historical root.
-    pub managed: bool,
+    /// The recorded installation a managed store belongs to; `None` for the
+    /// historical root.
+    pub managed: Option<&'a LinuxInstallLocation>,
     /// The historical unit an adoption copies, before any journal exists.
     pub original: Option<&'a UnitRecord>,
     /// How long a started candidate must stay up before it commits.
     pub probation: Duration,
+    /// Renders a managed store's service unit.
+    pub service: LinuxServiceRenderer,
 }
 
 fn platform<H: LinuxInstallHost>(
@@ -504,8 +533,16 @@ fn platform<H: LinuxInstallHost>(
 /// [`InstallCoordinator`] itself (preparing, binding and writing a journal,
 /// then recovering it) gets the same platform the raw installer uses.
 ///
+/// Only the historical root of an installation whose locator still says it
+/// was never adopted binds without a recorded location (an unreadable
+/// locator proves nothing, so it refuses too); any other store must pass its
+/// location, so its service is always rendered for one release, inside its
+/// sandbox, by `inputs.service`.
+///
 /// # Errors
-/// Refuses units, executors, topology or prior roles that cannot be proven.
+/// Refuses units, executors, topology or prior roles that cannot be proven,
+/// a managed store bound without its location, and a candidate bound for a
+/// location the service sandbox cannot confine.
 pub fn bind_linux_platform<E: LinuxInstallExecutor>(
     home: &Path,
     executor: impl FnOnce(
@@ -517,6 +554,21 @@ pub fn bind_linux_platform<E: LinuxInstallExecutor>(
     lock: &InstallLock,
     inputs: LinuxPlatformInputs<'_>,
 ) -> Result<LinuxInstallPlatform<E>, LinuxInstallCommandError> {
+    if inputs.managed.is_none()
+        && (store.root() != home.join(".local/lib/hypercolor")
+            || !matches!(
+                super::locator::read_hint(home),
+                Ok(super::LinuxInstallAuthority::Legacy(_))
+            ))
+    {
+        return Err(InstallPlatformError::new(
+            "a managed installation must be bound with its recorded location",
+        )
+        .into());
+    }
+    if let (Some(_), Some(location)) = (inputs.candidate, inputs.managed) {
+        require_sandboxable(home, location)?;
+    }
     let known = known_units(store, lock, inputs.candidate, inputs.journal)?;
     let tree = LinuxPublicTree::new(lock, home)?;
     let executor = executor(store, lock, tree)?;
@@ -527,10 +579,12 @@ pub fn bind_linux_platform<E: LinuxInstallExecutor>(
         executor,
         inputs
             .journal
-            .filter(|_| inputs.managed)
+            .filter(|_| inputs.managed.is_some())
             .map(|journal| &journal.platform_record),
         inputs.original,
         inputs.probation,
+        inputs.managed,
+        inputs.service,
     )?)
 }
 
@@ -546,6 +600,8 @@ pub(crate) fn bind_platform<E: LinuxInstallExecutor>(
     record: Option<&PlatformTransactionRecord>,
     original: Option<&UnitRecord>,
     probation: Duration,
+    managed: Option<&LinuxInstallLocation>,
+    service: LinuxServiceRenderer,
 ) -> Result<LinuxInstallPlatform<E>, InstallPlatformError> {
     if original.is_some() && record.is_none() {
         executor.retain_prior_units()?;
@@ -559,6 +615,8 @@ pub(crate) fn bind_platform<E: LinuxInstallExecutor>(
         immutable_units_root: store.root().join("units"),
         active_root: store.active_path(),
         probation,
+        managed: managed.cloned(),
+        service,
     };
     let mut platform = LinuxInstallPlatform::new(executor, config, known)?;
     if let Some(original) = original.filter(|_| record.is_none()) {

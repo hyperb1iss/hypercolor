@@ -3,7 +3,7 @@ use std::path::Path;
 
 use sha2::{Digest as _, Sha256};
 
-use super::super::{InstallPlatformError, PlatformCheckpoint, PlatformState, UnitRecord};
+use super::super::{InstallPlatformError, PlatformCheckpoint, PlatformState, UnitId, UnitRecord};
 use super::LinuxInstallPlatform;
 use super::executor::LinuxInstallExecutor;
 use super::model::{
@@ -11,6 +11,9 @@ use super::model::{
     LinuxOwnerReceipt, LinuxRecord, LinuxServiceIdentity, LinuxServicePhase, LinuxServiceWatch,
     LinuxSystemdObservation, LinuxUnitBinding, MAX_HTTP_RESPONSE_BYTES, MAX_SYSTEMD_SHOW_BYTES,
     error, parse_systemd_show,
+};
+use super::service::{
+    CONTRACT_LINE_PREFIX, LinuxServiceInput, LinuxServiceRenderer, unit_contract,
 };
 use super::systemd::canonical_launcher_exec;
 
@@ -30,8 +33,88 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         retained_unit_binding(unit, units_root)
     }
 
-    pub(super) fn candidate_launcher(&self) -> Result<LinuxLauncher, InstallPlatformError> {
-        render_launcher(&self.config.active_root)
+    /// The unit this installation renders for `unit`: under its service
+    /// renderer for a managed installation, the direct unit through
+    /// `active` for the historical root.
+    pub(super) fn service_for_unit(
+        &self,
+        unit: &UnitId,
+    ) -> Result<LinuxLauncher, InstallPlatformError> {
+        match &self.config.managed {
+            Some(location) => render_managed(
+                &self.config.service,
+                &self.config.immutable_units_root,
+                unit,
+                location,
+            )
+            .map(|(launcher, _)| launcher),
+            None => render_direct(&self.config.active_root),
+        }
+    }
+
+    /// Render `unit` again under the contract the `recorded` unit names, to
+    /// validate a transaction's recorded candidate unit.
+    pub(super) fn rerender_service(
+        &self,
+        unit: &UnitId,
+        recorded: &[u8],
+    ) -> Result<LinuxLauncher, InstallPlatformError> {
+        let Some(contract) = unit_contract(recorded) else {
+            return render_direct(&self.config.active_root);
+        };
+        let location = self
+            .config
+            .managed
+            .as_ref()
+            .ok_or_else(|| error("the historical root runs no contract service unit"))?;
+        render_managed(
+            &self.renderer_for(contract)?,
+            &self.config.immutable_units_root,
+            unit,
+            location,
+        )
+        .map(|(launcher, _)| launcher)
+    }
+
+    /// Every unit validation accepts for `unit`: the historical direct unit
+    /// through `active`, and the units a contract this build knows renders.
+    pub(super) fn accepted_services(&self, unit: &UnitId) -> Vec<LinuxLauncher> {
+        let mut services: Vec<LinuxLauncher> = render_direct(&self.config.active_root)
+            .into_iter()
+            .collect();
+        services.extend(self.release_services(unit));
+        services
+    }
+
+    /// The units a contract this build knows renders for `unit`: this
+    /// installation's own and the public one. Each names `unit`'s release
+    /// directory, unlike the direct unit. A rendering that fails is left out.
+    pub(super) fn release_services(&self, unit: &UnitId) -> Vec<LinuxLauncher> {
+        let Some(location) = &self.config.managed else {
+            return Vec::new();
+        };
+        [self.config.service, LinuxServiceRenderer::PUBLIC]
+            .into_iter()
+            .filter_map(|renderer| {
+                render_managed(&renderer, &self.config.immutable_units_root, unit, location)
+                    .ok()
+                    .map(|(launcher, _)| launcher)
+            })
+            .collect()
+    }
+
+    /// The renderer for `contract`: this installation's own, or the public
+    /// one every build carries.
+    fn renderer_for(&self, contract: &str) -> Result<LinuxServiceRenderer, InstallPlatformError> {
+        [self.config.service, LinuxServiceRenderer::PUBLIC]
+            .into_iter()
+            .find(|renderer| renderer.contract() == contract)
+            .ok_or_else(|| {
+                error(format!(
+                    "the service unit was rendered under contract {contract}, which this \
+                     build does not know"
+                ))
+            })
     }
 
     pub(super) fn layout_target(
@@ -44,11 +127,52 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
     }
 }
 
-/// Render the exact generated launcher for one active root.
+/// Render a managed installation's unit for `unit` under `renderer`, with
+/// the contract line first, and the daemon arguments it runs with.
 ///
 /// # Errors
-/// Refuses a non-UTF-8 root or a launcher that exceeds its byte bound.
-pub(super) fn render_launcher(active_root: &Path) -> Result<LinuxLauncher, InstallPlatformError> {
+/// Refuses a renderer whose unit is not one `Type=notify` service with one
+/// `ExecStart`, names no daemon arguments, or exceeds the unit byte bound.
+pub(super) fn render_managed(
+    renderer: &LinuxServiceRenderer,
+    units_root: &Path,
+    unit: &UnitId,
+    location: &super::LinuxInstallLocation,
+) -> Result<(LinuxLauncher, Vec<String>), InstallPlatformError> {
+    let release = units_root.join(unit.as_str());
+    let rendered = renderer.render(&LinuxServiceInput {
+        release: &release,
+        location,
+    })?;
+    if rendered.daemon_arguments.is_empty() {
+        return Err(error("a rendered service names no daemon arguments"));
+    }
+    let bytes = format!(
+        "{CONTRACT_LINE_PREFIX}{}\n{}",
+        renderer.contract(),
+        rendered.unit
+    )
+    .into_bytes();
+    if bytes.len() > super::model::MAX_LAUNCHER_BYTES {
+        return Err(error("rendered service unit exceeds its byte bound"));
+    }
+    let exec_start = require_notify_launcher(&bytes)?;
+    Ok((
+        LinuxLauncher {
+            mode: LAUNCHER_MODE,
+            bytes,
+            exec_start,
+        },
+        rendered.daemon_arguments,
+    ))
+}
+
+/// Render the historical direct unit, which runs the daemon straight
+/// through `active` without a sandbox.
+///
+/// # Errors
+/// Refuses a non-UTF-8 root or a unit that exceeds its byte bound.
+pub(super) fn render_direct(active_root: &Path) -> Result<LinuxLauncher, InstallPlatformError> {
     let active = active_root
         .to_str()
         .ok_or_else(|| error("Linux install roots must be exact UTF-8"))?;
@@ -60,7 +184,7 @@ pub(super) fn render_launcher(active_root: &Path) -> Result<LinuxLauncher, Insta
     )
     .into_bytes();
     if bytes.len() > super::model::MAX_LAUNCHER_BYTES {
-        return Err(error("rendered Linux launcher exceeds its byte bound"));
+        return Err(error("rendered service unit exceeds its byte bound"));
     }
     Ok(LinuxLauncher {
         mode: LAUNCHER_MODE,
@@ -114,15 +238,19 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                 .filter(|prior| &prior.unit == unit)
                 .ok_or_else(|| error("prior owner proof requested an unknown unit"))?
         };
-        let expected_exec = if candidate_owner {
-            &record
+        let (unit_bytes, expected_exec) = if candidate_owner {
+            let launcher = record
                 .candidate_launcher
                 .as_ref()
-                .ok_or_else(|| error("running candidate lacks launcher metadata"))?
-                .exec_start
+                .ok_or_else(|| error("running candidate lacks launcher metadata"))?;
+            (launcher.bytes.as_slice(), launcher.exec_start.clone())
         } else {
-            &require_notify_launcher(&record.prior_launcher_bytes)?
+            (
+                record.prior_launcher_bytes.as_slice(),
+                require_notify_launcher(&record.prior_launcher_bytes)?,
+            )
         };
+        let expected_exec = &expected_exec;
         require_running_observation(&before, &self.config.direct_fragment_path, expected_exec)?;
         if before.invocation_id == record.baseline_systemd.invocation_id {
             return Err(error("systemd owner invocation is not fresh"));
@@ -157,6 +285,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                 "/proc executable identity does not match the immutable unit",
             ));
         }
+        self.require_daemon_arguments(&process, unit_bytes, &before.exec_start, binding)?;
         verify_http(
             self.executor.http_get("/health", MAX_HTTP_RESPONSE_BYTES)?,
             self.executor
@@ -288,6 +417,12 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
                 "prior /proc executable identity does not match its retained unit",
             ));
         }
+        self.require_daemon_arguments(
+            &process,
+            &record.prior_launcher_bytes,
+            &before.exec_start,
+            binding,
+        )?;
         verify_http(
             self.executor.http_get("/health", MAX_HTTP_RESPONSE_BYTES)?,
             self.executor
@@ -299,6 +434,71 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
             return Err(error("prior systemd owner changed during baseline proof"));
         }
         Ok(())
+    }
+}
+
+impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
+    /// Prove the daemon runs with the arguments its unit gives it, which
+    /// for a managed unit name the UI and effects of the daemon's own
+    /// release.
+    ///
+    /// A unit rendered under a contract this build knows gives the
+    /// renderer's daemon arguments; a direct unit, or one that differs from
+    /// its contract's rendering, gives its own `ExecStart` arguments; a unit
+    /// under a contract this build does not know, and legacy snapshots,
+    /// whose historical units this installer did not write, keep only the
+    /// executable proof.
+    pub(super) fn require_daemon_arguments(
+        &self,
+        process: &super::model::LinuxProcessExecutable,
+        unit_bytes: &[u8],
+        exec_start: &str,
+        binding: &LinuxUnitBinding,
+    ) -> Result<(), InstallPlatformError> {
+        let Some(expected) = self.expected_daemon_arguments(unit_bytes, exec_start, binding)?
+        else {
+            return Ok(());
+        };
+        if process.arguments != expected {
+            return Err(error(format!(
+                "the daemon of {} runs with arguments {:?}, not {:?}",
+                binding.unit.as_str(),
+                process.arguments,
+                expected
+            )));
+        }
+        Ok(())
+    }
+
+    fn expected_daemon_arguments(
+        &self,
+        unit_bytes: &[u8],
+        exec_start: &str,
+        binding: &LinuxUnitBinding,
+    ) -> Result<Option<Vec<String>>, InstallPlatformError> {
+        if binding.unit.as_str().starts_with("legacy-") {
+            return Ok(None);
+        }
+        let words: Vec<String> = serde_json::from_str(exec_start)
+            .map_err(|_| error("canonical ExecStart argument vector is malformed"))?;
+        let Some(contract) = unit_contract(unit_bytes) else {
+            return Ok(Some(words));
+        };
+        let (Some(location), Ok(renderer)) = (&self.config.managed, self.renderer_for(contract))
+        else {
+            return Ok(None);
+        };
+        let (rendered, arguments) = render_managed(
+            &renderer,
+            &self.config.immutable_units_root,
+            &binding.unit,
+            location,
+        )?;
+        Ok(Some(if rendered.bytes == unit_bytes {
+            arguments
+        } else {
+            words
+        }))
     }
 }
 

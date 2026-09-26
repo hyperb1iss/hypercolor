@@ -15,6 +15,8 @@
 #       Print the journal, active pointer, service properties and /health.
 #   hc-guest-driver health
 #       Print /health, or "unreachable".
+#   hc-guest-driver launch-report
+#       Print the qualification daemon's /qual/launch report.
 set -euo pipefail
 
 RELEASES=/releases
@@ -80,6 +82,11 @@ PY
     if [[ -e "${XDG_RUNTIME_DIR}/bus" ]]; then printf 'reachable\n'; else printf 'hidden\n'; fi
     printf '== health\n'
     health
+}
+
+launch_report() {
+    curl -fsS --max-time 5 http://127.0.0.1:9420/qual/launch 2>/dev/null || printf 'unreachable'
+    printf '\n'
 }
 
 install() {
@@ -189,5 +196,6 @@ case "${command}" in
     install) (($#)) || die "install needs a version"; install "$@" ;;
     state) state ;;
     health) health ;;
-    *) die "usage: hc-guest-driver install|state|health" ;;
+    launch-report) launch_report ;;
+    *) die "usage: hc-guest-driver install|state|health|launch-report" ;;
 esac

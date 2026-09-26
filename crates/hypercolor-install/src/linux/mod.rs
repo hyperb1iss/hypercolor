@@ -23,6 +23,7 @@ mod prior;
 mod proof;
 mod record;
 mod runtime;
+mod service;
 mod state;
 mod systemd;
 mod uninstall;
@@ -53,6 +54,9 @@ pub use model::{
     LinuxServiceWatch, LinuxSystemdObservation, MAX_PROBATION_WINDOW, parse_systemd_show,
 };
 pub use runtime::{LinuxRuntimeSettlement, LinuxSystemdConnection};
+pub use service::{
+    LINUX_PUBLIC_SERVICE_CONTRACT, LinuxRenderedService, LinuxServiceInput, LinuxServiceRenderer,
+};
 pub use uninstall::{
     LinuxUninstallCheckpoint, LinuxUninstallHost, LinuxUninstallRun, run_linux_uninstall,
 };
@@ -150,6 +154,14 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         {
             return Err(model::error(
                 "Linux install roots do not share one exact topology",
+            ));
+        }
+        if let Some(location) = &config.managed
+            && (config.immutable_units_root != location.release_root().join("units")
+                || config.active_root != location.release_root().join("active"))
+        {
+            return Err(model::error(
+                "Linux install roots are not the recorded managed release root",
             ));
         }
         executor.validate_topology(&config)?;
