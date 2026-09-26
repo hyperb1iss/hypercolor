@@ -106,12 +106,10 @@ if [[ -z "${tarball}" ]]; then
   exit 2
 fi
 
-for cmd in python3; do
-  command -v "${cmd}" >/dev/null 2>&1 || {
-    echo "missing required command: ${cmd}" >&2
-    exit 1
-  }
-done
+command -v python3 >/dev/null 2>&1 || {
+  echo "missing required command: python3" >&2
+  exit 1
+}
 
 [[ -s "${tarball}" ]] || {
   echo "release tarball is missing or empty: ${tarball}" >&2
@@ -308,8 +306,18 @@ from pathlib import Path
 
 root_name = os.environ["ROOT_NAME"]
 root = Path(os.environ["ROOT_DIR"])
+def unique_keys(pairs):
+    # The Rust validator rejects a duplicated field; keep the two in step
+    # instead of silently taking the last value.
+    keys = [key for key, _ in pairs]
+    duplicated = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicated:
+        raise SystemExit(f"duplicated keys: {duplicated}")
+    return dict(pairs)
+
+
 with open(os.environ["MANIFEST"], encoding="utf-8") as handle:
-    manifest = json.load(handle)
+    manifest = json.load(handle, object_pairs_hook=unique_keys)
 
 name = manifest.get("name")
 version = manifest.get("version")
@@ -426,6 +434,62 @@ if actual_paths != expected_paths:
     raise SystemExit(
         f"manifest member set mismatch: missing={missing}, unexpected={unexpected}"
     )
+
+# The durable store inventory a Linux release ships (dist.sh writes it from
+# packaging/managed/durable-stores.json). The installer never reads it, so
+# its absence is not an error here; when present it must be exactly its
+# shape: one entry per store, each reading the schema it writes.
+inventory_path = "share/hypercolor/durable-stores.json"
+if inventory_path in expected_paths:
+    def whole(value, what):
+        if type(value) is not int or value < 0 or value > 0xFFFFFFFF:
+            raise SystemExit(f"{what} must be a whole number in 0..=4294967295")
+        return value
+
+    def token(value, limit, what):
+        if (
+            not isinstance(value, str)
+            or len(value) > limit
+            or re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", value) is None
+        ):
+            raise SystemExit(
+                f"{what} must be 1..={limit} lowercase letters, digits and '-': {value!r}"
+            )
+        return value
+
+    with open(root / inventory_path, encoding="utf-8") as handle:
+        inventory = json.load(handle, object_pairs_hook=unique_keys)
+    if not isinstance(inventory, dict) or set(inventory) != {"stores"}:
+        raise SystemExit(f"{inventory_path} must hold exactly its stores")
+    stores = inventory["stores"]
+    if not isinstance(stores, list) or not 1 <= len(stores) <= 64:
+        raise SystemExit(f"{inventory_path} must declare 1..=64 stores")
+    store_fields = {
+        "name", "storage_format", "readable_schema_min", "readable_schema_max",
+        "written_schema", "migration_mode",
+    }
+    names = set()
+    for store in stores:
+        if not isinstance(store, dict) or set(store) != store_fields:
+            raise SystemExit("a durable store must declare exactly its six fields")
+        name = token(store["name"], 64, "durable store name")
+        if name in names:
+            raise SystemExit(f"durable store {name} is declared twice")
+        names.add(name)
+        token(store["storage_format"], 32, f"durable store {name} storage_format")
+        low = whole(store["readable_schema_min"], f"{name}.readable_schema_min")
+        high = whole(store["readable_schema_max"], f"{name}.readable_schema_max")
+        written = whole(store["written_schema"], f"{name}.written_schema")
+        if not low <= written <= high:
+            raise SystemExit(
+                f"durable store {name} must read the schema it writes: "
+                f"{low}..={high} does not hold {written}"
+            )
+        if store["migration_mode"] not in {"backward_compatible", "staged", "manual"}:
+            raise SystemExit(
+                f"durable store {name} has an unknown migration_mode "
+                f"{store['migration_mode']!r}"
+            )
 PY
 
 platform="$(MANIFEST="${manifest}" python3 - <<'PY'

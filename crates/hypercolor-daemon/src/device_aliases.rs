@@ -30,7 +30,7 @@ use crate::persistence::{AtomicFileWriter, serialize_json_pretty, write_atomic};
 /// File name of the overlay inside the daemon state directory.
 pub const DEVICE_ALIASES_FILE: &str = "device-aliases.json";
 
-const SCHEMA_VERSION: u32 = 2;
+pub(crate) const SCHEMA_VERSION: u32 = 2;
 const STORE_SUBJECT: &str = "device aliases";
 
 /// Persisted portable-key overlay.

@@ -115,11 +115,18 @@ pub(crate) fn validate_installed_release_record(
     validated_installed_manifest(source).map(drop)
 }
 
+/// Validate a retained release through the installed-manifest rules.
+///
+/// Adoption copies the historical active release, and recovery rebinds a
+/// recorded prior; both are installed releases, which may predate the
+/// current candidate requirements (bundled user skills), so they are never
+/// judged as new candidates.
 fn validated_installed_manifest(
     source: &UnitRecord,
 ) -> Result<ValidatedManifest, ReleasePayloadError> {
-    let manifest =
-        ValidatedManifest::parse(tree::read_retained_manifest_bytes(source.directory())?)?;
+    let manifest = ValidatedManifest::parse_installed(tree::read_retained_manifest_bytes(
+        source.directory(),
+    )?)?;
     if manifest.unit_id != *source.id() {
         return Err(ReleasePayloadError::UnexpectedManifestDigest {
             expected: source.id().as_str().to_owned(),

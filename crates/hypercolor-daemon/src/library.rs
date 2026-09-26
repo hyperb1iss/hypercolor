@@ -27,8 +27,8 @@ use crate::persistence::{
     AtomicWriteReservation, PersistenceError, serialize_json_pretty,
 };
 
-const LIBRARY_SCHEMA_VERSION: u32 = 2;
-const LEGACY_LIBRARY_SCHEMA_VERSION: u32 = 1;
+pub(crate) const LIBRARY_SCHEMA_VERSION: u32 = 2;
+pub(crate) const LEGACY_LIBRARY_SCHEMA_VERSION: u32 = 1;
 
 /// Storage-layer errors for library entities.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

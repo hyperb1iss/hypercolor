@@ -126,6 +126,20 @@ meantime:
   about to stop. It ends without changing anything and says so; run the
   installer again to upgrade.
 
+## What a release says about your data
+
+Every Linux release tarball ships `share/hypercolor/durable-stores.json`, a
+list of every durable store the release reads or writes: your configuration,
+scenes, layouts, library, device settings and the rest. For each store it
+names the schema the release writes and the oldest and newest it can read.
+Stores without a version field on disk declare schema `0`, their only shape so
+far. The values come from each store's own code, and a test keeps the list
+equal to it.
+
+The installer does not read this file and never refuses a release without it;
+older releases do not have one. It is there for tools that decide whether one
+release can take over another's data.
+
 ## Directory permissions and private groups
 
 Another account must not be able to change the directories the installer

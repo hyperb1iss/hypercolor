@@ -1053,8 +1053,71 @@ impl Fixture {
     /// Install `release` the way the historical lib-root installer did.
     fn legacy_install(&self, release: &Release) -> UnitRecord {
         let old = self.legacy();
-        let mut lock = old.acquire_anchored_lock(&self.home).expect("legacy lock");
+        let lock = old.acquire_anchored_lock(&self.home).expect("legacy lock");
         let unit = release.stage(&old, &lock);
+        drop(lock);
+        self.legacy_activate(unit)
+    }
+
+    /// Install `release` the way a historical installer from before bundled
+    /// user skills did: its manifest counts none and ships none, which a
+    /// new candidate may not do but an installed release may.
+    fn legacy_install_before_user_skills(&self, release: &Release) -> UnitRecord {
+        let scratch = release
+            .source
+            .parent()
+            .expect("fixture root")
+            .join("scratch-store");
+        let staging =
+            InstallStore::new(&scratch, MAX_JOURNAL).with_ownership_policy(self.private());
+        let staging_lock = staging.acquire_lock().expect("scratch lock");
+        let staged = release.stage(&staging, &staging_lock);
+        let root = staging.unit_path(staged.id());
+        drop(staged);
+        let path = root.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("manifest")).expect("manifest JSON");
+        manifest["assets"]
+            .as_object_mut()
+            .expect("assets")
+            .remove("user_skill_files");
+        manifest["members"]
+            .as_array_mut()
+            .expect("members")
+            .retain(|member| {
+                !member["path"]
+                    .as_str()
+                    .expect("path")
+                    .starts_with("share/hypercolor/skills")
+            });
+        let bytes = serde_json::to_vec_pretty(&manifest).expect("encode");
+        let share = root.join("share/hypercolor");
+        let skills = share.join("skills");
+        let share_mode = fs::metadata(&share).expect("share").permissions().mode();
+        for thawed in [&root, &share, &skills] {
+            fs::set_permissions(thawed, fs::Permissions::from_mode(0o755)).expect("thaw");
+        }
+        fs::remove_dir_all(&skills).expect("remove the user skills");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("thaw");
+        fs::write(&path, &bytes).expect("rewrite manifest");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).expect("freeze");
+        fs::set_permissions(&share, fs::Permissions::from_mode(share_mode)).expect("freeze");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).expect("freeze");
+        let id = UnitId::new(sha256(&bytes)).expect("digest");
+        fs::rename(&root, staging.unit_path(&id)).expect("rename");
+        let retained = hypercolor_cli::install::retain_linux_unit(&staging, &staging_lock, &id)
+            .expect("retain");
+        let old = self.legacy();
+        let lock = old.acquire_anchored_lock(&self.home).expect("legacy lock");
+        let unit = hypercolor_cli::install::copy_installed_release_unit(&old, &lock, &retained)
+            .expect("the historical installer held a release from before user skills");
+        drop(lock);
+        self.legacy_activate(unit)
+    }
+
+    fn legacy_activate(&self, unit: UnitRecord) -> UnitRecord {
+        let old = self.legacy();
+        let mut lock = old.acquire_anchored_lock(&self.home).expect("legacy lock");
         self.world.borrow_mut().historical.push(unit.clone());
         let config = LinuxInstallConfig {
             direct_fragment_path: self.world.borrow().fragment.clone(),
@@ -1087,7 +1150,7 @@ impl Fixture {
         assert_eq!(
             outcome,
             InstallOutcome::Committed {
-                active_unit: release.id.clone()
+                active_unit: unit.id().clone()
             }
         );
         unit
@@ -3911,4 +3974,43 @@ fn a_library_caller_prepares_binds_writes_and_drives_its_own_transaction() {
         fixture.journal().transaction_id.as_str(),
         "update-01JZQ3V8ZK6F2N7QK9X4W5T1AB"
     );
+}
+
+#[test]
+fn an_install_from_before_user_skills_adopts_and_rolls_back_exactly() {
+    for failing in [false, true] {
+        let fixture = Fixture::new();
+        fixture.legacy_install_before_user_skills(&fixture.v1);
+        let snapshot = fixture.snapshot();
+        if failing {
+            fixture.world.borrow_mut().fault = Some("runtime:true".to_owned());
+        }
+        let location = fixture.default_location();
+        let run = fixture
+            .run(&fixture.v2, Some(location.clone()), &fixture.private())
+            .expect("the adoption settles");
+        if failing {
+            assert!(matches!(run.outcome, InstallOutcome::RolledBack { .. }));
+            assert_eq!(
+                fixture.snapshot(),
+                snapshot,
+                "the release from before user skills runs again, exactly"
+            );
+        } else {
+            assert_eq!(
+                run.outcome,
+                InstallOutcome::Committed {
+                    active_unit: fixture.v2.id.clone()
+                }
+            );
+            fixture.assert_managed(&location, &fixture.v2.id);
+            let run = fixture.update(&fixture.v3).expect("a later update");
+            assert_eq!(
+                run.outcome,
+                InstallOutcome::Committed {
+                    active_unit: fixture.v3.id.clone()
+                }
+            );
+        }
+    }
 }

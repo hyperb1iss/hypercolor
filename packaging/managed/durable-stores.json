@@ -1,0 +1,204 @@
+{
+  "stores": [
+    {
+      "name": "config",
+      "storage_format": "toml",
+      "readable_schema_min": 4,
+      "readable_schema_max": 5,
+      "written_schema": 5,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "instance-id",
+      "storage_format": "text",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "asset-library",
+      "storage_format": "json",
+      "readable_schema_min": 1,
+      "readable_schema_max": 1,
+      "written_schema": 1,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "user-effects",
+      "storage_format": "html",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "layouts",
+      "storage_format": "json",
+      "readable_schema_min": 1,
+      "readable_schema_max": 1,
+      "written_schema": 1,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "layout-auto-exclusions",
+      "storage_format": "json",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "legacy-profiles",
+      "storage_format": "json",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "scenes",
+      "storage_format": "json",
+      "readable_schema_min": 2,
+      "readable_schema_max": 2,
+      "written_schema": 2,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "driver-inventory",
+      "storage_format": "json",
+      "readable_schema_min": 1,
+      "readable_schema_max": 1,
+      "written_schema": 1,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "credentials",
+      "storage_format": "encrypted-json",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "logical-devices",
+      "storage_format": "json",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "attachment-templates",
+      "storage_format": "toml",
+      "readable_schema_min": 1,
+      "readable_schema_max": 1,
+      "written_schema": 1,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "attachment-profiles",
+      "storage_format": "json",
+      "readable_schema_min": 1,
+      "readable_schema_max": 1,
+      "written_schema": 1,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "display-preferences",
+      "storage_format": "json",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "device-settings",
+      "storage_format": "json",
+      "readable_schema_min": 1,
+      "readable_schema_max": 3,
+      "written_schema": 3,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "simulated-displays",
+      "storage_format": "json",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "runtime-state",
+      "storage_format": "json",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "device-aliases",
+      "storage_format": "json",
+      "readable_schema_min": 2,
+      "readable_schema_max": 2,
+      "written_schema": 2,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "library",
+      "storage_format": "json",
+      "readable_schema_min": 1,
+      "readable_schema_max": 2,
+      "written_schema": 2,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "device-binding-journal",
+      "storage_format": "json",
+      "readable_schema_min": 1,
+      "readable_schema_max": 1,
+      "written_schema": 1,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "cli-config",
+      "storage_format": "toml",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "tui-config",
+      "storage_format": "toml",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "app-servers",
+      "storage_format": "toml",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "app-first-run",
+      "storage_format": "marker",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    },
+    {
+      "name": "openrgb-config",
+      "storage_format": "json",
+      "readable_schema_min": 0,
+      "readable_schema_max": 0,
+      "written_schema": 0,
+      "migration_mode": "backward_compatible"
+    }
+  ]
+}

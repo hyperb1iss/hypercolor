@@ -18,7 +18,7 @@ use crate::persistence::{
     AtomicWriteReservation, PersistenceError, serialize_json_pretty,
 };
 
-const SCENE_STORE_SCHEMA_VERSION: u32 = 2;
+pub(crate) const SCENE_STORE_SCHEMA_VERSION: u32 = 2;
 const SCENE_STORE_V2_SHAPE: &str = r#"{"schema_version":2,"scenes":{...}}"#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -14,7 +14,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::device::{DeviceInfo, DeviceTopologyHint};
 use crate::spatial::LedTopology;
 
-const CURRENT_ATTACHMENT_SCHEMA_VERSION: u32 = 1;
+/// The schema attachment templates and component profiles are written at.
+pub const CURRENT_ATTACHMENT_SCHEMA_VERSION: u32 = 1;
 
 fn current_attachment_schema_version() -> u32 {
     CURRENT_ATTACHMENT_SCHEMA_VERSION
