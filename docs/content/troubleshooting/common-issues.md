@@ -252,7 +252,7 @@ If events arrive in `websocat` but the browser preview is still dark, the proble
 
 **Symptom:** Your lights changed, or a scene, layout, or device setting is not what you left it, and you did not change it.
 
-**Find out what changed it.** Every request that changes state (a REST `POST`, `PUT`, `PATCH`, or `DELETE`, a WebSocket `command` with one of those methods, or an MCP tool call that is not read-only) is recorded with its time, method, path, status, the client's socket address, any address it claimed through `X-Forwarded-For` or `X-Real-IP` (kept separately, since any local process can send those headers), its user agent, and the state files it changed. Request bodies, query strings, credentials, and tool arguments are never recorded. Ask the daemon for the newest entries:
+**Find out what changed it.** Every request that changes state (a REST `POST`, `PUT`, `PATCH`, or `DELETE`, a WebSocket `command` with one of those methods, or an MCP tool call that is not read-only) is recorded with its time, method, path, status, the client's socket address, any address it claimed through `X-Forwarded-For` or `X-Real-IP` (kept separately, since any local process can send those headers), its user agent, and the state files it changed. A request whose client disconnects before the response is still recorded, with status `499`, once the work it started has finished. Request bodies, query strings, credentials, and tool arguments are never recorded. Ask the daemon for the newest entries:
 
 ```bash
 curl -s 'http://127.0.0.1:9420/api/v1/system/audit?limit=20'

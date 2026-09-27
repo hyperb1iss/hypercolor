@@ -33,7 +33,9 @@ pub struct AuditEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     /// Response status. MCP tool calls report 200 for success and the
-    /// closest HTTP status for a tool error (400, 404, 409, or 500).
+    /// closest HTTP status for a tool error (400, 404, 409, or 500). A
+    /// request dropped before its response, as when the client
+    /// disconnects, reports 499.
     pub status: u16,
     /// The socket peer's address, `in-process` for trusted in-process
     /// calls, or `unknown` when the transport has none. Never read from a

@@ -27,7 +27,9 @@ class AuditEntry:
                 calls, or `unknown` when the transport has none. Never read from a
                 header.
             status (int): Response status. MCP tool calls report 200 for success and the
-                closest HTTP status for a tool error (400, 404, 409, or 500).
+                closest HTTP status for a tool error (400, 404, 409, or 500). A
+                request dropped before its response, as when the client
+                disconnects, reports 499.
             timestamp (str): When the request finished, RFC 3339 UTC with milliseconds.
             transport (AuditTransport): Transport a state-changing request arrived on.
             user_agent (str): Client `User-Agent`, capped at 256 characters, empty when absent.

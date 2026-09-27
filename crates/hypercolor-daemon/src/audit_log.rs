@@ -20,8 +20,12 @@
 //! request changed. They never record request bodies, query strings,
 //! credentials, or MCP tool arguments.
 //!
+//! Every audited request runs under an [`AuditGuard`], which records its
+//! entry exactly once: with the response status, or with status 499 when the
+//! request is dropped first (a client that disconnects mid-request).
+//!
 //! Store attribution works through `hypercolor-persistence`'s replacement
-//! observer: a request runs inside [`collect_changes`], and every store file
+//! observer: a request runs inside [`AuditGuard::run`], and every store file
 //! whose bytes change on that task, on a task it starts with
 //! [`spawn_attributed`], or in a blocking closure run through
 //! [`with_change_scope`] is attributed to it. Writes made by detached
@@ -33,6 +37,7 @@ use std::future::Future;
 use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 use hypercolor_types::api::system::{AuditEntry, AuditTransport};
 
@@ -54,10 +59,18 @@ tokio::task_local! {
     static WS_PEER: Arc<AuditPeer>;
 }
 
+/// Status an entry reports when its request was dropped before a response,
+/// as when the client disconnects mid-request.
+pub const CLIENT_CLOSED_STATUS: u16 = 499;
+
 /// Store files changed while one request ran.
 #[derive(Debug, Default)]
 pub struct ChangeScope {
     paths: Mutex<Vec<PathBuf>>,
+    /// The entry of a request dropped before it finished. It is recorded
+    /// when the last holder of this scope lets go, which is after every task
+    /// the request started with [`spawn_attributed`] has finished writing.
+    abandoned: Mutex<Option<PendingEntry>>,
 }
 
 impl ChangeScope {
@@ -70,6 +83,113 @@ impl ChangeScope {
 
     fn take(&self) -> Vec<PathBuf> {
         std::mem::take(&mut *self.paths.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+}
+
+impl Drop for ChangeScope {
+    fn drop(&mut self) {
+        let abandoned = self
+            .abandoned
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(pending) = abandoned {
+            let changed = self.take();
+            pending.record(CLIENT_CLOSED_STATUS, &changed);
+        }
+    }
+}
+
+/// An owned description of a request, recorded once however it ends.
+#[derive(Debug)]
+struct PendingEntry {
+    log: Option<Arc<AuditLog>>,
+    transport: AuditTransport,
+    method: String,
+    path: String,
+    tool: Option<String>,
+    peer: AuditPeer,
+    started: Instant,
+}
+
+impl PendingEntry {
+    fn record(self, status: u16, changed: &[PathBuf]) {
+        let entry = entry(
+            self.log.as_deref(),
+            self.transport,
+            RequestLine {
+                method: &self.method,
+                path: &self.path,
+                tool: self.tool.as_deref(),
+                peer: &self.peer,
+            },
+            status,
+            changed,
+            self.started.elapsed().as_secs_f64() * 1000.0,
+        );
+        record(self.log.as_deref(), &entry);
+    }
+}
+
+/// Records one state-changing request exactly once.
+///
+/// Run the request through [`run`](Self::run) and call
+/// [`finish`](Self::finish) with its status. When the request is dropped
+/// first (the client disconnected, or a caller dropped the future), the
+/// entry is still recorded, with [`CLIENT_CLOSED_STATUS`], once every task
+/// the request started with [`spawn_attributed`] has finished, so it names
+/// the stores those tasks went on to change.
+#[derive(Debug)]
+pub struct AuditGuard {
+    scope: Arc<ChangeScope>,
+    pending: Option<PendingEntry>,
+}
+
+impl AuditGuard {
+    /// Start auditing one request.
+    #[must_use]
+    pub fn new(
+        log: Option<Arc<AuditLog>>,
+        transport: AuditTransport,
+        request: RequestLine<'_>,
+    ) -> Self {
+        Self {
+            scope: Arc::new(ChangeScope::default()),
+            pending: Some(PendingEntry {
+                log,
+                transport,
+                method: request.method.to_owned(),
+                path: request.path.to_owned(),
+                tool: request.tool.map(str::to_owned),
+                peer: request.peer.clone(),
+                started: Instant::now(),
+            }),
+        }
+    }
+
+    /// Run the request, attributing the store changes it makes.
+    pub async fn run<F: Future>(&self, future: F) -> F::Output {
+        CHANGES.scope(Arc::clone(&self.scope), future).await
+    }
+
+    /// Record the request with the status it finished with.
+    pub fn finish(mut self, status: u16) {
+        if let Some(pending) = self.pending.take() {
+            let changed = self.scope.take();
+            pending.record(status, &changed);
+        }
+    }
+}
+
+impl Drop for AuditGuard {
+    fn drop(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            *self
+                .scope
+                .abandoned
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(pending);
+        }
     }
 }
 
@@ -117,13 +237,6 @@ pub fn install_store_observer() {
 
 fn record_change(path: &Path) {
     let _ = CHANGES.try_with(|scope| scope.push(path));
-}
-
-/// Run `future` and return the store files whose bytes it changed.
-pub async fn collect_changes<F: Future>(future: F) -> (F::Output, Vec<PathBuf>) {
-    let scope = Arc::new(ChangeScope::default());
-    let output = CHANGES.scope(Arc::clone(&scope), future).await;
-    (output, scope.take())
 }
 
 /// The change scope of the current task, to carry into a blocking closure.

@@ -43,7 +43,7 @@ use axum::response::Response;
 use hypercolor_types::api::system::AuditTransport;
 use tracing::Level;
 
-use crate::audit_log::{self, AuditLog, AuditPeer, RequestLine};
+use crate::audit_log::{self, AuditGuard, AuditLog, AuditPeer, RequestLine};
 
 /// Middleware state: the audit sink and the path it leaves to MCP.
 #[derive(Debug, Clone, Default)]
@@ -94,14 +94,31 @@ pub async fn log_access(
         |caller| caller.peer.as_ref().clone(),
     );
 
-    let (response, changed) = if mutating && !mcp {
-        audit_log::collect_changes(next.run(request)).await
-    } else {
-        (next.run(request).await, Vec::new())
+    let transport = caller
+        .as_ref()
+        .map_or(AuditTransport::Http, |caller| caller.transport);
+    let audit = || {
+        AuditGuard::new(
+            state.audit.clone(),
+            transport,
+            RequestLine {
+                method: method.as_str(),
+                path: &path,
+                tool: None,
+                peer: &peer,
+            },
+        )
+    };
+
+    // The guard records the entry even when the client disconnects and
+    // hyper drops this future mid-request.
+    let guard = (mutating && !mcp).then(audit);
+    let response = match &guard {
+        Some(guard) => guard.run(next.run(request)).await,
+        None => next.run(request).await,
     };
     let status = response.status().as_u16();
     let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
-    let audited = should_audit(mutating, mcp, status);
 
     emit(
         select_level(status, &method, &path),
@@ -114,24 +131,10 @@ pub async fn log_access(
         &user_agent,
     );
 
-    if audited {
-        let transport = caller
-            .as_ref()
-            .map_or(AuditTransport::Http, |caller| caller.transport);
-        let entry = audit_log::entry(
-            state.audit.as_deref(),
-            transport,
-            RequestLine {
-                method: method.as_str(),
-                path: &path,
-                tool: None,
-                peer: &peer,
-            },
-            status,
-            &changed,
-            latency_ms,
-        );
-        audit_log::record(state.audit.as_deref(), &entry);
+    match guard {
+        Some(guard) => guard.finish(status),
+        None if rejected_mcp_write(mutating, mcp, status) => audit().finish(status),
+        None => {}
     }
 
     response
@@ -140,8 +143,8 @@ pub async fn log_access(
 /// MCP tool calls are audited where they run. A mutating request to the MCP
 /// mount that the security layer turns away never reaches a tool, so it is
 /// recorded here instead.
-const fn should_audit(mutating: bool, mcp: bool, status: u16) -> bool {
-    mutating && (!mcp || matches!(status, 401 | 403))
+const fn rejected_mcp_write(mutating: bool, mcp: bool, status: u16) -> bool {
+    mutating && mcp && matches!(status, 401 | 403)
 }
 
 fn is_mcp_path(mcp_path: Option<&str>, path: &str) -> bool {
@@ -301,7 +304,8 @@ mod tests {
     use tracing::Level;
 
     use super::{
-        client_addr, is_mcp_path, peer_identity, redact_sensitive_query, select_level, should_audit,
+        client_addr, is_mcp_path, peer_identity, redact_sensitive_query, rejected_mcp_write,
+        select_level,
     };
 
     #[test]
@@ -315,12 +319,11 @@ mod tests {
 
     #[test]
     fn rejected_mcp_writes_are_audited_and_accepted_ones_left_to_tools() {
-        assert!(should_audit(true, false, 200));
-        assert!(!should_audit(false, false, 200));
-        assert!(!should_audit(true, true, 200));
-        assert!(should_audit(true, true, 401));
-        assert!(should_audit(true, true, 403));
-        assert!(!should_audit(false, true, 401));
+        assert!(!rejected_mcp_write(true, true, 200));
+        assert!(rejected_mcp_write(true, true, 401));
+        assert!(rejected_mcp_write(true, true, 403));
+        assert!(!rejected_mcp_write(false, true, 401));
+        assert!(!rejected_mcp_write(true, false, 401));
     }
 
     #[test]

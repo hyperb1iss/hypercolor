@@ -267,8 +267,9 @@ Each entry has the time, transport (`http`, `websocket`, or `mcp`), method,
 path without its query string, MCP tool name, status, the socket peer's
 address, any `X-Forwarded-For` or `X-Real-IP` claim (as `forwarded_for`,
 never trusted for `remote`), user agent, and the durable stores the request
-changed. `?limit=` caps the page
-(default 100, at most 1000). Request bodies, query strings, credentials, and
+changed. A request whose client disconnects before the response is
+recorded with status `499`. `?limit=` caps the page (default 100, at most
+1000). Request bodies, query strings, credentials, and
 tool arguments are never recorded. The same entries live on disk in
 `${XDG_STATE_HOME:-~/.local/state}/hypercolor/logs/api-audit.jsonl`; see
 [Undoing an unwanted change](@/troubleshooting/common-issues.md#undoing-an-unwanted-change).

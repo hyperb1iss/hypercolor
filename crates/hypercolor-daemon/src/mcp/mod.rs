@@ -124,16 +124,13 @@ impl HypercolorMcpServer {
             .any(|definition| definition.name == tool && !definition.read_only)
     }
 
-    /// Record a finished tool call that can change state. The HTTP layer
+    /// Start auditing a tool call that can change state. The HTTP layer
     /// skips the MCP mount because reads and writes share its POST.
-    fn audit_tool_call(
+    fn tool_call_audit(
         &self,
         tool: &str,
         context: &RequestContext<RoleServer>,
-        status: u16,
-        changed: &[std::path::PathBuf],
-        latency_ms: f64,
-    ) {
+    ) -> crate::audit_log::AuditGuard {
         let peer = context
             .extensions
             .get::<axum::http::request::Parts>()
@@ -149,9 +146,8 @@ impl HypercolorMcpServer {
                     )
                 },
             );
-        let log = self.state.audit_log.as_deref();
-        let entry = crate::audit_log::entry(
-            log,
+        crate::audit_log::AuditGuard::new(
+            self.state.audit_log.clone(),
             hypercolor_types::api::system::AuditTransport::Mcp,
             crate::audit_log::RequestLine {
                 method: "tools/call",
@@ -159,11 +155,7 @@ impl HypercolorMcpServer {
                 tool: Some(tool),
                 peer: &peer,
             },
-            status,
-            changed,
-            latency_ms,
-        );
-        crate::audit_log::record(log, &entry);
+        )
     }
 }
 
@@ -216,21 +208,17 @@ impl ServerHandler for HypercolorMcpServer {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + Send + '_ {
         async move {
-            let started = std::time::Instant::now();
             let tool = request.name.to_string();
             let arguments = Value::Object(request.arguments.unwrap_or_default());
             let execute = tools::execute_tool_with_state(&tool, &arguments, &self.state);
-            let audited = self.mutates(&tool);
-            let (result, changed) = if audited {
-                crate::audit_log::collect_changes(execute).await
+            let result = if self.mutates(&tool) {
+                let audit = self.tool_call_audit(&tool, &context);
+                let result = audit.run(execute).await;
+                audit.finish(result.as_ref().map_or_else(tool_error_status, |_| 200));
+                result
             } else {
-                (execute.await, Vec::new())
+                execute.await
             };
-            if audited {
-                let status = result.as_ref().map_or_else(tool_error_status, |_| 200);
-                let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
-                self.audit_tool_call(&tool, &context, status, &changed, latency_ms);
-            }
             match result {
                 Ok(payload) => Ok(CallToolResult::structured(payload).into()),
                 Err(error) => {

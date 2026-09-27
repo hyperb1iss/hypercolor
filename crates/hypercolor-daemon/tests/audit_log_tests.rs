@@ -2,18 +2,23 @@
 
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::ConnectInfo;
+use axum::extract::{ConnectInfo, State};
 use http::{Request, StatusCode};
 use hypercolor_daemon::api;
+use hypercolor_daemon::api::access_log::{self, AccessLogState};
 use hypercolor_daemon::app_state::AppStateBuilder;
-use hypercolor_daemon::audit_log::{self, AUDIT_LOG_FILE, AuditLog, AuditPeer, RequestLine};
+use hypercolor_daemon::audit_log::{
+    self, AUDIT_LOG_FILE, AuditGuard, AuditLog, AuditPeer, RequestLine,
+};
 use hypercolor_daemon::state_history::{StoreRoots, daemon_store_files};
 use hypercolor_types::api::system::{AuditEntry, AuditTransport};
 use serde_json::Value;
+use tokio::io::AsyncWriteExt as _;
 use tower::ServiceExt;
 
 fn sample(index: usize) -> AuditEntry {
@@ -254,6 +259,72 @@ async fn layout_writes_on_workflow_tasks_are_attributed() {
     }
 }
 
+/// Drive a request whose layout publication the render thread would ack.
+#[cfg(feature = "persistence-test-hooks")]
+async fn with_layout_publications<R>(
+    state: &Arc<hypercolor_daemon::app_state::AppState>,
+    request: R,
+) -> axum::response::Response
+where
+    R: std::future::Future<Output = Result<axum::response::Response, std::convert::Infallible>>,
+{
+    tokio::pin!(request);
+    let executor = state.layout_publication_test_executor();
+    loop {
+        tokio::select! {
+            response = &mut request => return response.unwrap_or_else(|never| match never {}),
+            () = tokio::time::sleep(Duration::from_millis(1)) => {
+                if executor.pending_layout_publications() > 0 {
+                    let executor = executor.clone();
+                    tokio::spawn(async move {
+                        let _ = executor.execute_next_layout_publication().await;
+                    });
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn applying_a_layout_attributes_the_runtime_session_it_rewrites() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let (state, log) = audit_state(directory.path());
+    let app = api::build_router(Arc::clone(&state), None);
+    let created = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/api/v1/layouts",
+            Some(r#"{"name": "Applied Layout"}"#),
+        ))
+        .await
+        .expect("create layout");
+    let layout_id = body_json(created).await["data"]["id"]
+        .as_str()
+        .expect("layout id")
+        .to_owned();
+
+    let applied = with_layout_publications(
+        &state,
+        app.clone().oneshot(request(
+            "POST",
+            &format!("/api/v1/layouts/{layout_id}/apply"),
+            None,
+        )),
+    )
+    .await;
+    assert!(applied.status().is_success(), "{}", applied.status());
+
+    let entry = log.recent(1).expect("recent").pop().expect("apply entry");
+    assert!(entry.path.ends_with("/apply"), "{}", entry.path);
+    assert!(
+        entry.stores.iter().any(|store| store == "runtime-state"),
+        "applying a layout rewrites the runtime session: {:?}",
+        entry.stores
+    );
+}
+
 #[tokio::test]
 async fn the_audit_endpoint_returns_the_newest_entries_and_is_not_itself_audited() {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -285,40 +356,138 @@ async fn the_audit_endpoint_returns_the_newest_entries_and_is_not_itself_audited
     assert_eq!(log.recent(10).expect("recent").len(), 3);
 }
 
+fn guard(log: &Arc<AuditLog>, path: &str) -> AuditGuard {
+    AuditGuard::new(
+        Some(Arc::clone(log)),
+        AuditTransport::Http,
+        RequestLine {
+            method: "POST",
+            path,
+            tool: None,
+            peer: &AuditPeer::new("127.0.0.1".to_owned(), None, "audit-test"),
+        },
+    )
+}
+
 #[tokio::test]
 async fn store_writes_on_blocking_threads_stay_attributed() {
     let directory = tempfile::tempdir().expect("tempdir");
     let path = directory.path().join("blocking.json");
+    let log = Arc::new(AuditLog::new(directory.path().join("logs"), &[]));
     audit_log::install_store_observer();
 
-    let ((), changed) = audit_log::collect_changes(async {
-        let scope = audit_log::current_change_scope();
-        let path = path.clone();
-        tokio::task::spawn_blocking(move || {
-            audit_log::with_change_scope(scope, || {
-                hypercolor_daemon::persistence::write_atomic(&path, b"written off-task")
-                    .expect("write");
-            });
+    let scoped = guard(&log, "/scoped");
+    scoped
+        .run(async {
+            let scope = audit_log::current_change_scope();
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || {
+                audit_log::with_change_scope(scope, || {
+                    hypercolor_daemon::persistence::write_atomic(&path, b"written off-task")
+                        .expect("write");
+                });
+            })
+            .await
+            .expect("blocking task");
         })
-        .await
-        .expect("blocking task");
-    })
-    .await;
-    assert_eq!(changed.len(), 1);
-    assert_eq!(changed[0].file_name(), path.file_name());
+        .await;
+    scoped.finish(200);
 
-    let ((), unscoped) = audit_log::collect_changes(async {
-        let path = path.clone();
-        tokio::task::spawn_blocking(move || {
-            hypercolor_daemon::persistence::write_atomic(&path, b"a background write")
-                .expect("write");
+    let unscoped = guard(&log, "/unscoped");
+    unscoped
+        .run(async {
+            let path = path.clone();
+            tokio::task::spawn_blocking(move || {
+                hypercolor_daemon::persistence::write_atomic(&path, b"a background write")
+                    .expect("write");
+            })
+            .await
+            .expect("blocking task");
         })
-        .await
-        .expect("blocking task");
-    })
-    .await;
+        .await;
+    unscoped.finish(200);
+
+    let entries = log.recent(10).expect("recent");
+    assert_eq!(entries[1].path, "/scoped");
+    assert_eq!(entries[1].stores, ["blocking.json"]);
+    assert_eq!(entries[0].path, "/unscoped");
     assert!(
-        unscoped.is_empty(),
+        entries[0].stores.is_empty(),
         "writes outside the scope are not attributed"
+    );
+}
+
+/// A handler that commits a store write on a workflow task, the way layout
+/// and simulator routes do, so a disconnect cannot cancel it.
+async fn slow_store_write(State(path): State<PathBuf>) -> StatusCode {
+    audit_log::spawn_attributed(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        hypercolor_daemon::persistence::write_atomic(&path, b"committed after the client left")
+            .expect("write");
+    })
+    .await
+    .expect("workflow task");
+    StatusCode::OK
+}
+
+#[tokio::test]
+async fn a_client_that_disconnects_mid_request_is_still_audited() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store = directory.path().join("slow.json");
+    let log = Arc::new(AuditLog::new(directory.path().join("logs"), &[]));
+    audit_log::install_store_observer();
+    let router = axum::Router::new()
+        .route("/api/v1/slow", axum::routing::post(slow_store_write))
+        .with_state(store.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            AccessLogState {
+                audit: Some(Arc::clone(&log)),
+                mcp_path: None,
+            },
+            access_log::log_access,
+        ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    // Send a complete request, then hang up before the response.
+    let mut client = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("connect");
+    client
+        .write_all(
+            b"POST /api/v1/slow HTTP/1.1\r\nHost: daemon\r\nUser-Agent: fire-and-forget\r\nContent-Length: 0\r\n\r\n",
+        )
+        .await
+        .expect("send request");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    drop(client);
+
+    let entry = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(entry) = log.recent(1).expect("recent").pop() {
+                break entry;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the dropped request is audited");
+    assert_eq!(entry.status, audit_log::CLIENT_CLOSED_STATUS);
+    assert_eq!(entry.method, "POST");
+    assert_eq!(entry.path, "/api/v1/slow");
+    assert_eq!(entry.user_agent, "fire-and-forget");
+    assert_eq!(
+        entry.stores,
+        ["slow.json"],
+        "the entry waits for the workflow's write"
+    );
+    assert_eq!(
+        fs::read_to_string(&store).expect("store written"),
+        "committed after the client left"
     );
 }
