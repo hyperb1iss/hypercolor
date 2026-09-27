@@ -2832,12 +2832,17 @@ impl Transport for FakePush2Transport {
         Ok(())
     }
 
-    async fn receive(&self, _timeout: Duration) -> std::result::Result<Vec<u8>, TransportError> {
-        self.pending_reply
-            .lock()
-            .expect("reply lock")
-            .take()
-            .ok_or(TransportError::Timeout { timeout_ms: 1000 })
+    async fn receive(&self, timeout: Duration) -> std::result::Result<Vec<u8>, TransportError> {
+        let reply = self.pending_reply.lock().expect("reply lock").take();
+        if let Some(reply) = reply {
+            return Ok(reply);
+        }
+        // A wedged endpoint never answers: the actor waits out the full
+        // response budget, exactly as it would on hardware.
+        tokio::time::sleep(timeout).await;
+        Err(TransportError::Timeout {
+            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        })
     }
 
     async fn close(&self) -> std::result::Result<(), TransportError> {
@@ -2874,7 +2879,9 @@ async fn publish_until(
     .expect("Push 2 fake should converge before the timeout");
 }
 
-#[tokio::test]
+// Paused time lets the actor wait out real 1 s response budgets for every
+// unanswered probe without the test taking that long.
+#[tokio::test(start_paused = true)]
 async fn push2_midi_stall_never_blocks_frame_publication_or_tears_down_the_actor() {
     let clock = Arc::new(Mutex::new(std::time::Instant::now()));
     let protocol_clock = Arc::clone(&clock);
@@ -2930,6 +2937,8 @@ async fn push2_midi_stall_never_blocks_frame_publication_or_tears_down_the_actor
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
+    // Guards the architecture rather than the driver: the render side hands
+    // frames to a latest-value slot and must never start awaiting the device.
     assert!(
         publish_elapsed < Duration::from_millis(250),
         "publishing 2000 frames into a stalled device took {publish_elapsed:?}"
