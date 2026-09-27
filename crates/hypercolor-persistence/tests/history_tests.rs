@@ -124,6 +124,56 @@ fn transient_content_is_skipped_and_the_first_write_keeps_the_older_file() {
 }
 
 #[test]
+fn identical_rewrites_never_make_stable_content_transient() {
+    let store = Store::new(10, LONG_THROTTLE);
+    fs::write(&store.path, "good").expect("seed");
+
+    // Stores are routinely rewritten with unchanged bytes alongside a
+    // sibling store's real change. That must not restart the clock that
+    // decides whether the current content is worth keeping.
+    store.write("good");
+    store.write("good");
+    store.write("bad");
+    assert_eq!(store.kept(), ["good"]);
+}
+
+/// Versions are the same state when they agree before the `|`.
+fn same_before_bar(left: &[u8], right: &[u8]) -> bool {
+    let state = |bytes: &[u8]| bytes.split(|byte| *byte == b'|').next().map(<[u8]>::to_vec);
+    state(left) == state(right)
+}
+
+#[test]
+fn an_equivalence_ignores_bookkeeping_only_changes() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = root.path().join("aliases.json");
+    let history = root.path().join("history");
+    fs::write(&path, "pinned|seen 1").expect("seed");
+    let writer = AtomicFileWriter::new(&path).expect("writer");
+    writer.enable_history(
+        HistoryPolicy::new(&history, 10, LONG_THROTTLE).with_equivalence(same_before_bar),
+    );
+    let kept = || -> Vec<String> {
+        list_generations(&history)
+            .expect("history")
+            .iter()
+            .map(|generation| fs::read_to_string(&generation.path).expect("generation"))
+            .collect()
+    };
+
+    // A last-seen stamp alone is neither kept nor a change of state.
+    writer.write(b"pinned|seen 2").expect("stamp");
+    writer.write(b"pinned|seen 3").expect("stamp");
+    assert!(kept().is_empty());
+
+    // The first real change keeps the state it replaced, then the new state
+    // takes the stamps without churning history.
+    writer.write(b"repinned|seen 4").expect("change");
+    writer.write(b"repinned|seen 5").expect("stamp");
+    assert_eq!(kept(), ["pinned|seen 3"]);
+}
+
+#[test]
 fn restore_round_trips_and_is_itself_undoable() {
     let store = Store::new(10, LONG_THROTTLE);
     fs::write(&store.path, "good").expect("seed");

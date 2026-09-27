@@ -29,8 +29,8 @@ use tempfile::NamedTempFile;
 mod history;
 
 pub use history::{
-    Generation, HistoryError, HistoryPolicy, RestoreOutcome, capture_next_writes, list_generations,
-    restore_generation, set_replacement_observer,
+    Equivalence, Generation, HistoryError, HistoryPolicy, RestoreOutcome, capture_next_writes,
+    list_generations, restore_generation, set_replacement_observer,
 };
 
 #[cfg(not(windows))]

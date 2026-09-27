@@ -16,13 +16,18 @@
 //!
 //! Rotation is cheap and bounded:
 //!
-//! - Content that is byte-identical to the new payload is never rotated.
+//! - Content equivalent to the new payload is never rotated. Equivalent means
+//!   byte-identical unless the policy supplies a looser [`Equivalence`], for
+//!   stores that stamp bookkeeping such as a last-seen time on every save.
 //! - Content already held by the newest generation is never copied again.
-//! - Content this process wrote less than `min_interval` ago is transient and
-//!   is not kept. Because the outgoing content must have been current for
-//!   `min_interval`, two rotations of one destination are always at least
-//!   `min_interval` apart, whatever the write rate. The first replacement in a
-//!   process always qualifies, since the file predates it.
+//! - Content that became current less than `min_interval` ago, through a
+//!   write by this process that changed it, is transient and is not kept.
+//!   Rewrites that change nothing do not restart that clock, so a stable file
+//!   stays stable however often it is saved. Because the outgoing content
+//!   must have been current for `min_interval`, two rotations of one
+//!   destination are always at least `min_interval` apart, whatever the write
+//!   rate. Until this process changes a file, its content predates the
+//!   process and always qualifies.
 //! - [`capture_next_writes`] waives the interval once per destination, which
 //!   the daemon uses on shutdown; a restore waives it for its own write.
 //! - At most `generations` files are kept; the oldest are removed after each
@@ -51,12 +56,18 @@ static HISTORY_DESTINATIONS: LazyLock<Mutex<Vec<Arc<Destination>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 static REPLACEMENT_OBSERVER: OnceLock<fn(&Path)> = OnceLock::new();
 
+/// Whether two versions of a destination hold the same state.
+///
+/// Called only on versions whose bytes differ.
+pub type Equivalence = fn(&[u8], &[u8]) -> bool;
+
 /// How many previous generations a destination keeps, and where.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct HistoryPolicy {
     directory: PathBuf,
     generations: usize,
     min_interval: Duration,
+    equivalent: Option<Equivalence>,
 }
 
 impl HistoryPolicy {
@@ -69,7 +80,23 @@ impl HistoryPolicy {
             directory: directory.into(),
             generations,
             min_interval,
+            equivalent: None,
         }
+    }
+
+    /// Treat versions that `equivalent` accepts as unchanged, so they are
+    /// neither kept nor counted as a change.
+    #[must_use]
+    pub fn with_equivalence(mut self, equivalent: Equivalence) -> Self {
+        self.equivalent = Some(equivalent);
+        self
+    }
+
+    fn same(&self, left: &[u8], right: &[u8]) -> bool {
+        left == right
+            || self
+                .equivalent
+                .is_some_and(|equivalent| equivalent(left, right))
     }
 
     /// Directory that holds this destination's generations.
@@ -353,9 +380,9 @@ pub fn restore_generation(path: &Path, id: u64) -> Result<RestoreOutcome, Histor
     })
 }
 
-/// Read what the destination holds, when rotation or the observer needs it.
+/// Read what the destination holds, when history or the observer needs it.
 pub(crate) fn previous_content(destination: &Destination) -> PreviousContent {
-    if !rotation_due(destination) && REPLACEMENT_OBSERVER.get().is_none() {
+    if policy_of(destination).is_none() && REPLACEMENT_OBSERVER.get().is_none() {
         return PreviousContent::NotRead;
     }
     match fs::read(&destination.path) {
@@ -381,18 +408,12 @@ pub(crate) fn rotate_before_replace(
     let PreviousContent::Present(previous) = previous else {
         return;
     };
-    if previous.as_slice() == payload || !rotation_due(destination) {
-        return;
-    }
-    let Some(policy) = destination
-        .history
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .map(|state| state.policy.clone())
-    else {
+    let Some(policy) = policy_of(destination) else {
         return;
     };
+    if policy.same(previous, payload) || !rotation_due(destination) {
+        return;
+    }
     match write_generation(destination, &policy, previous) {
         Ok(Some(id)) => tracing::debug!(
             path = %destination.path.display(),
@@ -408,8 +429,8 @@ pub(crate) fn rotate_before_replace(
     }
 }
 
-/// Record a visible replacement: restart the transient window and tell the
-/// observer when the bytes changed.
+/// Record a visible replacement: restart the transient window when the
+/// content changed, and tell the observer when the bytes did.
 pub(crate) fn note_replacement(
     destination: &Destination,
     previous: &PreviousContent,
@@ -421,7 +442,13 @@ pub(crate) fn note_replacement(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_mut()
     {
-        state.last_replaced_at = Some(Instant::now());
+        let unchanged = matches!(
+            previous,
+            PreviousContent::Present(previous) if state.policy.same(previous, payload)
+        );
+        if !unchanged {
+            state.last_replaced_at = Some(Instant::now());
+        }
         state.capture_next = false;
     }
     if let Some(observer) = REPLACEMENT_OBSERVER.get()
@@ -430,6 +457,15 @@ pub(crate) fn note_replacement(
     {
         observer(&destination.path);
     }
+}
+
+fn policy_of(destination: &Destination) -> Option<HistoryPolicy> {
+    destination
+        .history
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(|state| state.policy.clone())
 }
 
 fn rotation_due(destination: &Destination) -> bool {
@@ -452,17 +488,14 @@ fn write_generation(
     previous: &[u8],
 ) -> Result<Option<u64>, HistoryError> {
     let directory = policy.directory();
-    fs::create_dir_all(directory).map_err(|source| HistoryError::Io {
-        path: directory.to_path_buf(),
-        source,
-    })?;
+    create_directory_durably(directory)?;
     let existing = list_generations(directory)?;
     if let Some(newest) = existing.last() {
         let newest_bytes = fs::read(&newest.path).map_err(|source| HistoryError::Io {
             path: newest.path.clone(),
             source,
         })?;
-        if newest_bytes == previous {
+        if policy.same(&newest_bytes, previous) {
             return Ok(None);
         }
     }
@@ -536,6 +569,31 @@ fn prune(directory: &Path, keep: usize) -> Result<(), HistoryError> {
     }
     #[cfg(unix)]
     sync_directory(directory)?;
+    Ok(())
+}
+
+/// Create `directory` and its missing ancestors, making each new entry
+/// durable in its parent so the first generation cannot vanish with them.
+fn create_directory_durably(directory: &Path) -> Result<(), HistoryError> {
+    let missing: Vec<&Path> = directory
+        .ancestors()
+        .take_while(|ancestor| !ancestor.as_os_str().is_empty() && !ancestor.exists())
+        .collect();
+    fs::create_dir_all(directory).map_err(|source| HistoryError::Io {
+        path: directory.to_path_buf(),
+        source,
+    })?;
+    #[cfg(unix)]
+    for created in missing.iter().rev() {
+        if let Some(parent) = created
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            sync_directory(parent)?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = missing;
     Ok(())
 }
 
