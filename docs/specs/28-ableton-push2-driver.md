@@ -807,7 +807,24 @@ Step  Command                               Purpose
 - **User mode** (`0x01`) is required for external LED control. In Live mode, Ableton Live owns the LEDs.
 - **Dual mode** (`0x02`) allows both Live and the driver to send — risk of visual conflicts. Avoid unless explicitly requested.
 - The mode switch reply is echoed to **both** MIDI ports. The driver should expect and discard the echo on the Live port.
-- Runtime keepalive should stay lightweight: reassert User mode and touch-strip host control, but do not force a full palette/key resync. Large periodic MIDI bursts can overrun ALSA's `seq_midi` output buffer while the display bulk path remains healthy.
+- User mode and touch-strip host control are re-asserted every 5 s inside the acknowledged LED stream (§10.4), not on a separate keepalive timer. A keepalive write that times out ends the USB actor and tears the device down, and a timer-driven burst would bypass the LED lane's flow control.
+
+### 10.4 LED Flow Control
+
+Ableton documents no MIDI input rate for the Push 2. What the manual does document is a request/reply contract: "Before sending the next command the host should wait for the reply, if any is expected, of the previous command." The endpoint delivers messages in order, so a reply can only be produced after every earlier message was read off it. The driver treats a reply as the device's confirmation that it is keeping up. That is an inference, not a guarantee the manual makes about processing, which is why palette sysex also keeps a rate ceiling of its own. The same batch-then-wait shape is the workaround a third-party developer reported for dropped pad updates in [push-interface#11](https://github.com/Ableton/push-interface/issues/11); Ableton's reply there was that the overflows happen in OS buffers, "on Linux MIDI is skipped easily".
+
+Before flow control, an animated effect kept the MIDI lane saturated indefinitely (about 9 KB/s with 16 palette writes and a Reapply Color Palette per frame), and nothing told the host whether the firmware kept up. The failure seen in the field is a firmware that stops accepting OUT transfers entirely, with the device still enumerated and the kernel reporting `rawmidi drain error` until a power cycle. The driver therefore:
+
+- keeps at most one USB-MIDI endpoint packet (512 wire bytes, the high-speed bulk `wMaxPacketSize`) of LED traffic unconfirmed; a batch that needs more closes with a Get LED Color Palette Entry (`0x04`) request, and the next batch waits for its reply;
+- computes every batch from the newest frame against the device state the host believes (latest color per LED, never a queue of stale frames), rotating through LEDs so a budget-limited batch cannot starve the tail of the grid;
+- spends each batch in priority order: the touch strip (one message for 31 LEDs), white-button levels (31 fixed slots, written once), RGB palette writes, then LED moves;
+- holds palette traffic to two fifths of a batch and palette writes to a ceiling of 16 per 62.5 ms (about 256 a second, the rate a saturating animation ran at before flow control; light effects that changed a few pads fast previously reached roughly 940), giving the writes to the colors whose nearest existing entry is furthest off, with one Reapply Color Palette per batch that wrote any;
+- holds LED output when a request goes unanswered, probing with a single palette read at a spacing that grows from 250 ms to 5 s in the first minute, 1 min until half an hour, then 5 min, so a day-long wedge stays inside the kernel's 4 KiB rawmidi buffer; the first answer triggers a resend of the whole believed state;
+- re-sends every LED index, the touch strip, and every palette slot in use every 10 s, so a message lost in an OS buffer heals without a reconnect;
+- splits the init clear and the shutdown palette restore into acknowledged chunks of the same size, counting whatever the LED lane left unconfirmed;
+- on Linux raw MIDI, writes a message only once the kernel buffer can take all of it, so a write that times out never leaves a truncated sysex on the wire.
+
+Apart from the 5 s mode re-assert and the 10 s resync, unchanged frames send nothing, and a single LED change to a color already in the palette is a single note or CC message.
 
 ---
 

@@ -3,11 +3,12 @@
 use hypercolor_types::device::SegmentInfo;
 
 mod display;
+mod flow;
 mod led_palette;
 
 use std::borrow::Cow;
-use std::sync::{Mutex, RwLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, DisplayFrameFormat,
@@ -17,8 +18,8 @@ use tracing::warn;
 
 use crate::display::DisplayEncodeError;
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ResponseStatus,
-    TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
+    ResponseStatus, TransferType,
 };
 
 const PUSH2_RGB_LED_COUNT: usize = 92;
@@ -29,10 +30,9 @@ const PUSH2_PAD_COUNT: usize = 64;
 const PUSH2_TOUCH_STRIP_LED_COUNT: usize = 31;
 const PUSH2_RGB_BUTTON_COUNT: usize = 28;
 const PUSH2_PALETTE_SIZE: usize = 128;
-// Bounds SET_PALETTE_ENTRY sysex per frame; fast-churn effects approximate via
-// nearest existing entries and converge over subsequent frames. Unbounded
-// palette rewrites flood the firmware's MIDI parser until it wedges.
-const PUSH2_PALETTE_WRITE_BUDGET_PER_FRAME: usize = 16;
+// Bounds SET_PALETTE_ENTRY sysex per acknowledged batch; fast-churn effects
+// approximate via nearest existing entries and converge over later batches.
+const PUSH2_PALETTE_WRITES_PER_BATCH: usize = 16;
 const PUSH2_RGB_SLOT_LIMIT: usize = 97;
 const PUSH2_WHITE_SLOT_START: u8 = 97;
 const PUSH2_WHITE_SLOT_COUNT: u8 = 31;
@@ -44,7 +44,6 @@ const PUSH2_DISPLAY_LINE_PIXELS: usize = PUSH2_DISPLAY_WIDTH * 2;
 const PUSH2_DISPLAY_LINE_PADDING: usize = 128;
 const PUSH2_DISPLAY_LINE_SIZE: usize = PUSH2_DISPLAY_LINE_PIXELS + PUSH2_DISPLAY_LINE_PADDING;
 const PUSH2_DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
-const PUSH2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(5);
 const PUSH2_IDENTITY_REQUEST: [u8; 6] = [0xF0, 0x7E, 0x01, 0x06, 0x01, 0xF7];
 const PUSH2_MANUFACTURER_PREFIX: [u8; 6] = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01];
 const PUSH2_DISPLAY_XOR_MASK: [u8; 4] = [0xE7, 0xF3, 0xE7, 0xFF];
@@ -59,6 +58,7 @@ const PUSH2_REAPPLY_PALETTE_MESSAGE: [u8; 8] = [
     0xF7,
 ];
 const PUSH2_CMD_SET_PALETTE_ENTRY: u8 = 0x03;
+const PUSH2_SET_PALETTE_ENTRY_LEN: usize = 17;
 const PUSH2_CMD_GET_PALETTE_ENTRY: u8 = 0x04;
 const PUSH2_CMD_REAPPLY_PALETTE: u8 = 0x05;
 const PUSH2_CMD_SET_LED_BRIGHTNESS: u8 = 0x06;
@@ -93,6 +93,11 @@ const _: () = assert!(
     "Push2 display transfer chunk size must align to the USB packet size"
 );
 
+/// Time source for resync and stall scheduling.
+pub type Push2Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
+/// Host-side mirror of the device, as it will stand once every message sent
+/// so far has been processed.
 #[derive(Debug)]
 struct Push2State {
     palette: [[u8; 4]; PUSH2_PALETTE_SIZE],
@@ -100,8 +105,15 @@ struct Push2State {
     factory_palette_valid: [bool; PUSH2_PALETTE_SIZE],
     prev_led_indices: [u8; PUSH2_MIDI_LED_COUNT],
     prev_touch_strip: [u8; PUSH2_TOUCH_STRIP_LED_COUNT],
-    last_colors: [[u8; 3]; PUSH2_TOTAL_LEDS],
-    last_frame_seen: bool,
+    /// LEDs to re-send even when their believed index already matches.
+    force_leds: [bool; PUSH2_MIDI_LED_COUNT],
+    force_touch_strip: bool,
+    /// Palette slots whose device contents are not trusted until rewritten.
+    force_palette: [bool; PUSH2_PALETTE_SIZE],
+    /// Palette reads answer the init sequence's factory capture until the
+    /// first frame; after that they are acknowledgement readbacks.
+    capturing_factory: bool,
+    link: flow::Push2Link,
 }
 
 impl Default for Push2State {
@@ -112,8 +124,11 @@ impl Default for Push2State {
             factory_palette_valid: [false; PUSH2_PALETTE_SIZE],
             prev_led_indices: [0; PUSH2_MIDI_LED_COUNT],
             prev_touch_strip: [0; PUSH2_TOUCH_STRIP_LED_COUNT],
-            last_colors: [[0; 3]; PUSH2_TOTAL_LEDS],
-            last_frame_seen: false,
+            force_leds: [false; PUSH2_MIDI_LED_COUNT],
+            force_touch_strip: false,
+            force_palette: [false; PUSH2_PALETTE_SIZE],
+            capturing_factory: true,
+            link: flow::Push2Link::default(),
         }
     }
 }
@@ -122,15 +137,24 @@ impl Default for Push2State {
 pub struct Push2Protocol {
     state: RwLock<Push2State>,
     display_encoder: Mutex<display::Push2DisplayEncoder>,
+    clock: Push2Clock,
 }
 
 impl Push2Protocol {
     /// Create a new Push 2 protocol instance.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_clock(Arc::new(Instant::now))
+    }
+
+    /// Create a Push 2 protocol instance that schedules resyncs and stall
+    /// probes against `clock` instead of the system clock.
+    #[must_use]
+    pub fn with_clock(clock: Push2Clock) -> Self {
         Self {
             state: RwLock::new(Push2State::default()),
             display_encoder: Mutex::new(display::Push2DisplayEncoder::default()),
+            clock,
         }
     }
 
@@ -175,11 +199,14 @@ impl Protocol for Push2Protocol {
             .expect("Push 2 state lock should not be poisoned");
         state.prev_led_indices = [0; PUSH2_MIDI_LED_COUNT];
         state.prev_touch_strip = [0; PUSH2_TOUCH_STRIP_LED_COUNT];
-        state.last_colors = [[0; 3]; PUSH2_TOTAL_LEDS];
-        state.last_frame_seen = false;
+        state.force_leds = [false; PUSH2_MIDI_LED_COUNT];
+        state.force_touch_strip = false;
+        state.force_palette = [false; PUSH2_PALETTE_SIZE];
+        state.capturing_factory = true;
+        flow::reset(&mut state);
         drop(state);
 
-        let mut commands = Vec::with_capacity(3 + PUSH2_PALETTE_SIZE + PUSH2_MIDI_LED_COUNT + 1);
+        let mut commands = Vec::with_capacity(3 + PUSH2_PALETTE_SIZE + PUSH2_MIDI_LED_COUNT + 2);
         commands.push(ProtocolCommand {
             data: PUSH2_IDENTITY_REQUEST.to_vec(),
             expects_response: true,
@@ -208,7 +235,12 @@ impl Protocol for Push2Protocol {
                 true,
             ));
         }
-        commands.extend(led_palette::all_leds_off_commands());
+        // The clear goes out in acknowledged chunks, and the first frame
+        // starts with nothing unconfirmed.
+        commands.extend(flow::chunk_with_ack_reads(
+            led_palette::all_leds_off_commands(),
+            0,
+        ));
         commands
     }
 
@@ -218,6 +250,7 @@ impl Protocol for Push2Protocol {
             .state
             .write()
             .expect("Push 2 state lock should not be poisoned");
+        let unconfirmed = flow::unconfirmed_wire_bytes(&state);
         commands.extend(led_palette::restore_factory_palette_commands(&mut state));
         state.prev_led_indices = [0; PUSH2_MIDI_LED_COUNT];
         state.prev_touch_strip = [0; PUSH2_TOUCH_STRIP_LED_COUNT];
@@ -234,7 +267,10 @@ impl Protocol for Push2Protocol {
             ),
             false,
         ));
-        commands
+        // Restoring a busy palette is up to 128 palette writes; unpaced by
+        // replies, that is the same unconfirmed flood the LED lane avoids.
+        // The first chunk waits out whatever the LED lane left unconfirmed.
+        flow::chunk_with_ack_reads(commands, unconfirmed)
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
@@ -246,20 +282,29 @@ impl Protocol for Push2Protocol {
     fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let normalized = self.normalize_colors(colors);
         let normalized = normalized.as_ref();
+        let now = (self.clock)();
         let mut state = self
             .state
             .write()
             .expect("Push 2 state lock should not be poisoned");
-        state.last_colors.copy_from_slice(normalized);
-        state.last_frame_seen = true;
-        led_palette::encode_led_frame(&mut state, normalized, commands, false);
+        state.capturing_factory = false;
+
+        let mut buffer = CommandBuffer::new(commands);
+        if let flow::BatchStart::Proceed(mut budget) =
+            flow::begin_batch(&mut state, now, &mut buffer)
+        {
+            let deferred =
+                led_palette::encode_led_batch(&mut state, normalized, &mut buffer, &mut budget);
+            flow::finish_batch(&mut state, &budget, deferred, &mut buffer);
+        }
+        buffer.finish();
     }
 
     #[expect(clippy::similar_names, reason = "lsb/msb are standard acronyms")]
     fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {
         let led_brightness = brightness / 2;
         let (display_lsb, display_msb) = encode_sysex_byte(brightness);
-        Some(vec![
+        let commands = vec![
             primary_command(
                 push2_sysex(PUSH2_CMD_SET_LED_BRIGHTNESS, &[led_brightness]),
                 false,
@@ -271,7 +316,17 @@ impl Protocol for Push2Protocol {
                 ),
                 false,
             ),
-        ])
+        ];
+        let wire_bytes = commands
+            .iter()
+            .map(|command| flow::usb_midi_wire_bytes(command.data.len()))
+            .sum();
+        let mut state = self
+            .state
+            .write()
+            .expect("Push 2 state lock should not be poisoned");
+        flow::note_unbatched_traffic(&mut state, wire_bytes);
+        Some(commands)
     }
 
     fn connection_diagnostics(&self) -> Vec<ProtocolCommand> {
@@ -281,23 +336,12 @@ impl Protocol for Push2Protocol {
         )]
     }
 
+    // User mode and touch-strip host control are re-asserted inside the
+    // acknowledged LED stream (see `flow`), not on a separate keepalive
+    // timer: a keepalive write that times out tears the device down, and it
+    // would bypass the flow control the LED lane depends on.
     fn keepalive(&self) -> Option<ProtocolKeepalive> {
-        Some(ProtocolKeepalive {
-            commands: vec![
-                primary_command(
-                    push2_sysex(PUSH2_CMD_SET_MIDI_MODE, &[PUSH2_MIDI_MODE_USER]),
-                    false,
-                ),
-                primary_command(
-                    push2_sysex(
-                        PUSH2_CMD_SET_TOUCH_STRIP_CONFIG,
-                        &[PUSH2_TOUCH_STRIP_HOST_CONFIG],
-                    ),
-                    false,
-                ),
-            ],
-            interval: PUSH2_KEEPALIVE_INTERVAL,
-        })
+        None
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
@@ -327,7 +371,32 @@ impl Protocol for Push2Protocol {
                 .state
                 .write()
                 .expect("Push 2 state lock should not be poisoned");
-            led_palette::parse_palette_entry_response(args, &mut state)?;
+            let (index, entry) = match led_palette::parse_palette_entry_response(args) {
+                Ok(parsed) => parsed,
+                Err(error) if state.capturing_factory => return Err(error),
+                // A garbled acknowledgement reply acknowledges nothing: the
+                // lane keeps holding and its next probe asks again. Failing
+                // the parse would end the USB actor over one bad packet.
+                Err(error) => {
+                    warn!(%error, "ignoring malformed Push 2 palette reply");
+                    return Ok(ProtocolResponse {
+                        status: ResponseStatus::Failed,
+                        data: data[6..data.len() - 1].to_vec(),
+                    });
+                }
+            };
+            if state.capturing_factory {
+                let slot = usize::from(index);
+                state.palette[slot] = entry;
+                state.factory_palette[slot] = entry;
+                state.factory_palette_valid[slot] = true;
+            } else {
+                // A reply for a request that already timed out is stale and
+                // proves nothing about the current batch, so only the reply
+                // to the outstanding request is taken.
+                let now = (self.clock)();
+                flow::acknowledge(&mut state, index, entry, now);
+            }
         }
 
         Ok(ProtocolResponse {
@@ -491,8 +560,8 @@ fn decode_sysex_byte(lsb: u8, msb: u8) -> Result<u8, ProtocolError> {
     Ok((msb << 7) | lsb)
 }
 
-fn set_palette_entry_message(index: u8, entry: [u8; 4]) -> [u8; 17] {
-    let mut message = [0_u8; 17];
+fn set_palette_entry_message(index: u8, entry: [u8; 4]) -> [u8; PUSH2_SET_PALETTE_ENTRY_LEN] {
+    let mut message = [0_u8; PUSH2_SET_PALETTE_ENTRY_LEN];
     message[..7].copy_from_slice(&[
         0xF0,
         0x00,
