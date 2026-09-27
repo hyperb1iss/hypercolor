@@ -76,21 +76,6 @@ fn push2_palette_writes_respect_per_frame_budget() {
 }
 
 #[test]
-fn push2_palette_budget_converges_across_frames() {
-    let protocol = Push2Protocol::new();
-    let colors = unique_pad_colors();
-
-    let per_frame: Vec<usize> = (0..6)
-        .map(|_| count_palette_writes(&protocol.encode_frame(&colors)))
-        .collect();
-
-    assert_eq!(per_frame, vec![16, 16, 16, 16, 0, 0]);
-
-    let steady_state = protocol.encode_frame(&colors);
-    assert!(steady_state.is_empty());
-}
-
-#[test]
 fn push2_budget_fallback_maps_to_nearest_existing_entry() {
     let protocol = Push2Protocol::new();
     protocol
@@ -141,7 +126,7 @@ fn push2_init_sequence_reads_palette_and_clears_zones() {
     let protocol = build_push2_protocol();
     let commands = protocol.init_sequence();
 
-    assert_eq!(commands.len(), 261);
+    assert_eq!(commands.len(), 263);
     assert!(commands[0].expects_response);
     assert_eq!(commands[0].data, vec![0xF0, 0x7E, 0x01, 0x06, 0x01, 0xF7]);
     assert_eq!(commands[1].transfer_type, TransferType::Primary);
@@ -168,14 +153,22 @@ fn push2_init_sequence_reads_palette_and_clears_zones() {
     assert_eq!(commands[195].data, vec![0xB0, 102, 0x00]);
     assert_eq!(commands[222].data, vec![0xB0, 9, 0x00]);
     assert_eq!(commands[223].data, vec![0xB0, 28, 0x00]);
-    assert_eq!(commands[259].data, vec![0xB0, 60, 0x00]);
+    // The clear is acknowledged one endpoint packet at a time: 125 four-byte
+    // USB-MIDI events fill 500 bytes, then a palette read waits for the
+    // device before the rest goes out.
+    let ack_read = vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x04, 0x00, 0xF7];
+    assert_eq!(commands[256].data, ack_read);
+    assert!(commands[256].expects_response);
+    assert_eq!(commands[260].data, vec![0xB0, 60, 0x00]);
     assert_eq!(
-        commands[260].data,
+        commands[261].data,
         vec![
             0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7
         ]
     );
+    assert_eq!(commands[262].data, ack_read);
+    assert!(commands[262].expects_response);
 }
 
 #[test]
@@ -311,29 +304,32 @@ fn push2_shutdown_restores_cached_factory_palette() {
     let _ = protocol.encode_frame(&colors);
 
     let shutdown = protocol.shutdown_sequence();
-    assert_eq!(shutdown.len(), 134);
+    let ack_read = vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x04, 0x00, 0xF7];
+    assert_eq!(shutdown.len(), 136);
     assert_eq!(shutdown[0].data, vec![0x90, 36, 0x00]);
-    assert_eq!(shutdown[129].data.len(), 24);
+    assert_eq!(shutdown[125].data, ack_read);
+    assert_eq!(shutdown[130].data.len(), 24);
     assert_eq!(
-        shutdown[130].data,
+        shutdown[131].data,
         vec![
             0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x7F, 0x01,
             0x12, 0x00, 0xF7
         ]
     );
     assert_eq!(
-        shutdown[131].data,
+        shutdown[132].data,
         vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x05, 0xF7]
     );
-    assert!(shutdown[132].expects_response);
+    assert!(shutdown[133].expects_response);
     assert_eq!(
-        shutdown[132].data,
+        shutdown[133].data,
         vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x0A, 0x00, 0xF7]
     );
     assert_eq!(
-        shutdown[133].data,
+        shutdown[134].data,
         vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x17, 0x68, 0xF7]
     );
+    assert_eq!(shutdown[135].data, ack_read);
 }
 
 #[test]
@@ -382,7 +378,7 @@ fn push2_brightness_and_diagnostics_use_primary_sysex() {
 }
 
 #[test]
-fn push2_keepalive_reasserts_user_mode_without_forced_led_resync() {
+fn push2_has_no_timer_keepalive_outside_the_led_stream() {
     let protocol = Push2Protocol::new();
     let mut colors = vec![[0_u8, 0_u8, 0_u8]; 160];
     colors[0] = [255, 0, 0];
@@ -394,36 +390,15 @@ fn push2_keepalive_reasserts_user_mode_without_forced_led_resync() {
             .any(|command| command.data == vec![0x90, 36, 0x01]),
         "first frame should light pad 0 from palette slot 1"
     );
-
     assert!(
         protocol.encode_frame(&colors).is_empty(),
-        "steady-state frame should normally be diff-suppressed"
+        "steady-state frame should be diff-suppressed"
     );
 
-    let keepalive = protocol
-        .keepalive()
-        .expect("Push 2 should run a MIDI mode keepalive");
-    assert_eq!(keepalive.interval, Duration::from_secs(5));
-
-    let resync = protocol.keepalive_commands();
-    assert_eq!(resync.len(), 2);
-    assert_eq!(
-        resync[0].data,
-        vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x0A, 0x01, 0xF7]
-    );
-    assert_eq!(
-        resync[1].data,
-        vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x17, 0x6B, 0xF7]
-    );
-    assert!(
-        resync
-            .iter()
-            .all(|command| command.transfer_type == TransferType::Primary)
-    );
-    assert!(
-        resync.iter().all(|command| command.data.len() <= 9),
-        "keepalive should stay lightweight enough to avoid ALSA MIDI bursts"
-    );
+    // User mode is re-asserted inside the acknowledged LED stream instead,
+    // where a stalled endpoint is a recoverable hold, not an actor failure.
+    assert!(protocol.keepalive().is_none());
+    assert!(protocol.keepalive_commands().is_empty());
 }
 
 #[test]
