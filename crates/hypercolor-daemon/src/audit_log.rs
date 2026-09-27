@@ -22,7 +22,10 @@
 //!
 //! Every audited request runs under an [`AuditGuard`], which records its
 //! entry exactly once: with the response status, or with status 499 when the
-//! request is dropped first (a client that disconnects mid-request).
+//! request is dropped first (a client that disconnects mid-request). A
+//! dropped request's entry is written when the last task it started
+//! finishes; a layout publication waiting on a stalled render thread holds
+//! it until that task ends or the runtime shuts down.
 //!
 //! Store attribution works through `hypercolor-persistence`'s replacement
 //! observer: a request runs inside [`AuditGuard::run`], and every store file
