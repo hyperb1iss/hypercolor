@@ -26,6 +26,13 @@ use serde::Serialize;
 
 use tempfile::NamedTempFile;
 
+mod history;
+
+pub use history::{
+    Generation, HistoryError, HistoryPolicy, RestoreOutcome, capture_next_writes, list_generations,
+    restore_generation, set_replacement_observer,
+};
+
 #[cfg(not(windows))]
 static DESTINATIONS: LazyLock<Mutex<HashMap<PathBuf, Weak<Destination>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -261,6 +268,7 @@ struct Destination {
     parent: PathBuf,
     state: Mutex<DestinationState>,
     state_changed: Condvar,
+    history: Mutex<Option<history::HistoryTracking>>,
     #[cfg(unix)]
     file_mode: AtomicU32,
     #[cfg(any(test, feature = "persistence-test-hooks"))]
@@ -373,6 +381,7 @@ impl AtomicFileWriter {
             parent: canonical_parent,
             state: Mutex::new(DestinationState::default()),
             state_changed: Condvar::new(),
+            history: Mutex::new(None),
             #[cfg(unix)]
             file_mode: AtomicU32::new(0),
             #[cfg(any(test, feature = "persistence-test-hooks"))]
@@ -848,6 +857,13 @@ fn try_write_stage_aware(
         );
     }
 
+    // Only one attempt per destination runs at a time (the active
+    // generation), so the file cannot change between this read and the
+    // replacement below. The copy into history is durable before the
+    // replacement starts.
+    let previous = history::previous_content(destination);
+    history::rotate_before_replace(destination, &previous, payload);
+
     let state = destination
         .state
         .lock()
@@ -878,6 +894,7 @@ fn try_write_stage_aware(
         });
     }
     drop(state);
+    history::note_replacement(destination, &previous, payload);
 
     #[cfg(unix)]
     {
@@ -991,7 +1008,7 @@ pub fn flush_all(timeout: Duration) -> PersistenceFlushReport {
 }
 
 #[cfg(unix)]
-fn apply_file_mode(destination: &Arc<Destination>, temporary: &fs::File) -> std::io::Result<()> {
+fn apply_file_mode(destination: &Destination, temporary: &fs::File) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
 
     let mode = destination.file_mode.load(Ordering::Acquire);

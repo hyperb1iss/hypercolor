@@ -17,7 +17,8 @@ ownership of these files is the daemon's single-instance guard, not this crate.
 ## Workspace position
 
 **Depends on:** `hypercolor-platform-fs` (for the actual durable replacement),
-`serde`, `serde_json`, `tempfile`, `thiserror`.
+`chrono` (generation timestamps), `serde`, `serde_json`, `tempfile`,
+`thiserror`, `tracing`.
 
 **Depended on by:** `hypercolor-core` (which re-exports it as
 `hypercolor_core::persistence`) and `hypercolor-driver-support`.
@@ -56,11 +57,34 @@ ownership of these files is the daemon's single-instance guard, not this crate.
 - `PersistenceFlushError` — a dirty snapshot that did not converge before its
   deadline.
 
+**History**
+
+- `HistoryPolicy`: how many previous generations a destination keeps, in which
+  directory, and how long content must stay current before it is worth keeping.
+  `AtomicFileWriter::enable_history(policy)` attaches it to the destination for
+  the rest of the process.
+- Before a replacement, the outgoing content is copied into the history
+  directory as `{id:06}-{replaced_at}{extension}`, durably, so a crash leaves
+  either the old file with its copy already kept or the new file. Content
+  identical to the new payload, content the newest generation already holds,
+  and content this process wrote less than `min_interval` ago are skipped, so
+  rotations of one destination are at least `min_interval` apart. The oldest
+  generations beyond the budget are removed.
+- `capture_next_writes()` waives the interval once per destination (the daemon
+  calls it before its shutdown saves).
+- `list_generations(directory)` and `restore_generation(path, id)` read and
+  restore. A restore is an ordinary write, so the content it replaces becomes a
+  new generation and the restore can be undone.
+- `set_replacement_observer(callback)` is told about every replacement that
+  changed a destination's bytes, on the thread that made it. The daemon uses it
+  to attribute store changes to API requests.
+
 **Errors**
 
 - `PersistenceError` — names the stage that failed: retry-supervisor
   initialization, snapshot serialization, invalid destination, directory
   creation, and the write and replacement stages.
+- `HistoryError`: a history listing or restore that could not complete.
 
 ## Feature flags
 
