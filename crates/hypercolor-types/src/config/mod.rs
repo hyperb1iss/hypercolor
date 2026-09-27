@@ -76,6 +76,12 @@ mod defaults {
     pub fn shutdown_color() -> String {
         "#1a1a2e".into()
     }
+    pub const fn state_history_generations() -> u32 {
+        10
+    }
+    pub const fn state_history_min_interval_secs() -> u64 {
+        30
+    }
 
     // Web
     pub fn websocket_fps() -> u32 {

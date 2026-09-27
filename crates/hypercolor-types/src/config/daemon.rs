@@ -43,6 +43,17 @@ pub struct DaemonConfig {
 
     #[serde(default = "defaults::shutdown_color")]
     pub shutdown_color: String,
+
+    /// Previous versions of each durable state file the daemon keeps, from
+    /// newest to oldest. `0` keeps none.
+    #[serde(default = "defaults::state_history_generations")]
+    pub state_history_generations: u32,
+
+    /// Seconds a state file's content must stay current before a later
+    /// write keeps it as a previous version. Shorter-lived content is
+    /// transient (a slider drag, a burst of automation) and is not kept.
+    #[serde(default = "defaults::state_history_min_interval_secs")]
+    pub state_history_min_interval_secs: u64,
 }
 
 impl Default for DaemonConfig {
@@ -60,6 +71,8 @@ impl Default for DaemonConfig {
             start_scene: defaults::start_scene(),
             shutdown_behavior: defaults::shutdown_behavior(),
             shutdown_color: defaults::shutdown_color(),
+            state_history_generations: defaults::state_history_generations(),
+            state_history_min_interval_secs: defaults::state_history_min_interval_secs(),
         }
     }
 }

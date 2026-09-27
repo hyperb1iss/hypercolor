@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod audit;
 pub mod openrgb;
+pub use audit::*;
 pub use openrgb::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
