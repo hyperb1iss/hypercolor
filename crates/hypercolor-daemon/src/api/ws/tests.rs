@@ -5496,10 +5496,7 @@ async fn dispatch_command_audits_mutations_as_the_session_peer() {
     ));
     state.audit_log = Some(Arc::clone(&log));
     let state = Arc::new(state);
-    let peer = crate::audit_log::AuditPeer {
-        remote: "192.0.2.7".to_owned(),
-        user_agent: "ws-client/2".to_owned(),
-    };
+    let peer = crate::audit_log::AuditPeer::new("192.0.2.7".to_owned(), None, "ws-client/2");
 
     let created = crate::audit_log::with_ws_peer(peer, async {
         let read = dispatch_command(

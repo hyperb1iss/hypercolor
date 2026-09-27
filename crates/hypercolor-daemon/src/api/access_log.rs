@@ -23,7 +23,13 @@
 //! auth, and every handler. WebSocket upgrades produce a single `101` entry;
 //! post-upgrade frame traffic is not HTTP and is not logged here, except for
 //! `command` messages, which replay through this router carrying the
-//! session's [`WsCommandPeer`].
+//! session's [`AuditCaller`].
+//!
+//! The access log trusts `X-Forwarded-For` / `X-Real-IP` from loopback peers,
+//! for local reverse proxies. The audit trail does not: it records the
+//! socket peer as `remote` and any forwarded value, verbatim and capped, as
+//! `forwarded_for`, so a local process cannot put another address in the
+//! `remote` field.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -48,9 +54,13 @@ pub struct AccessLogState {
     pub mcp_path: Option<String>,
 }
 
-/// Marks a request replayed from a WebSocket `command` message.
+/// Who sent a request that has no socket of its own: a WebSocket `command`
+/// replayed through the router, or an in-process trusted call.
 #[derive(Debug, Clone)]
-pub struct WsCommandPeer(pub Arc<AuditPeer>);
+pub struct AuditCaller {
+    pub transport: AuditTransport,
+    pub peer: Arc<AuditPeer>,
+}
 
 pub async fn log_access(
     State(state): State<AccessLogState>,
@@ -61,23 +71,37 @@ pub async fn log_access(
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let query = request.uri().query().map(redact_sensitive_query);
-    let ws_peer = request.extensions().get::<WsCommandPeer>().cloned();
-    let (remote, user_agent) = match &ws_peer {
-        Some(WsCommandPeer(peer)) => (peer.remote.clone(), peer.user_agent.clone()),
+    let caller = request.extensions().get::<AuditCaller>().cloned();
+    let (remote, user_agent) = match &caller {
+        Some(caller) => (caller.peer.remote.clone(), caller.peer.user_agent.clone()),
         None => (
             client_addr(&request).unwrap_or_else(|| "unknown".to_owned()),
             user_agent(request.headers()),
         ),
     };
-    let audited = audit_log::is_mutating(&method) && !is_mcp_path(state.mcp_path.as_deref(), &path);
+    let mutating = audit_log::is_mutating(&method);
+    let mcp = is_mcp_path(state.mcp_path.as_deref(), &path);
+    let peer = caller.as_ref().map_or_else(
+        || {
+            peer_identity(
+                request
+                    .extensions()
+                    .get::<ConnectInfo<SocketAddr>>()
+                    .map(|ConnectInfo(address)| *address),
+                request.headers(),
+            )
+        },
+        |caller| caller.peer.as_ref().clone(),
+    );
 
-    let (response, changed) = if audited {
+    let (response, changed) = if mutating && !mcp {
         audit_log::collect_changes(next.run(request)).await
     } else {
         (next.run(request).await, Vec::new())
     };
     let status = response.status().as_u16();
     let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let audited = should_audit(mutating, mcp, status);
 
     emit(
         select_level(status, &method, &path),
@@ -91,11 +115,9 @@ pub async fn log_access(
     );
 
     if audited {
-        let transport = if ws_peer.is_some() {
-            AuditTransport::Websocket
-        } else {
-            AuditTransport::Http
-        };
+        let transport = caller
+            .as_ref()
+            .map_or(AuditTransport::Http, |caller| caller.transport);
         let entry = audit_log::entry(
             state.audit.as_deref(),
             transport,
@@ -103,8 +125,7 @@ pub async fn log_access(
                 method: method.as_str(),
                 path: &path,
                 tool: None,
-                remote: &remote,
-                user_agent: &user_agent,
+                peer: &peer,
             },
             status,
             &changed,
@@ -114,6 +135,13 @@ pub async fn log_access(
     }
 
     response
+}
+
+/// MCP tool calls are audited where they run. A mutating request to the MCP
+/// mount that the security layer turns away never reaches a tool, so it is
+/// recorded here instead.
+const fn should_audit(mutating: bool, mcp: bool, status: u16) -> bool {
+    mutating && (!mcp || matches!(status, 401 | 403))
 }
 
 fn is_mcp_path(mcp_path: Option<&str>, path: &str) -> bool {
@@ -133,16 +161,20 @@ fn user_agent(headers: &HeaderMap) -> String {
         .to_owned()
 }
 
-/// The audit identity of a connection from its socket address and headers,
-/// with the same forwarded-for trust rule as HTTP requests.
+/// The audit identity of a connection: its socket address, whatever it
+/// claims through forwarding headers, and its user agent.
 #[must_use]
 pub fn peer_identity(socket_addr: Option<SocketAddr>, headers: &HeaderMap) -> AuditPeer {
-    AuditPeer {
-        remote: socket_addr
-            .map(|socket_addr| remote_from(socket_addr, headers))
-            .unwrap_or_else(|| "unknown".to_owned()),
-        user_agent: user_agent(headers),
-    }
+    let forwarded = ["x-forwarded-for", "x-real-ip"]
+        .into_iter()
+        .filter_map(|name| headers.get(name)?.to_str().ok())
+        .map(str::trim)
+        .find(|value| !value.is_empty());
+    AuditPeer::new(
+        socket_addr.map_or_else(|| "unknown".to_owned(), |address| address.ip().to_string()),
+        forwarded,
+        &user_agent(headers),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -268,7 +300,9 @@ mod tests {
     use axum::http::{Method, Request};
     use tracing::Level;
 
-    use super::{client_addr, is_mcp_path, redact_sensitive_query, select_level};
+    use super::{
+        client_addr, is_mcp_path, peer_identity, redact_sensitive_query, select_level, should_audit,
+    };
 
     #[test]
     fn the_mcp_mount_and_its_children_are_left_to_tool_auditing() {
@@ -277,6 +311,40 @@ mod tests {
         assert!(!is_mcp_path(Some("/mcp"), "/mcpx"));
         assert!(!is_mcp_path(Some("/mcp"), "/api/v1/scenes"));
         assert!(!is_mcp_path(None, "/mcp"));
+    }
+
+    #[test]
+    fn rejected_mcp_writes_are_audited_and_accepted_ones_left_to_tools() {
+        assert!(should_audit(true, false, 200));
+        assert!(!should_audit(false, false, 200));
+        assert!(!should_audit(true, true, 200));
+        assert!(should_audit(true, true, 401));
+        assert!(should_audit(true, true, 403));
+        assert!(!should_audit(false, true, 401));
+    }
+
+    #[test]
+    fn the_audit_peer_is_the_socket_and_forwarding_is_only_a_claim() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.50".parse().expect("header value parses"),
+        );
+        headers.insert(
+            axum::http::header::USER_AGENT,
+            "x".repeat(1000).parse().expect("header value parses"),
+        );
+        let peer = peer_identity(
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9420)),
+            &headers,
+        );
+        assert_eq!(peer.remote, "127.0.0.1");
+        assert_eq!(peer.forwarded_for.as_deref(), Some("203.0.113.50"));
+        assert_eq!(
+            peer.user_agent.len(),
+            crate::audit_log::MAX_CLIENT_FIELD_CHARS
+        );
+        assert_eq!(peer_identity(None, &headers).remote, "unknown");
     }
 
     #[test]

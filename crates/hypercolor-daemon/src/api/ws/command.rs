@@ -80,7 +80,10 @@ pub(super) async fn dispatch_command(
     if let Some(peer) = crate::audit_log::current_ws_peer() {
         request
             .extensions_mut()
-            .insert(crate::api::access_log::WsCommandPeer(peer));
+            .insert(crate::api::access_log::AuditCaller {
+                transport: hypercolor_types::api::system::AuditTransport::Websocket,
+                peer,
+            });
     }
 
     let response = cached_command_router(state)

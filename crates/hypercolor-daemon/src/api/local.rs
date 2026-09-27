@@ -52,6 +52,12 @@ impl TrustedLocalApi {
     ) -> Result<Response<Body>, TrustedLocalApiError> {
         validate_http_uri(request.uri())?;
         super::security::mark_trusted_local_control(&mut request);
+        request
+            .extensions_mut()
+            .insert(super::access_log::AuditCaller {
+                transport: hypercolor_types::api::system::AuditTransport::Http,
+                peer: Arc::new(crate::audit_log::AuditPeer::in_process()),
+            });
         Ok(self
             .router
             .clone()

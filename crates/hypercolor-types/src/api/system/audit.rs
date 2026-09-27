@@ -35,9 +35,16 @@ pub struct AuditEntry {
     /// Response status. MCP tool calls report 200 for success and the
     /// closest HTTP status for a tool error (400, 404, 409, or 500).
     pub status: u16,
-    /// Client address, or `unknown` when the transport has none.
+    /// The socket peer's address, `in-process` for trusted in-process
+    /// calls, or `unknown` when the transport has none. Never read from a
+    /// header.
     pub remote: String,
-    /// Client `User-Agent`, empty when absent.
+    /// What the client claimed through `X-Forwarded-For` or `X-Real-IP`,
+    /// verbatim and capped at 256 characters. Only as trustworthy as the
+    /// process that sent it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_for: Option<String>,
+    /// Client `User-Agent`, capped at 256 characters, empty when absent.
     pub user_agent: String,
     /// Durable stores whose bytes this request changed, by inventory name.
     #[serde(default)]

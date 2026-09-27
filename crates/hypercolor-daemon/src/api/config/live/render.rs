@@ -55,7 +55,7 @@ pub(super) async fn apply_render_config_change(state: &Arc<AppState>, key: Optio
 
 async fn sync_active_layout_canvas_size(state: &Arc<AppState>, width: u32, height: u32) -> bool {
     let state = Arc::clone(state);
-    match tokio::spawn(sync_active_layout_canvas_size_workflow(
+    match crate::audit_log::spawn_attributed(sync_active_layout_canvas_size_workflow(
         state, width, height,
     ))
     .await

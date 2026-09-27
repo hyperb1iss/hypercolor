@@ -23,12 +23,17 @@ class AuditEntry:
             latency_ms (float): Handling time in milliseconds.
             method (str): HTTP method, or `tools/call` for MCP.
             path (str): Request path without its query string, or the MCP mount path.
-            remote (str): Client address, or `unknown` when the transport has none.
+            remote (str): The socket peer's address, `in-process` for trusted in-process
+                calls, or `unknown` when the transport has none. Never read from a
+                header.
             status (int): Response status. MCP tool calls report 200 for success and the
                 closest HTTP status for a tool error (400, 404, 409, or 500).
             timestamp (str): When the request finished, RFC 3339 UTC with milliseconds.
             transport (AuditTransport): Transport a state-changing request arrived on.
-            user_agent (str): Client `User-Agent`, empty when absent.
+            user_agent (str): Client `User-Agent`, capped at 256 characters, empty when absent.
+            forwarded_for (None | str | Unset): What the client claimed through `X-Forwarded-For` or `X-Real-IP`,
+                verbatim and capped at 256 characters. Only as trustworthy as the
+                process that sent it.
             stores (list[str] | Unset): Durable stores whose bytes this request changed, by inventory name.
             tool (None | str | Unset): MCP tool name.
     """
@@ -41,6 +46,7 @@ class AuditEntry:
     timestamp: str
     transport: AuditTransport
     user_agent: str
+    forwarded_for: None | str | Unset = UNSET
     stores: list[str] | Unset = UNSET
     tool: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -61,6 +67,12 @@ class AuditEntry:
         transport = self.transport.value
 
         user_agent = self.user_agent
+
+        forwarded_for: None | str | Unset
+        if isinstance(self.forwarded_for, Unset):
+            forwarded_for = UNSET
+        else:
+            forwarded_for = self.forwarded_for
 
         stores: list[str] | Unset = UNSET
         if not isinstance(self.stores, Unset):
@@ -86,6 +98,8 @@ class AuditEntry:
                 "user_agent": user_agent,
             }
         )
+        if forwarded_for is not UNSET:
+            field_dict["forwarded_for"] = forwarded_for
         if stores is not UNSET:
             field_dict["stores"] = stores
         if tool is not UNSET:
@@ -112,6 +126,15 @@ class AuditEntry:
 
         user_agent = d.pop("user_agent")
 
+        def _parse_forwarded_for(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        forwarded_for = _parse_forwarded_for(d.pop("forwarded_for", UNSET))
+
         stores = cast(list[str], d.pop("stores", UNSET))
 
         def _parse_tool(data: object) -> None | str | Unset:
@@ -132,6 +155,7 @@ class AuditEntry:
             timestamp=timestamp,
             transport=transport,
             user_agent=user_agent,
+            forwarded_for=forwarded_for,
             stores=stores,
             tool=tool,
         )

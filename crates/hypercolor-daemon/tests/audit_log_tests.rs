@@ -10,7 +10,7 @@ use axum::extract::ConnectInfo;
 use http::{Request, StatusCode};
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppStateBuilder;
-use hypercolor_daemon::audit_log::{self, AUDIT_LOG_FILE, AuditLog, RequestLine};
+use hypercolor_daemon::audit_log::{self, AUDIT_LOG_FILE, AuditLog, AuditPeer, RequestLine};
 use hypercolor_daemon::state_history::{StoreRoots, daemon_store_files};
 use hypercolor_types::api::system::{AuditEntry, AuditTransport};
 use serde_json::Value;
@@ -24,8 +24,7 @@ fn sample(index: usize) -> AuditEntry {
             method: "POST",
             path: &format!("/api/v1/sample/{index}"),
             tool: None,
-            remote: "127.0.0.1",
-            user_agent: "audit-test",
+            peer: &AuditPeer::new("127.0.0.1".to_owned(), None, "audit-test"),
         },
         200,
         &[],
@@ -187,7 +186,8 @@ async fn only_mutating_requests_are_audited_and_no_secret_reaches_the_trail() {
     assert_eq!(create.transport, AuditTransport::Http);
     assert_eq!(create.path, "/api/v1/scenes");
     assert_eq!(create.status, 201);
-    assert_eq!(create.remote, "203.0.113.9");
+    assert_eq!(create.remote, "127.0.0.1", "the socket peer, not a header");
+    assert_eq!(create.forwarded_for.as_deref(), Some("203.0.113.9"));
     assert_eq!(create.user_agent, "audit-test/1.0");
     assert!(
         create.stores.iter().any(|store| store == "scenes"),
@@ -207,6 +207,50 @@ async fn only_mutating_requests_are_audited_and_no_secret_reaches_the_trail() {
         "Bearer",
     ] {
         assert!(!trail.contains(secret), "{secret} leaked into the trail");
+    }
+}
+
+#[tokio::test]
+async fn layout_writes_on_workflow_tasks_are_attributed() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let (state, log) = audit_state(directory.path());
+    let app = api::build_router(state, None);
+
+    let created = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/api/v1/layouts",
+            Some(r#"{"name": "Audit Layout"}"#),
+        ))
+        .await
+        .expect("create layout");
+    assert!(created.status().is_success(), "{}", created.status());
+    let layout_id = body_json(created).await["data"]["id"]
+        .as_str()
+        .expect("layout id")
+        .to_owned();
+    let deleted = app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("/api/v1/layouts/{layout_id}"),
+            None,
+        ))
+        .await
+        .expect("delete layout");
+    assert!(deleted.status().is_success(), "{}", deleted.status());
+
+    let entries = log.recent(10).expect("recent");
+    assert_eq!(entries.len(), 2);
+    for entry in &entries {
+        assert!(
+            entry.stores.iter().any(|store| store == "layouts"),
+            "{} {} should name the layout store: {:?}",
+            entry.method,
+            entry.path,
+            entry.stores
+        );
     }
 }
 

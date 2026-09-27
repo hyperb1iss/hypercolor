@@ -264,8 +264,10 @@ of your output, not a microphone, if you want lights to follow what's playing.
 {% <api_endpoint method="GET" path="/api/v1/system/audit"> %}
 Recent state-changing requests, newest first, from the daemon's audit trail.
 Each entry has the time, transport (`http`, `websocket`, or `mcp`), method,
-path without its query string, MCP tool name, status, client address, user
-agent, and the durable stores the request changed. `?limit=` caps the page
+path without its query string, MCP tool name, status, the socket peer's
+address, any `X-Forwarded-For` or `X-Real-IP` claim (as `forwarded_for`,
+never trusted for `remote`), user agent, and the durable stores the request
+changed. `?limit=` caps the page
 (default 100, at most 1000). Request bodies, query strings, credentials, and
 tool arguments are never recorded. The same entries live on disk in
 `${XDG_STATE_HOME:-~/.local/state}/hypercolor/logs/api-audit.jsonl`; see

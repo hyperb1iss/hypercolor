@@ -12,8 +12,8 @@
 //! ```
 //!
 //! One JSON object per line, the same shape `GET /api/v1/system/audit`
-//! returns. The active file rotates at 1 MiB and four rotated files are
-//! kept, so the trail never exceeds about 5 MiB.
+//! returns. The active file rotates at 4 MiB and four rotated files are
+//! kept, so the trail stays under about 20 MiB, roughly 70,000 entries.
 //!
 //! Entries record the method, the path without its query string, the
 //! status, the client address and user agent, and which durable stores the
@@ -22,9 +22,11 @@
 //!
 //! Store attribution works through `hypercolor-persistence`'s replacement
 //! observer: a request runs inside [`collect_changes`], and every store file
-//! whose bytes change on that task (or in a blocking closure run through
-//! [`with_change_scope`]) is attributed to it. Writes made later by
-//! background workers, such as a retry after a failed write, are not.
+//! whose bytes change on that task, on a task it starts with
+//! [`spawn_attributed`], or in a blocking closure run through
+//! [`with_change_scope`] is attributed to it. Writes made by detached
+//! background work, such as a retry after a failed write or a playlist
+//! runner, are not.
 
 use std::fs::{self, File, OpenOptions};
 use std::future::Future;
@@ -41,7 +43,7 @@ pub const AUDIT_LOG_DIR: &str = "logs";
 /// The active audit file.
 pub const AUDIT_LOG_FILE: &str = "api-audit.jsonl";
 /// Size at which the active file rotates.
-pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
+pub const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// Rotated files kept beside the active one.
 pub const ROTATED_FILES: usize = 4;
 /// Largest page `GET /system/audit` returns.
@@ -71,22 +73,40 @@ impl ChangeScope {
     }
 }
 
-/// Who sent a request, for transports without a per-request socket address.
+/// Longest `forwarded_for` or `user_agent` value an entry keeps.
+pub const MAX_CLIENT_FIELD_CHARS: usize = 256;
+
+/// Who sent a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditPeer {
+    /// The socket peer's address, never taken from a header.
     pub remote: String,
+    /// What the client claimed through `X-Forwarded-For` or `X-Real-IP`.
+    pub forwarded_for: Option<String>,
     pub user_agent: String,
 }
 
 impl AuditPeer {
-    /// The peer for an in-process trusted socket, which has no address.
+    /// A peer with client-supplied fields capped to
+    /// [`MAX_CLIENT_FIELD_CHARS`].
     #[must_use]
-    pub fn in_process() -> Self {
+    pub fn new(remote: String, forwarded_for: Option<&str>, user_agent: &str) -> Self {
         Self {
-            remote: "in-process".to_owned(),
-            user_agent: String::new(),
+            remote,
+            forwarded_for: forwarded_for.map(cap),
+            user_agent: cap(user_agent),
         }
     }
+
+    /// The peer for in-process trusted calls, which have no address.
+    #[must_use]
+    pub fn in_process() -> Self {
+        Self::new("in-process".to_owned(), None, "")
+    }
+}
+
+fn cap(value: &str) -> String {
+    value.chars().take(MAX_CLIENT_FIELD_CHARS).collect()
 }
 
 /// Route every store replacement that changes bytes into the change scope of
@@ -119,6 +139,26 @@ pub fn with_change_scope<R>(scope: Option<Arc<ChangeScope>>, operation: impl FnO
         Some(scope) => CHANGES.sync_scope(scope, operation),
         None => operation(),
     }
+}
+
+/// Spawn `future` so the store writes it makes stay attributed to the
+/// request that started it.
+///
+/// Handlers that run a workflow on its own task, so a disconnecting client
+/// cannot cancel it halfway, use this instead of `tokio::spawn`; a plain
+/// spawn does not inherit task-local state.
+pub fn spawn_attributed<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let scope = current_change_scope();
+    tokio::spawn(async move {
+        match scope {
+            Some(scope) => CHANGES.scope(scope, future).await,
+            None => future.await,
+        }
+    })
 }
 
 /// Run a WebSocket session with `peer` as the sender of its commands.
@@ -157,6 +197,7 @@ pub fn record(log: Option<&AuditLog>, entry: &AuditEntry) {
         tool = entry.tool.as_deref().unwrap_or(""),
         status = entry.status,
         remote = %entry.remote,
+        forwarded_for = entry.forwarded_for.as_deref().unwrap_or(""),
         user_agent = %entry.user_agent,
         stores = %entry.stores.join(","),
         "State-changing request"
@@ -300,18 +341,25 @@ impl AuditLog {
     /// Returns the filesystem error when a trail file exists but cannot be
     /// read. Lines that do not parse are skipped.
     pub fn recent(&self, limit: usize) -> io::Result<Vec<AuditEntry>> {
-        let _writer = self.file.lock().unwrap_or_else(PoisonError::into_inner);
+        // Open the whole rotation set under the writer lock so a rotation
+        // cannot shift files between reads, then parse without holding it.
+        let files = {
+            let _writer = self.file.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut files = Vec::new();
+            for index in 0..=self.rotated_files {
+                match File::open(self.file_path(index)) {
+                    Ok(file) => files.push(file),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            files
+        };
         let mut entries = Vec::new();
-        for index in 0..=self.rotated_files {
+        for file in files {
             if entries.len() >= limit {
                 break;
             }
-            let path = self.file_path(index);
-            let file = match File::open(&path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error),
-            };
             let mut lines = Vec::new();
             for line in BufReader::new(file).lines() {
                 let line = line?;
@@ -371,8 +419,9 @@ pub fn entry(
         path: request.path.to_owned(),
         tool: request.tool.map(str::to_owned),
         status,
-        remote: request.remote.to_owned(),
-        user_agent: request.user_agent.to_owned(),
+        remote: request.peer.remote.clone(),
+        forwarded_for: request.peer.forwarded_for.clone(),
+        user_agent: request.peer.user_agent.clone(),
         stores: log.map_or_else(
             || {
                 changed
@@ -393,8 +442,7 @@ pub struct RequestLine<'a> {
     pub method: &'a str,
     pub path: &'a str,
     pub tool: Option<&'a str>,
-    pub remote: &'a str,
-    pub user_agent: &'a str,
+    pub peer: &'a AuditPeer,
 }
 
 fn canonical(path: &Path) -> PathBuf {
