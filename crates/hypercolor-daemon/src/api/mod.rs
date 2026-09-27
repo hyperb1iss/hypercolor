@@ -242,7 +242,15 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                 ])
                 .allow_headers([header::ACCEPT, header::AUTHORIZATION, header::CONTENT_TYPE]),
         )
-        .layer(axum::middleware::from_fn(access_log::log_access))
+        .layer(axum::middleware::from_fn_with_state(
+            access_log::AccessLogState {
+                audit: state.audit_log.clone(),
+                mcp_path: mcp_config
+                    .enabled
+                    .then(|| crate::mcp::normalize_base_path(&mcp_config.base_path)),
+            },
+            access_log::log_access,
+        ))
         .with_state(state)
 }
 

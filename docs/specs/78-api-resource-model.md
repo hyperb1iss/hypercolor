@@ -308,7 +308,7 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 ---
 
-## Appendix A: Normative route inventory (88 paths, 124 operations)
+## Appendix A: Normative route inventory (89 paths, 125 operations)
 
 Scope: the `/api/v1` surface (JSON routes plus the one `/ws` upgrade endpoint, which the convergence test matches by path without asserting a JSON shape) and `/health`. Document routes are deliberately outside the inventory and the convergence test: `/` (SPA), `/api/v1/docs`, `/api/v1/openapi.json`, and the `/mcp` mount are served pages and protocol endpoints, not API resources (`/preview` was on this list until wave 3.2c deleted the page). Config rows landed via Spec 76 wave 4.3; logical-devices rows are intentionally absent pending the §8 downstream check (re-add via spec amendment if the check fails). `⚡` marks routes whose handler is new or substantially rewritten by this spec.
 
@@ -319,6 +319,7 @@ Scope: the `/api/v1` surface (JSON routes plus the one `/ws` upgrade endpoint, w
 | `/api/v1/system/openrgb` | GET | |
 | `/api/v1/system/sensors` | GET | |
 | `/api/v1/system/audio-devices` | GET | ⚡ from `/audio/devices` |
+| `/api/v1/system/audit` | GET | recent state-changing requests from the audit trail |
 | `/api/v1/input/authorize` | POST | protected Input Monitoring authorization |
 | `/api/v1/capture/authorize` | POST | protected screen-capture authorization |
 | `/api/v1/media/authorize` | POST | protected media Automation authorization (Design 72 E3) |

@@ -193,8 +193,8 @@ impl DaemonState {
             .validate()
             .context("invalid screen capture configuration")?;
 
-        // History goes in before any store opens, so startup migrations and
-        // repairs keep the file they replace.
+        // History and audit attribution go in before any store opens, so
+        // startup migrations and repairs keep the file they replace.
         let store_roots = crate::state_history::StoreRoots {
             config_file: config_manager.path().to_path_buf(),
             config_dir: ConfigManager::config_dir(),
@@ -215,6 +215,18 @@ impl DaemonState {
                 .join(","),
             directory = %state_dir.join(crate::state_history::HISTORY_DIR).display(),
             "State history ready"
+        );
+        crate::audit_log::install_store_observer();
+        let audit_log = Arc::new(crate::audit_log::AuditLog::new(
+            state_dir.join(crate::audit_log::AUDIT_LOG_DIR),
+            &crate::state_history::daemon_store_files(&store_roots),
+        ));
+        info!(
+            path = %audit_log
+                .directory()
+                .join(crate::audit_log::AUDIT_LOG_FILE)
+                .display(),
+            "Audit log ready"
         );
         #[cfg(feature = "servo-gpu-import")]
         {
@@ -892,6 +904,7 @@ impl DaemonState {
             session_monitors: None,
             start_time: Instant::now(),
             server_identity,
+            audit_log: Some(audit_log),
         })
     }
 }

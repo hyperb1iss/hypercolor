@@ -1,4 +1,4 @@
-//! HTTP access-log middleware.
+//! HTTP access-log and audit middleware.
 //!
 //! Emits one `tracing` event per completed request with method, path, status,
 //! latency, and client address. The log level tracks response status so
@@ -14,34 +14,68 @@
 //! upgrades authenticate via `?token=...` and plaintext keys must never hit
 //! stdout or log files.
 //!
+//! State-changing requests (POST, PUT, PATCH, DELETE) also produce an audit
+//! entry (see [`crate::audit_log`]) naming the durable stores they changed.
+//! The MCP mount is skipped here because MCP carries reads and writes over
+//! the same POST; its tool calls are audited one by one instead.
+//!
 //! Mounted as the outermost layer so it sees the final response from CORS,
 //! auth, and every handler. WebSocket upgrades produce a single `101` entry;
-//! post-upgrade frame traffic is not HTTP and is not logged here.
+//! post-upgrade frame traffic is not HTTP and is not logged here, except for
+//! `command` messages, which replay through this router carrying the
+//! session's [`WsCommandPeer`].
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Instant;
 
 use axum::body::Body;
-use axum::extract::ConnectInfo;
-use axum::http::{Method, Request, header};
+use axum::extract::{ConnectInfo, State};
+use axum::http::{HeaderMap, Method, Request, header};
 use axum::middleware::Next;
 use axum::response::Response;
+use hypercolor_types::api::system::AuditTransport;
 use tracing::Level;
 
-pub async fn log_access(request: Request<Body>, next: Next) -> Response {
+use crate::audit_log::{self, AuditLog, AuditPeer, RequestLine};
+
+/// Middleware state: the audit sink and the path it leaves to MCP.
+#[derive(Debug, Clone, Default)]
+pub struct AccessLogState {
+    /// The daemon's audit trail; tracing only when absent.
+    pub audit: Option<Arc<AuditLog>>,
+    /// MCP mount path, audited per tool call rather than per POST.
+    pub mcp_path: Option<String>,
+}
+
+/// Marks a request replayed from a WebSocket `command` message.
+#[derive(Debug, Clone)]
+pub struct WsCommandPeer(pub Arc<AuditPeer>);
+
+pub async fn log_access(
+    State(state): State<AccessLogState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
     let start = Instant::now();
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let query = request.uri().query().map(redact_sensitive_query);
-    let remote = client_addr(&request).unwrap_or_else(|| "unknown".to_owned());
-    let user_agent = request
-        .headers()
-        .get(header::USER_AGENT)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_owned();
+    let ws_peer = request.extensions().get::<WsCommandPeer>().cloned();
+    let (remote, user_agent) = match &ws_peer {
+        Some(WsCommandPeer(peer)) => (peer.remote.clone(), peer.user_agent.clone()),
+        None => (
+            client_addr(&request).unwrap_or_else(|| "unknown".to_owned()),
+            user_agent(request.headers()),
+        ),
+    };
+    let audited = audit_log::is_mutating(&method) && !is_mcp_path(state.mcp_path.as_deref(), &path);
 
-    let response = next.run(request).await;
+    let (response, changed) = if audited {
+        audit_log::collect_changes(next.run(request)).await
+    } else {
+        (next.run(request).await, Vec::new())
+    };
     let status = response.status().as_u16();
     let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
 
@@ -56,7 +90,59 @@ pub async fn log_access(request: Request<Body>, next: Next) -> Response {
         &user_agent,
     );
 
+    if audited {
+        let transport = if ws_peer.is_some() {
+            AuditTransport::Websocket
+        } else {
+            AuditTransport::Http
+        };
+        let entry = audit_log::entry(
+            state.audit.as_deref(),
+            transport,
+            RequestLine {
+                method: method.as_str(),
+                path: &path,
+                tool: None,
+                remote: &remote,
+                user_agent: &user_agent,
+            },
+            status,
+            &changed,
+            latency_ms,
+        );
+        audit_log::record(state.audit.as_deref(), &entry);
+    }
+
     response
+}
+
+fn is_mcp_path(mcp_path: Option<&str>, path: &str) -> bool {
+    mcp_path.is_some_and(|base| {
+        path == base
+            || path
+                .strip_prefix(base)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+fn user_agent(headers: &HeaderMap) -> String {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// The audit identity of a connection from its socket address and headers,
+/// with the same forwarded-for trust rule as HTTP requests.
+#[must_use]
+pub fn peer_identity(socket_addr: Option<SocketAddr>, headers: &HeaderMap) -> AuditPeer {
+    AuditPeer {
+        remote: socket_addr
+            .map(|socket_addr| remote_from(socket_addr, headers))
+            .unwrap_or_else(|| "unknown".to_owned()),
+        user_agent: user_agent(headers),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -122,19 +208,20 @@ fn quiet_success_request(method: &Method, path: &str) -> bool {
 
 fn client_addr(request: &Request<Body>) -> Option<String> {
     let ConnectInfo(socket_addr) = request.extensions().get::<ConnectInfo<SocketAddr>>()?;
-
-    if socket_addr.ip().is_loopback()
-        && let Some(forwarded) = forwarded_ip(request)
-    {
-        return Some(forwarded);
-    }
-
-    Some(socket_addr.ip().to_string())
+    Some(remote_from(*socket_addr, request.headers()))
 }
 
-fn forwarded_ip(request: &Request<Body>) -> Option<String> {
-    let headers = request.headers();
+fn remote_from(socket_addr: SocketAddr, headers: &HeaderMap) -> String {
+    if socket_addr.ip().is_loopback()
+        && let Some(forwarded) = forwarded_ip(headers)
+    {
+        return forwarded;
+    }
 
+    socket_addr.ip().to_string()
+}
+
+fn forwarded_ip(headers: &HeaderMap) -> Option<String> {
     if let Some(raw) = headers.get("x-forwarded-for")
         && let Ok(value) = raw.to_str()
         && let Some(first) = value.split(',').next()
@@ -181,7 +268,16 @@ mod tests {
     use axum::http::{Method, Request};
     use tracing::Level;
 
-    use super::{client_addr, redact_sensitive_query, select_level};
+    use super::{client_addr, is_mcp_path, redact_sensitive_query, select_level};
+
+    #[test]
+    fn the_mcp_mount_and_its_children_are_left_to_tool_auditing() {
+        assert!(is_mcp_path(Some("/mcp"), "/mcp"));
+        assert!(is_mcp_path(Some("/mcp"), "/mcp/session"));
+        assert!(!is_mcp_path(Some("/mcp"), "/mcpx"));
+        assert!(!is_mcp_path(Some("/mcp"), "/api/v1/scenes"));
+        assert!(!is_mcp_path(None, "/mcp"));
+    }
 
     #[test]
     fn redacts_token_query_parameter() {

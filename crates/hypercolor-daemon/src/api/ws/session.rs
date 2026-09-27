@@ -91,6 +91,7 @@ pub(crate) async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    connect_info: Option<Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
     auth_context: Option<Extension<RequestAuthContext>>,
 ) -> Response {
     if !ws_origin_allowed(&state, &headers) {
@@ -105,8 +106,15 @@ pub(crate) async fn ws_handler(
     let ws = ws
         .max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES);
+    let peer = crate::api::access_log::peer_identity(
+        connect_info.map(|Extension(axum::extract::ConnectInfo(address))| address),
+        &headers,
+    );
     upgrade_handler(ws, move |socket| {
-        handle_socket(SessionSocket::Network(socket), state, auth_context, None)
+        crate::audit_log::with_ws_peer(
+            peer,
+            handle_socket(SessionSocket::Network(socket), state, auth_context, None),
+        )
     })
 }
 
@@ -128,11 +136,14 @@ fn spawn_local_socket_with_context(
 ) -> TrustedLocalWebSocket {
     let (socket, transport) = trusted_local_socket_pair();
     let shutdown = transport.shutdown_token();
-    drop(runtime.spawn(handle_socket(
-        SessionSocket::Local(transport),
-        state,
-        auth_context,
-        Some(shutdown),
+    drop(runtime.spawn(crate::audit_log::with_ws_peer(
+        crate::audit_log::AuditPeer::in_process(),
+        handle_socket(
+            SessionSocket::Local(transport),
+            state,
+            auth_context,
+            Some(shutdown),
+        ),
     )));
     socket
 }

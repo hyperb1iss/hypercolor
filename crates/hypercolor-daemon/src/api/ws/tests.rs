@@ -5487,6 +5487,66 @@ async fn dispatch_command_routes_to_system() {
 }
 
 #[tokio::test]
+async fn dispatch_command_audits_mutations_as_the_session_peer() {
+    let audit_dir = tempfile::tempdir().expect("audit dir");
+    let mut state = AppState::new();
+    let log = Arc::new(crate::audit_log::AuditLog::new(
+        audit_dir.path().to_path_buf(),
+        &[],
+    ));
+    state.audit_log = Some(Arc::clone(&log));
+    let state = Arc::new(state);
+    let peer = crate::audit_log::AuditPeer {
+        remote: "192.0.2.7".to_owned(),
+        user_agent: "ws-client/2".to_owned(),
+    };
+
+    let created = crate::audit_log::with_ws_peer(peer, async {
+        let read = dispatch_command(
+            &state,
+            RequestAuthContext::unsecured(),
+            "cmd_read".to_owned(),
+            "GET".to_owned(),
+            "/scenes".to_owned(),
+            None,
+        )
+        .await;
+        assert!(matches!(read, ServerMessage::Response { status: 200, .. }));
+        dispatch_command(
+            &state,
+            RequestAuthContext::unsecured(),
+            "cmd_write".to_owned(),
+            "POST".to_owned(),
+            "/scenes?token=ws-secret".to_owned(),
+            Some(serde_json::json!({ "name": "From WS", "description": "ws-body-secret" })),
+        )
+        .await
+    })
+    .await;
+    assert!(matches!(
+        created,
+        ServerMessage::Response { status: 201, .. }
+    ));
+
+    let entries = log.recent(10).expect("audit entries");
+    assert_eq!(entries.len(), 1, "only the mutation is audited");
+    let entry = &entries[0];
+    assert_eq!(
+        entry.transport,
+        hypercolor_types::api::system::AuditTransport::Websocket
+    );
+    assert_eq!(entry.method, "POST");
+    assert_eq!(entry.path, "/api/v1/scenes");
+    assert_eq!(entry.status, 201);
+    assert_eq!(entry.remote, "192.0.2.7");
+    assert_eq!(entry.user_agent, "ws-client/2");
+    let trail = std::fs::read_to_string(audit_dir.path().join(crate::audit_log::AUDIT_LOG_FILE))
+        .expect("trail file");
+    assert!(!trail.contains("ws-secret"));
+    assert!(!trail.contains("ws-body-secret"));
+}
+
+#[tokio::test]
 async fn dispatch_command_rejects_invalid_method() {
     let state = Arc::new(AppState::new());
     let message = dispatch_command(

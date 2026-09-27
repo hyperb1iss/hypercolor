@@ -48,9 +48,15 @@ use crate::app_state::AppState;
 pub fn build_router(state: Arc<AppState>, config: &McpConfig) -> Router<Arc<AppState>> {
     let path = normalize_base_path(&config.base_path);
     let service_state = Arc::clone(&state);
+    let mount_path = path.clone();
     let service: StreamableHttpService<HypercolorMcpServer, LocalSessionManager> =
         StreamableHttpService::new(
-            move || Ok(HypercolorMcpServer::new(Arc::clone(&service_state))),
+            move || {
+                Ok(HypercolorMcpServer::new(
+                    Arc::clone(&service_state),
+                    mount_path.clone(),
+                ))
+            },
             Arc::default(),
             http_config(config),
         );
@@ -94,19 +100,71 @@ pub(crate) fn normalize_base_path(path: &str) -> String {
 #[derive(Clone)]
 struct HypercolorMcpServer {
     state: Arc<AppState>,
+    /// Where the transport is mounted, reported as the audit path.
+    mount_path: String,
     tools: Vec<tools::ToolDefinition>,
     resources: Vec<resources::ResourceDefinition>,
     prompts: Vec<prompts::PromptDefinition>,
 }
 
 impl HypercolorMcpServer {
-    fn new(state: Arc<AppState>) -> Self {
+    fn new(state: Arc<AppState>, mount_path: String) -> Self {
         Self {
             state,
+            mount_path,
             tools: tools::build_tool_definitions(),
             resources: resources::build_resource_definitions(),
             prompts: prompts::build_prompt_definitions(),
         }
+    }
+
+    fn mutates(&self, tool: &str) -> bool {
+        self.tools
+            .iter()
+            .any(|definition| definition.name == tool && !definition.read_only)
+    }
+
+    /// Record a finished tool call that can change state. The HTTP layer
+    /// skips the MCP mount because reads and writes share its POST.
+    fn audit_tool_call(
+        &self,
+        tool: &str,
+        context: &RequestContext<RoleServer>,
+        status: u16,
+        changed: &[std::path::PathBuf],
+        latency_ms: f64,
+    ) {
+        let peer = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .map_or_else(
+                || crate::api::access_log::peer_identity(None, &axum::http::HeaderMap::new()),
+                |parts| {
+                    crate::api::access_log::peer_identity(
+                        parts
+                            .extensions
+                            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                            .map(|axum::extract::ConnectInfo(address)| *address),
+                        &parts.headers,
+                    )
+                },
+            );
+        let log = self.state.audit_log.as_deref();
+        let entry = crate::audit_log::entry(
+            log,
+            hypercolor_types::api::system::AuditTransport::Mcp,
+            crate::audit_log::RequestLine {
+                method: "tools/call",
+                path: &self.mount_path,
+                tool: Some(tool),
+                remote: &peer.remote,
+                user_agent: &peer.user_agent,
+            },
+            status,
+            changed,
+            latency_ms,
+        );
+        crate::audit_log::record(log, &entry);
     }
 }
 
@@ -156,13 +214,25 @@ impl ServerHandler for HypercolorMcpServer {
     fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + Send + '_ {
         async move {
+            let started = std::time::Instant::now();
+            let tool = request.name.to_string();
             let arguments = Value::Object(request.arguments.unwrap_or_default());
-            match tools::execute_tool_with_state(request.name.as_ref(), &arguments, &self.state)
-                .await
-            {
+            let execute = tools::execute_tool_with_state(&tool, &arguments, &self.state);
+            let audited = self.mutates(&tool);
+            let (result, changed) = if audited {
+                crate::audit_log::collect_changes(execute).await
+            } else {
+                (execute.await, Vec::new())
+            };
+            if audited {
+                let status = result.as_ref().map_or_else(tool_error_status, |_| 200);
+                let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+                self.audit_tool_call(&tool, &context, status, &changed, latency_ms);
+            }
+            match result {
                 Ok(payload) => Ok(CallToolResult::structured(payload).into()),
                 Err(error) => {
                     Ok(CallToolResult::structured_error(tool_error_payload(&error)).into())
@@ -248,6 +318,18 @@ impl ServerHandler for HypercolorMcpServer {
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<GetPromptResponse, ErrorData>> + Send + '_ {
         ready(build_prompt_result(request).map(GetPromptResponse::from))
+    }
+}
+
+/// The HTTP status an audit entry reports for a failed tool call.
+const fn tool_error_status(error: &tools::ToolError) -> u16 {
+    match error {
+        tools::ToolError::NotFound(_) => 404,
+        tools::ToolError::MissingParam(_)
+        | tools::ToolError::InvalidParam { .. }
+        | tools::ToolError::InvalidSelector { .. } => 400,
+        tools::ToolError::Conflict(_) => 409,
+        tools::ToolError::Internal(_) => 500,
     }
 }
 

@@ -179,10 +179,15 @@ impl LayoutExclusions {
             self.persistence.reserve_snapshot(&entries)
         };
         let result = match pending {
-            Ok(pending) => tokio::task::spawn_blocking(move || pending.commit())
+            Ok(pending) => {
+                let changes = crate::audit_log::current_change_scope();
+                tokio::task::spawn_blocking(move || {
+                    crate::audit_log::with_change_scope(changes, || pending.commit())
+                })
                 .await
                 .map_err(|error| anyhow::anyhow!("layout exclusion store task failed: {error}"))
-                .and_then(|result| result),
+                .and_then(|result| result)
+            }
             Err(error) => Err(error),
         };
         anyhow::ensure!(
