@@ -26,6 +26,25 @@ fn daemon_defaults_match_spec() {
     assert_eq!(d.start_scene, "last");
     assert_eq!(d.shutdown_behavior, ShutdownBehavior::HardwareDefault);
     assert_eq!(d.shutdown_color, "#1a1a2e");
+    assert_eq!(d.state_history_generations, 10);
+    assert_eq!(d.state_history_min_interval_secs, 30);
+}
+
+#[test]
+fn state_history_settings_round_trip_and_default_when_absent() {
+    let tuned = DaemonConfig {
+        state_history_generations: 3,
+        state_history_min_interval_secs: 5,
+        ..DaemonConfig::default()
+    };
+    let saved = toml::to_string(&tuned).expect("daemon config serializes");
+    let reloaded: DaemonConfig = toml::from_str(&saved).expect("daemon config parses");
+    assert_eq!(reloaded.state_history_generations, 3);
+    assert_eq!(reloaded.state_history_min_interval_secs, 5);
+
+    let older: DaemonConfig = toml::from_str("port = 9420").expect("older config parses");
+    assert_eq!(older.state_history_generations, 10);
+    assert_eq!(older.state_history_min_interval_secs, 30);
 }
 
 #[test]

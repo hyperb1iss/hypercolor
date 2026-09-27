@@ -778,7 +778,7 @@ impl LayoutContext {
         let context = self.clone();
         let previous_zones = previous_zones.to_vec();
         let updated_zones = updated_zones.to_vec();
-        if let Err(error) = tokio::spawn(async move {
+        if let Err(error) = crate::audit_log::spawn_attributed(async move {
             context
                 .exclusions
                 .reconcile_zones(scene_id, &previous_zones, &updated_zones)
@@ -793,7 +793,7 @@ impl LayoutContext {
     /// Drop discovery exclusions owned by a removed zone.
     pub async fn remove_zone_auto_exclusions(&self, scene_id: SceneId, zone_id: ZoneId) {
         let context = self.clone();
-        if let Err(error) = tokio::spawn(async move {
+        if let Err(error) = crate::audit_log::spawn_attributed(async move {
             context.exclusions.remove_zone(scene_id, zone_id).await;
         })
         .await

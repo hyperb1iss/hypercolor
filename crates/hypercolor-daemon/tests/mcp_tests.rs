@@ -734,6 +734,78 @@ async fn mcp_http_initialize_returns_json_in_stateless_mode() {
 }
 
 #[tokio::test]
+async fn mcp_audits_state_changing_tool_calls_only() {
+    let (builder, tempdir) = isolated_state_builder_with_tempdir();
+    let mut state = builder.build();
+    let log = Arc::new(hypercolor_daemon::audit_log::AuditLog::new(
+        tempdir.path().join("logs"),
+        &[],
+    ));
+    state.audit_log = Some(Arc::clone(&log));
+    let state = Arc::new(state);
+    let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let address = listener.local_addr().expect("read local addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+    });
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .user_agent("mcp-agent/1")
+        .build()
+        .expect("build reqwest client");
+    let mcp_url = format!("http://{address}/mcp");
+
+    for (id, method, params) in [
+        (1, "tools/list", Value::Null),
+        (
+            2,
+            "tools/call",
+            json!({ "name": "get_status", "arguments": {} }),
+        ),
+        (
+            3,
+            "tools/call",
+            json!({ "name": "set_color", "arguments": { "color": "#ff0000", "note": "mcp-arg-secret" } }),
+        ),
+    ] {
+        let mut body = json!({ "jsonrpc": "2.0", "id": id, "method": method });
+        if !params.is_null() {
+            body["params"] = params;
+        }
+        let response = post_json(&client, &mcp_url, body, None).await;
+        let _ = parse_jsonrpc_response(response).await;
+    }
+
+    let entries = log.recent(10).expect("audit entries");
+    assert_eq!(entries.len(), 1, "reads and listings are not audited");
+    let entry = &entries[0];
+    assert_eq!(
+        entry.transport,
+        hypercolor_types::api::system::AuditTransport::Mcp
+    );
+    assert_eq!(entry.method, "tools/call");
+    assert_eq!(entry.path, "/mcp");
+    assert_eq!(entry.tool.as_deref(), Some("set_color"));
+    assert_eq!(entry.remote, "127.0.0.1");
+    assert_eq!(entry.user_agent, "mcp-agent/1");
+    let trail = fs::read_to_string(
+        tempdir
+            .path()
+            .join("logs")
+            .join(hypercolor_daemon::audit_log::AUDIT_LOG_FILE),
+    )
+    .expect("trail file");
+    assert!(!trail.contains("mcp-arg-secret"), "tool arguments stay out");
+}
+
+#[tokio::test]
 async fn mcp_http_tools_list_and_call_return_structured_results() {
     let (state, _tempdir) = isolated_state_with_tempdir();
 

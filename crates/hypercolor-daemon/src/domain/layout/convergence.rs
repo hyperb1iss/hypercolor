@@ -148,7 +148,7 @@ impl LayoutConvergence {
         limit_to_devices: Option<HashSet<DeviceId>>,
     ) {
         let convergence = self.clone();
-        if let Err(error) = tokio::spawn(async move {
+        if let Err(error) = crate::audit_log::spawn_attributed(async move {
             convergence
                 .sync_connectivity_workflow(&runtime, limit_to_devices.as_ref())
                 .await;
@@ -207,7 +207,7 @@ impl LayoutConvergence {
         limit_to_devices: Option<HashSet<DeviceId>>,
     ) {
         let convergence = self.clone();
-        if let Err(error) = tokio::spawn(async move {
+        if let Err(error) = crate::audit_log::spawn_attributed(async move {
             convergence
                 .sync_active_layout_workflow(&runtime, limit_to_devices.as_ref())
                 .await;

@@ -44,6 +44,44 @@ mod tests;
 
 const DEFAULT_CONFIG_FILE_NAME: &str = "hypercolor.toml";
 
+/// Entries `GET /system/audit` returns when the query names no limit.
+const DEFAULT_AUDIT_LIMIT: usize = 100;
+
+/// `GET /api/v1/system/audit`: recent state-changing requests, newest
+/// first, from the daemon's persistent audit trail.
+pub async fn get_audit_log(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<hypercolor_types::api::system::AuditLogQuery>,
+) -> Response {
+    let limit = query
+        .limit
+        .map_or(DEFAULT_AUDIT_LIMIT, |limit| limit as usize)
+        .clamp(1, crate::audit_log::MAX_QUERY_LIMIT);
+    let items = match state.audit_log.clone() {
+        None => Vec::new(),
+        Some(log) => match tokio::task::spawn_blocking(move || log.recent(limit)).await {
+            Ok(Ok(items)) => items,
+            Ok(Err(error)) => {
+                return DomainError::Internal(
+                    anyhow::Error::new(error).context("failed to read the audit log"),
+                )
+                .into_response();
+            }
+            Err(error) => {
+                return DomainError::Internal(
+                    anyhow::Error::new(error).context("audit log reader failed"),
+                )
+                .into_response();
+            }
+        },
+    };
+    envelope::ok(hypercolor_types::api::envelope::ListResponse {
+        total: items.len() as u64,
+        items,
+        page: None,
+    })
+}
+
 /// Read OpenRGB installation, endpoint, and device coverage state.
 pub async fn get_openrgb_status(State(state): State<Arc<AppState>>) -> Response {
     envelope::ok(crate::domain::openrgb_setup::openrgb_status(&state.domains.devices).await)

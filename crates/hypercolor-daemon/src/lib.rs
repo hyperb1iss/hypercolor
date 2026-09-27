@@ -4,6 +4,7 @@
 pub mod api;
 pub mod app_state;
 pub mod attachment_profiles;
+pub mod audit_log;
 pub mod daemon;
 pub(crate) mod deadline;
 pub mod device_aliases;
@@ -55,4 +56,5 @@ pub use scene_transactions::{LayoutPublicationTestExecutor, LayoutTransactionRej
 pub mod session;
 pub mod simulators;
 pub mod startup;
+pub mod state_history;
 pub mod zone_layout_preview;

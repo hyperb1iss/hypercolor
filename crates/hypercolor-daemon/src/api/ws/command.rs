@@ -75,6 +75,16 @@ pub(super) async fn dispatch_command(
         }
     };
     request.extensions_mut().insert(auth_context);
+    // The replayed request has no socket of its own; the audit trail names
+    // the session's client instead.
+    if let Some(peer) = crate::audit_log::current_ws_peer() {
+        request
+            .extensions_mut()
+            .insert(crate::api::access_log::AuditCaller {
+                transport: hypercolor_types::api::system::AuditTransport::Websocket,
+                peer,
+            });
+    }
 
     let response = cached_command_router(state)
         .oneshot(request)

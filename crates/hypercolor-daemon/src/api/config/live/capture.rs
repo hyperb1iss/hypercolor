@@ -174,8 +174,12 @@ pub(in crate::api::config) async fn apply_capture_config_transaction(
     if let Err(error) = tokio::task::spawn_blocking(move || retirement.retire()).await {
         warn!(%error, "Detached capture source retirement task failed");
     }
+    let changes = crate::audit_log::current_change_scope();
     if let Some(persistence) = persistence
-        && let Err(error) = tokio::task::spawn_blocking(move || persistence.commit()).await
+        && let Err(error) = tokio::task::spawn_blocking(move || {
+            crate::audit_log::with_change_scope(changes, || persistence.commit());
+        })
+        .await
     {
         warn!(%error, "Capture identity persistence task failed");
     }

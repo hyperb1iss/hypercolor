@@ -67,9 +67,14 @@ impl LayoutCatalog {
         snapshot: HashMap<String, SpatialLayout>,
     ) -> anyhow::Result<()> {
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || crate::layout_store::save(&path, &snapshot))
-            .await
-            .map_err(|error| anyhow::anyhow!("layout store task failed: {error}"))?
+        let changes = crate::audit_log::current_change_scope();
+        tokio::task::spawn_blocking(move || {
+            crate::audit_log::with_change_scope(changes, || {
+                crate::layout_store::save(&path, &snapshot)
+            })
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("layout store task failed: {error}"))?
     }
 
     pub(super) async fn persist_best_effort(&self) {

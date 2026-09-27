@@ -245,3 +245,45 @@ hypercolor service logs --lines 50
 ```
 
 If events arrive in `websocat` but the browser preview is still dark, the problem is on the browser side. Open the developer console and look for WebSocket errors in the Network tab.
+
+---
+
+## Undoing an unwanted change
+
+**Symptom:** Your lights changed, or a scene, layout, or device setting is not what you left it, and you did not change it.
+
+**Find out what changed it.** Every request that changes state (a REST `POST`, `PUT`, `PATCH`, or `DELETE`, a WebSocket `command` with one of those methods, or an MCP tool call that is not read-only) is recorded with its time, method, path, status, the client's socket address, any address it claimed through `X-Forwarded-For` or `X-Real-IP` (kept separately, since any local process can send those headers), its user agent, and the state files it changed. A request whose client disconnects before the response is still recorded, with status `499`, once the work it started has finished. Request bodies, query strings, credentials, and tool arguments are never recorded. Ask the daemon for the newest entries:
+
+```bash
+curl -s 'http://127.0.0.1:9420/api/v1/system/audit?limit=20'
+```
+
+The same entries are kept on disk as JSON Lines, one object per line, newest at the end of the file, so they survive restarts. The file is `logs/api-audit.jsonl` in the daemon's state directory:
+
+```text
+${XDG_STATE_HOME:-~/.local/state}/hypercolor/logs/api-audit.jsonl   # Linux
+~/Library/Application Support/hypercolor/logs/api-audit.jsonl       # macOS
+%LOCALAPPDATA%\hypercolor\logs\api-audit.jsonl                      # Windows
+```
+
+The file rotates at 4 MiB into `api-audit.1.jsonl` through `api-audit.4.jsonl`, about 70,000 entries in all. Each entry also appears in the daemon log at `info` level.
+
+**Put the previous state back.** The daemon keeps the last ten versions of each state file under `history/` in the same state directory (see `state_history_generations` in [Configuration](@/guide/configuration.md)). List them:
+
+```bash
+hypercolor-daemon history list                  # every store
+hypercolor-daemon history list runtime-state    # just the live session
+hypercolor-daemon history list scenes --json
+```
+
+Each version shows when it was replaced and when it was originally saved. Stop the daemon, restore the version you want, and start it again:
+
+```bash
+hypercolor service stop
+hypercolor-daemon history restore runtime-state 12
+hypercolor service start
+```
+
+`restore` refuses to run while the daemon is up, because the daemon would write its in-memory state over the restored file. The restore saves the content it replaced as a new version and prints its number, so restoring that number undoes it. Run the command as the same user, with the same `XDG_*` environment, as the daemon, and pass `--config <path>` if the daemon uses a non-default config file.
+
+The stores with history are `config`, `layouts`, `layout-auto-exclusions`, `scenes`, `logical-devices`, `attachment-profiles`, `display-preferences`, `device-settings`, `simulated-displays`, `runtime-state`, `device-aliases`, and `library`. Credentials, discovery caches, and migration journals keep no history.

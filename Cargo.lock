@@ -4812,6 +4812,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
+ "chrono",
  "clap",
  "core-foundation 0.10.1",
  "cpal",
@@ -5321,11 +5322,13 @@ dependencies = [
 name = "hypercolor-persistence"
 version = "0.5.1"
 dependencies = [
+ "chrono",
  "hypercolor-platform-fs",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]

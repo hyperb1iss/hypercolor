@@ -296,6 +296,10 @@ pub struct DaemonState {
 
     /// Stable network identity exposed by discovery and API responses.
     pub server_identity: ServerIdentity,
+
+    /// Persistent trail of state-changing requests, shared by every API
+    /// projection so one file has one writer.
+    pub audit_log: Option<Arc<crate::audit_log::AuditLog>>,
 }
 
 impl DaemonState {

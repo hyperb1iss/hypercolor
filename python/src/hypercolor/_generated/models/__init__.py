@@ -60,6 +60,9 @@ from .assign_members_request import AssignMembersRequest
 from .audio_band import AudioBand
 from .audio_device_info import AudioDeviceInfo
 from .audio_devices_response import AudioDevicesResponse
+from .audit_entry import AuditEntry
+from .audit_entry_list_response import AuditEntryListResponse
+from .audit_transport import AuditTransport
 from .authorize_input_monitoring_response_200 import AuthorizeInputMonitoringResponse200
 from .authorize_media_response_200 import AuthorizeMediaResponse200
 from .authorize_screen_recording_response_200 import AuthorizeScreenRecordingResponse200
@@ -382,6 +385,7 @@ from .get_active_layout_response_200 import GetActiveLayoutResponse200
 from .get_active_playlist_response_200 import GetActivePlaylistResponse200
 from .get_asset_response_200 import GetAssetResponse200
 from .get_attachments_response_200 import GetAttachmentsResponse200
+from .get_audit_log_response_200 import GetAuditLogResponse200
 from .get_config_key_response_200 import GetConfigKeyResponse200
 from .get_config_schema_response_200 import GetConfigSchemaResponse200
 from .get_control_surface_response_200 import GetControlSurfaceResponse200
@@ -722,6 +726,9 @@ __all__ = (
     "AudioBand",
     "AudioDeviceInfo",
     "AudioDevicesResponse",
+    "AuditEntry",
+    "AuditEntryListResponse",
+    "AuditTransport",
     "AuthorizeInputMonitoringResponse200",
     "AuthorizeMediaResponse200",
     "AuthorizeScreenRecordingResponse200",
@@ -994,6 +1001,7 @@ __all__ = (
     "GetActivePlaylistResponse200",
     "GetAssetResponse200",
     "GetAttachmentsResponse200",
+    "GetAuditLogResponse200",
     "GetConfigKeyResponse200",
     "GetConfigSchemaResponse200",
     "GetControlSurfaceResponse200",

@@ -156,7 +156,9 @@ pub async fn delete_simulated_display(
         Err(error) => return error.into_response(),
     };
 
-    match tokio::spawn(delete_simulated_display_workflow(state, device_id)).await {
+    match crate::audit_log::spawn_attributed(delete_simulated_display_workflow(state, device_id))
+        .await
+    {
         Ok(response) => response,
         Err(error) => DomainError::Internal(anyhow::anyhow!(
             "Simulated display deletion workflow failed: {error}"

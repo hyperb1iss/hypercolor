@@ -473,7 +473,7 @@ impl LayoutTransactionAuthority {
         let scene_manager = self.scene_manager.clone();
         let scene_transactions = self.scene_transactions.clone();
         let retained_guard = guard.clone();
-        tokio::spawn(async move {
+        crate::audit_log::spawn_attributed(async move {
             let retained_guard = retained_guard;
             let prepared_engine = prepared.into_spatial_engine();
             let (

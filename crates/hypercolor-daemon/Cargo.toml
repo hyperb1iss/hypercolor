@@ -105,6 +105,7 @@ strum = { workspace = true }
 subtle = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+chrono = { workspace = true }
 base64 = { workspace = true }
 sha2 = { workspace = true }
 single-instance = "0.3.3"

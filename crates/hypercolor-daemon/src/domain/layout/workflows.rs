@@ -89,9 +89,9 @@ impl LayoutContext {
     /// an in-memory catalog mutation behind.
     pub async fn create(&self, body: CreateLayoutRequest) -> Result<LayoutSummary, DomainError> {
         let context = self.clone();
-        await_layout_workflow(tokio::spawn(
-            async move { context.create_workflow(body).await },
-        ))
+        await_layout_workflow(crate::audit_log::spawn_attributed(async move {
+            context.create_workflow(body).await
+        }))
         .await
     }
 
@@ -173,7 +173,7 @@ impl LayoutContext {
         body: UpdateLayoutRequest,
     ) -> Result<LayoutSummary, DomainError> {
         let context = self.clone();
-        await_layout_workflow(tokio::spawn(async move {
+        await_layout_workflow(crate::audit_log::spawn_attributed(async move {
             context.update_workflow(&selector, body).await
         }))
         .await
@@ -276,7 +276,7 @@ impl LayoutContext {
         runtime: LayoutRuntime,
     ) -> Result<LayoutMutationResult<ApplyLayoutResponse>, DomainError> {
         let context = self.clone();
-        await_layout_workflow(tokio::spawn(async move {
+        await_layout_workflow(crate::audit_log::spawn_attributed(async move {
             context.apply_workflow(&selector, &runtime).await
         }))
         .await
@@ -318,7 +318,7 @@ impl LayoutContext {
         runtime: LayoutRuntime,
     ) -> Result<PreviewLayoutResponse, DomainError> {
         let context = self.clone();
-        await_layout_workflow(tokio::spawn(async move {
+        await_layout_workflow(crate::audit_log::spawn_attributed(async move {
             context.preview_workflow(layout, &runtime).await
         }))
         .await
@@ -367,7 +367,7 @@ impl LayoutContext {
         runtime: LayoutRuntime,
     ) -> Result<LayoutMutationResult<DeleteLayoutResponse>, DomainError> {
         let context = self.clone();
-        await_layout_workflow(tokio::spawn(async move {
+        await_layout_workflow(crate::audit_log::spawn_attributed(async move {
             context.delete_workflow(&selector, &runtime).await
         }))
         .await

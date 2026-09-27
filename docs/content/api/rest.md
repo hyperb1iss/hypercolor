@@ -261,6 +261,20 @@ List available audio capture devices for reactive effects. Pick the **monitor**
 of your output, not a microphone, if you want lights to follow what's playing.
 {% </api_endpoint> %}
 
+{% <api_endpoint method="GET" path="/api/v1/system/audit"> %}
+Recent state-changing requests, newest first, from the daemon's audit trail.
+Each entry has the time, transport (`http`, `websocket`, or `mcp`), method,
+path without its query string, MCP tool name, status, the socket peer's
+address, any `X-Forwarded-For` or `X-Real-IP` claim (as `forwarded_for`,
+never trusted for `remote`), user agent, and the durable stores the request
+changed. A request whose client disconnects before the response is
+recorded with status `499`. `?limit=` caps the page (default 100, at most
+1000). Request bodies, query strings, credentials, and
+tool arguments are never recorded. The same entries live on disk in
+`${XDG_STATE_HOME:-~/.local/state}/hypercolor/logs/api-audit.jsonl`; see
+[Undoing an unwanted change](@/troubleshooting/common-issues.md#undoing-an-unwanted-change).
+{% </api_endpoint> %}
+
 {% <api_endpoint method="GET" path="/api/v1/system/openrgb"> %}
 Inspect OpenRGB on the daemon host: installation path and version, configured
 SDK endpoints, negotiated protocol versions, controller counts, permission

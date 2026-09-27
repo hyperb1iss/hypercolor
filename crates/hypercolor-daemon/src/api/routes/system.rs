@@ -30,6 +30,18 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
             )],
         ))
         .routes(openapi::documented_route(
+            "/system/audit",
+            axum::routing::get(system::get_audit_log),
+            [
+                OperationDoc::get_list::<hypercolor_types::api::system::AuditEntry>(
+                    "get_audit_log",
+                    "system",
+                    "List recent state-changing requests, newest first",
+                )
+                .query::<hypercolor_types::api::system::AuditLogQuery>(),
+            ],
+        ))
+        .routes(openapi::documented_route(
             "/system/sensors",
             axum::routing::get(system::get_sensors),
             [
