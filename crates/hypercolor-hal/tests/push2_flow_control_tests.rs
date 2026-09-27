@@ -373,18 +373,307 @@ fn palette_writes_stay_budgeted_per_batch_and_converge() {
     }
 
     let mut writes_per_pass = Vec::new();
-    for _ in 0..8 {
+    for _ in 0..12 {
         rig.clock.advance(push2_fake::FRAME_PERIOD);
         let since = rig.clock.elapsed();
         let _ = rig.pump(&frame);
-        let writes = rig
-            .sent_since(since)
+        let sent = rig.sent_since(since);
+        let writes = sent
             .iter()
             .filter(|sent| sent.bytes.len() == 17 && sent.bytes[6] == 0x03)
             .count();
+        let palette_wire: usize = sent
+            .iter()
+            .filter(|sent| sent.bytes.len() == 17 || is_reapply(&sent.bytes))
+            .map(|sent| wire_bytes(&sent.bytes))
+            .sum();
+        // Palette traffic keeps to its share of the packet, leaving the rest
+        // of every batch for LED moves.
+        assert!(
+            palette_wire <= ENDPOINT_PACKET_BYTES * 2 / 5,
+            "{palette_wire} palette bytes"
+        );
         writes_per_pass.push(writes);
     }
 
-    assert_eq!(writes_per_pass, vec![16, 16, 16, 16, 0, 0, 0, 0]);
+    // 64 distinct colors, each written exactly once, then silence.
+    assert_eq!(writes_per_pass.iter().sum::<usize>(), 64);
+    assert!(writes_per_pass.iter().all(|writes| *writes <= 16));
+    assert_eq!(writes_per_pass.last(), Some(&0));
     assert_rgb_leds_show(&rig, &frame);
+}
+
+fn luma(color: [u8; 3]) -> u32 {
+    (2126 * u32::from(color[0]) + 7152 * u32::from(color[1]) + 722 * u32::from(color[2]) + 5000)
+        / 10_000
+}
+
+fn strip_packed(frame: &[[u8; 3]]) -> Vec<u8> {
+    let levels: Vec<u8> = frame[129..160]
+        .iter()
+        .map(|color| u8::try_from((luma(*color) * 7 + 127) / 255).expect("level fits"))
+        .collect();
+    let mut packed = vec![0_u8; 16];
+    for index in 0..15 {
+        packed[index] = ((levels[index * 2 + 1] & 7) << 4) | (levels[index * 2] & 7);
+    }
+    packed[15] = levels[30] & 7;
+    packed
+}
+
+fn color_distance_sq(a: [u8; 3], b: [u8; 3]) -> u32 {
+    a.iter()
+        .zip(b)
+        .map(|(left, right)| u32::from(left.abs_diff(right)).pow(2))
+        .sum()
+}
+
+/// Worst display lag, in 60 Hz frames, per zone: at every tick after a
+/// one-second warmup, how many frames back the newest frame is that each
+/// LED's shown value matches. Pure latency, not approximation error.
+struct Lag {
+    rgb: usize,
+    white: usize,
+    strip: usize,
+}
+
+const LAG_SEARCH_FRAMES: usize = 90;
+
+fn lag_to_match(recent: &[Vec<[u8; 3]>], matches: impl Fn(&[[u8; 3]]) -> bool) -> usize {
+    recent
+        .iter()
+        .rev()
+        .position(|frame| matches(frame))
+        .unwrap_or(LAG_SEARCH_FRAMES)
+}
+
+fn perceived_lag(frame: fn(u64) -> Vec<[u8; 3]>) -> Lag {
+    let mut rig = Push2Rig::connected();
+    let start = rig.clock.elapsed();
+    rig.run_for(Duration::from_secs(10), frame);
+    let mut worst = Lag {
+        rgb: 0,
+        white: 0,
+        strip: 0,
+    };
+    let mut recent: Vec<Vec<[u8; 3]>> = Vec::new();
+    rig.replay_ticks(
+        start + Duration::from_secs(1),
+        start + Duration::from_secs(10),
+        |tick, device| {
+            if recent.is_empty() {
+                let first = tick.saturating_sub(LAG_SEARCH_FRAMES as u64);
+                recent.extend((first..tick).map(frame));
+            }
+            recent.push(frame(tick));
+            if recent.len() > LAG_SEARCH_FRAMES {
+                recent.remove(0);
+            }
+            for led in 0..RGB_LED_COUNT {
+                let shown = device.lit_rgb(led);
+                let lag = lag_to_match(&recent, |colors| {
+                    color_distance_sq(shown, colors[led]) <= 3 * 24 * 24
+                });
+                worst.rgb = worst.rgb.max(lag);
+            }
+            for button in 0..37 {
+                let led = RGB_LED_COUNT + button;
+                let shown = u32::from(device.lit[led][3]);
+                let lag = lag_to_match(&recent, |colors| luma(colors[led]).abs_diff(shown) <= 8);
+                worst.white = worst.white.max(lag);
+            }
+            let strip = device.touch_strip.clone();
+            let lag = lag_to_match(&recent, |colors| {
+                strip.as_deref() == Some(&strip_packed(colors)[..])
+            });
+            worst.strip = worst.strip.max(lag);
+        },
+    );
+    worst
+}
+
+fn white_buttons_breathing(frame: u64) -> Vec<[u8; 3]> {
+    let mut colors = rainbow_sweep(frame);
+    #[expect(clippy::cast_precision_loss, reason = "synthetic effect timing")]
+    let level = 0.5 + 0.5 * (frame as f32 / 20.0).sin();
+    for color in &mut colors[RGB_LED_COUNT..129] {
+        *color = push2_fake::hsv(0.0, 0.0, level);
+    }
+    colors
+}
+
+#[test]
+fn every_zone_stays_fresh_under_a_saturating_sweep() {
+    // The touch strip, the white buttons, and the RGB grid share one budget;
+    // none of them may starve while the sweep keeps it full.
+    let lag = perceived_lag(white_buttons_breathing);
+    println!(
+        "sweep lag: RGB {} frames, white {} frames, strip {} frames",
+        lag.rgb, lag.white, lag.strip
+    );
+    // Bounds sit at what the lane did before flow control on the same fake
+    // (strip 9, white 8, worst RGB 11 frames); none may regress.
+    assert!(lag.strip <= 4, "strip lagged {} frames", lag.strip);
+    assert!(lag.white <= 8, "white buttons lagged {} frames", lag.white);
+    assert!(lag.rgb <= 11, "an RGB LED lagged {} frames", lag.rgb);
+}
+
+#[test]
+fn slow_color_drift_tracks_within_a_couple_of_frames() {
+    fn slow_drift(frame: u64) -> Vec<[u8; 3]> {
+        (0..LED_COUNT)
+            .map(|led| {
+                #[expect(clippy::cast_precision_loss, reason = "synthetic effect timing")]
+                let hue = led as f32 / 160.0 + frame as f32 / 1800.0;
+                push2_fake::hsv(hue, 0.8, 0.9)
+            })
+            .collect()
+    }
+    let lag = perceived_lag(slow_drift);
+    println!(
+        "slow drift lag: RGB {} frames, white {} frames, strip {} frames",
+        lag.rgb, lag.white, lag.strip
+    );
+    assert!(lag.rgb <= 2, "an RGB LED lagged {} frames", lag.rgb);
+    assert!(lag.strip <= 2);
+}
+
+#[test]
+fn palette_sysex_never_exceeds_the_pre_flow_control_rate() {
+    for (name, effect) in [
+        ("rainbow", rainbow_sweep as fn(u64) -> Vec<[u8; 3]>),
+        ("breathing whites", white_buttons_breathing),
+    ] {
+        let mut rig = Push2Rig::connected();
+        let start = rig.clock.elapsed();
+        rig.run_for(Duration::from_secs(10), effect);
+        let writes = rig
+            .sent_since(start)
+            .iter()
+            .filter(|sent| sent.bytes.len() == 17 && sent.bytes[6] == 0x03)
+            .count();
+        // 16 writes per frame at the ~62.5 ms frame cadence the saturated
+        // lane ran at before, plus one frame's worth of banked credit.
+        assert!(
+            writes <= 256 * 10 + 16,
+            "{name}: {writes} palette writes in 10 s"
+        );
+    }
+}
+
+#[test]
+fn a_garbled_acknowledgement_reply_holds_the_lane_instead_of_failing() {
+    let mut rig = Push2Rig::connected();
+    rig.clock.advance(push2_fake::FRAME_PERIOD);
+    rig.protocol
+        .encode_frame_into(&rainbow_sweep(0), &mut rig.commands);
+    let ack = rig
+        .commands
+        .last()
+        .filter(|command| is_ack_request(&command.data))
+        .map(|command| command.data[7])
+        .expect("a saturated batch closes with an acknowledgement request");
+
+    // The reply is truncated: one argument byte short.
+    let garbled = vec![
+        0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x04, ack, 0x01, 0x00, 0xF7,
+    ];
+    let response = rig
+        .protocol
+        .parse_response(&garbled)
+        .expect("a garbled acknowledgement must not fail the frame");
+    assert_eq!(
+        response.status,
+        hypercolor_hal::protocol::ResponseStatus::Failed
+    );
+
+    // Unanswered, the next pass holds and probes; the device answers the
+    // probe and the lane converges on the frame.
+    rig.clock.advance(push2_fake::FRAME_PERIOD);
+    let hold = rig.pump(&rainbow_sweep(1));
+    assert_eq!(hold.commands, 1, "the held lane sends only a probe");
+    let frame = rainbow_sweep(2);
+    let _ = settle(&mut rig, &frame);
+    assert_rgb_leds_show(&rig, &frame);
+}
+
+#[test]
+fn shutdown_waits_out_traffic_the_lane_left_unconfirmed() {
+    let mut rig = Push2Rig::connected();
+    let mut frame = vec![[0_u8; 3]; LED_COUNT];
+    frame[0] = [255, 0, 0];
+    rig.clock.advance(push2_fake::FRAME_PERIOD);
+    let pass = rig.pump(&frame);
+    assert!(
+        pass.commands > 0 && pass.wire_bytes < 256,
+        "a small unacknowledged batch"
+    );
+
+    let shutdown = rig.protocol.shutdown_sequence();
+    let mut unconfirmed = pass.wire_bytes;
+    for command in &shutdown {
+        if command.expects_response {
+            unconfirmed = 0;
+        } else {
+            unconfirmed += wire_bytes(&command.data);
+        }
+        assert!(
+            unconfirmed <= ENDPOINT_PACKET_BYTES,
+            "shutdown stacked {unconfirmed} bytes"
+        );
+    }
+    rig.device.max_unconfirmed_wire_bytes = 0;
+    rig.deliver(&shutdown).expect("shutdown delivers");
+    assert!(rig.device.max_unconfirmed_wire_bytes <= ENDPOINT_PACKET_BYTES);
+}
+
+#[test]
+fn brightness_changes_count_against_the_unconfirmed_window() {
+    let mut rig = Push2Rig::connected();
+    for step in 0..40_u8 {
+        rig.clock.advance(push2_fake::FRAME_PERIOD);
+        let _ = rig.pump(&rainbow_sweep(u64::from(step)));
+        let brightness = rig
+            .protocol
+            .encode_brightness(step.wrapping_mul(6))
+            .expect("Push 2 supports brightness");
+        rig.deliver(&brightness).expect("brightness delivers");
+    }
+    assert!(
+        rig.device.max_unconfirmed_wire_bytes <= ENDPOINT_PACKET_BYTES,
+        "brightness pushed the window to {} bytes",
+        rig.device.max_unconfirmed_wire_bytes
+    );
+}
+
+#[test]
+fn a_day_long_stall_stays_inside_the_kernel_buffer() {
+    let mut rig = Push2Rig::connected();
+    settle(&mut rig, &static_gradient());
+    rig.device.stalled = true;
+
+    // The actor still encodes a frame whenever the render loop publishes one;
+    // sampling once a second is enough to hit every probe deadline.
+    let frame = rainbow_sweep(7);
+    for _ in 0..(24 * 60 * 60) {
+        rig.clock.advance(Duration::from_secs(1));
+        let pass = rig.pump(&frame);
+        assert!(
+            !pass.failed,
+            "a probe write timed out: the kernel buffer filled"
+        );
+    }
+    println!("24 h stall backlog: {} bytes", rig.device.backlog_bytes());
+    assert!(rig.device.backlog_bytes() < KERNEL_BUFFER_BYTES);
+
+    rig.device.unstall();
+    let latest = rainbow_sweep(99);
+    for _ in 0..600 {
+        rig.clock.advance(Duration::from_secs(1));
+        let _ = rig.pump(&latest);
+        if (0..RGB_LED_COUNT).all(|led| rig.device.lit_rgb(led) == latest[led]) {
+            break;
+        }
+    }
+    assert_rgb_leds_show(&rig, &latest);
 }

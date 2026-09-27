@@ -184,7 +184,7 @@ impl FakePush2 {
     }
 
     /// Process one message; returns a reply when the command has one.
-    fn process(&mut self, message: &[u8]) -> Option<Vec<u8>> {
+    pub fn process(&mut self, message: &[u8]) -> Option<Vec<u8>> {
         match message.first().copied() {
             Some(0x90) => {
                 let led = usize::from(message[1].checked_sub(PAD_NOTE_BASE)?);
@@ -413,6 +413,33 @@ impl Push2Rig {
             }
         }
         Ok(())
+    }
+
+    /// Replay the wire log into a fresh device and hand `observe` what it
+    /// showed at every 60 Hz tick in `from..to`, with the tick's frame index.
+    /// This is what a viewer sees, as opposed to the state right after a
+    /// batch lands.
+    pub fn replay_ticks(
+        &self,
+        from: Duration,
+        to: Duration,
+        mut observe: impl FnMut(u64, &FakePush2),
+    ) {
+        let mut replay = FakePush2::new();
+        let mut cursor = 0;
+        let mut tick = frame_index_at(from);
+        loop {
+            let at = frame_time(tick);
+            if at >= to {
+                break;
+            }
+            while cursor < self.device.sent.len() && self.device.sent[cursor].at <= at {
+                let _ = replay.process(&self.device.sent[cursor].bytes);
+                cursor += 1;
+            }
+            observe(tick, &replay);
+            tick += 1;
+        }
     }
 
     /// Messages sent at or after `since`.

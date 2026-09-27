@@ -239,6 +239,7 @@ impl Protocol for Push2Protocol {
         // starts with nothing unconfirmed.
         commands.extend(flow::chunk_with_ack_reads(
             led_palette::all_leds_off_commands(),
+            0,
         ));
         commands
     }
@@ -249,6 +250,7 @@ impl Protocol for Push2Protocol {
             .state
             .write()
             .expect("Push 2 state lock should not be poisoned");
+        let unconfirmed = flow::unconfirmed_wire_bytes(&state);
         commands.extend(led_palette::restore_factory_palette_commands(&mut state));
         state.prev_led_indices = [0; PUSH2_MIDI_LED_COUNT];
         state.prev_touch_strip = [0; PUSH2_TOUCH_STRIP_LED_COUNT];
@@ -267,7 +269,8 @@ impl Protocol for Push2Protocol {
         ));
         // Restoring a busy palette is up to 128 palette writes; unpaced by
         // replies, that is the same unconfirmed flood the LED lane avoids.
-        flow::chunk_with_ack_reads(commands)
+        // The first chunk waits out whatever the LED lane left unconfirmed.
+        flow::chunk_with_ack_reads(commands, unconfirmed)
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
@@ -301,7 +304,7 @@ impl Protocol for Push2Protocol {
     fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {
         let led_brightness = brightness / 2;
         let (display_lsb, display_msb) = encode_sysex_byte(brightness);
-        Some(vec![
+        let commands = vec![
             primary_command(
                 push2_sysex(PUSH2_CMD_SET_LED_BRIGHTNESS, &[led_brightness]),
                 false,
@@ -313,7 +316,17 @@ impl Protocol for Push2Protocol {
                 ),
                 false,
             ),
-        ])
+        ];
+        let wire_bytes = commands
+            .iter()
+            .map(|command| flow::usb_midi_wire_bytes(command.data.len()))
+            .sum();
+        let mut state = self
+            .state
+            .write()
+            .expect("Push 2 state lock should not be poisoned");
+        flow::note_unbatched_traffic(&mut state, wire_bytes);
+        Some(commands)
     }
 
     fn connection_diagnostics(&self) -> Vec<ProtocolCommand> {
@@ -354,11 +367,24 @@ impl Protocol for Push2Protocol {
         let command = data[6];
         let args = &data[7..data.len() - 1];
         if command == PUSH2_CMD_GET_PALETTE_ENTRY {
-            let (index, entry) = led_palette::parse_palette_entry_response(args)?;
             let mut state = self
                 .state
                 .write()
                 .expect("Push 2 state lock should not be poisoned");
+            let (index, entry) = match led_palette::parse_palette_entry_response(args) {
+                Ok(parsed) => parsed,
+                Err(error) if state.capturing_factory => return Err(error),
+                // A garbled acknowledgement reply acknowledges nothing: the
+                // lane keeps holding and its next probe asks again. Failing
+                // the parse would end the USB actor over one bad packet.
+                Err(error) => {
+                    warn!(%error, "ignoring malformed Push 2 palette reply");
+                    return Ok(ProtocolResponse {
+                        status: ResponseStatus::Failed,
+                        data: data[6..data.len() - 1].to_vec(),
+                    });
+                }
+            };
             if state.capturing_factory {
                 let slot = usize::from(index);
                 state.palette[slot] = entry;

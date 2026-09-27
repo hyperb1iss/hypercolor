@@ -2,10 +2,12 @@
 //!
 //! Ableton documents no MIDI input rate for the Push 2. What the interface
 //! manual does document is a request/reply contract: before sending the next
-//! command, the host should wait for the reply of the previous one. Replies
-//! come back in order, after the firmware has processed every earlier message,
-//! so a reply is also proof that the device drained everything sent before
-//! it. The LED lane paces itself on that proof:
+//! command, the host should wait for the reply of the previous one. The
+//! endpoint delivers messages in order, so a reply can only be produced after
+//! every earlier message was read off it; the lane treats a reply as the
+//! device's confirmation that it is keeping up (an inference, not a promise
+//! the manual makes, which is why the expensive palette sysex also has a
+//! rate ceiling of its own). The LED lane paces itself on those replies:
 //!
 //! - at most one USB-MIDI endpoint packet of LED traffic is ever
 //!   unconfirmed; a batch that needs more ends with an acknowledgement
@@ -13,9 +15,14 @@
 //! - every batch is computed from the newest frame against the device state
 //!   the host believes, so superseded frames are never queued, only
 //!   overwritten;
+//! - palette writes, the costliest message class (a 17-byte sysex, and any
+//!   batch that writes one also owes a Reapply Color Palette), never exceed
+//!   the rate the lane ran at before flow control existed, and never take
+//!   more than two fifths of a batch;
 //! - a request that goes unanswered puts the lane on hold: no LED traffic is
-//!   piled behind a stalled endpoint, a single small probe is retried with
-//!   backoff, and the first answer schedules a full resync;
+//!   piled behind a stalled endpoint, a single small probe is retried with a
+//!   backoff that stretches as the stall ages, and the first answer schedules
+//!   a full resync;
 //! - a periodic resync re-sends the believed state so a lost message heals
 //!   without waiting for the effect to touch that LED again.
 
@@ -37,8 +44,8 @@ const USB_MIDI_EVENT_BYTES: usize = 4;
 /// Bulk OUT `wMaxPacketSize` of the Push 2 MIDI streaming interface.
 ///
 /// The Push 2 enumerates at high speed, where a bulk endpoint's max packet
-/// is 512 bytes. Keeping unconfirmed LED traffic within one packet means the
-/// firmware never has more than one endpoint buffer of our data to absorb.
+/// is 512 bytes. Keeping unconfirmed LED traffic within one packet bounds
+/// what the firmware can have queued from us to one endpoint buffer.
 pub(super) const PUSH2_MIDI_ENDPOINT_PACKET_BYTES: usize = 512;
 
 /// Unconfirmed traffic that earns an acknowledgement request even when a
@@ -56,9 +63,33 @@ pub(super) const PUSH2_RESYNC_INTERVAL: Duration = Duration::from_secs(10);
 /// How often User mode and touch-strip host control are re-asserted.
 pub(super) const PUSH2_MODE_ASSERT_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Palette writes accrue one credit per interval, up to a frame's worth.
+///
+/// Before flow control, the lane allowed 16 palette writes per frame and a
+/// saturated animation delivered a frame about every 62.5 ms, so the device
+/// has been taking up to 256 writes a second in the field. Replies bound the
+/// data in flight but not how long the firmware spends on each write, so the
+/// palette sysex rate stays at that ceiling rather than rising with the
+/// faster batch cadence.
+pub(super) const PUSH2_PALETTE_WRITE_INTERVAL: Duration = Duration::from_micros(3_906);
+const PALETTE_WRITE_CREDIT_CAP: Duration = Duration::from_micros(3_906 * 16);
+
+/// Share of a batch's wire budget palette traffic may take, so LED moves,
+/// white buttons, and the touch strip always make progress in the same batch.
+pub(super) const PALETTE_WIRE_SHARE_BYTES: usize = PUSH2_MIDI_ENDPOINT_PACKET_BYTES * 2 / 5;
+
 const STALL_PROBE_BACKOFF_MIN: Duration = Duration::from_millis(250);
-const STALL_PROBE_BACKOFF_MAX: Duration = Duration::from_secs(5);
-const STALL_REPORT_INTERVAL: Duration = Duration::from_mins(1);
+/// Probe spacing grows with the stall's age. The field failure is a wedge
+/// that lasts until a power cycle, so later probes only need to notice a
+/// device that comes back on its own, and each unanswered probe stays queued
+/// in the kernel's 4 KiB rawmidi buffer; these caps keep a day-long stall
+/// under that buffer.
+const STALL_PROBE_BACKOFF_CAPS: [(Duration, Duration); 3] = [
+    (Duration::from_mins(1), Duration::from_secs(5)),
+    (Duration::from_mins(30), Duration::from_mins(1)),
+    (Duration::MAX, Duration::from_mins(5)),
+];
+const STALL_REPORT_INTERVAL: Duration = Duration::from_mins(5);
 
 /// Bytes a MIDI message occupies on the USB wire.
 ///
@@ -115,6 +146,9 @@ pub(super) struct Push2Link {
     ack_cursor: u8,
     last_resync_at: Option<Instant>,
     last_mode_assert_at: Option<Instant>,
+    /// Time banked toward palette writes; see `PUSH2_PALETTE_WRITE_INTERVAL`.
+    palette_credit: Option<Duration>,
+    last_credit_at: Option<Instant>,
     stall: Option<Push2Stall>,
     /// First LED the next batch serves, so a budget-limited batch rotates
     /// through every LED instead of starving the tail of the list.
@@ -163,6 +197,17 @@ pub(super) fn begin_batch(
         Some(_) => {}
     }
 
+    let credit = state
+        .link
+        .palette_credit
+        .unwrap_or(PALETTE_WRITE_CREDIT_CAP);
+    let earned = state
+        .link
+        .last_credit_at
+        .map_or(Duration::ZERO, |at| now.saturating_duration_since(at));
+    state.link.palette_credit = Some((credit + earned).min(PALETTE_WRITE_CREDIT_CAP));
+    state.link.last_credit_at = Some(now);
+
     let mut budget = WireBudget::new(
         PUSH2_MIDI_ENDPOINT_PACKET_BYTES
             .saturating_sub(state.link.unconfirmed_wire_bytes)
@@ -205,6 +250,25 @@ pub(super) fn begin_batch(
     }
 
     BatchStart::Proceed(budget)
+}
+
+/// Palette writes the rate ceiling allows right now.
+pub(super) fn palette_writes_available(link: &Push2Link) -> usize {
+    let credit = link.palette_credit.unwrap_or(PALETTE_WRITE_CREDIT_CAP);
+    usize::try_from(credit.as_micros() / PUSH2_PALETTE_WRITE_INTERVAL.as_micros())
+        .unwrap_or(usize::MAX)
+}
+
+/// Charge one palette write against the rate ceiling.
+pub(super) fn spend_palette_write(link: &mut Push2Link) {
+    let credit = link.palette_credit.unwrap_or(PALETTE_WRITE_CREDIT_CAP);
+    link.palette_credit = Some(credit.saturating_sub(PUSH2_PALETTE_WRITE_INTERVAL));
+}
+
+/// Count out-of-band traffic (brightness sysex) against the unconfirmed
+/// window, so the next batch leaves room for it.
+pub(super) fn note_unbatched_traffic(state: &mut Push2State, wire_bytes: usize) {
+    state.link.unconfirmed_wire_bytes += wire_bytes;
 }
 
 /// Close a batch: account for what it spent and request an acknowledgement
@@ -267,11 +331,14 @@ pub(super) fn acknowledge(state: &mut Push2State, index: u8, entry: [u8; 4], now
 ///
 /// A command that already expects a reply confirms everything before it, so
 /// it closes its chunk too.
-pub(super) fn chunk_with_ack_reads(burst: Vec<ProtocolCommand>) -> Vec<ProtocolCommand> {
+pub(super) fn chunk_with_ack_reads(
+    burst: Vec<ProtocolCommand>,
+    already_unconfirmed: usize,
+) -> Vec<ProtocolCommand> {
     let ack_cost = usb_midi_wire_bytes(ACK_REQUEST_LEN);
     let limit = PUSH2_MIDI_ENDPOINT_PACKET_BYTES - ack_cost;
-    let mut chunked = Vec::with_capacity(burst.len() + burst.len() / 64 + 2);
-    let mut unconfirmed = 0_usize;
+    let mut chunked = Vec::with_capacity(burst.len() + burst.len() / 64 + 3);
+    let mut unconfirmed = already_unconfirmed;
     for command in burst {
         let cost = usb_midi_wire_bytes(command.data.len());
         if unconfirmed > 0 && unconfirmed + cost > limit {
@@ -305,6 +372,17 @@ pub(super) fn reset(state: &mut Push2State) {
     state.link = Push2Link::default();
 }
 
+/// Wire bytes the device has not yet confirmed. An unanswered request counts
+/// as a full window, since nothing sent since the last answer is known to
+/// have drained.
+pub(super) fn unconfirmed_wire_bytes(state: &Push2State) -> usize {
+    if state.link.awaiting_ack.is_some() {
+        PUSH2_MIDI_ENDPOINT_PACKET_BYTES
+    } else {
+        state.link.unconfirmed_wire_bytes
+    }
+}
+
 fn hold_for_ack(state: &mut Push2State, now: Instant, buffer: &mut CommandBuffer<'_>) {
     let mut stall = if let Some(stall) = state.link.stall {
         stall
@@ -327,7 +405,8 @@ fn hold_for_ack(state: &mut Push2State, now: Instant, buffer: &mut CommandBuffer
     if now >= stall.next_probe_at {
         push_ack_request(state, buffer);
         stall.probes = stall.probes.saturating_add(1);
-        stall.next_probe_at = now + probe_backoff(stall.probes);
+        let age = now.saturating_duration_since(stall.since);
+        stall.next_probe_at = now + probe_backoff(stall.probes, age);
         debug!(probes = stall.probes, "push2 acknowledgement probe sent");
     }
 
@@ -344,11 +423,15 @@ fn hold_for_ack(state: &mut Push2State, now: Instant, buffer: &mut CommandBuffer
     state.link.stall = Some(stall);
 }
 
-fn probe_backoff(probes: u32) -> Duration {
+fn probe_backoff(probes: u32, stall_age: Duration) -> Duration {
+    let cap = STALL_PROBE_BACKOFF_CAPS
+        .iter()
+        .find(|(until, _)| stall_age < *until)
+        .map_or(STALL_PROBE_BACKOFF_MIN, |(_, cap)| *cap);
     let doublings = probes.saturating_sub(1).min(16);
     STALL_PROBE_BACKOFF_MIN
         .saturating_mul(1_u32 << doublings)
-        .min(STALL_PROBE_BACKOFF_MAX)
+        .min(cap)
 }
 
 fn push_ack_request(state: &mut Push2State, buffer: &mut CommandBuffer<'_>) {
