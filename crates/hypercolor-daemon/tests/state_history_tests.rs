@@ -214,6 +214,55 @@ fn the_table_listing_names_every_covered_store() {
 }
 
 #[test]
+fn discovery_last_seen_stamps_do_not_churn_alias_history() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let roots = roots(directory.path());
+    let path = roots.state_dir.join("device-aliases.json");
+    fs::create_dir_all(&roots.state_dir).expect("state dir");
+    let aliases = |fingerprint: &str, last_seen: u64| {
+        serde_json::json!({
+            "schema_version": 2,
+            "aliases": {
+                "usb:1234:5678:serial": {
+                    "source": "usb_serial",
+                    "raw": "serial",
+                    "fingerprint": fingerprint,
+                    "first_seen_epoch_s": 1,
+                    "last_seen_epoch_s": last_seen,
+                }
+            }
+        })
+        .to_string()
+    };
+    fs::write(&path, aliases("pinned", 100)).expect("seed aliases");
+    state_history::enable(&roots, 10, Duration::ZERO);
+
+    for scan in 1..=20 {
+        hypercolor_daemon::persistence::write_atomic(
+            &path,
+            aliases("pinned", 100 + scan).as_bytes(),
+        )
+        .expect("scan stamp");
+    }
+    assert!(
+        generation_ids(&roots, "device-aliases").is_empty(),
+        "last-seen stamps alone keep nothing"
+    );
+
+    hypercolor_daemon::persistence::write_atomic(&path, aliases("repinned", 200).as_bytes())
+        .expect("real change");
+    assert_eq!(generation_ids(&roots, "device-aliases").len(), 1);
+    assert!(state_history::same_device_aliases(
+        aliases("x", 1).as_bytes(),
+        aliases("x", 2).as_bytes()
+    ));
+    assert!(!state_history::same_device_aliases(
+        aliases("x", 1).as_bytes(),
+        aliases("y", 1).as_bytes()
+    ));
+}
+
+#[test]
 fn zero_generations_turns_history_off() {
     let directory = tempfile::tempdir().expect("tempdir");
     let roots = roots(directory.path());

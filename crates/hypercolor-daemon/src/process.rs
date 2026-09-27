@@ -102,7 +102,7 @@ struct DaemonArgs {
     macos_tcc_canary_publish: Option<Vec<PathBuf>>,
 
     /// Path to the configuration file.
-    #[arg(short, long, env = "HYPERCOLOR_CONFIG")]
+    #[arg(short, long, env = "HYPERCOLOR_CONFIG", global = true)]
     config: Option<PathBuf>,
 
     /// Address and port to bind the API server to.
@@ -958,7 +958,18 @@ fn run_history_command(
     } else {
         None
     };
-    crate::state_history::run_command(command, &roots, &daemon, &mut std::io::stdout().lock())
+    match crate::state_history::run_command(command, &roots, &daemon, &mut std::io::stdout().lock())
+    {
+        // `history list | head` closing the pipe early is not a failure.
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::BrokenPipe) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
 }
 
 const RUNNING_DAEMON_REFUSAL: &str = "hypercolor-daemon is running; stop it before restoring \

@@ -29,7 +29,7 @@ use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::persistence::{
-    AtomicFileWriter, Generation, HistoryPolicy, list_generations, restore_generation,
+    AtomicFileWriter, Equivalence, Generation, HistoryPolicy, list_generations, restore_generation,
 };
 use hypercolor_types::config::DaemonConfig;
 use serde::Serialize;
@@ -180,16 +180,54 @@ pub fn enable(roots: &StoreRoots, generations: usize, min_interval: Duration) ->
                 continue;
             }
         };
-        writer.enable_history(HistoryPolicy::new(
+        let mut policy = HistoryPolicy::new(
             history_directory(&roots.state_dir, store.name),
             generations,
             min_interval,
-        ));
+        );
+        if let Some(equivalent) = equivalence(store.name) {
+            policy = policy.with_equivalence(equivalent);
+        }
+        writer.enable_history(policy);
         if generations > 0 {
             covered.push(store);
         }
     }
     covered
+}
+
+/// Stores that stamp bookkeeping on saves that change no state. Without a
+/// looser comparison, those stamps would count as changes and churn history.
+fn equivalence(store: &str) -> Option<Equivalence> {
+    match store {
+        // Every discovery scan refreshes each alias's `last_seen_epoch_s`.
+        "device-aliases" => Some(same_device_aliases),
+        _ => None,
+    }
+}
+
+/// Whether two device alias files pin the same identities, ignoring when
+/// each was last seen.
+#[must_use]
+pub fn same_device_aliases(left: &[u8], right: &[u8]) -> bool {
+    fn pins(bytes: &[u8]) -> Option<serde_json::Value> {
+        let mut document: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        if let Some(aliases) = document
+            .get_mut("aliases")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for record in aliases.values_mut() {
+                if let Some(record) = record.as_object_mut() {
+                    record.remove("last_seen_epoch_s");
+                }
+            }
+        }
+        Some(document)
+    }
+    match (pins(left), pins(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn is_excluded(name: &str) -> bool {
@@ -290,8 +328,7 @@ pub fn run_command(
                 })
                 .collect::<Result<Vec<_>>>()?;
             if json {
-                serde_json::to_writer_pretty(&mut *out, &listings)?;
-                writeln!(out)?;
+                writeln!(out, "{}", serde_json::to_string_pretty(&listings)?)?;
             } else {
                 write_table(out, &listings)?;
             }
