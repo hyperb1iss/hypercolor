@@ -191,8 +191,9 @@ pub(super) fn encode_led_batch(
         let slot = nearest_existing_rgb_slot(&state.palette, palette_entry(color));
         color_slots.insert(color, slot);
     }
-    // The next batch hands its palette writes to the colors this one could
-    // not afford first, so a fast effect cannot starve the end of the grid.
+    // Writes go to the worst approximations first; among equally bad ones,
+    // the next batch starts its scan where this one ran out, so ties rotate
+    // through the grid instead of always favoring the first pads.
     if let Some(index) = first_unwritten_color {
         state.link.palette_scan_offset = index;
     }

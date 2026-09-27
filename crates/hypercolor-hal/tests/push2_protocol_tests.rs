@@ -506,3 +506,67 @@ fn push2_parse_response_rejects_out_of_range_palette_index() {
         "unexpected error: {error}"
     );
 }
+
+#[test]
+fn push2_palette_writes_go_to_the_worst_approximations_first() {
+    let protocol = Push2Protocol::new();
+    protocol
+        .parse_response(&palette_reply(90, [250, 0, 0, 53]))
+        .expect("palette reply should parse");
+
+    // Pad 0 wants red, within a few steps of the seeded slot 90; nine blues
+    // after it have nothing close. Only eight writes fit a batch, and the
+    // scan starts at pad 0, so first-come order would spend one on red.
+    let mut colors = vec![[0_u8; 3]; 160];
+    colors[0] = [255, 0, 0];
+    for (index, color) in colors.iter_mut().enumerate().skip(1).take(9) {
+        *color = [0, u8::try_from(index * 20).expect("fits in u8"), 200];
+    }
+
+    let commands = protocol.encode_frame(&colors);
+
+    assert_eq!(count_palette_writes(&commands), 8);
+    assert!(
+        commands
+            .iter()
+            .filter(|command| command.data.len() == 17)
+            .all(|command| command.data[8..10] != [0x7F, 0x01]),
+        "no write should be spent on red while far-off colors wait"
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.data == vec![0x90, 36, 90]),
+        "red borrows the seeded near-red slot"
+    );
+}
+
+#[test]
+fn push2_reply_for_a_different_palette_index_acknowledges_nothing() {
+    let protocol = Push2Protocol::new();
+    let colors = unique_pad_colors();
+    let batch = protocol.encode_frame(&colors);
+    let ack = batch
+        .last()
+        .filter(|command| command.data.len() == 9 && command.data[6] == 0x04)
+        .map(|command| command.data[7])
+        .expect("a full batch closes with a palette read");
+
+    // A stale reply for another index must not release the next batch.
+    protocol
+        .parse_response(&palette_reply((ack + 1) % 128, [1, 2, 3, 4]))
+        .expect("stale palette reply still parses");
+    let held = protocol.encode_frame(&colors);
+    assert_eq!(held.len(), 1, "the lane holds and sends only a probe");
+    assert_eq!(held[0].data[6], 0x04);
+
+    // The reply to the probe releases it.
+    protocol
+        .parse_response(&palette_reply(held[0].data[7], [0, 0, 0, 0]))
+        .expect("probe reply parses");
+    let next = protocol.encode_frame(&colors);
+    assert!(
+        next.len() > 1,
+        "LED traffic resumes once the probe is answered"
+    );
+}

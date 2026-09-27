@@ -540,9 +540,23 @@ fn slow_color_drift_tracks_within_a_couple_of_frames() {
 
 #[test]
 fn palette_sysex_never_exceeds_the_pre_flow_control_rate() {
+    // 16 pads spinning hue fast with the rest dark: batches are small and run
+    // every frame, so the credit, not the palette share, is what binds. The
+    // lane used to run this at about 940 writes a second.
+    fn spinning_pads(frame: u64) -> Vec<[u8; 3]> {
+        let mut colors = vec![[0_u8; 3]; LED_COUNT];
+        for (pad, color) in colors.iter_mut().enumerate().take(16) {
+            #[expect(clippy::cast_precision_loss, reason = "synthetic effect timing")]
+            let hue = pad as f32 / 16.0 + frame as f32 * 0.1;
+            *color = push2_fake::hsv(hue, 1.0, 1.0);
+        }
+        colors
+    }
+
     for (name, effect) in [
         ("rainbow", rainbow_sweep as fn(u64) -> Vec<[u8; 3]>),
         ("breathing whites", white_buttons_breathing),
+        ("spinning pads", spinning_pads),
     ] {
         let mut rig = Push2Rig::connected();
         let start = rig.clock.elapsed();

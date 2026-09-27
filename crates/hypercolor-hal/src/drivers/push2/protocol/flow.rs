@@ -16,9 +16,9 @@
 //!   the host believes, so superseded frames are never queued, only
 //!   overwritten;
 //! - palette writes, the costliest message class (a 17-byte sysex, and any
-//!   batch that writes one also owes a Reapply Color Palette), never exceed
-//!   the rate the lane ran at before flow control existed, and never take
-//!   more than two fifths of a batch;
+//!   batch that writes one also owes a Reapply Color Palette), stay under a
+//!   ceiling set at the rate a saturating animation ran at before flow
+//!   control, and never take more than two fifths of a batch;
 //! - a request that goes unanswered puts the lane on hold: no LED traffic is
 //!   piled behind a stalled endpoint, a single small probe is retried with a
 //!   backoff that stretches as the stall ages, and the first answer schedules
@@ -65,12 +65,13 @@ pub(super) const PUSH2_MODE_ASSERT_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Palette writes accrue one credit per interval, up to a frame's worth.
 ///
-/// Before flow control, the lane allowed 16 palette writes per frame and a
-/// saturated animation delivered a frame about every 62.5 ms, so the device
-/// has been taking up to 256 writes a second in the field. Replies bound the
-/// data in flight but not how long the firmware spends on each write, so the
-/// palette sysex rate stays at that ceiling rather than rising with the
-/// faster batch cadence.
+/// Before flow control, the lane allowed 16 palette writes per frame. A
+/// saturating animation delivered a frame about every 62.5 ms, about 256
+/// writes a second; a light effect that changed a few pads fast delivered
+/// every frame and could reach roughly 940. Replies bound the data in flight
+/// but not how long the firmware spends on each write, so the ceiling sits
+/// at the saturated rate and does not rise with the faster batch cadence.
+/// Light fast effects trade a little color precision for it.
 pub(super) const PUSH2_PALETTE_WRITE_INTERVAL: Duration = Duration::from_micros(3_906);
 const PALETTE_WRITE_CREDIT_CAP: Duration = Duration::from_micros(3_906 * 16);
 
