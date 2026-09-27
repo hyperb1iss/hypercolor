@@ -807,7 +807,23 @@ Step  Command                               Purpose
 - **User mode** (`0x01`) is required for external LED control. In Live mode, Ableton Live owns the LEDs.
 - **Dual mode** (`0x02`) allows both Live and the driver to send — risk of visual conflicts. Avoid unless explicitly requested.
 - The mode switch reply is echoed to **both** MIDI ports. The driver should expect and discard the echo on the Live port.
-- Runtime keepalive should stay lightweight: reassert User mode and touch-strip host control, but do not force a full palette/key resync. Large periodic MIDI bursts can overrun ALSA's `seq_midi` output buffer while the display bulk path remains healthy.
+- User mode and touch-strip host control are re-asserted every 5 s inside the acknowledged LED stream (§10.4), not on a separate keepalive timer. A keepalive write that times out ends the USB actor and tears the device down, and a timer-driven burst would bypass the LED lane's flow control.
+
+### 10.4 LED Flow Control
+
+Ableton documents no MIDI input rate for the Push 2. The manual's contract is request/reply: "Before sending the next command the host should wait for the reply, if any is expected, of the previous command." Replies come back in order, after every earlier message has been processed, so a reply also proves the firmware drained everything before it. Ableton's own guidance for bulk LED updates ([push-interface#11](https://github.com/Ableton/push-interface/issues/11)) is the same shape: send a batch, then wait for a sysex reply before the next one.
+
+Unpaced by replies, an animated effect keeps the MIDI lane saturated indefinitely (about 9 to 12 KB/s with a Reapply Color Palette on every frame), and nothing tells the host whether the firmware is keeping up. The failure seen in the field is a firmware that stops accepting OUT transfers entirely, with the device still enumerated and the kernel reporting `rawmidi drain error` until a power cycle. The driver therefore:
+
+- keeps at most one USB-MIDI endpoint packet (512 wire bytes, the high-speed bulk `wMaxPacketSize`) of LED traffic unconfirmed; a batch that needs more closes with a Get LED Color Palette Entry (`0x04`) request, and the next batch waits for its reply;
+- computes every batch from the newest frame against the device state the host believes (latest color per LED, never a queue of stale frames), rotating through LEDs so a budget-limited batch cannot starve the tail of the grid;
+- sends one Reapply Color Palette per batch that wrote palette entries, and caps RGB palette writes at 16 per batch;
+- holds LED output when a request goes unanswered, probing with a single palette read (backing off from 250 ms to 5 s) instead of piling traffic behind a stalled endpoint, then re-sends the whole believed state on the first answer;
+- re-sends every LED index, the touch strip, and every palette slot in use every 10 s, so a message lost in an OS buffer heals without a reconnect;
+- splits the init clear and the shutdown palette restore into acknowledged chunks of the same size;
+- on Linux raw MIDI, writes a message only once the kernel buffer can take all of it, so a write that times out never leaves a truncated sysex on the wire.
+
+Unchanged frames send nothing, and a single LED change to a color already in the palette is a single note or CC message.
 
 ---
 
