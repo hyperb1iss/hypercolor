@@ -73,7 +73,7 @@ start_scene      = "last"             # "last" | "default" | <scene name>
 shutdown_behavior = "hardware_default" # hardware_default | off | static
 shutdown_color   = "#1a1a2e"          # Hex color used when shutdown_behavior = "static"
 state_history_generations       = 10  # Previous versions kept per state file; 0 keeps none
-state_history_min_interval_secs = 30  # Content younger than this is transient and not kept
+state_history_min_interval_secs = 30  # Content changed more recently than this is transient
 ```
 
 **`target_fps`** controls the maximum render cadence. The FPS controller auto-shifts between tiers (10, 20, 30, 45, 60) based on frame budget; this key sets the ceiling. Changes to this key take effect live without a daemon restart.
@@ -84,7 +84,7 @@ state_history_min_interval_secs = 30  # Content younger than this is transient a
 
 **`shutdown_behavior`**: `hardware_default` leaves LEDs on their last hardware frame (most controllers hold it). `off` sends a black frame to every device. `static` sends the color in `shutdown_color`.
 
-**`state_history_generations`** and **`state_history_min_interval_secs`** control the previous versions the daemon keeps of its state files (the live session, scenes, layouts, device settings and aliases, the library, display preferences, and this config file). Before a save replaces a file, the old content is copied to `${XDG_STATE_HOME:-~/.local/state}/hypercolor/history/<store>/`. Content that is byte-identical to the new save, or that the daemon wrote less than `state_history_min_interval_secs` ago, is not copied, so a slider drag or a burst of automation keeps only the state it started from. Shutdown always keeps the content its final saves replace. Both keys take effect on the next daemon start. See [Undoing an unwanted change](@/troubleshooting/common-issues.md#undoing-an-unwanted-change) for listing and restoring versions.
+**`state_history_generations`** and **`state_history_min_interval_secs`** control the previous versions the daemon keeps of its state files (the live session, scenes, layouts, device settings and aliases, the library, display preferences, and this config file). Before a save replaces a file, the old content is copied to the `history/<store>/` folder of the state directory (`${XDG_STATE_HOME:-~/.local/state}/hypercolor` on Linux, `~/Library/Application Support/hypercolor` on macOS, `%LOCALAPPDATA%\hypercolor` on Windows). Content identical to the new save is not copied, and neither is content the daemon changed less than `state_history_min_interval_secs` ago, so a slider drag or a burst of automation keeps only the state it started from. Saves that change nothing never make older content look recent, and device aliases ignore the last-seen time discovery stamps on every scan. Shutdown always keeps the content its final saves replace. Both keys take effect on the next daemon start. See [Undoing an unwanted change](@/troubleshooting/common-issues.md#undoing-an-unwanted-change) for listing and restoring versions.
 
 For one-off daemon launches, CLI flags override these without touching the file:
 

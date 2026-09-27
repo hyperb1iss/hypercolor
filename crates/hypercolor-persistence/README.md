@@ -66,10 +66,12 @@ ownership of these files is the daemon's single-instance guard, not this crate.
 - Before a replacement, the outgoing content is copied into the history
   directory as `{id:06}-{replaced_at}{extension}`, durably, so a crash leaves
   either the old file with its copy already kept or the new file. Content
-  identical to the new payload, content the newest generation already holds,
-  and content this process wrote less than `min_interval` ago are skipped, so
-  rotations of one destination are at least `min_interval` apart. The oldest
-  generations beyond the budget are removed.
+  equivalent to the new payload (byte-identical, or accepted by the policy's
+  optional `Equivalence`), content the newest generation already holds, and
+  content this process changed less than `min_interval` ago are skipped, so
+  rotations of one destination are at least `min_interval` apart. Rewrites
+  that change nothing do not restart that clock. The oldest generations
+  beyond the budget are removed.
 - `capture_next_writes()` waives the interval once per destination (the daemon
   calls it before its shutdown saves).
 - `list_generations(directory)` and `restore_generation(path, id)` read and
