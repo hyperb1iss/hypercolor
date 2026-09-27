@@ -448,8 +448,8 @@ pub(crate) fn note_replacement(
         );
         if !unchanged {
             state.last_replaced_at = Some(Instant::now());
+            state.capture_next = false;
         }
-        state.capture_next = false;
     }
     if let Some(observer) = REPLACEMENT_OBSERVER.get()
         && !matches!(previous, PreviousContent::NotRead)
