@@ -2675,3 +2675,298 @@ async fn an_optional_reply_does_not_forgive_a_send_that_timed_out() {
 
     assert!(protocol.seen().is_empty(), "nothing was read as a reply");
 }
+
+/// Push 2 stand-in for actor tests: applies palette-indexed LED MIDI,
+/// answers palette reads, and can stall like a wedged MIDI endpoint.
+struct FakePush2Transport {
+    device: Mutex<FakePush2Device>,
+    stalled: AtomicBool,
+    backlog: Mutex<Vec<Vec<u8>>>,
+    pending_reply: Mutex<Option<Vec<u8>>>,
+    sends_while_stalled: AtomicUsize,
+}
+
+struct FakePush2Device {
+    palette: [[u8; 4]; 128],
+    led_index: HashMap<(u8, u8), u8>,
+    lit: HashMap<(u8, u8), [u8; 4]>,
+}
+
+const FAKE_PUSH2_PREFIX: [u8; 6] = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01];
+const FAKE_KERNEL_BUFFER_BYTES: usize = 4096;
+
+impl FakePush2Device {
+    fn process(&mut self, message: &[u8]) -> Option<Vec<u8>> {
+        match message.first().copied() {
+            Some(status @ (0x90 | 0xB0)) => {
+                let key = (status, message[1]);
+                self.led_index.insert(key, message[2]);
+                self.lit.insert(key, self.palette[usize::from(message[2])]);
+                None
+            }
+            Some(0xF0) if message == [0xF0, 0x7E, 0x01, 0x06, 0x01, 0xF7] => Some(vec![
+                0xF0, 0x7E, 0x01, 0x06, 0x02, 0x00, 0x21, 0x1D, 0x67, 0x32, 0x02, 0x00, 0x01, 0x00,
+                0x2F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xF7,
+            ]),
+            Some(0xF0) if message.len() >= 8 && message[..6] == FAKE_PUSH2_PREFIX => {
+                let args = &message[7..message.len() - 1];
+                match message[6] {
+                    0x03 => {
+                        let mut entry = [0_u8; 4];
+                        for (channel, value) in entry.iter_mut().enumerate() {
+                            *value = args[1 + channel * 2] | (args[2 + channel * 2] << 7);
+                        }
+                        self.palette[usize::from(args[0])] = entry;
+                        None
+                    }
+                    0x04 => {
+                        let mut reply = FAKE_PUSH2_PREFIX.to_vec();
+                        reply.extend_from_slice(&[0x04, args[0]]);
+                        for value in self.palette[usize::from(args[0])] {
+                            reply.extend_from_slice(&[value & 0x7F, value >> 7]);
+                        }
+                        reply.push(0xF7);
+                        Some(reply)
+                    }
+                    0x05 => {
+                        for (key, index) in &self.led_index {
+                            self.lit.insert(*key, self.palette[usize::from(*index)]);
+                        }
+                        None
+                    }
+                    0x0A => {
+                        let mut reply = FAKE_PUSH2_PREFIX.to_vec();
+                        reply.extend_from_slice(&[0x0A, args[0], 0xF7]);
+                        Some(reply)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+impl FakePush2Transport {
+    fn new() -> Self {
+        Self {
+            device: Mutex::new(FakePush2Device {
+                palette: [[0; 4]; 128],
+                led_index: HashMap::new(),
+                lit: HashMap::new(),
+            }),
+            stalled: AtomicBool::new(false),
+            backlog: Mutex::new(Vec::new()),
+            pending_reply: Mutex::new(None),
+            sends_while_stalled: AtomicUsize::new(0),
+        }
+    }
+
+    fn stall(&self) {
+        self.stalled.store(true, Ordering::SeqCst);
+    }
+
+    fn unstall(&self) {
+        let backlog = std::mem::take(&mut *self.backlog.lock().expect("backlog lock"));
+        let mut device = self.device.lock().expect("device lock");
+        for message in backlog {
+            let _ = device.process(&message);
+        }
+        self.stalled.store(false, Ordering::SeqCst);
+    }
+
+    fn backlog_bytes(&self) -> usize {
+        self.backlog
+            .lock()
+            .expect("backlog lock")
+            .iter()
+            .map(Vec::len)
+            .sum()
+    }
+
+    fn pads_show(&self, frame: &[[u8; 3]]) -> bool {
+        let device = self.device.lock().expect("device lock");
+        (0..64_u8).all(|pad| {
+            device
+                .lit
+                .get(&(0x90, 36 + pad))
+                .is_some_and(|lit| lit[..3] == frame[usize::from(pad)])
+        })
+    }
+}
+
+#[async_trait]
+impl Transport for FakePush2Transport {
+    fn name(&self) -> &'static str {
+        "fake-push2"
+    }
+
+    fn supports_parallel_transfer_lanes(&self) -> bool {
+        true
+    }
+
+    async fn send(&self, data: &[u8]) -> std::result::Result<(), TransportError> {
+        self.send_with_type(data, TransferType::Primary).await
+    }
+
+    async fn send_with_type(
+        &self,
+        data: &[u8],
+        transfer_type: TransferType,
+    ) -> std::result::Result<(), TransportError> {
+        if transfer_type != TransferType::Primary {
+            return Ok(());
+        }
+        if self.stalled.load(Ordering::SeqCst) {
+            self.sends_while_stalled.fetch_add(1, Ordering::SeqCst);
+            let mut backlog = self.backlog.lock().expect("backlog lock");
+            let queued: usize = backlog.iter().map(Vec::len).sum();
+            if queued + data.len() > FAKE_KERNEL_BUFFER_BYTES {
+                return Err(TransportError::Timeout { timeout_ms: 1000 });
+            }
+            backlog.push(data.to_vec());
+            return Ok(());
+        }
+        let reply = self.device.lock().expect("device lock").process(data);
+        *self.pending_reply.lock().expect("reply lock") = reply;
+        Ok(())
+    }
+
+    async fn receive(&self, _timeout: Duration) -> std::result::Result<Vec<u8>, TransportError> {
+        self.pending_reply
+            .lock()
+            .expect("reply lock")
+            .take()
+            .ok_or(TransportError::Timeout { timeout_ms: 1000 })
+    }
+
+    async fn close(&self) -> std::result::Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+fn push2_test_frame(seed: u32) -> Vec<[u8; 3]> {
+    (0..160_u32)
+        .map(|led| {
+            let red = u8::try_from((led * 7 + seed) % 256).expect("wrapped to a byte");
+            let green = u8::try_from((led * 13 + seed * 3) % 256).expect("wrapped to a byte");
+            [red, green, 128]
+        })
+        .collect()
+}
+
+async fn publish_until(
+    frame_tx: &watch::Sender<Option<Arc<UsbFramePayload>>>,
+    clock: &Mutex<std::time::Instant>,
+    frame: &[[u8; 3]],
+    mut done: impl FnMut() -> bool,
+) {
+    timeout(Duration::from_secs(5), async {
+        while !done() {
+            *clock.lock().expect("clock lock") += Duration::from_millis(100);
+            frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(
+                frame.to_vec(),
+            )))));
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("Push 2 fake should converge before the timeout");
+}
+
+#[tokio::test]
+async fn push2_midi_stall_never_blocks_frame_publication_or_tears_down_the_actor() {
+    let clock = Arc::new(Mutex::new(std::time::Instant::now()));
+    let protocol_clock = Arc::clone(&clock);
+    let protocol = Arc::new(hypercolor_hal::drivers::push2::Push2Protocol::with_clock(
+        Arc::new(move || *protocol_clock.lock().expect("clock lock")),
+    ));
+    let transport = Arc::new(FakePush2Transport::new());
+    UsbBackend::run_commands(
+        protocol.as_ref(),
+        transport.as_ref(),
+        &protocol.init_sequence(),
+    )
+    .await
+    .expect("init should complete against a healthy fake");
+
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let actor_protocol: Arc<dyn Protocol> = protocol.clone();
+    let actor_transport: Arc<dyn Transport> = transport.clone();
+    let actor = tokio::spawn(UsbBackend::test_run_parallel_device_actor(
+        DeviceId::new(),
+        "push2-stall-test-device",
+        actor_protocol,
+        actor_transport,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    let first = push2_test_frame(0);
+    publish_until(&frame_tx, &clock, &first, || transport.pads_show(&first)).await;
+
+    // The endpoint wedges. The render side keeps publishing at full rate and
+    // never waits on the device: the watch slot only ever holds the newest
+    // frame, whatever the actor is doing.
+    transport.stall();
+    let publish_started = std::time::Instant::now();
+    for seed in 1..=2_000 {
+        frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(
+            push2_test_frame(seed),
+        )))));
+        if seed % 100 == 0 {
+            tokio::task::yield_now().await;
+        }
+    }
+    let publish_elapsed = publish_started.elapsed();
+    for seed in 0..30 {
+        *clock.lock().expect("clock lock") += Duration::from_secs(1);
+        frame_tx.send_replace(Some(Arc::new(UsbFramePayload::untracked(Arc::new(
+            push2_test_frame(3_000 + seed),
+        )))));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    assert!(
+        publish_elapsed < Duration::from_millis(250),
+        "publishing 2000 frames into a stalled device took {publish_elapsed:?}"
+    );
+    assert!(
+        !actor.is_finished(),
+        "a stalled endpoint must not end the actor"
+    );
+    let stalled_sends = transport.sends_while_stalled.load(Ordering::SeqCst);
+    // One batch went out before the missing acknowledgement was noticed,
+    // then only backed-off probes.
+    assert!(
+        (2..=160).contains(&stalled_sends),
+        "{stalled_sends} sends reached the stalled endpoint"
+    );
+    assert!(transport.backlog_bytes() <= 512 + 30 * 9);
+
+    // The endpoint recovers: the next probe is answered, the lane resyncs,
+    // and the device lands on the newest frame without a reconnect.
+    transport.unstall();
+    let last = push2_test_frame(9_999);
+    publish_until(&frame_tx, &clock, &last, || transport.pads_show(&last)).await;
+    assert!(!actor.is_finished());
+
+    let (response_tx, response_rx) = oneshot::channel();
+    command_tx
+        .send(UsbDeviceCommand::Shutdown {
+            led_count: 0,
+            response_tx,
+        })
+        .expect("actor command channel should remain open");
+    response_rx
+        .await
+        .expect("shutdown response should be delivered")
+        .expect("shutdown should succeed");
+    actor
+        .await
+        .expect("actor task should join")
+        .expect("actor should exit cleanly");
+}
