@@ -9,7 +9,7 @@ use std::time::Duration;
 use hypercolor_hal::drivers::push2::transport::{
     midi_usb_path_from_sound_card_sysfs_for_testing,
     rawmidi_name_from_sound_card_and_seq_port_for_testing, rawmidi_open_retry_for_testing,
-    rawmidi_write_deadline_for_testing,
+    rawmidi_whole_message_write_for_testing, rawmidi_write_deadline_for_testing,
 };
 
 #[test]
@@ -160,4 +160,37 @@ fn rawmidi_open_retry_waits_for_hotplug_device_node() {
 
     assert_eq!(attempts, 3);
     assert_eq!(elapsed, Duration::from_millis(100));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rawmidi_write_never_starts_a_message_the_buffer_cannot_hold() {
+    // A wedged endpoint leaves 10 bytes free; a 17-byte palette sysex must
+    // time out without a single byte reaching the kernel, so no truncated
+    // sysex is ever left on the wire.
+    let (written, result) =
+        rawmidi_whole_message_write_for_testing(&[10], Duration::from_secs(1), 17);
+
+    assert_eq!(result, Err("timeout".to_owned()));
+    assert_eq!(written, 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rawmidi_write_admits_the_whole_message_once_space_frees_up() {
+    let (written, result) =
+        rawmidi_whole_message_write_for_testing(&[4, 8, 16, 4096], Duration::from_secs(1), 17);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(written, 17);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rawmidi_write_goes_straight_through_with_room_to_spare() {
+    let (written, result) =
+        rawmidi_whole_message_write_for_testing(&[4096], Duration::from_millis(1), 3);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(written, 3);
 }

@@ -51,6 +51,8 @@ const PUSH2_MANUFACTURER_PREFIX: [u8; 6] = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01];
 const PUSH2_RAWMIDI_OPEN_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(target_os = "linux")]
 const PUSH2_RAWMIDI_OPEN_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+#[cfg(target_os = "linux")]
+const PUSH2_RAWMIDI_SPACE_WAIT_STEP: Duration = Duration::from_millis(1);
 
 /// Open the driver-owned Push 2 composite transport.
 #[must_use]
@@ -754,13 +756,58 @@ fn write_rawmidi_with_deadline(
 ) -> Result<(), TransportError> {
     let started_at = Instant::now();
     let mut io = rawmidi.io();
-    write_with_deadline(
+    write_whole_message_with_deadline(
+        || rawmidi_output_space(rawmidi),
+        |remaining| std::thread::sleep(remaining.min(PUSH2_RAWMIDI_SPACE_WAIT_STEP)),
         |chunk| std::io::Write::write(&mut io, chunk),
         |remaining| wait_rawmidi_writable(rawmidi, remaining),
         move || started_at.elapsed(),
         data,
         timeout,
     )
+}
+
+/// Free bytes in the kernel's rawmidi output buffer.
+#[cfg(target_os = "linux")]
+fn rawmidi_output_space(rawmidi: &Rawmidi) -> Result<usize, TransportError> {
+    rawmidi
+        .status()
+        .map(|status| status.get_avail())
+        .map_err(|error| TransportError::IoError {
+            detail: format!("rawmidi status unavailable: {error}"),
+        })
+}
+
+/// Write one MIDI message only once the kernel buffer can take all of it.
+///
+/// A nonblocking rawmidi write accepts whatever fits, so a message started
+/// against a nearly full buffer could be abandoned halfway at the deadline,
+/// leaving a truncated sysex on the wire for the firmware parser to choke
+/// on. Admitting the message whole means a stalled endpoint times out with
+/// nothing written.
+#[cfg(target_os = "linux")]
+fn write_whole_message_with_deadline(
+    mut space: impl FnMut() -> Result<usize, TransportError>,
+    mut wait_for_space: impl FnMut(Duration),
+    write: impl FnMut(&[u8]) -> std::io::Result<usize>,
+    wait_writable: impl FnMut(Duration) -> Result<bool, TransportError>,
+    mut elapsed: impl FnMut() -> Duration,
+    data: &[u8],
+    timeout: Duration,
+) -> Result<(), TransportError> {
+    // Poll readiness fires on the first free byte, not on room for the
+    // whole message, so admission waits in short sleeps instead.
+    while space()? < data.len() {
+        let waited = elapsed();
+        if waited >= timeout {
+            return Err(TransportError::Timeout {
+                timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+            });
+        }
+        wait_for_space(timeout.saturating_sub(waited));
+    }
+
+    write_with_deadline(write, wait_writable, elapsed, data, timeout)
 }
 
 #[cfg(target_os = "linux")]
@@ -1134,6 +1181,68 @@ pub fn rawmidi_write_deadline_for_testing(
         TransportError::Timeout { .. } => "timeout".to_owned(),
         other => other.to_string(),
     })
+}
+
+/// Drive the whole-message rawmidi writer against a scripted kernel buffer.
+///
+/// `space` yields the free buffer bytes reported on each check (the last
+/// value repeats), and every wait advances a simulated clock by 1 ms.
+/// Returns the bytes handed to the kernel and the write outcome.
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub fn rawmidi_whole_message_write_for_testing(
+    space: &[usize],
+    timeout: Duration,
+    data_len: usize,
+) -> (usize, Result<(), String>) {
+    use std::cell::Cell;
+
+    let checks = Cell::new(0_usize);
+    let written = Cell::new(0_usize);
+    let simulated_elapsed = Cell::new(Duration::ZERO);
+    let data = vec![0_u8; data_len];
+    let result = write_whole_message_with_deadline(
+        || {
+            let index = checks.get().min(space.len().saturating_sub(1));
+            checks.set(checks.get() + 1);
+            Ok(space
+                .get(index)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(written.get()))
+        },
+        |_remaining| simulated_elapsed.set(simulated_elapsed.get() + Duration::from_millis(1)),
+        |chunk| {
+            let index = checks
+                .get()
+                .saturating_sub(1)
+                .min(space.len().saturating_sub(1));
+            let room = space
+                .get(index)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(written.get());
+            let accepted = chunk.len().min(room);
+            written.set(written.get() + accepted);
+            if accepted == 0 {
+                Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+            } else {
+                Ok(accepted)
+            }
+        },
+        |_remaining| {
+            simulated_elapsed.set(simulated_elapsed.get() + Duration::from_millis(1));
+            Ok(false)
+        },
+        || simulated_elapsed.get(),
+        &data,
+        timeout,
+    )
+    .map_err(|error| match error {
+        TransportError::Timeout { .. } => "timeout".to_owned(),
+        other => other.to_string(),
+    });
+    (written.get(), result)
 }
 
 #[doc(hidden)]
