@@ -359,7 +359,10 @@ impl DaemonState {
         info!("Input sources stopped");
         drop(self.input_status_event_publisher.take());
 
-        // 5. Persist the current runtime session before scene cleanup.
+        // 5. Persist the current runtime session before scene cleanup. The
+        // content these saves replace is kept in state history however
+        // recently it was written, so a session's last state always survives.
+        persistence::capture_next_writes();
         let runtime_snapshot = self.persist_runtime_session_snapshot().await;
         let scene_snapshot = persist_scene_store_snapshot(&self.scene_manager).await;
         let flush_report = persistence::flush_all(SHUTDOWN_PERSISTENCE_FLUSH_TIMEOUT);

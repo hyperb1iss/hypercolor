@@ -146,6 +146,17 @@ struct DaemonArgs {
     #[cfg(target_os = "windows")]
     #[arg(long, hide = true)]
     windows_service: bool,
+
+    #[command(subcommand)]
+    command: Option<DaemonCommand>,
+}
+
+/// Offline maintenance commands; without one, the daemon runs.
+#[derive(clap::Subcommand, Debug)]
+enum DaemonCommand {
+    /// List or restore previous versions of the daemon's state files.
+    #[command(subcommand)]
+    History(crate::state_history::HistoryCommand),
 }
 
 impl DaemonArgs {
@@ -287,7 +298,10 @@ pub fn run(extension_installers: &'static [&'static dyn DaemonExtensionInstaller
         (args, argument)
     };
     #[cfg(not(target_os = "macos"))]
-    let args = DaemonArgs::parse();
+    let mut args = DaemonArgs::parse();
+    if let Some(DaemonCommand::History(command)) = args.command.take() {
+        return run_history_command(command, args.config.take());
+    }
     #[cfg(target_os = "linux")]
     let service_status = {
         let claim = crate::launcher_claim::read_service_identity_claim(
@@ -912,6 +926,58 @@ impl Drop for MainRunLoopStop {
             }
         });
     }
+}
+
+/// Run `hypercolor-daemon history ...` against this user's state files.
+fn run_history_command(
+    command: crate::state_history::HistoryCommand,
+    config: Option<PathBuf>,
+) -> Result<()> {
+    use hypercolor_core::config::ConfigManager as Config;
+
+    let config_file = config.unwrap_or_else(|| Config::config_dir().join("hypercolor.toml"));
+    let daemon = if config_file.exists() {
+        Config::load(&config_file).map_or_else(
+            |error| {
+                eprintln!(
+                    "warning: could not read {} ({error:#}); using default history settings",
+                    config_file.display()
+                );
+                hypercolor_types::config::DaemonConfig::default()
+            },
+            |config| config.daemon,
+        )
+    } else {
+        hypercolor_types::config::DaemonConfig::default()
+    };
+    let roots = crate::state_history::StoreRoots::resolve(config_file);
+    // A running daemon would overwrite a restored file from memory, so a
+    // write holds the same single-instance guard the daemon takes.
+    let _guard = if command.writes() {
+        Some(acquire_offline_guard()?)
+    } else {
+        None
+    };
+    crate::state_history::run_command(command, &roots, &daemon, &mut std::io::stdout().lock())
+}
+
+const RUNNING_DAEMON_REFUSAL: &str = "hypercolor-daemon is running; stop it before restoring \
+     state, or it will overwrite the restored file";
+
+#[cfg(not(target_os = "macos"))]
+fn acquire_offline_guard() -> Result<SingleInstance> {
+    let instance = SingleInstance::new(&daemon_instance_name())
+        .context("failed to check for a running daemon")?;
+    anyhow::ensure!(instance.is_single(), RUNNING_DAEMON_REFUSAL);
+    Ok(instance)
+}
+
+#[cfg(target_os = "macos")]
+fn acquire_offline_guard() -> Result<MacosDaemonGuard> {
+    try_acquire_macos_daemon_guard(&daemon_instance_name())
+        .map_err(anyhow::Error::msg)
+        .context("failed to check for a running daemon")?
+        .ok_or_else(|| anyhow::anyhow!(RUNNING_DAEMON_REFUSAL))
 }
 
 fn daemon_instance_name() -> String {

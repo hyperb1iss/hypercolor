@@ -4812,6 +4812,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
+ "chrono",
  "clap",
  "core-foundation 0.10.1",
  "cpal",

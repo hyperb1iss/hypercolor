@@ -55,4 +55,5 @@ pub use scene_transactions::{LayoutPublicationTestExecutor, LayoutTransactionRej
 pub mod session;
 pub mod simulators;
 pub mod startup;
+pub mod state_history;
 pub mod zone_layout_preview;
