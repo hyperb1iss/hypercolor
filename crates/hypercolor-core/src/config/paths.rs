@@ -82,6 +82,11 @@ pub fn set_data_dir_override(path: Option<PathBuf>) {
 /// Linux uses `$XDG_STATE_HOME/hypercolor/` (default
 /// `~/.local/state/hypercolor/`). Platforms without a distinct state home use
 /// the local application-data directory.
+///
+/// A process that relocated its data directory without relocating its state
+/// directory gets `<data>/state`. Only fixtures relocate the data directory,
+/// and the state directory holds the live daemon's runtime session, audit
+/// trail, and history, so it must never fall through to the real user's.
 pub fn state_dir() -> PathBuf {
     if let Some(override_path) = STATE_DIR_OVERRIDE
         .read()
@@ -89,6 +94,14 @@ pub fn state_dir() -> PathBuf {
         .clone()
     {
         return override_path;
+    }
+
+    if let Some(data_override) = DATA_DIR_OVERRIDE
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+    {
+        return data_override.join("state");
     }
 
     dirs::state_dir()
