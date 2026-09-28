@@ -928,10 +928,12 @@ L-Connect streams an effect until the device's record echoes its effect
 index and sends nothing more (`MasterDevice.SyncRgbData`). The live stream
 holds to the same contract, per cluster (`wireless/pacing.rs`):
 
-- **Window of one.** A cluster gets a new transfer only when its record
-  echoes the last one. A frame that arrives while a transfer is out is
-  held; a newer frame replaces it, so what goes out next is always the
-  newest frame and stale frames are never queued.
+- **Window of one, a frame at a time.** A cluster gets a new transfer only
+  when its record echoes the last one, and a frame moves as one: it goes to
+  every cluster it changes once no heard cluster has a transfer out, or it
+  is held whole. A newer frame replaces a held one, so what goes out next
+  is always the newest frame and stale frames are never queued. A cluster
+  the RX cannot hear, or one whose lighting is held, holds up nobody.
 - **Every send is its own acknowledgement.** Each transfer carries a tag
   unique to that send (§6.7), so a restore of the frame already showing, a
   resend of a frame that did not land, or the first frame after a
@@ -943,11 +945,12 @@ holds to the same contract, per cluster (`wireless/pacing.rs`):
   moment a confirmation lands it sends the held frame, so delivery never
   waits for the next render frame. The backend handles pumped writes as
   frame traffic: a transient write error is logged and the lane continues,
-  where a failed keepalive would end the session. A frame the protocol
-  holds entirely is acknowledged to the output queue as suppressed, not
-  completed, and a frame written for some clusters and held for others is
-  acknowledged with only the bytes written (`Protocol::deferred_frame_bytes`).
-  The held share goes out later on the pump, untracked, like upkeep.
+  where a failed keepalive would end the session. Resends run only on the
+  pump, so a frame the render path hands over is written whole or held
+  whole: a held frame is acknowledged to the output queue as suppressed,
+  not completed, and a written one counts only the pixels of the clusters
+  it changed (`Protocol::written_frame_bytes`). A held frame goes out later
+  on the pump, untracked, like upkeep.
 - **Echo polls.** One page (448 bytes, read to exactly that length, no gap
   timeout) while every record fits in a page, otherwise two. The first poll
   after a send waits three quarters of the running echo time, later polls
@@ -988,7 +991,8 @@ holds to the same contract, per cluster (`wireless/pacing.rs`):
   resends.
 - **Shutdown.** The final frame the backend sends before shutdown goes out
   even if the window held it, including when the fans showed that frame
-  before the transfer still out.
+  before the transfer still out, but never past the bound on unresolved
+  transfers.
 
 Every 10 s the protocol logs `L-Wireless RGB delivery` at info with the
 offered, sent, and delivered frame rates, coalesced frames, resends,
