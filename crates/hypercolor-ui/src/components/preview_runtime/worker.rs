@@ -6,7 +6,7 @@ use hypercolor_leptos_ext::canvas::{
     supports_global, supports_offscreen_canvas_2d_bitmap,
 };
 use hypercolor_leptos_ext::events::{WorkerMessageHandler, post_worker_canvas_frame};
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use web_sys::{HtmlCanvasElement, ImageBitmapRenderingContext, MessageEvent, Worker};
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
@@ -107,6 +107,8 @@ function scheduleFlush() {
   self.setTimeout(flushFrame, 0);
 }
 
+// Answer every frame with a bitmap or null, so the page never waits on a
+// frame that failed.
 async function flushFrame() {
   framePending = false;
   const frame = latestFrame;
@@ -114,28 +116,32 @@ async function flushFrame() {
     return;
   }
 
-  if (frame.format === 2) {
-    const bitmap = await createJpegBitmap(frame);
-    if (!bitmap) {
-      return;
-    }
-
-    self.postMessage(bitmap, [bitmap]);
-    return;
+  let bitmap = null;
+  try {
+    bitmap = frame.format === 2 ? await createJpegBitmap(frame) : rasterizeFrame(frame);
+  } catch {
+    bitmap = null;
   }
 
+  if (bitmap) {
+    self.postMessage(bitmap, [bitmap]);
+  } else {
+    self.postMessage(null);
+  }
+}
+
+function rasterizeFrame(frame) {
   if (!ensureCanvas(frame.width, frame.height)) {
-    return;
+    return null;
   }
 
   const imageData = createImageData(frame);
   if (!imageData) {
-    return;
+    return null;
   }
 
   ctx.putImageData(imageData, 0, 0);
-  const bitmap = canvas.transferToImageBitmap();
-  self.postMessage(bitmap, [bitmap]);
+  return canvas.transferToImageBitmap();
 }
 
 async function createJpegBitmap(frame) {
@@ -210,14 +216,21 @@ function createImageData(frame) {
 
 "#;
 
+/// Consecutive frames the worker may fail to decode before it counts as
+/// broken. One bad frame is skipped; a worker that can decode nothing is
+/// replaced.
+const MAX_CONSECUTIVE_SKIPS: u32 = 3;
+
 pub(super) struct PreviewWorkerRuntime {
     worker: Worker,
     worker_url: String,
     failed: Rc<Cell<bool>>,
+    broken: Rc<Cell<bool>>,
     dispatch_state: Rc<RefCell<FrameDispatchState<SubmittedFrame>>>,
     in_flight: Rc<RefCell<Option<SubmittedFrame>>>,
     last_shape: Option<(u32, u32, CanvasPixelFormat)>,
     onmessage: WorkerMessageHandler,
+    _onerror: Closure<dyn FnMut(JsValue)>,
 }
 
 impl PreviewWorkerRuntime {
@@ -232,9 +245,12 @@ impl PreviewWorkerRuntime {
 
         let (worker, worker_url) = create_worker().map_err(|_| ())?;
         let failed = Rc::new(Cell::new(false));
+        let broken = Rc::new(Cell::new(false));
         let dispatch_state = Rc::new(RefCell::new(FrameDispatchState::<SubmittedFrame>::default()));
         let in_flight = Rc::new(RefCell::new(None::<SubmittedFrame>));
+        let consecutive_skips = Cell::new(0_u32);
         let failed_handle = Rc::clone(&failed);
+        let broken_handle = Rc::clone(&broken);
         let dispatch_state_handle = Rc::clone(&dispatch_state);
         let in_flight_handle = Rc::clone(&in_flight);
         let canvas_handle = canvas.clone();
@@ -243,12 +259,21 @@ impl PreviewWorkerRuntime {
 
         let onmessage = WorkerMessageHandler::attach(&worker, move |event| {
             let shown = in_flight_handle.borrow_mut().take();
-            if !present_bitmap(&canvas_handle, &bitmap_ctx_handle, &event) {
+            if event.data().is_null() {
+                consecutive_skips.set(consecutive_skips.get() + 1);
+                if consecutive_skips.get() >= MAX_CONSECUTIVE_SKIPS {
+                    failed_handle.set(true);
+                    broken_handle.set(true);
+                    return;
+                }
+            } else if present_bitmap(&canvas_handle, &bitmap_ctx_handle, &event) {
+                consecutive_skips.set(0);
+                if let Some(shown) = shown {
+                    shown.report(presented.as_ref());
+                }
+            } else {
                 failed_handle.set(true);
                 return;
-            }
-            if let Some(shown) = shown {
-                shown.report(presented.as_ref());
             }
 
             let next_frame = dispatch_state_handle.borrow_mut().next_after_present();
@@ -261,15 +286,33 @@ impl PreviewWorkerRuntime {
             }
         });
 
+        // A worker whose script fails to load or throws reports only through
+        // this event; without it the page would wait on its reply forever.
+        let failed_on_error = Rc::clone(&failed);
+        let broken_on_error = Rc::clone(&broken);
+        let onerror = Closure::<dyn FnMut(JsValue)>::new(move |_| {
+            failed_on_error.set(true);
+            broken_on_error.set(true);
+        });
+        worker.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+
         Ok(Self {
             worker,
             worker_url,
             failed,
+            broken,
             dispatch_state,
             in_flight,
             last_shape: None,
             onmessage,
+            _onerror: onerror,
         })
+    }
+
+    /// The worker failed on its own rather than on a frame shape change, so
+    /// recreating it would fail the same way.
+    pub(super) fn is_broken(&self) -> bool {
+        self.broken.get()
     }
 
     pub(super) fn render(&mut self, submitted: SubmittedFrame) -> PreviewRenderOutcome {
@@ -279,7 +322,10 @@ impl PreviewWorkerRuntime {
 
         let frame = &submitted.frame;
         let next_shape = (frame.width, frame.height, frame.pixel_format());
-        if self.last_shape.is_some_and(|shape| shape != next_shape) {
+        if self
+            .last_shape
+            .is_some_and(|shape| shape_change_needs_new_worker(shape, next_shape))
+        {
             self.failed.set(true);
             return PreviewRenderOutcome::Reinitialize;
         }
@@ -304,6 +350,15 @@ impl PreviewWorkerRuntime {
     }
 }
 
+/// Every JPEG decodes on its own and presents at the bitmap's size, so only
+/// a format change, or a raw frame changing size, needs a fresh worker.
+fn shape_change_needs_new_worker(
+    previous: (u32, u32, CanvasPixelFormat),
+    next: (u32, u32, CanvasPixelFormat),
+) -> bool {
+    previous.2 != next.2 || (next.2 != CanvasPixelFormat::Jpeg && previous != next)
+}
+
 fn probe_worker_canvas_support() -> Result<(), ()> {
     if supports_offscreen_canvas_2d_bitmap() {
         Ok(())
@@ -326,6 +381,7 @@ fn probe_worker_support(format: CanvasPixelFormat) -> Result<(), ()> {
 impl Drop for PreviewWorkerRuntime {
     fn drop(&mut self) {
         self.onmessage.detach_from(&self.worker);
+        self.worker.set_onerror(None);
         self.worker.terminate();
         revoke_blob_url(&self.worker_url);
     }
@@ -363,7 +419,34 @@ fn present_bitmap(
 
 #[cfg(test)]
 mod tests {
-    use super::{DispatchDecision, FrameDispatchState};
+    use super::{DispatchDecision, FrameDispatchState, shape_change_needs_new_worker};
+    use crate::ws::CanvasPixelFormat;
+
+    #[test]
+    fn jpeg_size_changes_keep_the_worker() {
+        let jpeg = |width, height| (width, height, CanvasPixelFormat::Jpeg);
+        let rgba = |width, height| (width, height, CanvasPixelFormat::Rgba);
+        assert!(!shape_change_needs_new_worker(
+            jpeg(320, 240),
+            jpeg(480, 360)
+        ));
+        assert!(!shape_change_needs_new_worker(
+            jpeg(480, 360),
+            jpeg(480, 360)
+        ));
+        assert!(shape_change_needs_new_worker(
+            jpeg(480, 360),
+            rgba(480, 360)
+        ));
+        assert!(shape_change_needs_new_worker(
+            rgba(320, 240),
+            rgba(480, 360)
+        ));
+        assert!(!shape_change_needs_new_worker(
+            rgba(320, 240),
+            rgba(320, 240)
+        ));
+    }
 
     #[test]
     fn dispatch_state_coalesces_frames_while_one_is_in_flight() {
