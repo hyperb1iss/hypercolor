@@ -185,26 +185,26 @@ impl UsbFramePayload {
         self.acknowledge(DeviceDeliveryAck::rejected(id, error));
     }
 
-    fn mark_transport_started(&self) -> bool {
-        let Some(id) = self.delivery_id else {
-            return true;
-        };
-        if self
-            .delivery_state
-            .compare_exchange(
-                DELIVERY_PENDING,
-                DELIVERY_STARTED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return false;
-        }
-        if let Some(observer) = &self.delivery_observer {
+    /// Claim this frame for the actor: it is encoded at most once, and a
+    /// disconnect no longer rejects it. Transport I/O is announced apart,
+    /// since the protocol may hold the frame and write nothing.
+    fn claim(&self) -> bool {
+        self.delivery_id.is_none()
+            || self
+                .delivery_state
+                .compare_exchange(
+                    DELIVERY_PENDING,
+                    DELIVERY_STARTED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+    }
+
+    fn announce_transport_started(&self) {
+        if let (Some(id), Some(observer)) = (self.delivery_id, &self.delivery_observer) {
             observer.transport_started(id);
         }
-        true
     }
 }
 
