@@ -121,6 +121,10 @@ wmi = "=0.18.4"
 # Servo's memory-report API exposes this callback type without reexporting it.
 base = { package = "servo-base", version = "0.6.0" }
 servo = { version = "0.6.0", default-features = false }
+# servo-allocator 0.6 made jemalloc opt-in (use-jemalloc). Core's servo
+# feature enables it on non-Windows targets so the daemon keeps jemalloc
+# as its global allocator; the exact pin matches Servo's own pins.
+servo-allocator = "=0.6.0"
 surfman = "0.13"
 
 # Crypto / auth
