@@ -997,9 +997,9 @@ Every 10 s the protocol logs `L-Wireless RGB delivery` at info with the
 offered, sent, and delivered frame rates, coalesced frames, each cluster's
 window, echoes per second, the mean and largest number of frames one echo
 retired (`advance_mean`, `advance_max`: above one means the echoed tag
-jumped several sends between polls, so the fans take frames faster than
-their status refreshes; that the sends in between also landed is the
-in-order inference, not something the record shows), the status interval
+jumped several sends between polls; the sends in between are retired
+under the in-order relay assumption, and whether each was displayed is
+unknown), the status interval
 (`echo_gap_ms`), the
 confirmed send's age (`echo_ms_mean`, `echo_ms_max`), the most sends found
 overdue, window halvings, timeouts, resends, restores, late echoes, drifts,
