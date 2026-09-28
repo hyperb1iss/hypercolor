@@ -61,8 +61,9 @@ struct Slice {
     delivered: u64,
     /// The most envelopes the TX held.
     queue: usize,
-    /// Mean age of the confirmed send at its echo: how long a frame waited
-    /// in the TX and on the air, plus the status wait.
+    /// Mean age of the confirmed sends at their echoes, pooled over the
+    /// slice: TX wait, air, and status wait together. A mean, so it bounds
+    /// the typical wait, not every frame's.
     echo_age: Duration,
     /// Transfers each cluster took.
     taken: Vec<usize>,
@@ -291,7 +292,7 @@ fn the_window_follows_capacity_changes_over_a_long_stream() {
         );
         assert!(
             slice.echo_age <= Duration::from_millis(500),
-            "a frame waits well under a second from send to echo: {slow:?}"
+            "the mean echo age stays under half a second: {slow:?}"
         );
     }
     let early = slow[1..4]
@@ -797,7 +798,7 @@ fn two_clusters_share_a_slow_radio_with_a_bounded_backlog() {
         );
         assert!(
             slice.echo_age <= Duration::from_secs(1),
-            "a frame waits under a second from send to echo: {minute:?}"
+            "the mean echo age stays under a second: {minute:?}"
         );
         assert!(
             slice
@@ -805,6 +806,13 @@ fn two_clusters_share_a_slow_radio_with_a_bounded_backlog() {
                 .iter()
                 .all(|taken| u64::try_from(*taken).expect("count") * 100 >= capacity * 25),
             "each cluster gets at least a quarter of the radio in every slice: {minute:?}"
+        );
+    }
+    for cluster in &rig.radio.clusters {
+        assert!(
+            cluster.applied_log.len() > 300,
+            "each cluster takes over 300 transfers in the minute: {}",
+            cluster.applied_log.len()
         );
     }
     let early = minute[1..6]
