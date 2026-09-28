@@ -136,6 +136,9 @@ struct WirelessState {
     latest_colors: Option<Vec<[u8; 3]>>,
     /// Acknowledgement-paced RGB delivery for the driven clusters.
     pacer: DeliveryPacer,
+    /// Bytes of the last encoded frame held back for clusters whose window
+    /// was closed.
+    deferred_frame_bytes: usize,
 }
 
 impl WirelessState {
@@ -852,6 +855,14 @@ impl Protocol for WirelessControllerProtocol {
         let frame_number = self.frames_encoded.fetch_add(1, Ordering::Relaxed);
         Self::pace_rgb(state, now, Some(frame_number), &mut buffer);
         buffer.finish();
+        state.deferred_frame_bytes = state
+            .table
+            .clusters
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| state.pacer.held(*index))
+            .map(|(_, cluster)| usize::try_from(cluster.led_count()).unwrap_or(0) * 3)
+            .sum();
         state.pacer.note_tx_packets(Self::tx_packets(commands));
     }
 
@@ -882,6 +893,15 @@ impl Protocol for WirelessControllerProtocol {
 
     fn frame_pump_interval(&self) -> Option<Duration> {
         Some(PUMP_INTERVAL)
+    }
+
+    /// The pixels of clusters whose window was closed when the last frame
+    /// arrived: the pump sends them once the transfer ahead is confirmed.
+    fn deferred_frame_bytes(&self) -> usize {
+        self.state
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .deferred_frame_bytes
     }
 
     /// The pacer's tick. A verdict on fans that stopped confirming comes

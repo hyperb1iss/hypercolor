@@ -99,6 +99,16 @@ pub trait Protocol: Send + Sync {
         commands.clear();
     }
 
+    /// Bytes of the frame most recently encoded that the protocol holds
+    /// back for later delivery instead of writing now.
+    ///
+    /// A flow-controlled protocol that writes some of a frame's zones and
+    /// defers the rest reports the deferred share here, so the frame's
+    /// delivery acknowledgement counts only the bytes actually written.
+    fn deferred_frame_bytes(&self) -> usize {
+        0
+    }
+
     /// Parse a raw device response payload.
     ///
     /// # Errors

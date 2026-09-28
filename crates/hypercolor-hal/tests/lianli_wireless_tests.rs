@@ -689,6 +689,39 @@ fn upkeep_waits_for_a_transfer_still_out_instead_of_stacking_a_restore() {
     );
 }
 
+/// A frame that finds one cluster's window closed is written for the
+/// others only, and the held share is reported as deferred so its delivery
+/// acknowledgement counts only what was written.
+#[test]
+fn a_frame_held_for_one_cluster_reports_that_clusters_pixels_deferred() {
+    let protocol = discovered_protocol();
+    let first = protocol.encode_frame(&[[1, 1, 1]; 5 * 26]);
+    assert_eq!(protocol.deferred_frame_bytes(), 0, "both windows were open");
+
+    // Only the first cluster confirms.
+    let tags = header_tags(&first);
+    let mut confirmed = record([0x11; 6], 0x00, 3, 28);
+    confirmed[20..24].copy_from_slice(&tags[0].1);
+    protocol
+        .parse_response(&table_with(&[confirmed, record([0x22; 6], 0x00, 2, 27)]))
+        .expect("table parses");
+
+    let second = protocol.encode_frame(&[[2, 2, 2]; 5 * 26]);
+    assert_eq!(
+        header_tags(&second)
+            .iter()
+            .map(|(target, _)| *target)
+            .collect::<Vec<_>>(),
+        vec![[0x11; 6]],
+        "only the confirmed cluster gets the new frame now"
+    );
+    assert_eq!(
+        protocol.deferred_frame_bytes(),
+        2 * 26 * 3,
+        "the second cluster's two fans wait for its echo"
+    );
+}
+
 /// The render path returns to the frame the fans last confirmed while a
 /// transfer of other pixels is still out. That transfer will land after
 /// the confirmation, so the confirmed frame is owed again: at shutdown it

@@ -2553,6 +2553,99 @@ impl Protocol for FairnessProtocol {
     }
 }
 
+/// Writes one command per frame and reports part of each frame deferred,
+/// as a flow-controlled protocol does when some zones must wait.
+struct PartlyDeferringProtocol;
+
+impl Protocol for PartlyDeferringProtocol {
+    fn name(&self) -> &'static str {
+        "partly-deferring-test"
+    }
+
+    fn init_sequence(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        vec![test_command(colors.first().map_or(0x11, |color| color[0]))]
+    }
+
+    fn deferred_frame_bytes(&self) -> usize {
+        12
+    }
+
+    fn parse_response(&self, _data: &[u8]) -> std::result::Result<ProtocolResponse, ProtocolError> {
+        Ok(ProtocolResponse {
+            status: ResponseStatus::Ok,
+            data: Vec::new(),
+        })
+    }
+
+    fn zones(&self) -> Vec<SegmentInfo> {
+        Vec::new()
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities::default()
+    }
+
+    fn total_leds(&self) -> u32 {
+        10
+    }
+
+    fn frame_interval(&self) -> Duration {
+        Duration::from_millis(16)
+    }
+}
+
+/// A frame the protocol writes only part of is acknowledged with the bytes
+/// actually written, not the whole payload.
+#[tokio::test]
+async fn a_partly_deferred_frame_is_acknowledged_with_the_bytes_written() {
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let transport: Arc<dyn Transport> = Arc::new(RecordingTransport::default());
+    let protocol: Arc<dyn Protocol> = Arc::new(PartlyDeferringProtocol);
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "partly-deferring-test-device",
+        protocol,
+        transport,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    let id = DeviceDeliveryId {
+        queue_generation: 11,
+        sequence: 1,
+    };
+    let (frame, ack) = UsbFramePayload::tracked(id, Arc::new(vec![[1, 2, 3]; 10]));
+    frame_tx.send_replace(Some(Arc::new(frame)));
+    let ack = timeout(Duration::from_secs(1), ack)
+        .await
+        .expect("the frame is acknowledged")
+        .expect("acknowledgement channel stays open");
+    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+    assert_eq!(
+        ack.completed_payload_bytes,
+        10 * 3 - 12,
+        "the deferred share is not counted as written"
+    );
+
+    drop(frame_tx);
+    let result = timeout(Duration::from_secs(1), actor)
+        .await
+        .expect("the actor stops once its frame source is gone")
+        .expect("actor task joins");
+    assert!(result.is_ok(), "{result:?}");
+}
+
 struct ParallelFairnessProtocol;
 
 impl Protocol for ParallelFairnessProtocol {
