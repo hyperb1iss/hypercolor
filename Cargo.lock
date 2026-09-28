@@ -802,7 +802,7 @@ dependencies = [
  "sha1 0.10.7",
  "sync_wrapper",
  "tokio",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.29.0",
  "tower",
  "tower-layer",
  "tower-service",
@@ -4673,7 +4673,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "tokio",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.30.0",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -4709,7 +4709,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tokio",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.30.0",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
@@ -5380,7 +5380,7 @@ dependencies = [
  "tachyonfx",
  "tempfile",
  "tokio",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.30.0",
  "tokio-util",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
@@ -14073,11 +14073,23 @@ checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
 dependencies = [
  "futures-util",
  "log",
+ "tokio",
+ "tungstenite 0.29.0",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
+dependencies = [
+ "futures-util",
+ "log",
  "rustls",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
- "tungstenite 0.29.0",
+ "tungstenite 0.30.0",
  "webpki-roots 0.26.11",
 ]
 
@@ -14415,8 +14427,6 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
- "rustls",
- "rustls-pki-types",
  "sha1 0.10.7",
  "thiserror 2.0.21",
 ]
