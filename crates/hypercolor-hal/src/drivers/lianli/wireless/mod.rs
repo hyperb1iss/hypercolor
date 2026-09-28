@@ -13,10 +13,10 @@
 //! broadcasts the 1 Hz clock the fan firmware expects.
 //!
 //! RGB is paced on the fans' acknowledgements ([`pacing`]): a cluster gets a
-//! new frame only once its record echoes the last one. The keepalive tick is
-//! the pacer's clock: it runs every few milliseconds, polls the table for
-//! echoes while a transfer is out, releases the newest held frame the moment
-//! its predecessor is confirmed, and runs the 1 Hz upkeep when it is due.
+//! new frame only once its record echoes the last one. The frame pump is the
+//! pacer's clock: every few milliseconds it polls the table for echoes while
+//! a transfer is out and releases the newest held frame the moment its
+//! predecessor is confirmed. The 1 Hz keepalive stays the upkeep.
 //!
 //! The transport watches both halves: a write that stalls marks that half
 //! wedged in [`health`], resets it through its partner the way L-Connect
@@ -57,7 +57,7 @@ use frame::{
     clock_sync_envelope, control_packet, effect_index_for, get_dev_poll, get_mac_query,
     pwm_envelope, reverse_fan_order, rgb_transfer, save_config_envelope, stream_prep_packet,
 };
-use pacing::{DeliveryPacer, DeliveryStats, SendKind, Tag};
+use pacing::{DeliveryPacer, DeliveryStats, SendKind, StallVerdict, Tag};
 
 /// Reads at init, where the RX answers a two-page poll in about 30 ms and
 /// the TX its status in about 1 ms; generous for a cold radio.
@@ -74,9 +74,9 @@ const GET_DEV_PAGES: u8 = 2;
 /// Upkeep cadence: fans drift to firmware defaults when PWM traffic stops,
 /// and miss the clock into an autonomous fallback.
 const UPKEEP_INTERVAL: Duration = Duration::from_secs(1);
-/// The keepalive tick: the pacer's clock. Short enough that an echo poll
-/// and the release of a held frame follow a confirmation closely; a tick
-/// with nothing due sends nothing.
+/// The frame pump: the pacer's clock. Short enough that an echo poll and the
+/// release of a held frame follow a confirmation closely; a tick with
+/// nothing due sends nothing.
 const PUMP_INTERVAL: Duration = Duration::from_millis(5);
 /// Frame cadence the render path is asked for: the most a cluster can be
 /// offered. What it is sent is whatever its echoes confirm, up to this.
@@ -136,7 +136,6 @@ struct WirelessState {
     latest_colors: Option<Vec<[u8; 3]>>,
     /// Acknowledgement-paced RGB delivery for the driven clusters.
     pacer: DeliveryPacer,
-    last_upkeep_at: Option<Instant>,
 }
 
 impl WirelessState {
@@ -611,9 +610,10 @@ impl WirelessControllerProtocol {
                 continue;
             };
             let raw = Self::cluster_raw(cluster, colors, start);
-            let tag = effect_index_for(&raw);
-            Self::push_transfer(master, cluster, &raw, tag, frame_number, buffer);
-            state.pacer.note_sent(index, tag, kind, now);
+            let wire = state
+                .pacer
+                .note_sent(index, effect_index_for(&raw), kind, now);
+            Self::push_transfer(master, cluster, &raw, wire, frame_number, buffer);
         }
     }
 
@@ -632,9 +632,10 @@ impl WirelessControllerProtocol {
                 continue;
             }
             let raw = Self::cluster_raw(cluster, colors, start);
-            let tag = effect_index_for(&raw);
-            Self::push_transfer(master, cluster, &raw, tag, None, buffer);
-            state.pacer.note_sent(index, tag, SendKind::Frame, now);
+            let wire = state
+                .pacer
+                .note_sent(index, effect_index_for(&raw), SendKind::Frame, now);
+            Self::push_transfer(master, cluster, &raw, wire, None, buffer);
         }
     }
 
@@ -766,7 +767,7 @@ impl Protocol for WirelessControllerProtocol {
         let mut guard = self.state.write().unwrap_or_else(PoisonError::into_inner);
         let state = &mut *guard;
         let mut commands = Vec::new();
-        if state.pacer.reset_requested() {
+        if state.pacer.silenced() {
             return commands;
         }
         let mut buffer = CommandBuffer::new(&mut commands);
@@ -845,14 +846,11 @@ impl Protocol for WirelessControllerProtocol {
     fn keepalive(&self) -> Option<ProtocolKeepalive> {
         Some(ProtocolKeepalive {
             commands: Vec::new(),
-            interval: PUMP_INTERVAL,
+            interval: UPKEEP_INTERVAL,
         })
     }
 
-    /// The pacer's tick. In order: a verdict on fans that stopped
-    /// confirming (the TX reset, and nothing else), the 1 Hz upkeep when it
-    /// is due, otherwise whatever the window now allows followed by an echo
-    /// poll when one is due. A tick with nothing due returns nothing.
+    /// The 1 Hz upkeep (see `upkeep`).
     fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
         let now = (self.clock)();
         let mut guard = self.state.write().unwrap_or_else(PoisonError::into_inner);
@@ -860,41 +858,65 @@ impl Protocol for WirelessControllerProtocol {
         state.topology_frozen = true;
         state.pacer.fit_clusters(state.table.clusters.len());
         let mut commands = Vec::new();
+        // After asking for the TX reset the session is over; the transport
+        // ends it, and nothing more is written to a TX being reset.
         if state.pacer.reset_requested() {
             return commands;
         }
-        if let Some(verdict) = state.pacer.stall_verdict(now) {
-            warn!(
-                cluster = verdict.cluster,
-                unconfirmed_ms =
-                    u64::try_from(verdict.unconfirmed_for.as_millis()).unwrap_or(u64::MAX),
-                resends = verdict.resends,
-                "L-Wireless fans are heard but confirmed no frame across every resend; the TX stopped delivering, resetting it through the RX"
-            );
-            commands.push(Self::tx_reset_command());
-            return commands;
+        Self::upkeep(state, now, &mut commands);
+        state.pacer.note_tx_packets(Self::tx_packets(&commands));
+        commands
+    }
+
+    fn frame_pump_interval(&self) -> Option<Duration> {
+        Some(PUMP_INTERVAL)
+    }
+
+    /// The pacer's tick. A verdict on fans that stopped confirming comes
+    /// first: the TX reset and nothing else, or nothing at all once the
+    /// lighting is held. Otherwise whatever the window allows now, then an
+    /// echo poll when one is due. A tick with nothing due leaves `commands`
+    /// empty.
+    fn pump_frame_into(&self, commands: &mut Vec<ProtocolCommand>) {
+        commands.clear();
+        let now = (self.clock)();
+        let mut guard = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let state = &mut *guard;
+        if !state.topology_frozen || state.pacer.silenced() {
+            return;
+        }
+        state.pacer.fit_clusters(state.table.clusters.len());
+        match state.pacer.stall_verdict(now) {
+            Some(StallVerdict::Reset {
+                cluster,
+                unconfirmed_for,
+                resends,
+                resets,
+            }) => {
+                warn!(
+                    cluster,
+                    unconfirmed_ms = u64::try_from(unconfirmed_for.as_millis()).unwrap_or(u64::MAX),
+                    resends,
+                    resets,
+                    "L-Wireless fans are heard but confirmed no frame across every resend; the TX stopped delivering, resetting it through the RX"
+                );
+                commands.push(Self::tx_reset_command());
+                return;
+            }
+            Some(StallVerdict::Hold { .. }) => return,
+            None => {}
         }
         state.pacer.note_absences(now);
 
-        let upkeep_due = state
-            .last_upkeep_at
-            .is_none_or(|at| now.saturating_duration_since(at) >= UPKEEP_INTERVAL);
-        if upkeep_due {
-            state.last_upkeep_at = Some(now);
-            Self::upkeep(state, now, &mut commands);
-        } else {
-            let mut buffer = CommandBuffer::new(&mut commands);
-            Self::pace_rgb(state, now, false, None, &mut buffer);
-            buffer.finish();
-            if state.pacer.poll_due(now) {
-                commands.push(Self::echo_poll_command(state.table.pages()));
-                state.pacer.note_poll(now);
-            }
+        let mut buffer = CommandBuffer::new(commands);
+        Self::pace_rgb(state, now, false, None, &mut buffer);
+        buffer.finish();
+        if state.pacer.poll_due(now) {
+            commands.push(Self::echo_poll_command(state.table.pages()));
+            state.pacer.note_poll(now);
         }
-
-        state.pacer.note_tx_packets(Self::tx_packets(&commands));
+        state.pacer.note_tx_packets(Self::tx_packets(commands));
         state.pacer.report_if_due(now);
-        commands
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
@@ -907,10 +929,9 @@ impl Protocol for WirelessControllerProtocol {
         match echo {
             USB_CMD_GET_MAC => {
                 if let Some(master) = parse_master_reply(data) {
-                    self.state
-                        .write()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .master = Some(master);
+                    let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+                    state.master = Some(master);
+                    state.pacer.bind_master(master.mac);
                 }
             }
             USB_CMD_SEND_RF => {

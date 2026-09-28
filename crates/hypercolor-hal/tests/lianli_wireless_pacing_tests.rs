@@ -12,10 +12,9 @@ mod fake;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use fake::{FRAME_PERIOD, FakeRadio, LEDS, Rig, moving_frame};
-use hypercolor_hal::drivers::lianli::wireless::frame::effect_index_for;
+use fake::{FRAME_PERIOD, FakeRadio, LEDS, Rig, content_of, moving_frame};
 use hypercolor_hal::drivers::lianli::wireless::pacing::{
-    ECHO_RESEND_CAP, ECHO_STALL, STALL_MIN_RESENDS,
+    ECHO_STALL, MAX_RESETS_WITHOUT_DELIVERY, STALL_MIN_RESENDS, resets_without_delivery,
 };
 use hypercolor_hal::protocol::{Protocol, TransferType};
 
@@ -34,12 +33,13 @@ fn slow_radio() -> FakeRadio {
     radio
 }
 
+/// Pixel hash of frame `frame` of the moving scene.
 fn tag_of(frame: u64) -> [u8; 4] {
-    let raw: Vec<u8> = moving_frame(frame).into_iter().flatten().collect();
-    effect_index_for(&raw)
+    content_of(&moving_frame(frame))
 }
 
-/// Distinct consecutive tags the first fan cluster took.
+/// Distinct frames the first fan cluster took, a frame taken again right
+/// after itself (a restore, a resend that also landed) counted once.
 fn distinct_applied(rig: &Rig) -> usize {
     let log = &rig.radio.clusters[0].applied_log;
     log.iter()
@@ -106,8 +106,8 @@ fn a_held_frame_goes_out_as_soon_as_the_transfer_ahead_is_confirmed() {
     rig.run_for(Duration::from_secs(3));
 
     assert_eq!(
-        rig.radio.clusters[0].applied,
-        tag_of(40),
+        rig.radio.clusters[0].showing(),
+        Some(tag_of(40)),
         "the newest frame reaches the fans with no later frame to carry it"
     );
 }
@@ -119,9 +119,9 @@ fn every_transfer_carries_the_newest_frame_the_protocol_has() {
 
     let tags: HashMap<[u8; 4], u64> = (0..200).map(|frame| (tag_of(frame), frame)).collect();
     let mut previous = None;
-    for (at, tag) in &rig.radio.tx_rgb_headers {
+    for (at, _, content) in &rig.radio.tx_transfers {
         let frame = *tags
-            .get(tag)
+            .get(content)
             .expect("every transfer carries a published frame");
         let newest = rig
             .taken_log
@@ -155,9 +155,9 @@ fn every_transfer_carries_the_newest_frame_the_protocol_has() {
 #[test]
 fn a_slow_report_cadence_stretches_the_wait_instead_of_resending_every_frame() {
     let mut radio = FakeRadio::one_cluster();
-    // The fans report a quarter second apart, so the first echo lands after
-    // the initial bounded wait has run out.
-    radio.report_interval = Duration::from_millis(250);
+    // The fans report 400 ms apart, so the first echo can land after the
+    // initial bounded wait has run out.
+    radio.report_interval = Duration::from_millis(400);
     let mut rig = Rig::connect(radio);
     rig.run_for(Duration::from_secs(5));
     let early = rig.stats();
@@ -165,16 +165,16 @@ fn a_slow_report_cadence_stretches_the_wait_instead_of_resending_every_frame() {
     let stats = rig.stats();
 
     assert!(
-        early.resends >= 1,
-        "the first wait is shorter than this radio's echo: {early:?}"
+        early.resends <= 1,
+        "at most the first transfer is bet on before the echo time is known: {early:?}"
     );
     assert!(
         stats.resends - early.resends <= 1,
         "once the echo time is learned the wait covers it: {early:?} then {stats:?}"
     );
     assert!(
-        stats.frames_delivered >= 30,
-        "about four frames a second get through: {stats:?}"
+        stats.frames_delivered >= 20,
+        "the two or three frames a second the reports allow get through: {stats:?}"
     );
     assert!(rig.radio.resets.is_empty(), "a slow radio is not a wedge");
     assert!(
@@ -187,10 +187,10 @@ fn a_slow_report_cadence_stretches_the_wait_instead_of_resending_every_frame() {
 #[test]
 fn a_late_echo_counts_as_delivered_and_resyncs_the_wait() {
     let mut radio = FakeRadio::one_cluster();
-    // Each transfer shows in the table 200 ms after the fans take it: past
+    // Each transfer shows in the table 350 ms after the fans take it: past
     // the first bounded wait, so the first transfer's echo arrives after it
     // was superseded by a resend carrying a newer frame.
-    radio.report_delay = Duration::from_millis(200);
+    radio.report_delay = Duration::from_millis(350);
     let mut rig = Rig::connect(radio);
     rig.run_for(Duration::from_secs(3));
     let early = rig.stats();
@@ -211,7 +211,7 @@ fn a_late_echo_counts_as_delivered_and_resyncs_the_wait() {
     );
     let mean = stats.echo_mean().expect("echo samples");
     assert!(
-        mean >= Duration::from_millis(200),
+        mean >= Duration::from_millis(350),
         "the learned echo time is the radio's: {mean:?}"
     );
     assert!(rig.radio.resets.is_empty(), "a late radio is not a wedge");
@@ -247,7 +247,7 @@ fn fans_that_stop_confirming_end_in_one_tx_reset_not_endless_resends() {
         after + FRAME_PERIOD >= ECHO_STALL && after <= ECHO_STALL + Duration::from_secs(3),
         "the reset follows the stall bound, not a hair trigger: {after:?}"
     );
-    let transfers = rig.headers_since(failed_at);
+    let transfers = rig.transfers_since(failed_at);
     assert!(
         transfers <= 1 + usize::try_from(STALL_MIN_RESENDS).expect("small") + 3,
         "a dead radio gets a bounded number of resends, not a stream: {transfers}"
@@ -258,25 +258,98 @@ fn fans_that_stop_confirming_end_in_one_tx_reset_not_endless_resends() {
     );
 }
 
+/// Firmware whose echo never tracks live frames, or a TX a reset does not
+/// revive, must not turn into a reset loop across reconnects: each
+/// controller gets a small reset budget until its fans confirm a frame
+/// again, and past it a session holds its lighting.
 #[test]
-fn a_session_that_never_confirmed_probes_slowly_instead_of_resetting() {
+fn a_tx_that_never_delivers_spends_a_bounded_reset_budget_then_holds() {
+    let dead = || {
+        let mut radio = FakeRadio::one_cluster();
+        radio.rf_dead = true;
+        radio
+    };
+    let first = dead();
+    let master = first.master;
+    let mut sessions = vec![first];
+    for _ in 1..=MAX_RESETS_WITHOUT_DELIVERY {
+        let mut radio = dead();
+        radio.master = master;
+        sessions.push(radio);
+    }
+
+    let mut resets = 0;
+    for (session, radio) in sessions.into_iter().enumerate() {
+        let mut rig = Rig::connect(radio);
+        rig.run_for(ECHO_STALL + Duration::from_secs(5));
+        let settled = rig.now();
+        rig.run_for(Duration::from_secs(20));
+        resets += rig.radio.resets.len();
+        if session < usize::try_from(MAX_RESETS_WITHOUT_DELIVERY).expect("small") {
+            assert_eq!(
+                rig.radio.resets.len(),
+                1,
+                "session {session} resets the TX once"
+            );
+        } else {
+            assert!(
+                rig.radio.resets.is_empty(),
+                "the budget is spent, so the session holds instead"
+            );
+            assert_eq!(
+                rig.transfers_since(settled),
+                0,
+                "a held session sends no RGB at all, not a slow probe"
+            );
+        }
+        assert_eq!(rig.commands_after_reset, 0);
+    }
+    assert_eq!(
+        u32::try_from(resets).expect("small"),
+        MAX_RESETS_WITHOUT_DELIVERY
+    );
+    assert_eq!(resets_without_delivery(master), MAX_RESETS_WITHOUT_DELIVERY);
+
+    // A replugged controller whose fans confirm again gets its budget back.
     let mut radio = FakeRadio::one_cluster();
-    radio.rf_dead = true;
+    radio.master = master;
     let mut rig = Rig::connect(radio);
+    rig.run_for(Duration::from_secs(2));
+    assert!(rig.stats().frames_delivered > 0);
+    assert_eq!(resets_without_delivery(master), 0);
+}
+
+/// Nothing on the host tells a lost transfer from one still queued in the
+/// TX. A radio so slow that one transfer outlasts the first bounded wait
+/// gets one resend, whose late echo teaches the wait, and no more.
+#[test]
+fn a_transfer_slower_than_the_first_wait_costs_one_resend_not_a_pile() {
+    let mut radio = FakeRadio::one_cluster();
+    // 120 ms an envelope: a transfer takes 360 ms of air.
+    radio.air_time = Duration::from_millis(120);
+    let mut rig = Rig::connect(radio);
+    rig.run_for(Duration::from_secs(5));
+    let early = rig.stats();
     rig.run_for(Duration::from_secs(10));
-    let settled = rig.now();
-    rig.run_for(Duration::from_secs(20));
+    let stats = rig.stats();
 
     assert!(
-        rig.radio.resets.is_empty(),
-        "a TX that never delivered in this session is not reset again and again"
+        early.resends <= 2,
+        "a bet or two before the echo time is known: {early:?}"
     );
-    let probes = rig.headers_since(settled);
-    let cap = usize::try_from(Duration::from_secs(20).as_millis() / ECHO_RESEND_CAP.as_millis())
-        .expect("small");
+    assert_eq!(
+        stats.resends, early.resends,
+        "the learned wait covers the radio from then on: {stats:?}"
+    );
     assert!(
-        probes <= cap + 1,
-        "probes are spaced at the resend cap: {probes} in 20 s"
+        rig.radio.max_air_queue <= 2 * TRANSFER_ENVELOPES + UPKEEP_ENVELOPES,
+        "at most the transfer and one resend are ever queued: {}",
+        rig.radio.max_air_queue
+    );
+    assert!(rig.radio.resets.is_empty(), "a slow radio is not a wedge");
+    assert!(
+        stats.frames_delivered >= 20,
+        "the radio's two or so frames a second get through: {stats:?}"
     );
 }
 
@@ -295,11 +368,11 @@ fn fans_the_rx_cannot_hear_are_sent_nothing_and_resume_when_heard() {
         "unheard fans are not a TX wedge"
     );
     assert!(
-        rig.headers_since(silent_at) <= 8,
+        rig.transfers_since(silent_at) <= 8,
         "a few resends before the fans count as unheard"
     );
     assert_eq!(
-        rig.headers_since(held_at),
+        rig.transfers_since(held_at),
         0,
         "nothing goes to fans the RX cannot hear"
     );
@@ -308,7 +381,7 @@ fn fans_the_rx_cannot_hear_are_sent_nothing_and_resume_when_heard() {
     let heard_at = rig.now();
     rig.run_for(Duration::from_secs(2));
     assert!(
-        rig.headers_since(heard_at) > 20,
+        rig.transfers_since(heard_at) > 20,
         "streaming resumes once the fans answer"
     );
     let newest = rig.taken_log.last().expect("frames").1;
@@ -344,7 +417,7 @@ fn delivered_and_sent_counts_match_what_the_fans_took() {
         "a lossless radio delivers every frame sent but the one out now: {stats:?}"
     );
     assert_eq!(
-        rig.radio.tx_rgb_headers.len(),
+        rig.radio.tx_transfers.len(),
         usize::try_from(stats.frames_sent + stats.restores + stats.resends).expect("count"),
         "every transfer on the wire is a frame, a restore, or a resend"
     );
@@ -443,12 +516,17 @@ fn a_still_scene_costs_only_the_upkeep_the_fans_need() {
     // envelope; nothing else reaches the TX.
     let packets_per_second = (stats.tx_packets - before.tx_packets) / 10;
     assert_eq!(packets_per_second, 4 + 4 + TRANSFER_ENVELOPES as u64 * 4);
-    // Per second: the table poll, whose reply also settles the restore
-    // (the fans were already showing that frame).
+    // Per second: the table poll, and an echo poll or two until the
+    // restore's own echo comes back.
     let polls = rig.radio.rx_polls.len() - polls_before;
     assert!(
-        (9..=11).contains(&polls),
-        "one RX poll a second when still: {polls} in 10 s"
+        (10..=31).contains(&polls),
+        "a few RX polls a second when still: {polls} in 10 s"
+    );
+    assert_eq!(
+        stats.restores - before.restores,
+        10,
+        "one restore after each PWM upkeep"
     );
 }
 
@@ -457,8 +535,7 @@ fn shutdown_sends_the_final_frame_the_window_held() {
     let mut rig = Rig::connect(slow_radio());
     rig.run_for(Duration::from_secs(1));
     let black = vec![[0, 0, 0]; LEDS];
-    let raw: Vec<u8> = black.iter().flatten().copied().collect();
-    let black_tag = effect_index_for(&raw);
+    let black_tag = content_of(&black);
 
     // Two frames back to back: whichever window the first found, the
     // second is held behind a transfer that is still out.
@@ -469,11 +546,20 @@ fn shutdown_sends_the_final_frame_the_window_held() {
     assert!(commands.is_empty(), "the black frame is held");
 
     let shutdown = rig.protocol.shutdown_sequence();
+    assert!(!shutdown.is_empty(), "the held black frame is flushed");
     assert!(
         shutdown
             .iter()
-            .any(|command| command.data[18..22] == black_tag
-                && command.transfer_type == TransferType::Primary),
-        "the held black frame goes out at shutdown"
+            .all(|command| command.transfer_type == TransferType::Primary),
+        "shutdown only writes to the TX"
+    );
+    rig.execute(&shutdown);
+    rig.radio.air_time = Duration::ZERO;
+    let drained = rig.now() + Duration::from_secs(1);
+    rig.radio.advance_to(drained);
+    assert_eq!(
+        rig.radio.clusters[0].showing(),
+        Some(black_tag),
+        "black is the last frame the fans take"
     );
 }

@@ -24,6 +24,7 @@
 )]
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -32,14 +33,106 @@ use hypercolor_hal::drivers::lianli::wireless::discovery::{
     GET_DEV_PAGE_LEN, RECORD_LEN, RECORD_VALIDATION,
 };
 use hypercolor_hal::drivers::lianli::wireless::frame::{
-    RF_BROADCAST_SLOT, RF_ENVELOPE_LEN, RF_SELECT, RF_SLICE_LEN, RfSubCommand, USB_CMD_GET_MAC,
-    USB_CMD_RESET_PARTNER, USB_CMD_SEND_RF, USB_RF_HEADER_LEN,
+    RF_BROADCAST_SLOT, RF_ENVELOPE_LEN, RF_SELECT, RF_SLICE_LEN, RGB_CHUNK_LEN, RGB_DATA_OFFSET,
+    RfSubCommand, USB_CMD_GET_MAC, USB_CMD_RESET_PARTNER, USB_CMD_SEND_RF, USB_RF_HEADER_LEN,
+    effect_index_for,
 };
 use hypercolor_hal::drivers::lianli::wireless::pacing::DeliveryStats;
+use hypercolor_hal::drivers::lianli::wireless::tinyuz;
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseTolerance, TransferType};
 
-pub const MASTER_MAC: [u8; 6] = [0xA0, 0x71, 0xAE, 0x72, 0xAB, 0x3C];
 pub const CLUSTER_MAC: [u8; 6] = [0x11; 6];
+
+/// A controller MAC of its own for every rig: the protocol keeps its TX
+/// reset budget per controller for the whole process, and tests run in
+/// parallel.
+fn fresh_master_mac() -> [u8; 6] {
+    static NEXT: AtomicU8 = AtomicU8::new(1);
+    [
+        0xA0,
+        0x71,
+        0xAE,
+        0x72,
+        0xAB,
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    ]
+}
+
+/// The pixel hash of `colors`: what a transfer shows, whatever its tag.
+#[must_use]
+pub fn content_of(colors: &[[u8; 3]]) -> [u8; 4] {
+    let raw: Vec<u8> = colors.iter().flatten().copied().collect();
+    effect_index_for(&raw)
+}
+
+/// A transfer part way through arriving.
+#[derive(Debug, Clone)]
+struct PartialTransfer {
+    tag: [u8; 4],
+    envelopes: u8,
+    compressed_len: usize,
+    leds: usize,
+    /// Data chunks by envelope index; the header's slot stays empty.
+    chunks: Vec<Option<Vec<u8>>>,
+}
+
+/// Rebuilds an RGB transfer from its envelopes, as a receiver does.
+#[derive(Debug, Clone, Default)]
+struct TransferAssembler {
+    current: Option<PartialTransfer>,
+}
+
+impl TransferAssembler {
+    /// Take one RGB envelope; returns the tag and pixel hash of a transfer
+    /// it completes.
+    fn take(&mut self, envelope: &[u8; RF_ENVELOPE_LEN]) -> Option<([u8; 4], [u8; 4])> {
+        let mut tag = [0_u8; 4];
+        tag.copy_from_slice(&envelope[14..18]);
+        let index = envelope[18];
+        if index == 0 {
+            if self
+                .current
+                .as_ref()
+                .is_some_and(|current| current.tag == tag)
+            {
+                return None;
+            }
+            let compressed_len =
+                u32::from_be_bytes([envelope[20], envelope[21], envelope[22], envelope[23]]);
+            self.current = Some(PartialTransfer {
+                tag,
+                envelopes: envelope[19],
+                compressed_len: usize::try_from(compressed_len).expect("length"),
+                leds: usize::from(envelope[27]),
+                chunks: vec![None; usize::from(envelope[19])],
+            });
+            return None;
+        }
+        let current = self.current.as_mut()?;
+        if current.tag != tag || index >= current.envelopes {
+            return None;
+        }
+        current.chunks[usize::from(index)] =
+            Some(envelope[RGB_DATA_OFFSET..RGB_DATA_OFFSET + RGB_CHUNK_LEN].to_vec());
+        if !current.chunks.iter().skip(1).all(Option::is_some) {
+            return None;
+        }
+        let mut compressed: Vec<u8> = current
+            .chunks
+            .iter()
+            .skip(1)
+            .flatten()
+            .flatten()
+            .copied()
+            .collect();
+        compressed.truncate(current.compressed_len);
+        let raw = tinyuz::decompress(&compressed, current.leds * 3).expect("a transfer decodes");
+        let done = (current.tag, effect_index_for(&raw));
+        self.current = None;
+        Some(done)
+    }
+}
+
 /// Three TL fans: 78 LEDs, one data envelope per frame.
 pub const LEDS: usize = 78;
 pub const FRAME_PERIOD: Duration = Duration::from_millis(33);
@@ -100,7 +193,7 @@ pub struct FakeCluster {
     pub rx_type: u8,
     /// Tag of the transfer the receiver last took.
     pub applied: [u8; 4],
-    /// Every tag it took, in order.
+    /// Pixel hash of every transfer it took, in order.
     pub applied_log: Vec<[u8; 4]>,
     /// What the RX last heard from it: echoed tag and clock.
     pub reported: [u8; 4],
@@ -108,8 +201,7 @@ pub struct FakeCluster {
     next_report_at: Duration,
     /// Tags taken, with when the RX can first report each.
     reportable: VecDeque<(Duration, [u8; 4])>,
-    /// Transfer being assembled: tag, envelopes expected, data seen.
-    assembling: Option<([u8; 4], u8, Vec<bool>)>,
+    assembler: TransferAssembler,
 }
 
 impl FakeCluster {
@@ -123,8 +215,14 @@ impl FakeCluster {
             clock: 1,
             next_report_at: Duration::ZERO,
             reportable: VecDeque::new(),
-            assembling: None,
+            assembler: TransferAssembler::default(),
         }
+    }
+
+    /// Pixel hash of what the fans show now.
+    #[must_use]
+    pub fn showing(&self) -> Option<[u8; 4]> {
+        self.applied_log.last().copied()
     }
 
     fn report(&mut self, now: Duration) {
@@ -139,33 +237,10 @@ impl FakeCluster {
     }
 
     fn take_rgb(&mut self, envelope: &[u8; RF_ENVELOPE_LEN], now: Duration, delay: Duration) {
-        let mut tag = [0_u8; 4];
-        tag.copy_from_slice(&envelope[14..18]);
-        let index = envelope[18];
-        let total = envelope[19];
-        if index == 0 {
-            if self
-                .assembling
-                .as_ref()
-                .is_some_and(|(current, _, _)| *current == tag)
-            {
-                return;
-            }
-            self.assembling = Some((tag, total, vec![false; usize::from(total)]));
-            return;
-        }
-        let Some((current, expected, seen)) = self.assembling.as_mut() else {
-            return;
-        };
-        if *current != tag || index >= *expected {
-            return;
-        }
-        seen[usize::from(index)] = true;
-        if seen.iter().skip(1).all(|chunk| *chunk) {
+        if let Some((tag, content)) = self.assembler.take(envelope) {
             self.applied = tag;
-            self.applied_log.push(tag);
+            self.applied_log.push(content);
             self.reportable.push_back((now + delay, tag));
-            self.assembling = None;
         }
     }
 }
@@ -179,6 +254,7 @@ struct AirEnvelope {
 
 /// The TX, the air, the fan receivers, and the RX.
 pub struct FakeRadio {
+    pub master: [u8; 6],
     pub clusters: Vec<FakeCluster>,
     /// Time one envelope occupies the air.
     pub air_time: Duration,
@@ -197,13 +273,14 @@ pub struct FakeRadio {
     air_free_at: Duration,
     slices: Vec<Option<[u8; RF_ENVELOPE_LEN]>>,
     slice_filled: [bool; 4],
-    /// Tag of the header envelope just queued, to count a repeated header
-    /// as one transfer.
-    last_header: Option<[u8; 4]>,
+    /// Rebuilds each transfer the TX queues, to log what it carries.
+    tx_assembler: TransferAssembler,
     rgb_envelopes: u64,
     pub max_air_queue: usize,
     pub tx_packets: u64,
-    pub tx_rgb_headers: Vec<(Duration, [u8; 4])>,
+    /// Every RGB transfer the TX took: when its last envelope was queued,
+    /// its tag, and its pixel hash.
+    pub tx_transfers: Vec<(Duration, [u8; 4], [u8; 4])>,
     pub rx_polls: Vec<(Duration, u8)>,
     pub resets: Vec<Duration>,
 }
@@ -218,6 +295,7 @@ impl FakeRadio {
     #[must_use]
     pub fn with_clusters(clusters: Vec<FakeCluster>) -> Self {
         Self {
+            master: fresh_master_mac(),
             clusters,
             air_time: Duration::from_millis(2),
             report_interval: Duration::from_millis(10),
@@ -229,11 +307,11 @@ impl FakeRadio {
             air_free_at: Duration::ZERO,
             slices: vec![None],
             slice_filled: [false; 4],
-            last_header: None,
+            tx_assembler: TransferAssembler::default(),
             rgb_envelopes: 0,
             max_air_queue: 0,
             tx_packets: 0,
-            tx_rgb_headers: Vec::new(),
+            tx_transfers: Vec::new(),
             rx_polls: Vec::new(),
             resets: Vec::new(),
         }
@@ -318,7 +396,7 @@ impl FakeRadio {
             USB_CMD_GET_MAC => {
                 let mut reply = vec![0_u8; 64];
                 reply[0] = USB_CMD_GET_MAC;
-                reply[1..7].copy_from_slice(&MASTER_MAC);
+                reply[1..7].copy_from_slice(&self.master);
                 reply[7..11].copy_from_slice(&[0, 0x0A, 0xE7, 0x4B]);
                 reply[11..13].copy_from_slice(&[0x00, 0x10]);
                 Some(reply)
@@ -338,18 +416,11 @@ impl FakeRadio {
                     if slice == 3 && self.slice_filled.iter().all(|filled| *filled) {
                         let bytes = self.slices[0].take().expect("envelope");
                         if bytes[0] == RF_SELECT {
-                            let header = (bytes[1] == RfSubCommand::SetRgb as u8 && bytes[18] == 0)
-                                .then(|| {
-                                    let mut tag = [0_u8; 4];
-                                    tag.copy_from_slice(&bytes[14..18]);
-                                    tag
-                                });
-                            if let Some(tag) = header
-                                && self.last_header != Some(tag)
+                            if bytes[1] == RfSubCommand::SetRgb as u8
+                                && let Some((tag, content)) = self.tx_assembler.take(&bytes)
                             {
-                                self.tx_rgb_headers.push((now, tag));
+                                self.tx_transfers.push((now, tag, content));
                             }
-                            self.last_header = header;
                             if self.air.is_empty() && self.air_free_at < now {
                                 self.air_free_at = now;
                             }
@@ -401,7 +472,7 @@ impl FakeRadio {
             let start = 4 + index * RECORD_LEN;
             let record = &mut reply[start..start + RECORD_LEN];
             record[0..6].copy_from_slice(&cluster.mac);
-            record[6..12].copy_from_slice(&MASTER_MAC);
+            record[6..12].copy_from_slice(&self.master);
             record[12] = 8;
             record[13] = cluster.rx_type;
             record[14..18].copy_from_slice(&cluster.clock.to_be_bytes());
@@ -428,6 +499,8 @@ pub struct Rig {
     pub frame_limit: Option<u64>,
     tick: Duration,
     next_tick_at: Duration,
+    pump: Option<Duration>,
+    next_pump_at: Duration,
     frames_taken: u64,
     last_taken: Option<u64>,
     /// When the actor took each frame, and its index.
@@ -459,6 +532,8 @@ impl Rig {
             frame_limit: None,
             tick: Duration::ZERO,
             next_tick_at: Duration::ZERO,
+            pump: None,
+            next_pump_at: Duration::ZERO,
             frames_taken: 0,
             last_taken: None,
             taken_log: Vec::new(),
@@ -474,6 +549,8 @@ impl Rig {
             .expect("the controller keeps alive")
             .interval;
         rig.next_tick_at = rig.clock.elapsed() + rig.tick;
+        rig.pump = rig.protocol.frame_pump_interval();
+        rig.next_pump_at = rig.clock.elapsed() + rig.pump.unwrap_or(Duration::MAX / 4);
         rig
     }
 
@@ -500,21 +577,19 @@ impl Rig {
             .map_or(published, |limit| published.min(limit))
     }
 
-    /// Run the actor loop until `duration` has passed.
+    /// Run the actor loop until `duration` has passed. Like the actor, the
+    /// keepalive wins when several are due, then a waiting frame, then the
+    /// frame pump; missed ticks are skipped.
     pub fn run_for(&mut self, duration: Duration) {
         let end = self.now() + duration;
         while self.now() < end {
             let now = self.now();
             if now >= self.next_tick_at {
-                // Missed ticks are skipped, as the actor's interval does.
                 while self.next_tick_at <= now {
                     self.next_tick_at += self.tick;
                 }
                 let commands = self.protocol.keepalive_commands();
-                if !self.radio.resets.is_empty() {
-                    self.commands_after_reset += commands.len();
-                }
-                self.execute(&commands);
+                self.run_batch(&commands);
                 continue;
             }
             let published = self.published(now);
@@ -526,17 +601,36 @@ impl Rig {
                 let colors = (self.frame)(index);
                 let mut commands = Vec::new();
                 self.protocol.encode_frame_into(&colors, &mut commands);
-                if !self.radio.resets.is_empty() {
-                    self.commands_after_reset += commands.len();
+                self.run_batch(&commands);
+                continue;
+            }
+            if let Some(pump) = self.pump
+                && now >= self.next_pump_at
+            {
+                while self.next_pump_at <= now {
+                    self.next_pump_at += pump;
                 }
-                self.execute(&commands);
+                let mut commands = Vec::new();
+                self.protocol.pump_frame_into(&mut commands);
+                self.run_batch(&commands);
                 continue;
             }
             let next_frame_at = self.frame_period * u32::try_from(published).expect("frames");
-            let next = self.next_tick_at.min(next_frame_at).min(end);
+            let next = self
+                .next_tick_at
+                .min(next_frame_at)
+                .min(self.next_pump_at)
+                .min(end);
             let step = next.saturating_sub(now).max(Duration::from_micros(10));
             self.advance(step);
         }
+    }
+
+    fn run_batch(&mut self, commands: &[ProtocolCommand]) {
+        if !self.radio.resets.is_empty() {
+            self.commands_after_reset += commands.len();
+        }
+        self.execute(commands);
     }
 
     /// Run commands the way the USB actor does.
@@ -571,13 +665,13 @@ impl Rig {
         }
     }
 
-    /// RGB headers the TX took after `since`.
+    /// RGB transfers the TX took after `since`.
     #[must_use]
-    pub fn headers_since(&self, since: Duration) -> usize {
+    pub fn transfers_since(&self, since: Duration) -> usize {
         self.radio
-            .tx_rgb_headers
+            .tx_transfers
             .iter()
-            .filter(|(at, _)| *at >= since)
+            .filter(|(at, ..)| *at >= since)
             .count()
     }
 

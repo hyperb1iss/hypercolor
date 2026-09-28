@@ -628,8 +628,9 @@ fn assert_upkeep_restores_frame(protocol: &Clocked, expected: &[ProtocolCommand]
     }
     for (actual, expected) in commands[pwm_end..rgb_end].iter().zip(expected) {
         assert_eq!(
-            actual.data, expected.data,
-            "restore the complete latest frame"
+            without_tag(&actual.data),
+            without_tag(&expected.data),
+            "restore the complete latest frame, under a tag of its own"
         );
         assert_eq!(actual.post_delay, expected.post_delay);
         assert_eq!(actual.transfer_type, expected.transfer_type);
@@ -638,6 +639,20 @@ fn assert_upkeep_restores_frame(protocol: &Clocked, expected: &[ProtocolCommand]
     assert_eq!(commands[rgb_end].data[5], RfSubCommand::ClockSync as u8);
     assert_eq!(commands[rgb_end + 4].transfer_type, TransferType::Companion);
     protocol.echo(&commands);
+}
+
+/// A packet with its RGB tag blanked: every send carries a tag of its own,
+/// so a restore matches the frame it restores everywhere but there.
+fn without_tag(data: &[u8]) -> Vec<u8> {
+    let mut data = data.to_vec();
+    let rgb_first_slice = data[0] == USB_CMD_SEND_RF
+        && data[1] == 0
+        && data[4] == RF_SELECT
+        && data[5] == RfSubCommand::SetRgb as u8;
+    if rgb_first_slice {
+        data[18..22].fill(0);
+    }
+    data
 }
 
 /// Send a frame and have the fans confirm it.
@@ -674,6 +689,39 @@ fn upkeep_waits_for_a_transfer_still_out_instead_of_stacking_a_restore() {
     );
 }
 
+/// The render path returns to the frame the fans last confirmed while a
+/// transfer of other pixels is still out. That transfer will land after
+/// the confirmation, so the confirmed frame is owed again: at shutdown it
+/// goes out even though the fans once showed it.
+#[test]
+fn shutdown_sends_the_final_frame_even_when_the_fans_showed_it_before() {
+    let protocol = discovered_protocol();
+    let black = [[0, 0, 0]; 5 * 26];
+    let first = confirmed_frame(&protocol, &black);
+    let colored = protocol.encode_frame(&[[9, 90, 200]; 5 * 26]);
+    assert!(
+        !header_tags(&colored).is_empty(),
+        "the colored frame is out"
+    );
+    let held = protocol.encode_frame(&black);
+    assert!(held.is_empty(), "black waits behind the colored transfer");
+
+    let shutdown = protocol.shutdown_sequence();
+    let flushed: Vec<Vec<u8>> = shutdown
+        .iter()
+        .map(|command| without_tag(&command.data))
+        .collect();
+    let black_again: Vec<Vec<u8>> = first
+        .iter()
+        .skip(3)
+        .map(|command| without_tag(&command.data))
+        .collect();
+    assert_eq!(
+        flushed, black_again,
+        "black goes out again behind the colored transfer"
+    );
+}
+
 #[test]
 fn upkeep_restores_pause_black_and_empty_frames_without_resurrecting_old_colors() {
     let protocol = discovered_protocol();
@@ -686,11 +734,11 @@ fn upkeep_restores_pause_black_and_empty_frames_without_resurrecting_old_colors(
     assert_eq!(
         empty
             .iter()
-            .map(|command| &command.data)
+            .map(|command| without_tag(&command.data))
             .collect::<Vec<_>>(),
         black
             .iter()
-            .map(|command| &command.data)
+            .map(|command| without_tag(&command.data))
             .collect::<Vec<_>>(),
         "an empty frame pads all known fans with black"
     );
@@ -757,10 +805,11 @@ fn a_new_session_discards_cached_colors_before_rediscovery() {
 fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
     let protocol = discovered_protocol();
     let keepalive = protocol.keepalive().expect("the radio needs upkeep");
+    assert_eq!(keepalive.interval, Duration::from_secs(1));
     assert_eq!(
-        keepalive.interval,
-        Duration::from_millis(5),
-        "the keepalive is the pacer's tick; upkeep runs once a second inside it"
+        protocol.frame_pump_interval(),
+        Some(Duration::from_millis(5)),
+        "the pacer runs on the frame pump, between frames"
     );
 
     let commands = protocol.keepalive_commands();
@@ -798,10 +847,9 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
     assert_eq!(poll.transfer_type, TransferType::Companion);
     assert_eq!(poll.response.capacity, Some(GET_DEV_REPLY_CAPACITY));
 
-    assert!(
-        protocol.keepalive_commands().is_empty(),
-        "a tick with nothing due sends nothing"
-    );
+    let mut pumped = vec![ProtocolCommand::default()];
+    protocol.pump_frame_into(&mut pumped);
+    assert!(pumped.is_empty(), "a pump with nothing due sends nothing");
     let later = protocol.upkeep();
     assert!(
         later[8].data[18..64].iter().any(|&b| b != 0x14),
@@ -911,11 +959,18 @@ fn a_record_reports_the_receiver_clock_and_the_table_its_page_count() {
     assert_eq!(table.clusters[0].clock, [0, 1, 2, 3]);
     assert_eq!(table.declared_records, 1);
     assert_eq!(table.pages(), 1);
-    assert_eq!(RECORDS_PER_PAGE, 10, "448-byte pages hold ten 42-byte records");
+    assert_eq!(
+        RECORDS_PER_PAGE, 10,
+        "448-byte pages hold ten 42-byte records"
+    );
 
     let mut eleven = table.clone();
     eleven.declared_records = 11;
-    assert_eq!(eleven.pages(), 2, "an eleventh record needs the second page");
+    assert_eq!(
+        eleven.pages(),
+        2,
+        "an eleventh record needs the second page"
+    );
     let mut none = table;
     none.declared_records = 0;
     assert_eq!(none.pages(), 1, "a poll always asks for a page");
