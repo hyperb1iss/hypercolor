@@ -14,12 +14,14 @@ use crate::ws::{CanvasFrame, CanvasPixelFormat};
 use super::PreviewRenderOutcome;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DispatchDecision {
+pub(super) enum DispatchDecision {
     DispatchNow,
     Deferred,
 }
 
-struct FrameDispatchState<T> {
+/// Latest-wins hand-off to an asynchronous presenter: one frame in flight,
+/// and at most one newer frame waiting behind it.
+pub(super) struct FrameDispatchState<T> {
     in_flight: bool,
     queued: Option<T>,
 }
@@ -34,7 +36,7 @@ impl<T> Default for FrameDispatchState<T> {
 }
 
 impl<T> FrameDispatchState<T> {
-    fn push_or_defer(&mut self, frame: T) -> DispatchDecision {
+    pub(super) fn push_or_defer(&mut self, frame: T) -> DispatchDecision {
         if self.in_flight {
             self.queued = Some(frame);
             DispatchDecision::Deferred
@@ -45,11 +47,11 @@ impl<T> FrameDispatchState<T> {
         }
     }
 
-    fn take_for_dispatch(&mut self) -> Option<T> {
+    pub(super) fn take_for_dispatch(&mut self) -> Option<T> {
         self.queued.take()
     }
 
-    fn next_after_present(&mut self) -> Option<T> {
+    pub(super) fn next_after_present(&mut self) -> Option<T> {
         if self.queued.is_some() {
             self.in_flight = true;
             return self.queued.take();
