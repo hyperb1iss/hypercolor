@@ -29,6 +29,35 @@ fn mounts_keep_navigation_assets_and_relative_state_separate() {
 }
 
 #[test]
+fn relocated_routes_keep_the_application_asset_base() {
+    let daemon_routes =
+        hypercolor_ui::UiMount::new("/remote/018f4c36-4a44-7cc9-9f57-0d2e9224d2f1", "")
+            .expect("valid route mount");
+    let deployed =
+        hypercolor_ui::UiMount::new("", "/remote-app/versions/0.6.0-beta.7").expect("valid");
+
+    let bridged = deployed.with_routes_from(&daemon_routes);
+    assert_eq!(
+        bridged.route_base(),
+        "/remote/018f4c36-4a44-7cc9-9f57-0d2e9224d2f1"
+    );
+    assert_eq!(
+        bridged.route_href("/devices"),
+        "/remote/018f4c36-4a44-7cc9-9f57-0d2e9224d2f1/devices"
+    );
+    assert_eq!(
+        bridged.asset_href("/assets/brand/mark-color.png"),
+        "/remote-app/versions/0.6.0-beta.7/assets/brand/mark-color.png"
+    );
+
+    let standalone = hypercolor_ui::UiMount::default().with_routes_from(&daemon_routes);
+    assert_eq!(
+        standalone.asset_href("/assets/brand/mark-color.png"),
+        "/assets/brand/mark-color.png"
+    );
+}
+
+#[test]
 fn root_mount_preserves_existing_urls() {
     for mount in [
         hypercolor_ui::UiMount::default(),

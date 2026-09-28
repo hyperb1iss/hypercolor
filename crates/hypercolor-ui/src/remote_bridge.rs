@@ -44,7 +44,7 @@ pub fn resolve_remote_api_url(mount: &str, daemon_id: &str, value: &str) -> Opti
     if mount.trim_end_matches('/') != expected_mount {
         return None;
     }
-    let mount = UiMount::new(mount, mount).ok()?;
+    let mount = UiMount::new(mount, "").ok()?;
     let suffix = query.map_or_else(String::new, |query| format!("?{query}"));
     Some(format!("{}/_d{path}{suffix}", mount.route_base()))
 }
@@ -136,7 +136,7 @@ mod browser {
 
     pub struct RemoteBridge {
         value: JsValue,
-        pub mount: UiMount,
+        routes: UiMount,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,6 +147,14 @@ mod browser {
     impl RemoteBridge {
         pub fn ready(&self) {
             let _ = call0(&self.value, "ready");
+        }
+
+        /// The mount the bridged application runs under. Routes live under
+        /// the bridge's daemon mount; static assets stay at the base the
+        /// application was built with, never under the daemon mount.
+        #[must_use]
+        pub fn ui_mount(&self, application: &UiMount) -> UiMount {
+            application.with_routes_from(&self.routes)
         }
     }
 
@@ -186,7 +194,7 @@ mod browser {
         }
         let daemon_id = string(&value, "daemonId")?;
         let mount_value = string(&value, "mount")?;
-        let mount = UiMount::new(&mount_value, &mount_value).map_err(|_| "remote_mount_invalid")?;
+        let routes = UiMount::new(&mount_value, "").map_err(|_| "remote_mount_invalid")?;
         let base = resolve_remote_api_url(&mount_value, &daemon_id, "/api/v1")
             .ok_or("remote_mount_invalid")?
             .trim_end_matches("/api/v1")
@@ -200,7 +208,7 @@ mod browser {
             .map_err(|_| "remote_http_transport_unavailable")?;
         install_websocket_transport(Rc::new(BridgeWebSocket(bridge)))
             .map_err(|_| "remote_socket_transport_unavailable")?;
-        Ok(RemoteBridge { value, mount })
+        Ok(RemoteBridge { value, routes })
     }
 
     fn fatal(value: &JsValue, code: &str) {
