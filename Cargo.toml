@@ -101,7 +101,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # Data structures
 crossbeam-queue = "0.3.14"
 uuid = { version = "1.26", features = ["v4", "v5", "v7", "serde"] }
-ulid = { version = "1.2.1", features = ["serde"] }
 sha2 = "0.11"
 hex = "0.4"
 subtle = "2.6"
@@ -131,7 +130,6 @@ surfman = "0.13"
 aes-gcm = "0.11.1"
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 dbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust", "vendored"] }
-ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 keyring-core = "1.0.0"
 rand = "0.10"
 rand_core = { version = "0.10", features = ["getrandom"] }
@@ -191,8 +189,6 @@ zerocopy = { version = "0.8", features = ["derive"] }
 if-addrs = "0.15.0"
 mdns-sd = "0.20"
 mach2 = "0.6"
-tonic = "0.12"
-prost = "0.13"
 nusb = { version = "0.2.7", features = ["tokio"] }
 zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
 
