@@ -740,13 +740,11 @@ impl UsbBackend {
             }
             return Ok(());
         }
-        // Bytes of this frame the protocol wrote now; a flow-controlled
-        // protocol may hold part of it back for later.
-        let written_bytes = frame
-            .colors
-            .len()
-            .saturating_mul(3)
-            .saturating_sub(protocol.deferred_frame_bytes());
+        // Bytes of this frame the protocol wrote: all of it, unless it
+        // wrote only the zones the frame changed.
+        let written_bytes = protocol
+            .written_frame_bytes()
+            .unwrap_or_else(|| frame.colors.len().saturating_mul(3));
         frame.announce_transport_started();
         let transport_started_at = Instant::now();
         match Self::run_encoded_frame(device_id, protocol, transport, frame, commands).await {

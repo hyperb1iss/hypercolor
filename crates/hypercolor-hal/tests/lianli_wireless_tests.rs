@@ -689,14 +689,17 @@ fn upkeep_waits_for_a_transfer_still_out_instead_of_stacking_a_restore() {
     );
 }
 
-/// A frame that finds one cluster's window closed is written for the
-/// others only, and the held share is reported as deferred so its delivery
-/// acknowledgement counts only what was written.
+/// A frame moves as one: while one cluster still has a transfer out, a
+/// frame that changes both is held whole rather than written for one.
 #[test]
-fn a_frame_held_for_one_cluster_reports_that_clusters_pixels_deferred() {
+fn a_frame_waits_whole_while_any_cluster_has_a_transfer_out() {
     let protocol = discovered_protocol();
     let first = protocol.encode_frame(&[[1, 1, 1]; 5 * 26]);
-    assert_eq!(protocol.deferred_frame_bytes(), 0, "both windows were open");
+    assert_eq!(
+        header_tags(&first).len(),
+        2,
+        "both clusters get the first frame"
+    );
 
     // Only the first cluster confirms.
     let tags = header_tags(&first);
@@ -707,18 +710,67 @@ fn a_frame_held_for_one_cluster_reports_that_clusters_pixels_deferred() {
         .expect("table parses");
 
     let second = protocol.encode_frame(&[[2, 2, 2]; 5 * 26]);
+    assert!(
+        second.is_empty(),
+        "the frame is held whole until the second cluster confirms"
+    );
+}
+
+/// When the window is open, a frame is written only to the clusters it
+/// changes, and reports just those pixels as written, so its delivery
+/// acknowledgement never counts bytes that stayed home.
+#[test]
+fn a_frame_reports_only_the_pixels_it_wrote() {
+    let protocol = discovered_protocol();
+    let first = confirmed_frame(&protocol, &[[1, 1, 1]; 5 * 26]);
+    assert_eq!(
+        protocol.written_frame_bytes(),
+        Some(5 * 26 * 3),
+        "the first frame wrote every pixel"
+    );
+    assert_eq!(header_tags(&first).len(), 2);
+
+    // New pixels for the first cluster's three fans; the second cluster's
+    // two fans keep theirs.
+    let mut colors = vec![[1, 1, 1]; 5 * 26];
+    for color in &mut colors[..3 * 26] {
+        *color = [9, 9, 9];
+    }
+    let second = protocol.encode_frame(&colors);
     assert_eq!(
         header_tags(&second)
             .iter()
             .map(|(target, _)| *target)
             .collect::<Vec<_>>(),
         vec![[0x11; 6]],
-        "only the confirmed cluster gets the new frame now"
+        "only the changed cluster is written"
     );
-    assert_eq!(
-        protocol.deferred_frame_bytes(),
-        2 * 26 * 3,
-        "the second cluster's two fans wait for its echo"
+    assert_eq!(protocol.written_frame_bytes(), Some(3 * 26 * 3));
+}
+
+/// Shutdown flushes a held final frame, but never past the bound on
+/// unresolved transfers: a cluster that already has four out gets nothing
+/// more.
+#[test]
+fn shutdown_never_flushes_past_the_unresolved_bound() {
+    let protocol = discovered_protocol();
+    let _ = protocol.encode_frame(&[[1, 1, 1]; 5 * 26]);
+    // Nothing is confirmed; the pump resends as each bounded wait expires,
+    // until each cluster has four transfers unresolved.
+    for wait in [350, 650, 1_250] {
+        protocol.advance(Duration::from_millis(wait));
+        let mut pumped = Vec::new();
+        protocol.pump_frame_into(&mut pumped);
+        assert_eq!(header_tags(&pumped).len(), 2, "one resend per cluster");
+    }
+    let held = protocol.encode_frame(&[[0, 0, 0]; 5 * 26]);
+    assert!(
+        held.is_empty(),
+        "black waits behind the unresolved transfers"
+    );
+    assert!(
+        protocol.shutdown_sequence().is_empty(),
+        "no fifth transfer, even at shutdown"
     );
 }
 

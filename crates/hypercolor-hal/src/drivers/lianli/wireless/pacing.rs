@@ -14,9 +14,12 @@
 //! reconnect is acknowledged by its own arrival and never by a report the RX
 //! cached before it.
 //!
-//! - One transfer per cluster is out at a time. A frame that arrives while
-//!   one is out is held; a newer frame replaces it, so what goes out next is
-//!   always the newest frame, never a queue of stale ones.
+//! - One transfer per cluster is out at a time, and a frame moves as one: it
+//!   goes to every cluster it changes once no heard cluster has a transfer
+//!   out, or it is held whole. A newer frame replaces a held one, so what
+//!   goes out next is always the newest frame, never a queue of stale
+//!   ones. A cluster the RX cannot hear, or one whose lighting is held,
+//!   holds up nobody.
 //! - While a transfer is out the RX table is polled for its echo. The first
 //!   poll waits most of the echo time seen so far, later polls follow
 //!   closely, and they back off as a wait drags on.
@@ -436,9 +439,22 @@ impl DeliveryPacer {
         }
     }
 
-    /// Whether `cluster` should be sent a transfer now, and why.
+    /// Whether a frame may go out now: no cluster that is heard and not
+    /// held has a transfer out. Frames move as one, so a frame is written
+    /// whole or held whole.
     #[must_use]
-    pub fn decide(&self, cluster: usize, now: Instant) -> Option<SendKind> {
+    pub fn window_open(&self, now: Instant) -> bool {
+        !self.silenced()
+            && !self
+                .links
+                .iter()
+                .any(|link| link.in_flight.is_some() && !link.holding && !link.absent(now))
+    }
+
+    /// Whether `cluster` should be sent a transfer now, and why, given
+    /// whether the frame window was open when this pass began.
+    #[must_use]
+    pub fn decide(&self, cluster: usize, now: Instant, window_open: bool) -> Option<SendKind> {
         if self.silenced() {
             return None;
         }
@@ -454,10 +470,20 @@ impl DeliveryPacer {
                 Some(SendKind::Resend)
             }
             Some(_) => None,
+            None if !window_open => None,
             None if link.confirmed != Some(newest) => Some(SendKind::Frame),
             None if link.restore_owed => Some(SendKind::Restore),
             None => None,
         }
+    }
+
+    /// Whether `cluster` may take one more transfer without passing the
+    /// unresolved bound.
+    #[must_use]
+    pub fn has_capacity(&self, cluster: usize) -> bool {
+        self.links.get(cluster).is_some_and(|link| {
+            !self.silenced() && !link.holding && link.unresolved < MAX_UNRESOLVED_TRANSFERS
+        })
     }
 
     /// Whether `cluster`'s newest frame has not gone out: held behind a
@@ -922,14 +948,14 @@ mod tests {
         let now = Instant::now();
         let mut pacer = connected(now);
         pacer.submit(0, T1);
-        assert_eq!(pacer.decide(0, now), Some(SendKind::Frame));
+        assert_eq!(pacer.decide(0, now, true), Some(SendKind::Frame));
         let wire = pacer.note_sent(0, T1, SendKind::Frame, now);
         pacer.submit(0, T2);
-        assert_eq!(pacer.decide(0, now), None, "the window is closed");
+        assert_eq!(pacer.decide(0, now, true), None, "the window is closed");
         let later = now + Duration::from_millis(20);
         pacer.observe(0, wire, [0, 0, 0, 1], later);
         assert_eq!(
-            pacer.decide(0, later),
+            pacer.decide(0, later, true),
             Some(SendKind::Frame),
             "the echo reopens it for the newest frame"
         );
@@ -947,12 +973,12 @@ mod tests {
         pacer.observe(0, first, [0, 0, 0, 2], now);
         pacer.submit(0, T2);
         assert_eq!(
-            pacer.decide(0, now),
+            pacer.decide(0, now, true),
             None,
             "a report from before the restore landed does not release the next frame"
         );
         pacer.observe(0, restore, [0, 0, 0, 3], now);
-        assert_eq!(pacer.decide(0, now), Some(SendKind::Frame));
+        assert_eq!(pacer.decide(0, now, true), Some(SendKind::Frame));
     }
 
     #[test]
@@ -963,16 +989,16 @@ mod tests {
         let first = pacer.note_sent(0, T1, SendKind::Frame, now);
         // PWM goes out while the frame is still unconfirmed.
         pacer.owe_restores();
-        assert_eq!(pacer.decide(0, now), None, "the window is closed");
+        assert_eq!(pacer.decide(0, now, true), None, "the window is closed");
         pacer.observe(0, first, [0, 0, 0, 1], now);
         assert_eq!(
-            pacer.decide(0, now),
+            pacer.decide(0, now, true),
             Some(SendKind::Restore),
             "the frame may have landed before the PWM; it goes out again"
         );
         let restore = pacer.note_sent(0, T1, SendKind::Restore, now);
         pacer.observe(0, restore, [0, 0, 0, 2], now);
-        assert_eq!(pacer.decide(0, now), None, "the debt is paid");
+        assert_eq!(pacer.decide(0, now, true), None, "the debt is paid");
     }
 
     #[test]
@@ -987,7 +1013,7 @@ mod tests {
         let mut session = connected(now);
         session.observe(0, first, [0, 0, 0, 2], now);
         session.submit(0, T1);
-        assert_eq!(session.decide(0, now), Some(SendKind::Frame));
+        assert_eq!(session.decide(0, now, true), Some(SendKind::Frame));
         let again = session.note_sent(0, T1, SendKind::Frame, now);
         assert_ne!(again, first);
         session.observe(0, first, [0, 0, 0, 3], now);
@@ -1009,7 +1035,7 @@ mod tests {
         for step in 0..40 {
             at += ECHO_RESEND_CAP;
             pacer.links[0].last_seen_at = Some(at);
-            if pacer.decide(0, at) == Some(SendKind::Resend) {
+            if pacer.decide(0, at, false) == Some(SendKind::Resend) {
                 wires.push(pacer.note_sent(0, T1, SendKind::Resend, at));
             }
             // Every fifth step the oldest unresolved transfer's echo lands
@@ -1029,6 +1055,36 @@ mod tests {
             wires.len() > usize::try_from(MAX_UNRESOLVED_TRANSFERS).expect("small"),
             "a late echo does free what it resolves"
         );
+    }
+
+    #[test]
+    fn a_frame_moves_as_one_across_clusters() {
+        let now = Instant::now();
+        let mut pacer = DeliveryPacer::default();
+        pacer.ensure_clusters(2);
+        for link in &mut pacer.links {
+            link.last_seen_at = Some(now);
+        }
+        pacer.submit(0, T1);
+        pacer.submit(1, T1);
+        let first = pacer.note_sent(0, T1, SendKind::Frame, now);
+        let second = pacer.note_sent(1, T1, SendKind::Frame, now);
+        pacer.observe(0, first, [0, 0, 0, 1], now);
+        pacer.submit(0, T2);
+        pacer.submit(1, T2);
+        assert!(
+            !pacer.window_open(now),
+            "the second cluster's transfer is still out"
+        );
+        assert_eq!(
+            pacer.decide(0, now, pacer.window_open(now)),
+            None,
+            "the first cluster waits for its sibling, so the frame goes out whole"
+        );
+        pacer.observe(1, second, [0, 0, 0, 1], now);
+        assert!(pacer.window_open(now));
+        assert_eq!(pacer.decide(0, now, true), Some(SendKind::Frame));
+        assert_eq!(pacer.decide(1, now, true), Some(SendKind::Frame));
     }
 
     #[test]

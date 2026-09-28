@@ -2553,13 +2553,13 @@ impl Protocol for FairnessProtocol {
     }
 }
 
-/// Writes one command per frame and reports part of each frame deferred,
-/// as a flow-controlled protocol does when some zones must wait.
-struct PartlyDeferringProtocol;
+/// Writes one command per frame and reports writing only part of it, as a
+/// protocol does that sends only the zones a frame changed.
+struct PartlyWritingProtocol;
 
-impl Protocol for PartlyDeferringProtocol {
+impl Protocol for PartlyWritingProtocol {
     fn name(&self) -> &'static str {
-        "partly-deferring-test"
+        "partly-writing-test"
     }
 
     fn init_sequence(&self) -> Vec<ProtocolCommand> {
@@ -2574,8 +2574,8 @@ impl Protocol for PartlyDeferringProtocol {
         vec![test_command(colors.first().map_or(0x11, |color| color[0]))]
     }
 
-    fn deferred_frame_bytes(&self) -> usize {
-        12
+    fn written_frame_bytes(&self) -> Option<usize> {
+        Some(18)
     }
 
     fn parse_response(&self, _data: &[u8]) -> std::result::Result<ProtocolResponse, ProtocolError> {
@@ -2605,15 +2605,15 @@ impl Protocol for PartlyDeferringProtocol {
 /// A frame the protocol writes only part of is acknowledged with the bytes
 /// actually written, not the whole payload.
 #[tokio::test]
-async fn a_partly_deferred_frame_is_acknowledged_with_the_bytes_written() {
+async fn a_partly_written_frame_is_acknowledged_with_the_bytes_written() {
     let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
     let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
     let (_command_tx, command_rx) = mpsc::unbounded_channel();
     let transport: Arc<dyn Transport> = Arc::new(RecordingTransport::default());
-    let protocol: Arc<dyn Protocol> = Arc::new(PartlyDeferringProtocol);
+    let protocol: Arc<dyn Protocol> = Arc::new(PartlyWritingProtocol);
     let actor = tokio::spawn(UsbBackend::test_run_device_actor(
         DeviceId::new(),
-        "partly-deferring-test-device",
+        "partly-writing-test-device",
         protocol,
         transport,
         frame_rx,
@@ -2633,9 +2633,8 @@ async fn a_partly_deferred_frame_is_acknowledged_with_the_bytes_written() {
         .expect("acknowledgement channel stays open");
     assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
     assert_eq!(
-        ack.completed_payload_bytes,
-        10 * 3 - 12,
-        "the deferred share is not counted as written"
+        ack.completed_payload_bytes, 18,
+        "only the bytes the protocol wrote are counted"
     );
 
     drop(frame_tx);

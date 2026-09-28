@@ -13,7 +13,8 @@
 //! broadcasts the 1 Hz clock the fan firmware expects.
 //!
 //! RGB is paced on the fans' acknowledgements ([`pacing`]): a cluster gets a
-//! new frame only once its record echoes the last one. The frame pump is the
+//! new frame only once its record echoes the last one, and a frame goes to
+//! every cluster it changes at once or waits whole. The frame pump is the
 //! pacer's clock: every few milliseconds it polls the table for echoes while
 //! a transfer is out and releases the newest held frame the moment its
 //! predecessor is confirmed. The 1 Hz keepalive stays the upkeep.
@@ -136,9 +137,8 @@ struct WirelessState {
     latest_colors: Option<Vec<[u8; 3]>>,
     /// Acknowledgement-paced RGB delivery for the driven clusters.
     pacer: DeliveryPacer,
-    /// Bytes of the last encoded frame held back for clusters whose window
-    /// was closed.
-    deferred_frame_bytes: usize,
+    /// Pixel bytes the last encoded frame wrote: the clusters it changed.
+    written_frame_bytes: usize,
 }
 
 impl WirelessState {
@@ -602,36 +602,50 @@ impl WirelessControllerProtocol {
         state.pacer.fit_clusters(&macs);
     }
 
-    /// Send every cluster whatever the pacer allows now: the newest frame
-    /// once its predecessor is confirmed, a resend after a bounded wait, or
-    /// the restore upkeep left owing.
+    /// Send every cluster whatever the pacer allows now: the newest frame,
+    /// to every cluster it changes, once no heard cluster has a transfer
+    /// out; the restore upkeep left owing; and, with `resends`, a transfer
+    /// again after its bounded wait. Returns the pixel bytes written.
+    ///
+    /// The render path passes `resends: false`, so a frame it hands over is
+    /// written whole or held whole, and its delivery acknowledgement is
+    /// never for part of it; resends run on the pump.
     fn pace_rgb(
         state: &mut WirelessState,
         now: Instant,
+        resends: bool,
         frame_number: Option<u32>,
         buffer: &mut CommandBuffer<'_>,
-    ) {
+    ) -> usize {
         let master = Self::master_mac(state);
         let Some(colors) = state.latest_colors.as_deref() else {
-            return;
+            return 0;
         };
+        let window_open = state.pacer.window_open(now);
         let mut offset = 0_usize;
+        let mut written = 0_usize;
         for (index, cluster) in state.table.clusters.iter().enumerate() {
             let start = offset;
             offset += usize::try_from(cluster.led_count()).unwrap_or(0);
-            let Some(kind) = state.pacer.decide(index, now) else {
+            let Some(kind) = state.pacer.decide(index, now, window_open) else {
                 continue;
             };
+            if kind == SendKind::Resend && !resends {
+                continue;
+            }
             let raw = Self::cluster_raw(cluster, colors, start);
             let wire = state
                 .pacer
                 .note_sent(index, effect_index_for(&raw), kind, now);
             Self::push_transfer(master, cluster, &raw, wire, frame_number, buffer);
+            written += raw.len();
         }
+        written
     }
 
     /// Send every cluster its newest frame if the window held it back,
-    /// window or not: nothing follows a shutdown to release it later.
+    /// window or not, since nothing follows a shutdown to release it later;
+    /// but never past the unresolved bound.
     fn flush_held(state: &mut WirelessState, now: Instant, buffer: &mut CommandBuffer<'_>) {
         let master = Self::master_mac(state);
         let Some(colors) = state.latest_colors.as_deref() else {
@@ -641,7 +655,7 @@ impl WirelessControllerProtocol {
         for (index, cluster) in state.table.clusters.iter().enumerate() {
             let start = offset;
             offset += usize::try_from(cluster.led_count()).unwrap_or(0);
-            if !state.pacer.held(index) {
+            if !state.pacer.held(index) || !state.pacer.has_capacity(index) {
                 continue;
             }
             let raw = Self::cluster_raw(cluster, colors, start);
@@ -689,7 +703,7 @@ impl WirelessControllerProtocol {
         state.pacer.owe_restores();
         let mut rgb_commands = Vec::new();
         let mut buffer = CommandBuffer::new(&mut rgb_commands);
-        Self::pace_rgb(state, now, None, &mut buffer);
+        Self::pace_rgb(state, now, true, None, &mut buffer);
         buffer.finish();
         commands.extend(rgb_commands);
 
@@ -853,16 +867,9 @@ impl Protocol for WirelessControllerProtocol {
         }
 
         let frame_number = self.frames_encoded.fetch_add(1, Ordering::Relaxed);
-        Self::pace_rgb(state, now, Some(frame_number), &mut buffer);
+        state.written_frame_bytes =
+            Self::pace_rgb(state, now, false, Some(frame_number), &mut buffer);
         buffer.finish();
-        state.deferred_frame_bytes = state
-            .table
-            .clusters
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| state.pacer.held(*index))
-            .map(|(_, cluster)| usize::try_from(cluster.led_count()).unwrap_or(0) * 3)
-            .sum();
         state.pacer.note_tx_packets(Self::tx_packets(commands));
     }
 
@@ -895,13 +902,15 @@ impl Protocol for WirelessControllerProtocol {
         Some(PUMP_INTERVAL)
     }
 
-    /// The pixels of clusters whose window was closed when the last frame
-    /// arrived: the pump sends them once the transfer ahead is confirmed.
-    fn deferred_frame_bytes(&self) -> usize {
-        self.state
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .deferred_frame_bytes
+    /// The pixels of the clusters the last frame changed and was written
+    /// to; unchanged clusters already show theirs.
+    fn written_frame_bytes(&self) -> Option<usize> {
+        Some(
+            self.state
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .written_frame_bytes,
+        )
     }
 
     /// The pacer's tick. A verdict on fans that stopped confirming comes
@@ -940,7 +949,7 @@ impl Protocol for WirelessControllerProtocol {
         state.pacer.note_absences(now);
 
         let mut buffer = CommandBuffer::new(commands);
-        Self::pace_rgb(state, now, None, &mut buffer);
+        Self::pace_rgb(state, now, true, None, &mut buffer);
         buffer.finish();
         if state.pacer.poll_due(now) {
             commands.push(Self::echo_poll_command(state.table.pages()));

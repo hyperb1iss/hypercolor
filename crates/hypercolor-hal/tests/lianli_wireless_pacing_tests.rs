@@ -543,7 +543,7 @@ fn a_lossy_radio_is_resent_to_and_only_confirmed_frames_count_as_delivered() {
 }
 
 #[test]
-fn two_clusters_are_paced_independently() {
+fn two_clusters_stream_together_one_frame_at_a_time() {
     let mut radio = FakeRadio::two_clusters();
     radio.air_time = Duration::from_millis(20);
     let mut rig = Rig::connect(radio);
