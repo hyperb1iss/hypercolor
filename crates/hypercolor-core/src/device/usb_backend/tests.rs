@@ -1619,6 +1619,147 @@ async fn wait_for_actor_drop(actor_dropped: &AtomicBool) {
     .expect("cancelled shutdown should abort and drop the actor task");
 }
 
+/// An L-Wireless pair whose TX stopped taking commands: every TX write
+/// runs out its budget, while the RX still takes the partner reset.
+#[derive(Default)]
+struct StalledWirelessTx {
+    sends: Mutex<Vec<(TransferType, Vec<u8>)>>,
+}
+
+#[async_trait]
+impl Transport for StalledWirelessTx {
+    fn name(&self) -> &'static str {
+        "stalled L-Wireless pair"
+    }
+
+    async fn send(&self, data: &[u8]) -> std::result::Result<(), TransportError> {
+        self.send_with_type(data, TransferType::Primary).await
+    }
+
+    async fn send_with_type(
+        &self,
+        data: &[u8],
+        transfer_type: TransferType,
+    ) -> std::result::Result<(), TransportError> {
+        self.sends
+            .lock()
+            .expect("send log lock should not be poisoned")
+            .push((transfer_type, data.to_vec()));
+        if transfer_type == TransferType::Companion {
+            Ok(())
+        } else {
+            Err(TransportError::Timeout { timeout_ms: 1000 })
+        }
+    }
+
+    async fn receive(&self, _timeout: Duration) -> std::result::Result<Vec<u8>, TransportError> {
+        Err(TransportError::Timeout { timeout_ms: 20 })
+    }
+
+    async fn close(&self) -> std::result::Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+/// Handle the test keeps while the watcher owns the pair.
+struct SharedStalledWirelessTx(Arc<StalledWirelessTx>);
+
+#[async_trait]
+impl Transport for SharedStalledWirelessTx {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+
+    async fn send(&self, data: &[u8]) -> std::result::Result<(), TransportError> {
+        self.0.send(data).await
+    }
+
+    async fn send_with_type(
+        &self,
+        data: &[u8],
+        transfer_type: TransferType,
+    ) -> std::result::Result<(), TransportError> {
+        self.0.send_with_type(data, transfer_type).await
+    }
+
+    async fn receive(&self, timeout: Duration) -> std::result::Result<Vec<u8>, TransportError> {
+        self.0.receive(timeout).await
+    }
+
+    async fn close(&self) -> std::result::Result<(), TransportError> {
+        self.0.close().await
+    }
+}
+
+/// A TX that stops taking commands mid-stream used to read as a transient
+/// frame timeout: the actor wrote into the dead endpoint frame after frame
+/// until upkeep failed. The controller's transport now names the wedge,
+/// resets the TX through the RX, and the actor stops on the first stall.
+#[tokio::test]
+async fn a_wedged_lianli_tx_ends_the_actor_and_is_reset_through_the_rx() {
+    use hypercolor_hal::drivers::lianli::WirelessControllerProtocol;
+    use hypercolor_hal::drivers::lianli::wireless::transport::{
+        WirelessControllerTransport, partner_reset_packet,
+    };
+
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let pair = Arc::new(StalledWirelessTx::default());
+    let transport: Arc<dyn Transport> = Arc::new(WirelessControllerTransport::new(
+        Box::new(SharedStalledWirelessTx(Arc::clone(&pair))),
+        "usb-backend-test-wedged-tx",
+    ));
+    let protocol: Arc<dyn Protocol> = Arc::new(WirelessControllerProtocol::new());
+
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "wedged-lianli-tx-test-device",
+        protocol,
+        transport,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    let frame_id = DeviceDeliveryId {
+        queue_generation: 3,
+        sequence: 1,
+    };
+    let (frame, ack_rx) = UsbFramePayload::tracked(frame_id, Arc::new(vec![[0x40, 0x10, 0x80]]));
+    frame_tx.send_replace(Some(Arc::new(frame)));
+
+    let ack = timeout(Duration::from_secs(1), ack_rx)
+        .await
+        .expect("the stalled frame is acknowledged")
+        .expect("acknowledgement channel stays open");
+    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
+    assert!(
+        matches!(ack.error, Some(DeviceError::Disconnected { .. })),
+        "a wedge is a disconnect, not a retryable timeout: {:?}",
+        ack.error
+    );
+
+    let result = timeout(Duration::from_secs(1), actor)
+        .await
+        .expect("the actor stops on the first stall instead of writing on")
+        .expect("actor task joins");
+    assert!(result.is_err(), "the session ends with the wedge");
+
+    let sends = pair
+        .sends
+        .lock()
+        .expect("send log lock should not be poisoned")
+        .clone();
+    assert_eq!(
+        sends.len(),
+        2,
+        "one stalled TX write, then the reset: {sends:?}"
+    );
+    assert_eq!(sends[0].0, TransferType::Primary);
+    assert_eq!(sends[1], (TransferType::Companion, partner_reset_packet()));
+}
+
 async fn assert_transient_frame_failure_survival(
     parallel_transfer_lanes: bool,
     failure: InjectedPrimaryFailure,

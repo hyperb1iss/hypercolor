@@ -11,10 +11,15 @@
 //! [`TransferType::Companion`]. Discovery happens at init and again on every
 //! keepalive tick, which also holds each cluster's observed PWM steady and
 //! broadcasts the 1 Hz clock the fan firmware expects.
+//!
+//! The transport watches both halves: a write that stalls marks that half
+//! wedged in [`health`], resets it through its partner the way L-Connect
+//! does, and ends the session instead of writing on into a dead endpoint.
 
 pub mod crypto;
 pub mod discovery;
 pub mod frame;
+pub mod health;
 pub mod lcd;
 pub mod tinyuz;
 pub mod transport;
