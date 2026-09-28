@@ -944,8 +944,10 @@ holds to the same contract, per cluster (`wireless/pacing.rs`):
   waits for the next render frame. The backend handles pumped writes as
   frame traffic: a transient write error is logged and the lane continues,
   where a failed keepalive would end the session. A frame the protocol
-  holds is acknowledged to the output queue as suppressed, not completed,
-  since nothing was written for it.
+  holds entirely is acknowledged to the output queue as suppressed, not
+  completed, and a frame written for some clusters and held for others is
+  acknowledged with only the bytes written (`Protocol::deferred_frame_bytes`).
+  The held share goes out later on the pump, untracked, like upkeep.
 - **Echo polls.** One page (448 bytes, read to exactly that length, no gap
   timeout) while every record fits in a page, otherwise two. The first poll
   after a send waits three quarters of the running echo time, later polls
@@ -956,11 +958,14 @@ holds to the same contract, per cluster (`wireless/pacing.rs`):
 - **Bounded wait and resync.** A transfer unconfirmed after four echo
   times (150 ms to 1 s; 300 ms before any echo has been seen) goes out
   again carrying the newest frame, and each further resend of the chain
-  waits twice as long, to 2 s. A chain gets three resends; after them it
-  waits only for an echo or the verdict below. Nothing on the host tells a
-  lost transfer from one still queued in the TX, so a resend is a bet: a
-  cluster has one transfer out, and a second, third, or fourth only after
-  that many bounded waits passed with no echo at all. An echo of an older transfer (one that landed
+  waits twice as long, to 2 s. No send goes out while four transfers are
+  unresolved. The TX relays in order, so an echo of one transfer resolves
+  it and everything sent before it, and frees exactly that many; a late
+  echo never renews the budget beyond what it resolved. Nothing on the host
+  tells a lost transfer from one still queued in the TX, so a resend is a
+  bet: a cluster has one transfer out in steady state, and a second, third,
+  or fourth only after that many bounded waits passed with no echo at all.
+  This is the one place the window of one bends, and the bound is hard. An echo of an older transfer (one that landed
   after its wait ran out) counts as delivered late, teaches the echo time,
   and restarts the stall clock, since it proves the radio delivers. Each
   echo-time sample is clipped to four running averages, so one outlier
@@ -972,8 +977,7 @@ holds to the same contract, per cluster (`wireless/pacing.rs`):
 - **Unheard fans.** A cluster missing from every table reply for 3 s is sent
   nothing until it answers; then its wait starts over.
 - **Stall verdict.** A cluster that is heard (in a reply within the last
-  second) but confirms nothing for 5 s across all three resends is a TX
-  that stopped delivering: the protocol writes the partner reset (§6.10)
+  second) but confirms nothing for 5 s is a TX that stopped delivering: the protocol writes the partner reset (§6.10)
   and sends nothing more. Each cluster (by radio MAC) can cause two such
   resets per process until it confirms a frame again, so a healthy cluster
   cannot renew a failing one's budget; once it is spent, the failing
