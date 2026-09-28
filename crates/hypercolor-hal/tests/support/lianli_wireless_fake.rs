@@ -595,6 +595,12 @@ impl Rig {
         self.protocol.delivery_stats()
     }
 
+    /// The protocol's current window for cluster `cluster`.
+    #[must_use]
+    pub fn protocol_window(&self, cluster: usize) -> Option<u32> {
+        self.protocol.delivery_window(cluster)
+    }
+
     fn advance(&mut self, by: Duration) {
         self.clock.advance(by);
         let now = self.now();

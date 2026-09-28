@@ -677,42 +677,73 @@ fn upkeep_restores_the_latest_frame_before_clock_and_retains_it_while_idle() {
     assert_eq!(protocol.frame_interval(), Duration::from_millis(33));
 }
 
+/// The restore upkeep owes goes through the window: with room it follows
+/// the PWM at once, with a full window it waits for an echo to free room.
+/// (Both upkeeps run at one instant, so no timeout intervenes.)
 #[test]
-fn upkeep_waits_for_a_transfer_still_out_instead_of_stacking_a_restore() {
+fn upkeep_restores_only_where_the_window_has_room() {
     let protocol = discovered_protocol();
     let first = protocol.encode_frame(&[[255, 0, 0]; 5 * 26]);
-    assert!(!header_tags(&first).is_empty());
-    let commands = protocol.keepalive_commands();
+    assert_eq!(header_tags(&first).len(), 2);
+    let with_room = protocol.keepalive_commands();
+    assert_eq!(
+        header_tags(&with_room).len(),
+        2,
+        "one send out and a window of two: the restore goes out"
+    );
+
+    let full = protocol.encode_frame(&[[0, 255, 0]; 5 * 26]);
+    assert!(full.is_empty(), "the window is full, so the frame waits");
+    let without_room = protocol.keepalive_commands();
     assert!(
-        header_tags(&commands).is_empty(),
-        "the frame still out is the restore; nothing is piled behind it"
+        header_tags(&without_room).is_empty(),
+        "no room: nothing is piled behind the sends out"
+    );
+    protocol.echo(&with_room);
+    let mut pumped = Vec::new();
+    protocol.pump_frame_into(&mut pumped);
+    assert_eq!(
+        header_tags(&pumped).len(),
+        2,
+        "the echo frees room and the newest frame goes out, paying the restore"
     );
 }
 
-/// A frame moves as one: while one cluster still has a transfer out, a
-/// frame that changes both is held whole rather than written for one.
+/// Clusters are paced independently: a frame goes to the cluster whose
+/// window has room, waits for the other, and reports only the pixels it
+/// wrote.
 #[test]
-fn a_frame_waits_whole_while_any_cluster_has_a_transfer_out() {
+fn a_frame_goes_to_each_cluster_with_room() {
     let protocol = discovered_protocol();
     let first = protocol.encode_frame(&[[1, 1, 1]; 5 * 26]);
-    assert_eq!(
-        header_tags(&first).len(),
-        2,
-        "both clusters get the first frame"
+    let second = protocol.encode_frame(&[[2, 2, 2]; 5 * 26]);
+    assert_eq!(header_tags(&first).len() + header_tags(&second).len(), 4);
+    assert!(
+        protocol.encode_frame(&[[3, 3, 3]; 5 * 26]).is_empty(),
+        "both windows of two are full"
     );
 
     // Only the first cluster confirms.
-    let tags = header_tags(&first);
+    let tags = header_tags(&second);
     let mut confirmed = record([0x11; 6], 0x00, 3, 28);
     confirmed[20..24].copy_from_slice(&tags[0].1);
     protocol
         .parse_response(&table_with(&[confirmed, record([0x22; 6], 0x00, 2, 27)]))
         .expect("table parses");
 
-    let second = protocol.encode_frame(&[[2, 2, 2]; 5 * 26]);
-    assert!(
-        second.is_empty(),
-        "the frame is held whole until the second cluster confirms"
+    let fourth = protocol.encode_frame(&[[4, 4, 4]; 5 * 26]);
+    assert_eq!(
+        header_tags(&fourth)
+            .iter()
+            .map(|(target, _)| *target)
+            .collect::<Vec<_>>(),
+        vec![[0x11; 6]],
+        "the cluster with room gets the frame; the full one waits"
+    );
+    assert_eq!(
+        protocol.written_frame_bytes(),
+        Some(3 * 26 * 3),
+        "the frame's acknowledgement counts only what was written"
     );
 }
 
@@ -748,48 +779,22 @@ fn a_frame_reports_only_the_pixels_it_wrote() {
     assert_eq!(protocol.written_frame_bytes(), Some(3 * 26 * 3));
 }
 
-/// Shutdown flushes a held final frame, but never past the bound on
-/// unresolved transfers: a cluster that already has four out gets nothing
-/// more.
-#[test]
-fn shutdown_never_flushes_past_the_unresolved_bound() {
-    let protocol = discovered_protocol();
-    let _ = protocol.encode_frame(&[[1, 1, 1]; 5 * 26]);
-    // Nothing is confirmed; the pump resends as each bounded wait expires,
-    // until each cluster has four transfers unresolved.
-    for wait in [350, 650, 1_250] {
-        protocol.advance(Duration::from_millis(wait));
-        let mut pumped = Vec::new();
-        protocol.pump_frame_into(&mut pumped);
-        assert_eq!(header_tags(&pumped).len(), 2, "one resend per cluster");
-    }
-    let held = protocol.encode_frame(&[[0, 0, 0]; 5 * 26]);
-    assert!(
-        held.is_empty(),
-        "black waits behind the unresolved transfers"
-    );
-    assert!(
-        protocol.shutdown_sequence().is_empty(),
-        "no fifth transfer, even at shutdown"
-    );
-}
-
-/// The render path returns to the frame the fans last confirmed while a
-/// transfer of other pixels is still out. That transfer will land after
-/// the confirmation, so the confirmed frame is owed again: at shutdown it
-/// goes out even though the fans once showed it.
+/// The render path returns to the frame the fans last confirmed while
+/// transfers of other pixels are still out. They will land after the
+/// confirmation, so the confirmed frame is owed again: at shutdown it goes
+/// out even though the fans once showed it.
 #[test]
 fn shutdown_sends_the_final_frame_even_when_the_fans_showed_it_before() {
     let protocol = discovered_protocol();
     let black = [[0, 0, 0]; 5 * 26];
     let first = confirmed_frame(&protocol, &black);
-    let colored = protocol.encode_frame(&[[9, 90, 200]; 5 * 26]);
-    assert!(
-        !header_tags(&colored).is_empty(),
-        "the colored frame is out"
-    );
+    // Two colored frames fill each window of two.
+    for shade in [90, 91] {
+        let colored = protocol.encode_frame(&[[9, shade, 200]; 5 * 26]);
+        assert!(!header_tags(&colored).is_empty(), "a colored frame is out");
+    }
     let held = protocol.encode_frame(&black);
-    assert!(held.is_empty(), "black waits behind the colored transfer");
+    assert!(held.is_empty(), "black waits behind the colored transfers");
 
     let shutdown = protocol.shutdown_sequence();
     let flushed: Vec<Vec<u8>> = shutdown

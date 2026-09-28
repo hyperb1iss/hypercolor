@@ -12,12 +12,13 @@
 //! upkeep tick, which also holds each cluster's observed PWM steady and
 //! broadcasts the 1 Hz clock the fan firmware expects.
 //!
-//! RGB is paced on the fans' acknowledgements ([`pacing`]): a cluster gets a
-//! new frame only once its record echoes the last one, and a frame goes to
-//! every cluster it changes at once or waits whole. The frame pump is the
-//! pacer's clock: every few milliseconds it polls the table for echoes while
-//! a transfer is out and releases the newest held frame the moment its
-//! predecessor is confirmed. The 1 Hz keepalive stays the upkeep.
+//! RGB is paced on the fans' acknowledgements ([`pacing`]): each cluster
+//! keeps a window of frames in flight, and its record's echo confirms every
+//! frame up to the one it names, like a cumulative TCP acknowledgement. The
+//! window adapts to what the radio drains. The frame pump is the pacer's
+//! clock: every few milliseconds it polls the table for echoes while frames
+//! are out and sends the newest held frame the moment an echo frees room.
+//! The 1 Hz keepalive stays the upkeep.
 //!
 //! The transport watches both halves: a write that stalls marks that half
 //! wedged in [`health`], resets it through its partner the way L-Connect
@@ -190,7 +191,7 @@ impl WirelessState {
         self.observe_echoes(&fresh, now);
     }
 
-    /// Hand each driven cluster's echoed tag and clock to the pacer.
+    /// Hand each driven cluster's echoed tag to the pacer.
     fn observe_echoes(&mut self, records: &[FanCluster], now: Instant) {
         let master = self.master.map(|master| master.mac);
         for record in records {
@@ -203,8 +204,7 @@ impl WirelessState {
                 .iter()
                 .position(|cluster| cluster.mac == record.mac)
             {
-                self.pacer
-                    .observe(index, record.effect_index, record.clock, now);
+                self.pacer.observe(index, record.effect_index, now);
             }
         }
     }
@@ -340,6 +340,16 @@ impl WirelessControllerProtocol {
             frames_encoded: AtomicU32::new(0),
             clock,
         }
+    }
+
+    /// `cluster`'s current window: the sends it may have unconfirmed.
+    #[must_use]
+    pub fn delivery_window(&self, cluster: usize) -> Option<u32> {
+        self.state
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pacer
+            .window(cluster)
     }
 
     /// Delivery counters for the current session: frames offered, sent,
@@ -602,16 +612,15 @@ impl WirelessControllerProtocol {
         state.pacer.fit_clusters(&macs);
     }
 
-    /// Send every cluster whatever the pacer allows now: the newest frame,
-    /// to every cluster it changes, once no cluster in step has a transfer
-    /// out; the restore upkeep left owing; and, with `resends`, a transfer
-    /// again after its bounded wait. Returns the pixel bytes written.
+    /// Send every cluster whatever the pacer allows now: the newest frame
+    /// where its window has room, the restore upkeep left owing, and, with
+    /// `resends`, a probe after a timeout. Returns the pixel bytes written.
     ///
-    /// The render path passes `resends: false`, so a frame it hands over is
-    /// written whole to the clusters in step or held whole, and its
-    /// delivery acknowledgement counts exactly what was written. A cluster
-    /// out of step (unheard, held, or past its first bounded wait) catches
-    /// up on the pump's resends.
+    /// The render path passes `resends: false`; probes run on the pump. A
+    /// frame it hands over is written to the clusters with room, and its
+    /// delivery acknowledgement counts exactly those bytes. A cluster
+    /// without room gets the newest frame on the pump once an echo frees
+    /// some.
     fn pace_rgb(
         state: &mut WirelessState,
         now: Instant,
@@ -623,13 +632,14 @@ impl WirelessControllerProtocol {
         let Some(colors) = state.latest_colors.as_deref() else {
             return 0;
         };
-        let window_open = state.pacer.window_open(now);
+        state.pacer.tick(now);
+        state.pacer.mark_window_limits(now);
         let mut offset = 0_usize;
         let mut written = 0_usize;
         for (index, cluster) in state.table.clusters.iter().enumerate() {
             let start = offset;
             offset += usize::try_from(cluster.led_count()).unwrap_or(0);
-            let Some(kind) = state.pacer.decide(index, now, window_open) else {
+            let Some(kind) = state.pacer.decide(index, now) else {
                 continue;
             };
             if kind == SendKind::Resend && !resends {

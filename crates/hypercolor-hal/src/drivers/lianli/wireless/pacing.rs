@@ -1,64 +1,62 @@
-//! Acknowledgement-paced RGB delivery.
+//! Acknowledgement-paced RGB delivery over a sliding window.
 //!
 //! Every RGB transfer carries a tag, and each fan cluster's record in the
 //! RX device table echoes the tag of the transfer its receiver last took
-//! (spec 80 section 6.5, record bytes 20 to 23). L-Connect sends an effect
-//! until the record echoes it and never sends more; this module holds the
-//! live stream to the same contract.
+//! (spec 80 section 6.5, record bytes 20 to 23). The record is a status the
+//! fans refresh a few times a second (about every 333 ms on the owner's V1
+//! rig, 500 ms at times), far slower than frames stream, so the echo is a
+//! cumulative acknowledgement: the tag it names confirms that transfer, and
+//! since the TX relays in order, every transfer sent before it has left the
+//! TX. Pacing one frame per echo would turn the status cadence into a frame
+//! rate cap; instead each cluster keeps a window of frames in flight, like
+//! a TCP sender:
 //!
-//! Each send gets its own wire tag: the frame's pixel hash mixed with a send
-//! number that runs for the whole process from a wall-clock seed, and never
-//! equals the tag the cluster is echoing at that moment. An echo therefore
-//! names exactly one transfer, so a restore of the frame already showing, a
-//! resend of a frame that did not land, or the first frame after a
-//! reconnect is acknowledged by its own arrival and never by a report the RX
-//! cached before it.
-//!
-//! - One transfer per cluster is out at a time, and a frame moves as one: it
-//!   goes to every cluster it changes once no cluster in step has a
-//!   transfer out, or it is held whole. A newer frame replaces a held one,
-//!   so what goes out next is always the newest frame, never a queue of
-//!   stale ones. A cluster falls out of step while the RX cannot hear it,
-//!   while its lighting is held, or once its transfer outlasts the first
-//!   bounded wait; the others carry on without it, and it catches up on its
-//!   own resends, rejoining when it confirms.
-//! - While a transfer is out the RX table is polled for its echo. The first
-//!   poll waits most of the echo time seen so far, later polls follow
-//!   closely, and they back off as a wait drags on.
-//! - A transfer unconfirmed after its bounded wait (four echo times, and a
-//!   conservative [`ECHO_WAIT_UNKNOWN`] before any echo is seen) goes out
-//!   again carrying the newest frame. Nothing on the host can tell a lost
-//!   transfer from one still queued in the TX, so a resend is a bet: the
-//!   wait doubles with every resend, and no send goes out while
-//!   [`MAX_UNRESOLVED_TRANSFERS`] are unresolved. The TX relays in order,
-//!   so an echo of one transfer resolves it and every transfer sent before
-//!   it, and frees exactly that much. A cluster therefore has one transfer
-//!   out in steady state, and never more than that bound, which only a run
-//!   of silent bounded waits reaches.
-//! - An echo of an older transfer (one that landed after its wait ran out)
-//!   counts as delivered late, teaches the echo time, and restarts the
-//!   stall clock, since it proves the radio still delivers.
-//! - A cluster the RX has stopped hearing is sent nothing until it answers.
+//! - A cluster may have up to its window of sends unconfirmed. The window
+//!   starts at [`INITIAL_WINDOW`], doubles per echo while it is the limit
+//!   (slow start), then grows by one per window of confirmed sends, up to
+//!   [`MAX_WINDOW`]. It grows only while it holds frames back, so a scene
+//!   the render path offers slower than the radio carries never inflates it.
+//! - Each echo measures the TX backlog directly: sends made after the
+//!   confirmed one that had time to arrive (their age exceeds the smallest
+//!   echo age seen lately, plus the poll spacing and a frame of jitter) but
+//!   did not are overdue. More than [`OVERDUE_LIMIT`] overdue means the TX
+//!   holds more than the radio drains, and the window halves, once per
+//!   window of sends. So the TX never holds more than a few frames beyond
+//!   what the radio carries, and delivery tracks the radio's own rate.
+//! - Clusters are paced independently: a frame goes to every cluster it
+//!   changes that has room, and waits for the rest, where a newer frame
+//!   replaces it, so what goes out next is always the newest frame, never a
+//!   queue of stale ones. One cluster with a slow radio, or one the RX
+//!   cannot hear, never throttles the others.
+//! - Each send gets its own wire tag: the frame's pixel hash mixed with a
+//!   send number that runs for the whole process from a wall-clock seed,
+//!   and never the tag the cluster echoes at that moment. An echo therefore
+//!   names exactly one send, and a report cached from before it (a restore
+//!   of the frame already showing, or the first frame after a reconnect)
+//!   confirms nothing.
+//! - Delivered frames are counted from how far the echo advances: a
+//!   cluster's frames are numbered as they are sent, and an echo confirms
+//!   every frame up to the one it names.
+//! - The table is polled while sends are unconfirmed, predicted from the
+//!   cadence of past echoes: the first poll after an echo waits most of an
+//!   echo interval, the rest follow a sixth of one apart.
+//! - No echo progress for three echo intervals (a timeout) means the sends
+//!   out were lost: the window collapses to [`MIN_WINDOW`] and the newest
+//!   frame goes out again, one probe at a time, backing off. Nothing is
+//!   ever sent while [`MAX_WINDOW`] sends are unresolved.
 //! - Fan-speed upkeep can knock a receiver back to its onboard lighting
 //!   without changing its echo, so every upkeep leaves each cluster owing a
-//!   restore: the first transfer after it pays the debt, and if the window
-//!   is closed the restore goes out once the transfer ahead resolves.
+//!   restore, sent with the next room in its window.
 //! - Fans that are heard but confirm nothing for [`ECHO_STALL`] mean the TX
-//!   stopped delivering: the
-//!   protocol asks the transport for the vendor reset, which ends the
-//!   session the way a refused write does. At most
+//!   stopped delivering: the protocol asks the transport for the vendor
+//!   reset, which ends the session the way a refused write does. At most
 //!   [`MAX_RESETS_WITHOUT_DELIVERY`] resets are asked for on behalf of one
-//!   cluster until that cluster confirms a frame again, across sessions;
-//!   past that the cluster's lighting is held and the log says to
-//!   power-cycle the controller, while clusters that still confirm keep
-//!   streaming. A TX the reset does not revive, or firmware that does not
-//!   echo live frames, ends in that bounded failure, never a reset loop.
-//!
-//! So the frame rate is whatever the radio confirms, up to what the render
-//! path offers, and nothing caps it.
+//!   cluster until it confirms a frame again, across sessions; past that
+//!   the cluster's lighting is held and the log says to power-cycle the
+//!   controller, while clusters that still confirm keep streaming.
 //!
 //! Counters feed [`DeliveryStats`] and a periodic info line comparing frames
-//! sent with frames the fans echoed back.
+//! sent with frames the echoes confirmed.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -72,28 +70,42 @@ use super::frame::{Mac, effect_index_for};
 /// An RGB transfer's tag, as the header carries it and the record echoes it.
 pub type Tag = [u8; 4];
 
-/// Delay before the first echo poll after a send, before any echo time is
-/// known, and the least spacing of the polls that follow.
-pub const ECHO_POLL_INTERVAL: Duration = Duration::from_millis(10);
-/// Polls back off as a wait drags on, to no more than this apart.
-pub const ECHO_POLL_MAX_INTERVAL: Duration = Duration::from_millis(250);
-/// The bounded wait before any echo time is known: long enough for a slow
-/// radio to get one transfer out before it is sent again.
-pub const ECHO_WAIT_UNKNOWN: Duration = Duration::from_millis(300);
-/// Bounds on the wait once echo times are known.
-pub const ECHO_RESEND_MIN: Duration = Duration::from_millis(150);
-pub const ECHO_RESEND_MAX: Duration = Duration::from_secs(1);
-/// Resends of an unconfirmed chain back off to this spacing.
-pub const ECHO_RESEND_CAP: Duration = Duration::from_secs(2);
+/// Sends a cluster may have unconfirmed when a session starts.
+pub const INITIAL_WINDOW: u32 = 2;
+/// The window never shrinks below this.
+pub const MIN_WINDOW: u32 = 2;
+/// The window never grows past this, and no send of any kind goes out while
+/// this many are unresolved: the most the TX can ever hold for a cluster.
+pub const MAX_WINDOW: u32 = 32;
+/// Overdue sends at an echo beyond which the TX is holding a backlog.
+pub const OVERDUE_LIMIT: u64 = 1;
+/// Jitter allowed on top of the poll spacing before a send counts overdue:
+/// about one frame interval at 30 fps.
+const OVERDUE_SLACK: Duration = Duration::from_millis(35);
+/// How long echo ages are remembered for the base-delay minimum.
+const BASE_DELAY_SPAN: Duration = Duration::from_secs(10);
+/// Echo-poll spacing before the echo cadence is known.
+pub const ECHO_POLL_DEFAULT: Duration = Duration::from_millis(40);
+/// Bounds on echo-poll spacing.
+pub const ECHO_POLL_MIN: Duration = Duration::from_millis(20);
+pub const ECHO_POLL_STEADY_MAX: Duration = Duration::from_millis(100);
+pub const ECHO_POLL_MAX: Duration = Duration::from_millis(250);
+/// The timeout before any echo cadence is known.
+pub const ECHO_TIMEOUT_UNKNOWN: Duration = Duration::from_millis(1_500);
+/// Bounds on the timeout once echoes are known: three echo intervals, or
+/// the usual echo age plus two, whichever is longer.
+pub const ECHO_TIMEOUT_MIN: Duration = Duration::from_millis(500);
+pub const ECHO_TIMEOUT_MAX: Duration = Duration::from_secs(3);
+/// Timeouts back off to this.
+pub const ECHO_TIMEOUT_CAP: Duration = Duration::from_secs(6);
 /// No confirmation for this long is logged once as a warning.
-pub const ECHO_STALL_WARN: Duration = Duration::from_secs(1);
+pub const ECHO_STALL_WARN: Duration = Duration::from_secs(2);
 /// No confirmation for this long, with the fans heard, is a TX that stopped
 /// delivering.
 pub const ECHO_STALL: Duration = Duration::from_secs(5);
-/// Transfers a cluster may have unresolved at once: the one out, and the
-/// resends its silent bounded waits allowed. Past this only an echo or the
-/// stall verdict moves the cluster.
-pub const MAX_UNRESOLVED_TRANSFERS: u32 = 4;
+/// A cluster counts as heard for the stall verdict when it was in a table
+/// reply this recently.
+const HEARD_WITHIN: Duration = Duration::from_secs(1);
 /// Resets asked for on behalf of one cluster before it confirms a frame
 /// again.
 pub const MAX_RESETS_WITHOUT_DELIVERY: u32 = 2;
@@ -101,22 +113,21 @@ pub const MAX_RESETS_WITHOUT_DELIVERY: u32 = 2;
 pub const ABSENT_AFTER: Duration = Duration::from_secs(3);
 /// How often the delivery report is logged.
 pub const REPORT_INTERVAL: Duration = Duration::from_secs(10);
-/// Transfers remembered per cluster, to recognise late echoes.
-const RECENT_SENDS: usize = 8;
-/// Weight of a new echo-time sample in the running average, as a divisor.
-const LATENCY_SMOOTHING: u32 = 8;
-/// An echo-time sample counts for at most this many averages.
-const OUTLIER_CLIP: u32 = 4;
+/// Weight of a new echo-interval sample in its running average, as a
+/// divisor.
+const GAP_SMOOTHING: u32 = 8;
+/// An echo-interval sample counts for at most this many averages.
+const OUTLIER_CLIP: u32 = 3;
 
 /// Why a transfer goes out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendKind {
-    /// A frame the cluster is not showing.
+    /// The newest frame, in the window's room.
     Frame,
-    /// The unconfirmed transfer again, carrying the newest frame, after its
-    /// bounded wait ran out.
+    /// The newest frame after a timeout: a probe while the cluster
+    /// recovers.
     Resend,
-    /// The frame already showing, again after fan-speed upkeep, which can
+    /// The frame already sent, again after fan-speed upkeep, which can
     /// knock a receiver back to its onboard lighting.
     Restore,
 }
@@ -132,8 +143,8 @@ pub enum StallVerdict {
         unconfirmed_for: Duration,
         /// Resends tried in that time.
         resends: u32,
-        /// Resets asked for since this controller's fans last confirmed,
-        /// this one included.
+        /// Resets asked for since this cluster last confirmed, this one
+        /// included.
         resets: u32,
     },
     /// The cluster's reset budget is spent: hold its lighting for this
@@ -151,116 +162,205 @@ pub enum StallVerdict {
 pub struct DeliveryStats {
     /// Frames the render path handed the protocol.
     pub frames_offered: u64,
-    /// Frames sent: a transfer of pixels its cluster had not been sent
-    /// before in its current chain. Resends of the same pixels and
-    /// restores are counted apart.
+    /// Frames sent: sends of pixels other than the cluster's last send.
+    /// Restores, and resends of the same pixels, are counted apart.
     pub frames_sent: u64,
-    /// Sent frames a cluster echoed back, late ones included.
+    /// Sent frames an echo confirmed, cumulatively: an echo confirms every
+    /// frame up to the one it names. A frame lost on the air but overtaken
+    /// by a later one before the next status is counted too; nothing tells
+    /// them apart.
     pub frames_delivered: u64,
-    /// Frames replaced by a newer one while their cluster's window was
-    /// closed, so never sent.
+    /// Frames replaced by a newer one before they could be sent.
     pub frames_coalesced: u64,
-    /// Transfers sent again after their bounded wait.
+    /// Probes sent after a timeout.
     pub resends: u64,
-    /// Showing frames re-sent after fan-speed upkeep.
+    /// Sent frames re-sent after fan-speed upkeep.
     pub restores: u64,
-    /// Echoes of a transfer that had already been superseded.
+    /// Windows that ran out without an echo.
+    pub timeouts: u64,
+    /// Echoes of a send a timeout had already given up on.
     pub late_echoes: u64,
     /// Echoes of a tag this session never sent while a frame of ours was
     /// showing: the receiver left our frame for its own lighting.
     pub drifts: u64,
+    /// Windows halved because the TX held a backlog.
+    pub congestion_events: u64,
+    /// Echoes that advanced, the frames they confirmed, and the most one
+    /// confirmed.
+    pub echo_advances: u64,
+    pub advance_frames: u64,
+    pub advance_max: u64,
+    /// The most sends found overdue at one echo.
+    pub overdue_max: u64,
     /// Echo polls sent to the RX.
     pub echo_polls: u64,
     /// Table replies that reached the protocol, polls and upkeep alike.
     pub table_replies: u64,
-    /// Replies in which a cluster's clock had moved since the last one:
-    /// how often the RX actually heard from the fans.
-    pub cluster_reports: u64,
     /// USB packets queued for the TX, upkeep included. A batch that fails
     /// part way stops early, so around failures a per-second URB count on
     /// the TX can come out lower.
     pub tx_packets: u64,
-    /// Echo-time samples and their sum and maximum.
+    /// Age of the confirmed send at each echo: samples, sum, and maximum.
     pub echo_samples: u64,
     pub echo_total: Duration,
     pub echo_max: Duration,
+    /// Intervals between advancing echoes while sends were out: samples
+    /// and sum.
+    pub gap_samples: u64,
+    pub gap_total: Duration,
 }
 
 impl DeliveryStats {
-    /// Mean time from a send to the poll that saw its echo.
+    /// Mean age of the confirmed send at each echo.
     #[must_use]
     pub fn echo_mean(&self) -> Option<Duration> {
-        let samples = u32::try_from(self.echo_samples).ok()?;
-        (samples > 0).then(|| self.echo_total / samples)
+        mean(self.echo_total, self.echo_samples)
     }
 
-    fn add_echo(&mut self, sample: Duration) {
-        self.echo_samples += 1;
-        self.echo_total += sample;
-        self.echo_max = self.echo_max.max(sample);
+    /// Mean interval between advancing echoes: the status cadence.
+    #[must_use]
+    pub fn gap_mean(&self) -> Option<Duration> {
+        mean(self.gap_total, self.gap_samples)
+    }
+
+    /// Mean frames one advancing echo confirmed.
+    #[must_use]
+    pub fn advance_mean(&self) -> Option<f64> {
+        (self.echo_advances > 0).then(|| {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a mean for the report is approximate by nature"
+            )]
+            let mean = self.advance_frames as f64 / self.echo_advances as f64;
+            mean
+        })
     }
 }
 
-/// A transfer out and not yet confirmed.
-#[derive(Debug, Clone, Copy)]
-struct InFlight {
-    /// The tag this transfer carries on the wire.
-    wire: Tag,
-    /// The pixels it carries.
-    content: Tag,
-    /// The latest send of this chain.
-    sent_at: Instant,
-    /// When the chain began: nothing has been confirmed since.
-    unconfirmed_since: Instant,
-    resends: u32,
-    /// The time to its echo is a sample of the radio's echo time; not so
-    /// for a chain that spanned a gap in which the fans went unheard.
-    clean: bool,
-    resend_at: Instant,
-    /// When this cluster next wants the table polled.
-    poll_at: Instant,
+/// A running average with a new sample weighted one in [`GAP_SMOOTHING`],
+/// clipped to [`OUTLIER_CLIP`] averages first.
+fn smooth(average: Option<Duration>, sample: Duration) -> Duration {
+    match average {
+        None => sample,
+        Some(average) => {
+            let sample = sample.min(average.saturating_mul(OUTLIER_CLIP));
+            if sample >= average {
+                average + sample.saturating_sub(average) / GAP_SMOOTHING
+            } else {
+                average.saturating_sub(average.saturating_sub(sample) / GAP_SMOOTHING)
+            }
+        }
+    }
 }
 
+fn mean(total: Duration, samples: u64) -> Option<Duration> {
+    let samples = u32::try_from(samples).ok()?;
+    (samples > 0).then(|| total / samples)
+}
+
+/// One send still unconfirmed.
 #[derive(Debug, Clone, Copy)]
-struct SentTag {
+struct Outstanding {
+    seq: u64,
     wire: Tag,
     content: Tag,
     sent_at: Instant,
-    /// The frame this transfer carried, counting from one, or zero for a
-    /// restore; resends of the same pixels share their frame's number.
-    frame: u64,
-    echoed: bool,
+    /// Frames numbered up to and including this send: what its echo
+    /// confirms.
+    frames_through: u64,
 }
 
 /// One cluster's side of the window.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ClusterLink {
     /// The cluster's radio MAC, which keys its reset budget.
     mac: Option<Mac>,
     /// Pixels of the newest frame submitted for this cluster.
     newest: Option<Tag>,
-    /// Pixels of ours the cluster last echoed; `None` while it shows
+    /// Pixels of the last send: what the fans show once everything out
+    /// has landed.
+    sent_content: Option<Tag>,
+    /// Pixels of the last confirmed send; `None` while the cluster shows
     /// something this session never sent.
-    confirmed: Option<Tag>,
-    in_flight: Option<InFlight>,
-    /// Sends after the last one the cluster echoed: what the TX may still
-    /// hold for it.
-    unresolved: u32,
-    recent: VecDeque<SentTag>,
-    /// Frames numbered for the delivery count.
+    shown: Option<Tag>,
+    /// Sends after the last confirmed one, oldest first.
+    log: VecDeque<Outstanding>,
+    /// Wire tag of the last confirmed send.
+    acked_wire: Option<Tag>,
+    next_seq: u64,
+    acked_seq: u64,
+    /// Sends up to this one were given up on by a timeout; they stay
+    /// unresolved until an echo passes them, but hold no window room.
+    lost_through: u64,
+    /// Frames numbered so far, and confirmed so far.
     frames: u64,
-    last_delivered_frame: u64,
+    delivered_through: u64,
+    window: u32,
+    ssthresh: u32,
+    avoid_credit: u32,
+    /// No further halving until an echo confirms this send.
+    recovery_until: u64,
+    /// A frame waited for room since the last advancing echo.
+    window_limited: bool,
+    timeouts: u32,
+    /// When the timeout clock last started: the first send after idle, a
+    /// progress echo, or a timeout.
+    rto_from: Option<Instant>,
+    /// When the cluster last showed progress, or started a chain of sends.
+    last_progress_at: Option<Instant>,
+    last_advance_at: Option<Instant>,
+    /// Sends were out when the last echo advanced, so the time to the next
+    /// advance samples the echo cadence.
+    out_after_advance: bool,
+    echo_gap: Option<Duration>,
+    /// Running average of the confirmed send's age at its echo.
+    echo_age: Option<Duration>,
+    base_delays: VecDeque<(Instant, Duration)>,
+    next_poll_at: Option<Instant>,
     last_seen_at: Option<Instant>,
-    last_clock: Option<[u8; 4]>,
-    /// The tag the cluster echoed last, whoever sent it.
     last_echo: Option<Tag>,
-    echo_average: Option<Duration>,
-    /// Fan-speed upkeep ran since the last transfer went out.
     restore_owed: bool,
-    /// The cluster's reset budget is spent: it gets no RGB this session.
     holding: bool,
     stall_warned: bool,
     absent_logged: bool,
+}
+
+impl Default for ClusterLink {
+    fn default() -> Self {
+        Self {
+            mac: None,
+            newest: None,
+            sent_content: None,
+            shown: None,
+            log: VecDeque::new(),
+            acked_wire: None,
+            next_seq: 1,
+            acked_seq: 0,
+            lost_through: 0,
+            frames: 0,
+            delivered_through: 0,
+            window: INITIAL_WINDOW,
+            ssthresh: MAX_WINDOW,
+            avoid_credit: 0,
+            recovery_until: 0,
+            window_limited: false,
+            timeouts: 0,
+            rto_from: None,
+            last_progress_at: None,
+            last_advance_at: None,
+            out_after_advance: false,
+            echo_gap: None,
+            echo_age: None,
+            base_delays: VecDeque::new(),
+            next_poll_at: None,
+            last_seen_at: None,
+            last_echo: None,
+            restore_owed: false,
+            holding: false,
+            stall_warned: false,
+            absent_logged: false,
+        }
+    }
 }
 
 impl ClusterLink {
@@ -273,83 +373,132 @@ impl ClusterLink {
         !self.heard_within(now, ABSENT_AFTER)
     }
 
-    /// The bounded wait for one echo: four echo times, within bounds, or
-    /// the conservative default before any echo has been seen.
-    fn resend_after(&self) -> Duration {
-        self.echo_average.map_or(ECHO_WAIT_UNKNOWN, |average| {
-            (average * 4).clamp(ECHO_RESEND_MIN, ECHO_RESEND_MAX)
-        })
+    /// Sends after the last confirmed one.
+    fn unresolved(&self) -> u64 {
+        self.next_seq - 1 - self.acked_seq
     }
 
-    /// When to poll first after a send: most of an echo time, so the poll
-    /// rarely comes back empty, and never sooner than the poll spacing.
-    fn first_poll_delay(&self) -> Duration {
-        let wait = self.resend_after();
-        self.echo_average
-            .map_or(ECHO_POLL_INTERVAL, |average| average * 3 / 4)
-            .clamp(ECHO_POLL_INTERVAL, wait / 2)
+    /// Unresolved sends a timeout has not given up on: what holds room.
+    fn in_flight(&self) -> u64 {
+        self.next_seq - 1 - self.acked_seq.max(self.lost_through)
     }
 
-    /// Spacing of the polls after the first: an eighth of an echo time,
-    /// doubling with every resend of the chain.
-    fn poll_spacing(&self, resends: u32) -> Duration {
-        self.echo_average
-            .map_or(ECHO_POLL_INTERVAL, |average| average / 8)
-            .clamp(ECHO_POLL_INTERVAL, ECHO_POLL_MAX_INTERVAL)
-            .saturating_mul(1 << resends.min(5))
-            .min(ECHO_POLL_MAX_INTERVAL)
+    fn has_room(&self) -> bool {
+        self.in_flight() < u64::from(self.window) && self.unresolved() < u64::from(MAX_WINDOW)
     }
 
-    fn sent(&mut self, wire: Tag) -> Option<&mut SentTag> {
-        self.recent
-            .iter_mut()
-            .rev()
-            .find(|entry| entry.wire == wire)
+    /// Whether the cluster has something to send: a frame it has not been
+    /// sent, or a restore it owes.
+    fn wants_send(&self) -> bool {
+        self.newest
+            .is_some_and(|newest| self.sent_content != Some(newest) || self.restore_owed)
     }
 
-    /// Sends made after the send tagged `wire`.
-    fn sent_after(&self, wire: Tag) -> u32 {
-        let after = self
-            .recent
-            .iter()
-            .rev()
-            .position(|entry| entry.wire == wire)
-            .unwrap_or(0);
-        u32::try_from(after).unwrap_or(u32::MAX)
+    /// Time without progress before the sends out count as lost: three
+    /// echo intervals, or the usual echo age plus two intervals when the
+    /// radio's echoes lag further behind, backing off with every timeout in
+    /// a row.
+    fn timeout(&self) -> Duration {
+        let base = match (self.echo_gap, self.echo_age) {
+            (None, None) => ECHO_TIMEOUT_UNKNOWN,
+            (gap, age) => {
+                let gap = gap.or(age).unwrap_or(ECHO_TIMEOUT_UNKNOWN);
+                let age = age.unwrap_or(Duration::ZERO);
+                (gap * 3)
+                    .max(age + gap * 2)
+                    .clamp(ECHO_TIMEOUT_MIN, ECHO_TIMEOUT_MAX)
+            }
+        };
+        base.saturating_mul(1 << self.timeouts.min(3))
+            .min(ECHO_TIMEOUT_CAP)
     }
 
-    fn remember(&mut self, entry: SentTag) {
-        if self.recent.len() == RECENT_SENDS {
-            self.recent.pop_front();
+    /// Spacing of echo polls: a sixth of an echo interval, backing off
+    /// while the cluster recovers from timeouts.
+    fn poll_spacing(&self) -> Duration {
+        self.echo_gap
+            .map_or(ECHO_POLL_DEFAULT, |gap| {
+                (gap / 6).clamp(ECHO_POLL_MIN, ECHO_POLL_STEADY_MAX)
+            })
+            .saturating_mul(1 << self.timeouts.min(3))
+            .min(ECHO_POLL_MAX)
+    }
+
+    /// When to poll first for the echo of sends just made: just before the
+    /// next status is due, when the cadence is known.
+    fn first_poll(&self, now: Instant) -> Instant {
+        let (Some(last), Some(gap)) = (self.last_advance_at, self.echo_gap) else {
+            return now + self.poll_spacing();
+        };
+        if gap.is_zero() {
+            return now + self.poll_spacing();
         }
-        self.recent.push_back(entry);
+        let since = now.saturating_duration_since(last);
+        let periods = u32::try_from(since.as_nanos() / gap.as_nanos()).unwrap_or(u32::MAX);
+        let expected = last + gap.saturating_mul(periods.saturating_add(1));
+        expected
+            .checked_sub(gap / 4)
+            .unwrap_or(expected)
+            .max(now + ECHO_POLL_MIN)
     }
 
-    /// Whether the echo of `entry` is the first delivery of its frame.
-    fn deliver(&mut self, entry: SentTag) -> bool {
-        if entry.frame == 0 || entry.frame <= self.last_delivered_frame {
-            return false;
+    /// The smallest echo age seen lately: the radio's delay with no
+    /// backlog, polling included.
+    fn base_delay(&self) -> Option<Duration> {
+        self.base_delays.iter().map(|(_, delay)| *delay).min()
+    }
+
+    fn sample_base_delay(&mut self, now: Instant, age: Duration) {
+        while self
+            .base_delays
+            .front()
+            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > BASE_DELAY_SPAN)
+        {
+            self.base_delays.pop_front();
         }
-        self.last_delivered_frame = entry.frame;
-        true
+        self.base_delays.push_back((now, age));
     }
 
-    /// Fold one echo time into the running average. A sample is clipped to
-    /// a few averages first, so one outlier (a poll that timed out, a
-    /// report the RX sat on) cannot stretch every wait after it; a radio
-    /// that really slowed down still gets there within a few samples.
-    fn sample_echo(&mut self, sample: Duration) {
-        self.echo_average = Some(match self.echo_average {
-            None => sample,
-            Some(average) => {
-                let sample = sample.min(average.saturating_mul(OUTLIER_CLIP));
-                if sample >= average {
-                    average + sample.saturating_sub(average) / LATENCY_SMOOTHING
-                } else {
-                    average.saturating_sub(average.saturating_sub(sample) / LATENCY_SMOOTHING)
+    /// Fold one echo interval into the running average, clipped so one
+    /// missed status cannot stretch every timeout after it.
+    fn sample_gap(&mut self, sample: Duration) {
+        self.echo_gap = Some(smooth(self.echo_gap, sample));
+    }
+
+    /// Fold one confirmed send's echo age into the running average.
+    fn sample_age(&mut self, sample: Duration) {
+        self.echo_age = Some(smooth(self.echo_age, sample));
+    }
+
+    /// Grow or shrink the window on an advancing echo that confirmed
+    /// `sends` sends and found `overdue` of the later ones overdue. Returns
+    /// whether the window halved.
+    fn adjust_window(&mut self, sends: u64, overdue: u64) -> bool {
+        let sends = u32::try_from(sends).unwrap_or(u32::MAX);
+        if overdue > OVERDUE_LIMIT && self.acked_seq >= self.recovery_until {
+            self.ssthresh = (self.window / 2).max(MIN_WINDOW);
+            self.window = self.ssthresh;
+            self.avoid_credit = 0;
+            self.recovery_until = self.next_seq - 1;
+            self.window_limited = false;
+            return true;
+        }
+        if std::mem::take(&mut self.window_limited) && self.acked_seq >= self.recovery_until {
+            if self.window < self.ssthresh {
+                self.window = self
+                    .window
+                    .saturating_add(sends)
+                    .min(self.ssthresh)
+                    .min(MAX_WINDOW);
+            } else {
+                self.avoid_credit = self.avoid_credit.saturating_add(sends);
+                while self.avoid_credit >= self.window && self.window < MAX_WINDOW {
+                    self.avoid_credit -= self.window;
+                    self.window += 1;
                 }
             }
-        });
+        }
+        false
     }
 }
 
@@ -359,8 +508,8 @@ pub struct DeliveryPacer {
     links: Vec<ClusterLink>,
     reset_requested: bool,
     totals: DeliveryStats,
-    window: DeliveryStats,
-    window_started_at: Option<Instant>,
+    interval: DeliveryStats,
+    interval_started_at: Option<Instant>,
 }
 
 impl DeliveryPacer {
@@ -376,17 +525,23 @@ impl DeliveryPacer {
         self.reset_requested
     }
 
+    /// Whether the protocol has asked for the TX reset: the session is
+    /// ending and nothing more should be written.
+    #[must_use]
+    pub const fn reset_requested(&self) -> bool {
+        self.reset_requested
+    }
+
     /// Clusters whose lighting is held because their reset budget is spent.
     #[must_use]
     pub fn held_clusters(&self) -> usize {
         self.links.iter().filter(|link| link.holding).count()
     }
 
-    /// Whether the protocol has asked for the TX reset: the session is
-    /// ending and nothing more should be written.
+    /// `cluster`'s current window, in sends.
     #[must_use]
-    pub const fn reset_requested(&self) -> bool {
-        self.reset_requested
+    pub fn window(&self, cluster: usize) -> Option<u32> {
+        self.links.get(cluster).map(|link| link.window)
     }
 
     /// Grow the window to cover `clusters`, keeping what is known.
@@ -396,7 +551,7 @@ impl DeliveryPacer {
         }
     }
 
-    /// Fit the window to the frozen routing, one link per cluster MAC in
+    /// Fit the pacer to the frozen routing, one link per cluster MAC in
     /// routing order: a cluster seen during connect that did not make the
     /// routing has no link left to report on.
     pub fn fit_clusters(&mut self, macs: &[Mac]) {
@@ -408,7 +563,7 @@ impl DeliveryPacer {
     }
 
     /// Fan-speed upkeep just went out: every cluster showing our lighting
-    /// owes a restore, paid by the next transfer it gets.
+    /// owes a restore, paid by the next send it gets.
     pub fn owe_restores(&mut self) {
         for link in &mut self.links {
             if link.newest.is_some() {
@@ -433,74 +588,112 @@ impl DeliveryPacer {
         self.ensure_clusters(cluster + 1);
         let link = &mut self.links[cluster];
         let replaced = link.newest.replace(content);
-        let unsent = replaced.is_some_and(|previous| {
-            previous != content && !link.recent.iter().any(|entry| entry.content == previous)
-        });
+        let unsent = replaced
+            .is_some_and(|previous| previous != content && link.sent_content != Some(previous));
         if unsent {
             self.count(|stats| stats.frames_coalesced += 1);
         }
     }
 
-    /// Whether a frame may go out now: no cluster in step has a transfer
-    /// out. A cluster is out of step while it is not heard, while its
-    /// lighting is held, and once its transfer outlasts the first bounded
-    /// wait, so one slow or failing cluster never stalls the rest.
-    #[must_use]
-    pub fn window_open(&self, now: Instant) -> bool {
-        !self.silenced()
-            && !self.links.iter().any(|link| {
-                !link.holding
-                    && !link.absent(now)
-                    && link
-                        .in_flight
-                        .is_some_and(|flight| flight.resends == 0 && now < flight.resend_at)
-            })
+    /// Give up on sends whose window ran out without an echo. A cluster
+    /// that times out collapses its window, drops out of step, and probes
+    /// with the newest frame until an echo moves again.
+    pub fn tick(&mut self, now: Instant) {
+        if self.silenced() {
+            return;
+        }
+        let mut timed_out = 0_u64;
+        for (cluster, link) in self.links.iter_mut().enumerate() {
+            if link.holding || link.in_flight() == 0 {
+                continue;
+            }
+            let Some(from) = link.rto_from else {
+                continue;
+            };
+            if now.saturating_duration_since(from) < link.timeout() {
+                continue;
+            }
+            if link.timeouts == 0 {
+                debug!(
+                    cluster,
+                    in_flight = link.in_flight(),
+                    window = link.window,
+                    "wireless sends unconfirmed past their timeout; collapsing the window and probing with the newest frame"
+                );
+            }
+            link.lost_through = link.next_seq - 1;
+            // A timeout before any echo was seen only means the first
+            // guess at the timeout was short; it says nothing about how
+            // much the radio carries, so slow start keeps its ceiling.
+            if link.echo_age.is_some() {
+                link.ssthresh = (link.window / 2).max(MIN_WINDOW);
+            }
+            link.window = MIN_WINDOW;
+            link.avoid_credit = 0;
+            link.timeouts = link.timeouts.saturating_add(1);
+            link.rto_from = Some(now);
+            timed_out += 1;
+        }
+        if timed_out > 0 {
+            self.count(|stats| stats.timeouts += timed_out);
+        }
     }
 
-    /// Whether `cluster` should be sent a transfer now, and why, given
-    /// whether the frame window was open when this pass began.
+    /// Note, before a pass of sends, which clusters have something to send
+    /// but no room: for them the window is the limit, and it may grow.
+    pub fn mark_window_limits(&mut self, now: Instant) {
+        if self.silenced() {
+            return;
+        }
+        for link in &mut self.links {
+            let pacing = !link.holding && !link.absent(now) && link.timeouts == 0;
+            if pacing && link.wants_send() && !link.has_room() {
+                link.window_limited = true;
+            }
+        }
+    }
+
+    /// Whether `cluster` should be sent a transfer now, and why.
     #[must_use]
-    pub fn decide(&self, cluster: usize, now: Instant, window_open: bool) -> Option<SendKind> {
+    pub fn decide(&self, cluster: usize, now: Instant) -> Option<SendKind> {
         if self.silenced() {
             return None;
         }
         let link = self.links.get(cluster)?;
         let newest = link.newest?;
-        if link.holding || link.absent(now) {
+        if link.holding || link.absent(now) || link.unresolved() >= u64::from(MAX_WINDOW) {
             return None;
         }
-        match link.in_flight {
-            Some(flight)
-                if now >= flight.resend_at && link.unresolved < MAX_UNRESOLVED_TRANSFERS =>
-            {
-                Some(SendKind::Resend)
-            }
-            Some(_) => None,
-            None if !window_open => None,
-            None if link.confirmed != Some(newest) => Some(SendKind::Frame),
-            None if link.restore_owed => Some(SendKind::Restore),
-            None => None,
+        if link.timeouts > 0 {
+            return (link.in_flight() == 0).then_some(SendKind::Resend);
+        }
+        if !link.has_room() {
+            return None;
+        }
+        if link.sent_content != Some(newest) {
+            Some(SendKind::Frame)
+        } else if link.restore_owed {
+            Some(SendKind::Restore)
+        } else {
+            None
         }
     }
 
-    /// Whether `cluster` may take one more transfer without passing the
-    /// unresolved bound.
+    /// Whether `cluster` may take one more send without passing the bound
+    /// on unresolved sends.
     #[must_use]
     pub fn has_capacity(&self, cluster: usize) -> bool {
         self.links.get(cluster).is_some_and(|link| {
-            !self.silenced() && !link.holding && link.unresolved < MAX_UNRESOLVED_TRANSFERS
+            !self.silenced() && !link.holding && link.unresolved() < u64::from(MAX_WINDOW)
         })
     }
 
-    /// Whether `cluster`'s newest frame has not gone out: held behind a
-    /// transfer of other pixels, or never sent at all.
+    /// Whether `cluster`'s newest frame has not gone out.
     #[must_use]
     pub fn held(&self, cluster: usize) -> bool {
         self.links.get(cluster).is_some_and(|link| {
-            link.newest.is_some_and(|newest| match link.in_flight {
-                Some(flight) => flight.content != newest,
-                None => link.confirmed != Some(newest),
-            })
+            link.newest
+                .is_some_and(|newest| link.sent_content != Some(newest))
         })
     }
 
@@ -510,76 +703,33 @@ impl DeliveryPacer {
         self.ensure_clusters(cluster + 1);
         let link = &mut self.links[cluster];
         let mut wire = wire_tag(content, next_send_number());
-        while Some(wire) == link.last_echo {
+        while Some(wire) == link.last_echo || Some(wire) == link.acked_wire {
             wire = wire_tag(content, next_send_number());
         }
-        link.restore_owed = false;
-        link.unresolved = link.unresolved.saturating_add(1);
-        let previous = link.in_flight;
-
-        // A frame is new pixels for the chain; a resend of the same pixels
-        // is the same frame again, and a restore is no frame at all.
-        let same_pixels_resend =
-            kind == SendKind::Resend && previous.is_some_and(|flight| flight.content == content);
-        let frame = if kind == SendKind::Restore {
-            0
-        } else if same_pixels_resend {
-            link.recent
-                .iter()
-                .rev()
-                .find(|entry| entry.content == content)
-                .map_or(0, |entry| entry.frame)
-        } else {
+        let new_frame = kind != SendKind::Restore && link.sent_content != Some(content);
+        if new_frame {
             link.frames += 1;
-            link.frames
-        };
-        let new_frame = kind != SendKind::Restore && !same_pixels_resend;
-        link.remember(SentTag {
+        }
+        if link.unresolved() == 0 {
+            link.last_progress_at = Some(now);
+        }
+        if link.in_flight() == 0 {
+            link.rto_from = Some(now);
+        }
+        let seq = link.next_seq;
+        link.next_seq += 1;
+        link.log.push_back(Outstanding {
+            seq,
             wire,
             content,
             sent_at: now,
-            frame,
-            echoed: false,
+            frames_through: link.frames,
         });
-
-        let first_poll = now + link.first_poll_delay();
-        let resend_after = link.resend_after();
-        let flight = match (kind, previous) {
-            (SendKind::Resend, Some(previous)) => {
-                let resends = previous.resends.saturating_add(1);
-                if resends == 1 {
-                    debug!(
-                        cluster,
-                        waited_ms = millis(now.saturating_duration_since(previous.sent_at)),
-                        "wireless transfer unconfirmed after its bounded wait; sending the newest frame again"
-                    );
-                }
-                InFlight {
-                    wire,
-                    content,
-                    sent_at: now,
-                    unconfirmed_since: previous.unconfirmed_since,
-                    resends,
-                    clean: previous.clean,
-                    resend_at: now
-                        + resend_after
-                            .saturating_mul(1 << resends.min(4))
-                            .min(ECHO_RESEND_CAP),
-                    poll_at: first_poll,
-                }
-            }
-            _ => InFlight {
-                wire,
-                content,
-                sent_at: now,
-                unconfirmed_since: now,
-                resends: 0,
-                clean: true,
-                resend_at: now + resend_after,
-                poll_at: first_poll,
-            },
-        };
-        link.in_flight = Some(flight);
+        link.sent_content = Some(content);
+        link.restore_owed = false;
+        if link.next_poll_at.is_none() {
+            link.next_poll_at = Some(link.first_poll(now));
+        }
         self.count(|stats| {
             match kind {
                 SendKind::Frame => {}
@@ -600,7 +750,8 @@ impl DeliveryPacer {
             && self.links.iter().any(|link| {
                 !link.holding
                     && !link.absent(now)
-                    && link.in_flight.is_some_and(|flight| now >= flight.poll_at)
+                    && link.unresolved() > 0
+                    && link.next_poll_at.is_none_or(|at| now >= at)
             })
     }
 
@@ -610,19 +761,11 @@ impl DeliveryPacer {
         self.count(|stats| stats.echo_polls += 1);
     }
 
-    /// A table poll went out that answers whatever echo polls were due:
-    /// reschedule every waiting cluster's next one, further out the longer
-    /// its wait has run.
+    /// A table poll went out that answers whatever echo polls were due.
     pub fn reschedule_polls(&mut self, now: Instant) {
         for link in &mut self.links {
-            let Some(flight) = link.in_flight else {
-                continue;
-            };
-            if now >= flight.poll_at {
-                let spacing = link.poll_spacing(flight.resends);
-                if let Some(flight) = link.in_flight.as_mut() {
-                    flight.poll_at = now + spacing;
-                }
+            if link.unresolved() > 0 && link.next_poll_at.is_none_or(|at| now >= at) {
+                link.next_poll_at = Some(now + link.poll_spacing());
             }
         }
     }
@@ -632,9 +775,13 @@ impl DeliveryPacer {
         self.count(|stats| stats.table_replies += 1);
     }
 
-    /// `cluster` reported `echo` with its clock at `clock` in a reply that
-    /// reached the protocol at `now`.
-    pub fn observe(&mut self, cluster: usize, echo: Tag, clock: [u8; 4], now: Instant) {
+    /// `cluster` reported `echo` in a table reply that reached the protocol
+    /// at `now`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one echo updates delivery, window, timing, and drift together"
+    )]
+    pub fn observe(&mut self, cluster: usize, echo: Tag, now: Instant) {
         self.ensure_clusters(cluster + 1);
         let link = &mut self.links[cluster];
         if link.absent_logged {
@@ -643,104 +790,109 @@ impl DeliveryPacer {
                 cluster,
                 "wireless cluster heard again; resuming its lighting"
             );
-            // Nothing could be confirmed while it was not heard, so its
-            // wait starts over, the newest frame goes out at once, and the
-            // time to an echo that spans the gap says nothing about the
-            // radio.
-            if let Some(flight) = link.in_flight.as_mut() {
-                flight.unconfirmed_since = now;
-                flight.resends = 0;
-                flight.resend_at = now;
-                flight.clean = false;
+            // Nothing could be confirmed while it was not heard: give up on
+            // what was out, and send the newest frame at once.
+            link.lost_through = link.next_seq - 1;
+            link.sent_content = None;
+            link.timeouts = 0;
+            link.rto_from = Some(now);
+            if link.unresolved() > 0 {
+                link.last_progress_at = Some(now);
             }
         }
         link.last_seen_at = Some(now);
         link.last_echo = Some(echo);
-        let reported = link.last_clock.replace(clock) != Some(clock);
 
-        let mut delivered = false;
-        let mut late = false;
-        let mut drifted = false;
-        let mut confirmed_any = false;
-        let mut echo_sample = None;
-
-        if let Some(flight) = link.in_flight
-            && flight.wire == echo
-        {
-            if flight.clean {
-                let sample = now.saturating_duration_since(flight.sent_at);
-                echo_sample = Some(sample);
-                link.sample_echo(sample);
-            }
-            link.in_flight = None;
-            link.unresolved = 0;
-            link.confirmed = Some(flight.content);
-            confirmed_any = true;
-            if std::mem::take(&mut link.stall_warned) {
-                info!(
+        let Some(position) = link.log.iter().position(|sent| sent.wire == echo) else {
+            if link.acked_wire != Some(echo) && link.shown.is_some() {
+                // The receiver shows something this session never sent:
+                // it left our frame for its own lighting. Send the newest
+                // frame again.
+                link.shown = None;
+                link.sent_content = None;
+                self.count(|stats| stats.drifts += 1);
+                debug!(
                     cluster,
-                    unconfirmed_ms =
-                        millis(now.saturating_duration_since(flight.unconfirmed_since)),
-                    resends = flight.resends,
-                    "wireless fans confirming frames again"
+                    echo = ?echo,
+                    "wireless receiver left our frame for its own lighting; sending the newest frame again"
                 );
             }
-            if let Some(entry) = link.sent(echo) {
-                entry.echoed = true;
-                let entry = *entry;
-                delivered = link.deliver(entry);
-            }
-        } else if let Some(entry) = link.sent(echo) {
-            if !entry.echoed {
-                // An older transfer landed after its wait ran out. The
-                // radio delivers, only slower than the wait allowed: learn
-                // the echo time and restart the stall clock.
-                entry.echoed = true;
-                let entry = *entry;
-                late = true;
-                confirmed_any = true;
-                delivered = link.deliver(entry);
-                link.sample_echo(now.saturating_duration_since(entry.sent_at));
-                // The TX relays in order: this transfer and everything sent
-                // before it have left the TX, and only the sends after it
-                // may still be queued. The resend budget is not renewed.
-                link.unresolved = link.sent_after(echo);
-                if let Some(flight) = link.in_flight.as_mut() {
-                    flight.unconfirmed_since = now;
-                }
-            }
-            link.confirmed = link.sent(echo).map(|entry| entry.content);
-        } else {
-            drifted = link.confirmed.is_some();
-            link.confirmed = None;
+            return;
+        };
+
+        let confirmed = link.log[position];
+        let sends = confirmed.seq - link.acked_seq;
+        let late = confirmed.seq <= link.lost_through;
+        let frames = confirmed
+            .frames_through
+            .saturating_sub(link.delivered_through);
+        link.delivered_through = link.delivered_through.max(confirmed.frames_through);
+        let age = now.saturating_duration_since(confirmed.sent_at);
+        link.sample_base_delay(now, age);
+        link.sample_age(age);
+        let slack = link.poll_spacing() + OVERDUE_SLACK;
+        let base = link.base_delay().unwrap_or(age);
+        let overdue = link
+            .log
+            .iter()
+            .skip(position + 1)
+            .filter(|sent| sent.sent_at + base + slack <= now)
+            .count();
+        let overdue = u64::try_from(overdue).unwrap_or(u64::MAX);
+        let gap = link
+            .last_advance_at
+            .filter(|_| link.out_after_advance)
+            .map(|previous| now.saturating_duration_since(previous));
+        if let Some(gap) = gap {
+            link.sample_gap(gap);
         }
+        link.last_advance_at = Some(now);
+
+        link.acked_seq = confirmed.seq;
+        link.acked_wire = Some(confirmed.wire);
+        link.shown = Some(confirmed.content);
+        link.log.drain(..=position);
+        link.out_after_advance = link.unresolved() > 0;
+        link.timeouts = 0;
+        link.rto_from = Some(now);
+        link.last_progress_at = Some(now);
+        link.next_poll_at = link.out_after_advance.then(|| link.first_poll(now));
+        if std::mem::take(&mut link.stall_warned) {
+            info!(cluster, "wireless fans confirming frames again");
+        }
+        let halved = link.adjust_window(sends, overdue);
+        if halved {
+            debug!(
+                cluster,
+                overdue,
+                window = link.window,
+                "wireless TX holding a backlog; halving the window"
+            );
+        }
+        let mac = link.mac;
 
         self.count(|stats| {
-            if reported {
-                stats.cluster_reports += 1;
-            }
-            if delivered {
-                stats.frames_delivered += 1;
+            stats.echo_advances += 1;
+            stats.advance_frames += frames;
+            stats.advance_max = stats.advance_max.max(frames);
+            stats.frames_delivered += frames;
+            stats.overdue_max = stats.overdue_max.max(overdue);
+            stats.echo_samples += 1;
+            stats.echo_total += age;
+            stats.echo_max = stats.echo_max.max(age);
+            if let Some(gap) = gap {
+                stats.gap_samples += 1;
+                stats.gap_total += gap;
             }
             if late {
                 stats.late_echoes += 1;
             }
-            if drifted {
-                stats.drifts += 1;
-            }
-            if let Some(sample) = echo_sample {
-                stats.add_echo(sample);
+            if halved {
+                stats.congestion_events += 1;
             }
         });
-        if confirmed_any && let Some(mac) = self.links[cluster].mac {
+        if let Some(mac) = mac {
             forget_resets(mac);
-        }
-        if drifted {
-            debug!(
-                cluster,
-                echo = ?echo,
-                "wireless receiver left our frame for its own lighting; sending the newest frame again"
-            );
         }
     }
 
@@ -758,17 +910,20 @@ impl DeliveryPacer {
     }
 
     /// Warn about clusters that stopped confirming, and decide when one has
-    /// stopped long enough, often enough, while still heard.
+    /// stopped long enough while still heard.
     pub fn stall_verdict(&mut self, now: Instant) -> Option<StallVerdict> {
         if self.silenced() {
             return None;
         }
         for (cluster, link) in self.links.iter_mut().enumerate() {
-            let Some(flight) = link.in_flight.filter(|_| !link.holding) else {
+            if link.holding || link.unresolved() == 0 {
+                continue;
+            }
+            let Some(since) = link.last_progress_at else {
                 continue;
             };
-            let unconfirmed_for = now.saturating_duration_since(flight.unconfirmed_since);
-            if unconfirmed_for < ECHO_STALL_WARN || !link.heard_within(now, ECHO_STALL_WARN) {
+            let unconfirmed_for = now.saturating_duration_since(since);
+            if unconfirmed_for < ECHO_STALL_WARN || !link.heard_within(now, HEARD_WITHIN) {
                 continue;
             }
             if !link.stall_warned {
@@ -776,8 +931,9 @@ impl DeliveryPacer {
                 warn!(
                     cluster,
                     unconfirmed_ms = millis(unconfirmed_for),
-                    resends = flight.resends,
-                    "wireless fans have not confirmed a frame; resending the newest frame as the radio allows"
+                    unresolved = link.unresolved(),
+                    timeouts = link.timeouts,
+                    "wireless fans have not confirmed a frame; probing with the newest frame as the radio allows"
                 );
             }
             if unconfirmed_for < ECHO_STALL {
@@ -790,13 +946,11 @@ impl DeliveryPacer {
                 return Some(StallVerdict::Reset {
                     cluster,
                     unconfirmed_for,
-                    resends: flight.resends,
+                    resends: link.timeouts,
                     resets,
                 });
             }
             link.holding = true;
-            link.in_flight = None;
-            link.unresolved = 0;
             error!(
                 cluster,
                 unconfirmed_ms = millis(unconfirmed_for),
@@ -813,22 +967,14 @@ impl DeliveryPacer {
 
     /// Log the delivery report when one is due.
     pub fn report_if_due(&mut self, now: Instant) {
-        let started = *self.window_started_at.get_or_insert(now);
+        let started = *self.interval_started_at.get_or_insert(now);
         let elapsed = now.saturating_duration_since(started);
         if elapsed < REPORT_INTERVAL {
             return;
         }
-        let window = std::mem::take(&mut self.window);
-        self.window_started_at = Some(now);
+        let interval = std::mem::take(&mut self.interval);
+        self.interval_started_at = Some(now);
         let clusters = self.links.len().max(1);
-        let per_cluster_rate = |count: u64| {
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "report rates are approximate by nature"
-            )]
-            let rate = count as f64 / elapsed.as_secs_f64() / clusters as f64;
-            (rate * 10.0).round() / 10.0
-        };
         let per_second = |count: u64| {
             #[expect(
                 clippy::cast_precision_loss,
@@ -837,23 +983,46 @@ impl DeliveryPacer {
             let rate = count as f64 / elapsed.as_secs_f64();
             (rate * 10.0).round() / 10.0
         };
+        let per_cluster = |count: u64| {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "report rates are approximate by nature"
+            )]
+            let rate = per_second(count) / clusters as f64;
+            (rate * 10.0).round() / 10.0
+        };
+        let windows = self
+            .links
+            .iter()
+            .map(|link| link.window.to_string())
+            .collect::<Vec<_>>()
+            .join("/");
         info!(
             clusters,
             window_s = elapsed.as_secs(),
-            offered_fps = per_second(window.frames_offered),
-            sent_fps = per_cluster_rate(window.frames_sent),
-            delivered_fps = per_cluster_rate(window.frames_delivered),
-            coalesced = window.frames_coalesced,
-            resends = window.resends,
-            restores = window.restores,
-            late_echoes = window.late_echoes,
-            drifts = window.drifts,
-            echo_ms_mean = window.echo_mean().map_or(0, millis),
-            echo_ms_max = millis(window.echo_max),
-            polls_per_s = per_second(window.echo_polls),
-            replies_per_s = per_second(window.table_replies),
-            reports_per_s = per_second(window.cluster_reports),
-            tx_packets_per_s = per_second(window.tx_packets),
+            offered_fps = per_second(interval.frames_offered),
+            sent_fps = per_cluster(interval.frames_sent),
+            delivered_fps = per_cluster(interval.frames_delivered),
+            coalesced = interval.frames_coalesced,
+            window = %windows,
+            echoes_per_s = per_second(interval.echo_advances),
+            advance_mean = interval
+                .advance_mean()
+                .map_or(0.0, |mean| (mean * 10.0).round() / 10.0),
+            advance_max = interval.advance_max,
+            echo_gap_ms = interval.gap_mean().map_or(0, millis),
+            echo_ms_mean = interval.echo_mean().map_or(0, millis),
+            echo_ms_max = millis(interval.echo_max),
+            overdue_max = interval.overdue_max,
+            congestion = interval.congestion_events,
+            timeouts = interval.timeouts,
+            resends = interval.resends,
+            restores = interval.restores,
+            late_echoes = interval.late_echoes,
+            drifts = interval.drifts,
+            polls_per_s = per_second(interval.echo_polls),
+            replies_per_s = per_second(interval.table_replies),
+            tx_packets_per_s = per_second(interval.tx_packets),
             held_clusters = self.held_clusters(),
             "L-Wireless RGB delivery"
         );
@@ -861,7 +1030,7 @@ impl DeliveryPacer {
 
     fn count(&mut self, update: impl Fn(&mut DeliveryStats)) {
         update(&mut self.totals);
-        update(&mut self.window);
+        update(&mut self.interval);
     }
 }
 
@@ -941,6 +1110,7 @@ mod tests {
 
     const T1: Tag = [0, 0, 0, 1];
     const T2: Tag = [0, 0, 0, 2];
+    const T3: Tag = [0, 0, 0, 3];
 
     fn connected(now: Instant) -> DeliveryPacer {
         let mut pacer = DeliveryPacer::default();
@@ -949,21 +1119,163 @@ mod tests {
         pacer
     }
 
+    /// Send the newest frame whenever the pacer allows; returns the wires.
+    fn send_all(pacer: &mut DeliveryPacer, contents: &[Tag], now: Instant) -> Vec<Tag> {
+        let mut wires = Vec::new();
+        for content in contents {
+            pacer.submit(0, *content);
+            pacer.mark_window_limits(now);
+            if let Some(kind) = pacer.decide(0, now) {
+                wires.push(pacer.note_sent(0, *content, kind, now));
+            }
+        }
+        wires
+    }
+
+    fn frame(index: u32) -> Tag {
+        index.to_be_bytes()
+    }
+
     #[test]
-    fn one_transfer_per_cluster_is_ever_unconfirmed() {
+    fn the_window_lets_several_frames_out_before_any_echo() {
         let now = Instant::now();
         let mut pacer = connected(now);
-        pacer.submit(0, T1);
-        assert_eq!(pacer.decide(0, now, true), Some(SendKind::Frame));
-        let wire = pacer.note_sent(0, T1, SendKind::Frame, now);
-        pacer.submit(0, T2);
-        assert_eq!(pacer.decide(0, now, true), None, "the window is closed");
-        let later = now + Duration::from_millis(20);
-        pacer.observe(0, wire, [0, 0, 0, 1], later);
+        let contents: Vec<Tag> = (1..=6).map(frame).collect();
+        let wires = send_all(&mut pacer, &contents, now);
         assert_eq!(
-            pacer.decide(0, later, true),
-            Some(SendKind::Frame),
-            "the echo reopens it for the newest frame"
+            wires.len(),
+            INITIAL_WINDOW as usize,
+            "the initial window, not one frame, goes out unconfirmed"
+        );
+        assert!(
+            pacer.held(0),
+            "then the window is full and the newest waits"
+        );
+    }
+
+    #[test]
+    fn one_echo_confirms_every_send_up_to_the_one_it_names() {
+        let now = Instant::now();
+        let mut pacer = connected(now);
+        pacer.links[0].window = 4;
+        let contents: Vec<Tag> = (1..=4).map(frame).collect();
+        let wires = send_all(&mut pacer, &contents, now);
+        pacer.observe(0, wires[2], now + Duration::from_millis(300));
+        let stats = pacer.totals();
+        assert_eq!(stats.frames_delivered, 3, "the echo passed three frames");
+        assert_eq!(stats.advance_max, 3);
+        assert_eq!(
+            pacer.links[0].unresolved(),
+            1,
+            "only the fourth is still out"
+        );
+    }
+
+    #[test]
+    fn a_full_window_grows_on_each_echo_that_frees_it() {
+        let now = Instant::now();
+        let mut pacer = connected(now);
+        let mut at = now;
+        let mut next = 1;
+        for _ in 0..4 {
+            let mut wires = Vec::new();
+            for _ in 0..40 {
+                pacer.submit(0, frame(next));
+                next += 1;
+                pacer.mark_window_limits(at);
+                if let Some(kind) = pacer.decide(0, at) {
+                    wires.push(pacer.note_sent(0, frame(next - 1), kind, at));
+                }
+                at += Duration::from_millis(8);
+            }
+            let last = *wires.last().expect("sends");
+            pacer.links[0].last_seen_at = Some(at);
+            pacer.observe(0, last, at);
+        }
+        assert!(
+            pacer.links[0].window >= 16,
+            "slow start doubles a window that keeps limiting: {}",
+            pacer.links[0].window
+        );
+    }
+
+    #[test]
+    fn an_overdue_backlog_halves_the_window_once_per_window() {
+        let now = Instant::now();
+        let mut pacer = connected(now);
+        pacer.links[0].window = 16;
+        pacer.links[0].ssthresh = 16;
+        // Sixteen sends 30 ms apart; the echo 500 ms after the last names
+        // only the third, so the ones between had time to arrive and did
+        // not: the TX holds a backlog.
+        let mut wires = Vec::new();
+        for index in 0..16 {
+            let at = now + Duration::from_millis(30 * index);
+            pacer.submit(0, frame(u32::try_from(index).expect("small") + 1));
+            let kind = pacer.decide(0, at).expect("room");
+            wires.push(pacer.note_sent(
+                0,
+                frame(u32::try_from(index).expect("small") + 1),
+                kind,
+                at,
+            ));
+        }
+        pacer.links[0].sample_base_delay(now, Duration::from_millis(40));
+        let echo_at = now + Duration::from_millis(30 * 15 + 500);
+        pacer.observe(0, wires[2], echo_at);
+        assert_eq!(pacer.links[0].window, 8, "the window halves");
+        pacer.observe(0, wires[3], echo_at + Duration::from_millis(10));
+        assert_eq!(
+            pacer.links[0].window, 8,
+            "once per window of sends, not on every echo that still sees it"
+        );
+        assert_eq!(pacer.totals().congestion_events, 1);
+    }
+
+    #[test]
+    fn a_timeout_collapses_the_window_and_probes_with_the_newest_frame() {
+        let now = Instant::now();
+        let mut pacer = connected(now);
+        let _ = send_all(&mut pacer, &[T1, T2], now);
+        let later = now + ECHO_TIMEOUT_UNKNOWN;
+        pacer.links[0].last_seen_at = Some(later);
+        pacer.submit(0, T3);
+        pacer.tick(later);
+        assert_eq!(pacer.links[0].window, MIN_WINDOW);
+        assert_eq!(pacer.decide(0, later), Some(SendKind::Resend));
+        let _ = pacer.note_sent(0, T3, SendKind::Resend, later);
+        assert_eq!(
+            pacer.decide(0, later),
+            None,
+            "one probe at a time while recovering"
+        );
+    }
+
+    #[test]
+    fn unresolved_sends_never_pass_the_hard_bound() {
+        let now = Instant::now();
+        let mut pacer = connected(now);
+        let mut at = now;
+        let mut index = 0;
+        for _ in 0..40 {
+            // The radio is dead: nothing ever echoes. Timeouts keep freeing
+            // window room, but the bound on unresolved sends holds.
+            for _ in 0..8 {
+                index += 1;
+                pacer.submit(0, frame(index));
+                pacer.links[0].last_seen_at = Some(at);
+                pacer.tick(at);
+                if let Some(kind) = pacer.decide(0, at) {
+                    let _ = pacer.note_sent(0, frame(index), kind, at);
+                }
+            }
+            at += ECHO_TIMEOUT_CAP;
+        }
+        assert!(pacer.links[0].unresolved() <= u64::from(MAX_WINDOW));
+        assert_eq!(pacer.links[0].unresolved(), u64::from(MAX_WINDOW));
+        assert!(
+            !pacer.has_capacity(0),
+            "not even the shutdown flush sends past the bound"
         );
     }
 
@@ -971,58 +1283,40 @@ mod tests {
     fn a_restore_is_confirmed_by_its_own_echo_not_the_frame_already_showing() {
         let now = Instant::now();
         let mut pacer = connected(now);
-        pacer.submit(0, T1);
-        let first = pacer.note_sent(0, T1, SendKind::Frame, now);
-        pacer.observe(0, first, [0, 0, 0, 1], now);
+        let first = send_all(&mut pacer, &[T1], now)[0];
+        pacer.observe(0, first, now);
+        pacer.owe_restores();
+        assert_eq!(pacer.decide(0, now), Some(SendKind::Restore));
         let restore = pacer.note_sent(0, T1, SendKind::Restore, now);
         assert_ne!(restore, first, "every send carries its own wire tag");
-        pacer.observe(0, first, [0, 0, 0, 2], now);
-        pacer.submit(0, T2);
+        pacer.observe(0, first, now);
         assert_eq!(
-            pacer.decide(0, now, true),
-            None,
-            "a report from before the restore landed does not release the next frame"
+            pacer.links[0].unresolved(),
+            1,
+            "a report from before the restore landed confirms nothing"
         );
-        pacer.observe(0, restore, [0, 0, 0, 3], now);
-        assert_eq!(pacer.decide(0, now, true), Some(SendKind::Frame));
-    }
-
-    #[test]
-    fn a_restore_owed_by_upkeep_waits_for_the_transfer_ahead_then_goes_out() {
-        let now = Instant::now();
-        let mut pacer = connected(now);
-        pacer.submit(0, T1);
-        let first = pacer.note_sent(0, T1, SendKind::Frame, now);
-        // PWM goes out while the frame is still unconfirmed.
-        pacer.owe_restores();
-        assert_eq!(pacer.decide(0, now, true), None, "the window is closed");
-        pacer.observe(0, first, [0, 0, 0, 1], now);
+        pacer.observe(0, restore, now);
+        assert_eq!(pacer.links[0].unresolved(), 0);
         assert_eq!(
-            pacer.decide(0, now, true),
-            Some(SendKind::Restore),
-            "the frame may have landed before the PWM; it goes out again"
+            pacer.totals().frames_delivered,
+            1,
+            "a restore is not another frame"
         );
-        let restore = pacer.note_sent(0, T1, SendKind::Restore, now);
-        pacer.observe(0, restore, [0, 0, 0, 2], now);
-        assert_eq!(pacer.decide(0, now, true), None, "the debt is paid");
     }
 
     #[test]
     fn a_new_tag_never_matches_what_the_cluster_echoes_now() {
         let now = Instant::now();
         let mut pacer = connected(now);
-        pacer.submit(0, T1);
-        let first = pacer.note_sent(0, T1, SendKind::Frame, now);
-        pacer.observe(0, first, [0, 0, 0, 1], now);
+        let first = send_all(&mut pacer, &[T1], now)[0];
+        pacer.observe(0, first, now);
         // A new session: nothing sent yet, the cluster still echoes the tag
         // of the last session's transfer.
         let mut session = connected(now);
-        session.observe(0, first, [0, 0, 0, 2], now);
-        session.submit(0, T1);
-        assert_eq!(session.decide(0, now, true), Some(SendKind::Frame));
-        let again = session.note_sent(0, T1, SendKind::Frame, now);
+        session.observe(0, first, now);
+        let again = send_all(&mut session, &[T1], now)[0];
         assert_ne!(again, first);
-        session.observe(0, first, [0, 0, 0, 3], now);
+        session.observe(0, first, now);
         assert_eq!(
             session.totals().frames_delivered,
             0,
@@ -1031,153 +1325,92 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_transfers_never_pass_the_bound_even_when_late_echoes_land() {
-        let now = Instant::now();
-        let mut pacer = connected(now);
-        pacer.submit(0, T1);
-        let mut at = now;
-        let mut wires = vec![pacer.note_sent(0, T1, SendKind::Frame, at)];
-        let mut most = 1;
-        for step in 0..40 {
-            at += ECHO_RESEND_CAP;
-            pacer.links[0].last_seen_at = Some(at);
-            if pacer.decide(0, at, false) == Some(SendKind::Resend) {
-                wires.push(pacer.note_sent(0, T1, SendKind::Resend, at));
-            }
-            // Every fifth step the oldest unresolved transfer's echo lands
-            // late, as a slow radio would deliver it.
-            let unresolved = usize::try_from(pacer.links[0].unresolved).expect("small");
-            if step % 5 == 4 && unresolved > 1 {
-                let oldest = wires.len() - unresolved;
-                pacer.observe(0, wires[oldest], [0, 0, 0, 1], at);
-            }
-            most = most.max(pacer.links[0].unresolved);
-        }
-        assert!(
-            most <= MAX_UNRESOLVED_TRANSFERS,
-            "late echoes free only what they resolve: {most} unresolved"
-        );
-        assert!(
-            wires.len() > usize::try_from(MAX_UNRESOLVED_TRANSFERS).expect("small"),
-            "a late echo does free what it resolves"
-        );
-    }
-
-    #[test]
-    fn a_frame_moves_as_one_across_clusters() {
+    fn clusters_are_paced_independently() {
         let now = Instant::now();
         let mut pacer = DeliveryPacer::default();
         pacer.ensure_clusters(2);
         for link in &mut pacer.links {
             link.last_seen_at = Some(now);
         }
-        pacer.submit(0, T1);
-        pacer.submit(1, T1);
-        let first = pacer.note_sent(0, T1, SendKind::Frame, now);
-        let second = pacer.note_sent(1, T1, SendKind::Frame, now);
-        pacer.observe(0, first, [0, 0, 0, 1], now);
-        pacer.submit(0, T2);
-        pacer.submit(1, T2);
-        assert!(
-            !pacer.window_open(now),
-            "the second cluster's transfer is still out"
-        );
-        assert_eq!(
-            pacer.decide(0, now, pacer.window_open(now)),
-            None,
-            "the first cluster waits for its sibling, so the frame goes out whole"
-        );
-        pacer.observe(1, second, [0, 0, 0, 1], now);
-        assert!(pacer.window_open(now));
-        assert_eq!(pacer.decide(0, now, true), Some(SendKind::Frame));
-        assert_eq!(pacer.decide(1, now, true), Some(SendKind::Frame));
-    }
-
-    #[test]
-    fn a_cluster_past_its_bounded_wait_stops_holding_the_others() {
-        let now = Instant::now();
-        let mut pacer = DeliveryPacer::default();
-        pacer.ensure_clusters(2);
-        for link in &mut pacer.links {
-            link.last_seen_at = Some(now);
+        // The second cluster fills its window; the first has room left.
+        for content in [T1, T2] {
+            pacer.submit(1, content);
+            let _ = pacer.note_sent(1, content, SendKind::Frame, now);
         }
-        pacer.submit(0, T1);
-        pacer.submit(1, T1);
-        let first = pacer.note_sent(0, T1, SendKind::Frame, now);
-        let _ = pacer.note_sent(1, T1, SendKind::Frame, now);
-        pacer.observe(0, first, [0, 0, 0, 1], now);
-        pacer.submit(0, T2);
-        pacer.submit(1, T2);
-        assert!(
-            !pacer.window_open(now),
-            "the second cluster is still in step"
-        );
-
-        let late = now + ECHO_WAIT_UNKNOWN;
-        pacer.links[1].last_seen_at = Some(late);
-        assert!(
-            pacer.window_open(late),
-            "past its bounded wait it falls out of step"
-        );
-        assert_eq!(pacer.decide(0, late, true), Some(SendKind::Frame));
-        assert_eq!(
-            pacer.decide(1, late, true),
-            Some(SendKind::Resend),
-            "and catches up on its own resend"
-        );
-    }
-
-    #[test]
-    fn a_frame_replaced_while_held_is_coalesced_not_queued() {
-        let now = Instant::now();
-        let mut pacer = connected(now);
         pacer.submit(0, T1);
         let _ = pacer.note_sent(0, T1, SendKind::Frame, now);
-        pacer.submit(0, T2);
-        pacer.submit(0, [0, 0, 0, 3]);
-        assert_eq!(pacer.totals().frames_coalesced, 1);
+        pacer.submit(0, T3);
+        pacer.submit(1, T3);
+        pacer.mark_window_limits(now);
+        assert_eq!(
+            pacer.decide(0, now),
+            Some(SendKind::Frame),
+            "a full neighbour never holds a cluster with room"
+        );
+        assert_eq!(pacer.decide(1, now), None);
+        assert!(pacer.links[1].window_limited, "the full one may grow");
     }
 
     #[test]
-    fn the_newest_frame_is_held_behind_a_transfer_of_other_pixels() {
+    fn a_cluster_recovering_from_a_timeout_probes_alone() {
+        let now = Instant::now();
+        let mut pacer = DeliveryPacer::default();
+        pacer.ensure_clusters(2);
+        for link in &mut pacer.links {
+            link.last_seen_at = Some(now);
+        }
+        for cluster in 0..2 {
+            for content in [T1, T2] {
+                pacer.submit(cluster, content);
+                let _ = pacer.note_sent(cluster, content, SendKind::Frame, now);
+            }
+        }
+        let late = now + ECHO_TIMEOUT_UNKNOWN;
+        for link in &mut pacer.links {
+            link.last_seen_at = Some(late);
+        }
+        // Only the first cluster's echo arrives.
+        let wire = pacer.links[0].log[1].wire;
+        pacer.observe(0, wire, now + Duration::from_millis(1));
+        pacer.tick(late);
+        pacer.submit(0, T3);
+        pacer.submit(1, T3);
+        assert_eq!(pacer.decide(0, late), Some(SendKind::Frame));
+        assert_eq!(pacer.decide(1, late), Some(SendKind::Resend));
+    }
+
+    #[test]
+    fn a_frame_replaced_before_it_could_go_is_coalesced_not_queued() {
         let now = Instant::now();
         let mut pacer = connected(now);
-        pacer.submit(0, T1);
-        let first = pacer.note_sent(0, T1, SendKind::Frame, now);
-        pacer.observe(0, first, [0, 0, 0, 1], now);
-        pacer.submit(0, T2);
-        let _ = pacer.note_sent(0, T2, SendKind::Frame, now);
-        // The render path goes back to what the fans last confirmed while
-        // the second transfer is still out.
-        pacer.submit(0, T1);
-        assert!(
-            pacer.held(0),
-            "the confirmed pixels must go out again after the transfer ahead"
+        pacer.links[0].window = MIN_WINDOW;
+        let contents: Vec<Tag> = (1..=5).map(frame).collect();
+        let _ = send_all(&mut pacer, &contents, now);
+        assert_eq!(
+            pacer.totals().frames_coalesced,
+            2,
+            "frames three and four were replaced while the window was full"
         );
+        assert!(pacer.held(0), "frame five waits");
     }
 
     #[test]
-    fn the_bounded_wait_grows_with_the_echo_time() {
+    fn the_timeout_follows_the_echo_cadence() {
         let mut link = ClusterLink::default();
-        assert_eq!(link.resend_after(), ECHO_WAIT_UNKNOWN);
-        link.sample_echo(Duration::from_millis(100));
-        assert_eq!(link.resend_after(), Duration::from_millis(400));
-        for _ in 0..40 {
-            link.sample_echo(Duration::from_secs(2));
-        }
-        assert_eq!(link.resend_after(), ECHO_RESEND_MAX);
+        assert_eq!(link.timeout(), ECHO_TIMEOUT_UNKNOWN);
+        link.sample_gap(Duration::from_millis(333));
+        assert_eq!(link.timeout(), Duration::from_millis(999));
+        link.timeouts = 1;
+        assert_eq!(link.timeout(), Duration::from_millis(1_998));
     }
 
     #[test]
-    fn one_outlier_barely_moves_the_echo_time() {
+    fn one_missed_status_barely_moves_the_echo_cadence() {
         let mut link = ClusterLink::default();
-        link.sample_echo(Duration::from_millis(30));
-        link.sample_echo(Duration::from_secs(18));
-        let average = link.echo_average.expect("average");
-        assert!(
-            average <= Duration::from_millis(50),
-            "an 18 s echo across a gap is clipped: {average:?}"
-        );
+        link.sample_gap(Duration::from_millis(333));
+        link.sample_gap(Duration::from_secs(18));
+        let gap = link.echo_gap.expect("gap");
+        assert!(gap <= Duration::from_millis(500), "clipped: {gap:?}");
     }
 
     #[test]
