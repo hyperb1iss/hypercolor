@@ -10,7 +10,8 @@ AI-generated notes, and registry publishes.
 2. Enter the version without the leading `v` (e.g. `0.3.0` or `0.3.0-rc.1`).
 3. Leave **dry run** checked for the first pass. Review the
    `release-preview-v<version>` artifact (release notes + changelog).
-4. Complete the signed macOS acceptance checkpoint below.
+4. Run the signed macOS smoke checkpoint below against a signed rehearsal
+   build.
 5. Re-run with dry run unchecked to ship.
 
 What the Release workflow does, in order:
@@ -59,28 +60,33 @@ and then verifies that every signature carries `APPLE_TEAM_ID` before the
 artifact is uploaded. The Release workflow refuses a non-dry run while any of
 the seven secrets is missing.
 
-## Signed macOS acceptance checkpoint
+## Signed macOS smoke checkpoint
 
-Spec 76 acceptance is a manual release checkpoint until the physical-hardware
-harness is automated. Before shipping a release that includes macOS screen
-capture or host input changes, run the signed packaged release candidate on
-the required Apple Silicon and Intel hardware and retain one acceptance bundle
-covering:
+Before the non-dry run, build signed artifacts without a tag by dispatching
+**CI/CD** with `release_artifacts: full` and `release_version` set to an
+`-rc.0` of the version being cut. Download the arm64 DMG from that run and
+check it on an Apple Silicon Mac:
 
-- the signed TCC owner matrix and selected capability topology, including the
-  broker decision;
-- keyboard, pointer, SDR, HDR, picker, lifecycle, and teardown acceptance for
-  the rows supported by each machine;
-- the Section 19 latency, cadence, zero-copy, byte-reconciliation, and
-  30-minute results, plus the Section 18.5 four-hour combined soak; and
-- one Metal 4 qualification and adoption artifact for every active device that
-  exposes the required facilities.
+- `spctl -a -vvv -t open --context context:primary-signature` on the DMG and
+  `spctl -a -vvv` on the installed app both report
+  `source=Notarized Developer ID`, and `xcrun stapler validate` passes on both;
+- the app opens from a browser download with no unidentified-developer
+  warning;
+- the Screen Recording and Input Monitoring prompts name Hypercolor, and the
+  grants survive a quit and relaunch;
+- a screen-reactive effect renders from live capture, keyboard and pointer
+  input reach an interactive effect, and quitting from the tray stops the
+  daemon; and
+- `hypercolor --version` from the macOS tarball runs after a browser download.
 
-Record the immutable artifact location and checksum in the release checklist.
-CI fixtures, unsigned local runs, and a successful build do not replace this
-evidence. If the signed bundle does not exist or any required row fails, stop
-after the dry run. The repository does not currently contain a completed
-physical-acceptance bundle.
+If any row fails, stop after the dry run. Intel builds get CI verification
+only (signature, notarization, team ID, architecture, and deployment target)
+and no hardware row, because the project has no Intel test machine.
+
+The full Spec 76 physical matrix (signed TCC owner topology, SDR and HDR rows,
+the Section 19 latency and cadence contracts, the four-hour soak, and Metal 4
+qualification) remains the target once the physical-hardware harness is
+automated. It is not a release gate until then.
 
 The native and standalone artifact jobs also wait for the Python OpenAPI and
 WebSocket drift checks. GitHub Release creation cannot run unless both checks
