@@ -9,6 +9,8 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="${ROOT_DIR}/packaging/macos/signing-manifest.tsv"
 SIGNING_TMP=""
 SIGNING_KEYCHAIN=""
+ORIGINAL_KEYCHAIN_SEARCH_LIST=()
+KEYCHAIN_SEARCH_LIST_CHANGED=0
 
 die() {
   printf 'macOS signing failed: %s\n' "$*" >&2
@@ -41,6 +43,11 @@ EOF
 }
 
 cleanup() {
+  if [[ "${KEYCHAIN_SEARCH_LIST_CHANGED}" == 1 ]]; then
+    security list-keychains -d user -s \
+      ${ORIGINAL_KEYCHAIN_SEARCH_LIST[@]+"${ORIGINAL_KEYCHAIN_SEARCH_LIST[@]}"} \
+      >/dev/null 2>&1 || true
+  fi
   if [[ -n "${SIGNING_KEYCHAIN}" && -f "${SIGNING_KEYCHAIN}" ]]; then
     security delete-keychain "${SIGNING_KEYCHAIN}" >/dev/null 2>&1 || true
   fi
@@ -196,6 +203,29 @@ prepare_signing_identity() {
   security find-identity -v -p codesigning "${SIGNING_KEYCHAIN}" \
     | grep -F "${APPLE_SIGNING_IDENTITY}" >/dev/null \
     || die "imported certificate does not provide APPLE_SIGNING_IDENTITY"
+
+  # codesign only resolves identities from keychains on the user search
+  # list, even when --keychain names the file, so the ephemeral keychain
+  # joins the front of that list until cleanup restores the original.
+  add_signing_keychain_to_search_list
+  security find-identity -v -p codesigning \
+    | grep -F "${APPLE_SIGNING_IDENTITY}" >/dev/null \
+    || die "signing identity is not visible on the keychain search list"
+}
+
+add_signing_keychain_to_search_list() {
+  local entry
+  ORIGINAL_KEYCHAIN_SEARCH_LIST=()
+  while IFS= read -r entry; do
+    entry="$(printf '%s' "${entry}" | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')"
+    if [[ -n "${entry}" ]]; then
+      ORIGINAL_KEYCHAIN_SEARCH_LIST+=("${entry}")
+    fi
+  done < <(security list-keychains -d user)
+  KEYCHAIN_SEARCH_LIST_CHANGED=1
+  security list-keychains -d user -s "${SIGNING_KEYCHAIN}" \
+    ${ORIGINAL_KEYCHAIN_SEARCH_LIST[@]+"${ORIGINAL_KEYCHAIN_SEARCH_LIST[@]}"} \
+    || die "could not add the signing keychain to the search list"
 }
 
 validate_notary_credentials() {
