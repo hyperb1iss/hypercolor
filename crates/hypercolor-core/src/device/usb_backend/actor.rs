@@ -721,11 +721,28 @@ impl UsbBackend {
         frame: &UsbFramePayload,
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
-        if !frame.mark_transport_started() {
+        if !frame.claim() {
             return Ok(());
         }
+        protocol.encode_frame_into(frame.colors.as_slice(), commands);
+        if commands.is_empty() {
+            // Nothing was written: the frame changed nothing the device
+            // shows, or the protocol holds it behind unconfirmed output and
+            // will send the newest frame itself. Either way no transport I/O
+            // happened, so the delivery is not reported as completed.
+            if let Some(id) = frame.delivery_id {
+                frame.acknowledge(super::DeviceDeliveryAck::from_write_result(
+                    id,
+                    0,
+                    Duration::ZERO,
+                    Ok(hypercolor_driver_api::DeviceWriteOutcome::SuppressedCadence),
+                ));
+            }
+            return Ok(());
+        }
+        frame.announce_transport_started();
         let transport_started_at = Instant::now();
-        match Self::run_device_frame(device_id, protocol, transport, frame, commands).await {
+        match Self::run_encoded_frame(device_id, protocol, transport, frame, commands).await {
             Ok(()) => {
                 if let Some(id) = frame.delivery_id {
                     frame.acknowledge(super::DeviceDeliveryAck::completed(
@@ -813,6 +830,17 @@ impl UsbBackend {
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
         protocol.encode_frame_into(frame.colors.as_slice(), commands);
+        Self::run_encoded_frame(device_id, protocol, transport, frame, commands).await
+    }
+
+    /// Write a frame the protocol has already encoded into `commands`.
+    async fn run_encoded_frame(
+        device_id: DeviceId,
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        frame: &UsbFramePayload,
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Result<()> {
         if tracing::enabled!(tracing::Level::TRACE) {
             let first_packet = commands.first().map_or_else(
                 || "<none>".to_owned(),
