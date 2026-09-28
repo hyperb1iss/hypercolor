@@ -54,18 +54,51 @@ fn rx_urbs_since(rig: &Rig, from: usize) -> usize {
         .sum()
 }
 
-/// Frames confirmed, the most envelopes the TX held, and the mean echo age,
-/// for each five-second slice of `slices`.
-fn slices(rig: &mut Rig, slices: usize) -> Vec<(u64, usize)> {
-    (0..slices)
+/// One five-second slice of a long run.
+#[derive(Debug)]
+struct Slice {
+    /// Frames the echoes retired.
+    delivered: u64,
+    /// The most envelopes the TX held.
+    queue: usize,
+    /// Mean age of the confirmed send at its echo: how long a frame waited
+    /// in the TX and on the air, plus the status wait.
+    echo_age: Duration,
+    /// Transfers each cluster took.
+    taken: Vec<usize>,
+}
+
+/// Run `count` five-second slices.
+fn slices(rig: &mut Rig, count: usize) -> Vec<Slice> {
+    (0..count)
         .map(|_| {
             let before = rig.stats();
+            let taken_before: Vec<usize> = rig
+                .radio
+                .clusters
+                .iter()
+                .map(|cluster| cluster.applied_log.len())
+                .collect();
             rig.radio.max_air_queue = 0;
             rig.run_for(Duration::from_secs(5));
-            (
-                rig.stats().frames_delivered - before.frames_delivered,
-                rig.radio.max_air_queue,
-            )
+            let after = rig.stats();
+            let samples = u32::try_from(after.echo_samples - before.echo_samples).expect("samples");
+            Slice {
+                delivered: after.frames_delivered - before.frames_delivered,
+                queue: rig.radio.max_air_queue,
+                echo_age: after
+                    .echo_total
+                    .saturating_sub(before.echo_total)
+                    .checked_div(samples)
+                    .unwrap_or_default(),
+                taken: rig
+                    .radio
+                    .clusters
+                    .iter()
+                    .zip(&taken_before)
+                    .map(|(cluster, before)| cluster.applied_log.len() - before)
+                    .collect(),
+            }
         })
         .collect()
 }
@@ -190,10 +223,10 @@ fn a_status_report_every_333_ms_still_delivers_near_the_offered_rate() {
         polls <= 10 * 10,
         "echo polls follow the status cadence, a few a second: {polls} in 10 s"
     );
-    let urbs = rx_urbs_since(&rig, polls_warm) / 10;
+    let urbs = rx_urbs_since(&rig, polls_warm);
     assert!(
-        urbs <= 72,
-        "streaming at 30 fps costs the RX no more than the one-frame window's 3 fps did: {urbs} URBs a second"
+        urbs <= 72 * 10,
+        "streaming at 30 fps costs the RX no more than the one-frame window's 3 fps did: {urbs} URBs in 10 s"
     );
     assert!(
         rig.radio.resets.is_empty(),
@@ -236,33 +269,37 @@ fn the_window_follows_capacity_changes_over_a_long_stream() {
     let _ = slices(&mut rig, 1);
     let fast_again = slices(&mut rig, 3);
 
-    for (delivered, queue) in fast[1..].iter().chain(&fast_again) {
+    for slice in fast[1..].iter().chain(&fast_again) {
         assert!(
-            *delivered >= 140,
+            slice.delivered >= 140,
             "near 150 frames in 5 s at full speed: {fast:?} {fast_again:?}"
         );
         assert!(
-            *queue <= TRANSFER_ENVELOPES + UPKEEP_ENVELOPES,
+            slice.queue <= TRANSFER_ENVELOPES + UPKEEP_ENVELOPES,
             "no backlog: {fast:?} {fast_again:?}"
         );
     }
     let capacity = SLOW_RADIO_TRANSFERS_PER_S * 5;
-    for (delivered, queue) in &slow[1..] {
+    for slice in &slow[1..] {
         assert!(
-            delivered * 100 >= capacity * 75,
+            slice.delivered * 100 >= capacity * 75,
             "three quarters of the slow radio's rate in every slice: {slow:?}"
         );
         assert!(
-            *queue <= 8 * TRANSFER_ENVELOPES + UPKEEP_ENVELOPES,
+            slice.queue <= 8 * TRANSFER_ENVELOPES + UPKEEP_ENVELOPES,
             "a few transfers queued at most: {slow:?}"
+        );
+        assert!(
+            slice.echo_age <= Duration::from_millis(500),
+            "a frame waits well under a second from send to echo: {slow:?}"
         );
     }
     let early = slow[1..4]
         .iter()
-        .map(|(_, queue)| *queue)
+        .map(|slice| slice.queue)
         .max()
         .unwrap_or(0);
-    let late = slow[5..].iter().map(|(_, queue)| *queue).max().unwrap_or(0);
+    let late = slow[5..].iter().map(|slice| slice.queue).max().unwrap_or(0);
     assert!(
         late <= early + TRANSFER_ENVELOPES,
         "the backlog does not creep as the base-delay filter turns over: {slow:?}"
@@ -749,37 +786,41 @@ fn two_clusters_share_a_slow_radio_with_a_bounded_backlog() {
     let minute = slices(&mut rig, 12);
 
     let capacity = SLOW_RADIO_TRANSFERS_PER_S * 5;
-    for (delivered, queue) in &minute[1..] {
+    for slice in &minute[1..] {
         assert!(
-            delivered * 100 >= capacity * 80,
+            slice.delivered * 100 >= capacity * 80,
             "the two share four fifths of what the radio carries: {minute:?}"
         );
         assert!(
-            *queue <= 2 * 8 * TRANSFER_ENVELOPES + UPKEEP_ENVELOPES,
+            slice.queue <= 2 * 8 * TRANSFER_ENVELOPES + UPKEEP_ENVELOPES,
             "a few transfers per cluster at most: {minute:?}"
+        );
+        assert!(
+            slice.echo_age <= Duration::from_secs(1),
+            "a frame waits under a second from send to echo: {minute:?}"
+        );
+        assert!(
+            slice
+                .taken
+                .iter()
+                .all(|taken| u64::try_from(*taken).expect("count") * 100 >= capacity * 25),
+            "each cluster gets at least a quarter of the radio in every slice: {minute:?}"
         );
     }
     let early = minute[1..6]
         .iter()
-        .map(|(_, queue)| *queue)
+        .map(|slice| slice.queue)
         .max()
         .unwrap_or(0);
     let late = minute[6..]
         .iter()
-        .map(|(_, queue)| *queue)
+        .map(|slice| slice.queue)
         .max()
         .unwrap_or(0);
     assert!(
         late <= early + 2 * TRANSFER_ENVELOPES,
         "the shared backlog stays flat over the minute: {minute:?}"
     );
-    for cluster in &rig.radio.clusters {
-        assert!(
-            cluster.applied_log.len() > 300,
-            "each cluster keeps streaming: {}",
-            cluster.applied_log.len()
-        );
-    }
 }
 
 /// A cluster whose echoes keep arriving late is still delivering, so it
