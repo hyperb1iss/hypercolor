@@ -2070,9 +2070,9 @@ fn wireless_content(index: u8) -> [u8; 4] {
     hypercolor_hal::drivers::lianli::wireless::frame::effect_index_for(&raw)
 }
 
-/// A frame that arrives while the transfer ahead of it is out is held, and
-/// the frame pump sends it as soon as the fans confirm, with no later frame
-/// to carry it.
+/// A frame that arrives while the window is full is held, and the frame
+/// pump sends it as soon as an echo frees room, with no later frame to
+/// carry it.
 #[tokio::test(start_paused = true)]
 async fn the_lianli_frame_pump_releases_a_frame_held_for_an_echo() {
     use hypercolor_hal::drivers::lianli::wireless::transport::WirelessControllerTransport;
@@ -2098,9 +2098,11 @@ async fn the_lianli_frame_pump_releases_a_frame_held_for_an_echo() {
         command_rx,
     ));
 
-    frame_tx.send_replace(Some(wireless_frame(1)));
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    frame_tx.send_replace(Some(wireless_frame(2)));
+    // Two frames fill the initial window of two; the third is held.
+    for frame in 1..=3 {
+        frame_tx.send_replace(Some(wireless_frame(frame)));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     tokio::time::sleep(Duration::from_millis(900)).await;
 
     {
@@ -2111,18 +2113,22 @@ async fn the_lianli_frame_pump_releases_a_frame_held_for_an_echo() {
             .map(|(_, content)| *content)
             .collect();
         assert_eq!(
-            contents,
-            vec![wireless_content(1), wireless_content(2)],
-            "the second frame went out once, after the first was confirmed"
+            &contents[..3],
+            &[
+                wireless_content(1),
+                wireless_content(2),
+                wireless_content(3)
+            ],
+            "the third frame went out once, after an echo freed room"
         );
-        let held_for = state.transfers[1].0 - state.transfers[0].0;
+        let held_for = state.transfers[2].0 - state.transfers[1].0;
         assert!(
             held_for >= Duration::from_millis(40),
-            "the second frame waited for the first one's echo: {held_for:?}"
+            "the third frame waited for an echo: {held_for:?}"
         );
         assert_eq!(
             state.shown.last(),
-            Some(&wireless_content(2)),
+            Some(&wireless_content(3)),
             "the fans show the newest frame"
         );
     }
@@ -2136,8 +2142,8 @@ async fn the_lianli_frame_pump_releases_a_frame_held_for_an_echo() {
 }
 
 /// Delivery acknowledgements report what the transport did: a frame the
-/// protocol writes is completed, a frame it holds behind an unconfirmed
-/// transfer is suppressed, not reported as delivered.
+/// protocol writes is completed, a frame it holds while the window is full
+/// is suppressed, not reported as delivered.
 #[tokio::test(start_paused = true)]
 async fn a_lianli_frame_held_for_an_echo_is_acknowledged_as_suppressed() {
     use hypercolor_hal::drivers::lianli::wireless::transport::WirelessControllerTransport;
@@ -2164,36 +2170,43 @@ async fn a_lianli_frame_held_for_an_echo_is_acknowledged_as_suppressed() {
     ));
 
     let colors = |index: u8| Arc::new(vec![[index, 0x20, 0x40]; ECHOING_LEDS]);
-    let first_id = DeviceDeliveryId {
-        queue_generation: 9,
-        sequence: 1,
-    };
-    let (first, first_ack) = UsbFramePayload::tracked(first_id, colors(1));
-    frame_tx.send_replace(Some(Arc::new(first)));
-    let first_ack = timeout(Duration::from_secs(1), first_ack)
-        .await
-        .expect("the first frame is acknowledged")
-        .expect("acknowledgement channel stays open");
-    assert_eq!(first_ack.status, DeviceDeliveryStatus::Completed);
-    assert!(first_ack.transport_started);
+    // The initial window of two takes two frames, each written whole.
+    for sequence in 1..=2_u8 {
+        let id = DeviceDeliveryId {
+            queue_generation: 9,
+            sequence: u64::from(sequence),
+        };
+        let (frame, ack) = UsbFramePayload::tracked(id, colors(sequence));
+        frame_tx.send_replace(Some(Arc::new(frame)));
+        let ack = timeout(Duration::from_secs(1), ack)
+            .await
+            .expect("the frame is acknowledged")
+            .expect("acknowledgement channel stays open");
+        assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+        assert!(ack.transport_started);
+        assert_eq!(
+            ack.completed_payload_bytes,
+            u64::try_from(ECHOING_LEDS * 3).expect("small")
+        );
+    }
 
-    let second_id = DeviceDeliveryId {
+    let held_id = DeviceDeliveryId {
         queue_generation: 9,
-        sequence: 2,
+        sequence: 3,
     };
-    let (second, second_ack) = UsbFramePayload::tracked(second_id, colors(2));
-    frame_tx.send_replace(Some(Arc::new(second)));
-    let second_ack = timeout(Duration::from_secs(1), second_ack)
+    let (held, held_ack) = UsbFramePayload::tracked(held_id, colors(3));
+    frame_tx.send_replace(Some(Arc::new(held)));
+    let held_ack = timeout(Duration::from_secs(1), held_ack)
         .await
         .expect("the held frame is acknowledged")
         .expect("acknowledgement channel stays open");
     assert_eq!(
-        second_ack.status,
+        held_ack.status,
         DeviceDeliveryStatus::SuppressedCadence,
-        "the frame waited behind the first one's echo; nothing was written for it"
+        "the window was full; nothing was written for the frame"
     );
-    assert!(!second_ack.transport_started);
-    assert_eq!(second_ack.completed_payload_bytes, 0);
+    assert!(!held_ack.transport_started);
+    assert_eq!(held_ack.completed_payload_bytes, 0);
 
     drop(frame_tx);
     let result = timeout(Duration::from_secs(1), actor)
@@ -2231,12 +2244,16 @@ async fn a_transient_fault_on_a_pumped_lianli_frame_keeps_the_actor_alive() {
         command_rx,
     ));
 
-    frame_tx.send_replace(Some(wireless_frame(1)));
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    // The next TX write is the held frame the pump releases.
+    // Two frames fill the initial window of two.
+    for frame in 1..=2 {
+        frame_tx.send_replace(Some(wireless_frame(frame)));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // The third frame is held, so the next TX write is the pump releasing
+    // it once an echo frees room.
     pair.state().fail_next_tx = true;
-    frame_tx.send_replace(Some(wireless_frame(2)));
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    frame_tx.send_replace(Some(wireless_frame(3)));
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     assert!(
         !actor.is_finished(),
@@ -2248,8 +2265,8 @@ async fn a_transient_fault_on_a_pumped_lianli_frame_keeps_the_actor_alive() {
     );
     assert_eq!(
         pair.state().shown.last(),
-        Some(&wireless_content(2)),
-        "the frame is resent after its wait and reaches the fans"
+        Some(&wireless_content(3)),
+        "the frame is sent again and reaches the fans"
     );
 
     drop(frame_tx);
