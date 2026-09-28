@@ -205,6 +205,8 @@ pub struct FakeCluster {
     assembler: TransferAssembler,
     /// The receiver hears nothing the TX sends, but still reports.
     pub deaf: bool,
+    /// This receiver's reports lag by this much instead of the radio's.
+    pub report_delay: Option<Duration>,
 }
 
 impl FakeCluster {
@@ -220,6 +222,7 @@ impl FakeCluster {
             reportable: VecDeque::new(),
             assembler: TransferAssembler::default(),
             deaf: false,
+            report_delay: None,
         }
     }
 
@@ -244,6 +247,7 @@ impl FakeCluster {
         if let Some((tag, content)) = self.assembler.take(envelope) {
             self.applied = tag;
             self.applied_log.push(content);
+            let delay = self.report_delay.unwrap_or(delay);
             self.reportable.push_back((now + delay, tag));
         }
     }

@@ -569,6 +569,36 @@ fn two_clusters_stream_together_one_frame_at_a_time() {
     }
 }
 
+/// A cluster whose echoes keep arriving late is still delivering, so it
+/// never reaches the stall verdict. It must not hold its healthy
+/// neighbour back: once its transfer outlasts the first bounded wait it
+/// falls out of step, and the neighbour keeps streaming.
+#[test]
+fn a_cluster_with_persistently_late_echoes_does_not_starve_its_neighbour() {
+    let mut radio = FakeRadio::two_clusters();
+    radio.clusters[1].report_delay = Some(Duration::from_millis(2_500));
+    let mut rig = Rig::connect(radio);
+    rig.frame = Box::new(|index| {
+        let mut colors = moving_frame(index);
+        colors.extend(moving_frame(index + 7_777));
+        colors
+    });
+    rig.run_for(Duration::from_secs(5));
+    let healthy_before = rig.radio.clusters[0].applied_log.len();
+    rig.run_for(Duration::from_secs(15));
+
+    assert!(rig.radio.resets.is_empty(), "late delivery is not a wedge");
+    assert!(
+        rig.radio.clusters[0].applied_log.len() > healthy_before + 300,
+        "the healthy cluster keeps streaming: {} frames in 15 s",
+        rig.radio.clusters[0].applied_log.len() - healthy_before
+    );
+    assert!(
+        rig.radio.clusters[1].applied_log.len() > 5,
+        "the late cluster keeps catching up"
+    );
+}
+
 #[test]
 fn a_still_scene_costs_only_the_upkeep_the_fans_need() {
     let mut rig = Rig::connect(FakeRadio::one_cluster());

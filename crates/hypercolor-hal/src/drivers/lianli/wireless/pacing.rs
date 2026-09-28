@@ -15,11 +15,13 @@
 //! cached before it.
 //!
 //! - One transfer per cluster is out at a time, and a frame moves as one: it
-//!   goes to every cluster it changes once no heard cluster has a transfer
-//!   out, or it is held whole. A newer frame replaces a held one, so what
-//!   goes out next is always the newest frame, never a queue of stale
-//!   ones. A cluster the RX cannot hear, or one whose lighting is held,
-//!   holds up nobody.
+//!   goes to every cluster it changes once no cluster in step has a
+//!   transfer out, or it is held whole. A newer frame replaces a held one,
+//!   so what goes out next is always the newest frame, never a queue of
+//!   stale ones. A cluster falls out of step while the RX cannot hear it,
+//!   while its lighting is held, or once its transfer outlasts the first
+//!   bounded wait; the others carry on without it, and it catches up on its
+//!   own resends, rejoining when it confirms.
 //! - While a transfer is out the RX table is polled for its echo. The first
 //!   poll waits most of the echo time seen so far, later polls follow
 //!   closely, and they back off as a wait drags on.
@@ -439,16 +441,20 @@ impl DeliveryPacer {
         }
     }
 
-    /// Whether a frame may go out now: no cluster that is heard and not
-    /// held has a transfer out. Frames move as one, so a frame is written
-    /// whole or held whole.
+    /// Whether a frame may go out now: no cluster in step has a transfer
+    /// out. A cluster is out of step while it is not heard, while its
+    /// lighting is held, and once its transfer outlasts the first bounded
+    /// wait, so one slow or failing cluster never stalls the rest.
     #[must_use]
     pub fn window_open(&self, now: Instant) -> bool {
         !self.silenced()
-            && !self
-                .links
-                .iter()
-                .any(|link| link.in_flight.is_some() && !link.holding && !link.absent(now))
+            && !self.links.iter().any(|link| {
+                !link.holding
+                    && !link.absent(now)
+                    && link
+                        .in_flight
+                        .is_some_and(|flight| flight.resends == 0 && now < flight.resend_at)
+            })
     }
 
     /// Whether `cluster` should be sent a transfer now, and why, given
@@ -1085,6 +1091,40 @@ mod tests {
         assert!(pacer.window_open(now));
         assert_eq!(pacer.decide(0, now, true), Some(SendKind::Frame));
         assert_eq!(pacer.decide(1, now, true), Some(SendKind::Frame));
+    }
+
+    #[test]
+    fn a_cluster_past_its_bounded_wait_stops_holding_the_others() {
+        let now = Instant::now();
+        let mut pacer = DeliveryPacer::default();
+        pacer.ensure_clusters(2);
+        for link in &mut pacer.links {
+            link.last_seen_at = Some(now);
+        }
+        pacer.submit(0, T1);
+        pacer.submit(1, T1);
+        let first = pacer.note_sent(0, T1, SendKind::Frame, now);
+        let _ = pacer.note_sent(1, T1, SendKind::Frame, now);
+        pacer.observe(0, first, [0, 0, 0, 1], now);
+        pacer.submit(0, T2);
+        pacer.submit(1, T2);
+        assert!(
+            !pacer.window_open(now),
+            "the second cluster is still in step"
+        );
+
+        let late = now + ECHO_WAIT_UNKNOWN;
+        pacer.links[1].last_seen_at = Some(late);
+        assert!(
+            pacer.window_open(late),
+            "past its bounded wait it falls out of step"
+        );
+        assert_eq!(pacer.decide(0, late, true), Some(SendKind::Frame));
+        assert_eq!(
+            pacer.decide(1, late, true),
+            Some(SendKind::Resend),
+            "and catches up on its own resend"
+        );
     }
 
     #[test]
