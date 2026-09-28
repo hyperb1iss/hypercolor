@@ -5060,7 +5060,7 @@ dependencies = [
  "i2cdev",
  "image",
  "midir",
- "nix 0.30.1",
+ "nix 0.31.3",
  "nusb",
  "serde_json",
  "tempfile",
@@ -5151,7 +5151,7 @@ dependencies = [
  "futures-util",
  "hypercolor-core",
  "hypercolor-types",
- "nix 0.30.1",
+ "nix 0.31.3",
  "sd-notify",
  "tokio",
  "tokio-util",
@@ -5247,7 +5247,7 @@ dependencies = [
  "core-foundation 0.10.1",
  "hypercolor-platform-fs",
  "hypercolor-types",
- "nix 0.30.1",
+ "nix 0.31.3",
  "notify",
  "security-framework",
  "serde",
@@ -5298,7 +5298,7 @@ dependencies = [
  "hypercolor-openrgb-sdk",
  "hypercolor-persistence",
  "hypercolor-types",
- "nix 0.30.1",
+ "nix 0.31.3",
  "rustix 1.1.5",
  "serde",
  "serde_json",
@@ -7583,18 +7583,6 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "memoffset 0.9.1",
-]
-
-[[package]]
-name = "nix"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
-dependencies = [
- "bitflags 2.13.2",
- "cfg-if",
- "cfg_aliases",
- "libc",
 ]
 
 [[package]]
