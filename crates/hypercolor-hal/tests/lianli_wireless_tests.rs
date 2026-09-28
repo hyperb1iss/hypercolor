@@ -1,13 +1,15 @@
 //! L-Wireless controller wire format, against spec 80 section 6 and the
 //! bytes captured from a V1 controller (`SLV3TX_V1.6`) on 2026-09-04.
 
-use std::time::Duration;
+use std::ops::Deref;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::lianli::WirelessControllerProtocol;
 use hypercolor_hal::drivers::lianli::wireless::discovery::{
-    DiscoveryError, GET_DEV_REPLY_CAPACITY, RECORD_LEN, RECORD_VALIDATION, WirelessFanModel,
-    parse_device_table, parse_master_reply,
+    DiscoveryError, GET_DEV_REPLY_CAPACITY, RECORD_LEN, RECORD_VALIDATION, RECORDS_PER_PAGE,
+    WirelessFanModel, parse_device_table, parse_master_reply, parse_table_records,
 };
 use hypercolor_hal::drivers::lianli::wireless::frame::{
     CLOCK_PAYLOAD_LEN, RF_BROADCAST_SLOT, RF_ENVELOPE_LEN, RF_SELECT, RGB_CHUNK_LEN,
@@ -337,8 +339,88 @@ fn right_attached_chains_reverse_the_per_fan_runs() {
 
 // --- Protocol ---
 
-fn discovered_protocol() -> WirelessControllerProtocol {
-    let protocol = WirelessControllerProtocol::new();
+/// A protocol on a hand-driven clock, so the upkeep runs when a test says
+/// and the pacer's waits never expire behind its back.
+struct Clocked {
+    protocol: WirelessControllerProtocol,
+    now: Arc<Mutex<Instant>>,
+}
+
+impl Clocked {
+    fn new() -> Self {
+        let now = Arc::new(Mutex::new(Instant::now()));
+        let clock = Arc::clone(&now);
+        Self {
+            protocol: WirelessControllerProtocol::with_clock(Arc::new(move || {
+                *clock.lock().expect("clock")
+            })),
+            now,
+        }
+    }
+
+    fn advance(&self, by: Duration) {
+        *self.now.lock().expect("clock") += by;
+    }
+
+    /// One upkeep: a second on, then the keepalive tick.
+    fn upkeep(&self) -> Vec<ProtocolCommand> {
+        self.advance(Duration::from_secs(1));
+        self.protocol.keepalive_commands()
+    }
+
+    /// The table poll's reply, with each cluster of `discovered_protocol`
+    /// echoing the tag it was sent in `commands`.
+    fn echo(&self, commands: &[ProtocolCommand]) {
+        let tags = header_tags(commands);
+        let mut first = record([0x11; 6], 0x00, 3, 28);
+        let mut second = record([0x22; 6], 0x00, 2, 27);
+        for (record, mac) in [(&mut first, [0x11; 6]), (&mut second, [0x22; 6])] {
+            if let Some((_, tag)) = tags.iter().find(|(target, _)| *target == mac) {
+                record[20..24].copy_from_slice(tag);
+            }
+        }
+        self.protocol
+            .parse_response(&table_with(&[first, second]))
+            .expect("table parses");
+    }
+}
+
+impl Deref for Clocked {
+    type Target = WirelessControllerProtocol;
+
+    fn deref(&self) -> &Self::Target {
+        &self.protocol
+    }
+}
+
+/// The target and tag of every RGB transfer in `commands`, a repeated
+/// header counted once.
+fn header_tags(commands: &[ProtocolCommand]) -> Vec<([u8; 6], [u8; 4])> {
+    let mut tags: Vec<([u8; 6], [u8; 4])> = Vec::new();
+    for command in commands {
+        let data = &command.data;
+        let header = data.len() == USB_PACKET_LEN
+            && data[0] == USB_CMD_SEND_RF
+            && data[1] == 0
+            && data[4] == RF_SELECT
+            && data[5] == RfSubCommand::SetRgb as u8
+            && data[22] == 0;
+        if !header {
+            continue;
+        }
+        let mut target = [0_u8; 6];
+        target.copy_from_slice(&data[6..12]);
+        let mut tag = [0_u8; 4];
+        tag.copy_from_slice(&data[18..22]);
+        if tags.last() != Some(&(target, tag)) {
+            tags.push((target, tag));
+        }
+    }
+    tags
+}
+
+fn discovered_protocol() -> Clocked {
+    let protocol = Clocked::new();
     protocol
         .parse_response(&captured_master_reply())
         .expect("MAC reply parses");
@@ -478,17 +560,22 @@ fn the_first_frame_switches_the_radio_to_streaming_and_later_frames_do_not() {
     );
     assert_eq!(first[10].post_delay, Duration::from_millis(1));
 
-    let second = protocol.encode_frame(&colors);
-    assert_eq!(second.len(), 2 * 3 * 4, "no preamble once streaming");
-    assert_eq!(
-        &first[3].data[18..22],
-        &second[0].data[18..22],
-        "the same pixels carry the same tag"
+    let held = protocol.encode_frame(&colors);
+    assert!(
+        held.is_empty(),
+        "each cluster has a transfer out, so the next frame waits for its echo"
+    );
+    protocol.echo(&first);
+    let same = protocol.encode_frame(&colors);
+    assert!(
+        same.is_empty(),
+        "the same pixels carry the same tag, which the fans already echo"
     );
     let changed = protocol.encode_frame(&vec![[0, 255, 0]; 5 * 26]);
+    assert_eq!(changed.len(), 2 * 3 * 4, "no preamble once streaming");
     assert_ne!(
         &changed[0].data[18..22],
-        &second[0].data[18..22],
+        &first[3].data[18..22],
         "new pixels carry a new tag"
     );
 }
@@ -505,8 +592,9 @@ fn a_short_color_slice_pads_the_missing_fans_with_black() {
 #[test]
 fn upkeep_does_not_restart_the_stream_once_it_is_armed() {
     let protocol = discovered_protocol();
-    let _ = protocol.encode_frame(&[[1, 2, 3]; 5 * 26]);
-    let commands = protocol.keepalive_commands();
+    let first = protocol.encode_frame(&[[1, 2, 3]; 5 * 26]);
+    protocol.echo(&first);
+    let commands = protocol.upkeep();
     assert!(
         commands
             .iter()
@@ -515,25 +603,27 @@ fn upkeep_does_not_restart_the_stream_once_it_is_armed() {
     );
     assert_eq!(
         commands.len(),
-        1 + 3 * 4 + 2 * 3 * 4,
-        "poll, PWM, RGB, clock"
+        2 * 4 + 2 * 3 * 4 + 4 + 1,
+        "PWM, RGB, clock, poll"
     );
-    let again = protocol.keepalive_commands();
+    protocol.echo(&commands);
+    let again = protocol.upkeep();
     assert_eq!(again.len(), commands.len());
 }
 
 /// All PWM envelopes precede recovery; unrelated upkeep must wait until the
-/// full RGB transfer (including every data packet and repeated header) is sent.
-fn assert_upkeep_restores_frame(
-    protocol: &WirelessControllerProtocol,
-    expected: &[ProtocolCommand],
-) {
-    let commands = protocol.keepalive_commands();
-    let pwm_end = 1 + protocol.clusters().len() * 4;
+/// full RGB transfer (including every data packet and repeated header) is
+/// sent, and the table poll comes last so its reply can confirm it.
+fn assert_upkeep_restores_frame(protocol: &Clocked, expected: &[ProtocolCommand]) {
+    let commands = protocol.upkeep();
+    let pwm_end = protocol.clusters().len() * 4;
     let rgb_end = pwm_end + expected.len();
-    assert_eq!(commands.len(), rgb_end + 4, "poll, PWM, RGB, clock only");
-    assert_eq!(commands[0].transfer_type, TransferType::Companion);
-    for pwm in commands[1..pwm_end].chunks_exact(4) {
+    assert_eq!(
+        commands.len(),
+        rgb_end + 4 + 1,
+        "PWM, RGB, clock, poll only"
+    );
+    for pwm in commands[..pwm_end].chunks_exact(4) {
         assert_eq!(pwm[0].data[5], RfSubCommand::Pwm as u8);
     }
     for (actual, expected) in commands[pwm_end..rgb_end].iter().zip(expected) {
@@ -546,16 +636,25 @@ fn assert_upkeep_restores_frame(
         assert_eq!(actual.expects_response, expected.expects_response);
     }
     assert_eq!(commands[rgb_end].data[5], RfSubCommand::ClockSync as u8);
+    assert_eq!(commands[rgb_end + 4].transfer_type, TransferType::Companion);
+    protocol.echo(&commands);
+}
+
+/// Send a frame and have the fans confirm it.
+fn confirmed_frame(protocol: &Clocked, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+    let commands = protocol.encode_frame(colors);
+    protocol.echo(&commands);
+    commands
 }
 
 #[test]
 fn upkeep_restores_the_latest_frame_before_clock_and_retains_it_while_idle() {
     let protocol = discovered_protocol();
-    let _ = protocol.encode_frame(&[[255, 0, 0]; 5 * 26]);
+    let _ = confirmed_frame(&protocol, &[[255, 0, 0]; 5 * 26]);
     let colors: Vec<_> = (0_u8..130)
         .map(|index| [index, index.wrapping_mul(13), 255 - index])
         .collect();
-    let latest = protocol.encode_frame(&colors);
+    let latest = confirmed_frame(&protocol, &colors);
     assert_upkeep_restores_frame(&protocol, &latest);
     // Idle delivery has no new encode calls, but PWM ticks still need recovery.
     assert_upkeep_restores_frame(&protocol, &latest);
@@ -564,14 +663,26 @@ fn upkeep_restores_the_latest_frame_before_clock_and_retains_it_while_idle() {
 }
 
 #[test]
+fn upkeep_waits_for_a_transfer_still_out_instead_of_stacking_a_restore() {
+    let protocol = discovered_protocol();
+    let first = protocol.encode_frame(&[[255, 0, 0]; 5 * 26]);
+    assert!(!header_tags(&first).is_empty());
+    let commands = protocol.keepalive_commands();
+    assert!(
+        header_tags(&commands).is_empty(),
+        "the frame still out is the restore; nothing is piled behind it"
+    );
+}
+
+#[test]
 fn upkeep_restores_pause_black_and_empty_frames_without_resurrecting_old_colors() {
     let protocol = discovered_protocol();
-    let _ = protocol.encode_frame(&[[255, 0, 0]; 5 * 26]);
-    let black = protocol.encode_frame(&[[0, 0, 0]; 5 * 26]);
+    let _ = confirmed_frame(&protocol, &[[255, 0, 0]; 5 * 26]);
+    let black = confirmed_frame(&protocol, &[[0, 0, 0]; 5 * 26]);
     assert_upkeep_restores_frame(&protocol, &black);
 
-    let _ = protocol.encode_frame(&[[0, 255, 0]; 5 * 26]);
-    let empty = protocol.encode_frame(&[]);
+    let _ = confirmed_frame(&protocol, &[[0, 255, 0]; 5 * 26]);
+    let empty = confirmed_frame(&protocol, &[]);
     assert_eq!(
         empty
             .iter()
@@ -588,7 +699,7 @@ fn upkeep_restores_pause_black_and_empty_frames_without_resurrecting_old_colors(
 
 #[test]
 fn upkeep_preserves_right_attached_cluster_order_and_normalizes_input_lengths() {
-    let protocol = WirelessControllerProtocol::new();
+    let protocol = Clocked::new();
     protocol
         .parse_response(&captured_master_reply())
         .expect("master");
@@ -600,21 +711,14 @@ fn upkeep_preserves_right_attached_cluster_order_and_normalizes_input_lengths() 
         .expect("one right-attached cluster and one normal cluster");
     let _ = protocol.keepalive_commands();
     let colors: Vec<_> = (0_u8..100).map(|index| [index, 0, 0]).collect();
-    let exact = protocol.encode_frame(&colors[..78]);
+    let exact = confirmed_frame(&protocol, &colors[..78]);
     let excess = protocol.encode_frame(&colors);
-    assert_eq!(
-        exact
-            .iter()
-            .map(|command| &command.data)
-            .collect::<Vec<_>>(),
-        excess
-            .iter()
-            .map(|command| &command.data)
-            .collect::<Vec<_>>(),
-        "pixels outside the physical topology are ignored"
+    assert!(
+        excess.is_empty(),
+        "pixels outside the physical topology are ignored, so nothing changed"
     );
-    assert_upkeep_restores_frame(&protocol, &excess);
-    let short = protocol.encode_frame(&colors[..10]);
+    assert_upkeep_restores_frame(&protocol, &exact);
+    let short = confirmed_frame(&protocol, &colors[..10]);
     assert_upkeep_restores_frame(&protocol, &short);
 }
 
@@ -632,14 +736,20 @@ fn a_new_session_discards_cached_colors_before_rediscovery() {
     let commands = protocol.keepalive_commands();
     assert_eq!(
         commands.len(),
-        1 + 2 + 4 + 4,
+        2 + 4 + 4 + 1,
         "no cached RGB in a new session"
     );
-    assert_eq!(&commands[1].data[..4], &TX_VIDEO_START);
-    assert_eq!(commands[3].data[5], RfSubCommand::Pwm as u8);
-    assert_eq!(commands[7].data[5], RfSubCommand::ClockSync as u8);
+    assert_eq!(&commands[0].data[..4], &TX_VIDEO_START);
+    assert_eq!(commands[2].data[5], RfSubCommand::Pwm as u8);
+    assert_eq!(commands[6].data[5], RfSubCommand::ClockSync as u8);
+    assert_eq!(commands[10].transfer_type, TransferType::Companion);
 
     let fresh = protocol.encode_frame(&[[1, 2, 3]; 26]);
+    let mut record = record([0x33; 6], 0, 1, 27);
+    record[20..24].copy_from_slice(&header_tags(&fresh)[0].1);
+    protocol
+        .parse_response(&table_with(&[record]))
+        .expect("the fans confirm");
     assert_upkeep_restores_frame(&protocol, &fresh);
 }
 
@@ -647,23 +757,25 @@ fn a_new_session_discards_cached_colors_before_rediscovery() {
 fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
     let protocol = discovered_protocol();
     let keepalive = protocol.keepalive().expect("the radio needs upkeep");
-    assert_eq!(keepalive.interval, Duration::from_secs(1));
+    assert_eq!(
+        keepalive.interval,
+        Duration::from_millis(5),
+        "the keepalive is the pacer's tick; upkeep runs once a second inside it"
+    );
 
     let commands = protocol.keepalive_commands();
-    assert_eq!(commands[0].transfer_type, TransferType::Companion);
-    assert_eq!(commands[0].response.capacity, Some(GET_DEV_REPLY_CAPACITY));
-    // The poll, the streaming preamble (video start plus one prep packet
-    // per cluster) because no frame has armed it yet, then two PWM
-    // envelopes and one clock envelope at four packets each.
+    // The streaming preamble (video start plus one prep packet per
+    // cluster) because no frame has armed it yet, then two PWM envelopes
+    // and one clock envelope at four packets each, then the table poll.
     let preamble = 1 + 2;
-    assert_eq!(commands.len(), 1 + preamble + 3 * 4);
+    assert_eq!(commands.len(), preamble + 3 * 4 + 1);
     assert_eq!(
-        &commands[1].data[..4],
+        &commands[0].data[..4],
         &TX_VIDEO_START,
         "the first tick arms streaming when no frame has"
     );
 
-    let pwm = &commands[1 + preamble].data;
+    let pwm = &commands[preamble].data;
     assert_eq!(pwm[5], RfSubCommand::Pwm as u8);
     assert_eq!(&pwm[6..12], &[0x11; 6]);
     assert_eq!(
@@ -671,10 +783,10 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
         &[3, 8, 1, 128, 64, 32, 0],
         "observed duty, never invented"
     );
-    let second_pwm = &commands[1 + preamble + 4].data;
+    let second_pwm = &commands[preamble + 4].data;
     assert_eq!(second_pwm[20], 2, "slot index counts clusters from one");
 
-    let clock = &commands[1 + preamble + 8].data;
+    let clock = &commands[preamble + 8].data;
     assert_eq!(&clock[..4], &[USB_CMD_SEND_RF, 0, 8, RF_BROADCAST_SLOT]);
     assert_eq!(clock[5], RfSubCommand::ClockSync as u8);
     assert!(
@@ -682,11 +794,17 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
         "first tick sends the sentinel"
     );
 
-    let later = protocol.keepalive_commands();
+    let poll = &commands[preamble + 12];
+    assert_eq!(poll.transfer_type, TransferType::Companion);
+    assert_eq!(poll.response.capacity, Some(GET_DEV_REPLY_CAPACITY));
+
     assert!(
-        later[1 + preamble + 8].data[18..64]
-            .iter()
-            .any(|&b| b != 0x14),
+        protocol.keepalive_commands().is_empty(),
+        "a tick with nothing due sends nothing"
+    );
+    let later = protocol.upkeep();
+    assert!(
+        later[8].data[18..64].iter().any(|&b| b != 0x14),
         "later ticks send the blob"
     );
 }
@@ -768,6 +886,39 @@ fn a_truncated_table_keeps_the_last_good_one() {
         .parse_response(&short)
         .expect("a truncated poll is not a session error");
     assert_eq!(protocol.clusters().len(), 2, "the last table stands");
+}
+
+#[test]
+fn a_truncated_reply_still_carries_the_echoes_it_holds() {
+    let mut short = table_with(&[record([0x11; 6], 0x00, 3, 28)]);
+    short[1] = 2;
+    short.truncate(4 + RECORD_LEN + 10);
+    let records = parse_table_records(&short, Some(MASTER_MAC)).expect("the header is sound");
+    assert_eq!(records.len(), 1, "the whole record that arrived");
+    assert_eq!(records[0].effect_index, [0, 0, 0, 7]);
+    assert_eq!(
+        parse_table_records(&captured_tx_status_echo(), Some(MASTER_MAC)),
+        Err(DiscoveryError::StatusEcho),
+        "a status packet carries no records"
+    );
+}
+
+#[test]
+fn a_record_reports_the_receiver_clock_and_the_table_its_page_count() {
+    let mut first = record([0x11; 6], 0x00, 3, 28);
+    first[14..18].copy_from_slice(&[0, 1, 2, 3]);
+    let table = parse_device_table(&table_with(&[first]), Some(MASTER_MAC)).expect("table");
+    assert_eq!(table.clusters[0].clock, [0, 1, 2, 3]);
+    assert_eq!(table.declared_records, 1);
+    assert_eq!(table.pages(), 1);
+    assert_eq!(RECORDS_PER_PAGE, 10, "448-byte pages hold ten 42-byte records");
+
+    let mut eleven = table.clone();
+    eleven.declared_records = 11;
+    assert_eq!(eleven.pages(), 2, "an eleventh record needs the second page");
+    let mut none = table;
+    none.declared_records = 0;
+    assert_eq!(none.pages(), 1, "a poll always asks for a page");
 }
 
 /// Segments are published from the connect-time order, so a later poll may
@@ -956,7 +1107,7 @@ fn an_unowned_cluster_gets_the_bind_carrier_on_its_pairing_slot_then_a_poll() {
 
 #[test]
 fn a_pairing_that_takes_is_written_to_flash_on_the_next_upkeep() {
-    let protocol = WirelessControllerProtocol::new();
+    let protocol = Clocked::new();
     protocol
         .parse_response(&captured_master_reply())
         .expect("MAC reply parses");
@@ -979,7 +1130,7 @@ fn a_pairing_that_takes_is_written_to_flash_on_the_next_upkeep() {
         "three TL LCD rings joined the three SL rings"
     );
 
-    let upkeep = protocol.keepalive_commands();
+    let upkeep = protocol.upkeep();
     let saves = save_packets(&upkeep);
     assert_eq!(saves.len(), 3, "three broadcasts");
     for packet in &saves {
@@ -1006,14 +1157,14 @@ fn a_pairing_that_takes_is_written_to_flash_on_the_next_upkeep() {
     );
 
     assert!(
-        save_packets(&protocol.keepalive_commands()).is_empty(),
+        save_packets(&protocol.upkeep()).is_empty(),
         "flash is written once"
     );
 }
 
 #[test]
 fn a_pairing_that_does_not_take_is_retried_by_upkeep_then_left() {
-    let protocol = WirelessControllerProtocol::new();
+    let protocol = Clocked::new();
     protocol
         .parse_response(&captured_master_reply())
         .expect("MAC reply parses");
@@ -1034,7 +1185,7 @@ fn a_pairing_that_does_not_take_is_retried_by_upkeep_then_left() {
         protocol
             .parse_response(&still_unbound)
             .expect("table parses");
-        let upkeep = protocol.keepalive_commands();
+        let upkeep = protocol.upkeep();
         let carriers = bind_packets(&upkeep).len();
         assert!(carriers == 0 || carriers == 6);
         retried += usize::from(carriers == 6);

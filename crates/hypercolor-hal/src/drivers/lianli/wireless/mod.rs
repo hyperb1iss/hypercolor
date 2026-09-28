@@ -9,24 +9,33 @@
 //! The protocol is one [`Protocol`] over a companion transport: TX commands
 //! travel on the primary path, the RX device table poll on
 //! [`TransferType::Companion`]. Discovery happens at init and again on every
-//! keepalive tick, which also holds each cluster's observed PWM steady and
+//! upkeep tick, which also holds each cluster's observed PWM steady and
 //! broadcasts the 1 Hz clock the fan firmware expects.
+//!
+//! RGB is paced on the fans' acknowledgements ([`pacing`]): a cluster gets a
+//! new frame only once its record echoes the last one. The keepalive tick is
+//! the pacer's clock: it runs every few milliseconds, polls the table for
+//! echoes while a transfer is out, releases the newest held frame the moment
+//! its predecessor is confirmed, and runs the 1 Hz upkeep when it is due.
 //!
 //! The transport watches both halves: a write that stalls marks that half
 //! wedged in [`health`], resets it through its partner the way L-Connect
-//! does, and ends the session instead of writing on into a dead endpoint.
+//! does, and ends the session instead of writing on into a dead endpoint. A
+//! TX whose fans stop confirming frames takes the same path, on the
+//! protocol's word.
 
 pub mod crypto;
 pub mod discovery;
 pub mod frame;
 pub mod health;
 pub mod lcd;
+pub mod pacing;
 pub mod tinyuz;
 pub mod transport;
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{PoisonError, RwLock};
-use std::time::Duration;
+use std::sync::{Arc, PoisonError, RwLock};
+use std::time::{Duration, Instant};
 
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint, SegmentInfo,
@@ -39,8 +48,8 @@ use crate::protocol::{
 };
 
 use discovery::{
-    DeviceTable, DiscoveryError, FanCluster, GET_DEV_REPLY_CAPACITY, MasterInfo,
-    parse_device_table, parse_master_reply,
+    DeviceTable, DiscoveryError, FanCluster, GET_DEV_PAGE_LEN, GET_DEV_REPLY_CAPACITY, MasterInfo,
+    parse_device_table, parse_master_reply, parse_table_records,
 };
 use frame::{
     DEFAULT_CHANNEL, Mac, RF_BROADCAST_SLOT, RX_LCD_MODE, RX_QUERY_34, RX_QUERY_37, RfEnvelope,
@@ -48,6 +57,7 @@ use frame::{
     clock_sync_envelope, control_packet, effect_index_for, get_dev_poll, get_mac_query,
     pwm_envelope, reverse_fan_order, rgb_transfer, save_config_envelope, stream_prep_packet,
 };
+use pacing::{DeliveryPacer, DeliveryStats, SendKind, Tag};
 
 /// Reads at init, where the RX answers a two-page poll in about 30 ms and
 /// the TX its status in about 1 ms; generous for a cold radio.
@@ -63,10 +73,13 @@ const SLICE_PACING: Duration = Duration::from_millis(1);
 const GET_DEV_PAGES: u8 = 2;
 /// Upkeep cadence: fans drift to firmware defaults when PWM traffic stops,
 /// and miss the clock into an autonomous fallback.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
-/// Frame cadence. A frame for a three-fan cluster is twelve USB packets a
-/// millisecond apart, so 30 fps leaves the radio most of every interval;
-/// the 10 fps floor froze visibly whenever upkeep interrupted the stream.
+const UPKEEP_INTERVAL: Duration = Duration::from_secs(1);
+/// The keepalive tick: the pacer's clock. Short enough that an echo poll
+/// and the release of a held frame follow a confirmation closely; a tick
+/// with nothing due sends nothing.
+const PUMP_INTERVAL: Duration = Duration::from_millis(5);
+/// Frame cadence the render path is asked for: the most a cluster can be
+/// offered. What it is sent is whatever its echoes confirm, up to this.
 /// Raise on measurement, never lower (spec 80 section 11.4).
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const MAX_FPS: u32 = 30;
@@ -121,12 +134,16 @@ struct WirelessState {
     /// The last submitted pixels, including black frames, retained across idle upkeep.
     /// None means no lighting frame has arrived in this session.
     latest_colors: Option<Vec<[u8; 3]>>,
+    /// Acknowledgement-paced RGB delivery for the driven clusters.
+    pacer: DeliveryPacer,
+    last_upkeep_at: Option<Instant>,
 }
 
 impl WirelessState {
     /// Adopt a freshly parsed table: as the routing while topology is still
-    /// open, as telemetry only once it is frozen.
-    fn adopt_table(&mut self, mut table: DeviceTable) {
+    /// open, as telemetry only once it is frozen. Either way its records
+    /// are the fans' acknowledgements.
+    fn adopt_table(&mut self, mut table: DeviceTable, now: Instant) {
         let master = self.master.map(|master| master.mac);
         self.adoptable = table
             .clusters
@@ -138,31 +155,55 @@ impl WirelessState {
             .clusters
             .retain(|cluster| master.is_some_and(|master| cluster.is_bound_fan_cluster(master)));
         self.settle_binds(&table);
+        self.pacer.note_table_reply();
+        let fresh = std::mem::take(&mut table.clusters);
 
-        if !self.topology_frozen {
-            self.table = table;
-            return;
-        }
-
-        self.table.motherboard_pwm = table.motherboard_pwm;
-        for cluster in &mut self.table.clusters {
-            if let Some(fresh) = table.clusters.iter().find(|fresh| fresh.mac == cluster.mac) {
-                cluster.rpm = fresh.rpm;
-                cluster.pwm = fresh.pwm;
-                cluster.cmd_seq = fresh.cmd_seq;
-                cluster.effect_index = fresh.effect_index;
-                cluster.channel = fresh.channel;
-                cluster.rx_type = fresh.rx_type;
+        if self.topology_frozen {
+            self.table.motherboard_pwm = table.motherboard_pwm;
+            self.table.declared_records = table.declared_records;
+            for cluster in &mut self.table.clusters {
+                if let Some(fresh) = fresh.iter().find(|fresh| fresh.mac == cluster.mac) {
+                    cluster.rpm = fresh.rpm;
+                    cluster.pwm = fresh.pwm;
+                    cluster.cmd_seq = fresh.cmd_seq;
+                    cluster.effect_index = fresh.effect_index;
+                    cluster.clock = fresh.clock;
+                    cluster.channel = fresh.channel;
+                    cluster.rx_type = fresh.rx_type;
+                }
             }
+            let known = self.table.clusters.len();
+            let seen = fresh.len();
+            if seen != known {
+                debug!(
+                    known,
+                    seen,
+                    "wireless cluster membership changed; routing keeps the connect-time set until reconnect"
+                );
+            }
+        } else {
+            table.clusters.clone_from(&fresh);
+            self.table = table;
         }
-        let known = self.table.clusters.len();
-        let seen = table.clusters.len();
-        if seen != known {
-            debug!(
-                known,
-                seen,
-                "wireless cluster membership changed; routing keeps the connect-time set until reconnect"
-            );
+        self.observe_echoes(&fresh, now);
+    }
+
+    /// Hand each driven cluster's echoed tag and clock to the pacer.
+    fn observe_echoes(&mut self, records: &[FanCluster], now: Instant) {
+        let master = self.master.map(|master| master.mac);
+        for record in records {
+            if !master.is_some_and(|master| record.is_bound_fan_cluster(master)) {
+                continue;
+            }
+            if let Some(index) = self
+                .table
+                .clusters
+                .iter()
+                .position(|cluster| cluster.mac == record.mac)
+            {
+                self.pacer
+                    .observe(index, record.effect_index, record.clock, now);
+            }
         }
     }
 
@@ -266,10 +307,14 @@ fn format_mac(mac: Mac) -> String {
         .join(":")
 }
 
+/// Time source for the pacer; tests drive it by hand.
+pub type WirelessClock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
 /// The L-Wireless controller protocol.
 pub struct WirelessControllerProtocol {
     state: RwLock<WirelessState>,
     frames_encoded: AtomicU32,
+    clock: WirelessClock,
 }
 
 impl Default for WirelessControllerProtocol {
@@ -282,10 +327,28 @@ impl WirelessControllerProtocol {
     /// A protocol with nothing discovered yet.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_clock(Arc::new(Instant::now))
+    }
+
+    /// A protocol whose pacing reads time from `clock`.
+    #[must_use]
+    pub fn with_clock(clock: WirelessClock) -> Self {
         Self {
             state: RwLock::new(WirelessState::default()),
             frames_encoded: AtomicU32::new(0),
+            clock,
         }
+    }
+
+    /// Delivery counters for the current session: frames offered, sent,
+    /// and confirmed by the fans' echoes.
+    #[must_use]
+    pub fn delivery_stats(&self) -> DeliveryStats {
+        self.state
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pacer
+            .totals()
     }
 
     /// The controller's identity, once the MAC query has answered.
@@ -329,6 +392,21 @@ impl WirelessControllerProtocol {
             post_delay: SLICE_PACING,
             ..Default::default()
         }
+    }
+
+    /// An echo poll: the table with as many pages as hold every record,
+    /// read to exactly that length so no gap timeout ends it. A missing
+    /// reply is not an error; the next poll asks again.
+    fn echo_poll_command(pages: u8) -> ProtocolCommand {
+        ProtocolCommand {
+            data: get_dev_poll(pages),
+            expects_response: true,
+            transfer_type: TransferType::Companion,
+            ..Default::default()
+        }
+        .with_response_capacity(usize::from(pages) * GET_DEV_PAGE_LEN)
+        .with_response_timeout(STEADY_TIMEOUT)
+        .with_optional_response()
     }
 
     /// The RX device table poll, read with the capacity a two-page reply
@@ -424,73 +502,229 @@ impl WirelessControllerProtocol {
         }
     }
 
-    /// Encode live delivery and PWM recovery through the same per-cluster wire path.
-    fn push_rgb_frame(
-        state: &WirelessState,
-        colors: &[[u8; 3]],
+    /// The pixels `cluster` shows from `colors`, in wire order: its LEDs
+    /// start at `offset`, missing ones are black, and a right-attached
+    /// chain runs its fans in reverse.
+    fn cluster_raw(cluster: &FanCluster, colors: &[[u8; 3]], offset: usize) -> Vec<u8> {
+        let leds_per_fan = usize::from(cluster.model.leds_per_fan());
+        let led_count = usize::from(cluster.fan_count) * leds_per_fan;
+        let mut raw = Vec::with_capacity(led_count * 3);
+        for led in 0..led_count {
+            let color = colors.get(offset + led).copied().unwrap_or([0, 0, 0]);
+            raw.extend_from_slice(&color);
+        }
+        if cluster.right_attach {
+            raw = reverse_fan_order(&raw, leds_per_fan, usize::from(cluster.fan_count));
+        }
+        raw
+    }
+
+    /// Queue one cluster's RGB transfer: the header twice, then the data.
+    fn push_transfer(
+        master: Mac,
+        cluster: &FanCluster,
+        raw: &[u8],
+        tag: Tag,
+        frame_number: Option<u32>,
+        buffer: &mut CommandBuffer<'_>,
+    ) {
+        let led_count = raw.len() / 3;
+        let transfer = rgb_transfer(
+            cluster.mac,
+            master,
+            tag,
+            u8::try_from(led_count).unwrap_or(u8::MAX),
+            LIVE_TOTAL_FRAMES,
+            LIVE_INTERVAL_MS,
+            raw,
+        );
+        if let Some(frame_number) = frame_number
+            && frame_number.is_multiple_of(FRAME_TRACE_EVERY)
+        {
+            trace!(
+                frame_number,
+                mac = %format_mac(cluster.mac),
+                led_count,
+                data_envelopes = transfer.data.len(),
+                first_pixel = ?raw.get(..3),
+                "wireless frame encoded"
+            );
+        }
+        for repeat in 0..HEADER_REPEATS {
+            let tail_delay = if repeat + 1 < HEADER_REPEATS {
+                HEADER_REPEAT_GAP
+            } else {
+                SLICE_PACING
+            };
+            Self::push_envelope(
+                buffer,
+                &transfer.header,
+                cluster.channel,
+                cluster.rx_type,
+                tail_delay,
+            );
+        }
+        for envelope in &transfer.data {
+            Self::push_envelope(
+                buffer,
+                envelope,
+                cluster.channel,
+                cluster.rx_type,
+                SLICE_PACING,
+            );
+        }
+    }
+
+    /// Hand the render path's newest frame to the pacer, one tag per
+    /// cluster.
+    fn submit_frame(state: &mut WirelessState) {
+        let Some(colors) = state.latest_colors.as_deref() else {
+            return;
+        };
+        let mut offset = 0_usize;
+        for (index, cluster) in state.table.clusters.iter().enumerate() {
+            let raw = Self::cluster_raw(cluster, colors, offset);
+            offset += raw.len() / 3;
+            state.pacer.submit(index, effect_index_for(&raw));
+        }
+    }
+
+    /// Send every cluster whatever the pacer allows now: the newest frame
+    /// once its predecessor is confirmed, a resend after a bounded wait,
+    /// and with `restore`, the confirmed frame again.
+    fn pace_rgb(
+        state: &mut WirelessState,
+        now: Instant,
+        restore: bool,
         frame_number: Option<u32>,
         buffer: &mut CommandBuffer<'_>,
     ) {
         let master = Self::master_mac(state);
+        let Some(colors) = state.latest_colors.as_deref() else {
+            return;
+        };
         let mut offset = 0_usize;
-        for cluster in &state.table.clusters {
-            let leds_per_fan = usize::from(cluster.model.leds_per_fan());
-            let led_count = usize::from(cluster.fan_count) * leds_per_fan;
-            let mut raw = Vec::with_capacity(led_count * 3);
-            for led in 0..led_count {
-                let color = colors.get(offset + led).copied().unwrap_or([0, 0, 0]);
-                raw.extend_from_slice(&color);
-            }
-            offset += led_count;
-            if cluster.right_attach {
-                raw = reverse_fan_order(&raw, leds_per_fan, usize::from(cluster.fan_count));
-            }
+        for (index, cluster) in state.table.clusters.iter().enumerate() {
+            let start = offset;
+            offset += usize::try_from(cluster.led_count()).unwrap_or(0);
+            let Some(kind) = state.pacer.decide(index, now, restore) else {
+                continue;
+            };
+            let raw = Self::cluster_raw(cluster, colors, start);
+            let tag = effect_index_for(&raw);
+            Self::push_transfer(master, cluster, &raw, tag, frame_number, buffer);
+            state.pacer.note_sent(index, tag, kind, now);
+        }
+    }
 
-            let transfer = rgb_transfer(
+    /// Send every cluster its newest frame if the window held it back,
+    /// window or not: nothing follows a shutdown to release it later.
+    fn flush_held(state: &mut WirelessState, now: Instant, buffer: &mut CommandBuffer<'_>) {
+        let master = Self::master_mac(state);
+        let Some(colors) = state.latest_colors.as_deref() else {
+            return;
+        };
+        let mut offset = 0_usize;
+        for (index, cluster) in state.table.clusters.iter().enumerate() {
+            let start = offset;
+            offset += usize::try_from(cluster.led_count()).unwrap_or(0);
+            if !state.pacer.held(index) {
+                continue;
+            }
+            let raw = Self::cluster_raw(cluster, colors, start);
+            let tag = effect_index_for(&raw);
+            Self::push_transfer(master, cluster, &raw, tag, None, buffer);
+            state.pacer.note_sent(index, tag, SendKind::Frame, now);
+        }
+    }
+
+    /// The 1 Hz upkeep: hold every cluster at the PWM it reported, restore
+    /// the confirmed frame if nothing newer is waiting, broadcast the
+    /// clock, and refresh the table. Streaming mode is armed here only when
+    /// no frame has done it yet.
+    ///
+    /// The table poll comes after the sends, as every poll does, so its
+    /// reply can only confirm a transfer that was already on its way.
+    fn upkeep(state: &mut WirelessState, now: Instant, commands: &mut Vec<ProtocolCommand>) {
+        let master = Self::master_mac(state);
+        let channel = Self::channel(state);
+        if !state.streaming_started {
+            Self::streaming_preamble(state, commands);
+            state.streaming_started = true;
+        }
+
+        for (index, cluster) in state.table.clusters.iter().enumerate() {
+            let slot_index = u8::try_from(index + 1).unwrap_or(u8::MAX);
+            let envelope = pwm_envelope(
                 cluster.mac,
                 master,
-                effect_index_for(&raw),
-                u8::try_from(led_count).unwrap_or(u8::MAX),
-                LIVE_TOTAL_FRAMES,
-                LIVE_INTERVAL_MS,
-                &raw,
+                cluster.rx_type,
+                cluster.channel,
+                slot_index,
+                cluster.pwm,
             );
-            if let Some(frame_number) = frame_number
-                && frame_number.is_multiple_of(FRAME_TRACE_EVERY)
-            {
-                trace!(
-                    frame_number,
-                    mac = %format_mac(cluster.mac),
-                    led_count,
-                    data_envelopes = transfer.data.len(),
-                    first_pixel = ?raw.get(..3),
-                    "wireless frame encoded"
-                );
+            Self::envelope_commands(commands, &envelope, cluster.channel, cluster.rx_type);
+        }
+
+        // PWM traffic can knock a receiver back to its onboard lighting
+        // without changing its echo, so the frame goes out again right
+        // after it, before clock or pairing traffic can delay it. It goes
+        // through the window: a transfer still out will land after the PWM
+        // on its own, and a resend covers one the PWM interrupted.
+        let mut rgb_commands = Vec::new();
+        let mut buffer = CommandBuffer::new(&mut rgb_commands);
+        Self::pace_rgb(state, now, true, None, &mut buffer);
+        buffer.finish();
+        commands.extend(rgb_commands);
+
+        let payload = clock_payload(WallClock::now_local());
+        let envelope = clock_sync_envelope(master, &payload, !state.clock_sent);
+        Self::envelope_commands(commands, &envelope, channel, RF_BROADCAST_SLOT);
+        state.clock_sent = true;
+
+        commands.push(Self::get_dev_command(STEADY_TIMEOUT));
+        // The table poll carries every echo a due poll would have.
+        state.pacer.reschedule_polls(now);
+
+        if state.save_pending {
+            state.save_pending = false;
+            info!("writing wireless pairing to receiver flash");
+            let envelope = save_config_envelope(master);
+            for _ in 0..SAVE_CONFIG_REPEATS {
+                Self::envelope_commands(commands, &envelope, channel, RF_BROADCAST_SLOT);
+                if let Some(last) = commands.last_mut() {
+                    last.post_delay = SAVE_CONFIG_GAP;
+                }
             }
-            for repeat in 0..HEADER_REPEATS {
-                let tail_delay = if repeat + 1 < HEADER_REPEATS {
-                    HEADER_REPEAT_GAP
-                } else {
-                    SLICE_PACING
-                };
-                Self::push_envelope(
-                    buffer,
-                    &transfer.header,
-                    cluster.channel,
-                    cluster.rx_type,
-                    tail_delay,
-                );
-            }
-            for envelope in &transfer.data {
-                Self::push_envelope(
-                    buffer,
-                    envelope,
-                    cluster.channel,
-                    cluster.rx_type,
-                    SLICE_PACING,
+        } else if !state.adoptable.is_empty() {
+            if state.bind_rounds < BIND_ROUND_LIMIT {
+                state.bind_round(commands);
+            } else if state.bind_rounds == BIND_ROUND_LIMIT {
+                state.bind_rounds = state.bind_rounds.saturating_add(1);
+                warn!(
+                    clusters = state.adoptable.len(),
+                    "wireless clusters did not take the pairing; giving up until reconnect"
                 );
             }
         }
+    }
+
+    /// The vendor reset for a TX whose fans stopped confirming, written to
+    /// the RX. The transport routes it through its wedge path and ends the
+    /// session; it expects no reply.
+    fn tx_reset_command() -> ProtocolCommand {
+        ProtocolCommand {
+            data: transport::partner_reset_packet(),
+            transfer_type: TransferType::Companion,
+            ..Default::default()
+        }
+    }
+
+    fn tx_packets(commands: &[ProtocolCommand]) -> usize {
+        commands
+            .iter()
+            .filter(|command| command.transfer_type != TransferType::Companion)
+            .count()
     }
 }
 
@@ -523,10 +757,22 @@ impl Protocol for WirelessControllerProtocol {
         ]
     }
 
+    /// The backend sends a final frame before this; if the window held it,
+    /// it goes out now, since nothing after a shutdown would release it.
+    /// Otherwise nothing: fans revert to firmware defaults when the upkeep
+    /// stops, the same as when L-Connect exits.
     fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
-        // Nothing to send: fans revert to firmware defaults when the upkeep
-        // stops, the same as when L-Connect exits.
-        Vec::new()
+        let now = (self.clock)();
+        let mut guard = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let state = &mut *guard;
+        let mut commands = Vec::new();
+        if state.pacer.reset_requested() {
+            return commands;
+        }
+        let mut buffer = CommandBuffer::new(&mut commands);
+        Self::flush_held(state, now, &mut buffer);
+        buffer.finish();
+        commands
     }
 
     /// Pair every unowned fan cluster the RX heard, before the topology is
@@ -550,10 +796,14 @@ impl Protocol for WirelessControllerProtocol {
         commands
     }
 
-    /// One RGB transfer per cluster, fans in slot order, the first frame of
-    /// a session preceded by the streaming-mode switch.
+    /// The first frame of a session is preceded by the streaming-mode
+    /// switch. Each cluster whose window is open gets its RGB transfer; the
+    /// rest keep this frame as their newest, which the pump sends once the
+    /// transfer ahead of it is confirmed.
     fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
-        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let now = (self.clock)();
+        let mut guard = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let state = &mut *guard;
         state.topology_frozen = true;
         let led_count = state
             .table
@@ -566,11 +816,14 @@ impl Protocol for WirelessControllerProtocol {
         latest_colors.clear();
         latest_colors.extend_from_slice(&colors[..colors.len().min(led_count)]);
         latest_colors.resize(led_count, [0, 0, 0]);
+        state.pacer.fit_clusters(state.table.clusters.len());
+        state.pacer.note_frame_offered();
+        Self::submit_frame(state);
         let mut buffer = CommandBuffer::new(commands);
 
         if !state.streaming_started {
             let mut preamble = Vec::new();
-            Self::streaming_preamble(&state, &mut preamble);
+            Self::streaming_preamble(state, &mut preamble);
             for command in preamble {
                 buffer.push_slice(
                     &command.data,
@@ -584,82 +837,63 @@ impl Protocol for WirelessControllerProtocol {
         }
 
         let frame_number = self.frames_encoded.fetch_add(1, Ordering::Relaxed);
-        Self::push_rgb_frame(&state, colors, Some(frame_number), &mut buffer);
+        Self::pace_rgb(state, now, false, Some(frame_number), &mut buffer);
         buffer.finish();
+        state.pacer.note_tx_packets(Self::tx_packets(commands));
     }
 
     fn keepalive(&self) -> Option<ProtocolKeepalive> {
         Some(ProtocolKeepalive {
             commands: Vec::new(),
-            interval: KEEPALIVE_INTERVAL,
+            interval: PUMP_INTERVAL,
         })
     }
 
-    /// The 1 Hz upkeep: refresh the table, hold every cluster at the PWM it
-    /// reported, restore the latest RGB frame, and broadcast the clock.
-    /// Streaming mode is armed here only
-    /// when no frame has done it yet.
+    /// The pacer's tick. In order: a verdict on fans that stopped
+    /// confirming (the TX reset, and nothing else), the 1 Hz upkeep when it
+    /// is due, otherwise whatever the window now allows followed by an echo
+    /// poll when one is due. A tick with nothing due returns nothing.
     fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
-        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let now = (self.clock)();
+        let mut guard = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let state = &mut *guard;
         state.topology_frozen = true;
-        let master = Self::master_mac(&state);
-        let channel = Self::channel(&state);
-        let mut commands = vec![Self::get_dev_command(STEADY_TIMEOUT)];
-        if !state.streaming_started {
-            Self::streaming_preamble(&state, &mut commands);
-            state.streaming_started = true;
+        state.pacer.fit_clusters(state.table.clusters.len());
+        let mut commands = Vec::new();
+        if state.pacer.reset_requested() {
+            return commands;
         }
-
-        for (index, cluster) in state.table.clusters.iter().enumerate() {
-            let slot_index = u8::try_from(index + 1).unwrap_or(u8::MAX);
-            let envelope = pwm_envelope(
-                cluster.mac,
-                master,
-                cluster.rx_type,
-                cluster.channel,
-                slot_index,
-                cluster.pwm,
+        if let Some(verdict) = state.pacer.stall_verdict(now) {
+            warn!(
+                cluster = verdict.cluster,
+                unconfirmed_ms =
+                    u64::try_from(verdict.unconfirmed_for.as_millis()).unwrap_or(u64::MAX),
+                resends = verdict.resends,
+                "L-Wireless fans are heard but confirmed no frame across every resend; the TX stopped delivering, resetting it through the RX"
             );
-            Self::envelope_commands(&mut commands, &envelope, cluster.channel, cluster.rx_type);
+            commands.push(Self::tx_reset_command());
+            return commands;
         }
+        state.pacer.note_absences(now);
 
-        // PWM traffic can interrupt the receiver's RGB playback. Restore the
-        // submitted frame before clock, pairing, or the next actor turn can delay it.
-        if let Some(colors) = &state.latest_colors {
-            let mut rgb_commands = Vec::new();
-            let mut buffer = CommandBuffer::new(&mut rgb_commands);
-            Self::push_rgb_frame(&state, colors, None, &mut buffer);
+        let upkeep_due = state
+            .last_upkeep_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= UPKEEP_INTERVAL);
+        if upkeep_due {
+            state.last_upkeep_at = Some(now);
+            Self::upkeep(state, now, &mut commands);
+        } else {
+            let mut buffer = CommandBuffer::new(&mut commands);
+            Self::pace_rgb(state, now, false, None, &mut buffer);
             buffer.finish();
-            commands.extend(rgb_commands);
-        }
-
-        let payload = clock_payload(WallClock::now_local());
-        let envelope = clock_sync_envelope(master, &payload, !state.clock_sent);
-        Self::envelope_commands(&mut commands, &envelope, channel, RF_BROADCAST_SLOT);
-        state.clock_sent = true;
-
-        if state.save_pending {
-            state.save_pending = false;
-            info!("writing wireless pairing to receiver flash");
-            let envelope = save_config_envelope(master);
-            for _ in 0..SAVE_CONFIG_REPEATS {
-                Self::envelope_commands(&mut commands, &envelope, channel, RF_BROADCAST_SLOT);
-                if let Some(last) = commands.last_mut() {
-                    last.post_delay = SAVE_CONFIG_GAP;
-                }
-            }
-        } else if !state.adoptable.is_empty() {
-            if state.bind_rounds < BIND_ROUND_LIMIT {
-                state.bind_round(&mut commands);
-            } else if state.bind_rounds == BIND_ROUND_LIMIT {
-                state.bind_rounds = state.bind_rounds.saturating_add(1);
-                warn!(
-                    clusters = state.adoptable.len(),
-                    "wireless clusters did not take the pairing; giving up until reconnect"
-                );
+            if state.pacer.poll_due(now) {
+                commands.push(Self::echo_poll_command(state.table.pages()));
+                state.pacer.note_poll(now);
             }
         }
 
+        state.pacer.note_tx_packets(Self::tx_packets(&commands));
+        state.pacer.report_if_due(now);
         commands
     }
 
@@ -680,19 +914,27 @@ impl Protocol for WirelessControllerProtocol {
                 }
             }
             USB_CMD_SEND_RF => {
+                let now = (self.clock)();
                 let master = self.master().map(|master| master.mac);
                 match parse_device_table(data, master) {
                     Ok(table) => {
                         self.state
                             .write()
                             .unwrap_or_else(PoisonError::into_inner)
-                            .adopt_table(table);
+                            .adopt_table(table, now);
                     }
                     Err(DiscoveryError::StatusEcho) => {
                         debug!("controller status packet where a device table was expected");
                     }
                     Err(error @ DiscoveryError::Truncated { .. }) => {
                         debug!(%error, "keeping the last device table");
+                        // The records that did arrive still carry echoes.
+                        if let Ok(records) = parse_table_records(data, master) {
+                            self.state
+                                .write()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .observe_echoes(&records, now);
+                        }
                     }
                     Err(error) => {
                         return Err(ProtocolError::MalformedResponse {

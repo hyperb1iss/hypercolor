@@ -13,6 +13,10 @@ use super::frame::{Mac, USB_CMD_GET_MAC, USB_CMD_SEND_RF};
 
 /// Records a device table can hold.
 pub const MAX_DEVICES: usize = 12;
+/// Bytes the RX answers per polled page, whatever it holds.
+pub const GET_DEV_PAGE_LEN: usize = 448;
+/// Whole records that fit in one page after the table header.
+pub const RECORDS_PER_PAGE: usize = (GET_DEV_PAGE_LEN - TABLE_HEADER_LEN) / RECORD_LEN;
 /// Bytes per device record.
 pub const RECORD_LEN: usize = 42;
 /// Bytes ahead of the first record.
@@ -167,8 +171,13 @@ pub struct FanCluster {
     pub pwm: [u8; SLOTS_PER_CLUSTER],
     /// Sequence byte the receiver echoes to acknowledge commands.
     pub cmd_seq: u8,
-    /// The effect tag last accepted by the receiver.
+    /// The effect tag last accepted by the receiver: the acknowledgement
+    /// RGB delivery paces on.
     pub effect_index: [u8; 4],
+    /// The receiver's clock as of its last report, raw (spec 80 section
+    /// 6.5: ticks of 0.625 ms). It advances each time the RX hears the
+    /// cluster, so two polls with the same value saw the same report.
+    pub clock: [u8; 4],
 }
 
 impl FanCluster {
@@ -206,6 +215,20 @@ pub struct DeviceTable {
     pub clusters: Vec<FanCluster>,
     /// Duty the controller reads off the motherboard PWM header, when wired.
     pub motherboard_pwm: Option<u8>,
+    /// Records the RX declared, masters and foreign gear included: what
+    /// sizes a poll that must reach every one of them.
+    pub declared_records: u8,
+}
+
+impl DeviceTable {
+    /// Pages a poll needs to carry every declared record, at least one.
+    #[must_use]
+    pub fn pages(&self) -> u8 {
+        let pages = usize::from(self.declared_records)
+            .div_ceil(RECORDS_PER_PAGE)
+            .max(1);
+        u8::try_from(pages).unwrap_or(u8::MAX)
+    }
 }
 
 /// Why a reply was not a device table.
@@ -245,6 +268,56 @@ pub fn parse_device_table(
     reply: &[u8],
     master: Option<Mac>,
 ) -> Result<DeviceTable, DiscoveryError> {
+    let count = table_count(reply, master)?;
+    let motherboard_pwm = if reply[2] & 0x80 == 0 {
+        let on = u16::from(reply[2] & 0x7F);
+        let off = u16::from(reply[3]);
+        let total = on + off;
+        (total > 0).then(|| u8::try_from((255 * on) / total).unwrap_or(u8::MAX))
+    } else {
+        None
+    };
+
+    let present = whole_records(reply).len();
+    if present < usize::from(count) {
+        // A short reply (an early inter-packet gap) must not replace a good
+        // table with the clusters that happened to arrive.
+        return Err(DiscoveryError::Truncated {
+            declared: count,
+            present,
+        });
+    }
+
+    Ok(DeviceTable {
+        clusters: parse_table_records(reply, master)?,
+        motherboard_pwm,
+        declared_records: count,
+    })
+}
+
+/// The valid records a reply carries, up to its declared count, without
+/// requiring every declared record to be present.
+///
+/// A truncated reply cannot replace the table, but the records it does
+/// carry are still what each receiver reported, which is all an
+/// acknowledgement needs.
+///
+/// # Errors
+///
+/// The same header errors as [`parse_device_table`]; truncation is not one.
+pub fn parse_table_records(
+    reply: &[u8],
+    master: Option<Mac>,
+) -> Result<Vec<FanCluster>, DiscoveryError> {
+    let count = table_count(reply, master)?;
+    Ok(whole_records(reply)
+        .take(usize::from(count))
+        .filter_map(parse_record)
+        .collect())
+}
+
+/// Validate a reply's header and return its declared record count.
+fn table_count(reply: &[u8], master: Option<Mac>) -> Result<u8, DiscoveryError> {
     if reply.len() < TABLE_HEADER_LEN {
         return Err(DiscoveryError::Short(reply.len()));
     }
@@ -262,31 +335,11 @@ pub fn parse_device_table(
     if usize::from(count) > MAX_DEVICES {
         return Err(DiscoveryError::TooManyDevices(count));
     }
-    let motherboard_pwm = if reply[2] & 0x80 == 0 {
-        let on = u16::from(reply[2] & 0x7F);
-        let off = u16::from(reply[3]);
-        let total = on + off;
-        (total > 0).then(|| u8::try_from((255 * on) / total).unwrap_or(u8::MAX))
-    } else {
-        None
-    };
+    Ok(count)
+}
 
-    let records = reply[TABLE_HEADER_LEN..].chunks_exact(RECORD_LEN);
-    let present = records.len().min(usize::from(count));
-    if present < usize::from(count) {
-        // A short reply (an early inter-packet gap) must not replace a good
-        // table with the clusters that happened to arrive.
-        return Err(DiscoveryError::Truncated {
-            declared: count,
-            present,
-        });
-    }
-    let clusters = records.take(present).filter_map(parse_record).collect();
-
-    Ok(DeviceTable {
-        clusters,
-        motherboard_pwm,
-    })
+fn whole_records(reply: &[u8]) -> std::slice::ChunksExact<'_, u8> {
+    reply[TABLE_HEADER_LEN..].chunks_exact(RECORD_LEN)
 }
 
 fn parse_record(record: &[u8]) -> Option<FanCluster> {
@@ -326,6 +379,8 @@ fn parse_record(record: &[u8]) -> Option<FanCluster> {
     pwm.copy_from_slice(&record[36..40]);
     let mut effect_index = [0_u8; 4];
     effect_index.copy_from_slice(&record[20..24]);
+    let mut clock = [0_u8; 4];
+    clock.copy_from_slice(&record[14..18]);
 
     Some(FanCluster {
         mac,
@@ -341,5 +396,6 @@ fn parse_record(record: &[u8]) -> Option<FanCluster> {
         pwm,
         cmd_seq: record[40],
         effect_index,
+        clock,
     })
 }
