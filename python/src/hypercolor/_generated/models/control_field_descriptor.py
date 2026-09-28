@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.apply_impact_type_0 import ApplyImpactType0
 from ..models.apply_impact_type_1 import ApplyImpactType1
@@ -88,19 +89,15 @@ class ControlFieldDescriptor:
         access = self.access.value
 
         apply_impact: dict[str, Any] | str
-        if isinstance(self.apply_impact, ApplyImpactType0):
-            apply_impact = self.apply_impact.value
-        elif isinstance(self.apply_impact, ApplyImpactType1):
-            apply_impact = self.apply_impact.value
-        elif isinstance(self.apply_impact, ApplyImpactType2):
-            apply_impact = self.apply_impact.value
-        elif isinstance(self.apply_impact, ApplyImpactType3):
-            apply_impact = self.apply_impact.value
-        elif isinstance(self.apply_impact, ApplyImpactType4):
-            apply_impact = self.apply_impact.value
-        elif isinstance(self.apply_impact, ApplyImpactType5):
-            apply_impact = self.apply_impact.value
-        elif isinstance(self.apply_impact, ApplyImpactType6):
+        if (
+            isinstance(self.apply_impact, ApplyImpactType0)
+            or isinstance(self.apply_impact, ApplyImpactType1)
+            or isinstance(self.apply_impact, ApplyImpactType2)
+            or isinstance(self.apply_impact, ApplyImpactType3)
+            or isinstance(self.apply_impact, ApplyImpactType4)
+            or isinstance(self.apply_impact, ApplyImpactType5)
+            or isinstance(self.apply_impact, ApplyImpactType6)
+        ):
             apply_impact = self.apply_impact.value
         else:
             apply_impact = self.apply_impact.to_dict()
@@ -167,7 +164,7 @@ class ControlFieldDescriptor:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.apply_impact_type_7 import ApplyImpactType7
         from ..models.control_field_descriptor_availability import (
             ControlFieldDescriptorAvailability,

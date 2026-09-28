@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DriverTransportKindType2(str, Enum):
+class DriverTransportKindType2(StrEnum):
     SMBUS = "smbus"
 
     def __str__(self) -> str:

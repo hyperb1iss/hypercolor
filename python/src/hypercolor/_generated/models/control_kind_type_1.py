@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlKindType1(str, Enum):
+class ControlKindType1(StrEnum):
     BOOLEAN = "boolean"
 
     def __str__(self) -> str:

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.component_category_type_0 import ComponentCategoryType0
 from ..models.component_category_type_1 import ComponentCategoryType1
@@ -86,25 +87,36 @@ class ComponentSlot:
             suggested_categories = []
             for suggested_categories_item_data in self.suggested_categories:
                 suggested_categories_item: dict[str, Any] | str
-                if isinstance(suggested_categories_item_data, ComponentCategoryType0):
-                    suggested_categories_item = suggested_categories_item_data.value
-                elif isinstance(suggested_categories_item_data, ComponentCategoryType1):
-                    suggested_categories_item = suggested_categories_item_data.value
-                elif isinstance(suggested_categories_item_data, ComponentCategoryType2):
-                    suggested_categories_item = suggested_categories_item_data.value
-                elif isinstance(suggested_categories_item_data, ComponentCategoryType3):
-                    suggested_categories_item = suggested_categories_item_data.value
-                elif isinstance(suggested_categories_item_data, ComponentCategoryType4):
-                    suggested_categories_item = suggested_categories_item_data.value
-                elif isinstance(suggested_categories_item_data, ComponentCategoryType5):
-                    suggested_categories_item = suggested_categories_item_data.value
-                elif isinstance(suggested_categories_item_data, ComponentCategoryType6):
-                    suggested_categories_item = suggested_categories_item_data.value
-                elif isinstance(suggested_categories_item_data, ComponentCategoryType7):
-                    suggested_categories_item = suggested_categories_item_data.value
-                elif isinstance(suggested_categories_item_data, ComponentCategoryType8):
-                    suggested_categories_item = suggested_categories_item_data.value
-                elif isinstance(suggested_categories_item_data, ComponentCategoryType9):
+                if (
+                    isinstance(suggested_categories_item_data, ComponentCategoryType0)
+                    or isinstance(
+                        suggested_categories_item_data, ComponentCategoryType1
+                    )
+                    or isinstance(
+                        suggested_categories_item_data, ComponentCategoryType2
+                    )
+                    or isinstance(
+                        suggested_categories_item_data, ComponentCategoryType3
+                    )
+                    or isinstance(
+                        suggested_categories_item_data, ComponentCategoryType4
+                    )
+                    or isinstance(
+                        suggested_categories_item_data, ComponentCategoryType5
+                    )
+                    or isinstance(
+                        suggested_categories_item_data, ComponentCategoryType6
+                    )
+                    or isinstance(
+                        suggested_categories_item_data, ComponentCategoryType7
+                    )
+                    or isinstance(
+                        suggested_categories_item_data, ComponentCategoryType8
+                    )
+                    or isinstance(
+                        suggested_categories_item_data, ComponentCategoryType9
+                    )
+                ):
                     suggested_categories_item = suggested_categories_item_data.value
                 else:
                     suggested_categories_item = suggested_categories_item_data.to_dict()
@@ -131,8 +143,10 @@ class ComponentSlot:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.component_category_type_10 import ComponentCategoryType10
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.component_category_type_10 import (
+            ComponentCategoryType10,
+        )
 
         d = dict(src_dict)
         id = d.pop("id")

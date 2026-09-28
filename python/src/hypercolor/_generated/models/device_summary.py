@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.display_rotation import DisplayRotation
 from ..types import UNSET, Unset
@@ -64,7 +65,9 @@ class DeviceSummary:
     def to_dict(self) -> dict[str, Any]:
         from ..models.bridge_device_summary import BridgeDeviceSummary
         from ..models.device_auth_summary import DeviceAuthSummary
-        from ..models.device_components_response import DeviceComponentsResponse
+        from ..models.device_components_response import (
+            DeviceComponentsResponse,
+        )
 
         brightness = self.brightness
 
@@ -163,11 +166,15 @@ class DeviceSummary:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.bridge_device_summary import BridgeDeviceSummary
         from ..models.device_auth_summary import DeviceAuthSummary
-        from ..models.device_components_response import DeviceComponentsResponse
-        from ..models.device_connection_summary import DeviceConnectionSummary
+        from ..models.device_components_response import (
+            DeviceComponentsResponse,
+        )
+        from ..models.device_connection_summary import (
+            DeviceConnectionSummary,
+        )
         from ..models.device_origin import DeviceOrigin
         from ..models.driver_presentation import DriverPresentation
         from ..models.segment_summary import SegmentSummary

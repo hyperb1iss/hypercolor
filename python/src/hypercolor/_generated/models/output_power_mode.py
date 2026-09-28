@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class OutputPowerMode(str, Enum):
+class OutputPowerMode(StrEnum):
     PAUSED = "paused"
     RUNNING = "running"
 

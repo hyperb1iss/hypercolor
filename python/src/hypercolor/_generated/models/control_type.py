@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlType(str, Enum):
+class ControlType(StrEnum):
     ASSET = "asset"
     COLOR_PICKER = "color_picker"
     DROPDOWN = "dropdown"

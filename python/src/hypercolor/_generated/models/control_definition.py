@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.control_kind_type_0 import ControlKindType0
 from ..models.control_kind_type_1 import ControlKindType1
@@ -122,23 +123,17 @@ class ControlDefinition:
         kind: dict[str, Any] | str | Unset
         if isinstance(self.kind, Unset):
             kind = UNSET
-        elif isinstance(self.kind, ControlKindType0):
-            kind = self.kind.value
-        elif isinstance(self.kind, ControlKindType1):
-            kind = self.kind.value
-        elif isinstance(self.kind, ControlKindType2):
-            kind = self.kind.value
-        elif isinstance(self.kind, ControlKindType3):
-            kind = self.kind.value
-        elif isinstance(self.kind, ControlKindType4):
-            kind = self.kind.value
-        elif isinstance(self.kind, ControlKindType5):
-            kind = self.kind.value
-        elif isinstance(self.kind, ControlKindType6):
-            kind = self.kind.value
-        elif isinstance(self.kind, ControlKindType7):
-            kind = self.kind.value
-        elif isinstance(self.kind, ControlKindType8):
+        elif (
+            isinstance(self.kind, ControlKindType0)
+            or isinstance(self.kind, ControlKindType1)
+            or isinstance(self.kind, ControlKindType2)
+            or isinstance(self.kind, ControlKindType3)
+            or isinstance(self.kind, ControlKindType4)
+            or isinstance(self.kind, ControlKindType5)
+            or isinstance(self.kind, ControlKindType6)
+            or isinstance(self.kind, ControlKindType7)
+            or isinstance(self.kind, ControlKindType8)
+        ):
             kind = self.kind.value
         else:
             kind = self.kind.to_dict()
@@ -214,7 +209,7 @@ class ControlDefinition:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.control_binding import ControlBinding
         from ..models.control_kind_type_9 import ControlKindType9
         from ..models.control_value import ControlValue

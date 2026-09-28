@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ApplyPolicyType4Kind(str, Enum):
+class ApplyPolicyType4Kind(StrEnum):
     INERT = "inert"
 
     def __str__(self) -> str:

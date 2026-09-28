@@ -5,6 +5,7 @@ from typing import Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.b_tree_map_additional_property_type_0_kind import (
     BTreeMapAdditionalPropertyType0Kind,
@@ -37,7 +38,7 @@ class BTreeMapAdditionalPropertyType0:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         d = dict(src_dict)
         kind = BTreeMapAdditionalPropertyType0Kind(d.pop("kind"))
 

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ApplyImpactType0(str, Enum):
+class ApplyImpactType0(StrEnum):
     NONE = "none"
 
     def __str__(self) -> str:

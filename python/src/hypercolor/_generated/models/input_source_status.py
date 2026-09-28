@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -68,8 +69,12 @@ class InputSourceStatus:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.input_source_issue_status import InputSourceIssueStatus
-        from ..models.source_diagnostics_envelope import SourceDiagnosticsEnvelope
+        from ..models.input_source_issue_status import (
+            InputSourceIssueStatus,
+        )
+        from ..models.source_diagnostics_envelope import (
+            SourceDiagnosticsEnvelope,
+        )
 
         active_consumer_count = self.active_consumer_count
 
@@ -189,9 +194,13 @@ class InputSourceStatus:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.input_source_issue_status import InputSourceIssueStatus
-        from ..models.source_diagnostics_envelope import SourceDiagnosticsEnvelope
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.input_source_issue_status import (
+            InputSourceIssueStatus,
+        )
+        from ..models.source_diagnostics_envelope import (
+            SourceDiagnosticsEnvelope,
+        )
 
         d = dict(src_dict)
         active_consumer_count = d.pop("active_consumer_count")

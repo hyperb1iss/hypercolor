@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ComponentCategoryType4(str, Enum):
+class ComponentCategoryType4(StrEnum):
     CASE = "Case"
 
     def __str__(self) -> str:

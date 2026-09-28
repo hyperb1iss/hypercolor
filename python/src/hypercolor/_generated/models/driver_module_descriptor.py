@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.driver_module_kind import DriverModuleKind
 from ..types import UNSET, Unset
@@ -91,9 +92,11 @@ class DriverModuleDescriptor:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.driver_capability_set import DriverCapabilitySet
-        from ..models.driver_transport_descriptor import DriverTransportDescriptor
+        from ..models.driver_transport_descriptor import (
+            DriverTransportDescriptor,
+        )
 
         d = dict(src_dict)
         api_schema_version = d.pop("api_schema_version")

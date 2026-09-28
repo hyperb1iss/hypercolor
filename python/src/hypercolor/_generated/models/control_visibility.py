@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlVisibility(str, Enum):
+class ControlVisibility(StrEnum):
     ADVANCED = "advanced"
     DIAGNOSTICS = "diagnostics"
     HIDDEN = "hidden"

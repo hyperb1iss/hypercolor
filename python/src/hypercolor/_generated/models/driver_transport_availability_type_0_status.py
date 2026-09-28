@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DriverTransportAvailabilityType0Status(str, Enum):
+class DriverTransportAvailabilityType0Status(StrEnum):
     AVAILABLE = "available"
 
     def __str__(self) -> str:

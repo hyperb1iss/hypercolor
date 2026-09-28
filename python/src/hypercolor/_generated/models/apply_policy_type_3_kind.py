@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ApplyPolicyType3Kind(str, Enum):
+class ApplyPolicyType3Kind(StrEnum):
     RESTART = "restart"
 
     def __str__(self) -> str:

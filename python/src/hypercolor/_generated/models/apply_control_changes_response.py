@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.apply_impact_type_0 import ApplyImpactType0
 from ..models.apply_impact_type_1 import ApplyImpactType1
@@ -68,19 +69,15 @@ class ApplyControlChangesResponse:
         impacts = []
         for impacts_item_data in self.impacts:
             impacts_item: dict[str, Any] | str
-            if isinstance(impacts_item_data, ApplyImpactType0):
-                impacts_item = impacts_item_data.value
-            elif isinstance(impacts_item_data, ApplyImpactType1):
-                impacts_item = impacts_item_data.value
-            elif isinstance(impacts_item_data, ApplyImpactType2):
-                impacts_item = impacts_item_data.value
-            elif isinstance(impacts_item_data, ApplyImpactType3):
-                impacts_item = impacts_item_data.value
-            elif isinstance(impacts_item_data, ApplyImpactType4):
-                impacts_item = impacts_item_data.value
-            elif isinstance(impacts_item_data, ApplyImpactType5):
-                impacts_item = impacts_item_data.value
-            elif isinstance(impacts_item_data, ApplyImpactType6):
+            if (
+                isinstance(impacts_item_data, ApplyImpactType0)
+                or isinstance(impacts_item_data, ApplyImpactType1)
+                or isinstance(impacts_item_data, ApplyImpactType2)
+                or isinstance(impacts_item_data, ApplyImpactType3)
+                or isinstance(impacts_item_data, ApplyImpactType4)
+                or isinstance(impacts_item_data, ApplyImpactType5)
+                or isinstance(impacts_item_data, ApplyImpactType6)
+            ):
                 impacts_item = impacts_item_data.value
             else:
                 impacts_item = impacts_item_data.to_dict()
@@ -117,13 +114,17 @@ class ApplyControlChangesResponse:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.applied_control_change import AppliedControlChange
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.applied_control_change import (
+            AppliedControlChange,
+        )
         from ..models.apply_control_changes_response_values import (
             ApplyControlChangesResponseValues,
         )
         from ..models.apply_impact_type_7 import ApplyImpactType7
-        from ..models.rejected_control_change import RejectedControlChange
+        from ..models.rejected_control_change import (
+            RejectedControlChange,
+        )
 
         d = dict(src_dict)
         accepted = []

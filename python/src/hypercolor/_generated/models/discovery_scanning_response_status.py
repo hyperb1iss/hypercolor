@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DiscoveryScanningResponseStatus(str, Enum):
+class DiscoveryScanningResponseStatus(StrEnum):
     SCANNING = "scanning"
 
     def __str__(self) -> str:

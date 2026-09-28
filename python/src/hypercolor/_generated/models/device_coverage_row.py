@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.coverage_active import CoverageActive
 from ..types import UNSET, Unset
@@ -39,8 +40,12 @@ class DeviceCoverageRow:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.coverage_bridge_device import CoverageBridgeDevice
-        from ..models.coverage_native_device import CoverageNativeDevice
+        from ..models.coverage_bridge_device import (
+            CoverageBridgeDevice,
+        )
+        from ..models.coverage_native_device import (
+            CoverageNativeDevice,
+        )
 
         active = self.active.value
 
@@ -81,10 +86,14 @@ class DeviceCoverageRow:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.coverage_bridge_device import CoverageBridgeDevice
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.coverage_bridge_device import (
+            CoverageBridgeDevice,
+        )
         from ..models.coverage_identity import CoverageIdentity
-        from ..models.coverage_native_device import CoverageNativeDevice
+        from ..models.coverage_native_device import (
+            CoverageNativeDevice,
+        )
 
         d = dict(src_dict)
         active = CoverageActive(d.pop("active"))

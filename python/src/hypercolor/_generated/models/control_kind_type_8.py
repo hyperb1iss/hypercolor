@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlKindType8(str, Enum):
+class ControlKindType8(StrEnum):
     RECT = "rect"
 
     def __str__(self) -> str:

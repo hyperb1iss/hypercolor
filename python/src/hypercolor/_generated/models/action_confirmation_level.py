@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ActionConfirmationLevel(str, Enum):
+class ActionConfirmationLevel(StrEnum):
     DESTRUCTIVE = "destructive"
     HARDWARE_PERSISTENT = "hardware_persistent"
     NORMAL = "normal"

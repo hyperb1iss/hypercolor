@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class BTreeMapAdditionalPropertyType10Kind(str, Enum):
+class BTreeMapAdditionalPropertyType10Kind(StrEnum):
     COLOR_RGBA = "color_rgba"
 
     def __str__(self) -> str:

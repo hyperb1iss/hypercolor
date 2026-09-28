@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 if TYPE_CHECKING:
     from ..models.full_frame_copy_session_status import FullFrameCopySessionStatus
@@ -43,9 +44,13 @@ class SessionPerformanceStatus:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.full_frame_copy_session_status import FullFrameCopySessionStatus
-        from ..models.latency_percentiles_status import LatencyPercentilesStatus
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.full_frame_copy_session_status import (
+            FullFrameCopySessionStatus,
+        )
+        from ..models.latency_percentiles_status import (
+            LatencyPercentilesStatus,
+        )
 
         d = dict(src_dict)
         full_frame_cpu_copies = FullFrameCopySessionStatus.from_dict(

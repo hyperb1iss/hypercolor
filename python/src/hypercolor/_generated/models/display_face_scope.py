@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DisplayFaceScope(str, Enum):
+class DisplayFaceScope(StrEnum):
     DEFAULT = "default"
     SCENE = "scene"
 

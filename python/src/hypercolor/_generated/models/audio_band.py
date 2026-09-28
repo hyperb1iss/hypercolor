@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class AudioBand(str, Enum):
+class AudioBand(StrEnum):
     BASS = "bass"
     BEAT_PULSE = "beat_pulse"
     MID = "mid"

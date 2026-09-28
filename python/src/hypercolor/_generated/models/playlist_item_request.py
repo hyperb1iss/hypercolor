@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -32,7 +33,9 @@ class PlaylistItemRequest:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.playlist_target_request_type_0 import PlaylistTargetRequestType0
+        from ..models.playlist_target_request_type_0 import (
+            PlaylistTargetRequestType0,
+        )
 
         target: dict[str, Any]
         if isinstance(self.target, PlaylistTargetRequestType0):
@@ -67,9 +70,13 @@ class PlaylistItemRequest:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.playlist_target_request_type_0 import PlaylistTargetRequestType0
-        from ..models.playlist_target_request_type_1 import PlaylistTargetRequestType1
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.playlist_target_request_type_0 import (
+            PlaylistTargetRequestType0,
+        )
+        from ..models.playlist_target_request_type_1 import (
+            PlaylistTargetRequestType1,
+        )
 
         d = dict(src_dict)
 

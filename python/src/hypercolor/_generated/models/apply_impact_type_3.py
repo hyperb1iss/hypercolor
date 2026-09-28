@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ApplyImpactType3(str, Enum):
+class ApplyImpactType3(StrEnum):
     DEVICE_RECONNECT = "device_reconnect"
 
     def __str__(self) -> str:

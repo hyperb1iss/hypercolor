@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class PlaylistItemTargetType1Type(str, Enum):
+class PlaylistItemTargetType1Type(StrEnum):
     PRESET = "preset"
 
     def __str__(self) -> str:

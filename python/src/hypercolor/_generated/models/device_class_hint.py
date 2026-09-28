@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DeviceClassHint(str, Enum):
+class DeviceClassHint(StrEnum):
     AUDIO = "audio"
     CONTROLLER = "controller"
     DISPLAY = "display"

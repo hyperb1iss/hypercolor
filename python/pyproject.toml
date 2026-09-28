@@ -1,5 +1,5 @@
 [build-system]
-requires = ["uv_build>=0.11.18,<0.12"]
+requires = ["uv_build>=0.12.19,<0.13"]
 build-backend = "uv_build"
 
 [project]
@@ -24,6 +24,7 @@ dependencies = [
     "attrs>=25.4.0",
     "httpx>=0.28.1",
     "msgspec>=0.21.1",
+    "typing-extensions>=4.16.0",
     "websockets>=16.0",
 ]
 
@@ -34,7 +35,7 @@ dev = [
     { include-group = "types" },
 ]
 generate = [
-    "openapi-python-client==0.29.0",
+    "openapi-python-client==0.29.1",
 ]
 lint = [
     "ruff>=0.15.15",

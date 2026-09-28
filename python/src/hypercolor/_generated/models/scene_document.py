@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -145,9 +146,13 @@ class SceneDocument:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.scene_document_metadata import SceneDocumentMetadata
-        from ..models.scene_document_transition import SceneDocumentTransition
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.scene_document_metadata import (
+            SceneDocumentMetadata,
+        )
+        from ..models.scene_document_transition import (
+            SceneDocumentTransition,
+        )
         from ..models.zone_resource import ZoneResource
 
         d = dict(src_dict)

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlPersistence(str, Enum):
+class ControlPersistence(StrEnum):
     DEVICE_CONFIG = "device_config"
     DRIVER_CONFIG = "driver_config"
     HARDWARE_STORED = "hardware_stored"

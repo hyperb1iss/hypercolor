@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlActionStatus(str, Enum):
+class ControlActionStatus(StrEnum):
     ACCEPTED = "accepted"
     COMPLETED = "completed"
     FAILED = "failed"

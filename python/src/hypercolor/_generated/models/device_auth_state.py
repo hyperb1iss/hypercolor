@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DeviceAuthState(str, Enum):
+class DeviceAuthState(StrEnum):
     CONFIGURED = "configured"
     ERROR = "error"
     OPEN = "open"

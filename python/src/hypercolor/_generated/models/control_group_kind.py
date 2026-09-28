@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlGroupKind(str, Enum):
+class ControlGroupKind(StrEnum):
     ADVANCED = "advanced"
     COLOR = "color"
     CONNECTION = "connection"

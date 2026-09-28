@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DriverTransportKindType6(str, Enum):
+class DriverTransportKindType6(StrEnum):
     BRIDGE = "bridge"
 
     def __str__(self) -> str:

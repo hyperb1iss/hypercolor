@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ProtectedSourceGrantOwner(str, Enum):
+class ProtectedSourceGrantOwner(StrEnum):
     APP = "app"
     APP_SIDECAR = "app_sidecar"
     BROKER = "broker"

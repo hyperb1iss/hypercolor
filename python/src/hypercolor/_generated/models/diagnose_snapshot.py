@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -79,15 +80,19 @@ class DiagnoseSnapshot:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.diagnose_device_output_snapshot import (
             DiagnoseDeviceOutputSnapshot,
         )
         from ..models.diagnose_display_output_snapshot import (
             DiagnoseDisplayOutputSnapshot,
         )
-        from ..models.diagnose_render_snapshot import DiagnoseRenderSnapshot
-        from ..models.diagnose_usb_actor_snapshot import DiagnoseUsbActorSnapshot
+        from ..models.diagnose_render_snapshot import (
+            DiagnoseRenderSnapshot,
+        )
+        from ..models.diagnose_usb_actor_snapshot import (
+            DiagnoseUsbActorSnapshot,
+        )
         from ..models.input_status import InputStatus
 
         d = dict(src_dict)

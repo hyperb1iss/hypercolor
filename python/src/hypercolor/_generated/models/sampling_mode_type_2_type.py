@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class SamplingModeType2Type(str, Enum):
+class SamplingModeType2Type(StrEnum):
     AREA_AVERAGE = "area_average"
 
     def __str__(self) -> str:

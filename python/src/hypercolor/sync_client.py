@@ -402,7 +402,7 @@ class SyncHypercolorClient:
         zone: str,
         *,
         name: str | None = None,
-        color: str | None | _Unset = _UNSET_SENTINEL,
+        color: str | _Unset | None = _UNSET_SENTINEL,
         brightness: float | None = None,
         enabled: bool | None = None,
         if_match: int | None = None,

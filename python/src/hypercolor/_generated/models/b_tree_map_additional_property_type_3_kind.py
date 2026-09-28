@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class BTreeMapAdditionalPropertyType3Kind(str, Enum):
+class BTreeMapAdditionalPropertyType3Kind(StrEnum):
     FLOAT = "float"
 
     def __str__(self) -> str:

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class SamplingModeType0Type(str, Enum):
+class SamplingModeType0Type(StrEnum):
     NEAREST = "nearest"
 
     def __str__(self) -> str:

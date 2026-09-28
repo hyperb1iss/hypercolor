@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ComponentCategoryType5(str, Enum):
+class ComponentCategoryType5(StrEnum):
     HEATSINK = "Heatsink"
 
     def __str__(self) -> str:

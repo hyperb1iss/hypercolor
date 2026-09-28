@@ -5,6 +5,7 @@ from typing import Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.playlist_target_request_type_1_type import PlaylistTargetRequestType1Type
 
@@ -40,7 +41,7 @@ class PlaylistTargetRequestType1:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         d = dict(src_dict)
         preset_id = d.pop("preset_id")
 

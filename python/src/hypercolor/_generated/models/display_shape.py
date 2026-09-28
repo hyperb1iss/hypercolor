@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DisplayShape(str, Enum):
+class DisplayShape(StrEnum):
     ROUND = "round"
     SQUARE = "square"
     TALL = "tall"

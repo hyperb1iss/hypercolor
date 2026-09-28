@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class PairingFlowKind(str, Enum):
+class PairingFlowKind(StrEnum):
     CREDENTIALS_FORM = "credentials_form"
     PHYSICAL_ACTION = "physical_action"
 

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class CoverageIdentityKind(str, Enum):
+class CoverageIdentityKind(StrEnum):
     DEVICE = "device"
     SERIAL = "serial"
     SMBUS = "smbus"

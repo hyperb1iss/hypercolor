@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class MacosCapabilityOwner(str, Enum):
+class MacosCapabilityOwner(StrEnum):
     APP = "app"
     APP_SIDECAR = "app_sidecar"
     BROKER = "broker"

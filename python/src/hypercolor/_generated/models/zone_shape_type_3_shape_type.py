@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ZoneShapeType3ShapeType(str, Enum):
+class ZoneShapeType3ShapeType(StrEnum):
     CUSTOM = "custom"
 
     def __str__(self) -> str:

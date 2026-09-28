@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class Protection(str, Enum):
+class Protection(StrEnum):
     OPEN = "open"
     SECTION_ROOT = "section_root"
     TREE = "tree"

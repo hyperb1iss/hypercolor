@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.layer_parameter import LayerParameter
 
@@ -48,11 +49,11 @@ class LayerBinding:
         map_ = self.map_.to_dict()
 
         source: dict[str, Any]
-        if isinstance(self.source, BindingSourceType0):
-            source = self.source.to_dict()
-        elif isinstance(self.source, BindingSourceType1):
-            source = self.source.to_dict()
-        elif isinstance(self.source, BindingSourceType2):
+        if (
+            isinstance(self.source, BindingSourceType0)
+            or isinstance(self.source, BindingSourceType1)
+            or isinstance(self.source, BindingSourceType2)
+        ):
             source = self.source.to_dict()
         else:
             source = self.source.to_dict()
@@ -72,7 +73,7 @@ class LayerBinding:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.binding_map import BindingMap
         from ..models.binding_source_type_0 import BindingSourceType0
         from ..models.binding_source_type_1 import BindingSourceType1

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class BTreeMapAdditionalPropertyType8Kind(str, Enum):
+class BTreeMapAdditionalPropertyType8Kind(StrEnum):
     DURATION = "duration"
 
     def __str__(self) -> str:

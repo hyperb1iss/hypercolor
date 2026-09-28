@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class BindingSourceType1Kind(str, Enum):
+class BindingSourceType1Kind(StrEnum):
     SENSOR = "sensor"
 
     def __str__(self) -> str:

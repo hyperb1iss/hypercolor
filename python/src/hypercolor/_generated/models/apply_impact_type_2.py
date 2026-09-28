@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ApplyImpactType2(str, Enum):
+class ApplyImpactType2(StrEnum):
     DISCOVERY_RESCAN = "discovery_rescan"
 
     def __str__(self) -> str:

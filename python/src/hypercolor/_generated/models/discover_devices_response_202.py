@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 if TYPE_CHECKING:
     from ..models.discovery_completed_response import DiscoveryCompletedResponse
@@ -50,9 +51,13 @@ class DiscoverDevicesResponse202:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.discovery_completed_response import DiscoveryCompletedResponse
-        from ..models.discovery_scanning_response import DiscoveryScanningResponse
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.discovery_completed_response import (
+            DiscoveryCompletedResponse,
+        )
+        from ..models.discovery_scanning_response import (
+            DiscoveryScanningResponse,
+        )
         from ..models.response_meta import ResponseMeta
 
         d = dict(src_dict)

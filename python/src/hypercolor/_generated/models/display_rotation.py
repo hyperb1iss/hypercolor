@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DisplayRotation(str, Enum):
+class DisplayRotation(StrEnum):
     DEG0 = "deg0"
     DEG180 = "deg180"
     DEG270 = "deg270"
