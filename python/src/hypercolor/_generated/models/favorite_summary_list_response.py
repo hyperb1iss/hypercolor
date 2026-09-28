@@ -90,9 +90,9 @@ class FavoriteSummaryListResponse:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                page_type_1 = PageInfo.from_dict(data)
+                page_type_0 = PageInfo.from_dict(data)
 
-                return page_type_1
+                return page_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | PageInfo | Unset, data)

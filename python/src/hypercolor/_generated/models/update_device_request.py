@@ -92,9 +92,9 @@ class UpdateDeviceRequest:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                display_rotation_type_1 = DisplayRotation(data)
+                display_rotation_type_0 = DisplayRotation(data)
 
-                return display_rotation_type_1
+                return display_rotation_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DisplayRotation | None | Unset, data)

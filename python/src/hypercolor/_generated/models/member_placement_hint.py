@@ -115,9 +115,9 @@ class MemberPlacementHint:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                orientation_type_1 = Orientation(data)
+                orientation_type_0 = Orientation(data)
 
-                return orientation_type_1
+                return orientation_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | Orientation | Unset, data)

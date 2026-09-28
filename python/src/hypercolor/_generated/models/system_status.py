@@ -309,9 +309,9 @@ class SystemStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                latest_frame_type_1 = LatestFrameStatus.from_dict(data)
+                latest_frame_type_0 = LatestFrameStatus.from_dict(data)
 
-                return latest_frame_type_1
+                return latest_frame_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(LatestFrameStatus | None | Unset, data)
@@ -328,11 +328,11 @@ class SystemStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                macos_daemon_ownership_type_1 = MacosDaemonOwnershipStatus.from_dict(
+                macos_daemon_ownership_type_0 = MacosDaemonOwnershipStatus.from_dict(
                     data
                 )
 
-                return macos_daemon_ownership_type_1
+                return macos_daemon_ownership_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MacosDaemonOwnershipStatus | None | Unset, data)

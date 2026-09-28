@@ -210,9 +210,9 @@ class ZoneResource:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                layout_type_1 = ZoneLayoutResource.from_dict(data)
+                layout_type_0 = ZoneLayoutResource.from_dict(data)
 
-                return layout_type_1
+                return layout_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | Unset | ZoneLayoutResource, data)

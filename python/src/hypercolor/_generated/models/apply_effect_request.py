@@ -126,9 +126,9 @@ class ApplyEffectRequest:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                preset_id_type_1 = UUID(data)
+                preset_id_type_0 = UUID(data)
 
-                return preset_id_type_1
+                return preset_id_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | Unset | UUID, data)

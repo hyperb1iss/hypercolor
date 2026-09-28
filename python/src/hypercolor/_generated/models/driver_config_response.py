@@ -90,9 +90,9 @@ class DriverConfigResponse:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                default_type_1 = DriverConfigEntry.from_dict(data)
+                default_type_0 = DriverConfigEntry.from_dict(data)
 
-                return default_type_1
+                return default_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DriverConfigEntry | None | Unset, data)

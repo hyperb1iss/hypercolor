@@ -87,9 +87,9 @@ class DeviceAuthSummary:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                descriptor_type_1 = PairingDescriptor.from_dict(data)
+                descriptor_type_0 = PairingDescriptor.from_dict(data)
 
-                return descriptor_type_1
+                return descriptor_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | PairingDescriptor | Unset, data)

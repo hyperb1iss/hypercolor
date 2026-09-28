@@ -88,9 +88,9 @@ class PairDeviceResponse:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                device_type_1 = DeviceSummary.from_dict(data)
+                device_type_0 = DeviceSummary.from_dict(data)
 
-                return device_type_1
+                return device_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DeviceSummary | None | Unset, data)

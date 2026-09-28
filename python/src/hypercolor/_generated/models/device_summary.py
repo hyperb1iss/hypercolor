@@ -204,9 +204,9 @@ class DeviceSummary:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                attachments_type_1 = DeviceComponentsResponse.from_dict(data)
+                attachments_type_0 = DeviceComponentsResponse.from_dict(data)
 
-                return attachments_type_1
+                return attachments_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DeviceComponentsResponse | None | Unset, data)
@@ -221,9 +221,9 @@ class DeviceSummary:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                auth_type_1 = DeviceAuthSummary.from_dict(data)
+                auth_type_0 = DeviceAuthSummary.from_dict(data)
 
-                return auth_type_1
+                return auth_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DeviceAuthSummary | None | Unset, data)
@@ -238,9 +238,9 @@ class DeviceSummary:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                bridge_type_1 = BridgeDeviceSummary.from_dict(data)
+                bridge_type_0 = BridgeDeviceSummary.from_dict(data)
 
-                return bridge_type_1
+                return bridge_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(BridgeDeviceSummary | None | Unset, data)
@@ -262,9 +262,9 @@ class DeviceSummary:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                display_rotation_type_1 = DisplayRotation(data)
+                display_rotation_type_0 = DisplayRotation(data)
 
-                return display_rotation_type_1
+                return display_rotation_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DisplayRotation | None | Unset, data)

@@ -84,9 +84,9 @@ class EditMembersRequest:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                assignment_type_1 = MemberAssignmentTarget.from_dict(data)
+                assignment_type_0 = MemberAssignmentTarget.from_dict(data)
 
-                return assignment_type_1
+                return assignment_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MemberAssignmentTarget | None | Unset, data)

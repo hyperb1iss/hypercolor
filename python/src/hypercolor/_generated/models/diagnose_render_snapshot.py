@@ -78,9 +78,9 @@ class DiagnoseRenderSnapshot:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                latest_frame_type_1 = DiagnoseLatestFrameSnapshot.from_dict(data)
+                latest_frame_type_0 = DiagnoseLatestFrameSnapshot.from_dict(data)
 
-                return latest_frame_type_1
+                return latest_frame_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DiagnoseLatestFrameSnapshot | None | Unset, data)

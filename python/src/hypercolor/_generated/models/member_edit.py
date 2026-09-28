@@ -74,9 +74,9 @@ class MemberEdit:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                after_type_1 = MemberState.from_dict(data)
+                after_type_0 = MemberState.from_dict(data)
 
-                return after_type_1
+                return after_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MemberState | None | Unset, data)
@@ -91,9 +91,9 @@ class MemberEdit:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                before_type_1 = MemberState.from_dict(data)
+                before_type_0 = MemberState.from_dict(data)
 
-                return before_type_1
+                return before_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MemberState | None | Unset, data)

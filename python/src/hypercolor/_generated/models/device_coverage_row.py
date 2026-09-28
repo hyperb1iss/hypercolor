@@ -110,9 +110,9 @@ class DeviceCoverageRow:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                bridge_type_1 = CoverageBridgeDevice.from_dict(data)
+                bridge_type_0 = CoverageBridgeDevice.from_dict(data)
 
-                return bridge_type_1
+                return bridge_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(CoverageBridgeDevice | None | Unset, data)
@@ -127,9 +127,9 @@ class DeviceCoverageRow:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                native_type_1 = CoverageNativeDevice.from_dict(data)
+                native_type_0 = CoverageNativeDevice.from_dict(data)
 
-                return native_type_1
+                return native_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(CoverageNativeDevice | None | Unset, data)

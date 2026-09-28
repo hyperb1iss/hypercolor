@@ -135,9 +135,18 @@ async fn openapi_json_is_served_with_expected_paths() {
             .iter()
             .find(|parameter| parameter["name"] == name)
             .unwrap_or_else(|| panic!("missing {name} effect filter"));
-        assert_eq!(
-            parameter["schema"]["oneOf"][1]["$ref"],
-            format!("#/components/schemas/{schema}")
+        let branches = parameter["schema"]["oneOf"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{name} effect filter should be a nullable oneOf"));
+        assert!(
+            branches
+                .iter()
+                .any(|branch| branch["$ref"] == format!("#/components/schemas/{schema}")),
+            "{name} effect filter should reference {schema}"
+        );
+        assert!(
+            branches.iter().any(|branch| branch["type"] == "null"),
+            "{name} effect filter should accept null"
         );
     }
     assert!(body["paths"]["/api/v1/output"]["get"].is_object());

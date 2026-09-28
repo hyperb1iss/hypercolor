@@ -74,9 +74,9 @@ class OutputPatchRequest:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                power_type_1 = OutputPowerMode(data)
+                power_type_0 = OutputPowerMode(data)
 
-                return power_type_1
+                return power_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | OutputPowerMode | Unset, data)

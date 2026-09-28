@@ -112,9 +112,9 @@ class RenderAccelerationStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                gpu_probe_type_1 = GpuCompositorProbeStatus.from_dict(data)
+                gpu_probe_type_0 = GpuCompositorProbeStatus.from_dict(data)
 
-                return gpu_probe_type_1
+                return gpu_probe_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(GpuCompositorProbeStatus | None | Unset, data)

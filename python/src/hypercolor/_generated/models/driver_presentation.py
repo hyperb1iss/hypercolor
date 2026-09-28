@@ -125,9 +125,9 @@ class DriverPresentation:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                default_device_class_type_1 = DeviceClassHint(data)
+                default_device_class_type_0 = DeviceClassHint(data)
 
-                return default_device_class_type_1
+                return default_device_class_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DeviceClassHint | None | Unset, data)

@@ -239,9 +239,9 @@ class InputSourceStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                action_issue_type_1 = InputSourceIssueStatus.from_dict(data)
+                action_issue_type_0 = InputSourceIssueStatus.from_dict(data)
 
-                return action_issue_type_1
+                return action_issue_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(InputSourceIssueStatus | None | Unset, data)
@@ -258,9 +258,9 @@ class InputSourceStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                diagnostics_type_1 = SourceDiagnosticsEnvelope.from_dict(data)
+                diagnostics_type_0 = SourceDiagnosticsEnvelope.from_dict(data)
 
-                return diagnostics_type_1
+                return diagnostics_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | SourceDiagnosticsEnvelope | Unset, data)
@@ -277,9 +277,9 @@ class InputSourceStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                freshness_issue_type_1 = InputSourceIssueStatus.from_dict(data)
+                freshness_issue_type_0 = InputSourceIssueStatus.from_dict(data)
 
-                return freshness_issue_type_1
+                return freshness_issue_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(InputSourceIssueStatus | None | Unset, data)
@@ -305,9 +305,9 @@ class InputSourceStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                issue_type_1 = InputSourceIssueStatus.from_dict(data)
+                issue_type_0 = InputSourceIssueStatus.from_dict(data)
 
-                return issue_type_1
+                return issue_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(InputSourceIssueStatus | None | Unset, data)
@@ -335,9 +335,9 @@ class InputSourceStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                lifecycle_issue_type_1 = InputSourceIssueStatus.from_dict(data)
+                lifecycle_issue_type_0 = InputSourceIssueStatus.from_dict(data)
 
-                return lifecycle_issue_type_1
+                return lifecycle_issue_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(InputSourceIssueStatus | None | Unset, data)

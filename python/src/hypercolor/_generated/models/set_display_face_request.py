@@ -101,9 +101,9 @@ class SetDisplayFaceRequest:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                blend_mode_type_1 = BlendMode(data)
+                blend_mode_type_0 = BlendMode(data)
 
-                return blend_mode_type_1
+                return blend_mode_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(BlendMode | None | Unset, data)

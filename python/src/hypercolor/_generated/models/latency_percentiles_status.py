@@ -102,9 +102,9 @@ class LatencyPercentilesStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                cumulative_histogram_type_1 = LatencyHistogramStatus.from_dict(data)
+                cumulative_histogram_type_0 = LatencyHistogramStatus.from_dict(data)
 
-                return cumulative_histogram_type_1
+                return cumulative_histogram_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(LatencyHistogramStatus | None | Unset, data)

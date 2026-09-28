@@ -238,9 +238,9 @@ class ControlDefinition:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                binding_type_1 = ControlBinding.from_dict(data)
+                binding_type_0 = ControlBinding.from_dict(data)
 
-                return binding_type_1
+                return binding_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(ControlBinding | None | Unset, data)
@@ -383,9 +383,9 @@ class ControlDefinition:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                preview_source_type_1 = PreviewSource(data)
+                preview_source_type_0 = PreviewSource(data)
 
-                return preview_source_type_1
+                return preview_source_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | PreviewSource | Unset, data)

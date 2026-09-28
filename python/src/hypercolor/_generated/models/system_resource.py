@@ -70,9 +70,9 @@ class SystemResource:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                status_type_1 = SystemStatus.from_dict(data)
+                status_type_0 = SystemStatus.from_dict(data)
 
-                return status_type_1
+                return status_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | SystemStatus | Unset, data)

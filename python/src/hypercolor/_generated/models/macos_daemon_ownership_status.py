@@ -105,9 +105,9 @@ class MacosDaemonOwnershipStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                conflict_type_1 = MacosDaemonOwnerConflictStatus.from_dict(data)
+                conflict_type_0 = MacosDaemonOwnerConflictStatus.from_dict(data)
 
-                return conflict_type_1
+                return conflict_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MacosDaemonOwnerConflictStatus | None | Unset, data)
@@ -124,11 +124,11 @@ class MacosDaemonOwnershipStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                recovery_required_type_1 = (
+                recovery_required_type_0 = (
                     MacosDaemonOwnerRecoveryRequiredStatus.from_dict(data)
                 )
 
-                return recovery_required_type_1
+                return recovery_required_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MacosDaemonOwnerRecoveryRequiredStatus | None | Unset, data)
