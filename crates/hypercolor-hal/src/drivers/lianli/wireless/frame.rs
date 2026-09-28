@@ -37,8 +37,20 @@ pub const RGB_DATA_OFFSET: usize = 20;
 /// Bytes of the clock-sync blob.
 pub const CLOCK_PAYLOAD_LEN: usize = 220;
 
-/// Precomposed TX control: reset the radio.
+/// Precomposed TX control the reference driver sends as its "reset".
+///
+/// The L-Connect decompile reads `0x11 <channel>` as the master query with
+/// the channel the TX should work on, so this is the query on the default
+/// channel, and the TX answers it with its MAC reply. It does not revive a
+/// TX that stopped taking commands; [`DONGLE_RESET`] through the partner
+/// dongle is the vendor's reset.
 pub const TX_RESET: [u8; 4] = [USB_CMD_GET_MAC, 0x08, 0x00, 0x00];
+/// USB command, written to one dongle, that resets its partner: L-Connect
+/// sends it through the RX after five failed writes to the TX, and through
+/// the TX for a failing RX (`FanControl.LianLi` `WirelessDonglePair.cs`).
+pub const USB_CMD_RESET_PARTNER: u8 = 0x15;
+/// Precomposed partner reset: the command byte and nothing else.
+pub const DONGLE_RESET: [u8; 1] = [USB_CMD_RESET_PARTNER];
 /// Precomposed TX control: enter the streaming ("video") mode.
 pub const TX_VIDEO_START: [u8; 4] = [USB_CMD_GET_MAC, 0x01, 0x00, 0x00];
 /// RX setup the reference driver sends once after discovery starts: two
