@@ -93,7 +93,7 @@ web-sys = { version = "0.3", features = [
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "=0.3.73"
+wasm-bindgen-test = "=0.3.79"
 
 # The standalone crate does not inherit the root dev profile. Full debug info
 # pushes its native Windows test archive past the COFF 4 GiB limit.
