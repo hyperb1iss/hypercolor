@@ -603,13 +603,15 @@ impl WirelessControllerProtocol {
     }
 
     /// Send every cluster whatever the pacer allows now: the newest frame,
-    /// to every cluster it changes, once no heard cluster has a transfer
+    /// to every cluster it changes, once no cluster in step has a transfer
     /// out; the restore upkeep left owing; and, with `resends`, a transfer
     /// again after its bounded wait. Returns the pixel bytes written.
     ///
     /// The render path passes `resends: false`, so a frame it hands over is
-    /// written whole or held whole, and its delivery acknowledgement is
-    /// never for part of it; resends run on the pump.
+    /// written whole to the clusters in step or held whole, and its
+    /// delivery acknowledgement counts exactly what was written. A cluster
+    /// out of step (unheard, held, or past its first bounded wait) catches
+    /// up on the pump's resends.
     fn pace_rgb(
         state: &mut WirelessState,
         now: Instant,
