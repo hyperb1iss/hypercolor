@@ -602,6 +602,15 @@ Precomposed control frames (zero-padded to 64): `11 08 00 00` TX reset,
 `11 01 00 00` enter video mode, `10 01 04 34` / `10 01 04 37` RX queries,
 `10 01 04 30` RX LCD mode.
 
+The "TX reset" is the reference driver's name for these bytes. The
+L-Connect decompile (`FanControl.LianLi` `Protocol/WirelessProtocol.cs`)
+reads `0x11 <channel>` as the master query, with byte 1 the channel the TX
+should work on, and L-Connect sends it every second and reads the reply. So
+`11 08` is the master query on channel 8: the TX answers it with its MAC
+reply, and it does not revive a TX that stopped taking commands. The
+vendor's dongle reset is a separate command, `15` padded to 64, written to
+the *partner* dongle (§6.10).
+
 **Master discovery:** write `{0x11, channel}`, read `{0x11, mac[6], ...}`
 (bytes 11–12 = master firmware, u16 BE, when present). Channel scan order:
 8, then even 2–38, then odd 1–39. Default channel 8.
@@ -846,6 +855,44 @@ dependency). Instead:
   **decoder in test code**, itself validated against committed
   (input, reference-compressed) fixture pairs generated offline with the
   upstream tools; our encoder round-trips through that validated decoder.
+
+### 6.10 Stall detection and the partner reset
+
+A live dongle takes a 64-byte bulk packet in about a millisecond. L-Connect
+gives a write 100 ms, and after five failed writes in a row to one dongle it
+resets that dongle by writing `15` to the other one: the TX through the RX,
+the RX through the TX (`FanControl.LianLi` `Devices/WirelessDonglePair.cs`,
+`Transport/WinUsbTransport.cs`). Hypercolor's bulk transport gives a write
+one second, and the driver treats one write refused for that long as the
+same verdict L-Connect reaches after five: the dongle is unresponsive.
+
+The driver-owned transport (`wireless/transport.rs`) watches both halves
+and, like L-Connect, counts only writes. A TX send-and-receive (the master
+query every connect starts with) runs as a watched send followed by an
+unwatched read, so a TX that takes the query but never answers stays a
+plain timeout. On a refused write it:
+
+1. records the wedge per controller, keyed by the TX's USB path, in
+   `wireless/health.rs`, where it outlives the session that saw it,
+2. logs `L-Wireless TX wedged` (or `RX`) once, and a `still wedged` line
+   with the stall and reset counts on every later stall,
+3. writes `15` to the partner half and logs whether the reset went out,
+4. fails the operation as a disconnect. A timeout would read as a transient
+   frame error, and the actor would keep writing into the dead endpoint
+   until upkeep failed. The disconnect ends the session, and the lifecycle's
+   reconnect backoff paces every later attempt, each of which is also a
+   fresh liveness probe and reset.
+
+The first command a wedged half takes afterwards, through any session,
+closes the wedge and logs `L-Wireless TX recovered`. Read timeouts never
+count, because optional replies time out on a healthy dongle. Neither does
+the RX table poll, which stays one exchange: its timeout cannot tell a
+refused write from a slow reply.
+
+The partner reset is the vendor's behavior, but it is unverified on this
+hardware. Whether `15` through the RX revives a V1 `SLV3TX` that has fully
+hung, rather than one whose endpoint has only stalled, is the first thing to
+check when a wedge next happens (§11.12).
 
 ## 7. Wireless LCD Receiver Protocol (0x1CBE)
 
@@ -1131,6 +1178,27 @@ Registration and data surfaces:
 11. **DES/`slv3tuzx` in open source.** The key is already public in multiple
     repos and in every L-Connect install; shipping it is documentation of an
     interoperability fact, not a secret. Noting for license/audit review.
+12. **Field wedges, 2026-09-26 to 2026-09-28 (V1, three TL LCD fans, one
+    cluster, 78 LEDs).** The TX stopped taking commands: 313 connect
+    attempts over about 26 hours each failed after one second, and only a
+    replug brought it back. A user-space `usbreset` of the stuck TX made it
+    fail re-enumeration (`device not accepting address, error -71`): the
+    device stopped responding at the USB level altogether, and a firmware
+    hang is the suspected cause. The trigger is unconfirmed. Two measured facts bound it. First, in steady state the
+    driver sends about 358 TX packets a second (about 28 frames of twelve
+    packets plus upkeep), which is about 90 RF envelopes a second, and reads
+    nothing back from the TX. L-Connect also leaves the TX's per-command
+    status packets unread outside its 1 Hz master query, so the unread
+    replies are not a Hypercolor-only deviation. Second, no hardware-tested
+    reference streams per-frame RGB this fast: L-Connect sends RGB only
+    until the receiver echoes the wanted effect index, the reference Linux
+    driver uploads looping animations once, and the OpenRGB fork ticks at
+    20 Hz. The reference maintainer tied an RF freeze of this TX to its
+    command rate (`sgtaziz/lian-li-linux` issue 22, fixed by moving fan
+    updates from 100 ms to 500 ms in `d780708f`). Before any rate change,
+    measure delivery on the receivers' echoed effect index and log the
+    onset of the next wedge; §6.10 makes that onset visible and tries the
+    vendor reset.
 
 ## 12. Testing Strategy
 
