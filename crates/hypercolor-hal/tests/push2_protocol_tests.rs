@@ -622,3 +622,47 @@ fn push2_touch_strip_arguments_never_set_the_reserved_bits() {
     assert_eq!(&args[..15], &[0x3F; 15]);
     assert_eq!(args[15], 0x07);
 }
+
+#[test]
+fn push2_identity_reply_decodes_the_manual_example() {
+    use hypercolor_hal::drivers::push2::protocol::push2_identity_for_testing;
+
+    // Version 1.0, build 47, serial 17295091, board revision 1.
+    let reply = [
+        0xF0, 0x7E, 0x01, 0x06, 0x02, 0x00, 0x21, 0x1D, 0x67, 0x32, 0x02, 0x00, 0x01, 0x00, 0x2F,
+        0x00, 0x73, 0x4D, 0x1F, 0x08, 0x00, 0x01, 0xF7,
+    ];
+    assert_eq!(
+        push2_identity_for_testing(&reply),
+        Some((1, 0, 47, 17_295_091, 1))
+    );
+    assert_eq!(push2_identity_for_testing(&reply[..22]), None);
+
+    // The reply still parses as before; decoding only adds a log line.
+    let response = Push2Protocol::new()
+        .parse_response(&reply)
+        .expect("identity reply parses");
+    assert_eq!(response.status, ResponseStatus::Ok);
+}
+
+#[test]
+fn push2_statistics_reply_decodes_the_manual_example() {
+    use hypercolor_hal::drivers::push2::protocol::push2_statistics_for_testing;
+
+    // External power supply, run ID 0, uptime 959 s.
+    let args = [0x01, 0x00, 0x3F, 0x07, 0x00, 0x00, 0x00];
+    assert_eq!(push2_statistics_for_testing(&args), Some((true, 0, 959)));
+    assert_eq!(
+        push2_statistics_for_testing(&[0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00]),
+        Some((false, 5, 1))
+    );
+    assert_eq!(push2_statistics_for_testing(&args[..6]), None);
+
+    let mut reply = vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x1A];
+    reply.extend_from_slice(&args);
+    reply.push(0xF7);
+    let response = Push2Protocol::new()
+        .parse_response(&reply)
+        .expect("statistics reply parses");
+    assert_eq!(response.status, ResponseStatus::Ok);
+}
