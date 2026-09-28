@@ -259,33 +259,26 @@ fn fans_that_stop_confirming_end_in_one_tx_reset_not_endless_resends() {
 }
 
 /// Firmware whose echo never tracks live frames, or a TX a reset does not
-/// revive, must not turn into a reset loop across reconnects: each
-/// controller gets a small reset budget until its fans confirm a frame
-/// again, and past it a session holds its lighting.
+/// revive, must not turn into a reset loop across reconnects: each cluster
+/// gets a small reset budget until it confirms a frame again, and past it
+/// the cluster's lighting is held.
 #[test]
 fn a_tx_that_never_delivers_spends_a_bounded_reset_budget_then_holds() {
-    let dead = || {
-        let mut radio = FakeRadio::one_cluster();
-        radio.rf_dead = true;
-        radio
-    };
-    let first = dead();
-    let master = first.master;
-    let mut sessions = vec![first];
-    for _ in 1..=MAX_RESETS_WITHOUT_DELIVERY {
-        let mut radio = dead();
-        radio.master = master;
-        sessions.push(radio);
-    }
+    let mut radio = FakeRadio::one_cluster();
+    radio.rf_dead = true;
+    let cluster = radio.clusters[0].mac;
+    let mut rig = Rig::connect(radio);
 
     let mut resets = 0;
-    for (session, radio) in sessions.into_iter().enumerate() {
-        let mut rig = Rig::connect(radio);
+    for session in 0..=MAX_RESETS_WITHOUT_DELIVERY {
+        if session > 0 {
+            rig = rig.reconnect();
+        }
         rig.run_for(ECHO_STALL + Duration::from_secs(5));
         let settled = rig.now();
         rig.run_for(Duration::from_secs(20));
         resets += rig.radio.resets.len();
-        if session < usize::try_from(MAX_RESETS_WITHOUT_DELIVERY).expect("small") {
+        if session < MAX_RESETS_WITHOUT_DELIVERY {
             assert_eq!(
                 rig.radio.resets.len(),
                 1,
@@ -299,7 +292,7 @@ fn a_tx_that_never_delivers_spends_a_bounded_reset_budget_then_holds() {
             assert_eq!(
                 rig.transfers_since(settled),
                 0,
-                "a held session sends no RGB at all, not a slow probe"
+                "a held cluster gets no RGB at all, not a slow probe"
             );
         }
         assert_eq!(rig.commands_after_reset, 0);
@@ -308,15 +301,91 @@ fn a_tx_that_never_delivers_spends_a_bounded_reset_budget_then_holds() {
         u32::try_from(resets).expect("small"),
         MAX_RESETS_WITHOUT_DELIVERY
     );
-    assert_eq!(resets_without_delivery(master), MAX_RESETS_WITHOUT_DELIVERY);
+    assert_eq!(
+        resets_without_delivery(cluster),
+        MAX_RESETS_WITHOUT_DELIVERY
+    );
 
-    // A replugged controller whose fans confirm again gets its budget back.
-    let mut radio = FakeRadio::one_cluster();
-    radio.master = master;
-    let mut rig = Rig::connect(radio);
+    // A power-cycled controller whose fans confirm again gets its budget
+    // back.
+    rig.radio.rf_dead = false;
+    let mut rig = rig.reconnect();
     rig.run_for(Duration::from_secs(2));
     assert!(rig.stats().frames_delivered > 0);
-    assert_eq!(resets_without_delivery(master), 0);
+    assert_eq!(resets_without_delivery(cluster), 0);
+}
+
+/// A healthy cluster confirming frames must not renew the reset budget of
+/// a cluster beside it that never does, or the controller would be reset
+/// forever. The failing cluster is held once its budget is spent, and the
+/// healthy one keeps streaming.
+#[test]
+fn a_healthy_cluster_does_not_renew_a_failing_clusters_reset_budget() {
+    let mut radio = FakeRadio::two_clusters();
+    radio.clusters[1].deaf = true;
+    let failing = radio.clusters[1].mac;
+    let mut rig = Rig::connect(radio);
+    rig.frame = Box::new(|index| {
+        let mut colors = moving_frame(index);
+        colors.extend(moving_frame(index + 7_777));
+        colors
+    });
+
+    let mut resets = 0;
+    for session in 0..=MAX_RESETS_WITHOUT_DELIVERY {
+        if session > 0 {
+            rig = rig.reconnect();
+        }
+        rig.run_for(ECHO_STALL + Duration::from_secs(10));
+        resets += rig.radio.resets.len();
+    }
+    assert_eq!(
+        u32::try_from(resets).expect("small"),
+        MAX_RESETS_WITHOUT_DELIVERY,
+        "the failing cluster's budget bounds the resets"
+    );
+    assert_eq!(
+        resets_without_delivery(failing),
+        MAX_RESETS_WITHOUT_DELIVERY
+    );
+
+    let healthy_before = rig.radio.clusters[0].applied_log.len();
+    rig.run_for(Duration::from_secs(5));
+    assert!(rig.radio.resets.is_empty(), "no further reset");
+    assert!(
+        rig.radio.clusters[0].applied_log.len() > healthy_before + 50,
+        "the healthy cluster keeps streaming beside the held one"
+    );
+}
+
+/// After a reconnect the receivers still echo the last session's transfer.
+/// A new session's first frame, even of the same pixels, must not be taken
+/// as confirmed by that cached report.
+#[test]
+fn a_cached_echo_from_the_last_session_confirms_nothing() {
+    let mut rig = Rig::connect(FakeRadio::one_cluster());
+    // A still scene: every session sends the same pixels first. The first
+    // session ends before any upkeep restore, so the fans still echo its
+    // very first transfer, the one a new session's first send would
+    // collide with if send numbers started over.
+    rig.frame_limit = Some(1);
+    rig.run_for(Duration::from_millis(500));
+    let first = rig.stats();
+    assert_eq!(
+        (first.frames_delivered, first.restores),
+        (1, 0),
+        "the first session confirmed its one transfer: {first:?}"
+    );
+
+    rig.radio.rf_dead = true;
+    let mut rig = rig.reconnect();
+    rig.run_for(Duration::from_secs(3));
+    assert_eq!(
+        rig.stats().frames_delivered,
+        0,
+        "nothing reached the fans this session, so nothing is confirmed: {:?}",
+        rig.stats()
+    );
 }
 
 /// Nothing on the host tells a lost transfer from one still queued in the

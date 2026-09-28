@@ -6,11 +6,13 @@
 //! until the record echoes it and never sends more; this module holds the
 //! live stream to the same contract.
 //!
-//! Each send gets its own wire tag: the frame's pixel hash mixed with a
-//! per-session send number. An echo therefore names exactly one transfer,
-//! so a restore of the frame already showing, or a resend of a frame that
-//! did not land, is acknowledged by its own arrival and never by a report
-//! that predates it.
+//! Each send gets its own wire tag: the frame's pixel hash mixed with a send
+//! number that runs for the whole process from a wall-clock seed, and never
+//! equals the tag the cluster is echoing at that moment. An echo therefore
+//! names exactly one transfer, so a restore of the frame already showing, a
+//! resend of a frame that did not land, or the first frame after a
+//! reconnect is acknowledged by its own arrival and never by a report the RX
+//! cached before it.
 //!
 //! - One transfer per cluster is out at a time. A frame that arrives while
 //!   one is out is held; a newer frame replaces it, so what goes out next is
@@ -22,21 +24,28 @@
 //!   conservative [`ECHO_WAIT_UNKNOWN`] before any echo is seen) goes out
 //!   again carrying the newest frame. Nothing on the host can tell a lost
 //!   transfer from one still queued in the TX, so a resend is a bet: the
-//!   wait doubles with every resend of the chain, which bounds the extra
-//!   transfers a stall can queue to a handful before the verdict below.
+//!   wait doubles with every resend, and a chain gets at most
+//!   [`MAX_CHAIN_RESENDS`] before it waits only for an echo or the verdict
+//!   below. A cluster can therefore have one transfer out, and at most
+//!   that many more only after as many bounded waits passed in silence.
 //! - An echo of an older transfer (one that landed after its wait ran out)
 //!   counts as delivered late, teaches the echo time, and restarts the
 //!   stall clock, since it proves the radio still delivers.
 //! - A cluster the RX has stopped hearing is sent nothing until it answers.
-//! - Fans that are heard but confirm nothing for [`ECHO_STALL`], across at
-//!   least [`STALL_MIN_RESENDS`] resends, mean the TX stopped delivering:
-//!   the protocol asks the transport for the vendor reset, which ends the
+//! - Fan-speed upkeep can knock a receiver back to its onboard lighting
+//!   without changing its echo, so every upkeep leaves each cluster owing a
+//!   restore: the first transfer after it pays the debt, and if the window
+//!   is closed the restore goes out once the transfer ahead resolves.
+//! - Fans that are heard but confirm nothing for [`ECHO_STALL`], across
+//!   every resend their chain gets, mean the TX stopped delivering: the
+//!   protocol asks the transport for the vendor reset, which ends the
 //!   session the way a refused write does. At most
-//!   [`MAX_RESETS_WITHOUT_DELIVERY`] resets are asked for per controller
-//!   until its fans confirm a frame again, across sessions; past that the
-//!   session holds its lighting and says to power-cycle the controller, so
-//!   a TX the reset does not revive, or firmware that does not echo live
-//!   frames, ends in a bounded failure instead of a reset loop.
+//!   [`MAX_RESETS_WITHOUT_DELIVERY`] resets are asked for on behalf of one
+//!   cluster until that cluster confirms a frame again, across sessions;
+//!   past that the cluster's lighting is held and the log says to
+//!   power-cycle the controller, while clusters that still confirm keep
+//!   streaming. A TX the reset does not revive, or firmware that does not
+//!   echo live frames, ends in that bounded failure, never a reset loop.
 //!
 //! So the frame rate is whatever the radio confirms, up to what the render
 //! path offers, and nothing caps it.
@@ -45,8 +54,9 @@
 //! sent with frames the fans echoed back.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tracing::{debug, error, info, warn};
 
@@ -73,9 +83,14 @@ pub const ECHO_STALL_WARN: Duration = Duration::from_secs(1);
 /// No confirmation for this long, with the fans heard, is a TX that stopped
 /// delivering.
 pub const ECHO_STALL: Duration = Duration::from_secs(5);
-/// Resends a stall must have tried before it is called.
-pub const STALL_MIN_RESENDS: u32 = 3;
-/// Resets asked for per controller before its fans confirm a frame again.
+/// Resends one unconfirmed chain gets; after them it waits for an echo or
+/// the stall verdict.
+pub const MAX_CHAIN_RESENDS: u32 = 3;
+/// Resends a stall must have tried before it is called: every one its chain
+/// gets.
+pub const STALL_MIN_RESENDS: u32 = MAX_CHAIN_RESENDS;
+/// Resets asked for on behalf of one cluster before it confirms a frame
+/// again.
 pub const MAX_RESETS_WITHOUT_DELIVERY: u32 = 2;
 /// A cluster missing from every table reply for this long is not heard.
 pub const ABSENT_AFTER: Duration = Duration::from_secs(3);
@@ -116,7 +131,8 @@ pub enum StallVerdict {
         /// this one included.
         resets: u32,
     },
-    /// The reset budget is spent: hold the lighting for this session.
+    /// The cluster's reset budget is spent: hold its lighting for this
+    /// session.
     Hold {
         /// Index of the cluster that stopped confirming.
         cluster: usize,
@@ -214,6 +230,8 @@ struct SentTag {
 /// One cluster's side of the window.
 #[derive(Debug, Default)]
 struct ClusterLink {
+    /// The cluster's radio MAC, which keys its reset budget.
+    mac: Option<Mac>,
     /// Pixels of the newest frame submitted for this cluster.
     newest: Option<Tag>,
     /// Pixels of ours the cluster last echoed; `None` while it shows
@@ -226,7 +244,13 @@ struct ClusterLink {
     last_delivered_frame: u64,
     last_seen_at: Option<Instant>,
     last_clock: Option<[u8; 4]>,
+    /// The tag the cluster echoed last, whoever sent it.
+    last_echo: Option<Tag>,
     echo_average: Option<Duration>,
+    /// Fan-speed upkeep ran since the last transfer went out.
+    restore_owed: bool,
+    /// The cluster's reset budget is spent: it gets no RGB this session.
+    holding: bool,
     stall_warned: bool,
     absent_logged: bool,
 }
@@ -314,10 +338,7 @@ impl ClusterLink {
 #[derive(Debug, Default)]
 pub struct DeliveryPacer {
     links: Vec<ClusterLink>,
-    master: Option<Mac>,
-    send_sequence: u32,
     reset_requested: bool,
-    holding: bool,
     totals: DeliveryStats,
     window: DeliveryStats,
     window_started_at: Option<Instant>,
@@ -330,11 +351,16 @@ impl DeliveryPacer {
         self.totals
     }
 
-    /// Whether the session sends RGB no more: the TX reset was asked for,
-    /// or the reset budget is spent and the lighting is held.
+    /// Whether the session sends RGB no more: the TX reset was asked for.
     #[must_use]
     pub const fn silenced(&self) -> bool {
-        self.reset_requested || self.holding
+        self.reset_requested
+    }
+
+    /// Clusters whose lighting is held because their reset budget is spent.
+    #[must_use]
+    pub fn held_clusters(&self) -> usize {
+        self.links.iter().filter(|link| link.holding).count()
     }
 
     /// Whether the protocol has asked for the TX reset: the session is
@@ -344,11 +370,6 @@ impl DeliveryPacer {
         self.reset_requested
     }
 
-    /// The controller this session drives, which keys the reset budget.
-    pub const fn bind_master(&mut self, master: Mac) {
-        self.master = Some(master);
-    }
-
     /// Grow the window to cover `clusters`, keeping what is known.
     pub fn ensure_clusters(&mut self, clusters: usize) {
         if self.links.len() < clusters {
@@ -356,11 +377,25 @@ impl DeliveryPacer {
         }
     }
 
-    /// Fit the window to the frozen routing: a cluster seen during connect
-    /// that did not make the routing has no link left to report on.
-    pub fn fit_clusters(&mut self, clusters: usize) {
-        self.links.truncate(clusters);
-        self.ensure_clusters(clusters);
+    /// Fit the window to the frozen routing, one link per cluster MAC in
+    /// routing order: a cluster seen during connect that did not make the
+    /// routing has no link left to report on.
+    pub fn fit_clusters(&mut self, macs: &[Mac]) {
+        self.links.truncate(macs.len());
+        self.ensure_clusters(macs.len());
+        for (link, mac) in self.links.iter_mut().zip(macs) {
+            link.mac = Some(*mac);
+        }
+    }
+
+    /// Fan-speed upkeep just went out: every cluster showing our lighting
+    /// owes a restore, paid by the next transfer it gets.
+    pub fn owe_restores(&mut self) {
+        for link in &mut self.links {
+            if link.newest.is_some() {
+                link.restore_owed = true;
+            }
+        }
     }
 
     /// The render path handed over a frame.
@@ -388,24 +423,23 @@ impl DeliveryPacer {
     }
 
     /// Whether `cluster` should be sent a transfer now, and why.
-    ///
-    /// `restore` asks for the showing frame again when nothing newer is
-    /// waiting (the fan-speed upkeep's recovery).
     #[must_use]
-    pub fn decide(&self, cluster: usize, now: Instant, restore: bool) -> Option<SendKind> {
+    pub fn decide(&self, cluster: usize, now: Instant) -> Option<SendKind> {
         if self.silenced() {
             return None;
         }
         let link = self.links.get(cluster)?;
         let newest = link.newest?;
-        if link.absent(now) {
+        if link.holding || link.absent(now) {
             return None;
         }
         match link.in_flight {
-            Some(flight) if now >= flight.resend_at => Some(SendKind::Resend),
+            Some(flight) if now >= flight.resend_at && flight.resends < MAX_CHAIN_RESENDS => {
+                Some(SendKind::Resend)
+            }
             Some(_) => None,
             None if link.confirmed != Some(newest) => Some(SendKind::Frame),
-            None if restore => Some(SendKind::Restore),
+            None if link.restore_owed => Some(SendKind::Restore),
             None => None,
         }
     }
@@ -426,9 +460,12 @@ impl DeliveryPacer {
     /// tag it carries on the wire.
     pub fn note_sent(&mut self, cluster: usize, content: Tag, kind: SendKind, now: Instant) -> Tag {
         self.ensure_clusters(cluster + 1);
-        self.send_sequence = self.send_sequence.wrapping_add(1);
-        let wire = wire_tag(content, self.send_sequence);
         let link = &mut self.links[cluster];
+        let mut wire = wire_tag(content, next_send_number());
+        while Some(wire) == link.last_echo {
+            wire = wire_tag(content, next_send_number());
+        }
+        link.restore_owed = false;
         let previous = link.in_flight;
 
         // A frame is new pixels for the chain; a resend of the same pixels
@@ -512,7 +549,9 @@ impl DeliveryPacer {
     pub fn poll_due(&self, now: Instant) -> bool {
         !self.silenced()
             && self.links.iter().any(|link| {
-                !link.absent(now) && link.in_flight.is_some_and(|flight| now >= flight.poll_at)
+                !link.holding
+                    && !link.absent(now)
+                    && link.in_flight.is_some_and(|flight| now >= flight.poll_at)
             })
     }
 
@@ -567,6 +606,7 @@ impl DeliveryPacer {
             }
         }
         link.last_seen_at = Some(now);
+        link.last_echo = Some(echo);
         let reported = link.last_clock.replace(clock) != Some(clock);
 
         let mut delivered = false;
@@ -639,8 +679,8 @@ impl DeliveryPacer {
                 stats.add_echo(sample);
             }
         });
-        if confirmed_any && let Some(master) = self.master {
-            forget_resets(master);
+        if confirmed_any && let Some(mac) = self.links[cluster].mac {
+            forget_resets(mac);
         }
         if drifted {
             debug!(
@@ -671,7 +711,7 @@ impl DeliveryPacer {
             return None;
         }
         for (cluster, link) in self.links.iter_mut().enumerate() {
-            let Some(flight) = link.in_flight else {
+            let Some(flight) = link.in_flight.filter(|_| !link.holding) else {
                 continue;
             };
             let unconfirmed_for = now.saturating_duration_since(flight.unconfirmed_since);
@@ -690,10 +730,10 @@ impl DeliveryPacer {
             if unconfirmed_for < ECHO_STALL || flight.resends < STALL_MIN_RESENDS {
                 continue;
             }
-            let resets = self.master.map_or(0, resets_without_delivery);
+            let resets = link.mac.map_or(0, resets_without_delivery);
             if resets < MAX_RESETS_WITHOUT_DELIVERY {
                 self.reset_requested = true;
-                let resets = self.master.map_or(1, note_reset);
+                let resets = link.mac.map_or(1, note_reset);
                 return Some(StallVerdict::Reset {
                     cluster,
                     unconfirmed_for,
@@ -701,12 +741,13 @@ impl DeliveryPacer {
                     resets,
                 });
             }
-            self.holding = true;
+            link.holding = true;
+            link.in_flight = None;
             error!(
                 cluster,
                 unconfirmed_ms = millis(unconfirmed_for),
                 resets,
-                "L-Wireless fans still confirm no frame after {resets} TX resets; holding the lighting. Power-cycle the controller"
+                "L-Wireless fans still confirm no frame after {resets} TX resets; holding their lighting. Power-cycle the controller"
             );
             return Some(StallVerdict::Hold {
                 cluster,
@@ -759,7 +800,7 @@ impl DeliveryPacer {
             replies_per_s = per_second(window.table_replies),
             reports_per_s = per_second(window.cluster_reports),
             tx_packets_per_s = per_second(window.tx_packets),
-            holding = self.holding,
+            held_clusters = self.held_clusters(),
             "L-Wireless RGB delivery"
         );
     }
@@ -780,40 +821,59 @@ pub fn wire_tag(content: Tag, sequence: u32) -> Tag {
     effect_index_for(&seed)
 }
 
-/// Resets asked for per controller since its fans last confirmed a frame.
-/// Kept for the process, so a reconnect cannot turn a TX that stays dead
-/// into a reset loop.
+/// The next send number. It runs for the whole process from a wall-clock
+/// seed, so a tag from an earlier session, or an earlier daemon, that a
+/// receiver still echoes is not handed out again by chance.
+fn next_send_number() -> u32 {
+    static NEXT: OnceLock<AtomicU32> = OnceLock::new();
+    NEXT.get_or_init(|| {
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| {
+                since.subsec_nanos()
+                    ^ u32::try_from(since.as_secs() & u64::from(u32::MAX)).unwrap_or(0)
+            });
+        AtomicU32::new(seed)
+    })
+    .fetch_add(1, Ordering::Relaxed)
+}
+
+/// Resets asked for on behalf of each cluster (by radio MAC) since it last
+/// confirmed a frame. Kept for the process, so a reconnect cannot turn a TX
+/// that stays dead into a reset loop, and per cluster, so fans that still
+/// confirm cannot renew a failing cluster's budget.
 fn reset_budget() -> &'static Mutex<HashMap<Mac, u32>> {
     static RESETS: OnceLock<Mutex<HashMap<Mac, u32>>> = OnceLock::new();
     RESETS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Resets asked for on `master` since its fans last confirmed a frame.
+/// Resets asked for on behalf of the cluster `mac` since it last confirmed
+/// a frame.
 #[must_use]
-pub fn resets_without_delivery(master: Mac) -> u32 {
+pub fn resets_without_delivery(mac: Mac) -> u32 {
     reset_budget()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .get(&master)
+        .get(&mac)
         .copied()
         .unwrap_or(0)
 }
 
-fn note_reset(master: Mac) -> u32 {
+fn note_reset(mac: Mac) -> u32 {
     let mut resets = reset_budget()
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    let count = resets.entry(master).or_insert(0);
+    let count = resets.entry(mac).or_insert(0);
     *count = count.saturating_add(1);
     *count
 }
 
-fn forget_resets(master: Mac) {
+fn forget_resets(mac: Mac) {
     let mut resets = reset_budget()
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     if !resets.is_empty() {
-        resets.remove(&master);
+        resets.remove(&mac);
     }
 }
 
@@ -840,14 +900,14 @@ mod tests {
         let now = Instant::now();
         let mut pacer = connected(now);
         pacer.submit(0, T1);
-        assert_eq!(pacer.decide(0, now, false), Some(SendKind::Frame));
+        assert_eq!(pacer.decide(0, now), Some(SendKind::Frame));
         let wire = pacer.note_sent(0, T1, SendKind::Frame, now);
         pacer.submit(0, T2);
-        assert_eq!(pacer.decide(0, now, false), None, "the window is closed");
+        assert_eq!(pacer.decide(0, now), None, "the window is closed");
         let later = now + Duration::from_millis(20);
         pacer.observe(0, wire, [0, 0, 0, 1], later);
         assert_eq!(
-            pacer.decide(0, later, false),
+            pacer.decide(0, later),
             Some(SendKind::Frame),
             "the echo reopens it for the newest frame"
         );
@@ -865,12 +925,77 @@ mod tests {
         pacer.observe(0, first, [0, 0, 0, 2], now);
         pacer.submit(0, T2);
         assert_eq!(
-            pacer.decide(0, now, false),
+            pacer.decide(0, now),
             None,
             "a report from before the restore landed does not release the next frame"
         );
         pacer.observe(0, restore, [0, 0, 0, 3], now);
-        assert_eq!(pacer.decide(0, now, false), Some(SendKind::Frame));
+        assert_eq!(pacer.decide(0, now), Some(SendKind::Frame));
+    }
+
+    #[test]
+    fn a_restore_owed_by_upkeep_waits_for_the_transfer_ahead_then_goes_out() {
+        let now = Instant::now();
+        let mut pacer = connected(now);
+        pacer.submit(0, T1);
+        let first = pacer.note_sent(0, T1, SendKind::Frame, now);
+        // PWM goes out while the frame is still unconfirmed.
+        pacer.owe_restores();
+        assert_eq!(pacer.decide(0, now), None, "the window is closed");
+        pacer.observe(0, first, [0, 0, 0, 1], now);
+        assert_eq!(
+            pacer.decide(0, now),
+            Some(SendKind::Restore),
+            "the frame may have landed before the PWM; it goes out again"
+        );
+        let restore = pacer.note_sent(0, T1, SendKind::Restore, now);
+        pacer.observe(0, restore, [0, 0, 0, 2], now);
+        assert_eq!(pacer.decide(0, now), None, "the debt is paid");
+    }
+
+    #[test]
+    fn a_new_tag_never_matches_what_the_cluster_echoes_now() {
+        let now = Instant::now();
+        let mut pacer = connected(now);
+        pacer.submit(0, T1);
+        let first = pacer.note_sent(0, T1, SendKind::Frame, now);
+        pacer.observe(0, first, [0, 0, 0, 1], now);
+        // A new session: nothing sent yet, the cluster still echoes the tag
+        // of the last session's transfer.
+        let mut session = connected(now);
+        session.observe(0, first, [0, 0, 0, 2], now);
+        session.submit(0, T1);
+        assert_eq!(session.decide(0, now), Some(SendKind::Frame));
+        let again = session.note_sent(0, T1, SendKind::Frame, now);
+        assert_ne!(again, first);
+        session.observe(0, first, [0, 0, 0, 3], now);
+        assert_eq!(
+            session.totals().frames_delivered,
+            0,
+            "the cached echo of the last session confirms nothing"
+        );
+    }
+
+    #[test]
+    fn a_chain_stops_resending_after_its_resends_and_waits_for_an_echo() {
+        let now = Instant::now();
+        let mut pacer = connected(now);
+        pacer.submit(0, T1);
+        let mut at = now;
+        let _ = pacer.note_sent(0, T1, SendKind::Frame, at);
+        for _ in 0..MAX_CHAIN_RESENDS {
+            at += ECHO_RESEND_CAP;
+            pacer.links[0].last_seen_at = Some(at);
+            assert_eq!(pacer.decide(0, at), Some(SendKind::Resend));
+            let _ = pacer.note_sent(0, T1, SendKind::Resend, at);
+        }
+        at += ECHO_RESEND_CAP;
+        pacer.links[0].last_seen_at = Some(at);
+        assert_eq!(
+            pacer.decide(0, at),
+            None,
+            "no more bets: an echo or the stall verdict decides"
+        );
     }
 
     #[test]

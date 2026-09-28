@@ -588,13 +588,23 @@ impl WirelessControllerProtocol {
         }
     }
 
+    /// Size the pacer to the routing, keyed by each cluster's radio MAC.
+    fn fit_pacer(state: &mut WirelessState) {
+        let macs: Vec<Mac> = state
+            .table
+            .clusters
+            .iter()
+            .map(|cluster| cluster.mac)
+            .collect();
+        state.pacer.fit_clusters(&macs);
+    }
+
     /// Send every cluster whatever the pacer allows now: the newest frame
-    /// once its predecessor is confirmed, a resend after a bounded wait,
-    /// and with `restore`, the confirmed frame again.
+    /// once its predecessor is confirmed, a resend after a bounded wait, or
+    /// the restore upkeep left owing.
     fn pace_rgb(
         state: &mut WirelessState,
         now: Instant,
-        restore: bool,
         frame_number: Option<u32>,
         buffer: &mut CommandBuffer<'_>,
     ) {
@@ -606,7 +616,7 @@ impl WirelessControllerProtocol {
         for (index, cluster) in state.table.clusters.iter().enumerate() {
             let start = offset;
             offset += usize::try_from(cluster.led_count()).unwrap_or(0);
-            let Some(kind) = state.pacer.decide(index, now, restore) else {
+            let Some(kind) = state.pacer.decide(index, now) else {
                 continue;
             };
             let raw = Self::cluster_raw(cluster, colors, start);
@@ -668,13 +678,15 @@ impl WirelessControllerProtocol {
         }
 
         // PWM traffic can knock a receiver back to its onboard lighting
-        // without changing its echo, so the frame goes out again right
-        // after it, before clock or pairing traffic can delay it. It goes
-        // through the window: a transfer still out will land after the PWM
-        // on its own, and a resend covers one the PWM interrupted.
+        // without changing its echo, so every cluster now owes a restore.
+        // Where the window is open it goes out right after the PWM, before
+        // clock or pairing traffic can delay it; where a transfer is still
+        // out, it follows once that transfer resolves, since the transfer
+        // may have landed before the PWM.
+        state.pacer.owe_restores();
         let mut rgb_commands = Vec::new();
         let mut buffer = CommandBuffer::new(&mut rgb_commands);
-        Self::pace_rgb(state, now, true, None, &mut buffer);
+        Self::pace_rgb(state, now, None, &mut buffer);
         buffer.finish();
         commands.extend(rgb_commands);
 
@@ -817,7 +829,7 @@ impl Protocol for WirelessControllerProtocol {
         latest_colors.clear();
         latest_colors.extend_from_slice(&colors[..colors.len().min(led_count)]);
         latest_colors.resize(led_count, [0, 0, 0]);
-        state.pacer.fit_clusters(state.table.clusters.len());
+        Self::fit_pacer(state);
         state.pacer.note_frame_offered();
         Self::submit_frame(state);
         let mut buffer = CommandBuffer::new(commands);
@@ -838,7 +850,7 @@ impl Protocol for WirelessControllerProtocol {
         }
 
         let frame_number = self.frames_encoded.fetch_add(1, Ordering::Relaxed);
-        Self::pace_rgb(state, now, false, Some(frame_number), &mut buffer);
+        Self::pace_rgb(state, now, Some(frame_number), &mut buffer);
         buffer.finish();
         state.pacer.note_tx_packets(Self::tx_packets(commands));
     }
@@ -856,7 +868,7 @@ impl Protocol for WirelessControllerProtocol {
         let mut guard = self.state.write().unwrap_or_else(PoisonError::into_inner);
         let state = &mut *guard;
         state.topology_frozen = true;
-        state.pacer.fit_clusters(state.table.clusters.len());
+        Self::fit_pacer(state);
         let mut commands = Vec::new();
         // After asking for the TX reset the session is over; the transport
         // ends it, and nothing more is written to a TX being reset.
@@ -873,10 +885,10 @@ impl Protocol for WirelessControllerProtocol {
     }
 
     /// The pacer's tick. A verdict on fans that stopped confirming comes
-    /// first: the TX reset and nothing else, or nothing at all once the
-    /// lighting is held. Otherwise whatever the window allows now, then an
-    /// echo poll when one is due. A tick with nothing due leaves `commands`
-    /// empty.
+    /// first: the TX reset and nothing else, or, once a cluster's reset
+    /// budget is spent, its lighting held while the rest carry on. Then
+    /// whatever the window allows now, and an echo poll when one is due. A
+    /// tick with nothing due leaves `commands` empty.
     fn pump_frame_into(&self, commands: &mut Vec<ProtocolCommand>) {
         commands.clear();
         let now = (self.clock)();
@@ -885,7 +897,7 @@ impl Protocol for WirelessControllerProtocol {
         if !state.topology_frozen || state.pacer.silenced() {
             return;
         }
-        state.pacer.fit_clusters(state.table.clusters.len());
+        Self::fit_pacer(state);
         match state.pacer.stall_verdict(now) {
             Some(StallVerdict::Reset {
                 cluster,
@@ -903,13 +915,12 @@ impl Protocol for WirelessControllerProtocol {
                 commands.push(Self::tx_reset_command());
                 return;
             }
-            Some(StallVerdict::Hold { .. }) => return,
-            None => {}
+            Some(StallVerdict::Hold { .. }) | None => {}
         }
         state.pacer.note_absences(now);
 
         let mut buffer = CommandBuffer::new(commands);
-        Self::pace_rgb(state, now, false, None, &mut buffer);
+        Self::pace_rgb(state, now, None, &mut buffer);
         buffer.finish();
         if state.pacer.poll_due(now) {
             commands.push(Self::echo_poll_command(state.table.pages()));
@@ -929,9 +940,10 @@ impl Protocol for WirelessControllerProtocol {
         match echo {
             USB_CMD_GET_MAC => {
                 if let Some(master) = parse_master_reply(data) {
-                    let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
-                    state.master = Some(master);
-                    state.pacer.bind_master(master.mac);
+                    self.state
+                        .write()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .master = Some(master);
                 }
             }
             USB_CMD_SEND_RF => {

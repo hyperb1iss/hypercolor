@@ -41,21 +41,22 @@ use hypercolor_hal::drivers::lianli::wireless::pacing::DeliveryStats;
 use hypercolor_hal::drivers::lianli::wireless::tinyuz;
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseTolerance, TransferType};
 
-pub const CLUSTER_MAC: [u8; 6] = [0x11; 6];
-
-/// A controller MAC of its own for every rig: the protocol keeps its TX
-/// reset budget per controller for the whole process, and tests run in
-/// parallel.
-fn fresh_master_mac() -> [u8; 6] {
+/// Radio MACs of their own for every rig: the protocol keeps its TX reset
+/// budget per cluster for the whole process, and tests run in parallel.
+fn fresh_mac(prefix: [u8; 5]) -> [u8; 6] {
     static NEXT: AtomicU8 = AtomicU8::new(1);
-    [
-        0xA0,
-        0x71,
-        0xAE,
-        0x72,
-        0xAB,
-        NEXT.fetch_add(1, Ordering::Relaxed),
-    ]
+    let mut mac = [0; 6];
+    mac[..5].copy_from_slice(&prefix);
+    mac[5] = NEXT.fetch_add(1, Ordering::Relaxed);
+    mac
+}
+
+fn fresh_master_mac() -> [u8; 6] {
+    fresh_mac([0xA0, 0x71, 0xAE, 0x72, 0xAB])
+}
+
+fn fresh_cluster_mac() -> [u8; 6] {
+    fresh_mac([0x11, 0x11, 0x11, 0x11, 0x11])
 }
 
 /// The pixel hash of `colors`: what a transfer shows, whatever its tag.
@@ -202,6 +203,8 @@ pub struct FakeCluster {
     /// Tags taken, with when the RX can first report each.
     reportable: VecDeque<(Duration, [u8; 4])>,
     assembler: TransferAssembler,
+    /// The receiver hears nothing the TX sends, but still reports.
+    pub deaf: bool,
 }
 
 impl FakeCluster {
@@ -216,6 +219,7 @@ impl FakeCluster {
             next_report_at: Duration::ZERO,
             reportable: VecDeque::new(),
             assembler: TransferAssembler::default(),
+            deaf: false,
         }
     }
 
@@ -289,7 +293,7 @@ impl FakeRadio {
     /// One three-fan TL cluster bound to this controller.
     #[must_use]
     pub fn one_cluster() -> Self {
-        Self::with_clusters(vec![FakeCluster::new(CLUSTER_MAC, 3)])
+        Self::with_clusters(vec![FakeCluster::new(fresh_cluster_mac(), 3)])
     }
 
     #[must_use]
@@ -321,8 +325,8 @@ impl FakeRadio {
     #[must_use]
     pub fn two_clusters() -> Self {
         Self::with_clusters(vec![
-            FakeCluster::new(CLUSTER_MAC, 3),
-            FakeCluster::new([0x22; 6], 4),
+            FakeCluster::new(fresh_cluster_mac(), 3),
+            FakeCluster::new(fresh_cluster_mac(), 4),
         ])
     }
 
@@ -383,7 +387,7 @@ impl FakeRadio {
         target.copy_from_slice(&bytes[2..8]);
         let delay = self.report_delay;
         for cluster in &mut self.clusters {
-            if cluster.mac == target && cluster.rx_type == envelope.rx_type {
+            if cluster.mac == target && cluster.rx_type == envelope.rx_type && !cluster.deaf {
                 cluster.take_rgb(bytes, now, delay);
             }
         }
@@ -521,7 +525,11 @@ impl Rig {
     /// Connect the protocol to `radio` and let the render path start.
     #[must_use]
     pub fn connect(radio: FakeRadio) -> Self {
-        let clock = SimClock::new();
+        Self::connect_on(radio, SimClock::new())
+    }
+
+    /// Connect a new protocol to `radio` on `clock`, which keeps running.
+    fn connect_on(radio: FakeRadio, clock: SimClock) -> Self {
         let protocol = protocol_on(&clock);
         let mut rig = Self {
             clock,
@@ -551,6 +559,25 @@ impl Rig {
         rig.next_tick_at = rig.clock.elapsed() + rig.tick;
         rig.pump = rig.protocol.frame_pump_interval();
         rig.next_pump_at = rig.clock.elapsed() + rig.pump.unwrap_or(Duration::MAX / 4);
+        rig
+    }
+
+    /// End this session and connect a new protocol to the same radio, as a
+    /// reconnect does: the receivers keep what they last took, the RX keeps
+    /// reporting it, and time runs on.
+    #[must_use]
+    pub fn reconnect(self) -> Self {
+        let Self {
+            clock,
+            mut radio,
+            frame,
+            frame_limit,
+            ..
+        } = self;
+        radio.resets.clear();
+        let mut rig = Self::connect_on(radio, clock);
+        rig.frame = frame;
+        rig.frame_limit = frame_limit;
         rig
     }
 
