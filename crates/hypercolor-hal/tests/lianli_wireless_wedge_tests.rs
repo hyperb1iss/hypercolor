@@ -13,7 +13,7 @@ use hypercolor_hal::drivers::lianli::wireless::frame::{
     DEFAULT_CHANNEL, DONGLE_RESET, TX_RESET, USB_CMD_RESET_PARTNER, USB_PACKET_LEN, get_mac_query,
 };
 use hypercolor_hal::drivers::lianli::wireless::health::{
-    ControllerHealth, DongleHalf, controller_health,
+    ControllerHealth, DongleHalf, WedgeCause, controller_health,
 };
 use hypercolor_hal::drivers::lianli::wireless::transport::{
     WirelessControllerTransport, partner_reset_packet,
@@ -207,7 +207,48 @@ async fn a_stalled_tx_write_is_a_wedge_that_resets_it_through_the_rx() {
     );
     let wedge = wedge_of(controller);
     assert_eq!(wedge.half, DongleHalf::Tx);
+    assert_eq!(wedge.cause, WedgeCause::RefusedWrite);
     assert_eq!((wedge.stalls, wedge.resets_sent), (1, 1));
+}
+
+/// The protocol paces RGB on the fans' echoes. When they stop confirming
+/// frames while the TX still takes every write, it writes the partner reset
+/// itself; the watcher records that as a wedge of its own kind, sends the
+/// reset once, and ends the session like a refused write.
+#[tokio::test]
+async fn a_reset_the_protocol_asks_for_is_an_undelivered_wedge_that_ends_the_session() {
+    let controller = "wedge-test-undelivered";
+    let pair = Arc::new(Pair::default());
+    let transport = watch(&pair, controller);
+
+    let error = transport
+        .send_with_type(&partner_reset_packet(), TransferType::Companion)
+        .await
+        .expect_err("the reset ends the session");
+
+    let TransportError::Disconnected { detail } = &error else {
+        panic!("a reset TX must be set up again from scratch: {error:?}");
+    };
+    assert!(
+        detail.contains("L-Wireless TX stopped delivering"),
+        "{detail}"
+    );
+    assert!(detail.contains("reset sent through the RX"), "{detail}");
+    assert_eq!(
+        pair.sends(),
+        vec![(TransferType::Companion, partner_reset_packet())],
+        "the reset goes to the RX exactly once"
+    );
+    let wedge = wedge_of(controller);
+    assert_eq!(wedge.half, DongleHalf::Tx);
+    assert_eq!(wedge.cause, WedgeCause::Undelivered);
+    assert_eq!((wedge.stalls, wedge.resets_sent), (1, 1));
+
+    transport
+        .send_with_type(&rgb_slice(), TransferType::Primary)
+        .await
+        .expect("the TX takes writes after its reset");
+    assert_eq!(controller_health(controller), ControllerHealth::Healthy);
 }
 
 #[tokio::test]
