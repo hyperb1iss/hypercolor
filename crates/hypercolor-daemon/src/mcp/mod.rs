@@ -31,7 +31,7 @@ use rmcp::{
         ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
         PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, ReadResourceRequestParams,
         ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role,
-        ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+        ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
     },
     service::{RequestContext, RoleServer},
 };
@@ -160,14 +160,14 @@ impl HypercolorMcpServer {
 }
 
 impl ServerHandler for HypercolorMcpServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_resources()
             .enable_prompts()
             .build();
 
-        ServerInfo::new(capabilities)
+        ServerConfig::new(capabilities)
             .with_server_info(
                 Implementation::new("hypercolor", env!("CARGO_PKG_VERSION"))
                     .with_title("Hypercolor RGB Lighting Controller")

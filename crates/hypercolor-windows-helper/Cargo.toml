@@ -31,4 +31,4 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-service = "0.8.0"
+windows-service = "0.8.1"
