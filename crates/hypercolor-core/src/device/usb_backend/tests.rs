@@ -1760,6 +1760,413 @@ async fn a_wedged_lianli_tx_ends_the_actor_and_is_reset_through_the_rx() {
     assert_eq!(sends[1], (TransferType::Companion, partner_reset_packet()));
 }
 
+/// L-Wireless stand-in for actor pacing tests. The TX rebuilds each RGB
+/// transfer from its envelope slices; the fan cluster takes it
+/// `apply_delay` after its last envelope arrives, unless the radio is dead;
+/// the RX answers a table poll with the tag the cluster last took. Time is
+/// tokio's, so a paused runtime drives it.
+struct EchoingWirelessPair {
+    apply_delay: Duration,
+    state: Mutex<EchoingWirelessState>,
+}
+
+#[derive(Default)]
+struct EchoingWirelessState {
+    rf_dead: bool,
+    envelope: Vec<u8>,
+    last_header: Option<[u8; 4]>,
+    pending: std::collections::VecDeque<(tokio::time::Instant, [u8; 4])>,
+    applied: [u8; 4],
+    rx_replies: std::collections::VecDeque<Vec<u8>>,
+    /// The cluster's clock, advanced by every report the RX hands over.
+    clock: u32,
+    /// Every transfer header the TX took, with when, a repeated header
+    /// counted once.
+    headers: Vec<(tokio::time::Instant, [u8; 4])>,
+    sends: Vec<(TransferType, Vec<u8>)>,
+}
+
+const ECHOING_MASTER: [u8; 6] = [0xA0, 0x71, 0xAE, 0x72, 0xAB, 0x3C];
+const ECHOING_CLUSTER: [u8; 6] = [0x11; 6];
+const ECHOING_LEDS: usize = 78;
+
+impl EchoingWirelessPair {
+    fn new(apply_delay: Duration) -> Self {
+        Self {
+            apply_delay,
+            state: Mutex::new(EchoingWirelessState {
+                applied: [0xF0, 0, 0, 1],
+                ..EchoingWirelessState::default()
+            }),
+        }
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, EchoingWirelessState> {
+        self.state
+            .lock()
+            .expect("echoing pair lock should not be poisoned")
+    }
+
+    fn table(state: &mut EchoingWirelessState, pages: u8) -> Vec<u8> {
+        let now = tokio::time::Instant::now();
+        while let Some((at, tag)) = state.pending.front().copied() {
+            if at > now {
+                break;
+            }
+            state.applied = tag;
+            state.pending.pop_front();
+        }
+        let mut reply = vec![0_u8; 448 * usize::from(pages.max(1))];
+        reply[..4].copy_from_slice(&[0x10, 1, 0x80, 0]);
+        let record = &mut reply[4..46];
+        record[0..6].copy_from_slice(&ECHOING_CLUSTER);
+        record[6..12].copy_from_slice(&ECHOING_MASTER);
+        record[12] = 8;
+        record[13] = 3;
+        state.clock = state.clock.wrapping_add(1);
+        record[14..18].copy_from_slice(&state.clock.to_be_bytes());
+        record[19] = 3;
+        record[20..24].copy_from_slice(&state.applied);
+        record[24..27].copy_from_slice(&[28, 28, 28]);
+        record[36..39].copy_from_slice(&[128, 128, 128]);
+        record[41] = 0x1C;
+        reply
+    }
+
+    fn take(&self, data: &[u8], transfer_type: TransferType) {
+        let mut state = self.state();
+        state.sends.push((transfer_type, data.to_vec()));
+        if transfer_type == TransferType::Companion {
+            if data[0] == 0x10 && data[2..4] != [0x04, 0x30] {
+                let reply = Self::table(&mut state, data[1]);
+                state.rx_replies.push_back(reply);
+            }
+            return;
+        }
+        if data[0] != 0x10 {
+            return;
+        }
+        if data[1] == 0 {
+            state.envelope.clear();
+        }
+        state.envelope.extend_from_slice(&data[4..]);
+        if data[1] != 3 || state.envelope.len() != 240 {
+            return;
+        }
+        let envelope = std::mem::take(&mut state.envelope);
+        if envelope[0] != 0x12 || envelope[1] != 0x20 {
+            state.last_header = None;
+            return;
+        }
+        let mut tag = [0_u8; 4];
+        tag.copy_from_slice(&envelope[14..18]);
+        let (index, total) = (envelope[18], envelope[19]);
+        if index == 0 {
+            if state.last_header != Some(tag) {
+                state.headers.push((tokio::time::Instant::now(), tag));
+            }
+            state.last_header = Some(tag);
+            return;
+        }
+        state.last_header = None;
+        if index + 1 == total && !state.rf_dead {
+            let at = tokio::time::Instant::now() + self.apply_delay;
+            state.pending.push_back((at, tag));
+        }
+    }
+}
+
+#[async_trait]
+impl Transport for EchoingWirelessPair {
+    fn name(&self) -> &'static str {
+        "echoing L-Wireless pair"
+    }
+
+    async fn send(&self, data: &[u8]) -> std::result::Result<(), TransportError> {
+        self.send_with_type(data, TransferType::Primary).await
+    }
+
+    async fn send_with_type(
+        &self,
+        data: &[u8],
+        transfer_type: TransferType,
+    ) -> std::result::Result<(), TransportError> {
+        self.take(data, transfer_type);
+        Ok(())
+    }
+
+    async fn receive(&self, timeout: Duration) -> std::result::Result<Vec<u8>, TransportError> {
+        self.receive_with_type(timeout, TransferType::Primary).await
+    }
+
+    async fn receive_with_type(
+        &self,
+        timeout: Duration,
+        transfer_type: TransferType,
+    ) -> std::result::Result<Vec<u8>, TransportError> {
+        let reply = (transfer_type == TransferType::Companion)
+            .then(|| self.state().rx_replies.pop_front())
+            .flatten();
+        reply.ok_or(TransportError::Timeout {
+            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        })
+    }
+
+    async fn send_receive_with_type(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+        transfer_type: TransferType,
+    ) -> std::result::Result<Vec<u8>, TransportError> {
+        self.send_with_type(data, transfer_type).await?;
+        self.receive_with_type(timeout, transfer_type).await
+    }
+
+    async fn close(&self) -> std::result::Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+/// Handle the test keeps while the watcher owns the pair.
+struct SharedEchoingWirelessPair(Arc<EchoingWirelessPair>);
+
+#[async_trait]
+impl Transport for SharedEchoingWirelessPair {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+
+    async fn send(&self, data: &[u8]) -> std::result::Result<(), TransportError> {
+        self.0.send(data).await
+    }
+
+    async fn send_with_type(
+        &self,
+        data: &[u8],
+        transfer_type: TransferType,
+    ) -> std::result::Result<(), TransportError> {
+        self.0.send_with_type(data, transfer_type).await
+    }
+
+    async fn receive(&self, timeout: Duration) -> std::result::Result<Vec<u8>, TransportError> {
+        self.0.receive(timeout).await
+    }
+
+    async fn receive_with_type(
+        &self,
+        timeout: Duration,
+        transfer_type: TransferType,
+    ) -> std::result::Result<Vec<u8>, TransportError> {
+        self.0.receive_with_type(timeout, transfer_type).await
+    }
+
+    async fn send_receive_with_type(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+        transfer_type: TransferType,
+    ) -> std::result::Result<Vec<u8>, TransportError> {
+        self.0
+            .send_receive_with_type(data, timeout, transfer_type)
+            .await
+    }
+
+    async fn close(&self) -> std::result::Result<(), TransportError> {
+        self.0.close().await
+    }
+}
+
+/// The wireless protocol on tokio's clock, already past discovery: it knows
+/// its master and one three-fan cluster.
+fn paced_wireless_protocol() -> Arc<hypercolor_hal::drivers::lianli::WirelessControllerProtocol> {
+    use hypercolor_hal::drivers::lianli::WirelessControllerProtocol;
+
+    let protocol =
+        WirelessControllerProtocol::with_clock(Arc::new(|| tokio::time::Instant::now().into_std()));
+    let mut master = vec![0_u8; 64];
+    master[0] = 0x11;
+    master[1..7].copy_from_slice(&ECHOING_MASTER);
+    master[7..13].copy_from_slice(&[0, 0x0A, 0xE7, 0x4B, 0x00, 0x10]);
+    protocol.parse_response(&master).expect("MAC reply parses");
+    let mut state = EchoingWirelessState {
+        applied: [0xF0, 0, 0, 1],
+        ..EchoingWirelessState::default()
+    };
+    protocol
+        .parse_response(&EchoingWirelessPair::table(&mut state, 2))
+        .expect("table parses");
+    Arc::new(protocol)
+}
+
+fn wireless_frame(index: u8) -> Arc<UsbFramePayload> {
+    Arc::new(UsbFramePayload::untracked(Arc::new(vec![
+        [
+            index, 0x20, 0x40
+        ];
+        ECHOING_LEDS
+    ])))
+}
+
+fn wireless_tag(index: u8) -> [u8; 4] {
+    let raw: Vec<u8> = [index, 0x20, 0x40].repeat(ECHOING_LEDS);
+    hypercolor_hal::drivers::lianli::wireless::frame::effect_index_for(&raw)
+}
+
+/// A frame that arrives while the transfer ahead of it is out is held, and
+/// the keepalive tick sends it as soon as the fans confirm, with no later
+/// frame to carry it.
+#[tokio::test(start_paused = true)]
+async fn the_lianli_keepalive_tick_releases_a_frame_held_for_an_echo() {
+    use hypercolor_hal::drivers::lianli::wireless::transport::WirelessControllerTransport;
+
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let pair = Arc::new(EchoingWirelessPair::new(Duration::from_millis(40)));
+    let transport: Arc<dyn Transport> = Arc::new(WirelessControllerTransport::new(
+        Box::new(SharedEchoingWirelessPair(Arc::clone(&pair))),
+        "usb-backend-test-lianli-held-frame",
+    ));
+    let protocol: Arc<dyn Protocol> = paced_wireless_protocol();
+
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "lianli-held-frame-test-device",
+        protocol,
+        transport,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    frame_tx.send_replace(Some(wireless_frame(1)));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    frame_tx.send_replace(Some(wireless_frame(2)));
+    tokio::time::sleep(Duration::from_millis(900)).await;
+
+    {
+        let state = pair.state();
+        let tags: Vec<[u8; 4]> = state.headers.iter().map(|(_, tag)| *tag).collect();
+        assert_eq!(
+            tags,
+            vec![wireless_tag(1), wireless_tag(2)],
+            "the second frame went out once, after the first was confirmed"
+        );
+        let held_for = state.headers[1].0 - state.headers[0].0;
+        assert!(
+            held_for >= Duration::from_millis(40),
+            "the second frame waited for the first one's echo: {held_for:?}"
+        );
+        assert_eq!(
+            state.applied,
+            wireless_tag(2),
+            "the fans show the newest frame"
+        );
+    }
+
+    drop(frame_tx);
+    let result = timeout(Duration::from_secs(1), actor)
+        .await
+        .expect("the actor stops once its frame source is gone")
+        .expect("actor task joins");
+    assert!(result.is_ok(), "{result:?}");
+}
+
+/// A TX that takes every write while its fans stop confirming frames is
+/// reset through the RX once the stall bound passes, and the actor ends
+/// instead of streaming into a radio that delivers nothing.
+#[tokio::test(start_paused = true)]
+async fn lianli_fans_that_stop_confirming_end_the_actor_through_the_wedge_path() {
+    use hypercolor_hal::drivers::lianli::wireless::health::{
+        ControllerHealth, DongleHalf, WedgeCause, controller_health,
+    };
+    use hypercolor_hal::drivers::lianli::wireless::pacing::ECHO_STALL;
+    use hypercolor_hal::drivers::lianli::wireless::transport::{
+        WirelessControllerTransport, partner_reset_packet,
+    };
+
+    let controller = "usb-backend-test-lianli-undelivered";
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let pair = Arc::new(EchoingWirelessPair::new(Duration::from_millis(10)));
+    let transport: Arc<dyn Transport> = Arc::new(WirelessControllerTransport::new(
+        Box::new(SharedEchoingWirelessPair(Arc::clone(&pair))),
+        controller,
+    ));
+    let protocol: Arc<dyn Protocol> = paced_wireless_protocol();
+
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "lianli-undelivered-test-device",
+        protocol,
+        transport,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    let mut frame = 0_u8;
+    for _ in 0..30 {
+        frame = frame.wrapping_add(1);
+        frame_tx.send_replace(Some(wireless_frame(frame)));
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    }
+    let confirmed = pair.state().headers.len();
+    assert!(
+        confirmed > 20,
+        "the radio worked first: {confirmed} transfers"
+    );
+
+    pair.state().rf_dead = true;
+    let failed_at = tokio::time::Instant::now();
+    while !actor.is_finished() {
+        assert!(
+            failed_at.elapsed() < ECHO_STALL + Duration::from_secs(5),
+            "the actor must not stream into a dead radio forever"
+        );
+        frame = frame.wrapping_add(1);
+        frame_tx.send_replace(Some(wireless_frame(frame)));
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    }
+    let ended_after = failed_at.elapsed();
+    let result = actor.await.expect("actor task joins");
+    assert!(result.is_err(), "the session ends with the verdict");
+    assert!(
+        ended_after + Duration::from_millis(100) >= ECHO_STALL,
+        "the verdict waits out the stall bound: {ended_after:?}"
+    );
+
+    let state = pair.state();
+    let resets: Vec<&(TransferType, Vec<u8>)> = state
+        .sends
+        .iter()
+        .filter(|(_, data)| data[0] == 0x15)
+        .collect();
+    assert_eq!(
+        resets,
+        vec![&(TransferType::Companion, partner_reset_packet())],
+        "one reset, written to the RX"
+    );
+    let after_failure = state
+        .headers
+        .iter()
+        .filter(|(at, _)| *at >= failed_at)
+        .count();
+    assert!(
+        after_failure <= 8,
+        "a bounded number of resends, not {after_failure} transfers"
+    );
+    drop(state);
+    match controller_health(controller) {
+        ControllerHealth::Wedged(wedge) => {
+            assert_eq!(wedge.half, DongleHalf::Tx);
+            assert_eq!(wedge.cause, WedgeCause::Undelivered);
+        }
+        ControllerHealth::Healthy => panic!("the stall is recorded as a TX wedge"),
+    }
+}
+
 async fn assert_transient_frame_failure_survival(
     parallel_transfer_lanes: bool,
     failure: InjectedPrimaryFailure,
