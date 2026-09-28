@@ -930,10 +930,14 @@ holds to the same contract, per cluster (`wireless/pacing.rs`):
 
 - **Window of one, a frame at a time.** A cluster gets a new transfer only
   when its record echoes the last one, and a frame moves as one: it goes to
-  every cluster it changes once no heard cluster has a transfer out, or it
-  is held whole. A newer frame replaces a held one, so what goes out next
-  is always the newest frame and stale frames are never queued. A cluster
-  the RX cannot hear, or one whose lighting is held, holds up nobody.
+  every cluster it changes once no cluster in step has a transfer out, or
+  it is held whole. A newer frame replaces a held one, so what goes out
+  next is always the newest frame and stale frames are never queued. A
+  cluster falls out of step while the RX cannot hear it, while its
+  lighting is held, and once its transfer outlasts the first bounded wait:
+  the others carry on without it, it catches up on its own resends, and it
+  rejoins when it confirms. One slow or failing cluster never stalls the
+  rest.
 - **Every send is its own acknowledgement.** Each transfer carries a tag
   unique to that send (§6.7), so a restore of the frame already showing, a
   resend of a frame that did not land, or the first frame after a
@@ -946,11 +950,14 @@ holds to the same contract, per cluster (`wireless/pacing.rs`):
   waits for the next render frame. The backend handles pumped writes as
   frame traffic: a transient write error is logged and the lane continues,
   where a failed keepalive would end the session. Resends run only on the
-  pump, so a frame the render path hands over is written whole or held
-  whole: a held frame is acknowledged to the output queue as suppressed,
-  not completed, and a written one counts only the pixels of the clusters
-  it changed (`Protocol::written_frame_bytes`). A held frame goes out later
-  on the pump, untracked, like upkeep.
+  pump, so a frame the render path hands over is written whole to the
+  clusters in step or held whole: a held frame is acknowledged to the
+  output queue as suppressed, not completed, and a written one counts only
+  the pixels it wrote (`Protocol::written_frame_bytes`). A cluster out of
+  step gets its newest pixels later on the pump, untracked, like upkeep, so
+  a frame written while one cluster lags, is unheard, or is held completes
+  for the clusters in step. The delivery statuses have no partial
+  disposition; adding one is a separate change to the driver API.
 - **Echo polls.** One page (448 bytes, read to exactly that length, no gap
   timeout) while every record fits in a page, otherwise two. The first poll
   after a send waits three quarters of the running echo time, later polls
