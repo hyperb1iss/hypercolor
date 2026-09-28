@@ -17,8 +17,8 @@ use web_sys::{
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
-use super::PreviewRenderOutcome;
 use super::worker::{DispatchDecision, FrameDispatchState};
+use super::{PresentedHook, PreviewRenderOutcome, SubmittedFrame};
 
 enum Surface {
     Bitmap(ImageBitmapRenderingContext),
@@ -28,7 +28,8 @@ enum Surface {
 struct Presenter {
     canvas: HtmlCanvasElement,
     surface: Surface,
-    dispatch: RefCell<FrameDispatchState<CanvasFrame>>,
+    dispatch: RefCell<FrameDispatchState<SubmittedFrame>>,
+    presented: Option<PresentedHook>,
     closed: Cell<bool>,
 }
 
@@ -39,7 +40,10 @@ pub(super) struct MainThreadJpegRuntime {
 impl MainThreadJpegRuntime {
     /// Present through the canvas's bitmap renderer when it has one (a
     /// failed worker start may already have claimed it), else through 2D.
-    pub(super) fn new(canvas: &HtmlCanvasElement) -> Result<Self, ()> {
+    pub(super) fn new(
+        canvas: &HtmlCanvasElement,
+        presented: Option<PresentedHook>,
+    ) -> Result<Self, ()> {
         if !supports_global("createImageBitmap") {
             return Err(());
         }
@@ -52,20 +56,21 @@ impl MainThreadJpegRuntime {
                 canvas: canvas.clone(),
                 surface,
                 dispatch: RefCell::new(FrameDispatchState::default()),
+                presented,
                 closed: Cell::new(false),
             }),
         })
     }
 
-    pub(super) fn render(&mut self, frame: &CanvasFrame) -> PreviewRenderOutcome {
-        if frame.pixel_format() != CanvasPixelFormat::Jpeg {
+    pub(super) fn render(&mut self, submitted: SubmittedFrame) -> PreviewRenderOutcome {
+        if submitted.frame.pixel_format() != CanvasPixelFormat::Jpeg {
             return PreviewRenderOutcome::Reinitialize;
         }
         let decision = self
             .presenter
             .dispatch
             .borrow_mut()
-            .push_or_defer(frame.clone());
+            .push_or_defer(submitted);
         if decision == DispatchDecision::DispatchNow {
             let next = self.presenter.dispatch.borrow_mut().take_for_dispatch();
             if let Some(next) = next {
@@ -85,9 +90,9 @@ impl Drop for MainThreadJpegRuntime {
 /// Decode one frame, present it, then continue with the newest frame that
 /// arrived meanwhile. A frame that fails to decode is skipped rather than
 /// stalling the frames behind it.
-fn decode_and_present(presenter: Rc<Presenter>, frame: CanvasFrame) {
+fn decode_and_present(presenter: Rc<Presenter>, submitted: SubmittedFrame) {
     wasm_bindgen_futures::spawn_local(async move {
-        let decoded = decode_jpeg(&frame).await;
+        let decoded = decode_jpeg(&submitted.frame).await;
         if presenter.closed.get() {
             if let Ok(bitmap) = decoded {
                 bitmap.close();
@@ -97,6 +102,7 @@ fn decode_and_present(presenter: Rc<Presenter>, frame: CanvasFrame) {
         if let Ok(bitmap) = decoded {
             presenter.present(&bitmap);
             bitmap.close();
+            submitted.report(presenter.presented.as_ref());
         }
         let next = presenter.dispatch.borrow_mut().next_after_present();
         if let Some(next) = next {

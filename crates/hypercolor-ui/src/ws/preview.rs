@@ -1,6 +1,9 @@
 //! Preview FPS cap logic, subscription management, and backpressure handling.
 
+use std::collections::VecDeque;
+
 use leptos::prelude::*;
+use serde::Serialize;
 
 use super::messages::CanvasFrame;
 use hypercolor_leptos_ext::canvas::supports_bitmap_worker_canvas;
@@ -472,6 +475,240 @@ const fn remote_preview_width_for_fps(requested_fps: u32) -> Option<u32> {
         24.. => None,
         12..=23 => Some(REMOTE_PREVIEW_WIDTH_MEDIUM),
         _ => Some(REMOTE_PREVIEW_WIDTH_LOW),
+    }
+}
+
+/// Window property holding a function that returns the current
+/// [`PreviewCounterSnapshot`] as a plain object, for browser test harnesses.
+pub const PREVIEW_COUNTERS_GLOBAL: &str = "__HYPERCOLOR_PREVIEW_COUNTERS__";
+
+/// Inclusive upper bounds, in milliseconds, of the displayed inter-frame
+/// gap buckets; one more bucket counts every longer gap. The bounds bracket
+/// the 60, 30, 20 and 15 fps intervals and twice the 15 fps interval.
+pub const PREVIEW_GAP_BUCKET_BOUNDS_MS: [u32; 11] =
+    [17, 34, 50, 67, 84, 100, 134, 200, 334, 500, 1_000];
+
+/// Recent arrivals kept to tag a frame as it reaches a preview surface,
+/// which happens right after it arrives.
+const RECENT_FRAME_LIMIT: usize = 64;
+
+/// Identifies one arrival on the main canvas stream: the generation of the
+/// stream it arrived in, and its sequence number, which counts arrivals
+/// across every stream. A surface takes the tag as the frame reaches it and
+/// hands it back once the frame is on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewTag {
+    stream: u64,
+    arrival: u64,
+}
+
+/// Point-in-time counters for the main canvas preview stream.
+///
+/// `received` counts every arrival. The measured surface is the first
+/// main-stream preview to show a frame, until it unmounts. Each arrival is
+/// classified once, when something settles it:
+///
+/// - `displayed` when the measured surface shows it;
+/// - `dropped` when the measured surface shows a newer arrival first, or
+///   the stream ends while that surface is still measuring;
+/// - `unobserved` when no surface is measuring at that point: it arrived
+///   before a surface started measuring, or its surface unmounted and the
+///   stream ended or another surface took over.
+///
+/// Arrivals not yet settled appear in none of the three, so `received`
+/// equals their sum only after the stream ends.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct PreviewCounterSnapshot {
+    /// Frames that arrived on the canvas stream.
+    pub received: u64,
+    /// Arrivals the measured surface put on screen.
+    pub displayed: u64,
+    /// Arrivals the measured surface never showed.
+    pub dropped: u64,
+    /// Arrivals settled while no surface was measuring.
+    pub unobserved: u64,
+    /// Inclusive upper bounds of the gap buckets, in milliseconds.
+    pub gap_bounds_ms: Vec<u32>,
+    /// Gaps between consecutive displayed frames, bucketed by
+    /// `gap_bounds_ms`; the final entry counts every longer gap.
+    pub gap_counts: Vec<u64>,
+}
+
+/// Received, displayed and dropped accounting for the main canvas stream,
+/// with a histogram of the gaps between displayed frames.
+///
+/// Every arrival gets a sequence number, carried in its [`PreviewTag`]. A
+/// display accounts for every arrival since the previous display, so frames
+/// between them count as dropped however long the presenter took. One
+/// surface measures at a time. A stream ends when the socket closes or the
+/// preview unsubscribes, and the next one is a new generation, so a late
+/// completion from an earlier stream is ignored.
+#[derive(Debug, Clone, Default)]
+pub struct PreviewCounters {
+    received: u64,
+    displayed: u64,
+    dropped: u64,
+    unobserved: u64,
+    accounted_through: u64,
+    recent: VecDeque<(u32, u64)>,
+    stream: u64,
+    next_surface: u64,
+    measuring: Option<u64>,
+    last_displayed_at_ms: Option<f64>,
+    gap_counts: [u64; PREVIEW_GAP_BUCKET_BOUNDS_MS.len() + 1],
+}
+
+impl PreviewCounters {
+    /// A fresh identity for one preview surface.
+    pub fn register_surface(&mut self) -> u64 {
+        self.next_surface += 1;
+        self.next_surface
+    }
+
+    /// The tag of the newest arrival numbered `frame_number` in the current
+    /// stream, to pass back to [`Self::record_displayed`] once it shows.
+    #[must_use]
+    pub fn tag(&self, frame_number: u32) -> Option<PreviewTag> {
+        self.recent
+            .iter()
+            .rev()
+            .find(|(number, _)| *number == frame_number)
+            .map(|(_, arrival)| PreviewTag {
+                stream: self.stream,
+                arrival: *arrival,
+            })
+    }
+
+    pub fn record_received(&mut self, frame_number: u32) {
+        self.received += 1;
+        if self.recent.len() == RECENT_FRAME_LIMIT {
+            self.recent.pop_front();
+        }
+        self.recent.push_back((frame_number, self.received));
+    }
+
+    /// Count the arrival `tag` names as shown by `surface` at `now_ms`.
+    ///
+    /// The first surface to show a frame becomes the measured one; arrivals
+    /// before that frame were unobserved. Returns `false`, changing nothing,
+    /// for another surface, an earlier stream, or an arrival that is not
+    /// newer than the last one accounted for.
+    pub fn record_displayed(&mut self, surface: u64, tag: PreviewTag, now_ms: f64) -> bool {
+        let sequence = tag.arrival;
+        if tag.stream != self.stream
+            || sequence <= self.accounted_through
+            || self.measuring.is_some_and(|owner| owner != surface)
+        {
+            return false;
+        }
+        if self.measuring.is_none() {
+            self.measuring = Some(surface);
+            self.unobserved += sequence - 1 - self.accounted_through;
+            self.accounted_through = sequence - 1;
+            self.last_displayed_at_ms = None;
+        }
+        self.dropped += sequence - 1 - self.accounted_through;
+        self.accounted_through = sequence;
+        self.displayed += 1;
+        if let Some(previous) = self.last_displayed_at_ms.replace(now_ms) {
+            self.gap_counts[gap_bucket(now_ms - previous)] += 1;
+        }
+        true
+    }
+
+    /// `surface` stopped showing the stream. Arrivals it had not shown yet
+    /// become unobserved unless another surface starts measuring.
+    pub fn release_surface(&mut self, surface: u64) {
+        if self.measuring == Some(surface) {
+            self.measuring = None;
+            self.last_displayed_at_ms = None;
+        }
+    }
+
+    /// Close the stream (the socket closed or the preview unsubscribed).
+    /// Unsettled arrivals are dropped if a surface is measuring and
+    /// unobserved otherwise, and a new stream generation begins.
+    pub fn end_stream(&mut self) {
+        let outstanding = self.received - self.accounted_through;
+        if self.measuring.is_some() {
+            self.dropped += outstanding;
+        } else {
+            self.unobserved += outstanding;
+        }
+        self.accounted_through = self.received;
+        self.recent.clear();
+        self.stream += 1;
+        self.last_displayed_at_ms = None;
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> PreviewCounterSnapshot {
+        PreviewCounterSnapshot {
+            received: self.received,
+            displayed: self.displayed,
+            dropped: self.dropped,
+            unobserved: self.unobserved,
+            gap_bounds_ms: PREVIEW_GAP_BUCKET_BOUNDS_MS.to_vec(),
+            gap_counts: self.gap_counts.to_vec(),
+        }
+    }
+}
+
+fn gap_bucket(gap_ms: f64) -> usize {
+    PREVIEW_GAP_BUCKET_BOUNDS_MS
+        .iter()
+        .position(|bound| gap_ms <= f64::from(*bound))
+        .unwrap_or(PREVIEW_GAP_BUCKET_BOUNDS_MS.len())
+}
+
+/// Shared handle to the main canvas stream's [`PreviewCounters`].
+#[derive(Debug, Clone, Copy)]
+pub struct PreviewCounterHandle(StoredValue<PreviewCounters>);
+
+impl PreviewCounterHandle {
+    pub(super) fn new() -> Self {
+        Self(StoredValue::new(PreviewCounters::default()))
+    }
+
+    #[must_use]
+    pub fn snapshot(self) -> PreviewCounterSnapshot {
+        self.0
+            .try_with_value(PreviewCounters::snapshot)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn register_surface(self) -> u64 {
+        self.0
+            .try_update_value(PreviewCounters::register_surface)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn tag(self, frame_number: u32) -> Option<PreviewTag> {
+        self.0
+            .try_with_value(|counters| counters.tag(frame_number))
+            .flatten()
+    }
+
+    pub(super) fn record_received(self, frame_number: u32) {
+        let _ = self
+            .0
+            .try_update_value(|counters| counters.record_received(frame_number));
+    }
+
+    pub(crate) fn record_displayed(self, surface: u64, tag: PreviewTag, now_ms: f64) {
+        let _ = self
+            .0
+            .try_update_value(|counters| counters.record_displayed(surface, tag, now_ms));
+    }
+
+    pub(crate) fn release_surface(self, surface: u64) {
+        let _ = self
+            .0
+            .try_update_value(|counters| counters.release_surface(surface));
+    }
+
+    pub(super) fn end_stream(self) {
+        let _ = self.0.try_update_value(PreviewCounters::end_stream);
     }
 }
 

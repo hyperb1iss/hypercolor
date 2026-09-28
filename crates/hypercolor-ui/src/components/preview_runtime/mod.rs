@@ -1,7 +1,9 @@
+use std::rc::Rc;
+
 use hypercolor_leptos_ext::canvas::set_canvas_size;
 use web_sys::HtmlCanvasElement;
 
-use crate::ws::{CanvasFrame, CanvasPixelFormat};
+use crate::ws::{CanvasFrame, CanvasPixelFormat, PreviewTag};
 
 pub mod canvas2d;
 mod main_thread;
@@ -13,6 +15,26 @@ use main_thread::MainThreadJpegRuntime;
 use webgl::WebGlInitError;
 use webgl::WebGlPreviewRuntime;
 use worker::PreviewWorkerRuntime;
+
+/// Called once a tagged frame's pixels are on screen, with the tag its
+/// `render` call carried. For the asynchronous presenters that is later
+/// than `render` returns; a frame that never lands never reports.
+pub(super) type PresentedHook = Rc<dyn Fn(&CanvasFrame, PreviewTag)>;
+
+/// A frame on its way to the screen, with the tag to report once it lands.
+#[derive(Clone)]
+pub(super) struct SubmittedFrame {
+    pub(super) frame: CanvasFrame,
+    pub(super) tag: Option<PreviewTag>,
+}
+
+impl SubmittedFrame {
+    fn report(&self, hook: Option<&PresentedHook>) {
+        if let (Some(hook), Some(tag)) = (hook, self.tag) {
+            hook(&self.frame, tag);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TextureShape {
@@ -42,6 +64,7 @@ enum PreviewRuntimeBackend {
 
 pub(super) struct PreviewRuntime {
     backend: PreviewRuntimeBackend,
+    presented: Option<PresentedHook>,
 }
 
 impl PreviewRuntime {
@@ -50,6 +73,7 @@ impl PreviewRuntime {
         frame: &CanvasFrame,
         allow_canvas2d_fallback: bool,
         smooth_scaling: bool,
+        presented: Option<PresentedHook>,
     ) -> Result<Self, PreviewRuntimeInitError> {
         prepare_canvas(canvas, frame);
 
@@ -57,12 +81,13 @@ impl PreviewRuntime {
             // JPEG never falls back to raw pixels: without the worker it
             // decodes on the main thread, and a page that can do neither
             // leaves the canvas as it is.
-            return PreviewWorkerRuntime::new(canvas, frame)
+            return PreviewWorkerRuntime::new(canvas, frame, presented.clone())
                 .map(PreviewRuntimeBackend::Worker)
                 .or_else(|()| {
-                    MainThreadJpegRuntime::new(canvas).map(PreviewRuntimeBackend::MainThreadJpeg)
+                    MainThreadJpegRuntime::new(canvas, presented.clone())
+                        .map(PreviewRuntimeBackend::MainThreadJpeg)
                 })
-                .map(|backend| Self { backend })
+                .map(|backend| Self { backend, presented })
                 .map_err(|()| PreviewRuntimeInitError::WebGlUnavailable);
         }
 
@@ -71,30 +96,43 @@ impl PreviewRuntime {
             Err(WebGlInitError::InitializationFailed) => {
                 return Err(PreviewRuntimeInitError::WebGlInitializationFailed);
             }
-            Err(WebGlInitError::ContextUnavailable) => PreviewWorkerRuntime::new(canvas, frame)
-                .map(PreviewRuntimeBackend::Worker)
-                .or_else(|()| {
-                    allow_canvas2d_fallback
-                        .then(|| Canvas2dPreviewRuntime::new(canvas))
-                        .flatten()
-                        .map(PreviewRuntimeBackend::Canvas2d)
-                        .ok_or(PreviewRuntimeInitError::WebGlUnavailable)
-                })?,
+            Err(WebGlInitError::ContextUnavailable) => {
+                PreviewWorkerRuntime::new(canvas, frame, presented.clone())
+                    .map(PreviewRuntimeBackend::Worker)
+                    .or_else(|()| {
+                        allow_canvas2d_fallback
+                            .then(|| Canvas2dPreviewRuntime::new(canvas))
+                            .flatten()
+                            .map(PreviewRuntimeBackend::Canvas2d)
+                            .ok_or(PreviewRuntimeInitError::WebGlUnavailable)
+                    })?
+            }
         };
-        Ok(Self { backend })
+        Ok(Self { backend, presented })
     }
 
+    /// Present `frame`. A `tag` is reported through the presented hook once
+    /// the frame's pixels land; an untagged frame is never reported.
     pub(super) fn render(
         &mut self,
         canvas: &HtmlCanvasElement,
         frame: &CanvasFrame,
+        tag: Option<PreviewTag>,
     ) -> PreviewRenderOutcome {
-        match &mut self.backend {
-            PreviewRuntimeBackend::Worker(runtime) => runtime.render(frame),
-            PreviewRuntimeBackend::MainThreadJpeg(runtime) => runtime.render(frame),
+        let submitted = SubmittedFrame {
+            frame: frame.clone(),
+            tag,
+        };
+        let outcome = match &mut self.backend {
+            PreviewRuntimeBackend::Worker(runtime) => return runtime.render(submitted),
+            PreviewRuntimeBackend::MainThreadJpeg(runtime) => return runtime.render(submitted),
             PreviewRuntimeBackend::WebGl(runtime) => runtime.render(canvas, frame),
             PreviewRuntimeBackend::Canvas2d(runtime) => runtime.render(canvas, frame),
+        };
+        if outcome == PreviewRenderOutcome::Presented {
+            submitted.report(self.presented.as_ref());
         }
+        outcome
     }
 
     pub(super) fn preserves_webgl_unavailable_streak(&self) -> bool {

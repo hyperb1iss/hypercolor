@@ -33,12 +33,13 @@ use super::messages::{
     interactive_preview_supported, is_resync_required, reset_layer_health_cache,
 };
 use super::preview::{
-    DEFAULT_PREVIEW_FPS_CAP, PreviewRoute, PreviewSubscriptionRequest, RemotePreviewPath,
-    accept_transport_path_report, clear_preview_subscription, clear_screen_preview_subscription,
-    clear_web_viewport_preview_subscription, request_preview_subscription,
-    request_screen_preview_subscription, request_web_viewport_preview_subscription,
-    send_canvas_unsubscribe, send_screen_canvas_unsubscribe, send_screen_zones_subscribe,
-    send_screen_zones_unsubscribe, send_web_viewport_canvas_unsubscribe, should_stream_preview,
+    DEFAULT_PREVIEW_FPS_CAP, PreviewCounterHandle, PreviewRoute, PreviewSubscriptionRequest,
+    RemotePreviewPath, accept_transport_path_report, clear_preview_subscription,
+    clear_screen_preview_subscription, clear_web_viewport_preview_subscription,
+    request_preview_subscription, request_screen_preview_subscription,
+    request_web_viewport_preview_subscription, send_canvas_unsubscribe,
+    send_screen_canvas_unsubscribe, send_screen_zones_subscribe, send_screen_zones_unsubscribe,
+    send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
 use super::transport::{
     WebSocketConnectRequest, WebSocketConnection, WebSocketEvent, WebSocketMessage,
@@ -253,6 +254,8 @@ pub struct WsManager {
     pub close_interactive_preview: Callback<String>,
     /// Send addressed browser-preview input edges as one `input_inject` message.
     pub send_input_inject: Callback<(String, Vec<InputInjectEdge>)>,
+    /// Received, displayed and dropped counts for the main canvas stream.
+    pub preview_counters: PreviewCounterHandle,
 }
 
 impl Default for WsManager {
@@ -331,6 +334,9 @@ impl WsManager {
         let requested_preview = StoredValue::new(None::<PreviewSubscriptionRequest>);
         let requested_screen_preview = StoredValue::new(None::<PreviewSubscriptionRequest>);
         let requested_web_viewport_preview = StoredValue::new(None::<PreviewSubscriptionRequest>);
+        let preview_counters = PreviewCounterHandle::new();
+        // The reactive owner keeps the window function alive with the app.
+        let _ = StoredValue::new_local(publish_preview_counters(preview_counters));
 
         // A Remote bridge carries every preview frame through its own
         // transport, so the stream follows the path it reports. The relayed
@@ -402,6 +408,7 @@ impl WsManager {
             requested_preview.set_value(None);
             requested_screen_preview.set_value(None);
             requested_web_viewport_preview.set_value(None);
+            preview_counters.end_stream();
             screen_zones_requested.set_value(false);
             set_preview_fps.set(0.0);
             set_sensors.set(None);
@@ -460,6 +467,7 @@ impl WsManager {
                             &set_preview_fps,
                             &set_canvas_frame,
                         );
+                        preview_counters.end_stream();
                         clear_screen_preview_subscription(
                             requested_screen_preview,
                             &set_screen_canvas_frame,
@@ -528,6 +536,7 @@ impl WsManager {
                                     PreviewFrameChannel::Canvas => {
                                         let current_frame_number = frame.frame_number;
                                         let current_timestamp_ms = frame.timestamp_ms;
+                                        preview_counters.record_received(current_frame_number);
                                         set_canvas_frame.set(Some(frame));
 
                                         if let (
@@ -716,6 +725,7 @@ impl WsManager {
                         &set_preview_fps,
                         &set_canvas_frame,
                     );
+                    preview_counters.end_stream();
                     send_canvas_unsubscribe(ws.as_ref());
                 }
                 return;
@@ -1099,6 +1109,7 @@ impl WsManager {
             open_interactive_preview,
             close_interactive_preview,
             send_input_inject,
+            preview_counters,
         }
     }
 }
@@ -1151,6 +1162,33 @@ fn dispose_existing_socket(
 
 fn document_is_visible() -> bool {
     browser_document().is_none_or(|document| !document.hidden())
+}
+
+/// Expose the counters to browser test harnesses as a window function
+/// returning a plain object. The returned closure must outlive the page.
+#[cfg(target_arch = "wasm32")]
+fn publish_preview_counters(
+    counters: PreviewCounterHandle,
+) -> Option<wasm_bindgen::closure::Closure<dyn Fn() -> JsValue>> {
+    let window = browser_window()?;
+    let getter = wasm_bindgen::closure::Closure::<dyn Fn() -> JsValue>::new(move || {
+        serde_json::to_string(&counters.snapshot())
+            .ok()
+            .and_then(|json| js_sys::JSON::parse(&json).ok())
+            .unwrap_or(JsValue::NULL)
+    });
+    js_sys::Reflect::set(
+        window.as_ref(),
+        &JsValue::from_str(super::PREVIEW_COUNTERS_GLOBAL),
+        getter.as_ref(),
+    )
+    .ok()?;
+    Some(getter)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const fn publish_preview_counters(_counters: PreviewCounterHandle) -> Option<()> {
+    None
 }
 
 fn tauri_window_is_visible() -> bool {

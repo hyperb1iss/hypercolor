@@ -11,7 +11,7 @@ use web_sys::{HtmlCanvasElement, ImageBitmapRenderingContext, MessageEvent, Work
 
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
-use super::PreviewRenderOutcome;
+use super::{PresentedHook, PreviewRenderOutcome, SubmittedFrame};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DispatchDecision {
@@ -214,37 +214,50 @@ pub(super) struct PreviewWorkerRuntime {
     worker: Worker,
     worker_url: String,
     failed: Rc<Cell<bool>>,
-    dispatch_state: Rc<RefCell<FrameDispatchState<CanvasFrame>>>,
+    dispatch_state: Rc<RefCell<FrameDispatchState<SubmittedFrame>>>,
+    in_flight: Rc<RefCell<Option<SubmittedFrame>>>,
     last_shape: Option<(u32, u32, CanvasPixelFormat)>,
     onmessage: WorkerMessageHandler,
 }
 
 impl PreviewWorkerRuntime {
-    pub(super) fn new(canvas: &HtmlCanvasElement, frame: &CanvasFrame) -> Result<Self, ()> {
+    pub(super) fn new(
+        canvas: &HtmlCanvasElement,
+        frame: &CanvasFrame,
+        presented: Option<PresentedHook>,
+    ) -> Result<Self, ()> {
         set_canvas_size(canvas, frame.width, frame.height);
         let bitmap_ctx = bitmap_renderer_context(canvas).ok_or(())?;
         probe_worker_support(frame.pixel_format())?;
 
         let (worker, worker_url) = create_worker().map_err(|_| ())?;
         let failed = Rc::new(Cell::new(false));
-        let dispatch_state = Rc::new(RefCell::new(FrameDispatchState::default()));
+        let dispatch_state = Rc::new(RefCell::new(FrameDispatchState::<SubmittedFrame>::default()));
+        let in_flight = Rc::new(RefCell::new(None::<SubmittedFrame>));
         let failed_handle = Rc::clone(&failed);
         let dispatch_state_handle = Rc::clone(&dispatch_state);
+        let in_flight_handle = Rc::clone(&in_flight);
         let canvas_handle = canvas.clone();
         let bitmap_ctx_handle = bitmap_ctx.clone();
         let worker_handle = worker.clone();
 
         let onmessage = WorkerMessageHandler::attach(&worker, move |event| {
+            let shown = in_flight_handle.borrow_mut().take();
             if !present_bitmap(&canvas_handle, &bitmap_ctx_handle, &event) {
                 failed_handle.set(true);
                 return;
             }
+            if let Some(shown) = shown {
+                shown.report(presented.as_ref());
+            }
 
             let next_frame = dispatch_state_handle.borrow_mut().next_after_present();
-            if let Some(frame) = next_frame
-                && post_frame(&worker_handle, &frame).is_err()
-            {
-                failed_handle.set(true);
+            if let Some(next) = next_frame {
+                let posted = post_frame(&worker_handle, &next.frame);
+                in_flight_handle.borrow_mut().replace(next);
+                if posted.is_err() {
+                    failed_handle.set(true);
+                }
             }
         });
 
@@ -253,33 +266,34 @@ impl PreviewWorkerRuntime {
             worker_url,
             failed,
             dispatch_state,
+            in_flight,
             last_shape: None,
             onmessage,
         })
     }
 
-    pub(super) fn render(&mut self, frame: &CanvasFrame) -> PreviewRenderOutcome {
+    pub(super) fn render(&mut self, submitted: SubmittedFrame) -> PreviewRenderOutcome {
         if self.failed.get() {
             return PreviewRenderOutcome::Reinitialize;
         }
 
+        let frame = &submitted.frame;
         let next_shape = (frame.width, frame.height, frame.pixel_format());
         if self.last_shape.is_some_and(|shape| shape != next_shape) {
             self.failed.set(true);
             return PreviewRenderOutcome::Reinitialize;
         }
 
-        let decision = self
-            .dispatch_state
-            .borrow_mut()
-            .push_or_defer(frame.clone());
+        let decision = self.dispatch_state.borrow_mut().push_or_defer(submitted);
         if decision == DispatchDecision::DispatchNow {
-            let next_frame = self
+            let next = self
                 .dispatch_state
                 .borrow_mut()
                 .take_for_dispatch()
                 .expect("dispatch-now state should hold the frame being sent");
-            if post_frame(&self.worker, &next_frame).is_err() {
+            let posted = post_frame(&self.worker, &next.frame);
+            self.in_flight.borrow_mut().replace(next);
+            if posted.is_err() {
                 self.failed.set(true);
                 return PreviewRenderOutcome::Reinitialize;
             }
