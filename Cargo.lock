@@ -4738,7 +4738,7 @@ dependencies = [
  "chrono",
  "cpal",
  "criterion",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "dpi",
  "fast_image_resize",
  "futures-core",
@@ -5347,7 +5347,7 @@ dependencies = [
 name = "hypercolor-platform-fs"
 version = "0.5.1"
 dependencies = [
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "rustix 1.1.5",
  "sha2 0.11.0",
  "tempfile",
