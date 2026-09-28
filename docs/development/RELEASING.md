@@ -38,23 +38,26 @@ What the Release workflow does, in order:
    with `GITHUB_TOKEN` never fire `on: push` workflows; the tag-lane jobs
    in ci.yml accept `workflow_dispatch` for exactly this reason.
 
-The CI tag lane then builds the Linux and Windows artifacts, creates the
-GitHub Release with the committed notes, publishes `hypercolor` +
+The CI tag lane then builds the Linux, Windows, and signed macOS artifacts,
+creates the GitHub Release with the committed notes, publishes `hypercolor` +
 `create-hypercolor` to npm (with provenance; prereleases go to the `next`
 dist-tag), publishes the Python client to PyPI (stable only), and updates
 the AUR metadata (stable only).
 
 The tag lane also updates the Homebrew tap: `update-homebrew` renders
-`packaging/homebrew/hypercolor.rb` with `scripts/homebrew-formula.mjs`,
-filling the Linux stanzas from the tarballs it just published and carrying
-the macOS stanzas forward from the formula already in
-`hyperb1iss/homebrew-tap`, so Linux users track every stable tag while macOS
-users keep the last accepted build until the signed lane promotes a newer one.
+`packaging/homebrew/hypercolor.rb` and `packaging/homebrew/hypercolor-app.rb`
+with `scripts/homebrew-formula.mjs`, filling every Linux and macOS stanza and
+both cask architectures from the tarballs and DMGs the release just published.
 
-Public CI ships no macOS artifacts: macOS binaries require Developer ID
-signing that repository runners cannot perform, so signed macOS tarballs and
-the `hypercolor-app` cask are produced, attached, and promoted into the tap
-through the signed acceptance checkpoint below.
+macOS artifacts are Developer ID signed and notarized on the GitHub macOS
+runners. The `release-credentials` job checks all seven Apple secrets before
+any artifact job starts, so a tag lane with a missing secret fails in seconds
+instead of after an hour of builds. Each macOS job imports the certificate
+into an ephemeral keychain, signs every binary with the hardened runtime,
+notarizes and staples the app and DMG through an App Store Connect API key,
+and then verifies that every signature carries `APPLE_TEAM_ID` before the
+artifact is uploaded. The Release workflow refuses a non-dry run while any of
+the seven secrets is missing.
 
 ## Signed macOS acceptance checkpoint
 
@@ -85,14 +88,54 @@ and both artifact lanes succeed.
 
 ## Required configuration
 
-| What | Where | Used for |
-| --- | --- | --- |
-| `ANTHROPIC_API_KEY` | repo secret | git-iris release notes + changelog (required) |
-| npm trusted publishers | npmjs.com package settings | `publish-npm` uses OIDC (no token, automatic provenance); register repo `hyperb1iss/hypercolor`, workflow `ci.yml` on **both** `hypercolor` and `create-hypercolor` |
-| PyPI trusted publisher | pypi.org project settings | `publish-pypi` uses OIDC; register repo `hyperb1iss/hypercolor`, workflow `ci.yml` |
-| `HOMEBREW_TAP_TOKEN` | repo secret | `update-homebrew` pushes the rendered formula to `hyperb1iss/homebrew-tap`; a fine-grained PAT scoped to that repository with Contents read/write; the job fails loudly when it is missing or cannot push |
-| `AUR_SSH_PRIVATE_KEY` | repo secret | `update-aur` pushes `hypercolor-bin` to the AUR over SSH; the matching public key must be registered on the AUR account (1Password: "SSH Key: hypercolor AUR CI") |
-| `GIT_IRIS_MODEL` | repo variable, optional | override git-iris's default Anthropic model |
+| What                         | Where                      | Used for                                                                                                                                                                                                  |
+| ---------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`          | repo secret                | git-iris release notes + changelog (required)                                                                                                                                                             |
+| npm trusted publishers       | npmjs.com package settings | `publish-npm` uses OIDC (no token, automatic provenance); register repo `hyperb1iss/hypercolor`, workflow `ci.yml` on **both** `hypercolor` and `create-hypercolor`                                       |
+| PyPI trusted publisher       | pypi.org project settings  | `publish-pypi` uses OIDC; register repo `hyperb1iss/hypercolor`, workflow `ci.yml`                                                                                                                        |
+| `HOMEBREW_TAP_TOKEN`         | repo secret                | `update-homebrew` pushes the rendered formula to `hyperb1iss/homebrew-tap`; a fine-grained PAT scoped to that repository with Contents read/write; the job fails loudly when it is missing or cannot push |
+| `AUR_SSH_PRIVATE_KEY`        | repo secret                | `update-aur` pushes `hypercolor-bin` to the AUR over SSH; the matching public key must be registered on the AUR account (1Password: "SSH Key: hypercolor AUR CI")                                         |
+| `GIT_IRIS_MODEL`             | repo variable, optional    | override git-iris's default Anthropic model                                                                                                                                                               |
+| `APPLE_TEAM_ID`              | repo secret                | the ten-character Apple Developer team ID; every signature is verified against it                                                                                                                         |
+| `APPLE_SIGNING_IDENTITY`     | repo secret                | the certificate's full common name, `Developer ID Application: <team name> (<team id>)`                                                                                                                   |
+| `APPLE_CERTIFICATE`          | repo secret                | base64 of a PKCS#12 bundle holding the Developer ID Application certificate and its private key                                                                                                           |
+| `APPLE_CERTIFICATE_PASSWORD` | repo secret                | the PKCS#12 export password                                                                                                                                                                               |
+| `APPLE_API_KEY_ID`           | repo secret                | App Store Connect API key ID, used by `notarytool`                                                                                                                                                        |
+| `APPLE_API_ISSUER`           | repo secret                | App Store Connect issuer ID (a UUID shown above the key list)                                                                                                                                             |
+| `APPLE_API_KEY_CONTENT`      | repo secret                | the full text of the `AuthKey_<id>.p8` file, including the BEGIN and END lines                                                                                                                            |
+
+### Provisioning the Apple credentials
+
+Only the Account Holder can create a Developer ID certificate. Everything
+below runs on any machine with OpenSSL; no Mac is needed.
+
+1. Generate a key and signing request:
+   `openssl genrsa -out developer-id.key 2048` then
+   `openssl req -new -key developer-id.key -out developer-id.csr -subj "/emailAddress=<you>/CN=<name>/C=US"`.
+2. In the Apple Developer portal, open **Certificates → +**, choose
+   **Developer ID Application** with the **G2 Sub-CA**, upload the CSR, and
+   download `developerID_application.cer`.
+3. Build the PKCS#12 bundle with 3DES and a SHA-1 MAC, carrying the
+   [Developer ID G2 intermediate](https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer)
+   so the chain is complete. OpenSSL 3 defaults to AES and PBKDF2, which
+   `SecItemImport` on the runners can reject. Convert both DER files to PEM
+   with `openssl x509 -inform DER -in <file>.cer -out <file>.pem`, then run
+   `openssl pkcs12 -export -inkey developer-id.key -in developer-id.pem -certfile DeveloperIDG2CA.pem -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 -out developer-id.p12`.
+   The certificate subject's CN is `APPLE_SIGNING_IDENTITY` and its OU is
+   `APPLE_TEAM_ID`. `openssl verify` reports an unhandled critical extension
+   on the leaf; that is Apple's private Developer ID marker, and
+   `-ignore_critical` confirms the chain.
+4. In App Store Connect, open **Users and Access → Integrations → Team
+   Keys**, generate a key with the **Developer** role, and download the
+   `.p8`. Apple offers the download exactly once.
+5. Store the key, CSR, certificate, PKCS#12 bundle, its password, and the
+   `.p8` in 1Password, then set the secrets from the files so no value lands
+   in shell history: `base64 -w0 developer-id.p12 | gh secret set APPLE_CERTIFICATE`,
+   `gh secret set APPLE_API_KEY_CONTENT < AuthKey_<id>.p8`, and so on.
+
+The Developer ID certificate is valid for five years. Rotating it means
+repeating steps 1 to 3 and replacing `APPLE_CERTIFICATE` and
+`APPLE_CERTIFICATE_PASSWORD`; the identity string and team ID stay the same.
 
 ## Version alignment
 
