@@ -194,3 +194,126 @@ fn rawmidi_write_goes_straight_through_with_room_to_spare() {
     assert_eq!(result, Ok(()));
     assert_eq!(written, 3);
 }
+
+mod stall_detection {
+    use std::time::Duration;
+
+    use hypercolor_hal::drivers::push2::transport::{
+        Push2StallStepForTesting as Step, push2_stall_reports_for_testing as reports,
+    };
+
+    fn deadline(at_secs: u64, backlog: Option<usize>) -> Step {
+        Step::DeadlinePassed {
+            at: Duration::from_secs(at_secs),
+            backlog,
+        }
+    }
+
+    fn reply(at_secs: u64) -> Step {
+        Step::ReplyArrived {
+            at: Duration::from_secs(at_secs),
+        }
+    }
+
+    #[test]
+    fn a_deadline_with_bytes_stuck_in_the_kernel_names_the_stall() {
+        // The field signature: the 6-byte device inquiry still sits in the
+        // kernel's rawmidi buffer after the 1 s reply deadline.
+        assert_eq!(
+            reports("stall-names", &[deadline(1, Some(6))]),
+            vec![Some("stalled queued=6".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_deadline_the_kernel_drained_is_not_called_a_stall() {
+        // The bytes left the rawmidi buffer, or the output cannot say: a
+        // missing reply alone does not show that output stopped.
+        assert_eq!(
+            reports("stall-drained", &[deadline(1, Some(0)), deadline(2, None)]),
+            vec![None, None]
+        );
+    }
+
+    #[test]
+    fn every_reconnect_attempt_against_a_stalled_device_names_it() {
+        // Discovery retries a stalled Push 2 every 5 minutes; each attempt is
+        // a new transport that reports once and counts the whole episode.
+        assert_eq!(
+            reports(
+                "stall-reconnects",
+                &[
+                    deadline(1, Some(6)),
+                    Step::Reopened,
+                    deadline(301, Some(6)),
+                    Step::Reopened,
+                    deadline(601, Some(6)),
+                ]
+            ),
+            vec![
+                Some("stalled queued=6".to_owned()),
+                None,
+                Some("still stalled queued=6 for=300s checks=2".to_owned()),
+                None,
+                Some("still stalled queued=6 for=600s checks=3".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stall_within_one_session_repeats_only_after_the_report_interval() {
+        // In-session probes back off from 250 ms; they must not turn the
+        // report into a log flood.
+        assert_eq!(
+            reports(
+                "stall-session",
+                &[
+                    deadline(1, Some(100)),
+                    deadline(2, Some(109)),
+                    deadline(60, Some(118)),
+                    deadline(302, Some(127)),
+                ]
+            ),
+            vec![
+                Some("stalled queued=100".to_owned()),
+                None,
+                None,
+                Some("still stalled queued=127 for=301s checks=4".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_first_reply_after_a_power_cycle_reports_flowing_once() {
+        // A power cycle re-enumerates the device and the next connect's
+        // identity reply is the first answer; the episode then closes, and a
+        // later stall is a new one.
+        assert_eq!(
+            reports(
+                "stall-recovers",
+                &[
+                    deadline(1, Some(6)),
+                    Step::Reopened,
+                    reply(3_601),
+                    reply(3_602),
+                    deadline(4_000, Some(9)),
+                ]
+            ),
+            vec![
+                Some("stalled queued=6".to_owned()),
+                None,
+                Some("flowing after=3600s checks=1".to_owned()),
+                None,
+                Some("stalled queued=9".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn replies_from_a_healthy_device_report_nothing() {
+        assert_eq!(
+            reports("stall-healthy", &[reply(1), reply(2)]),
+            vec![None, None]
+        );
+    }
+}

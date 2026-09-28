@@ -114,6 +114,18 @@ pub trait NativeMidiSession: Send + 'static {
 
     /// Close native input and output resources.
     fn close(&mut self);
+
+    /// Bytes this session wrote that the OS still holds for the device,
+    /// when the platform can tell.
+    ///
+    /// A backlog that outlives a reply timeout shows that output to the
+    /// device stopped making progress, which a missing reply alone cannot
+    /// show. An empty backlog does not prove delivery: bytes can have left
+    /// the OS buffer and still be waiting in the USB stack. Sessions without
+    /// that visibility return `None`.
+    fn output_backlog(&mut self) -> Option<usize> {
+        None
+    }
 }
 
 /// Native session and diagnostic port names returned by a driver opener.
@@ -151,6 +163,9 @@ enum MidiWorkerCommand {
         fallback_token: MidiResponseToken,
         timeout: Duration,
         completion: oneshot::Sender<Result<Vec<u8>, TransportError>>,
+    },
+    OutputBacklog {
+        completion: oneshot::Sender<Option<usize>>,
     },
     Close {
         completion: oneshot::Sender<()>,
@@ -248,6 +263,20 @@ impl MidiWorkerClient {
             })
             .map_err(|_| TransportError::Closed)?;
         result.await.map_err(|_| worker_stopped("receive"))?
+    }
+
+    /// Bytes the native output still holds for the device, when the
+    /// platform can tell. See [`NativeMidiSession::output_backlog`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when the worker has stopped.
+    pub async fn output_backlog(&self) -> Result<Option<usize>, TransportError> {
+        let (completion, result) = oneshot::channel();
+        self.commands
+            .send(MidiWorkerCommand::OutputBacklog { completion })
+            .map_err(|_| TransportError::Closed)?;
+        result.await.map_err(|_| worker_stopped("output backlog"))
     }
 
     /// Close the worker-owned native session.
@@ -398,6 +427,9 @@ fn run_native_midi_worker<S, G, F>(
                 let result = receive_matching_response(&responses, request, timeout);
                 state.clear();
                 let _ = completion.send(result);
+            }
+            MidiWorkerCommand::OutputBacklog { completion } => {
+                let _ = completion.send(session.output_backlog());
             }
             MidiWorkerCommand::Close { completion } => {
                 state.clear();

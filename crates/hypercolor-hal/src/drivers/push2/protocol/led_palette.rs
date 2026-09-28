@@ -590,12 +590,15 @@ fn white_button_palette_slot(rgb: [u8; 3]) -> (u8, [u8; 4]) {
     )
 }
 
+/// Pack the strip's color indices two LEDs per argument byte, laid out as the
+/// interface manual's Set Touch Strip LEDs table has it: `0 0 LED(2n+1)
+/// LED(2n)`, three bits each. Bit 6 is reserved and must stay clear.
 fn encode_touch_strip(levels: &[u8; PUSH2_TOUCH_STRIP_LED_COUNT]) -> [u8; 16] {
     let mut packed = [0_u8; 16];
     for index in 0..15 {
-        let low = levels[index * 2] & 0x07;
-        let high = levels[index * 2 + 1] & 0x07;
-        packed[index] = (high << 4) | low;
+        let even = levels[index * 2] & 0x07;
+        let odd = levels[index * 2 + 1] & 0x07;
+        packed[index] = (odd << 3) | even;
     }
     packed[15] = levels[30] & 0x07;
     packed

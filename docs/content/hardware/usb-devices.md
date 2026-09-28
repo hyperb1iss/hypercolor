@@ -200,6 +200,12 @@ Transports that claim the USB interface (`UsbControl`, `UsbHid`, `UsbVendor`, `U
 
 The `UsbMidi` transport connects to the Push 2 User MIDI port. If Ableton Live or another host has that port open, Hypercolor cannot connect. Close the DAW or remove the Push 2 from its MIDI device list.
 
+**Push 2 stops responding until it is power-cycled**
+
+MIDI output to the Push 2 can stall while the device stays plugged in and enumerated. On Linux the daemon then logs `Push 2 MIDI output stalled`, repeats `Push 2 MIDI output is still stalled` on each reconnect attempt, and the kernel log shows `rawmidi drain error` for the Push 2's MIDI device. Restarting the daemon does not clear it. Unplug the Push 2's USB cable and its power supply, wait a few seconds, and plug both back in; Hypercolor reconnects on its own.
+
+If it keeps happening, open an issue with the daemon's `Push 2 identified` and `Push 2 reported its power source and uptime` lines and the kernel log from the minutes before the first warning.
+
 ## Related pages
 
 - [SMBus/I2C devices](@/hardware/smbus-i2c.md): ASUS Aura motherboard, GPU, and DRAM lighting

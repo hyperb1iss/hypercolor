@@ -415,7 +415,7 @@ fn strip_packed(frame: &[[u8; 3]]) -> Vec<u8> {
         .collect();
     let mut packed = vec![0_u8; 16];
     for index in 0..15 {
-        packed[index] = ((levels[index * 2 + 1] & 7) << 4) | (levels[index * 2] & 7);
+        packed[index] = ((levels[index * 2 + 1] & 7) << 3) | (levels[index * 2] & 7);
     }
     packed[15] = levels[30] & 7;
     packed

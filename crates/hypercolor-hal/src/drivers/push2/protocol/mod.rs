@@ -2,6 +2,7 @@
 
 use hypercolor_types::device::SegmentInfo;
 
+mod diagnostics;
 mod display;
 mod flow;
 mod led_palette;
@@ -352,6 +353,7 @@ impl Protocol for Push2Protocol {
         }
 
         if data.len() >= 5 && data[1..5] == [0x7E, 0x01, 0x06, 0x02] {
+            diagnostics::log_identity(data);
             return Ok(ProtocolResponse {
                 status: ResponseStatus::Ok,
                 data: data[1..data.len() - 1].to_vec(),
@@ -366,6 +368,9 @@ impl Protocol for Push2Protocol {
 
         let command = data[6];
         let args = &data[7..data.len() - 1];
+        if command == PUSH2_CMD_REQUEST_STATS {
+            diagnostics::log_statistics(args);
+        }
         if command == PUSH2_CMD_GET_PALETTE_ENTRY {
             let mut state = self
                 .state
@@ -580,4 +585,33 @@ fn set_palette_entry_message(index: u8, entry: [u8; 4]) -> [u8; PUSH2_SET_PALETT
     }
     message[16] = 0xF7;
     message
+}
+
+/// Decode a Device Inquiry reply as `(major, minor, build, serial, board)`.
+#[doc(hidden)]
+#[must_use]
+pub fn push2_identity_for_testing(message: &[u8]) -> Option<(u8, u8, u16, u32, u8)> {
+    diagnostics::decode_identity(message).map(|identity| {
+        (
+            identity.firmware_major,
+            identity.firmware_minor,
+            identity.build,
+            identity.serial,
+            identity.board_revision,
+        )
+    })
+}
+
+/// Decode Request Statistics reply arguments as `(external power, run ID,
+/// uptime seconds)`.
+#[doc(hidden)]
+#[must_use]
+pub fn push2_statistics_for_testing(args: &[u8]) -> Option<(bool, u8, u32)> {
+    diagnostics::decode_statistics(args).map(|statistics| {
+        (
+            statistics.external_power,
+            statistics.run_id,
+            statistics.uptime_s,
+        )
+    })
 }

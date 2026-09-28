@@ -570,3 +570,99 @@ fn push2_reply_for_a_different_palette_index_acknowledges_nothing() {
         "LED traffic resumes once the probe is answered"
     );
 }
+
+/// The interface manual's Set Touch Strip LEDs example: every fourth LED at
+/// full brightness (index 7), the others half lit (index 4).
+const MANUAL_TOUCH_STRIP_EXAMPLE: [u8; 16] = [
+    0x27, 0x24, 0x27, 0x24, 0x27, 0x24, 0x27, 0x24, 0x27, 0x24, 0x27, 0x24, 0x27, 0x24, 0x27, 0x04,
+];
+
+fn touch_strip_args(commands: &[ProtocolCommand]) -> Vec<u8> {
+    commands
+        .iter()
+        .find(|command| command.data.len() == 24 && command.data[6] == 0x19)
+        .map(|command| command.data[7..23].to_vec())
+        .expect("the frame carries a Set Touch Strip LEDs message")
+}
+
+#[test]
+fn push2_touch_strip_packing_matches_the_interface_manual() {
+    let protocol = Push2Protocol::new();
+    let mut colors = vec![[0_u8, 0_u8, 0_u8]; 160];
+    for (led, color) in colors[129..160].iter_mut().enumerate() {
+        // Full white quantizes to strip index 7; mid gray to index 4.
+        *color = if led % 4 == 0 {
+            [255, 255, 255]
+        } else {
+            [146, 146, 146]
+        };
+    }
+
+    let args = touch_strip_args(&protocol.encode_frame(&colors));
+
+    // Each argument byte is `0 0 LED(2n+1) LED(2n)`: the odd LED sits in
+    // bits 5..3, and bit 6 is reserved.
+    assert_eq!(args, MANUAL_TOUCH_STRIP_EXAMPLE);
+}
+
+#[test]
+fn push2_touch_strip_arguments_never_set_the_reserved_bits() {
+    let protocol = Push2Protocol::new();
+    let mut colors = vec![[0_u8, 0_u8, 0_u8]; 160];
+    for color in &mut colors[129..160] {
+        *color = [255, 255, 255];
+    }
+
+    let args = touch_strip_args(&protocol.encode_frame(&colors));
+
+    assert!(
+        args.iter().all(|byte| byte & 0xC0 == 0),
+        "touch strip arguments must leave bits 7 and 6 clear: {args:02X?}"
+    );
+    assert_eq!(&args[..15], &[0x3F; 15]);
+    assert_eq!(args[15], 0x07);
+}
+
+#[test]
+fn push2_identity_reply_decodes_the_manual_example() {
+    use hypercolor_hal::drivers::push2::protocol::push2_identity_for_testing;
+
+    // Version 1.0, build 47, serial 17295091, board revision 1.
+    let reply = [
+        0xF0, 0x7E, 0x01, 0x06, 0x02, 0x00, 0x21, 0x1D, 0x67, 0x32, 0x02, 0x00, 0x01, 0x00, 0x2F,
+        0x00, 0x73, 0x4D, 0x1F, 0x08, 0x00, 0x01, 0xF7,
+    ];
+    assert_eq!(
+        push2_identity_for_testing(&reply),
+        Some((1, 0, 47, 17_295_091, 1))
+    );
+    assert_eq!(push2_identity_for_testing(&reply[..22]), None);
+
+    // The reply still parses as before; decoding only adds a log line.
+    let response = Push2Protocol::new()
+        .parse_response(&reply)
+        .expect("identity reply parses");
+    assert_eq!(response.status, ResponseStatus::Ok);
+}
+
+#[test]
+fn push2_statistics_reply_decodes_the_manual_example() {
+    use hypercolor_hal::drivers::push2::protocol::push2_statistics_for_testing;
+
+    // External power supply, run ID 0, uptime 959 s.
+    let args = [0x01, 0x00, 0x3F, 0x07, 0x00, 0x00, 0x00];
+    assert_eq!(push2_statistics_for_testing(&args), Some((true, 0, 959)));
+    assert_eq!(
+        push2_statistics_for_testing(&[0x00, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00]),
+        Some((false, 5, 1))
+    );
+    assert_eq!(push2_statistics_for_testing(&args[..6]), None);
+
+    let mut reply = vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x1A];
+    reply.extend_from_slice(&args);
+    reply.push(0xF7);
+    let response = Push2Protocol::new()
+        .parse_response(&reply)
+        .expect("statistics reply parses");
+    assert_eq!(response.status, ResponseStatus::Ok);
+}
