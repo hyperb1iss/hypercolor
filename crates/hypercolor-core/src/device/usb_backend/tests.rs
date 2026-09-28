@@ -1799,7 +1799,11 @@ struct EchoingTransfer {
     data: Vec<u8>,
 }
 
-const ECHOING_CLUSTER: [u8; 6] = [0x11; 6];
+/// The stand-in's fan cluster: a radio MAC of its own per controller, since
+/// the TX reset budget is kept per cluster for the whole process.
+const fn echoing_cluster(master: [u8; 6]) -> [u8; 6] {
+    [0x11, 0x11, 0x11, 0x11, master[4], master[5]]
+}
 const ECHOING_LEDS: usize = 78;
 
 impl EchoingWirelessPair {
@@ -1833,7 +1837,7 @@ impl EchoingWirelessPair {
         let mut reply = vec![0_u8; 448 * usize::from(pages.max(1))];
         reply[..4].copy_from_slice(&[0x10, 1, 0x80, 0]);
         let record = &mut reply[4..46];
-        record[0..6].copy_from_slice(&ECHOING_CLUSTER);
+        record[0..6].copy_from_slice(&echoing_cluster(master));
         record[6..12].copy_from_slice(&master);
         record[12] = 8;
         record[13] = 3;
@@ -2122,6 +2126,74 @@ async fn the_lianli_frame_pump_releases_a_frame_held_for_an_echo() {
             "the fans show the newest frame"
         );
     }
+
+    drop(frame_tx);
+    let result = timeout(Duration::from_secs(1), actor)
+        .await
+        .expect("the actor stops once its frame source is gone")
+        .expect("actor task joins");
+    assert!(result.is_ok(), "{result:?}");
+}
+
+/// Delivery acknowledgements report what the transport did: a frame the
+/// protocol writes is completed, a frame it holds behind an unconfirmed
+/// transfer is suppressed, not reported as delivered.
+#[tokio::test(start_paused = true)]
+async fn a_lianli_frame_held_for_an_echo_is_acknowledged_as_suppressed() {
+    use hypercolor_hal::drivers::lianli::wireless::transport::WirelessControllerTransport;
+
+    let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x04];
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let pair = Arc::new(EchoingWirelessPair::new(master, Duration::from_millis(40)));
+    let transport: Arc<dyn Transport> = Arc::new(WirelessControllerTransport::new(
+        Box::new(SharedEchoingWirelessPair(Arc::clone(&pair))),
+        "usb-backend-test-lianli-held-ack",
+    ));
+    let protocol: Arc<dyn Protocol> = paced_wireless_protocol(master);
+
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "lianli-held-ack-test-device",
+        protocol,
+        transport,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    let colors = |index: u8| Arc::new(vec![[index, 0x20, 0x40]; ECHOING_LEDS]);
+    let first_id = DeviceDeliveryId {
+        queue_generation: 9,
+        sequence: 1,
+    };
+    let (first, first_ack) = UsbFramePayload::tracked(first_id, colors(1));
+    frame_tx.send_replace(Some(Arc::new(first)));
+    let first_ack = timeout(Duration::from_secs(1), first_ack)
+        .await
+        .expect("the first frame is acknowledged")
+        .expect("acknowledgement channel stays open");
+    assert_eq!(first_ack.status, DeviceDeliveryStatus::Completed);
+    assert!(first_ack.transport_started);
+
+    let second_id = DeviceDeliveryId {
+        queue_generation: 9,
+        sequence: 2,
+    };
+    let (second, second_ack) = UsbFramePayload::tracked(second_id, colors(2));
+    frame_tx.send_replace(Some(Arc::new(second)));
+    let second_ack = timeout(Duration::from_secs(1), second_ack)
+        .await
+        .expect("the held frame is acknowledged")
+        .expect("acknowledgement channel stays open");
+    assert_eq!(
+        second_ack.status,
+        DeviceDeliveryStatus::SuppressedCadence,
+        "the frame waited behind the first one's echo; nothing was written for it"
+    );
+    assert!(!second_ack.transport_started);
+    assert_eq!(second_ack.completed_payload_bytes, 0);
 
     drop(frame_tx);
     let result = timeout(Duration::from_secs(1), actor)
