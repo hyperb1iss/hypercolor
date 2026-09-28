@@ -63,9 +63,12 @@ the seven secrets is missing.
 ## Signed macOS smoke checkpoint
 
 Before the non-dry run, build signed artifacts without a tag by dispatching
-**CI/CD** with `release_artifacts: full` and `release_version` set to an
-`-rc.0` of the version being cut. Download the arm64 DMG from that run and
-check it on an Apple Silicon Mac:
+**CI/CD** with `release_artifacts: full` from the release source. Leave
+`release_version` blank: the artifact jobs reject any version whose base
+differs from the current Cargo version, which the release commit has not
+stamped yet, so the blank default (`<cargo version>-ci.0`) is the only
+value that builds. Download the arm64 DMG from that run and check it on an
+Apple Silicon Mac:
 
 - `spctl -a -vvv -t open --context context:primary-signature` on the DMG and
   `spctl -a -vvv` on the installed app both report
