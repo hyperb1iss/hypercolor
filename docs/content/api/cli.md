@@ -30,14 +30,19 @@ Every flag below is global: it applies to any subcommand and can appear before
 or after it. Connection flags fall back to environment variables, so you set
 them once and forget them.
 
+A connection setting comes from the first source that names it: the flag, then
+its environment variable, then the active profile in `cli.toml`, then the
+built-in default. A value you name always wins, even one equal to the default,
+so `--port 9420` means port 9420 whatever the profile says.
+
 ```
 hypercolor [OPTIONS] <COMMAND>
 ```
 
 | Flag | Env var | Default | Purpose |
 | --- | --- | --- | --- |
-| `--host <HOST>` | `HYPERCOLOR_HOST` | `localhost` | Daemon hostname or IP. |
-| `--port <PORT>` | `HYPERCOLOR_PORT` | `9420` | Daemon port. |
+| `--host <HOST>` | `HYPERCOLOR_HOST` | profile, else `localhost` | Daemon hostname or IP. |
+| `--port <PORT>` | `HYPERCOLOR_PORT` | profile, else `9420` | Daemon port. |
 | `--api-key <KEY>` | `HYPERCOLOR_API_KEY` | _(none)_ | Bearer token for authenticated requests. |
 | `--profile <NAME>` | `HYPERCOLOR_PROFILE` | _(none)_ | Named connection profile from `cli.toml`. |
 | `--format <FORMAT>` | | `table` | Output format. One of `table`, `json`, `plain`. |

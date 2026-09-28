@@ -63,8 +63,8 @@ pub struct Profile {
 impl Default for Profile {
     fn default() -> Self {
         Self {
-            host: "localhost".to_string(),
-            port: 9420,
+            host: DEFAULT_HOST.to_string(),
+            port: DEFAULT_PORT,
             api_key: None,
             label: None,
             description: None,
@@ -143,6 +143,25 @@ pub fn save(config: &CliConfig) -> Result<()> {
 
 // ── Profile Resolution ──────────────────────────────────────────────────
 
+/// Host a connection falls back to when neither the invocation nor a profile
+/// names one.
+pub const DEFAULT_HOST: &str = "localhost";
+
+/// Port a connection falls back to when neither the invocation nor a profile
+/// names one.
+pub const DEFAULT_PORT: u16 = 9420;
+
+/// Connection settings the invocation named outright, through a flag or its
+/// `HYPERCOLOR_*` environment variable. `None` leaves the setting to the
+/// profile, then to the compiled-in default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConnectionRequest {
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub api_key: Option<String>,
+    pub profile: Option<String>,
+}
+
 /// Resolve connection parameters from CLI flags, env vars, and profiles.
 ///
 /// Precedence (highest wins):
@@ -150,71 +169,136 @@ pub fn save(config: &CliConfig) -> Result<()> {
 ///   2. `HYPERCOLOR_HOST`/`HYPERCOLOR_PORT`/`HYPERCOLOR_API_KEY` env vars
 ///   3. Named profile fields from cli.toml
 ///   4. Compiled-in defaults (localhost:9420, no auth)
-pub fn resolve_connection(
-    flag_host: &str,
-    flag_port: u16,
-    flag_api_key: Option<&str>,
-    flag_profile: Option<&str>,
-) -> Result<ResolvedConnection> {
+///
+/// A named value always wins, including one that happens to equal the
+/// default: `--port 9420` means port 9420 even when a profile says otherwise.
+///
+/// # Errors
+///
+/// Returns an error when cli.toml exists but cannot be read or parsed.
+pub fn resolve_connection(request: &ConnectionRequest) -> Result<ResolvedConnection> {
     let config = load()?;
-
-    let profile_name = flag_profile
-        .map(ToOwned::to_owned)
-        .or_else(|| std::env::var("HYPERCOLOR_PROFILE").ok())
-        .unwrap_or(config.defaults.profile.clone());
-
-    let explicitly_requested =
-        flag_profile.is_some() || std::env::var("HYPERCOLOR_PROFILE").is_ok();
-
-    let profile = config.profiles.get(&profile_name);
-
-    if profile.is_none() && explicitly_requested {
+    let resolved = resolve_with_config(request, &config);
+    if request.profile.is_some() && !config.profiles.contains_key(&resolved.profile_name) {
         eprintln!(
-            "  ! profile {profile_name:?} not found in {} \
+            "  ! profile {:?} not found in {} \
              (run `hypercolor config profile list` to see available profiles)",
+            resolved.profile_name,
             config_path().display()
         );
     }
+    Ok(resolved)
+}
 
-    let host_is_default = flag_host == "localhost";
-    let port_is_default = flag_port == 9420;
+/// Merge a request over the loaded config, without touching the environment
+/// or the filesystem.
+fn resolve_with_config(request: &ConnectionRequest, config: &CliConfig) -> ResolvedConnection {
+    let profile_name = request
+        .profile
+        .clone()
+        .unwrap_or_else(|| config.defaults.profile.clone());
+    let profile = config.profiles.get(&profile_name);
 
-    let host = if !host_is_default {
-        flag_host.to_string()
-    } else if let Ok(env_host) = std::env::var("HYPERCOLOR_HOST") {
-        env_host
-    } else if let Some(p) = profile {
-        p.host.clone()
-    } else {
-        "localhost".to_string()
-    };
-
-    let port = if !port_is_default {
-        flag_port
-    } else if let Ok(env_port) = std::env::var("HYPERCOLOR_PORT") {
-        env_port.parse().unwrap_or(9420)
-    } else if let Some(p) = profile {
-        p.port
-    } else {
-        9420
-    };
-
-    let api_key = flag_api_key
-        .map(ToOwned::to_owned)
-        .or_else(|| std::env::var("HYPERCOLOR_API_KEY").ok())
+    let host = request
+        .host
+        .clone()
+        .or_else(|| profile.map(|p| p.host.clone()))
+        .unwrap_or_else(|| DEFAULT_HOST.to_owned());
+    let port = request
+        .port
+        .or_else(|| profile.map(|p| p.port))
+        .unwrap_or(DEFAULT_PORT);
+    let api_key = request
+        .api_key
+        .clone()
         .or_else(|| profile.and_then(|p| p.api_key.as_ref().filter(|k| !k.is_empty()).cloned()));
 
-    Ok(ResolvedConnection {
+    ResolvedConnection {
         host,
         port,
         api_key,
         profile_name,
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CONFIG_FILE_NAME, config_path, resolve_config_path};
+    use super::{
+        CONFIG_FILE_NAME, CliConfig, ConnectionRequest, DEFAULT_HOST, DEFAULT_PORT, Profile,
+        config_path, resolve_config_path, resolve_with_config,
+    };
+
+    /// A config whose default profile points somewhere no request names.
+    fn config_with_default_profile() -> CliConfig {
+        let mut config = CliConfig::default();
+        config.profiles.insert(
+            config.defaults.profile.clone(),
+            Profile {
+                host: "profile.example".to_owned(),
+                port: 7777,
+                api_key: Some("profile-key".to_owned()),
+                ..Profile::default()
+            },
+        );
+        config
+    }
+
+    #[test]
+    fn named_values_equal_to_the_defaults_still_beat_the_profile() {
+        let request = ConnectionRequest {
+            host: Some(DEFAULT_HOST.to_owned()),
+            port: Some(DEFAULT_PORT),
+            ..ConnectionRequest::default()
+        };
+
+        let resolved = resolve_with_config(&request, &config_with_default_profile());
+
+        assert_eq!(resolved.host, DEFAULT_HOST);
+        assert_eq!(resolved.port, DEFAULT_PORT);
+    }
+
+    #[test]
+    fn named_values_beat_the_profile() {
+        let request = ConnectionRequest {
+            host: Some("127.0.0.1".to_owned()),
+            port: Some(41_000),
+            api_key: Some("flag-key".to_owned()),
+            profile: None,
+        };
+
+        let resolved = resolve_with_config(&request, &config_with_default_profile());
+
+        assert_eq!(resolved.host, "127.0.0.1");
+        assert_eq!(resolved.port, 41_000);
+        assert_eq!(resolved.api_key.as_deref(), Some("flag-key"));
+    }
+
+    #[test]
+    fn unnamed_values_come_from_the_profile() {
+        let resolved = resolve_with_config(
+            &ConnectionRequest::default(),
+            &config_with_default_profile(),
+        );
+
+        assert_eq!(resolved.host, "profile.example");
+        assert_eq!(resolved.port, 7777);
+        assert_eq!(resolved.api_key.as_deref(), Some("profile-key"));
+    }
+
+    #[test]
+    fn unnamed_values_without_a_profile_use_the_compiled_in_defaults() {
+        let request = ConnectionRequest {
+            profile: Some("missing".to_owned()),
+            ..ConnectionRequest::default()
+        };
+
+        let resolved = resolve_with_config(&request, &config_with_default_profile());
+
+        assert_eq!(resolved.profile_name, "missing");
+        assert_eq!(resolved.host, DEFAULT_HOST);
+        assert_eq!(resolved.port, DEFAULT_PORT);
+        assert_eq!(resolved.api_key, None);
+    }
 
     /// The env override is caller-owned and cannot be cleared from a test:
     /// edition 2024 makes `std::env::set_var` unsafe and `unsafe_code` is
