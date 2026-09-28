@@ -241,7 +241,9 @@ impl UsbBackend {
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             interval
         });
+        let mut frame_pump = Self::frame_pump_timer(protocol.as_ref());
         let mut frame_commands = Vec::new();
+        let mut pump_commands = Vec::new();
 
         loop {
             tokio::select! {
@@ -314,11 +316,69 @@ impl UsbBackend {
                     )
                     .await?;
                 }
+                () = async {
+                    if let Some(interval) = frame_pump.as_mut() {
+                        interval.tick().await;
+                    }
+                }, if frame_pump.is_some() => {
+                    Self::run_frame_pump(
+                        device_id,
+                        protocol.as_ref(),
+                        transport.as_ref(),
+                        &mut pump_commands,
+                    )
+                    .await?;
+                }
                 else => break,
             }
         }
 
         Ok(())
+    }
+
+    /// The protocol's between-frame pump interval as a ticking timer.
+    fn frame_pump_timer(protocol: &dyn Protocol) -> Option<tokio::time::Interval> {
+        protocol.frame_pump_interval().map(|period| {
+            let mut interval =
+                tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            interval
+        })
+    }
+
+    /// Run the frame lane's due work between frames. Its writes are frame
+    /// traffic, so a transient failure is logged and the lane continues,
+    /// exactly as for a frame; anything fatal ends the actor.
+    async fn run_frame_pump(
+        device_id: DeviceId,
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Result<()> {
+        protocol.pump_frame_into(commands);
+        if commands.is_empty() {
+            return Ok(());
+        }
+        match Self::run_commands(protocol, transport, commands.as_slice())
+            .await
+            .with_context(|| format!("USB frame pump write failed for device {device_id}"))
+        {
+            Ok(()) => Ok(()),
+            Err(error)
+                if Self::classify_frame_write_error(&error) == FrameWriteDisposition::Transient =>
+            {
+                warn!(
+                    device_id = %device_id,
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    error = %error,
+                    error_chain = %format_error_chain(&error),
+                    "transient USB frame pump write failed; actor will continue"
+                );
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn run_device_display_actor(
@@ -442,8 +502,10 @@ impl UsbBackend {
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             interval
         });
+        let mut frame_pump = Self::frame_pump_timer(protocol.as_ref());
         let mut frame_commands = Vec::new();
         let mut display_commands = Vec::new();
+        let mut pump_commands = Vec::new();
 
         loop {
             tokio::select! {
@@ -587,6 +649,19 @@ impl UsbBackend {
                         transport.as_ref(),
                         &frame,
                         &mut frame_commands,
+                    )
+                    .await?;
+                }
+                () = async {
+                    if let Some(interval) = frame_pump.as_mut() {
+                        interval.tick().await;
+                    }
+                }, if frame_pump.is_some() => {
+                    Self::run_frame_pump(
+                        device_id,
+                        protocol.as_ref(),
+                        transport.as_ref(),
+                        &mut pump_commands,
                     )
                     .await?;
                 }

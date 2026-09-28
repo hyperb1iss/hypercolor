@@ -79,6 +79,26 @@ pub trait Protocol: Send + Sync {
             .map_or_else(Vec::new, |keepalive| keepalive.commands)
     }
 
+    /// How often the frame lane should be pumped between frames.
+    ///
+    /// A protocol that holds frames back for flow control (sending only once
+    /// the device has confirmed the last one) returns a cadence here, and
+    /// the backend calls [`Protocol::pump_frame_into`] on it, so confirmation
+    /// reads and released frames go out without waiting for the next frame.
+    /// Pumped commands are frame traffic: the backend handles their write
+    /// errors as it does a frame's, so a transient one does not end the
+    /// session the way a failed keepalive does.
+    fn frame_pump_interval(&self) -> Option<Duration> {
+        None
+    }
+
+    /// The frame lane's due work: confirmation reads, a frame released by a
+    /// confirmation, a resend. `commands` is rewritten from the start and
+    /// is left empty when nothing is due.
+    fn pump_frame_into(&self, commands: &mut Vec<ProtocolCommand>) {
+        commands.clear();
+    }
+
     /// Parse a raw device response payload.
     ///
     /// # Errors
