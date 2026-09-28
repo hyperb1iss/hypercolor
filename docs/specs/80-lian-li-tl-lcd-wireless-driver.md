@@ -774,17 +774,20 @@ when ≤2 repeats, else 20 ms); Hypercolor sends it twice, 2 ms apart, the
 way the reference adapter streams direct color. Data frames (index 1..N)
 carry the packet index at [18] and up to 220 compressed bytes at
 [20..240]; bytes past the final chunk's length are zero. The effect index
-of a live frame is the constant `00 00 00 01` the reference uses, so the
-tag a receiver echoes in its record is the drift detector, not a counter.
+of a live frame is an FNV-1a hash of the frame's pixels, never zero: a
+frame that changes gets a new tag, a still keeps its tag, and the tag a
+receiver echoes in its record (record bytes 20 to 23) is the
+acknowledgement RGB delivery paces on (§6.11).
 
 After the first device table poll, init sends the RX setup the reference
 daemon sends once after discovery starts: `10 01 04 34` and `10 01 04 37`
 (replies read but not required) and the LCD-mode switch `10 01 04 30`.
 
-Live streaming = `total_frames: 1` per render tick. The achievable tick rate
-is bandwidth-bound and must be measured on hardware (§11.4) — the spec sets
-no artificial cap. Firmware-looped animation upload is the documented
-optimization path for static effects.
+Live streaming = `total_frames: 1` per transfer. A cluster gets a new
+transfer only once its record echoes the last one (§6.11), so the delivered
+rate is whatever the radio confirms, up to what the render path offers; the
+spec sets no artificial cap. Firmware-looped animation upload is the
+documented optimization path for static effects.
 
 ### 6.8 Steady-state upkeep: the v1 keepalive policy
 
@@ -821,9 +824,12 @@ occasionally spikes RPM.
 PWM writes can interrupt direct RGB output and briefly expose the receiver's
 onboard rainbow effect. After writing the PWM batch, upkeep immediately
 re-sends each cluster's latest RGB frame through the normal transfer codec,
-before clock or pairing work. Recovery starts only after a frame has
-been encoded, preserves black frames, and never re-arms streaming mode.
-The cached frame belongs to the connection session and is cleared on init.
+before clock or pairing work. The restore goes through the pacing window
+(§6.11): a cluster with a transfer still out gets nothing extra, since that
+transfer lands after the PWM anyway and its bounded wait resends one the
+PWM interrupted. Recovery starts only after a frame has been encoded,
+preserves black frames, and never re-arms streaming mode. The cached frame
+belongs to the connection session and is cleared on init.
 The upstream driver documents the same interruption in
 [issue 83](https://github.com/sgtaziz/lian-li-linux/issues/83) and restores
 cached direct colors in [PR 149](https://github.com/sgtaziz/lian-li-linux/pull/149).
@@ -833,8 +839,18 @@ physical flicker removal still requires observation on the affected fans.
 This holds user-set speeds steady without making Hypercolor a fan-curve
 product. Exact clock-blob field values are validated on hardware before the
 descriptor ships enabled (§11). Both upkeep streams and the GetDev poll run
-as periodic protocol upkeep through the same actor seam Corsair's LCD
-keepalive uses.
+once a second inside the pacer's keepalive tick (§6.11), in this order:
+streaming preamble (first tick only), PWM per cluster, the paced restore,
+the clock broadcast, then the two-page table poll, which comes after the
+sends so its reply can only confirm a transfer already on its way.
+
+That is the minimum the protocol needs, per second: one PWM envelope per
+cluster and one clock envelope (four TX packets each), the restore when
+the window is open (twelve TX packets per three-fan cluster), and one
+two-page table poll on the RX. A still scene with one cluster therefore
+costs 20 TX packets and one RX poll a second. The master query L-Connect
+repeats every second is not needed: nothing in this driver moves the TX
+off its channel after init.
 
 ### 6.9 tinyuz compression
 
@@ -893,6 +909,64 @@ The partner reset is the vendor's behavior, but it is unverified on this
 hardware. Whether `15` through the RX revives a V1 `SLV3TX` that has fully
 hung, rather than one whose endpoint has only stalled, is the first thing to
 check when a wedge next happens (§11.12).
+
+A TX can also fail without refusing a write: it takes every packet while its
+fans stop confirming frames. Only the protocol sees that (§6.11), so it asks
+for the reset by writing `15` to the RX itself. The transport treats that
+write as the protocol's verdict: it records a wedge with cause
+`Undelivered`, logs `L-Wireless TX stopped delivering`, sends the reset once,
+and ends the session with a disconnect exactly as for a refused write. The
+first TX write after the reset closes the wedge; whether the fans confirm
+frames again shows in the delivery report.
+
+### 6.11 Acknowledgement-paced RGB delivery
+
+L-Connect streams an effect until the device's record echoes its effect
+index and sends nothing more (`MasterDevice.SyncRgbData`). The live stream
+holds to the same contract, per cluster (`wireless/pacing.rs`):
+
+- **Window of one.** A cluster gets a new transfer only when its record
+  echoes the last one. A frame that arrives while a transfer is out is
+  held; a newer frame replaces it, so what goes out next is always the
+  newest frame and stale frames are never queued. The TX therefore never
+  holds more unconfirmed RGB than one transfer (three envelopes for a
+  three-fan TL cluster) per cluster, plus the upkeep's PWM and clock.
+- **The pump.** The protocol's keepalive tick runs every 5 ms and returns
+  nothing when nothing is due. While a transfer is out it polls the table
+  for the echo, and the moment a confirmation lands it sends the held
+  frame, so delivery never waits for the next render frame.
+- **Echo polls.** One page (448 bytes, read to exactly that length, no gap
+  timeout) while every record fits in a page, otherwise two. The first poll
+  after a send waits three quarters of the running echo time, later polls
+  follow an eighth of it apart (10 ms at least), and both back off as a
+  wait drags on, to 250 ms. A poll's reply may be missing; the next asks
+  again.
+- **Bounded wait and resync.** A transfer unconfirmed after four echo
+  times (150 ms to 1 s) goes out again carrying the newest frame, backing
+  off to one resend every 2 s. An echo of an older transfer (one that
+  landed after its wait ran out) counts as delivered late, teaches the echo
+  time, and restarts the stall clock, since it proves the radio delivers.
+  Echo-time samples come only from a tag sent once and seen to change, and
+  each is clipped to four running averages so one outlier cannot stretch
+  every later wait.
+- **Unheard fans.** A cluster missing from every table reply for 3 s is sent
+  nothing until it answers; then its wait starts over.
+- **Stall verdict.** A cluster that is heard (in a reply within the last
+  second) but confirms nothing for 5 s across at least three resends,
+  after confirming earlier in the session, is a TX that stopped delivering:
+  the protocol writes the partner reset (§6.10) and sends nothing more. A
+  session that never saw a confirmation keeps probing at the resend cap
+  instead, so firmware that does not echo live frames, or a TX the reset
+  did not revive, cannot drive a reset loop.
+- **Shutdown.** The final frame the backend sends before shutdown goes out
+  even if the window held it, since nothing after would release it.
+
+Every 10 s the protocol logs `L-Wireless RGB delivery` at info with the
+offered, sent, and delivered frame rates, coalesced frames, resends,
+restores, late echoes, drifts, the mean and maximum echo time, polls and
+replies per second, how often the RX actually heard each cluster (its clock
+field moved), and TX packets per second, which a per-second URB count on the
+TX should match.
 
 ## 7. Wireless LCD Receiver Protocol (0x1CBE)
 
@@ -1198,7 +1272,11 @@ Registration and data surfaces:
     updates from 100 ms to 500 ms in `d780708f`). Before any rate change,
     measure delivery on the receivers' echoed effect index and log the
     onset of the next wedge; §6.10 makes that onset visible and tries the
-    vendor reset.
+    vendor reset. §6.11 now does both: RGB is paced on the echo, and the
+    delivery report is the measurement. No capture before it holds a table
+    poll with a fan record, so the echo time and the delivered rate of the
+    unpaced driver were never observed; the first soak on the paced build
+    supplies them.
 
 ## 12. Testing Strategy
 
