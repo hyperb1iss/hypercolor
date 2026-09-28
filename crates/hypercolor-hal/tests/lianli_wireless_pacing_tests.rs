@@ -43,6 +43,33 @@ const STATUS_CADENCE: Duration = Duration::from_millis(333);
 /// Transfers a second the slow radio carries: 50 envelopes of 3.
 const SLOW_RADIO_TRANSFERS_PER_S: u64 = 50 / 3;
 
+/// Estimated URBs the RX took for its polls since `from`: one OUT, seven
+/// IN packets per page, and the gap read that ends a two-page upkeep
+/// reply. On the owner's rig the one-frame window of PR 318 ran 64 to 72
+/// a second.
+fn rx_urbs_since(rig: &Rig, from: usize) -> usize {
+    rig.radio.rx_polls[from..]
+        .iter()
+        .map(|(_, pages)| 1 + 7 * usize::from(*pages) + usize::from(*pages > 1))
+        .sum()
+}
+
+/// Frames confirmed, the most envelopes the TX held, and the mean echo age,
+/// for each five-second slice of `slices`.
+fn slices(rig: &mut Rig, slices: usize) -> Vec<(u64, usize)> {
+    (0..slices)
+        .map(|_| {
+            let before = rig.stats();
+            rig.radio.max_air_queue = 0;
+            rig.run_for(Duration::from_secs(5));
+            (
+                rig.stats().frames_delivered - before.frames_delivered,
+                rig.radio.max_air_queue,
+            )
+        })
+        .collect()
+}
+
 /// Frames the render path offered, and frames confirmed, over `span`
 /// after `warmup`.
 fn steady_delivery(rig: &mut Rig, warmup: Duration, span: Duration) -> (u64, u64) {
@@ -135,8 +162,9 @@ fn a_status_report_every_333_ms_still_delivers_near_the_offered_rate() {
     let mut radio = FakeRadio::one_cluster();
     radio.report_interval = STATUS_CADENCE;
     let mut rig = Rig::connect(radio);
-    let (offered, delivered) =
-        steady_delivery(&mut rig, Duration::from_secs(3), Duration::from_secs(10));
+    rig.run_for(Duration::from_secs(3));
+    let polls_warm = rig.radio.rx_polls.len();
+    let (offered, delivered) = steady_delivery(&mut rig, Duration::ZERO, Duration::from_secs(10));
 
     assert!(
         delivered * 10 >= offered * 9,
@@ -157,10 +185,15 @@ fn a_status_report_every_333_ms_still_delivers_near_the_offered_rate() {
         "the window never builds a backlog on a radio that keeps up: {}",
         rig.radio.max_air_queue
     );
-    let polls = rig.radio.rx_polls.len();
+    let polls = rig.radio.rx_polls.len() - polls_warm;
     assert!(
-        polls <= 13 * 12,
-        "echo polls follow the status cadence, a few a second: {polls} in 13 s"
+        polls <= 10 * 10,
+        "echo polls follow the status cadence, a few a second: {polls} in 10 s"
+    );
+    let urbs = rx_urbs_since(&rig, polls_warm) / 10;
+    assert!(
+        urbs <= 72,
+        "streaming at 30 fps costs the RX no more than the one-frame window's 3 fps did: {urbs} URBs a second"
     );
     assert!(
         rig.radio.resets.is_empty(),
@@ -185,6 +218,55 @@ fn a_status_cadence_that_slows_mid_stream_keeps_delivery_near_the_offered_rate()
         "{delivered} of {offered} frames after the cadence slowed"
     );
     assert!(rig.radio.resets.is_empty());
+}
+
+/// Capacity that changes under a long stream: the window settles to the
+/// slow radio within one slice, holds a flat backlog over several turns of
+/// its ten-second base-delay filter, and returns to the full rate when the
+/// radio speeds up again.
+#[test]
+fn the_window_follows_capacity_changes_over_a_long_stream() {
+    let mut radio = FakeRadio::one_cluster();
+    radio.report_interval = STATUS_CADENCE;
+    let mut rig = Rig::connect(radio);
+    let fast = slices(&mut rig, 4);
+    rig.radio.air_time = Duration::from_millis(20);
+    let slow = slices(&mut rig, 8);
+    rig.radio.air_time = Duration::from_millis(2);
+    let _ = slices(&mut rig, 1);
+    let fast_again = slices(&mut rig, 3);
+
+    for (delivered, queue) in fast[1..].iter().chain(&fast_again) {
+        assert!(
+            *delivered >= 140,
+            "near 150 frames in 5 s at full speed: {fast:?} {fast_again:?}"
+        );
+        assert!(
+            *queue <= TRANSFER_ENVELOPES + UPKEEP_ENVELOPES,
+            "no backlog: {fast:?} {fast_again:?}"
+        );
+    }
+    let capacity = SLOW_RADIO_TRANSFERS_PER_S * 5;
+    for (delivered, queue) in &slow[1..] {
+        assert!(
+            delivered * 100 >= capacity * 75,
+            "three quarters of the slow radio's rate in every slice: {slow:?}"
+        );
+        assert!(
+            *queue <= 8 * TRANSFER_ENVELOPES + UPKEEP_ENVELOPES,
+            "a few transfers queued at most: {slow:?}"
+        );
+    }
+    let early = slow[1..4]
+        .iter()
+        .map(|(_, queue)| *queue)
+        .max()
+        .unwrap_or(0);
+    let late = slow[5..].iter().map(|(_, queue)| *queue).max().unwrap_or(0);
+    assert!(
+        late <= early + TRANSFER_ENVELOPES,
+        "the backlog does not creep as the base-delay filter turns over: {slow:?}"
+    );
 }
 
 #[test]
@@ -648,6 +730,10 @@ fn a_lost_final_frame_is_resent_after_the_timeout() {
     assert!(rig.radio.resets.is_empty());
 }
 
+/// Two clusters sharing a slow radio over a minute: together they keep
+/// most of what it carries, each keeps streaming, and the shared backlog
+/// stays flat. Each cluster tolerates a small backlog of its own, so the
+/// shared one is up to twice a single cluster's.
 #[test]
 fn two_clusters_share_a_slow_radio_with_a_bounded_backlog() {
     let mut radio = FakeRadio::two_clusters();
@@ -660,20 +746,36 @@ fn two_clusters_share_a_slow_radio_with_a_bounded_backlog() {
         colors.extend(moving_frame(index + 7_777));
         colors
     });
-    let (_, delivered) = steady_delivery(&mut rig, Duration::from_secs(3), Duration::from_secs(10));
+    let minute = slices(&mut rig, 12);
 
+    let capacity = SLOW_RADIO_TRANSFERS_PER_S * 5;
+    for (delivered, queue) in &minute[1..] {
+        assert!(
+            delivered * 100 >= capacity * 80,
+            "the two share four fifths of what the radio carries: {minute:?}"
+        );
+        assert!(
+            *queue <= 2 * 8 * TRANSFER_ENVELOPES + UPKEEP_ENVELOPES,
+            "a few transfers per cluster at most: {minute:?}"
+        );
+    }
+    let early = minute[1..6]
+        .iter()
+        .map(|(_, queue)| *queue)
+        .max()
+        .unwrap_or(0);
+    let late = minute[6..]
+        .iter()
+        .map(|(_, queue)| *queue)
+        .max()
+        .unwrap_or(0);
     assert!(
-        delivered * 100 >= SLOW_RADIO_TRANSFERS_PER_S * 10 * 80,
-        "the two share four fifths of what the radio carries: {delivered} in 10 s"
-    );
-    assert!(
-        rig.radio.max_air_queue <= 2 * 8 * TRANSFER_ENVELOPES + UPKEEP_ENVELOPES,
-        "a few transfers per cluster at most: {}",
-        rig.radio.max_air_queue
+        late <= early + 2 * TRANSFER_ENVELOPES,
+        "the shared backlog stays flat over the minute: {minute:?}"
     );
     for cluster in &rig.radio.clusters {
         assert!(
-            cluster.applied_log.len() > 60,
+            cluster.applied_log.len() > 300,
             "each cluster keeps streaming: {}",
             cluster.applied_log.len()
         );
