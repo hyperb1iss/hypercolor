@@ -89,6 +89,83 @@ async fn retained_worker_supports_delayed_receive_and_releases_native_state() {
     .expect("worker should release its lifetime guard");
 }
 
+struct BacklogSession {
+    backlog: Option<usize>,
+}
+
+impl NativeMidiSession for BacklogSession {
+    fn send(&mut self, _packet: &[u8]) -> Result<(), TransportError> {
+        Ok(())
+    }
+
+    fn close(&mut self) {}
+
+    fn output_backlog(&mut self) -> Option<usize> {
+        self.backlog
+    }
+}
+
+async fn open_backlog_worker(
+    backlog: Option<usize>,
+) -> hypercolor_hal::transport::midi::MidiWorkerClient {
+    open_native_midi_worker(
+        "hypercolor-test-midi-backlog".to_owned(),
+        "test MIDI backlog worker".to_owned(),
+        (),
+        2,
+        first_byte_matches,
+        move |_ingress| {
+            Ok(OpenedMidiSession::new(
+                BacklogSession { backlog },
+                "test input".to_owned(),
+                "test output".to_owned(),
+            ))
+        },
+    )
+    .await
+    .expect("native MIDI worker should open")
+}
+
+#[tokio::test]
+async fn worker_reports_the_native_output_backlog() {
+    let stuck = open_backlog_worker(Some(6)).await;
+    assert_eq!(
+        stuck.output_backlog().await.expect("worker answers"),
+        Some(6)
+    );
+    stuck.close().await.expect("worker should close cleanly");
+
+    let opaque = open_backlog_worker(None).await;
+    assert_eq!(opaque.output_backlog().await.expect("worker answers"), None);
+    opaque.close().await.expect("worker should close cleanly");
+}
+
+#[tokio::test]
+async fn sessions_without_backlog_visibility_report_none() {
+    let client = open_native_midi_worker(
+        "hypercolor-test-midi-default".to_owned(),
+        "test MIDI default worker".to_owned(),
+        (),
+        2,
+        first_byte_matches,
+        move |ingress| {
+            Ok(OpenedMidiSession::new(
+                CallbackSession {
+                    ingress,
+                    closed: Arc::new(AtomicBool::new(false)),
+                },
+                "test input".to_owned(),
+                "test output".to_owned(),
+            ))
+        },
+    )
+    .await
+    .expect("native MIDI worker should open");
+
+    assert_eq!(client.output_backlog().await.expect("worker answers"), None);
+    client.close().await.expect("worker should close cleanly");
+}
+
 #[test]
 fn native_midi_close_orders_input_before_output() {
     let order = RefCell::new(Vec::new());

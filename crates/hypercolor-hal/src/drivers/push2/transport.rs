@@ -1,13 +1,11 @@
 //! Ableton Push 2 native MIDI and bulk-display transport.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
-#[cfg(target_os = "linux")]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 use alsa::poll::Descriptors as _;
@@ -20,9 +18,7 @@ use midir::{
 };
 use nusb::transfer::{Buffer, Bulk, Out, TransferError};
 use tokio::sync::Mutex as AsyncMutex;
-#[cfg(target_os = "linux")]
-use tracing::warn;
-use tracing::{debug, trace};
+use tracing::{debug, info, trace, warn};
 
 use crate::protocol::TransferType;
 use crate::registry::{UsbTransportFuture, UsbTransportOpenRequest};
@@ -53,6 +49,9 @@ const PUSH2_RAWMIDI_OPEN_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 const PUSH2_RAWMIDI_OPEN_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(target_os = "linux")]
 const PUSH2_RAWMIDI_SPACE_WAIT_STEP: Duration = Duration::from_millis(1);
+/// How often a Push 2 whose MIDI output stays stalled within one transport
+/// session is reported again. Each new connect attempt reports once.
+const PUSH2_STALL_REPORT_INTERVAL: Duration = Duration::from_mins(5);
 
 /// Open the driver-owned Push 2 composite transport.
 #[must_use]
@@ -113,7 +112,12 @@ struct Push2MidiConnections {
 enum Push2MidiOutput {
     Midir(MidiOutputConnection),
     #[cfg(target_os = "linux")]
-    Raw(Rawmidi),
+    Raw {
+        rawmidi: Rawmidi,
+        /// Free space the kernel reported right after open, while its output
+        /// buffer was still empty: the buffer's size.
+        buffer_size: Option<usize>,
+    },
 }
 
 impl Push2MidiOutput {
@@ -121,7 +125,27 @@ impl Push2MidiOutput {
         match self {
             Self::Midir(midi_out) => midi_out.send(data).map_err(map_midi_send_error),
             #[cfg(target_os = "linux")]
-            Self::Raw(rawmidi) => write_rawmidi_with_deadline(rawmidi, data, DEFAULT_IO_TIMEOUT),
+            Self::Raw { rawmidi, .. } => {
+                write_rawmidi_with_deadline(rawmidi, data, DEFAULT_IO_TIMEOUT)
+            }
+        }
+    }
+
+    /// Bytes written to the kernel that it has not yet handed to the USB
+    /// MIDI driver. The sequencer path hides its buffer, so only raw MIDI
+    /// can tell.
+    fn backlog(&self) -> Option<usize> {
+        match self {
+            Self::Midir(_) => None,
+            #[cfg(target_os = "linux")]
+            Self::Raw {
+                rawmidi,
+                buffer_size,
+            } => {
+                let buffer_size = (*buffer_size)?;
+                let free = rawmidi_output_space(rawmidi).ok()?;
+                Some(buffer_size.saturating_sub(free))
+            }
         }
     }
 
@@ -131,7 +155,7 @@ impl Push2MidiOutput {
                 let _ = midi_out.close();
             }
             #[cfg(target_os = "linux")]
-            Self::Raw(_rawmidi) => {}
+            Self::Raw { .. } => {}
         }
     }
 }
@@ -153,6 +177,10 @@ impl NativeMidiSession for Push2MidiConnections {
             },
             Push2MidiOutput::close,
         );
+    }
+
+    fn output_backlog(&mut self) -> Option<usize> {
+        self.midi_out.as_ref()?.backlog()
     }
 }
 
@@ -219,6 +247,187 @@ fn push2_midi_leases() -> &'static Mutex<HashSet<Push2MidiIdentity>> {
     ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+/// Whether MIDI output to one physical Push 2 is still making progress.
+///
+/// In the field failure the Push 2 stays enumerated while its USB MIDI OUT
+/// endpoint stops completing transfers, and only a power cycle has cleared
+/// it. A reply that never comes is ambiguous on its own: the device may have
+/// read the request and lost the answer. Bytes the kernel still holds after
+/// the reply deadline are not ambiguous about the host side: output stopped
+/// making progress. One mechanism is every snd-usb-audio output URB still
+/// waiting on the endpoint, the likeliest in the field failure since no
+/// submit error was logged; a failed URB submit can also leave bytes behind.
+/// Either way the backlog cannot say whether the device or the host stopped
+/// it. A stall that begins with fewer bytes in flight than the URBs hold
+/// shows up only once later writes back up behind them.
+///
+/// The record is shared by every transport opened on the same device, so a
+/// stall stays one episode across the reconnect attempts it causes.
+#[derive(Debug, Default, Clone, Copy)]
+struct Push2StallRecord {
+    since: Option<Instant>,
+    checks: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Push2StallReport {
+    Stalled {
+        queued_bytes: usize,
+    },
+    StillStalled {
+        queued_bytes: usize,
+        stalled_for: Duration,
+        checks: u32,
+    },
+    Flowing {
+        stalled_for: Duration,
+        checks: u32,
+    },
+}
+
+impl Push2StallRecord {
+    /// Record a MIDI deadline that passed with `backlog` bytes still in the
+    /// kernel. Without a backlog there is nothing to conclude: the bytes left
+    /// the rawmidi buffer, or the platform cannot say.
+    ///
+    /// `last_report` belongs to one transport session, so each connect
+    /// attempt names the stall once and a long session repeats it only every
+    /// [`PUSH2_STALL_REPORT_INTERVAL`].
+    fn deadline_passed(
+        &mut self,
+        now: Instant,
+        backlog: Option<usize>,
+        last_report: &mut Option<Instant>,
+    ) -> Option<Push2StallReport> {
+        let queued_bytes = backlog.filter(|queued| *queued > 0)?;
+        self.checks = self.checks.saturating_add(1);
+        let Some(since) = self.since else {
+            self.since = Some(now);
+            *last_report = Some(now);
+            return Some(Push2StallReport::Stalled { queued_bytes });
+        };
+        if last_report
+            .is_some_and(|at| now.saturating_duration_since(at) < PUSH2_STALL_REPORT_INTERVAL)
+        {
+            return None;
+        }
+        *last_report = Some(now);
+        Some(Push2StallReport::StillStalled {
+            queued_bytes,
+            stalled_for: now.saturating_duration_since(since),
+            checks: self.checks,
+        })
+    }
+
+    /// Record a reply from the device, which ends any stall.
+    fn reply_arrived(&mut self, now: Instant) -> Option<Push2StallReport> {
+        let since = self.since.take()?;
+        let checks = std::mem::take(&mut self.checks);
+        Some(Push2StallReport::Flowing {
+            stalled_for: now.saturating_duration_since(since),
+            checks,
+        })
+    }
+}
+
+fn push2_stall_records() -> &'static Mutex<HashMap<Push2MidiIdentity, Push2StallRecord>> {
+    static RECORDS: OnceLock<Mutex<HashMap<Push2MidiIdentity, Push2StallRecord>>> = OnceLock::new();
+    RECORDS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// One transport session's view of the shared stall record.
+///
+/// Records exist only while a device is stalled, so a healthy reply costs
+/// one map lookup.
+struct Push2StallWatch {
+    identity: Push2MidiIdentity,
+    last_report: Mutex<Option<Instant>>,
+}
+
+impl Push2StallWatch {
+    fn new(identity: Push2MidiIdentity) -> Self {
+        Self {
+            identity,
+            last_report: Mutex::new(None),
+        }
+    }
+
+    /// A reply from the device ends any stall on record.
+    fn reply_arrived(&self, now: Instant) -> Option<Push2StallReport> {
+        let report = {
+            let mut records = push2_stall_records()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let record = records.get_mut(&self.identity)?;
+            let report = record.reply_arrived(now);
+            records.remove(&self.identity);
+            report
+        };
+        if let Some(report) = report {
+            log_push2_stall_report(&self.identity, report);
+        }
+        report
+    }
+
+    /// A MIDI deadline passed with `backlog` bytes still queued in the
+    /// kernel (`None` when the output cannot tell).
+    fn deadline_passed(&self, now: Instant, backlog: Option<usize>) -> Option<Push2StallReport> {
+        let report = {
+            let mut records = push2_stall_records()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut last_report = self
+                .last_report
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let record = records.entry(self.identity.clone()).or_default();
+            let report = record.deadline_passed(now, backlog, &mut last_report);
+            if record.since.is_none() {
+                records.remove(&self.identity);
+            }
+            report
+        };
+        if let Some(report) = report {
+            log_push2_stall_report(&self.identity, report);
+        }
+        report
+    }
+}
+
+fn log_push2_stall_report(identity: &Push2MidiIdentity, report: Push2StallReport) {
+    let device = identity.describe();
+    match report {
+        Push2StallReport::Stalled { queued_bytes } => warn!(
+            device = %device,
+            queued_bytes,
+            "Push 2 MIDI output stalled: bytes written before the reply deadline are still \
+             queued in the kernel for its USB MIDI OUT endpoint; if this persists, \
+             power-cycle the Push 2 (unplug USB and the power supply)"
+        ),
+        Push2StallReport::StillStalled {
+            queued_bytes,
+            stalled_for,
+            checks,
+        } => warn!(
+            device = %device,
+            queued_bytes,
+            stalled_s = stalled_for.as_secs(),
+            checks,
+            "Push 2 MIDI output is still stalled; power-cycle the Push 2 \
+             (unplug USB and the power supply)"
+        ),
+        Push2StallReport::Flowing {
+            stalled_for,
+            checks,
+        } => info!(
+            device = %device,
+            stalled_s = stalled_for.as_secs(),
+            checks,
+            "Push 2 MIDI output is flowing again"
+        ),
+    }
+}
+
 fn push2_response_selector(request: &[u8]) -> u32 {
     if request == [0xF0, 0x7E, 0x01, 0x06, 0x01, 0xF7] {
         return PUSH2_RESPONSE_IDENTITY;
@@ -272,6 +481,7 @@ pub struct Push2Transport {
     bulk_buffer: Arc<Mutex<Option<Buffer>>>,
     midi: MidiWorkerClient,
     midi_next_send_at: AsyncMutex<Option<tokio::time::Instant>>,
+    stall_watch: Push2StallWatch,
     closed: AtomicBool,
 }
 
@@ -302,16 +512,14 @@ impl Push2Transport {
             _ => Push2MidiPortRole::User,
         };
 
-        let serial_for_midi = serial.map(ToOwned::to_owned);
-        let usb_path_for_midi = usb_path.map(ToOwned::to_owned);
-        let midi = open_push2_midi_worker(
-            expected_role,
+        let identity = Push2MidiIdentity {
+            role: expected_role,
             vendor_id,
             product_id,
-            serial_for_midi,
-            usb_path_for_midi,
-        )
-        .await?;
+            serial: serial.map(ToOwned::to_owned),
+            usb_path: usb_path.map(ToOwned::to_owned),
+        };
+        let midi = open_push2_midi_worker(identity.clone()).await?;
 
         #[cfg(target_os = "linux")]
         let display_interface_handle = device
@@ -372,6 +580,7 @@ impl Push2Transport {
             bulk_buffer: Arc::new(Mutex::new(Some(Buffer::new(out_max_packet_size)))),
             midi,
             midi_next_send_at: AsyncMutex::new(None),
+            stall_watch: Push2StallWatch::new(identity),
             closed: AtomicBool::new(false),
         })
     }
@@ -391,13 +600,38 @@ impl Push2Transport {
             "push2 midi send"
         );
 
-        // Push 2 firmware wedges under unpaced MIDI bursts until power cycled,
-        // so every output path gets inter-message spacing, raw MIDI included.
+        // Push 2 MIDI output has wedged until a power cycle after hours of
+        // unpaced bursts, so every output path gets inter-message spacing,
+        // raw MIDI included.
         self.pace_midi_send(data.len()).await;
 
         let packet = data.to_vec();
         let response_token = MidiResponseToken::new(push2_response_selector(&packet));
-        self.midi.send(packet, response_token).await
+        let result = self.midi.send(packet, response_token).await;
+        // A send only times out when the kernel buffer stayed too full to
+        // take the message, which is the same stall seen from the write side.
+        if matches!(result, Err(TransportError::Timeout { .. })) {
+            self.observe_midi_timeout().await;
+        }
+        result
+    }
+
+    /// Classify the outcome of a reply wait on the MIDI lane.
+    async fn observe_midi_reply(&self, result: &Result<Vec<u8>, TransportError>) {
+        match result {
+            Ok(_) => {
+                self.stall_watch.reply_arrived(Instant::now());
+            }
+            Err(TransportError::Timeout { .. }) => self.observe_midi_timeout().await,
+            Err(_) => {}
+        }
+    }
+
+    /// After a MIDI deadline passes, ask the kernel whether our bytes are
+    /// still waiting for the device.
+    async fn observe_midi_timeout(&self) {
+        let backlog = self.midi.output_backlog().await.ok().flatten();
+        self.stall_watch.deadline_passed(Instant::now(), backlog);
     }
 
     async fn pace_midi_send(&self, packet_len: usize) {
@@ -477,7 +711,9 @@ impl Transport for Push2Transport {
             TransferType::Primary => {
                 let fallback_token = MidiResponseToken::new(PUSH2_RESPONSE_ANY_SYSEX)
                     .expect("Push 2 catch-all response token should be nonzero");
-                self.midi.receive(timeout, fallback_token).await
+                let result = self.midi.receive(timeout, fallback_token).await;
+                self.observe_midi_reply(&result).await;
+                result
             }
             TransferType::Bulk | TransferType::HidReport | TransferType::Companion => {
                 Err(TransportError::UnsupportedTransfer {
@@ -519,9 +755,12 @@ impl Transport for Push2Transport {
                 };
                 let response_token = MidiResponseToken::new(selector)
                     .expect("Push 2 response selector should be nonzero");
-                self.midi
+                let result = self
+                    .midi
                     .send_receive(data.to_vec(), response_token, timeout)
-                    .await
+                    .await;
+                self.observe_midi_reply(&result).await;
+                result
             }
             TransferType::Bulk | TransferType::HidReport | TransferType::Companion => {
                 Err(TransportError::UnsupportedTransfer {
@@ -541,19 +780,8 @@ impl Transport for Push2Transport {
 }
 
 async fn open_push2_midi_worker(
-    expected_role: Push2MidiPortRole,
-    vendor_id: u16,
-    product_id: u16,
-    serial: Option<String>,
-    usb_path: Option<String>,
+    identity: Push2MidiIdentity,
 ) -> Result<MidiWorkerClient, TransportError> {
-    let identity = Push2MidiIdentity {
-        role: expected_role,
-        vendor_id,
-        product_id,
-        serial,
-        usb_path,
-    };
     let lease = Push2MidiLease::acquire(identity.clone())?;
     let worker_context = format!("Push 2 MIDI worker for {}", identity.describe());
     let open_identity = identity;
@@ -679,15 +907,20 @@ fn open_push2_midi_output(
     if let Some(rawmidi_name) = rawmidi_name_from_seq_port_id(&output_port_id) {
         match open_push2_rawmidi_with_retry(&rawmidi_name) {
             Ok((rawmidi, attempts, elapsed)) => {
+                let buffer_size = rawmidi_output_space(&rawmidi).ok();
                 debug!(
                     midi_output = output_name,
                     midi_port_id = output_port_id,
                     rawmidi = %rawmidi_name,
                     attempts,
                     wait_ms = elapsed.as_millis(),
+                    buffer_size,
                     "opened Push 2 raw MIDI output"
                 );
-                return Ok(Push2MidiOutput::Raw(rawmidi));
+                return Ok(Push2MidiOutput::Raw {
+                    rawmidi,
+                    buffer_size,
+                });
             }
             Err(error) => {
                 warn!(
@@ -1243,6 +1476,78 @@ pub fn rawmidi_whole_message_write_for_testing(
         other => other.to_string(),
     });
     (written.get(), result)
+}
+
+/// One observation fed to a Push 2 stall watch by
+/// [`push2_stall_reports_for_testing`].
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub enum Push2StallStepForTesting {
+    /// A MIDI deadline passed `at` into the run with `backlog` bytes still
+    /// queued in the kernel; `None` means the output cannot tell.
+    DeadlinePassed {
+        at: Duration,
+        backlog: Option<usize>,
+    },
+    /// A reply arrived `at` into the run.
+    ReplyArrived { at: Duration },
+    /// A new transport opened on the same device, as a reconnect does.
+    Reopened,
+}
+
+/// Drive stall watches for the device with `serial` through `steps` and
+/// describe each report, `None` where they stayed quiet.
+///
+/// `Reopened` starts a new watch on the same device, as a reconnect attempt
+/// does, so the shared record carries over. The record is process-wide:
+/// tests that run in parallel must use distinct serials.
+#[doc(hidden)]
+#[must_use]
+pub fn push2_stall_reports_for_testing(
+    serial: &str,
+    steps: &[Push2StallStepForTesting],
+) -> Vec<Option<String>> {
+    let identity = Push2MidiIdentity {
+        role: Push2MidiPortRole::User,
+        vendor_id: 0x2982,
+        product_id: 0x1967,
+        serial: Some(serial.to_owned()),
+        usb_path: Some("test-stall".to_owned()),
+    };
+    let start = Instant::now();
+    let mut watch = Push2StallWatch::new(identity.clone());
+    steps
+        .iter()
+        .map(|step| {
+            let report = match *step {
+                Push2StallStepForTesting::DeadlinePassed { at, backlog } => {
+                    watch.deadline_passed(start + at, backlog)
+                }
+                Push2StallStepForTesting::ReplyArrived { at } => watch.reply_arrived(start + at),
+                Push2StallStepForTesting::Reopened => {
+                    watch = Push2StallWatch::new(identity.clone());
+                    None
+                }
+            };
+            report.map(|report| match report {
+                Push2StallReport::Stalled { queued_bytes } => {
+                    format!("stalled queued={queued_bytes}")
+                }
+                Push2StallReport::StillStalled {
+                    queued_bytes,
+                    stalled_for,
+                    checks,
+                } => format!(
+                    "still stalled queued={queued_bytes} for={}s checks={checks}",
+                    stalled_for.as_secs()
+                ),
+                Push2StallReport::Flowing {
+                    stalled_for,
+                    checks,
+                } => format!("flowing after={}s checks={checks}", stalled_for.as_secs()),
+            })
+        })
+        .collect()
 }
 
 #[doc(hidden)]
