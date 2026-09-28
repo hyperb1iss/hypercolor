@@ -165,10 +165,11 @@ pub struct DeliveryStats {
     /// Frames sent: sends of pixels other than the cluster's last send.
     /// Restores, and resends of the same pixels, are counted apart.
     pub frames_sent: u64,
-    /// Sent frames an echo confirmed, cumulatively: an echo confirms every
-    /// frame up to the one it names. A frame lost on the air but overtaken
-    /// by a later one before the next status is counted too; nothing tells
-    /// them apart.
+    /// Sent frames an echo retired, cumulatively: an echo names one send
+    /// the fans took, and every frame sent before it has left the TX, since
+    /// the TX relays in order. A frame lost on the air but overtaken by a
+    /// later one before the next status is counted too, so this is the rate
+    /// the radio drains frames, an upper bound on the frames shown.
     pub frames_delivered: u64,
     /// Frames replaced by a newer one before they could be sent.
     pub frames_coalesced: u64,
@@ -371,6 +372,15 @@ impl ClusterLink {
 
     fn absent(&self, now: Instant) -> bool {
         !self.heard_within(now, ABSENT_AFTER)
+    }
+
+    /// Whether `tag` could be confused with a send this cluster already
+    /// knows: one still out, the last confirmed, or what it echoes now.
+    /// Hashed tags can collide, and an echo must name exactly one send.
+    fn tag_taken(&self, tag: Tag) -> bool {
+        self.last_echo == Some(tag)
+            || self.acked_wire == Some(tag)
+            || self.log.iter().any(|sent| sent.wire == tag)
     }
 
     /// Sends after the last confirmed one.
@@ -702,10 +712,11 @@ impl DeliveryPacer {
     pub fn note_sent(&mut self, cluster: usize, content: Tag, kind: SendKind, now: Instant) -> Tag {
         self.ensure_clusters(cluster + 1);
         let link = &mut self.links[cluster];
-        let mut wire = wire_tag(content, next_send_number());
-        while Some(wire) == link.last_echo || Some(wire) == link.acked_wire {
-            wire = wire_tag(content, next_send_number());
-        }
+        let wire = allocate_wire(
+            content,
+            |candidate| link.tag_taken(candidate),
+            next_send_number,
+        );
         let new_frame = kind != SendKind::Restore && link.sent_content != Some(content);
         if new_frame {
             link.frames += 1;
@@ -1042,6 +1053,17 @@ pub fn wire_tag(content: Tag, sequence: u32) -> Tag {
     seed[..4].copy_from_slice(&content);
     seed[4..].copy_from_slice(&sequence.to_be_bytes());
     effect_index_for(&seed)
+}
+
+/// A wire tag for `content` that `taken` does not reject, drawing send
+/// numbers from `next` until one fits.
+fn allocate_wire(content: Tag, taken: impl Fn(Tag) -> bool, mut next: impl FnMut() -> u32) -> Tag {
+    loop {
+        let wire = wire_tag(content, next());
+        if !taken(wire) {
+            return wire;
+        }
+    }
 }
 
 /// The next send number. It runs for the whole process from a wall-clock
@@ -1411,6 +1433,37 @@ mod tests {
         link.sample_gap(Duration::from_secs(18));
         let gap = link.echo_gap.expect("gap");
         assert!(gap <= Duration::from_millis(500), "clipped: {gap:?}");
+    }
+
+    #[test]
+    fn a_tag_that_collides_with_a_send_still_out_is_never_handed_out() {
+        // Two different sends hash to the same tag under FNV-1a.
+        let colliding = wire_tag([0, 0, 0, 2], 1);
+        assert_eq!(colliding, wire_tag([0xAF, 0x66, 0x5D, 0x09], 2));
+
+        let now = Instant::now();
+        let mut pacer = connected(now);
+        pacer.submit(0, [0, 0, 0, 2]);
+        let first = allocate_wire([0, 0, 0, 2], |_| false, || 1);
+        assert_eq!(first, colliding);
+        pacer.links[0].log.push_back(Outstanding {
+            seq: 1,
+            wire: first,
+            content: [0, 0, 0, 2],
+            sent_at: now,
+            frames_through: 1,
+        });
+        pacer.links[0].next_seq = 2;
+        let mut numbers = [2, 3].into_iter();
+        let second = allocate_wire(
+            [0xAF, 0x66, 0x5D, 0x09],
+            |candidate| pacer.links[0].tag_taken(candidate),
+            || numbers.next().expect("a spare number"),
+        );
+        assert_ne!(
+            second, first,
+            "the colliding tag is skipped, so one echo names one send"
+        );
     }
 
     #[test]
