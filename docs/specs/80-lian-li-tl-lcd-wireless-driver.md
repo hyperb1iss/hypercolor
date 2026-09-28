@@ -932,10 +932,13 @@ of one run. Paced one frame per echo, the stream ran at 3 fps on that rig
 cumulative acknowledgement and each cluster keeps a window of frames in
 flight, like a TCP sender (`wireless/pacing.rs`):
 
-- **The echo acknowledges cumulatively.** Each send carries a tag unique to
-  it (§6.7). An echo naming a send confirms that send and, since the TX
-  relays in order, every send before it. Delivered frames are counted from
-  how far each echo advances.
+- **The echo acknowledges cumulatively.** Each send carries a tag unique
+  among the cluster's sends still out (§6.7; a hashed tag that collides with
+  one is skipped). An echo naming a send confirms that send and, since the
+  TX relays in order, retires every send before it. Delivered frames are
+  counted from how far each echo advances: the rate the radio drains
+  frames. A frame lost on the air but overtaken before the next status is
+  retired too, so this is an upper bound on frames shown.
 - **A sliding window per cluster.** A cluster may have up to its window of
   sends unconfirmed. The window starts at 2, grows by the confirmed sends
   per echo while it is the limit (slow start, doubling per status), then
@@ -993,8 +996,11 @@ flight, like a TCP sender (`wireless/pacing.rs`):
 Every 10 s the protocol logs `L-Wireless RGB delivery` at info with the
 offered, sent, and delivered frame rates, coalesced frames, each cluster's
 window, echoes per second, the mean and largest number of frames one echo
-confirmed (`advance_mean`, `advance_max`: above one means the echo is
-cumulative on the hardware), the status interval (`echo_gap_ms`), the
+retired (`advance_mean`, `advance_max`: above one means the echoed tag
+jumped several sends between polls, so the fans take frames faster than
+their status refreshes; that the sends in between also landed is the
+in-order inference, not something the record shows), the status interval
+(`echo_gap_ms`), the
 confirmed send's age (`echo_ms_mean`, `echo_ms_max`), the most sends found
 overdue, window halvings, timeouts, resends, restores, late echoes, drifts,
 polls and replies per second, TX packets queued per second, and held
