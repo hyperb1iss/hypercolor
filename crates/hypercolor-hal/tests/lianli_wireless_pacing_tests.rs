@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use fake::{FRAME_PERIOD, FakeRadio, LEDS, Rig, content_of, moving_frame};
 use hypercolor_hal::drivers::lianli::wireless::pacing::{
-    ECHO_STALL, MAX_RESETS_WITHOUT_DELIVERY, STALL_MIN_RESENDS, resets_without_delivery,
+    ECHO_STALL, MAX_RESETS_WITHOUT_DELIVERY, MAX_UNRESOLVED_TRANSFERS, resets_without_delivery,
 };
 use hypercolor_hal::protocol::{Protocol, TransferType};
 
@@ -249,7 +249,7 @@ fn fans_that_stop_confirming_end_in_one_tx_reset_not_endless_resends() {
     );
     let transfers = rig.transfers_since(failed_at);
     assert!(
-        transfers <= 1 + usize::try_from(STALL_MIN_RESENDS).expect("small") + 3,
+        transfers <= usize::try_from(MAX_UNRESOLVED_TRANSFERS).expect("small"),
         "a dead radio gets a bounded number of resends, not a stream: {transfers}"
     );
     assert_eq!(

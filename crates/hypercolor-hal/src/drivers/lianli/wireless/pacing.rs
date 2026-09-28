@@ -24,10 +24,12 @@
 //!   conservative [`ECHO_WAIT_UNKNOWN`] before any echo is seen) goes out
 //!   again carrying the newest frame. Nothing on the host can tell a lost
 //!   transfer from one still queued in the TX, so a resend is a bet: the
-//!   wait doubles with every resend, and a chain gets at most
-//!   [`MAX_CHAIN_RESENDS`] before it waits only for an echo or the verdict
-//!   below. A cluster can therefore have one transfer out, and at most
-//!   that many more only after as many bounded waits passed in silence.
+//!   wait doubles with every resend, and no send goes out while
+//!   [`MAX_UNRESOLVED_TRANSFERS`] are unresolved. The TX relays in order,
+//!   so an echo of one transfer resolves it and every transfer sent before
+//!   it, and frees exactly that much. A cluster therefore has one transfer
+//!   out in steady state, and never more than that bound, which only a run
+//!   of silent bounded waits reaches.
 //! - An echo of an older transfer (one that landed after its wait ran out)
 //!   counts as delivered late, teaches the echo time, and restarts the
 //!   stall clock, since it proves the radio still delivers.
@@ -36,8 +38,8 @@
 //!   without changing its echo, so every upkeep leaves each cluster owing a
 //!   restore: the first transfer after it pays the debt, and if the window
 //!   is closed the restore goes out once the transfer ahead resolves.
-//! - Fans that are heard but confirm nothing for [`ECHO_STALL`], across
-//!   every resend their chain gets, mean the TX stopped delivering: the
+//! - Fans that are heard but confirm nothing for [`ECHO_STALL`] mean the TX
+//!   stopped delivering: the
 //!   protocol asks the transport for the vendor reset, which ends the
 //!   session the way a refused write does. At most
 //!   [`MAX_RESETS_WITHOUT_DELIVERY`] resets are asked for on behalf of one
@@ -83,12 +85,10 @@ pub const ECHO_STALL_WARN: Duration = Duration::from_secs(1);
 /// No confirmation for this long, with the fans heard, is a TX that stopped
 /// delivering.
 pub const ECHO_STALL: Duration = Duration::from_secs(5);
-/// Resends one unconfirmed chain gets; after them it waits for an echo or
-/// the stall verdict.
-pub const MAX_CHAIN_RESENDS: u32 = 3;
-/// Resends a stall must have tried before it is called: every one its chain
-/// gets.
-pub const STALL_MIN_RESENDS: u32 = MAX_CHAIN_RESENDS;
+/// Transfers a cluster may have unresolved at once: the one out, and the
+/// resends its silent bounded waits allowed. Past this only an echo or the
+/// stall verdict moves the cluster.
+pub const MAX_UNRESOLVED_TRANSFERS: u32 = 4;
 /// Resets asked for on behalf of one cluster before it confirms a frame
 /// again.
 pub const MAX_RESETS_WITHOUT_DELIVERY: u32 = 2;
@@ -238,6 +238,9 @@ struct ClusterLink {
     /// something this session never sent.
     confirmed: Option<Tag>,
     in_flight: Option<InFlight>,
+    /// Sends after the last one the cluster echoed: what the TX may still
+    /// hold for it.
+    unresolved: u32,
     recent: VecDeque<SentTag>,
     /// Frames numbered for the delivery count.
     frames: u64,
@@ -297,6 +300,17 @@ impl ClusterLink {
             .iter_mut()
             .rev()
             .find(|entry| entry.wire == wire)
+    }
+
+    /// Sends made after the send tagged `wire`.
+    fn sent_after(&self, wire: Tag) -> u32 {
+        let after = self
+            .recent
+            .iter()
+            .rev()
+            .position(|entry| entry.wire == wire)
+            .unwrap_or(0);
+        u32::try_from(after).unwrap_or(u32::MAX)
     }
 
     fn remember(&mut self, entry: SentTag) {
@@ -434,7 +448,9 @@ impl DeliveryPacer {
             return None;
         }
         match link.in_flight {
-            Some(flight) if now >= flight.resend_at && flight.resends < MAX_CHAIN_RESENDS => {
+            Some(flight)
+                if now >= flight.resend_at && link.unresolved < MAX_UNRESOLVED_TRANSFERS =>
+            {
                 Some(SendKind::Resend)
             }
             Some(_) => None,
@@ -466,6 +482,7 @@ impl DeliveryPacer {
             wire = wire_tag(content, next_send_number());
         }
         link.restore_owed = false;
+        link.unresolved = link.unresolved.saturating_add(1);
         let previous = link.in_flight;
 
         // A frame is new pixels for the chain; a resend of the same pixels
@@ -624,6 +641,7 @@ impl DeliveryPacer {
                 link.sample_echo(sample);
             }
             link.in_flight = None;
+            link.unresolved = 0;
             link.confirmed = Some(flight.content);
             confirmed_any = true;
             if std::mem::take(&mut link.stall_warned) {
@@ -651,9 +669,12 @@ impl DeliveryPacer {
                 confirmed_any = true;
                 delivered = link.deliver(entry);
                 link.sample_echo(now.saturating_duration_since(entry.sent_at));
+                // The TX relays in order: this transfer and everything sent
+                // before it have left the TX, and only the sends after it
+                // may still be queued. The resend budget is not renewed.
+                link.unresolved = link.sent_after(echo);
                 if let Some(flight) = link.in_flight.as_mut() {
                     flight.unconfirmed_since = now;
-                    flight.resends = 0;
                 }
             }
             link.confirmed = link.sent(echo).map(|entry| entry.content);
@@ -727,7 +748,7 @@ impl DeliveryPacer {
                     "wireless fans have not confirmed a frame; resending the newest frame as the radio allows"
                 );
             }
-            if unconfirmed_for < ECHO_STALL || flight.resends < STALL_MIN_RESENDS {
+            if unconfirmed_for < ECHO_STALL {
                 continue;
             }
             let resets = link.mac.map_or(0, resets_without_delivery);
@@ -743,6 +764,7 @@ impl DeliveryPacer {
             }
             link.holding = true;
             link.in_flight = None;
+            link.unresolved = 0;
             error!(
                 cluster,
                 unconfirmed_ms = millis(unconfirmed_for),
@@ -977,24 +999,35 @@ mod tests {
     }
 
     #[test]
-    fn a_chain_stops_resending_after_its_resends_and_waits_for_an_echo() {
+    fn unresolved_transfers_never_pass_the_bound_even_when_late_echoes_land() {
         let now = Instant::now();
         let mut pacer = connected(now);
         pacer.submit(0, T1);
         let mut at = now;
-        let _ = pacer.note_sent(0, T1, SendKind::Frame, at);
-        for _ in 0..MAX_CHAIN_RESENDS {
+        let mut wires = vec![pacer.note_sent(0, T1, SendKind::Frame, at)];
+        let mut most = 1;
+        for step in 0..40 {
             at += ECHO_RESEND_CAP;
             pacer.links[0].last_seen_at = Some(at);
-            assert_eq!(pacer.decide(0, at), Some(SendKind::Resend));
-            let _ = pacer.note_sent(0, T1, SendKind::Resend, at);
+            if pacer.decide(0, at) == Some(SendKind::Resend) {
+                wires.push(pacer.note_sent(0, T1, SendKind::Resend, at));
+            }
+            // Every fifth step the oldest unresolved transfer's echo lands
+            // late, as a slow radio would deliver it.
+            let unresolved = usize::try_from(pacer.links[0].unresolved).expect("small");
+            if step % 5 == 4 && unresolved > 1 {
+                let oldest = wires.len() - unresolved;
+                pacer.observe(0, wires[oldest], [0, 0, 0, 1], at);
+            }
+            most = most.max(pacer.links[0].unresolved);
         }
-        at += ECHO_RESEND_CAP;
-        pacer.links[0].last_seen_at = Some(at);
-        assert_eq!(
-            pacer.decide(0, at),
-            None,
-            "no more bets: an echo or the stall verdict decides"
+        assert!(
+            most <= MAX_UNRESOLVED_TRANSFERS,
+            "late echoes free only what they resolve: {most} unresolved"
+        );
+        assert!(
+            wires.len() > usize::try_from(MAX_UNRESOLVED_TRANSFERS).expect("small"),
+            "a late echo does free what it resolves"
         );
     }
 
