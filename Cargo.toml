@@ -119,8 +119,8 @@ wmi = "=0.18.4"
 
 # Servo embedder boundary
 # Servo's memory-report API exposes this callback type without reexporting it.
-base = { package = "servo-base", version = "0.5.0" }
-servo = { version = "0.5.0", default-features = false }
+base = { package = "servo-base", version = "0.6.0" }
+servo = { version = "0.6.0", default-features = false }
 surfman = "0.13"
 
 # Crypto / auth

@@ -7,22 +7,24 @@
 //! pixels. The asserted matrix below gates which CSS the SDK layout module
 //! may rely on — JS layout over the display descriptor stays the baseline.
 //!
-//! ## Support matrix (Servo 0.4, software GL, verified by this test)
+//! ## Support matrix (Servo 0.6, software GL, verified by this test)
 //!
 //! | Probe                | 480x480 | 960x160 |
 //! |----------------------|---------|---------|
 //! | flex-row             | yes     | yes     |
 //! | flex-column          | yes     | yes     |
 //! | flex-gap             | yes     | yes     |
-//! | grid                 | NO      | NO      |
+//! | grid                 | yes     | yes     |
 //! | clip-path-circle     | yes     | yes     |
 //! | aspect-media-query   | yes     | yes     |
 //! | transform-translate  | yes     | yes     |
 //!
 //! Consequences for the SDK: flexbox (including gap), transforms,
 //! `clip-path: circle()` (the face circular mask), and aspect-ratio media
-//! queries are safe. CSS grid layout is not rendered by Servo, and JS over the
-//! display descriptor remains the baseline for device-specific geometry.
+//! queries are safe. Servo 0.6 also renders the CSS grid probe, which Servo
+//! 0.5 and earlier left stacked full-width; faces built for older daemons
+//! still cannot rely on grid. JS over the display descriptor remains the
+//! baseline for device-specific geometry.
 //!
 //! Heavy fixture: set `HYPERCOLOR_RUN_SERVO_CSS_PROBES=1` to run. The child
 //! process pattern mirrors the Servo GPU parity test — Servo teardown can
@@ -67,8 +69,8 @@ flex-gap 480x480 pass
 flex-gap 960x160 pass
 flex-row 480x480 pass
 flex-row 960x160 pass
-grid 480x480 fail
-grid 960x160 fail
+grid 480x480 pass
+grid 960x160 pass
 transform-translate 480x480 pass
 transform-translate 960x160 pass
 ";
