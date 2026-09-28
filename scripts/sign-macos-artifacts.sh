@@ -29,10 +29,14 @@ Commands:
     --target <triple> --team-id <team>
   verify-standalone --directory <distribution> --target <triple>
     --team-id <team>
+  selftest
 
 The app command pre-signs the staged daemon sidecar, builds only the Tauri
 app bundle, reapplies every manifest signature, notarizes and staples the app,
 then creates, signs, notarizes, and staples a separate DMG.
+
+The selftest command signs, verifies, and notarizes a throwaway binary to
+prove the credentials and keychain handling without a release build.
 
 Signing requires APPLE_SIGNING_IDENTITY and APPLE_TEAM_ID. The identity may
 already be installed, or APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD may
@@ -678,6 +682,32 @@ sign_standalone_artifacts() {
   printf 'signed standalone distribution: %s\n' "${directory}"
 }
 
+# Exercises the release credentials end to end on a throwaway binary: the
+# same keychain import, codesign, verification, and notarytool paths the app
+# and standalone commands use, in minutes instead of a full release build.
+run_selftest() {
+  local identifier="tech.hyperbliss.hypercolor.signing-selftest"
+  for command in ditto jq xcrun; do
+    require "${command}"
+  done
+  prepare_signing_identity
+  validate_notary_credentials
+
+  ensure_signing_tmp
+  local source="${SIGNING_TMP}/selftest.c"
+  local binary="${SIGNING_TMP}/hypercolor-signing-selftest"
+  local archive="${SIGNING_TMP}/hypercolor-signing-selftest.zip"
+  printf 'int main(void) { return 0; }\n' > "${source}"
+  xcrun --sdk macosx clang -mmacosx-version-min=15.2 -o "${binary}" "${source}"
+
+  codesign_object "${binary}" "${identifier}" none
+  verify_signature "${binary}" "${identifier}" none
+  ditto -c -k --keepParent "${binary}" "${archive}"
+  notarize "${archive}" "${SIGNING_TMP}/selftest-notarization.json"
+  printf 'macOS signing selftest passed: signed for team %s and notarized\n' \
+    "${APPLE_TEAM_ID}"
+}
+
 validate_manifest
 
 command_name="${1:-}"
@@ -775,6 +805,10 @@ case "${command_name}" in
     APPLE_TEAM_ID="${team_id}"
     verify_standalone_artifacts "${directory}" "${target}"
     printf 'verified signed standalone artifacts\n'
+    ;;
+  selftest)
+    [[ "$#" -eq 0 ]] || die "selftest takes no arguments"
+    run_selftest
     ;;
   -h|--help|help)
     usage

@@ -1,0 +1,54 @@
+name: macOS Signing Selftest
+
+# Proves the Developer ID and notarization credentials end to end on a
+# throwaway binary through the same scripts the release lane uses, in minutes
+# instead of a full release build. Runs on demand (after rotating a
+# certificate or API key) and on same-repository pull requests that touch
+# the signing scripts. Fork pull requests never receive the secrets, so the
+# job skips them.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/sign-macos-artifacts.sh
+      - scripts/macos-signing-keychain.c
+      - scripts/with-macos-signing.sh
+      - .github/workflows/macos-signing-selftest.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-signing-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  XCODE_VERSION: "26.5"
+
+jobs:
+  selftest:
+    name: Sign and notarize a probe binary
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+
+      - name: Sign, verify, and notarize the probe
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: bash scripts/with-macos-signing.sh scripts/sign-macos-artifacts.sh selftest
