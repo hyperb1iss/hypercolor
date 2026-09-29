@@ -1,6 +1,6 @@
 //! Canvas preview presents authoritative daemon frames in the browser via WebGL.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -25,9 +25,15 @@ use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContex
 use crate::ws::input::{
     InputEdgeButton, InputEdgeScrollPhase, InputEdgeScrollUnit, InputEdgeState, InputInjectEdge,
 };
-use crate::ws::{CanvasFrame, InteractivePreviewLifecycle, InteractivePreviewRequest};
+use crate::ws::{
+    CanvasFrame, InteractivePreviewLifecycle, InteractivePreviewRequest, PreviewCounterHandle,
+    PreviewTag,
+};
+use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 
-use super::preview_runtime::{PreviewRenderOutcome, PreviewRuntime, PreviewRuntimeInitError};
+use super::preview_runtime::{
+    PresentedHook, PreviewRenderOutcome, PreviewRuntime, PreviewRuntimeInitError,
+};
 
 type PresentCallback = Rc<dyn Fn()>;
 type PresentScheduler = Rc<RefCell<Option<PresentCallback>>>;
@@ -64,6 +70,43 @@ fn should_publish_preview_telemetry(
 
 fn has_preview_extent(frame: &CanvasFrame) -> bool {
     frame.width > 0 && frame.height > 0
+}
+
+/// The main canvas stream's display counters, as one preview surface sees them.
+#[derive(Clone, Copy)]
+struct CountedSurface {
+    counters: PreviewCounterHandle,
+    surface: u64,
+}
+
+impl CountedSurface {
+    fn new(counters: PreviewCounterHandle) -> Self {
+        Self {
+            counters,
+            surface: counters.register_surface(),
+        }
+    }
+
+    /// Tag a frame as it arrives, while its origin is still known: only the
+    /// authoritative main-stream frame counts, never an interactive one.
+    fn tag(self, frame: &CanvasFrame, authoritative: Option<&CanvasFrame>) -> Option<PreviewTag> {
+        let from_main_stream = frame.channel == PreviewFrameChannel::Canvas
+            && authoritative
+                .is_some_and(|current| js_sys::Object::is(current.pixels_js(), frame.pixels_js()));
+        from_main_stream
+            .then(|| self.counters.tag(frame.frame_number))
+            .flatten()
+    }
+
+    fn presented_hook(self) -> PresentedHook {
+        Rc::new(move |_: &CanvasFrame, tag: PreviewTag| {
+            self.counters.record_displayed(self.surface, tag, now_ms());
+        })
+    }
+
+    fn release(self) {
+        self.counters.release_surface(self.surface);
+    }
 }
 
 /// Whether the effect explicitly declares interactive input demand.
@@ -204,6 +247,7 @@ impl PresenterState {
         canvas: &web_sys::HtmlCanvasElement,
         frame: &CanvasFrame,
         smooth_scaling: bool,
+        presented: Option<&PresentedHook>,
     ) -> bool {
         let Some(webgl_unavailable_streak) = self.retry_state(frame.frame_number) else {
             return matches!(self, Self::Ready { .. });
@@ -214,6 +258,7 @@ impl PresenterState {
             frame,
             webgl_unavailable_streak >= CANVAS2D_FALLBACK_THRESHOLD,
             smooth_scaling,
+            presented.cloned(),
         ) {
             Ok(runtime) => {
                 let ready_streak = if runtime.preserves_webgl_unavailable_streak() {
@@ -354,6 +399,14 @@ pub fn CanvasPreview(
     let smooth_scaling = image_rendering != "pixelated";
     let preview_registered = Arc::new(AtomicBool::new(false));
     let disposed = Arc::new(AtomicBool::new(false));
+    // Surfaces showing the main canvas stream count toward its display
+    // counters. Display surfaces opt out of the main stream, and screen,
+    // web-viewport and interactive frames keep their own numbering.
+    let counted_surface = ws
+        .filter(|_| register_main_preview_consumer)
+        .map(|ws| CountedSurface::new(ws.preview_counters));
+    let presented_hook = counted_surface.map(CountedSurface::presented_hook);
+    let latest_frame_tag = Rc::new(Cell::new(None::<PreviewTag>));
     let consumer_count = if register_main_preview_consumer {
         consumer_count.or_else(|| ws.map(|ws| ws.set_preview_consumers))
     } else {
@@ -372,6 +425,8 @@ pub fn CanvasPreview(
         let last_published_telemetry = Rc::clone(&last_published_telemetry);
         let last_telemetry_published_at = Rc::clone(&last_telemetry_published_at);
         let scheduler_disposed = Arc::clone(&disposed);
+        let presented_hook = presented_hook.clone();
+        let latest_frame_tag = Rc::clone(&latest_frame_tag);
 
         let scheduler = Scheduler::new(move |frame_info| {
             if scheduler_disposed.load(Ordering::Relaxed) {
@@ -408,7 +463,12 @@ pub fn CanvasPreview(
                 && Some(frame.frame_number) != *last_presented_frame.borrow()
             {
                 let mut presenter_state = presenter.borrow_mut();
-                if presenter_state.ensure_runtime(&canvas_handle, frame, smooth_scaling) {
+                if presenter_state.ensure_runtime(
+                    &canvas_handle,
+                    frame,
+                    smooth_scaling,
+                    presented_hook.as_ref(),
+                ) {
                     let mode = presenter_state.mode_label();
                     if runtime_mode.get_untracked() != mode {
                         runtime_mode.set(mode);
@@ -418,7 +478,7 @@ pub fn CanvasPreview(
                         webgl_unavailable_streak,
                     } = &mut *presenter_state
                     {
-                        match presenter.render(&canvas_handle, frame) {
+                        match presenter.render(&canvas_handle, frame, latest_frame_tag.get()) {
                             PreviewRenderOutcome::Presented => {
                                 let skipped =
                                     last_presented_frame.borrow().map_or(0, |previous_frame| {
@@ -525,11 +585,18 @@ pub fn CanvasPreview(
     Effect::new({
         let latest_frame = Rc::clone(&latest_frame);
         let latest_frame_received_at = Rc::clone(&latest_frame_received_at);
+        let latest_frame_tag = Rc::clone(&latest_frame_tag);
         let schedule_present = Rc::clone(&schedule_present);
         move |_| {
             let next_frame = frame.get().filter(has_preview_extent);
             let has_next_frame = next_frame.is_some();
             let received_at_ms = has_next_frame.then(now_ms);
+            latest_frame_tag.set(counted_surface.zip(next_frame.as_ref()).and_then(
+                |(surface, next)| {
+                    authoritative_frame
+                        .with_untracked(|current| surface.tag(next, current.as_ref()))
+                },
+            ));
             *latest_frame.borrow_mut() = next_frame;
             *latest_frame_received_at.borrow_mut() = received_at_ms;
 
@@ -585,6 +652,9 @@ pub fn CanvasPreview(
             }
             if let Some(telemetry) = preview_telemetry {
                 telemetry.set(PreviewPresenterTelemetry::default());
+            }
+            if let Some(surface) = counted_surface {
+                surface.release();
             }
         }
     });

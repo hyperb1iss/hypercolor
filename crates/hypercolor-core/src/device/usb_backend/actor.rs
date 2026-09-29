@@ -241,7 +241,9 @@ impl UsbBackend {
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             interval
         });
+        let mut frame_pump = Self::frame_pump_timer(protocol.as_ref());
         let mut frame_commands = Vec::new();
+        let mut pump_commands = Vec::new();
 
         loop {
             tokio::select! {
@@ -314,11 +316,70 @@ impl UsbBackend {
                     )
                     .await?;
                 }
+                () = async {
+                    if let Some(interval) = frame_pump.as_mut() {
+                        interval.tick().await;
+                    }
+                }, if frame_pump.is_some() => {
+                    Self::run_frame_pump(
+                        device_id,
+                        protocol.as_ref(),
+                        transport.as_ref(),
+                        &mut pump_commands,
+                    )
+                    .await?;
+                }
                 else => break,
             }
         }
 
         Ok(())
+    }
+
+    /// The protocol's between-frame pump interval as a ticking timer.
+    fn frame_pump_timer(protocol: &dyn Protocol) -> Option<tokio::time::Interval> {
+        protocol.frame_pump_interval().map(|period| {
+            let mut interval =
+                tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            interval
+        })
+    }
+
+    /// Run the frame lane's due work between frames. Its writes are frame
+    /// traffic, so a transient failure is logged and the lane continues,
+    /// exactly as for a frame; anything fatal ends the actor.
+    async fn run_frame_pump(
+        device_id: DeviceId,
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Result<()> {
+        protocol.pump_frame_into(commands);
+        Self::check_session_restart(device_id, protocol)?;
+        if commands.is_empty() {
+            return Ok(());
+        }
+        match Self::run_commands(protocol, transport, commands.as_slice())
+            .await
+            .with_context(|| format!("USB frame pump write failed for device {device_id}"))
+        {
+            Ok(()) => Ok(()),
+            Err(error)
+                if Self::classify_frame_write_error(&error) == FrameWriteDisposition::Transient =>
+            {
+                warn!(
+                    device_id = %device_id,
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    error = %error,
+                    error_chain = %format_error_chain(&error),
+                    "transient USB frame pump write failed; actor will continue"
+                );
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn run_device_display_actor(
@@ -396,6 +457,22 @@ impl UsbBackend {
         }
     }
 
+    /// End the session, writing nothing more, when the protocol asks for a
+    /// fresh connect. It ends as a disconnect, so the lifecycle reconnects
+    /// the device and its whole connect sequence runs again.
+    fn check_session_restart(device_id: DeviceId, protocol: &dyn Protocol) -> Result<()> {
+        match protocol.session_restart() {
+            Some(reason) => {
+                Err(
+                    anyhow::Error::new(TransportError::Disconnected { detail: reason }).context(
+                        format!("USB device {device_id} asked to be connected afresh"),
+                    ),
+                )
+            }
+            None => Ok(()),
+        }
+    }
+
     async fn run_keepalive_commands(
         device_id: DeviceId,
         device_name: &'static str,
@@ -403,6 +480,7 @@ impl UsbBackend {
         transport: &dyn Transport,
     ) -> Result<()> {
         let commands = protocol.keepalive_commands();
+        Self::check_session_restart(device_id, protocol)?;
         if commands.is_empty() {
             return Ok(());
         }
@@ -442,8 +520,10 @@ impl UsbBackend {
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             interval
         });
+        let mut frame_pump = Self::frame_pump_timer(protocol.as_ref());
         let mut frame_commands = Vec::new();
         let mut display_commands = Vec::new();
+        let mut pump_commands = Vec::new();
 
         loop {
             tokio::select! {
@@ -590,6 +670,19 @@ impl UsbBackend {
                     )
                     .await?;
                 }
+                () = async {
+                    if let Some(interval) = frame_pump.as_mut() {
+                        interval.tick().await;
+                    }
+                }, if frame_pump.is_some() => {
+                    Self::run_frame_pump(
+                        device_id,
+                        protocol.as_ref(),
+                        transport.as_ref(),
+                        &mut pump_commands,
+                    )
+                    .await?;
+                }
                 else => break,
             }
         }
@@ -646,16 +739,38 @@ impl UsbBackend {
         frame: &UsbFramePayload,
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
-        if !frame.mark_transport_started() {
+        if !frame.claim() {
             return Ok(());
         }
+        protocol.encode_frame_into(frame.colors.as_slice(), commands);
+        if commands.is_empty() {
+            // Nothing was written: the frame changed nothing the device
+            // shows, or the protocol holds it behind unconfirmed output and
+            // will send the newest frame itself. Either way no transport I/O
+            // happened, so the delivery is not reported as completed.
+            if let Some(id) = frame.delivery_id {
+                frame.acknowledge(super::DeviceDeliveryAck::from_write_result(
+                    id,
+                    0,
+                    Duration::ZERO,
+                    Ok(hypercolor_driver_api::DeviceWriteOutcome::SuppressedCadence),
+                ));
+            }
+            return Ok(());
+        }
+        // Bytes of this frame the protocol wrote: all of it, unless it
+        // wrote only the zones the frame changed.
+        let written_bytes = protocol
+            .written_frame_bytes()
+            .unwrap_or_else(|| frame.colors.len().saturating_mul(3));
+        frame.announce_transport_started();
         let transport_started_at = Instant::now();
-        match Self::run_device_frame(device_id, protocol, transport, frame, commands).await {
+        match Self::run_encoded_frame(device_id, protocol, transport, frame, commands).await {
             Ok(()) => {
                 if let Some(id) = frame.delivery_id {
                     frame.acknowledge(super::DeviceDeliveryAck::completed(
                         id,
-                        frame.colors.len().saturating_mul(3),
+                        written_bytes,
                         transport_started_at.elapsed(),
                     ));
                 }
@@ -738,6 +853,17 @@ impl UsbBackend {
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
         protocol.encode_frame_into(frame.colors.as_slice(), commands);
+        Self::run_encoded_frame(device_id, protocol, transport, frame, commands).await
+    }
+
+    /// Write a frame the protocol has already encoded into `commands`.
+    async fn run_encoded_frame(
+        device_id: DeviceId,
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        frame: &UsbFramePayload,
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Result<()> {
         if tracing::enabled!(tracing::Level::TRACE) {
             let first_packet = commands.first().map_or_else(
                 || "<none>".to_owned(),

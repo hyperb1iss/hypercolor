@@ -774,17 +774,23 @@ when ≤2 repeats, else 20 ms); Hypercolor sends it twice, 2 ms apart, the
 way the reference adapter streams direct color. Data frames (index 1..N)
 carry the packet index at [18] and up to 220 compressed bytes at
 [20..240]; bytes past the final chunk's length are zero. The effect index
-of a live frame is the constant `00 00 00 01` the reference uses, so the
-tag a receiver echoes in its record is the drift detector, not a counter.
+of a live transfer is unique per send: an FNV-1a hash of the frame's
+pixels mixed with a send number that runs for the whole process from a
+wall-clock seed, never zero, and never the tag the cluster echoes at that
+moment. The tag a
+receiver echoes in its record (record bytes 20 to 23) therefore names
+exactly one transfer, which makes it the acknowledgement RGB delivery paces
+on (§6.11); the pixel hash alone identifies what a frame shows.
 
 After the first device table poll, init sends the RX setup the reference
 daemon sends once after discovery starts: `10 01 04 34` and `10 01 04 37`
 (replies read but not required) and the LCD-mode switch `10 01 04 30`.
 
-Live streaming = `total_frames: 1` per render tick. The achievable tick rate
-is bandwidth-bound and must be measured on hardware (§11.4) — the spec sets
-no artificial cap. Firmware-looped animation upload is the documented
-optimization path for static effects.
+Live streaming = `total_frames: 1` per transfer. Each cluster keeps a window
+of transfers in flight, and its record's echo acknowledges them
+cumulatively (§6.11), so the delivered rate is whatever the radio drains,
+up to what the render path offers; the spec sets no artificial cap. Firmware-looped animation upload is the
+documented optimization path for static effects.
 
 ### 6.8 Steady-state upkeep: the v1 keepalive policy
 
@@ -821,9 +827,11 @@ occasionally spikes RPM.
 PWM writes can interrupt direct RGB output and briefly expose the receiver's
 onboard rainbow effect. After writing the PWM batch, upkeep immediately
 re-sends each cluster's latest RGB frame through the normal transfer codec,
-before clock or pairing work. Recovery starts only after a frame has
-been encoded, preserves black frames, and never re-arms streaming mode.
-The cached frame belongs to the connection session and is cleared on init.
+before clock or pairing work. The restore goes through the pacing window
+(§6.11): every upkeep leaves each cluster owing one, sent right away where
+the window has room and with the next room otherwise. Recovery starts only after a frame has been encoded,
+preserves black frames, and never re-arms streaming mode. The cached frame
+belongs to the connection session and is cleared on init.
 The upstream driver documents the same interruption in
 [issue 83](https://github.com/sgtaziz/lian-li-linux/issues/83) and restores
 cached direct colors in [PR 149](https://github.com/sgtaziz/lian-li-linux/pull/149).
@@ -833,8 +841,18 @@ physical flicker removal still requires observation on the affected fans.
 This holds user-set speeds steady without making Hypercolor a fan-curve
 product. Exact clock-blob field values are validated on hardware before the
 descriptor ships enabled (§11). Both upkeep streams and the GetDev poll run
-as periodic protocol upkeep through the same actor seam Corsair's LCD
-keepalive uses.
+on the 1 Hz keepalive, in this order:
+streaming preamble (first tick only), PWM per cluster, the paced restore,
+the clock broadcast, then the two-page table poll, which comes after the
+sends so its reply can only confirm a transfer already on its way.
+
+That is the minimum the protocol needs, per second: one PWM envelope per
+cluster and one clock envelope (four TX packets each), the restore when
+the window is open (twelve TX packets per three-fan cluster), and one
+two-page table poll on the RX. A still scene with one cluster therefore
+costs 20 TX packets and one RX poll a second. The master query L-Connect
+repeats every second is not needed: nothing in this driver moves the TX
+off its channel after init.
 
 ### 6.9 tinyuz compression
 
@@ -893,6 +911,189 @@ The partner reset is the vendor's behavior, but it is unverified on this
 hardware. Whether `15` through the RX revives a V1 `SLV3TX` that has fully
 hung, rather than one whose endpoint has only stalled, is the first thing to
 check when a wedge next happens (§11.12).
+
+A TX can also fail without refusing a write: it takes every packet while its
+fans stop confirming frames. Only the protocol sees that (§6.11), so it asks
+for the reset by writing `15` to the RX itself. The transport treats that
+write as the protocol's verdict: it records a wedge with cause
+`Undelivered`, logs `L-Wireless TX stopped delivering`, sends the reset once,
+and ends the session with a disconnect exactly as for a refused write. The
+first TX write after the reset closes the wedge; whether the fans confirm
+frames again shows in the delivery report.
+
+The fans can also stop taking frames when the TX is fine. On the owner's rig
+on 2026-09-29 (UTC), 29 minutes into a soak at a steady 28 fps, the fans
+stopped confirming while the TX took every write. Three TX resets followed,
+each ending the session, and each reconnect ran the whole connect sequence
+within about 1.5 s. The TX took commands again within about a second each
+time, but the fans confirmed only a few frames between the first and second
+(their echo also named two tags the session never sent) and nothing after.
+The driver then held their lighting. A daemon restart 99 minutes later,
+after RGB silence the whole time while fan-speed and clock upkeep continued,
+brought them back at once. So a reconnect alone does not clear this stall,
+while a reconnect after a long rest did. The restart differed in two more
+ways the evidence cannot separate from the rest: time had passed, and it
+also reconnected the three TL Wireless LCD devices (`1cbe:0006`, the same
+fans' wired LCD links), which an in-process reconnect of the controller
+never touches. They logged nothing around the stall. Of the connect
+sequence, only the first clock broadcast of a session (§6.8) and the
+fan-speed envelopes reach the fans, and both went out in the three
+reconnects that failed. The rest of the sequence is local to the TX and RX:
+the TX's own reset, the master query, the table poll, the RX setup, and the
+streaming preamble.
+
+The driver therefore recovers in stages, per cluster (by radio MAC), across
+sessions:
+
+1. **TX resets.** Two, as above, each ending the session for a reconnect.
+2. **Rests and reconnects.** Once the resets are spent, the cluster's RGB
+   rests while upkeep holds its fans' speed and clock, then the protocol
+   asks the backend for a fresh connect (`Protocol::session_restart`). The
+   backend ends the session as a disconnect, writing nothing more, and the
+   lifecycle reconnects, so the whole connect sequence runs again on fresh
+   USB handles. The rests are 10 s, 30 s, 1 min, 2 min and 5 min.
+3. **Power-cycle message, and slow reconnects.** After the fifth reconnect,
+   the log says to power-cycle the controller. A rested reconnect still
+   follows every 10 minutes, since the one recovery seen came after a long
+   rest.
+
+Clusters that still confirm keep streaming through a rest, and lose only
+the moment each reconnect takes. Any confirmed frame clears the cluster's
+budget. How short a rest suffices is unknown: each rest is logged with its
+length and attempt number, the stalled cluster's record is logged as the RX
+reports it (channel, slot, echo, command sequence, PWM, RPM), and a recovery
+logs `L-Wireless fans confirm frames again after reconnecting` with the
+resets and reconnects it took.
+
+### 6.11 Acknowledgement-paced RGB delivery
+
+L-Connect streams an effect until the device's record echoes its effect
+index and sends nothing more (`MasterDevice.SyncRgbData`). The live stream
+paces on the same echo, but the echo is a status the fans refresh on their
+own cadence: about every 333 ms on the owner's V1 rig, 500 ms for part of
+one run, and 550 ms to about a second in another. Paced one frame per
+echo, the stream ran at 3 fps on that rig (PR 318, measured on hardware
+2026-09-28). So the echo is treated as a cumulative acknowledgement and
+each cluster keeps a window of frames in flight, like a TCP sender
+(`wireless/pacing.rs`). The hardware bears out the cumulative reading: with
+a window of 29 to 30, single echoes advanced by up to 29 sends and the fans
+confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
+
+- **The echo acknowledges cumulatively.** Each send carries a tag unique
+  among the cluster's sends still out (§6.7; a hashed tag that collides with
+  one is skipped). An echo naming a send confirms that send and, since the
+  TX relays in order, retires every send before it. Delivered frames are
+  counted from how far each echo advances: the rate the radio drains
+  frames. A frame lost on the air but overtaken before the next status is
+  retired too, so this is an upper bound on frames shown.
+- **A sliding window per cluster.** A cluster may have up to its window of
+  sends unconfirmed. The window starts at 2, grows by the confirmed sends
+  per echo while it is the limit (slow start, doubling per status), then
+  by one per window of confirmed sends, up to 64 (a one-second status at
+  30 fps needs about 33 in flight). It grows only while it
+  holds frames back, so a scene offered slower than the radio carries
+  never inflates it. A frame that arrives with no room is held, and a
+  newer frame replaces it, so what goes out next is always the newest.
+- **Backlog, judged against the status cadence.** A status can be a
+  snapshot up to a whole status interval older than the reply that
+  carries it, so a send is overdue only once it has had time to land and
+  to be caught by a status: its age exceeds the base delay (the smallest
+  echo age over the last minute, kept as the smallest of each 10 s), plus
+  a status interval, plus the poll spacing and 35 ms of jitter. The status
+  interval is the longest of the last four measured, or the running
+  average if that is longer (600 ms until measured), so a cadence that
+  just slowed, as it did from 550 ms to a second on the owner's rig,
+  counts from its first slow status. In effect a send is overdue once it
+  missed a status it should have been in. Judged against the send's own
+  latency
+  instead, stale statuses on the owner's rig read as backlog 1 to 7 times
+  per 10 s, and delivery sawtoothed between 3.9 and 26.4 fps (PR 320,
+  2026-09-28).
+- **Only sustained evidence shrinks the window.** More than one overdue at
+  three advancing echoes in a row halves the window; the window does not
+  grow while such a run is open. Halvings come at most once per three
+  status intervals and once per window of sends. Every cluster's frames
+  wait in the one TX queue, so a halving applies to every cluster with
+  sends out that the RX can hear and that is not already inside its own
+  holdoff or recovery: with clusters
+  halving alone, the others kept the shared queue full, and three
+  clusters on a slow radio at a one-second status grew past the 5 s stall
+  verdict into a TX reset in simulation. The minute-long base delay
+  matters too: with a 10 s memory the base rose with a backlog that grew
+  by less than a status interval per span, and two clusters sharing a slow
+  radio grew without bound in simulation.
+- **What the tolerance costs.** On a radio slower than the stream the TX
+  holds about two status intervals of what the radio carries before the
+  window answers, where a per-send rule held a few transfers. In the fake
+  radio at 16.7 transfers a second and a 333 ms status, one cluster settles
+  near 50 envelopes (0.7 s mean echo age), two near 75 (1.1 s), and three
+  near 95 (1.4 s); three at a one-second status hold about 165 (2.6 s),
+  and four about 210 (3.3 s). Delivery stays at 78 to 95% of the radio's
+  rate, and the backlog stays bounded with no reset over 30 minutes. A
+  radio that keeps up holds no backlog at any cadence.
+- **Clusters are paced independently.** A frame goes to every cluster it
+  changes that has room and waits for the rest; one cluster whose echoes
+  lag steadily, or one the RX cannot hear, never throttles another. A
+  backlog in the shared TX shrinks them together. The exception: a
+  cluster whose own delay jumps by more than a status interval mid-run
+  reads as a backlog until its base delay catches up (about a minute),
+  and its halvings reach its neighbours. In simulation, a 1.5 to 2.5 s
+  jump on one of two clusters left the other at 29 to 31 fps throughout,
+  while the jumped cluster regrew by one frame per status. A frame's delivery acknowledgement counts only the
+  pixels written (`Protocol::written_frame_bytes`); a frame written to no
+  cluster is acknowledged as suppressed.
+- **The frame pump.** The protocol's frame pump (`Protocol::frame_pump_interval`
+  and `pump_frame_into`) runs every 5 ms and returns nothing when nothing is
+  due. It polls the table while sends are unconfirmed and sends the held
+  frame the moment an echo frees room. Pumped writes get frame-write error
+  handling: a transient error is logged and the lane continues.
+- **Echo polls follow the status cadence.** One page (448 bytes, read to
+  exactly that length) while every record fits in a page, otherwise two.
+  After an advancing echo the first poll waits for three quarters of the
+  learned status interval, and the rest follow a sixth of it apart (20 to
+  100 ms). The record's clock bytes change on every reply on the V1
+  controller, so they cannot mark a status refresh; the echo's own changes
+  do.
+- **Timeouts.** No echo progress for three status intervals, or the usual
+  echo age plus two when echoes lag further (0.5 to 3 s; at least 1.5 s
+  until an echo interval is measured), gives up on the sends out: the
+  window collapses to 2 and the newest frame goes out as a probe, one at a
+  time, the timeout doubling to 6 s. A timeout before an echo interval is
+  measured keeps slow start's ceiling, since it only proves the guess was
+  short. Guessing the interval from the first echo's age timed out fans on
+  a 550 ms cadence half a second after a quick first echo. No send of any
+  kind goes out while 64 are unresolved, which bounds what the TX can hold
+  for a cluster even when the radio stops.
+- **Restores after upkeep.** Every fan-speed upkeep leaves each cluster
+  owing a restore, paid by the next room in its window.
+- **Unheard fans.** A cluster missing from every table reply for 3 s is sent
+  nothing until it answers; then the sends out are given up and the newest
+  frame goes out.
+- **Stall verdict.** A cluster that is heard (in a reply within the last
+  second) but confirms nothing for 5 s is a TX that stopped delivering: the
+  protocol writes the partner reset (§6.10) and sends nothing more. Each
+  cluster (by radio MAC) can cause two such resets per process until it
+  confirms a frame again. Once they are spent, the stall is taken to be the
+  fans': the cluster's RGB rests, then the session ends for a fresh connect,
+  on the growing schedule in §6.10, while clusters that still confirm keep
+  streaming.
+- **Shutdown.** The final frame the backend sends before shutdown goes out
+  even if the window held it, within the bound on unresolved sends.
+
+Every 10 s the protocol logs `L-Wireless RGB delivery` at info with the
+offered, sent, and delivered frame rates, coalesced frames, each cluster's
+window and status interval (`status_ms`, 0 until measured), echoes per
+second, the mean and largest number of frames one echo
+retired (`advance_mean`, `advance_max`: above one means the echoed tag
+jumped several sends between polls; the sends in between are retired
+under the in-order relay assumption, and whether each was displayed is
+unknown), the status interval averaged over the report
+(`echo_gap_ms`; sampled while sends were out across an echo, or resumed
+within a quarter interval of one), the
+confirmed send's age (`echo_ms_mean`, `echo_ms_max`), the most sends found
+overdue, window halvings, timeouts, resends, restores, late echoes, drifts,
+polls and replies per second, TX packets queued per second, and held
+clusters.
 
 ## 7. Wireless LCD Receiver Protocol (0x1CBE)
 
@@ -1198,7 +1399,11 @@ Registration and data surfaces:
     updates from 100 ms to 500 ms in `d780708f`). Before any rate change,
     measure delivery on the receivers' echoed effect index and log the
     onset of the next wedge; §6.10 makes that onset visible and tries the
-    vendor reset.
+    vendor reset. §6.11 now does both: RGB is paced on the echo, and the
+    delivery report is the measurement. The first paced build (one frame
+    per echo, PR 318) showed on hardware that the echo refreshes about
+    every 333 ms (500 ms for part of the run) whatever is sent, and ran the
+    fans at 3 fps; the sliding window replaced it.
 
 ## 12. Testing Strategy
 

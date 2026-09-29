@@ -98,10 +98,11 @@ fn print_banner() {
 /// than through context: the erased route defs ([`extensions::UiExtensions::routes`])
 /// are `Send` but not `Sync`, so `provide_context` cannot carry them. Nav items
 /// are plain data and are surfaced through context inside [`app::app_view`].
-#[allow(
-    unused_mut,
-    reason = "Remote WASM discovery replaces the runtime mount"
-)]
+///
+/// Under a Remote bridge the routes move under the bridge's daemon mount,
+/// while static assets keep the base in `ext.mount`, so a bridged build
+/// loads its bundled images from wherever it was deployed.
+#[allow(unused_mut, reason = "Remote WASM discovery rebases the route mount")]
 pub fn run_with_extensions(mut ext: UiExtensions) {
     _ = console_log::init_with_level(log::Level::Debug);
     console_error_panic_hook::set_once();
@@ -113,7 +114,7 @@ pub fn run_with_extensions(mut ext: UiExtensions) {
     };
     #[cfg(target_arch = "wasm32")]
     if let Some(remote) = &remote {
-        ext.mount = remote.mount.clone();
+        ext.mount = remote.ui_mount(&ext.mount);
     }
     print_banner();
     mount_to_body(move || app::app_view(ext));

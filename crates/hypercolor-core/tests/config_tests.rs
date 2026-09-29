@@ -551,6 +551,16 @@ fn state_dir_uses_an_independent_override() {
 }
 
 #[test]
+fn state_dir_follows_a_relocated_data_dir_without_its_own_override() {
+    let _guard = PathOverrideTestGuard::acquire();
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_path = dir.path().join("data");
+
+    ConfigManager::set_data_dir_override(Some(data_path.clone()));
+    assert_eq!(ConfigManager::state_dir(), data_path.join("state"));
+}
+
+#[test]
 fn cache_dir_contains_hypercolor() {
     let dir = ConfigManager::cache_dir();
     assert!(

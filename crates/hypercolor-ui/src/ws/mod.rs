@@ -19,4 +19,8 @@ pub use messages::{
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,
     PerformanceMetrics, SceneEventHint, ScreenZonesFrame, ServiceIdentityEventHint,
 };
-pub use preview::DEFAULT_PREVIEW_FPS_CAP;
+pub use preview::{
+    DEFAULT_PREVIEW_FPS_CAP, PREVIEW_COUNTERS_GLOBAL, PREVIEW_GAP_BUCKET_BOUNDS_MS,
+    PreviewCounterHandle, PreviewCounterSnapshot, PreviewCounters, PreviewTag, RemotePreviewPath,
+    RemotePreviewProfile,
+};

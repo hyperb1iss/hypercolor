@@ -733,7 +733,7 @@ fn macos_signing_manifest_assigns_every_stable_identity() {
     ] {
         assert!(MACOS_SIGNING_MANIFEST.contains(identifier));
     }
-    assert!(MACOS_SIGNING_MANIFEST.contains("hypercolor-daemon-{target}"));
+    assert!(MACOS_SIGNING_MANIFEST.contains("\tContents/MacOS/hypercolor-daemon\t"));
 }
 
 #[test]

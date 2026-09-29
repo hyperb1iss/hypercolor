@@ -5,6 +5,11 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
+import {
+  assertHarnessDaemon,
+  assertIsolationSupported,
+  isolatedEnv,
+} from "./environment.mjs";
 import { repoRoot, writeRunState } from "./state.mjs";
 
 const STARTUP_TIMEOUT_MS = 45_000;
@@ -215,11 +220,14 @@ async function seedPreviewSimulator(apiOrigin) {
 }
 
 export default async function globalSetup() {
+  assertIsolationSupported();
   const runDir = await fsp.mkdtemp(path.join(os.tmpdir(), "hypercolor-e2e-"));
   const homeDir = path.join(runDir, "home");
   const xdgConfigHome = path.join(runDir, "config-home");
   const xdgDataHome = path.join(runDir, "data-home");
+  const xdgStateHome = path.join(runDir, "state-home");
   const xdgCacheHome = path.join(runDir, "cache-home");
+  const xdgRuntimeDir = path.join(runDir, "runtime");
   const daemonLog = path.join(runDir, "daemon.log");
   const webLog = path.join(runDir, "webapp.log");
 
@@ -242,7 +250,9 @@ export default async function globalSetup() {
       fsp.mkdir(homeDir, { recursive: true }),
       fsp.mkdir(xdgConfigHome, { recursive: true }),
       fsp.mkdir(xdgDataHome, { recursive: true }),
+      fsp.mkdir(xdgStateHome, { recursive: true }),
       fsp.mkdir(xdgCacheHome, { recursive: true }),
+      fsp.mkdir(xdgRuntimeDir, { recursive: true, mode: 0o700 }),
       assertExists(daemonBinary, "Daemon binary"),
       assertExists(cliBinary, "CLI binary"),
       assertExists(uiDistDir, "UI dist"),
@@ -259,15 +269,14 @@ export default async function globalSetup() {
     const apiOrigin = `http://127.0.0.1:${daemonPort}`;
     const appOrigin = `http://127.0.0.1:${appPort}`;
 
-    const sharedEnv = {
-      ...process.env,
-      HYPERCOLOR_E2E: "1",
-      NO_COLOR: "1",
-      HOME: homeDir,
-      XDG_CONFIG_HOME: xdgConfigHome,
-      XDG_DATA_HOME: xdgDataHome,
-      XDG_CACHE_HOME: xdgCacheHome,
-    };
+    const sharedEnv = isolatedEnv({
+      homeDir,
+      xdgConfigHome,
+      xdgDataHome,
+      xdgStateHome,
+      xdgCacheHome,
+      xdgRuntimeDir,
+    });
 
     const daemon = spawnLoggedProcess(
       daemonBinary,
@@ -281,6 +290,7 @@ export default async function globalSetup() {
     daemonPid = daemon.pid ?? null;
 
     await waitForJsonHealth(`${apiOrigin}/health`, "daemon health");
+    await assertHarnessDaemon(apiOrigin, configPath);
     const seededDisplay = await seedPreviewSimulator(apiOrigin);
 
     const web = spawnLoggedProcess(
@@ -315,7 +325,9 @@ export default async function globalSetup() {
       homeDir,
       xdgConfigHome,
       xdgDataHome,
+      xdgStateHome,
       xdgCacheHome,
+      xdgRuntimeDir,
       seededDisplay,
       daemonBinary,
       cliBinary,

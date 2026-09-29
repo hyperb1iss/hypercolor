@@ -33,6 +33,19 @@ impl UiMount {
         })
     }
 
+    /// Keep this mount's asset base and take the route base from `routes`.
+    ///
+    /// An embedder that relocates the application's routes, such as a
+    /// bridged Remote page, must not move the static assets the application
+    /// was built to load.
+    #[must_use]
+    pub fn with_routes_from(&self, routes: &Self) -> Self {
+        Self {
+            route_base: routes.route_base.clone(),
+            asset_base: self.asset_base.clone(),
+        }
+    }
+
     /// Base passed to Leptos Router. Imperative navigation already applies it.
     #[must_use]
     pub fn route_base(&self) -> &str {

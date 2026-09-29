@@ -11,6 +11,12 @@
 //! cause; on the V1 `SLV3TX` the state has only ever cleared with a power
 //! cycle, and a USB-level reset of the stuck TX made it fail re-enumeration.
 //!
+//! A TX can also fail without refusing anything: it takes every write while
+//! its fans stop confirming frames. The protocol paces RGB on those
+//! confirmations (see [`super::pacing`]), so it is the one that notices, and
+//! it asks for the same partner reset; that wedge is recorded with its own
+//! [`WedgeCause`].
+//!
 //! The registry is keyed by the controller's identity (the TX's USB path),
 //! records which half stalled, and is cleared by the first command that half
 //! takes afterwards, through any session, so the wedge and its recovery each
@@ -71,11 +77,22 @@ impl DongleHalf {
     }
 }
 
-/// A half that stopped taking commands.
+/// How a half was found not working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WedgeCause {
+    /// A write ran out its whole budget.
+    RefusedWrite,
+    /// The TX took every write but its fans stopped confirming frames.
+    Undelivered,
+}
+
+/// A half that stopped taking commands, or stopped delivering them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Wedge {
     /// The half that stalled.
     pub half: DongleHalf,
+    /// What gave it away first; later stalls keep the first cause.
+    pub cause: WedgeCause,
     /// When the first stall of this wedge was seen.
     pub since: Instant,
     /// Stalled writes since the wedge began, across reconnects.
@@ -111,8 +128,8 @@ pub(crate) fn any_wedge_open() -> bool {
     OPEN_WEDGES.load(Ordering::Acquire) > 0
 }
 
-/// Count a stalled write on `half`, opening a wedge when none is open.
-pub(crate) fn record_stall(controller: &str, half: DongleHalf) -> Wedge {
+/// Count a stall on `half`, opening a wedge when none is open.
+pub(crate) fn record_stall(controller: &str, half: DongleHalf, cause: WedgeCause) -> Wedge {
     let mut wedges = registry().lock().unwrap_or_else(PoisonError::into_inner);
     let wedge = match wedges.entry((controller.to_owned(), half)) {
         Entry::Occupied(entry) => entry.into_mut(),
@@ -120,6 +137,7 @@ pub(crate) fn record_stall(controller: &str, half: DongleHalf) -> Wedge {
             OPEN_WEDGES.fetch_add(1, Ordering::AcqRel);
             entry.insert(Wedge {
                 half,
+                cause,
                 since: Instant::now(),
                 stalls: 0,
                 resets_sent: 0,

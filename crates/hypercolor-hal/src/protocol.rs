@@ -79,6 +79,49 @@ pub trait Protocol: Send + Sync {
             .map_or_else(Vec::new, |keepalive| keepalive.commands)
     }
 
+    /// How often the frame lane should be pumped between frames.
+    ///
+    /// A protocol that holds frames back for flow control (sending only once
+    /// the device has confirmed the last one) returns a cadence here, and
+    /// the backend calls [`Protocol::pump_frame_into`] on it, so confirmation
+    /// reads and released frames go out without waiting for the next frame.
+    /// Pumped commands are frame traffic: the backend handles their write
+    /// errors as it does a frame's, so a transient one does not end the
+    /// session the way a failed keepalive does.
+    fn frame_pump_interval(&self) -> Option<Duration> {
+        None
+    }
+
+    /// The frame lane's due work: confirmation reads, a frame released by a
+    /// confirmation, a resend. `commands` is rewritten from the start and
+    /// is left empty when nothing is due.
+    fn pump_frame_into(&self, commands: &mut Vec<ProtocolCommand>) {
+        commands.clear();
+    }
+
+    /// Why the protocol wants its session ended and the device connected
+    /// afresh, if it does.
+    ///
+    /// `None`, the default, means carry on. A protocol that decides the
+    /// device needs its whole connect sequence again, on fresh transport
+    /// handles, returns the reason; the backend checks after every pump
+    /// and keepalive tick, writes nothing more, and ends the session as a
+    /// disconnect, so the device lifecycle reconnects it.
+    fn session_restart(&self) -> Option<String> {
+        None
+    }
+
+    /// Pixel bytes of the frame most recently encoded that the protocol
+    /// wrote, when that is not the whole payload.
+    ///
+    /// `None`, the default, means the whole frame. A protocol that writes
+    /// only the zones a frame changed reports what it wrote, so the frame's
+    /// delivery acknowledgement counts only bytes that reached the
+    /// transport.
+    fn written_frame_bytes(&self) -> Option<usize> {
+        None
+    }
+
     /// Parse a raw device response payload.
     ///
     /// # Errors

@@ -42,8 +42,8 @@ use crate::ws::messages::scene_event_requires_effect_refresh;
 use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
     EffectErrorHint, ExtensionEventHint, InputInjectEdge, InputSourceStatusEventHint,
-    InteractivePreviewLifecycle, InteractivePreviewRequest, PerformanceMetrics, SceneEventHint,
-    ScreenZonesFrame, ServiceIdentityEventHint, WsManager,
+    InteractivePreviewLifecycle, InteractivePreviewRequest, PerformanceMetrics,
+    PreviewCounterHandle, SceneEventHint, ScreenZonesFrame, ServiceIdentityEventHint, WsManager,
 };
 
 mod effect_state;
@@ -124,6 +124,8 @@ pub struct WsContext {
     /// Send addressed browser-preview input edges as one control-authorized
     /// `input_inject` message. No-op while disconnected.
     pub send_input_inject: Callback<(String, Vec<InputInjectEdge>)>,
+    /// Received, displayed and dropped counts for the main canvas stream.
+    pub preview_counters: PreviewCounterHandle,
 }
 
 #[derive(Clone, Copy)]
@@ -583,6 +585,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         open_interactive_preview: ws.open_interactive_preview,
         close_interactive_preview: ws.close_interactive_preview,
         send_input_inject: ws.send_input_inject,
+        preview_counters: ws.preview_counters,
     };
     provide_context(ws_ctx);
     provide_context(crate::device_metrics::install_device_metrics_store(ws_ctx));
