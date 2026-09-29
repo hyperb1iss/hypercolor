@@ -148,10 +148,10 @@ const HEARD_WITHIN: Duration = Duration::from_secs(1);
 /// again.
 pub const MAX_RESETS_WITHOUT_DELIVERY: u32 = 2;
 /// Once a cluster's reset budget is spent, how long its RGB rests before
-/// each reconnect runs the connect sequence again. On the owner's rig, fans
-/// that three TX resets and three reconnects within 25 s did not bring back
-/// confirmed frames at once after 99 minutes without RGB, so a rest is part
-/// of the recovery; how short one suffices is unknown, so they grow.
+/// each reconnect runs the connect sequence again. On the owner's rig,
+/// three TX resets and three reconnects within 25 s did not bring stalled
+/// fans back, and a connect after 99 minutes without RGB did at once. How
+/// short a rest suffices is unknown, so they grow.
 pub const RECONNECT_RESTS: [Duration; 5] = [
     Duration::from_secs(10),
     Duration::from_secs(30),

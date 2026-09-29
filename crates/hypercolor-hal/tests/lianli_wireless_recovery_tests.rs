@@ -115,7 +115,8 @@ fn fans_stalled_past_their_tx_resets_come_back_after_a_rested_reconnect() {
 }
 
 /// A stall that needs four minutes' rest: the rests grow until one
-/// outlasts it, well before the power-cycle message, and the TX is reset
+/// outlasts it, on the last scheduled rest before the power-cycle message,
+/// and the TX is reset
 /// no more than its budget allows along the way.
 #[test]
 fn a_long_fan_stall_is_outlasted_by_growing_rests() {
@@ -187,27 +188,36 @@ fn fans_that_never_come_back_are_reconnected_every_ten_minutes() {
         "every reconnect is counted against the cluster"
     );
 
-    // A stretch inside one of the ten-minute rests: no RGB, but upkeep.
+    // A minute inside a ten-minute rest: wait for the next reconnect, let
+    // its session reach the stall verdict, then watch.
+    let sessions = rig.sessions.len();
+    let waited = rig.now();
+    while rig.sessions.len() == sessions {
+        assert!(
+            rig.now().saturating_sub(waited) <= RECONNECT_REST_HELD + Duration::from_mins(1),
+            "a reconnect follows within the held rest"
+        );
+        rig.run_for(Duration::from_secs(1));
+    }
+    rig.run_for(Duration::from_secs(10));
     let rest_started = rig.now();
     let packets_before = rig.radio.tx_packets;
     rig.run_for(Duration::from_mins(1));
-    let sessions_in_stretch = rig
-        .sessions
-        .iter()
-        .filter(|at| **at >= rest_started)
-        .count();
-    if sessions_in_stretch == 0 {
-        assert_eq!(
-            rig.transfers_since(rest_started),
-            0,
-            "a resting cluster gets no RGB"
-        );
-        assert!(
-            rig.radio.tx_packets - packets_before >= 60 * 8,
-            "fan-speed and clock upkeep carry on through the rest: {} packets in 60 s",
-            rig.radio.tx_packets - packets_before
-        );
-    }
+    assert_eq!(
+        rig.sessions.len(),
+        sessions + 1,
+        "no reconnect inside the rest"
+    );
+    assert_eq!(
+        rig.transfers_since(rest_started),
+        0,
+        "a resting cluster gets no RGB"
+    );
+    assert!(
+        rig.radio.tx_packets - packets_before >= 60 * 8,
+        "fan-speed and clock upkeep carry on through the rest: {} packets in 60 s",
+        rig.radio.tx_packets - packets_before
+    );
 }
 
 /// A TX that stops delivering and comes back with its reset still recovers
