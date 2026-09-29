@@ -33,13 +33,12 @@ use super::messages::{
     interactive_preview_supported, is_resync_required, reset_layer_health_cache,
 };
 use super::preview::{
-    DEFAULT_PREVIEW_FPS_CAP, PreviewCounterHandle, PreviewRoute, PreviewSubscriptionRequest,
-    RemotePreviewPath, accept_transport_path_report, clear_preview_subscription,
-    clear_screen_preview_subscription, clear_web_viewport_preview_subscription,
-    request_preview_subscription, request_screen_preview_subscription,
-    request_web_viewport_preview_subscription, send_canvas_unsubscribe,
-    send_screen_canvas_unsubscribe, send_screen_zones_subscribe, send_screen_zones_unsubscribe,
-    send_web_viewport_canvas_unsubscribe, should_stream_preview,
+    DEFAULT_PREVIEW_FPS_CAP, PreviewCounterHandle, PreviewSubscriptionRequest,
+    canvas_frame_topics_allowed, clear_preview_subscription, clear_screen_preview_subscription,
+    clear_web_viewport_preview_subscription, request_preview_subscription,
+    request_screen_preview_subscription, request_web_viewport_preview_subscription,
+    send_canvas_unsubscribe, send_screen_canvas_unsubscribe, send_screen_zones_subscribe,
+    send_screen_zones_unsubscribe, send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
 use super::transport::{
     WebSocketConnectRequest, WebSocketConnection, WebSocketEvent, WebSocketMessage,
@@ -338,24 +337,9 @@ impl WsManager {
         // The reactive owner keeps the window function alive with the app.
         let _ = StoredValue::new_local(publish_preview_counters(preview_counters));
 
-        // A Remote bridge carries every preview frame through its own
-        // transport, so the stream follows the path it reports. The relayed
-        // profile applies until the bridge names a path.
-        let remote_path_report =
-            remote_bridge::is_available().then(remote_bridge::current_transport_path);
-        let remote_path_generation = StoredValue::new(
-            remote_path_report
-                .as_ref()
-                .and_then(|report| report.as_ref().map(|report| report.generation)),
-        );
-        let (remote_preview_path, set_remote_preview_path) =
-            signal(remote_path_report.map(|report| {
-                report.map_or(RemotePreviewPath::Relayed, |report| {
-                    RemotePreviewPath::from_bridge_kind(&report.kind)
-                })
-            }));
-        let remote_path_callback: StoredValue<Option<EventHandle>, LocalStorage> =
-            StoredValue::new_local(None);
+        // Under a Remote bridge the main canvas arrives as the bridge's video
+        // track, so the socket never subscribes to a canvas frame topic.
+        let frame_topics = canvas_frame_topics_allowed(remote_bridge::is_available());
 
         // Shared WebSocket handle for preview subscription effect.
         let ws_handle: StoredValue<Option<Rc<dyn WebSocketConnection>>, LocalStorage> =
@@ -710,13 +694,15 @@ impl WsManager {
 
         // Preview subscription effect — reacts to FPS cap / visibility changes
         Effect::new(move |_| {
+            if !frame_topics {
+                return;
+            }
             let engine_target = engine_preview_target.get();
             let consumer_count = preview_consumers.get();
             let client_cap = preview_page_cap.get().min(preview_backpressure_cap.get());
             let width_cap = preview_width_cap.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
-            let route = PreviewRoute::from_remote_path(remote_preview_path.get());
             if !should_stream_preview(window_visible, engine_target, consumer_count) {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_preview_subscription(
@@ -736,7 +722,6 @@ impl WsManager {
                     ws.as_ref(),
                     requested_preview,
                     set_preview_target_fps,
-                    route,
                     engine_target,
                     client_cap,
                     width_cap,
@@ -746,11 +731,13 @@ impl WsManager {
         });
 
         Effect::new(move |_| {
+            if !frame_topics {
+                return;
+            }
             let engine_target = engine_preview_target.get();
             let consumer_count = screen_preview_consumers.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
-            let route = PreviewRoute::from_remote_path(remote_preview_path.get());
             if !should_stream_preview(window_visible, engine_target, consumer_count) {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_screen_preview_subscription(
@@ -766,7 +753,6 @@ impl WsManager {
                 request_screen_preview_subscription(
                     ws.as_ref(),
                     requested_screen_preview,
-                    route,
                     engine_target,
                     is_visible,
                 );
@@ -799,11 +785,13 @@ impl WsManager {
         });
 
         Effect::new(move |_| {
+            if !frame_topics {
+                return;
+            }
             let engine_target = engine_preview_target.get();
             let consumer_count = web_viewport_preview_consumers.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
-            let route = PreviewRoute::from_remote_path(remote_preview_path.get());
             if !should_stream_preview(window_visible, engine_target, consumer_count) {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_web_viewport_preview_subscription(
@@ -819,7 +807,6 @@ impl WsManager {
                 request_web_viewport_preview_subscription(
                     ws.as_ref(),
                     requested_web_viewport_preview,
-                    route,
                     engine_target,
                     is_visible,
                 );
@@ -992,29 +979,6 @@ impl WsManager {
                 },
             );
             daemon_connection_change_callback.set_value(Some(on_daemon_connection_change));
-        }
-
-        if remote_preview_path.get_untracked().is_some()
-            && let Some(window) = browser_window()
-        {
-            let on_remote_path_change = on(
-                window.unchecked_ref(),
-                remote_bridge::TRANSPORT_PATH_EVENT,
-                move |event| {
-                    let Some(report) = remote_bridge::transport_path_from_event(event) else {
-                        return;
-                    };
-                    if !accept_transport_path_report(remote_path_generation.get_value(), &report) {
-                        return;
-                    }
-                    remote_path_generation.set_value(Some(report.generation));
-                    let path = Some(RemotePreviewPath::from_bridge_kind(&report.kind));
-                    if remote_preview_path.get_untracked() != path {
-                        set_remote_preview_path.set(path);
-                    }
-                },
-            );
-            remote_path_callback.set_value(Some(on_remote_path_change));
         }
 
         // Initial connection

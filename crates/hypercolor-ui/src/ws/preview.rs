@@ -11,7 +11,6 @@ use hypercolor_leptos_ext::prelude::current_page_location;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::transport::{WebSocketConnection, send_json};
-use crate::remote_bridge::TransportPathReport;
 
 pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 60;
 pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
@@ -20,95 +19,12 @@ pub(super) const WEB_VIEWPORT_PREVIEW_FPS_CAP: u32 = 15;
 const REMOTE_PREVIEW_WIDTH_MEDIUM: u32 = 640;
 const REMOTE_PREVIEW_WIDTH_LOW: u32 = 480;
 
-/// A Remote session carries every preview frame as one sealed message with
-/// a hard size limit, so it asks for JPEG on every path. Raw RGB or RGBA
-/// exceeds that limit on every frame.
-const REMOTE_PREVIEW_FORMAT: &str = "jpeg";
-
-/// Transport path a Remote bridge reports for the live session, as far as
-/// the preview cares.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemotePreviewPath {
-    /// A peer-to-peer channel inside one local network.
-    Local,
-    /// A peer-to-peer channel across the internet.
-    Direct,
-    /// A relayed carrier, or a path the bridge has not classified.
-    Relayed,
-}
-
-impl RemotePreviewPath {
-    /// Classify the `kind` of a bridge transport path report.
-    ///
-    /// Only the peer-to-peer kinds earn a larger preview. Relay kinds,
-    /// `unknown`, and kinds this build does not recognize all get the
-    /// relayed profile, so a new path kind can never widen the stream.
-    #[must_use]
-    pub fn from_bridge_kind(kind: &str) -> Self {
-        match kind {
-            "local" => Self::Local,
-            "direct" => Self::Direct,
-            _ => Self::Relayed,
-        }
-    }
-}
-
-/// Upper bounds a Remote session puts on its preview stream.
-///
-/// Page caps still apply below these. JPEG size depends on content, so the
-/// width keeps a frame inside the sealed-message limit in practice; the
-/// computer's per-frame byte budget is what guarantees it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RemotePreviewProfile {
-    pub max_fps: u32,
-    pub max_width: u32,
-}
-
-impl RemotePreviewProfile {
-    #[must_use]
-    pub const fn for_path(path: RemotePreviewPath) -> Self {
-        match path {
-            // A LAN path keeps the local preview cadence; only the width is
-            // bounded, by the per-frame limit rather than the link.
-            RemotePreviewPath::Local => Self {
-                max_fps: DEFAULT_PREVIEW_FPS_CAP,
-                max_width: 480,
-            },
-            RemotePreviewPath::Direct => Self {
-                max_fps: 30,
-                max_width: 480,
-            },
-            // The relay shares one ordered channel with every API call and
-            // encodes each frame twice, so it gets the lightest stream.
-            RemotePreviewPath::Relayed => Self {
-                max_fps: 15,
-                max_width: 320,
-            },
-        }
-    }
-}
-
-/// Where preview frames travel, which decides their format and bounds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PreviewRoute {
-    /// The page talks to the daemon over its own origin.
-    Host,
-    /// A Remote bridge carries the session over the reported path.
-    Remote(RemotePreviewPath),
-}
-
-impl PreviewRoute {
-    pub(super) fn from_remote_path(path: Option<RemotePreviewPath>) -> Self {
-        path.map_or(Self::Host, Self::Remote)
-    }
-}
-
-/// Whether a bridge path report is at least as new as the last one applied.
-pub(super) fn accept_transport_path_report(
-    last_generation: Option<u64>,
-    report: &TransportPathReport,
-) -> bool {
-    last_generation.is_none_or(|last| report.generation >= last)
+/// Whether the socket may carry the canvas frame topics (`canvas`,
+/// `screen_canvas` and `web_viewport_canvas`). Under a Remote bridge it never
+/// does: the main canvas arrives as the bridge's video track, and no other
+/// canvas streams frame by frame over Remote.
+pub(super) const fn canvas_frame_topics_allowed(bridged: bool) -> bool {
+    !bridged
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,26 +36,8 @@ pub(super) struct PreviewSubscriptionRequest {
 }
 
 impl PreviewSubscriptionRequest {
-    fn canvas(route: PreviewRoute, requested_fps: u32, width_cap: u32) -> Self {
-        match route {
-            PreviewRoute::Host => {
-                Self::canvas_for_host(preview_hostname().as_str(), requested_fps, width_cap)
-            }
-            PreviewRoute::Remote(path) => Self::remote(path, requested_fps, width_cap),
-        }
-    }
-
-    fn remote(path: RemotePreviewPath, requested_fps: u32, width_cap: u32) -> Self {
-        let profile = RemotePreviewProfile::for_path(path);
-        Self {
-            fps: requested_fps.min(profile.max_fps),
-            width: match width_cap {
-                0 => profile.max_width,
-                cap => cap.min(profile.max_width),
-            },
-            height: 0,
-            format: REMOTE_PREVIEW_FORMAT,
-        }
+    fn canvas(requested_fps: u32, width_cap: u32) -> Self {
+        Self::canvas_for_host(preview_hostname().as_str(), requested_fps, width_cap)
     }
 
     fn canvas_for_host(hostname: &str, requested_fps: u32, width_cap: u32) -> Self {
@@ -153,13 +51,8 @@ impl PreviewSubscriptionRequest {
         }
     }
 
-    fn web_viewport(route: PreviewRoute, requested_fps: u32) -> Self {
-        match route {
-            PreviewRoute::Host => {
-                Self::web_viewport_for_host(preview_hostname().as_str(), requested_fps)
-            }
-            PreviewRoute::Remote(path) => Self::remote(path, requested_fps, 0),
-        }
+    fn web_viewport(requested_fps: u32) -> Self {
+        Self::web_viewport_for_host(preview_hostname().as_str(), requested_fps)
     }
 
     fn web_viewport_for_host(hostname: &str, requested_fps: u32) -> Self {
@@ -210,22 +103,16 @@ fn web_viewport_preview_request_dimensions() -> (u32, u32) {
     (0, 0)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each input is one reactive preview demand"
-)]
 pub(super) fn request_preview_subscription(
     ws: &dyn WebSocketConnection,
     requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     set_preview_target_fps: WriteSignal<u32>,
-    route: PreviewRoute,
     engine_target_fps: u32,
     client_cap: u32,
     width_cap: u32,
     page_visible: bool,
 ) {
     let request = PreviewSubscriptionRequest::canvas(
-        route,
         desired_preview_fps(engine_target_fps, client_cap, page_visible),
         width_cap,
     );
@@ -254,12 +141,10 @@ pub(super) fn request_preview_subscription(
 pub(super) fn request_screen_preview_subscription(
     ws: &dyn WebSocketConnection,
     requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
-    route: PreviewRoute,
     engine_target_fps: u32,
     page_visible: bool,
 ) {
     let request = PreviewSubscriptionRequest::canvas(
-        route,
         desired_preview_fps(engine_target_fps, SCREEN_PREVIEW_FPS_CAP, page_visible),
         0,
     );
@@ -287,18 +172,14 @@ pub(super) fn request_screen_preview_subscription(
 pub(super) fn request_web_viewport_preview_subscription(
     ws: &dyn WebSocketConnection,
     requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
-    route: PreviewRoute,
     engine_target_fps: u32,
     page_visible: bool,
 ) {
-    let request = PreviewSubscriptionRequest::web_viewport(
-        route,
-        desired_preview_fps(
-            engine_target_fps,
-            WEB_VIEWPORT_PREVIEW_FPS_CAP,
-            page_visible,
-        ),
-    );
+    let request = PreviewSubscriptionRequest::web_viewport(desired_preview_fps(
+        engine_target_fps,
+        WEB_VIEWPORT_PREVIEW_FPS_CAP,
+        page_visible,
+    ));
     if requested_preview_request.get_value() == Some(request) {
         return;
     }
@@ -715,120 +596,33 @@ impl PreviewCounterHandle {
 #[cfg(test)]
 mod tests {
     use super::{
-        PreviewRoute, PreviewSubscriptionRequest, REMOTE_PREVIEW_WIDTH_LOW,
-        REMOTE_PREVIEW_WIDTH_MEDIUM, RemotePreviewPath, RemotePreviewProfile,
-        accept_transport_path_report, desired_preview_fps, preview_canvas_format_for_host,
+        PreviewSubscriptionRequest, REMOTE_PREVIEW_WIDTH_LOW, REMOTE_PREVIEW_WIDTH_MEDIUM,
+        canvas_frame_topics_allowed, desired_preview_fps, preview_canvas_format_for_host,
         preview_canvas_request_dimensions_for_host, remote_preview_width_for_fps,
         should_stream_preview, web_viewport_preview_request_dimensions,
     };
-    use crate::remote_bridge::TransportPathReport;
 
-    const REMOTE_PATHS: [RemotePreviewPath; 3] = [
-        RemotePreviewPath::Local,
-        RemotePreviewPath::Direct,
-        RemotePreviewPath::Relayed,
-    ];
+    #[test]
+    fn a_bridge_never_carries_canvas_frame_topics() {
+        assert!(!canvas_frame_topics_allowed(true));
+        assert!(canvas_frame_topics_allowed(false));
+    }
 
-    fn remote_requests(path: RemotePreviewPath) -> Vec<PreviewSubscriptionRequest> {
-        let route = PreviewRoute::Remote(path);
-        let mut requests = Vec::new();
-        for page_visible in [true, false] {
-            for engine_fps in [1, 10, 20, 30, 45, 60] {
-                let fps = desired_preview_fps(engine_fps, 60, page_visible);
-                requests.push(PreviewSubscriptionRequest::web_viewport(route, fps));
-                for width_cap in [0, 160, 320, 480, 704, 960, 2560] {
-                    requests.push(PreviewSubscriptionRequest::canvas(route, fps, width_cap));
-                }
+    #[test]
+    fn local_pages_keep_their_frame_formats() {
+        assert_eq!(
+            PreviewSubscriptionRequest::canvas_for_host("localhost", 30, 0),
+            PreviewSubscriptionRequest {
+                fps: 30,
+                width: 0,
+                height: 0,
+                format: "rgba",
             }
-        }
-        requests
-    }
-
-    #[test]
-    fn bridge_path_kinds_select_the_preview_path() {
-        assert_eq!(
-            RemotePreviewPath::from_bridge_kind("local"),
-            RemotePreviewPath::Local
         );
         assert_eq!(
-            RemotePreviewPath::from_bridge_kind("direct"),
-            RemotePreviewPath::Direct
-        );
-        for kind in ["relay", "turn", "unknown", "", "Direct", "satellite"] {
-            assert_eq!(
-                RemotePreviewPath::from_bridge_kind(kind),
-                RemotePreviewPath::Relayed,
-                "{kind}"
-            );
-        }
-    }
-
-    #[test]
-    fn remote_profile_is_chosen_by_path() {
-        let request = |path, fps, width_cap| {
-            PreviewSubscriptionRequest::canvas(PreviewRoute::Remote(path), fps, width_cap)
-        };
-        let expected = |fps, width| PreviewSubscriptionRequest {
-            fps,
-            width,
-            height: 0,
-            format: "jpeg",
-        };
-        assert_eq!(request(RemotePreviewPath::Local, 60, 0), expected(60, 480));
-        assert_eq!(request(RemotePreviewPath::Direct, 60, 0), expected(30, 480));
-        assert_eq!(
-            request(RemotePreviewPath::Relayed, 60, 0),
-            expected(15, 320)
-        );
-        assert_eq!(request(RemotePreviewPath::Relayed, 6, 0), expected(6, 320));
-        assert_eq!(
-            request(RemotePreviewPath::Direct, 60, 704),
-            expected(30, 480)
-        );
-        assert_eq!(
-            request(RemotePreviewPath::Direct, 20, 256),
-            expected(20, 256)
-        );
-    }
-
-    #[test]
-    fn remote_sessions_never_request_raw_pixels() {
-        for path in REMOTE_PATHS {
-            let profile = RemotePreviewProfile::for_path(path);
-            for request in remote_requests(path) {
-                assert_eq!(request.format, "jpeg", "{path:?} {request:?}");
-                assert!(request.width > 0, "{path:?} {request:?}");
-                assert!(request.width <= profile.max_width, "{path:?} {request:?}");
-                assert!(request.fps <= profile.max_fps, "{path:?} {request:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn a_bridge_overrides_the_loopback_raw_format() {
-        assert_eq!(
-            PreviewSubscriptionRequest::canvas_for_host("localhost", 30, 0).format,
+            PreviewSubscriptionRequest::web_viewport_for_host("127.0.0.1", 15).format,
             "rgba"
         );
-        let route = PreviewRoute::from_remote_path(Some(RemotePreviewPath::Local));
-        assert_eq!(route, PreviewRoute::Remote(RemotePreviewPath::Local));
-        assert_eq!(
-            PreviewSubscriptionRequest::canvas(route, 30, 0).format,
-            "jpeg"
-        );
-        assert_eq!(PreviewRoute::from_remote_path(None), PreviewRoute::Host);
-    }
-
-    #[test]
-    fn path_reports_apply_in_generation_order() {
-        let report = |generation| TransportPathReport {
-            kind: "direct".to_owned(),
-            generation,
-        };
-        assert!(accept_transport_path_report(None, &report(0)));
-        assert!(accept_transport_path_report(Some(4), &report(4)));
-        assert!(accept_transport_path_report(Some(4), &report(5)));
-        assert!(!accept_transport_path_report(Some(4), &report(3)));
     }
 
     #[test]

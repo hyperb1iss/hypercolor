@@ -45,6 +45,7 @@ pub mod pages;
 pub mod preferences;
 pub mod preview_telemetry;
 pub mod remote_bridge;
+pub mod remote_preview;
 pub mod render_canvas;
 pub mod render_presets;
 pub mod route_ui;

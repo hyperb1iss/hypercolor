@@ -36,10 +36,8 @@
 //! The embedder dispatches [`PREVIEW_STATE_EVENT`] on `window` whenever the
 //! state or the stream changes, and the UI reads both methods again.
 //!
-//! Beyond the required members, a bridge may report its transport path
-//! through an optional `transportPath()` method returning
-//! `{ kind, generation }`, and a [`TRANSPORT_PATH_EVENT`] on `window` whose
-//! `detail` has the same shape. The preview sizes its stream from it.
+//! Under a contract 1 bridge the UI shows stills and never asks for video.
+//! Under any bridge it never subscribes to the socket's canvas frame topics.
 
 use crate::route_ui::UiMount;
 
@@ -52,52 +50,6 @@ pub const PREVIEW_VIDEO_CONTRACT: u32 = 2;
 /// Window event a contract 2 bridge dispatches when its preview state or
 /// stream changes.
 pub const PREVIEW_STATE_EVENT: &str = "hypercolor:remote-preview-state";
-
-/// Window event a bridge dispatches when its transport path changes.
-pub const TRANSPORT_PATH_EVENT: &str = "hypercolor:remote-transport-path";
-
-/// One transport path report from the bridge.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransportPathReport {
-    /// Path kind, such as `local`, `direct`, or a relay kind.
-    pub kind: String,
-    /// Monotonic generation; a report older than one already seen is stale.
-    pub generation: u64,
-}
-
-impl TransportPathReport {
-    /// Validate a report's raw fields: a non-empty kind and a generation
-    /// that is a non-negative safe integer.
-    #[must_use]
-    pub fn from_parts(kind: Option<String>, generation: Option<f64>) -> Option<Self> {
-        const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
-        let kind = kind.filter(|kind| !kind.is_empty())?;
-        let generation = generation.filter(|generation| {
-            generation.is_finite()
-                && *generation >= 0.0
-                && generation.fract() == 0.0
-                && *generation <= MAX_SAFE_INTEGER
-        })?;
-        Some(Self {
-            kind,
-            generation: generation as u64,
-        })
-    }
-}
-
-/// Native builds never expose the browser Remote bridge.
-#[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub const fn current_transport_path() -> Option<TransportPathReport> {
-    None
-}
-
-/// Native builds never receive bridge path events.
-#[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub fn transport_path_from_event(_event: &web_sys::Event) -> Option<TransportPathReport> {
-    None
-}
 
 /// Select the contract this build speaks with a bridge offering
 /// `minimum..=maximum`.
@@ -316,8 +268,8 @@ mod browser {
     };
 
     use super::{
-        PREVIEW_VIDEO_CONTRACT, PreviewDemand, PreviewState, TransportPathReport, UiMount,
-        negotiate_contract, resolve_remote_api_url, resolve_remote_api_url_from_base,
+        PREVIEW_VIDEO_CONTRACT, PreviewDemand, PreviewState, UiMount, negotiate_contract,
+        resolve_remote_api_url, resolve_remote_api_url_from_base,
     };
 
     thread_local! {
@@ -434,33 +386,6 @@ mod browser {
     #[must_use]
     pub fn is_available() -> bool {
         bridge_value().is_some()
-    }
-
-    /// The bridge's current transport path, when it reports one.
-    #[must_use]
-    pub fn current_transport_path() -> Option<TransportPathReport> {
-        let bridge = bridge_value()?;
-        let report = method(&bridge, "transportPath").ok()?.call0(&bridge).ok()?;
-        transport_path_from_value(&report)
-    }
-
-    /// Read the report a [`super::TRANSPORT_PATH_EVENT`] carries in `detail`.
-    #[must_use]
-    pub fn transport_path_from_event(event: &web_sys::Event) -> Option<TransportPathReport> {
-        let detail = get(event.as_ref(), "detail").ok()?;
-        transport_path_from_value(&detail)
-    }
-
-    fn transport_path_from_value(value: &JsValue) -> Option<TransportPathReport> {
-        if !value.is_object() {
-            return None;
-        }
-        TransportPathReport::from_parts(
-            get(value, "kind").ok().and_then(|kind| kind.as_string()),
-            get(value, "generation")
-                .ok()
-                .and_then(|generation| generation.as_f64()),
-        )
     }
 
     /// The installed bridge's preview members, when it speaks contract 2.
@@ -1259,40 +1184,13 @@ export function socketHandlersCleared() {
 
 #[cfg(target_arch = "wasm32")]
 pub use browser::{
-    BridgeContract, PreviewChannel, RemoteBridge, RemoteBridgeError, current_transport_path,
-    initialize, is_available, negotiate, preview_channel, transport_path_from_event,
+    BridgeContract, PreviewChannel, RemoteBridge, RemoteBridgeError, initialize, is_available,
+    negotiate, preview_channel,
 };
 
 #[cfg(test)]
 mod tests {
-    use super::{TransportPathReport, is_available, resolve_remote_api_url};
-
-    #[test]
-    fn path_reports_need_a_kind_and_a_safe_generation() {
-        assert_eq!(
-            TransportPathReport::from_parts(Some("direct".to_owned()), Some(7.0)),
-            Some(TransportPathReport {
-                kind: "direct".to_owned(),
-                generation: 7,
-            })
-        );
-        for (kind, generation) in [
-            (None, Some(1.0)),
-            (Some(String::new()), Some(1.0)),
-            (Some("direct".to_owned()), None),
-            (Some("direct".to_owned()), Some(-1.0)),
-            (Some("direct".to_owned()), Some(1.5)),
-            (Some("direct".to_owned()), Some(f64::NAN)),
-            (Some("direct".to_owned()), Some(f64::INFINITY)),
-            (Some("direct".to_owned()), Some(9_007_199_254_740_992.0)),
-        ] {
-            assert_eq!(
-                TransportPathReport::from_parts(kind.clone(), generation),
-                None,
-                "{kind:?} {generation:?}"
-            );
-        }
-    }
+    use super::{is_available, resolve_remote_api_url};
 
     const DAEMON: &str = "018f4c36-4a44-7cc9-9f57-0d2e9224d2f1";
 
