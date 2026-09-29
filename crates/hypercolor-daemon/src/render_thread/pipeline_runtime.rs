@@ -73,7 +73,9 @@ use super::sparkleflinger::{
     SparkleFlingerSamplingPreparation,
 };
 use super::{RenderThreadState, micros_u32};
-use crate::interaction_routing::{InteractionRoutingControl, selected_input_availability};
+use crate::interaction_routing::{
+    InteractionRoutingControl, selected_host_statuses, selected_input_availability,
+};
 use crate::scene_transactions::{LayoutActivationControl, LayoutTransactionRejection};
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 100;
@@ -267,8 +269,13 @@ impl InputRouteCache {
             self.rebuild_routes(&graph);
         }
         let browser_registry = self.interaction_routing.browser_registry_snapshot();
-        self.interaction_catalog
-            .refresh(&graph, &browser_registry, Instant::now());
+        let device_registry = self.interaction_routing.device_registry_snapshot();
+        self.interaction_catalog.refresh(
+            &graph,
+            &browser_registry,
+            &device_registry,
+            Instant::now(),
+        );
 
         inputs.prepare_for_sample(None);
         self.route_latest_into(&graph, inputs);
@@ -375,11 +382,7 @@ impl InputRouteCache {
             &mut self.routed_interaction.interaction,
         );
         inputs.input_availability = selected_input_availability(
-            self.routed_interaction
-                .diagnostics
-                .selected
-                .iter()
-                .filter_map(|source| source.status.as_ref()),
+            selected_host_statuses(&self.routed_interaction.diagnostics.selected),
             Instant::now(),
         );
         for event in &mut inputs.interaction.batch.events {
@@ -396,18 +399,16 @@ impl InputRouteCache {
             self.rebuild_routes(&graph);
         }
         let browser = self.interaction_routing.browser_registry_snapshot();
+        let device = self.interaction_routing.device_registry_snapshot();
         let now = Instant::now();
-        self.interaction_catalog.refresh(&graph, &browser, now);
+        self.interaction_catalog
+            .refresh(&graph, &browser, &device, now);
         self.interaction_availability(now)
     }
 
     fn interaction_availability(&self, now: Instant) -> InputSourceAvailability {
         selected_input_availability(
-            self.routed_interaction
-                .diagnostics
-                .selected
-                .iter()
-                .filter_map(|source| source.status.as_ref()),
+            selected_host_statuses(&self.routed_interaction.diagnostics.selected),
             now,
         )
     }
@@ -2562,9 +2563,10 @@ mod tests {
             routes.rebuild_routes(graph);
         }
         let registry = routes.interaction_routing.browser_registry_snapshot();
+        let devices = routes.interaction_routing.device_registry_snapshot();
         routes
             .interaction_catalog
-            .refresh(graph, &registry, Instant::now());
+            .refresh(graph, &registry, &devices, Instant::now());
         inputs.prepare_for_sample(None);
         routes.route_latest_into(graph, inputs);
         routes.route_interaction_into(event_bus, inputs);

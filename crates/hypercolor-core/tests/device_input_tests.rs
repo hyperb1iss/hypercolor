@@ -1,10 +1,16 @@
 use std::sync::Arc;
+use std::time::Instant;
 
+use hypercolor_core::input::routing::{
+    ConsumerIncarnation, InteractionRouteCatalog, InteractionRouteRequest,
+    InteractionRouteSourceClass, InteractionRouter, RoutedInteraction,
+};
 use hypercolor_core::input::{
-    DeviceButtonHold, DeviceInputChildSlot, DeviceInputHandle, DeviceInputRegistryError, InputData,
-    InteractionData, SourceState, TouchContact,
+    BrowserInputHandle, DeviceButtonHold, DeviceInputChildSlot, DeviceInputHandle,
+    DeviceInputRegistryError, InputData, InputManager, InteractionData, SourceState, TouchContact,
 };
 use hypercolor_driver_api::DeviceInputSink;
+use hypercolor_types::config::InteractionRoutePolicy;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::device_input::{DeviceInputEdge, TouchPosition};
 use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent, TouchPhase};
@@ -476,4 +482,246 @@ fn merged_snapshots_union_device_holds_per_device() {
         "the same contact on the same device is held once"
     );
     assert_eq!(first.device.buttons, vec![hold(lightpad), hold(lumi)]);
+}
+
+/// One routed consumer over an empty host graph, an empty browser registry,
+/// and a device registry.
+struct DeviceRoute {
+    manager: InputManager,
+    browser: BrowserInputHandle,
+    devices: DeviceInputHandle,
+    catalog: InteractionRouteCatalog,
+    router: InteractionRouter,
+    output: RoutedInteraction,
+    now_ms: u64,
+}
+
+impl DeviceRoute {
+    fn new(devices: &DeviceInputHandle) -> Self {
+        Self {
+            manager: InputManager::new(),
+            browser: BrowserInputHandle::new(),
+            devices: devices.clone(),
+            catalog: InteractionRouteCatalog::default(),
+            router: InteractionRouter::default(),
+            output: RoutedInteraction::new(ConsumerIncarnation::new(1)),
+            now_ms: 0,
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.catalog.refresh(
+            &self.manager.input_graph_handle().snapshot(),
+            &self.browser.registry().snapshot(),
+            &self.devices.registry().snapshot(),
+            Instant::now(),
+        );
+    }
+
+    fn resolve(&mut self, policy: InteractionRoutePolicy) -> &InteractionData {
+        self.refresh();
+        self.now_ms += 16;
+        self.catalog.resolve_into(
+            &mut self.router,
+            ConsumerIncarnation::new(1),
+            InteractionRouteRequest {
+                policy,
+                browser_source: None,
+            },
+            0,
+            self.now_ms,
+            &mut self.output,
+        );
+        &self.output.interaction
+    }
+
+    fn host(&mut self) -> &InteractionData {
+        self.resolve(InteractionRoutePolicy::Host)
+    }
+}
+
+#[test]
+fn device_sources_follow_host_policy_but_not_browser_previews() {
+    let devices = demanded_handle();
+    let _attachment = devices.attach(DeviceId::new(), "pad");
+    let mut route = DeviceRoute::new(&devices);
+    route.refresh();
+    assert_eq!(
+        route
+            .catalog
+            .sources()
+            .iter()
+            .map(|source| source.class)
+            .collect::<Vec<_>>(),
+        [InteractionRouteSourceClass::Device]
+    );
+    assert!(route.catalog.sources()[0].incarnation.is_device());
+
+    for (policy, selected) in [
+        (InteractionRoutePolicy::Host, 1),
+        (InteractionRoutePolicy::Merge, 1),
+        (InteractionRoutePolicy::Browser, 0),
+    ] {
+        route.resolve(policy);
+        assert_eq!(
+            route.output.diagnostics.selected.len(),
+            selected,
+            "{policy:?} device selection"
+        );
+    }
+}
+
+#[test]
+fn routed_touches_carry_begin_and_end_edges_and_live_positions() {
+    let devices = demanded_handle();
+    let device = DeviceId::new();
+    let pad = devices.attach(device, "pad");
+    let mut route = DeviceRoute::new(&devices);
+    route.host();
+
+    pad.inject(&[began(3, at(0.25, 0.5, 0.5))]).expect("inject");
+    let routed = route.host();
+    assert_eq!(
+        touch_edges(&routed.batch.events),
+        vec![(3, TouchPhase::Began)]
+    );
+    assert_eq!(
+        routed.device.touches,
+        vec![TouchContact {
+            device_id: device,
+            contact: 3,
+            x: 0.25,
+            y: 0.5,
+            pressure: 0.5,
+        }]
+    );
+    let began_generation = routed.generation;
+
+    pad.inject(&[moved(3, at(0.75, 0.5, 0.9))]).expect("inject");
+    let routed = route.host();
+    assert!(routed.batch.events.is_empty());
+    assert_eq!(
+        (
+            routed.device.touches[0].x,
+            routed.device.touches[0].pressure
+        ),
+        (0.75, 0.9)
+    );
+    assert!(routed.generation > began_generation);
+
+    pad.inject(&[ended(3, at(0.75, 0.5, 0.0))]).expect("inject");
+    let routed = route.host();
+    assert_eq!(
+        touch_edges(&routed.batch.events),
+        vec![(3, TouchPhase::Ended)]
+    );
+    assert!(routed.device.is_empty());
+}
+
+#[test]
+fn detaching_a_device_cancels_what_the_consumer_observed() {
+    let devices = demanded_handle();
+    let pad = devices.attach(DeviceId::new(), "pad");
+    let mut route = DeviceRoute::new(&devices);
+    route.host();
+    pad.inject(&[
+        began(0, at(0.5, 0.5, 0.5)),
+        button("mode", InputButtonState::Pressed),
+    ])
+    .expect("inject");
+    route.host();
+
+    drop(pad);
+    let routed = route.host();
+    assert_eq!(
+        touch_edges(&routed.batch.events),
+        vec![(0, TouchPhase::Cancelled)]
+    );
+    assert_eq!(
+        button_edges(&routed.batch.events),
+        vec![("mode".to_owned(), InputButtonState::Released)]
+    );
+    assert!(routed.device.is_empty());
+}
+
+#[test]
+fn holds_older_than_the_consumer_stay_quarantined_until_they_end() {
+    let devices = demanded_handle();
+    let pad = devices.attach(DeviceId::new(), "pad");
+    pad.inject(&[began(0, at(0.5, 0.5, 0.5))]).expect("inject");
+
+    let mut route = DeviceRoute::new(&devices);
+    assert!(route.host().device.is_empty());
+
+    pad.inject(&[ended(0, at(0.5, 0.5, 0.0))]).expect("inject");
+    assert!(route.host().batch.events.is_empty());
+
+    pad.inject(&[began(0, at(0.5, 0.5, 0.5))]).expect("inject");
+    let routed = route.host();
+    assert_eq!(
+        touch_edges(&routed.batch.events),
+        vec![(0, TouchPhase::Began)]
+    );
+    assert_eq!(routed.device.touches.len(), 1);
+}
+
+#[test]
+fn losing_demand_releases_routed_holds_and_later_taps_route_again() {
+    let devices = demanded_handle();
+    let pad = devices.attach(DeviceId::new(), "pad");
+    let mut route = DeviceRoute::new(&devices);
+    route.host();
+    pad.inject(&[began(0, at(0.5, 0.5, 0.5))]).expect("inject");
+    route.host();
+
+    devices.set_demanded(false);
+    let routed = route.host();
+    assert_eq!(
+        touch_edges(&routed.batch.events),
+        vec![(0, TouchPhase::Cancelled)]
+    );
+    assert!(routed.device.is_empty());
+
+    devices.set_demanded(true);
+    pad.inject(&[ended(0, at(0.5, 0.5, 0.0)), began(0, at(0.2, 0.2, 0.5))])
+        .expect("inject");
+    let routed = route.host();
+    assert_eq!(
+        touch_edges(&routed.batch.events),
+        vec![(0, TouchPhase::Began)]
+    );
+    assert_eq!(routed.device.touches[0].x, 0.2);
+}
+
+#[test]
+fn routed_device_buttons_hold_until_release() {
+    let devices = demanded_handle();
+    let device = DeviceId::new();
+    let keys = devices.attach(device, "keys");
+    let mut route = DeviceRoute::new(&devices);
+    route.host();
+
+    keys.inject(&[button("up", InputButtonState::Pressed)])
+        .expect("inject");
+    let routed = route.host();
+    assert_eq!(
+        button_edges(&routed.batch.events),
+        vec![("up".to_owned(), InputButtonState::Pressed)]
+    );
+    assert_eq!(
+        routed.device.buttons,
+        vec![DeviceButtonHold {
+            device_id: device,
+            button: Arc::from("up"),
+        }]
+    );
+
+    keys.inject(&[button("up", InputButtonState::Released)])
+        .expect("inject");
+    let routed = route.host();
+    assert_eq!(
+        button_edges(&routed.batch.events),
+        vec![("up".to_owned(), InputButtonState::Released)]
+    );
+    assert!(routed.device.buttons.is_empty());
 }
