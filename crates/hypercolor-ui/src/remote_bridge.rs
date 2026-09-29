@@ -3,6 +3,39 @@
 //! The module knows only the JavaScript transport contract. Cloud identity,
 //! tickets, encryption, and account policy remain in the embedding loader.
 //!
+//! # Contract
+//!
+//! The embedder publishes `window.__HYPERCOLOR_REMOTE__` with
+//! `contract: { min, max }`, `daemonId`, `mount`, and the methods `request`,
+//! `openSocket`, `ready` and `fatal`. This build speaks contracts
+//! [`CONTRACT_MIN`] through [`CONTRACT_MAX`] and selects the highest one both
+//! sides support.
+//!
+//! Contract 2 carries the live canvas preview as a video track the embedder
+//! receives, through three more methods:
+//!
+//! - `previewState()` returns `"unsupported"`, `"connecting"` or `"live"`.
+//! - `previewStream()` returns the `MediaStream` holding the track, or `null`
+//!   before one exists.
+//! - `setPreview({ enabled, maxWidth })` takes the page's whole preview
+//!   demand and replaces the previous one: `enabled` while any preview is on
+//!   screen in a visible page, and `maxWidth` the longest edge, in device
+//!   pixels, of the largest preview on screen (0 when none is, and kept
+//!   while the page is hidden). The UI calls it the moment its demand
+//!   changes, and only then.
+//!
+//! The embedder keeps the latest demand whatever state its session is in
+//! and never throws from `setPreview`: a call that throws is offered again
+//! only on the next demand change or [`PREVIEW_STATE_EVENT`]. Pacing and
+//! replay belong to the embedder too. It tells the two reasons for
+//! `enabled: false` apart by reading `document.visibilityState` when the
+//! call arrives, stopping at once for a hidden page and after a grace
+//! period for a preview scrolled out of view in a visible one, and it
+//! replays the current demand to every new session.
+//!
+//! The embedder dispatches [`PREVIEW_STATE_EVENT`] on `window` whenever the
+//! state or the stream changes, and the UI reads both methods again.
+//!
 //! Beyond the required members, a bridge may report its transport path
 //! through an optional `transportPath()` method returning
 //! `{ kind, generation }`, and a [`TRANSPORT_PATH_EVENT`] on `window` whose
@@ -11,7 +44,14 @@
 use crate::route_ui::UiMount;
 
 pub const CONTRACT_MIN: u32 = 1;
-pub const CONTRACT_MAX: u32 = 1;
+pub const CONTRACT_MAX: u32 = 2;
+
+/// The first contract that carries the live preview as video.
+pub const PREVIEW_VIDEO_CONTRACT: u32 = 2;
+
+/// Window event a contract 2 bridge dispatches when its preview state or
+/// stream changes.
+pub const PREVIEW_STATE_EVENT: &str = "hypercolor:remote-preview-state";
 
 /// Window event a bridge dispatches when its transport path changes.
 pub const TRANSPORT_PATH_EVENT: &str = "hypercolor:remote-transport-path";
@@ -56,6 +96,101 @@ pub const fn current_transport_path() -> Option<TransportPathReport> {
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn transport_path_from_event(_event: &web_sys::Event) -> Option<TransportPathReport> {
+    None
+}
+
+/// Select the contract this build speaks with a bridge offering
+/// `minimum..=maximum`.
+///
+/// # Errors
+///
+/// Returns `remote_contract_mismatch` for an empty or inverted range and
+/// for a range this build cannot meet.
+pub const fn negotiate_contract(minimum: u32, maximum: u32) -> Result<u32, &'static str> {
+    if minimum == 0 || maximum == 0 || minimum > maximum {
+        return Err("remote_contract_mismatch");
+    }
+    let selected = if CONTRACT_MAX < maximum {
+        CONTRACT_MAX
+    } else {
+        maximum
+    };
+    if selected < CONTRACT_MIN || selected < minimum {
+        return Err("remote_contract_mismatch");
+    }
+    Ok(selected)
+}
+
+/// Where the bridge's live preview stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewState {
+    /// No video will come: the bridge or the computer lacks it.
+    Unsupported,
+    /// Video is expected but not playing yet.
+    Connecting,
+    /// The stream carries the live canvas.
+    Live,
+}
+
+impl PreviewState {
+    /// Read a bridge's reported state. `live` counts only with a stream to
+    /// play, and a missing or unknown state reads as `connecting`, so a
+    /// newer embedder never makes this build claim video it cannot show.
+    #[must_use]
+    pub fn from_bridge(state: Option<&str>, has_stream: bool) -> Self {
+        match state {
+            Some("unsupported") => Self::Unsupported,
+            Some("live") if has_stream => Self::Live,
+            _ => Self::Connecting,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::Connecting => "connecting",
+            Self::Live => "live",
+        }
+    }
+}
+
+/// The page's preview demand, as `setPreview` receives it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PreviewDemand {
+    pub enabled: bool,
+    /// Longest edge in device pixels of the largest preview on screen.
+    pub max_width: u32,
+}
+
+/// Native builds never install a bridge, so they never hold its preview.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub struct PreviewChannel {
+    never: std::convert::Infallible,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PreviewChannel {
+    #[must_use]
+    pub fn state(&self) -> PreviewState {
+        match self.never {}
+    }
+
+    #[must_use]
+    pub fn stream(&self) -> Option<web_sys::MediaStream> {
+        match self.never {}
+    }
+
+    pub fn set_preview(&self, _demand: PreviewDemand) -> bool {
+        match self.never {}
+    }
+}
+
+/// Native builds never install a bridge.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub const fn preview_channel() -> Option<PreviewChannel> {
     None
 }
 
@@ -181,13 +316,19 @@ mod browser {
     };
 
     use super::{
-        CONTRACT_MAX, CONTRACT_MIN, TransportPathReport, UiMount, resolve_remote_api_url,
-        resolve_remote_api_url_from_base,
+        PREVIEW_VIDEO_CONTRACT, PreviewDemand, PreviewState, TransportPathReport, UiMount,
+        negotiate_contract, resolve_remote_api_url, resolve_remote_api_url_from_base,
     };
+
+    thread_local! {
+        static PREVIEW_CHANNEL: std::cell::RefCell<Option<PreviewChannel>> =
+            const { std::cell::RefCell::new(None) };
+    }
 
     pub struct RemoteBridge {
         value: JsValue,
         routes: UiMount,
+        contract: u32,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -206,6 +347,87 @@ mod browser {
         #[must_use]
         pub fn ui_mount(&self, application: &UiMount) -> UiMount {
             application.with_routes_from(&self.routes)
+        }
+
+        /// The contract this build selected with the bridge.
+        #[must_use]
+        pub const fn contract(&self) -> u32 {
+            self.contract
+        }
+    }
+
+    /// A bridge checked against this build's contract, before anything is
+    /// installed.
+    pub struct BridgeContract {
+        /// The contract selected with the bridge.
+        pub contract: u32,
+        /// The video preview members, present from contract 2.
+        pub preview: Option<PreviewChannel>,
+        routes: UiMount,
+        base: String,
+    }
+
+    /// Contract 2's live preview members of an installed bridge.
+    #[derive(Clone, Debug)]
+    pub struct PreviewChannel {
+        value: JsValue,
+    }
+
+    impl PreviewChannel {
+        /// Take the preview members of a bridge object.
+        ///
+        /// # Errors
+        ///
+        /// Returns `remote_contract_invalid` when `previewState`,
+        /// `previewStream` or `setPreview` is not a function.
+        pub fn from_bridge(value: &JsValue) -> Result<Self, &'static str> {
+            for name in ["previewState", "previewStream", "setPreview"] {
+                method(value, name)?;
+            }
+            Ok(Self {
+                value: value.clone(),
+            })
+        }
+
+        /// The bridge's preview state, as far as this build can show it.
+        #[must_use]
+        pub fn state(&self) -> PreviewState {
+            let state = call0(&self.value, "previewState")
+                .ok()
+                .and_then(|state| state.as_string());
+            PreviewState::from_bridge(state.as_deref(), self.stream().is_some())
+        }
+
+        /// The stream holding the received video track, when one exists.
+        #[must_use]
+        pub fn stream(&self) -> Option<web_sys::MediaStream> {
+            call0(&self.value, "previewStream")
+                .ok()?
+                .dyn_into::<web_sys::MediaStream>()
+                .ok()
+        }
+
+        /// Hand the bridge the page's whole preview demand. Returns whether
+        /// the bridge accepted the call.
+        pub fn set_preview(&self, demand: PreviewDemand) -> bool {
+            let init = Object::new();
+            let fields = [
+                ("enabled", JsValue::from_bool(demand.enabled)),
+                ("maxWidth", JsValue::from_f64(f64::from(demand.max_width))),
+            ];
+            if fields
+                .iter()
+                .any(|(name, value)| Reflect::set(&init, &JsValue::from_str(name), value).is_err())
+            {
+                return false;
+            }
+            method(&self.value, "setPreview")
+                .and_then(|function| {
+                    function
+                        .call1(&self.value, &init)
+                        .map_err(|_| "remote_preview_failed")
+                })
+                .is_ok()
         }
     }
 
@@ -241,6 +463,12 @@ mod browser {
         )
     }
 
+    /// The installed bridge's preview members, when it speaks contract 2.
+    #[must_use]
+    pub fn preview_channel() -> Option<PreviewChannel> {
+        PREVIEW_CHANNEL.with_borrow(Clone::clone)
+    }
+
     pub fn initialize() -> Result<Option<RemoteBridge>, RemoteBridgeError> {
         let Some(value) = bridge_value() else {
             return Ok(None);
@@ -252,6 +480,16 @@ mod browser {
         result.map(Some).map_err(|code| RemoteBridgeError { code })
     }
 
+    /// Check a bridge object against this build's contract without
+    /// installing any transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns the code [`initialize`] would report to the bridge's `fatal`.
+    pub fn negotiate(value: &JsValue) -> Result<BridgeContract, RemoteBridgeError> {
+        negotiate_value(value).map_err(|code| RemoteBridgeError { code })
+    }
+
     fn bridge_value() -> Option<JsValue> {
         let window = web_sys::window()?;
         Reflect::get(window.as_ref(), &JsValue::from_str("__HYPERCOLOR_REMOTE__"))
@@ -259,34 +497,51 @@ mod browser {
             .filter(|value| !value.is_null() && !value.is_undefined())
     }
 
-    fn initialize_value(value: JsValue) -> Result<RemoteBridge, &'static str> {
-        let contract = get(&value, "contract")?;
-        let minimum = integer(&contract, "min")?;
-        let maximum = integer(&contract, "max")?;
-        if minimum == 0 || maximum == 0 || minimum > maximum {
-            return Err("remote_contract_mismatch");
-        }
-        let selected = CONTRACT_MAX.min(maximum);
-        if selected < CONTRACT_MIN || selected < minimum {
-            return Err("remote_contract_mismatch");
-        }
-        let daemon_id = string(&value, "daemonId")?;
-        let mount_value = string(&value, "mount")?;
+    fn negotiate_value(value: &JsValue) -> Result<BridgeContract, &'static str> {
+        let contract = get(value, "contract")?;
+        let selected = negotiate_contract(integer(&contract, "min")?, integer(&contract, "max")?)?;
+        let daemon_id = string(value, "daemonId")?;
+        let mount_value = string(value, "mount")?;
         let routes = UiMount::new(&mount_value, "").map_err(|_| "remote_mount_invalid")?;
         let base = resolve_remote_api_url(&mount_value, &daemon_id, "/api/v1")
             .ok_or("remote_mount_invalid")?
             .trim_end_matches("/api/v1")
             .to_owned();
         for name in ["request", "openSocket", "ready", "fatal"] {
-            method(&value, name)?;
+            method(value, name)?;
         }
+        let preview = if selected >= PREVIEW_VIDEO_CONTRACT {
+            Some(PreviewChannel::from_bridge(value)?)
+        } else {
+            None
+        };
+        Ok(BridgeContract {
+            contract: selected,
+            preview,
+            routes,
+            base,
+        })
+    }
+
+    fn initialize_value(value: JsValue) -> Result<RemoteBridge, &'static str> {
+        let BridgeContract {
+            contract,
+            preview,
+            routes,
+            base,
+        } = negotiate_value(&value)?;
         install_remote_daemon_connection(&base);
         let bridge = Rc::new(value.clone());
         install_http_transport(Rc::new(BridgeHttp(Rc::clone(&bridge))))
             .map_err(|_| "remote_http_transport_unavailable")?;
         install_websocket_transport(Rc::new(BridgeWebSocket(bridge)))
             .map_err(|_| "remote_socket_transport_unavailable")?;
-        Ok(RemoteBridge { value, routes })
+        PREVIEW_CHANNEL.set(preview);
+        Ok(RemoteBridge {
+            value,
+            routes,
+            contract,
+        })
     }
 
     fn fatal(value: &JsValue, code: &str) {
@@ -492,7 +747,10 @@ mod browser {
 
     fn body_stream(body: HttpBody) -> web_sys::ReadableStream {
         let stream = futures_util::stream::unfold(body, |mut body| async move {
-            match body.read_chunk(NonZeroUsize::new(64 * 1024).unwrap()).await {
+            match body
+                .read_chunk(NonZeroUsize::new(64 * 1024).expect("64 KiB is nonzero"))
+                .await
+            {
                 Ok(Some(bytes)) => Some((Ok(Uint8Array::from(bytes.as_slice()).into()), body)),
                 Ok(None) => None,
                 Err(error) => Some((Err(JsValue::from_str(&error.to_string())), body)),
@@ -504,7 +762,7 @@ mod browser {
     async fn collect_body(mut body: HttpBody) -> Result<Vec<u8>, HttpStreamError> {
         let mut bytes = Vec::new();
         while let Some(chunk) = body
-            .read_chunk(NonZeroUsize::new(64 * 1024).unwrap())
+            .read_chunk(NonZeroUsize::new(64 * 1024).expect("64 KiB is nonzero"))
             .await?
         {
             bytes.extend(chunk);
@@ -1001,8 +1259,8 @@ export function socketHandlersCleared() {
 
 #[cfg(target_arch = "wasm32")]
 pub use browser::{
-    RemoteBridge, RemoteBridgeError, current_transport_path, initialize, is_available,
-    transport_path_from_event,
+    BridgeContract, PreviewChannel, RemoteBridge, RemoteBridgeError, current_transport_path,
+    initialize, is_available, negotiate, preview_channel, transport_path_from_event,
 };
 
 #[cfg(test)]
