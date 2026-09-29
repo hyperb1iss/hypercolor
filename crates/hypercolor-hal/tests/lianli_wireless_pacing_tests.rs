@@ -945,6 +945,55 @@ fn a_cluster_with_persistently_late_echoes_does_not_starve_its_neighbour() {
     );
 }
 
+/// Three clusters oversubscribing a slow radio with a one-second status for
+/// eight minutes: the backlog stays well short of the stall verdict, so
+/// the TX is never reset, and every cluster keeps streaming. Each cluster
+/// halving only its own window left the others to keep the shared queue
+/// full; echo ages passed five seconds and a cluster starved into a reset.
+#[test]
+fn three_clusters_on_a_slow_radio_with_a_slow_status_never_reach_the_stall_verdict() {
+    let mut radio = FakeRadio::two_clusters();
+    radio
+        .clusters
+        .push(FakeRadio::one_cluster().clusters.remove(0));
+    radio.air_time = Duration::from_millis(20);
+    radio.report_interval = Duration::from_secs(1);
+    radio.report_jitter = Duration::from_millis(100);
+    radio.snapshot_lag = Duration::from_millis(200);
+    let mut rig = Rig::connect(radio);
+    rig.frame = Box::new(|index| {
+        let mut colors = moving_frame(index);
+        colors.extend(moving_frame(index + 7_777));
+        colors.extend(moving_frame(index + 15_554));
+        colors
+    });
+    let run = slices(&mut rig, 96);
+
+    assert!(
+        rig.radio.resets.is_empty(),
+        "a backlog is not a wedge: {} resets",
+        rig.radio.resets.len()
+    );
+    let capacity = SLOW_RADIO_TRANSFERS_PER_S * 5;
+    for slice in &run[6..] {
+        assert!(
+            slice.echo_age <= Duration::from_secs(4),
+            "the mean echo age stays well short of the 5 s stall verdict: {run:?}"
+        );
+        assert!(
+            slice.delivered * 100 >= capacity * 70,
+            "the three keep most of what the radio carries: {run:?}"
+        );
+        assert!(
+            slice
+                .taken
+                .iter()
+                .all(|taken| u64::try_from(*taken).expect("count") * 100 >= capacity * 10),
+            "each cluster gets at least a tenth of the radio in every slice: {run:?}"
+        );
+    }
+}
+
 #[test]
 fn a_still_scene_costs_only_the_upkeep_the_fans_need() {
     let mut rig = Rig::connect(FakeRadio::one_cluster());

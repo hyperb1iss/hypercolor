@@ -27,14 +27,16 @@
 //! - Only sustained evidence shrinks the window: more than [`OVERDUE_LIMIT`]
 //!   overdue at [`BACKLOG_EVIDENCE`] advancing echoes in a row halves it,
 //!   at most once per [`DECREASE_HOLDOFF_STATUSES`] status intervals and
-//!   once per window of sends. So the TX holds a bounded backlog when the
-//!   radio really is slower than the stream, and delivery tracks the
-//!   radio's own rate.
+//!   once per window of sends. Every cluster's frames wait in the one TX
+//!   queue, so the halving applies to every cluster on the controller. So
+//!   the TX holds a bounded backlog when the radio really is slower than
+//!   the stream, and delivery tracks the radio's own rate.
 //! - Clusters are paced independently: a frame goes to every cluster it
 //!   changes that has room, and waits for the rest, where a newer frame
 //!   replaces it, so what goes out next is always the newest frame, never a
-//!   queue of stale ones. One cluster with a slow radio, or one the RX
-//!   cannot hear, never throttles the others.
+//!   queue of stale ones. One cluster whose echoes lag, or one the RX
+//!   cannot hear, never throttles the others; only a backlog in the shared
+//!   TX shrinks them together.
 //! - Each send gets its own wire tag: the frame's pixel hash mixed with a
 //!   send number that runs for the whole process from a wall-clock seed,
 //!   and never the tag the cluster echoes at that moment. An echo therefore
@@ -522,6 +524,28 @@ impl ClusterLink {
         self.echo_gap.unwrap_or(STATUS_UNKNOWN)
     }
 
+    /// Whether the window may halve at `now`: once per window of sends,
+    /// and at most once per [`DECREASE_HOLDOFF_STATUSES`] status intervals.
+    fn may_decrease(&self, now: Instant) -> bool {
+        let holdoff = self
+            .status_interval()
+            .saturating_mul(DECREASE_HOLDOFF_STATUSES);
+        let held_off = self
+            .last_decrease_at
+            .is_some_and(|at| now.saturating_duration_since(at) < holdoff);
+        self.acked_seq >= self.recovery_until && !held_off
+    }
+
+    fn halve(&mut self, now: Instant) {
+        self.ssthresh = (self.window / 2).max(MIN_WINDOW);
+        self.window = self.ssthresh;
+        self.avoid_credit = 0;
+        self.recovery_until = self.next_seq - 1;
+        self.window_limited = false;
+        self.backlog_streak = 0;
+        self.last_decrease_at = Some(now);
+    }
+
     /// Grow or shrink the window on an advancing echo at `now` that
     /// confirmed `sends` sends and found `overdue` of the later ones
     /// overdue. Returns whether the window halved.
@@ -532,23 +556,8 @@ impl ClusterLink {
         } else {
             self.backlog_streak = 0;
         }
-        let holdoff = self
-            .status_interval()
-            .saturating_mul(DECREASE_HOLDOFF_STATUSES);
-        let held_off = self
-            .last_decrease_at
-            .is_some_and(|at| now.saturating_duration_since(at) < holdoff);
-        if self.backlog_streak >= BACKLOG_EVIDENCE
-            && self.acked_seq >= self.recovery_until
-            && !held_off
-        {
-            self.ssthresh = (self.window / 2).max(MIN_WINDOW);
-            self.window = self.ssthresh;
-            self.avoid_credit = 0;
-            self.recovery_until = self.next_seq - 1;
-            self.window_limited = false;
-            self.backlog_streak = 0;
-            self.last_decrease_at = Some(now);
+        if self.backlog_streak >= BACKLOG_EVIDENCE && self.may_decrease(now) {
+            self.halve(now);
             return true;
         }
         let limited = std::mem::take(&mut self.window_limited);
@@ -951,15 +960,28 @@ impl DeliveryPacer {
             info!(cluster, "wireless fans confirming frames again");
         }
         let halved = link.adjust_window(sends, overdue, now);
+        let mac = link.mac;
+        let mut shared = 0_u64;
         if halved {
+            // Every cluster's frames wait in the one TX queue. Halving only
+            // the cluster that saw the backlog leaves the others to keep it
+            // full, and each cluster's base delay then absorbs it: with
+            // three clusters on a slow radio the backlog grew past the stall
+            // verdict. So the whole controller answers it.
+            for (other, peer) in self.links.iter_mut().enumerate() {
+                if other != cluster && !peer.holding && peer.may_decrease(now) {
+                    peer.halve(now);
+                    shared += 1;
+                }
+            }
             debug!(
                 cluster,
                 overdue,
-                window = link.window,
-                "wireless TX holding a backlog; halving the window"
+                window = self.links[cluster].window,
+                shared,
+                "wireless TX holding a backlog; halving the windows"
             );
         }
-        let mac = link.mac;
 
         self.count(|stats| {
             stats.echo_advances += 1;
@@ -978,7 +1000,7 @@ impl DeliveryPacer {
                 stats.late_echoes += 1;
             }
             if halved {
-                stats.congestion_events += 1;
+                stats.congestion_events += 1 + shared;
             }
         });
         if let Some(mac) = mac {
@@ -1343,6 +1365,40 @@ mod tests {
         at += Duration::from_millis(1_700);
         assert!(link.adjust_window(1, 4, at), "after the holdoff it may");
         assert_eq!(link.window, 4);
+    }
+
+    #[test]
+    fn a_backlog_one_cluster_sees_halves_every_window_on_the_tx() {
+        let now = Instant::now();
+        let mut pacer = connected(now);
+        pacer.ensure_clusters(2);
+        for link in &mut pacer.links {
+            link.window = 16;
+            link.ssthresh = 16;
+            link.echo_gap = Some(Duration::from_millis(550));
+        }
+        let mut wires = Vec::new();
+        for index in 0..16 {
+            let at = now + Duration::from_millis(33 * index);
+            let content = frame(u32::try_from(index).expect("small") + 1);
+            pacer.submit(0, content);
+            let kind = pacer.decide(0, at).expect("room");
+            wires.push(pacer.note_sent(0, content, kind, at));
+        }
+        pacer.links[0].sample_base_delay(now, Duration::from_millis(40));
+        // Three statuses 550 ms apart, each confirming one more send while
+        // the rest wait far past a status interval: a sustained backlog.
+        let first = now + Duration::from_millis(33 * 15 + 1_500);
+        for (step, wire) in wires[1..4].iter().enumerate() {
+            let at = first + Duration::from_millis(550 * u64::try_from(step).expect("small"));
+            pacer.observe(0, *wire, at);
+        }
+        assert_eq!(pacer.links[0].window, 8, "the cluster that saw it halves");
+        assert_eq!(
+            pacer.links[1].window, 8,
+            "its neighbour on the same TX halves with it"
+        );
+        assert_eq!(pacer.totals().congestion_events, 2);
     }
 
     #[test]
