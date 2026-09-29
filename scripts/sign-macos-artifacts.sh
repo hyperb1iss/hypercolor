@@ -23,6 +23,8 @@ Usage: scripts/sign-macos-artifacts.sh <command> [options]
 Commands:
   validate-manifest
   app --target <triple> --version <version> --arch <arm64|x86_64> [--ci]
+  sign-app --app <bundle> --target <triple> --version <version>
+    --arch <arm64|x86_64>
   standalone --directory <distribution> --target <triple>
   verify-app --app <bundle> --dmg <image> --provenance <json>
     --target <triple> --team-id <team>
@@ -30,9 +32,11 @@ Commands:
     --team-id <team>
   selftest
 
-The app command pre-signs the staged daemon sidecar, builds only the Tauri
-app bundle, reapplies every manifest signature, notarizes and staples the app,
-then creates, signs, notarizes, and staples a separate DMG.
+The app command builds the unsigned Tauri app bundle and then runs sign-app
+on it. sign-app signs every manifest object in an existing unsigned bundle,
+notarizes and staples the app, then creates, signs, notarizes, and staples
+a DMG in the sibling bundle/dmg directory. CI builds the bundle in one job and
+runs sign-app in another, so signing has its own time budget.
 
 The selftest command signs, verifies, and notarizes a throwaway binary to
 prove the credentials and keychain handling without a release build.
@@ -656,23 +660,36 @@ verify_standalone_artifacts() {
   verify_inventory "${directory}" standalone "${target}" "${provenance}"
 }
 
+validate_app_options() {
+  local target="$1"
+  local version="$2"
+  local arch="$3"
+  [[ "${target}" == *-apple-darwin ]] || die "app target must be an Apple Darwin triple"
+  [[ "${version}" =~ ^[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] \
+    || die "app version must be semver"
+  case "${arch}" in
+    arm64|x86_64) ;;
+    *) die "app architecture must be arm64 or x86_64" ;;
+  esac
+  case "${target}:${arch}" in
+    aarch64-apple-darwin:arm64|x86_64-apple-darwin:x86_64) ;;
+    *) die "app architecture does not match target ${target}" ;;
+  esac
+}
+
+# Builds the unsigned Tauri app bundle, then signs and notarizes it. CI runs
+# the two halves in separate jobs; this keeps the local path to one command.
 build_app_artifacts() {
   local target="$1"
   local version="$2"
   local arch="$3"
   local ci="$4"
 
+  # Fail on missing credentials before a long Tauri build, not after it.
   prepare_signing_identity
   validate_notary_credentials
-  for command in cargo ditto file find hdiutil jq plutil sed xcrun; do
-    require "${command}"
-  done
-
-  local staged_sidecar="${ROOT_DIR}/target/bundle-stage/binaries/hypercolor-daemon-${target}"
-  resolve_rule app 'Contents/MacOS/hypercolor-daemon' "${target}"
-  [[ -f "${staged_sidecar}" ]] || die "staged daemon sidecar is missing: ${staged_sidecar}"
-  codesign_object "${staged_sidecar}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
-  verify_signature "${staged_sidecar}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
+  require cargo
+  require jq
 
   local tauri_args=(tauri build --bundles app --no-sign --config tauri.bundle.conf.json --target "${target}")
   [[ "${ci}" -eq 1 ]] && tauri_args+=(--ci)
@@ -681,16 +698,34 @@ build_app_artifacts() {
     cargo "${tauri_args[@]}"
   )
 
-  local target_dir profile_dir app dmg_dir dmg app_zip app_receipt dmg_receipt inventory
+  local target_dir
   target_dir="$(
     cd "${ROOT_DIR}/crates/hypercolor-app"
     cargo metadata --format-version 1 --no-deps | jq -r '.target_directory'
   )"
-  profile_dir="${target_dir}/${target}/release"
-  app="${profile_dir}/bundle/macos/Hypercolor.app"
-  dmg_dir="${profile_dir}/bundle/dmg"
-  dmg="${dmg_dir}/Hypercolor-${version}-${arch}.dmg"
+  sign_app_bundle "${target_dir}/${target}/release/bundle/macos/Hypercolor.app" \
+    "${target}" "${version}" "${arch}"
+}
+
+# Signs every manifest object in an unsigned Tauri app bundle, notarizes and
+# staples it, then creates, signs, notarizes, and staples its DMG in the
+# sibling bundle/dmg directory with a provenance receipt beside it.
+sign_app_bundle() {
+  local app="$1"
+  local target="$2"
+  local version="$3"
+  local arch="$4"
+
   [[ -d "${app}" ]] || die "Tauri app bundle is missing: ${app}"
+  prepare_signing_identity
+  validate_notary_credentials
+  for command in ditto file find hdiutil jq plutil sed xcrun; do
+    require "${command}"
+  done
+
+  local dmg_dir dmg app_zip app_receipt dmg_receipt inventory
+  dmg_dir="$(dirname -- "$(dirname -- "${app}")")/dmg"
+  dmg="${dmg_dir}/Hypercolor-${version}-${arch}.dmg"
 
   sign_scope "${app}" app "${target}"
   ensure_signing_tmp
@@ -822,18 +857,26 @@ case "${command_name}" in
         *) die "unknown app option: $1" ;;
       esac
     done
-    [[ "${target}" == *-apple-darwin ]] || die "app target must be an Apple Darwin triple"
-    [[ "${version}" =~ ^[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] \
-      || die "app version must be semver"
-    case "${arch}" in
-      arm64|x86_64) ;;
-      *) die "app architecture must be arm64 or x86_64" ;;
-    esac
-    case "${target}:${arch}" in
-      aarch64-apple-darwin:arm64|x86_64-apple-darwin:x86_64) ;;
-      *) die "app architecture does not match target ${target}" ;;
-    esac
+    validate_app_options "${target}" "${version}" "${arch}"
     build_app_artifacts "${target}" "${version}" "${arch}" "${ci}"
+    ;;
+  sign-app)
+    app=""
+    target=""
+    version=""
+    arch=""
+    while [[ "$#" -gt 0 ]]; do
+      case "$1" in
+        --app) app="$2"; shift 2 ;;
+        --target) target="$2"; shift 2 ;;
+        --version) version="$2"; shift 2 ;;
+        --arch) arch="$2"; shift 2 ;;
+        *) die "unknown sign-app option: $1" ;;
+      esac
+    done
+    [[ -n "${app}" ]] || die "sign-app requires --app"
+    validate_app_options "${target}" "${version}" "${arch}"
+    sign_app_bundle "${app}" "${target}" "${version}" "${arch}"
     ;;
   standalone)
     directory=""
