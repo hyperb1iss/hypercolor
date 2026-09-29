@@ -921,6 +921,45 @@ and ends the session with a disconnect exactly as for a refused write. The
 first TX write after the reset closes the wedge; whether the fans confirm
 frames again shows in the delivery report.
 
+The fans can also stop taking frames when the TX is fine. On the owner's rig
+on 2026-09-29, 29 minutes into a soak at a steady 28 fps, the fans stopped
+confirming while the TX took every write. Three TX resets followed, each
+ending the session, and each reconnect ran the whole connect sequence within
+about 1.5 s. The TX took commands again within about a second each time, but
+the fans confirmed only a few frames between the first and second (their
+echo also named two tags the session never sent) and nothing after. The
+driver then held their lighting. A daemon restart 99 minutes later, after
+RGB silence the whole time while fan-speed and clock upkeep continued,
+brought them back at once. So a reconnect alone does not clear this stall,
+while a reconnect after a long rest did. Of the connect sequence, only the
+first clock broadcast of a session (§6.8) and the fan-speed envelopes reach
+the fans, and both went out in the three reconnects that failed. The rest
+of the sequence is local to the TX and RX: the TX's own reset, the master
+query, the table poll, the RX setup, and the streaming preamble.
+
+The driver therefore recovers in stages, per cluster (by radio MAC), across
+sessions:
+
+1. **TX resets.** Two, as above, each ending the session for a reconnect.
+2. **Rests and reconnects.** Once the resets are spent, the cluster's RGB
+   rests while upkeep holds its fans' speed and clock, then the protocol
+   asks the backend for a fresh connect (`Protocol::session_restart`). The
+   backend ends the session as a disconnect, writing nothing more, and the
+   lifecycle reconnects, so the whole connect sequence runs again on fresh
+   USB handles. The rests are 10 s, 30 s, 1 min, 2 min and 5 min.
+3. **Power-cycle message, and slow reconnects.** After the fifth reconnect,
+   the log says to power-cycle the controller. A rested reconnect still
+   follows every 10 minutes, since the one recovery seen came after a long
+   rest.
+
+Clusters that still confirm keep streaming through a rest, and lose only
+the moment each reconnect takes. Any confirmed frame clears the cluster's
+budget. How short a rest suffices is unknown: each rest is logged with its
+length and attempt number, the stalled cluster's record is logged as the RX
+reports it (channel, slot, echo, command sequence, PWM, RPM), and a recovery
+logs `L-Wireless fans confirm frames again after reconnecting` with the
+resets and reconnects it took.
+
 ### 6.11 Acknowledgement-paced RGB delivery
 
 L-Connect streams an effect until the device's record echoes its effect
@@ -1029,9 +1068,10 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   second) but confirms nothing for 5 s is a TX that stopped delivering: the
   protocol writes the partner reset (§6.10) and sends nothing more. Each
   cluster (by radio MAC) can cause two such resets per process until it
-  confirms a frame again; once they are spent, its lighting is held with an
-  error to power-cycle the controller, while clusters that still confirm
-  keep streaming.
+  confirms a frame again. Once they are spent, the stall is taken to be the
+  fans': the cluster's RGB rests, then the session ends for a fresh connect,
+  on the growing schedule in §6.10, while clusters that still confirm keep
+  streaming.
 - **Shutdown.** The final frame the backend sends before shutdown goes out
   even if the window held it, within the bound on unresolved sends.
 
