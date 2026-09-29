@@ -335,6 +335,35 @@ fn a_one_second_status_still_delivers_near_the_offered_rate() {
     );
 }
 
+/// The status cadence slowing from 550 ms to a second mid-stream, as it did
+/// on the owner's rig, with every status now 900 ms stale: nearly a whole
+/// new interval. The learned cadence trails the change by several
+/// statuses, and the stale statuses in between are still not a backlog.
+#[test]
+fn a_status_that_slows_to_a_second_with_stale_snapshots_is_not_a_backlog() {
+    let mut radio = FakeRadio::one_cluster();
+    radio.report_interval = Duration::from_millis(550);
+    let mut rig = Rig::connect(radio);
+    rig.run_for(Duration::from_secs(10));
+    let before = rig.stats();
+    rig.radio.report_interval = Duration::from_secs(1);
+    rig.radio.report_delay = Duration::from_millis(900);
+    let after_change = slices(&mut rig, 6);
+    let stats = rig.stats();
+
+    assert_eq!(
+        stats.congestion_events, before.congestion_events,
+        "a slower, staler status never halves the window: {after_change:?} {stats:?}"
+    );
+    for slice in &after_change[2..] {
+        assert!(
+            slice.taken[0] >= 135,
+            "the fans take at least 27 fps once the window covers the slower status: {after_change:?}"
+        );
+    }
+    assert!(rig.radio.resets.is_empty());
+}
+
 /// The status cadence on the owner's rig moved from 333 ms to 500 ms
 /// mid-run. The window follows it without losing the stream.
 #[test]

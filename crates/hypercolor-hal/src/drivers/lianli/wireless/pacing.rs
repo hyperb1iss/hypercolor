@@ -3,8 +3,8 @@
 //! Every RGB transfer carries a tag, and each fan cluster's record in the
 //! RX device table echoes the tag of the transfer its receiver last took
 //! (spec 80 section 6.5, record bytes 20 to 23). The record is a status the
-//! fans refresh a few times a second (about every 333 ms on the owner's V1
-//! rig, 500 ms at times), far slower than frames stream, so the echo is a
+//! fans refresh on their own cadence (333 ms to about a second on the
+//! owner's V1 rig), far slower than frames stream, so the echo is a
 //! cumulative acknowledgement: the tag it names confirms that transfer, and
 //! since the TX relays in order, every transfer sent before it has left the
 //! TX. Pacing one frame per echo would turn the status cadence into a frame
@@ -18,12 +18,14 @@
 //!   the render path offers slower than the radio carries never inflates it.
 //! - Each echo measures the TX backlog directly: sends made after the
 //!   confirmed one that had time to arrive and to show up in a status are
-//!   overdue. "Time" is the smallest echo age seen lately, plus one full
-//!   status interval, since a status can be a snapshot that much older
+//!   overdue. "Time" is the smallest echo age over the last minute, plus a
+//!   whole status interval (the longest measured lately, so a cadence that
+//!   just slowed counts), since a status can be a snapshot that much older
 //!   than when the RX hands it over, plus the poll spacing and a frame of
-//!   jitter. Judged against the send's own latency instead, stale statuses
-//!   on real fans read as backlog and kept halving a window the radio
-//!   could fill.
+//!   jitter. In effect a send is overdue once it missed a status it should
+//!   have been in. Judged against the send's own latency instead, stale
+//!   statuses on real fans read as backlog and kept halving a window the
+//!   radio could fill.
 //! - Only sustained evidence shrinks the window: more than [`OVERDUE_LIMIT`]
 //!   overdue at [`BACKLOG_EVIDENCE`] advancing echoes in a row halves it,
 //!   at most once per [`DECREASE_HOLDOFF_STATUSES`] status intervals and
@@ -100,6 +102,9 @@ pub const BACKLOG_EVIDENCE: u32 = 3;
 pub const DECREASE_HOLDOFF_STATUSES: u32 = 3;
 /// The status interval assumed before one has been measured.
 pub const STATUS_UNKNOWN: Duration = Duration::from_millis(600);
+/// Status intervals remembered as measured, for judging staleness: the
+/// span of a run of backlog evidence, and one more.
+const RECENT_GAPS: usize = BACKLOG_EVIDENCE as usize + 1;
 /// Jitter allowed on top of the poll spacing before a send counts overdue:
 /// about one frame interval at 30 fps.
 const OVERDUE_SLACK: Duration = Duration::from_millis(35);
@@ -331,6 +336,8 @@ struct ClusterLink {
     window_limited: bool,
     /// Advancing echoes in a row that found a backlog.
     backlog_streak: u32,
+    /// The last few status intervals measured, newest last.
+    recent_gaps: VecDeque<Duration>,
     last_decrease_at: Option<Instant>,
     /// The first send made after an echo left nothing out; an advance soon
     /// after still samples the status cadence.
@@ -378,6 +385,7 @@ impl Default for ClusterLink {
             recovery_until: 0,
             window_limited: false,
             backlog_streak: 0,
+            recent_gaps: VecDeque::new(),
             last_decrease_at: None,
             resumed_at: None,
             timeouts: 0,
@@ -532,6 +540,24 @@ impl ClusterLink {
     /// The status interval: measured, or assumed until it is.
     fn status_interval(&self) -> Duration {
         self.echo_gap.unwrap_or(STATUS_UNKNOWN)
+    }
+
+    /// How stale a status may be: the longest status interval measured
+    /// lately, or the running average if that is longer. The average
+    /// trails a slower cadence by several statuses, and stale statuses in
+    /// between would otherwise read as a backlog.
+    fn staleness_allowance(&self) -> Duration {
+        self.recent_gaps
+            .iter()
+            .copied()
+            .fold(self.status_interval(), Duration::max)
+    }
+
+    fn remember_gap(&mut self, gap: Duration) {
+        if self.recent_gaps.len() == RECENT_GAPS {
+            self.recent_gaps.pop_front();
+        }
+        self.recent_gaps.push_back(gap);
     }
 
     /// Whether the window may halve at `now`: once per window of sends,
@@ -922,21 +948,6 @@ impl DeliveryPacer {
         let age = now.saturating_duration_since(confirmed.sent_at);
         link.sample_base_delay(now, age);
         link.sample_age(age);
-        // A send is overdue once it has had time to land and to be caught
-        // by a status: the radio's own delay, a whole status interval (a
-        // status can be a snapshot that much older than its arrival), the
-        // poll spacing, and a frame of jitter.
-        let due_after = link.base_delay().unwrap_or(age)
-            + link.status_interval()
-            + link.poll_spacing()
-            + OVERDUE_SLACK;
-        let overdue = link
-            .log
-            .iter()
-            .skip(position + 1)
-            .filter(|sent| sent.sent_at + due_after <= now)
-            .count();
-        let overdue = u64::try_from(overdue).unwrap_or(u64::MAX);
         // The time since the last advance samples the status cadence when
         // sends were out all along, or resumed promptly after it.
         let prompt = link.status_interval() / 4;
@@ -952,6 +963,24 @@ impl DeliveryPacer {
             .filter(|_| streaming)
             .map(|previous| now.saturating_duration_since(previous));
         link.resumed_at = None;
+        if let Some(gap) = gap {
+            link.remember_gap(gap);
+        }
+        // A send is overdue once it has had time to land and to be caught
+        // by a status: the radio's own delay, a whole status interval (a
+        // status can be a snapshot that much older than its arrival), the
+        // poll spacing, and a frame of jitter.
+        let due_after = link.base_delay().unwrap_or(age)
+            + link.staleness_allowance()
+            + link.poll_spacing()
+            + OVERDUE_SLACK;
+        let overdue = link
+            .log
+            .iter()
+            .skip(position + 1)
+            .filter(|sent| sent.sent_at + due_after <= now)
+            .count();
+        let overdue = u64::try_from(overdue).unwrap_or(u64::MAX);
         if let Some(gap) = gap {
             link.sample_gap(gap);
         }
@@ -1435,10 +1464,12 @@ mod tests {
         // interval plus the radio's delay, so none is overdue.
         pacer.observe(0, wires[1], now + Duration::from_millis(33 * 15 + 5));
         assert_eq!(pacer.totals().overdue_max, 0);
-        // 800 ms on, the next status names only the third send: the rest
-        // outlasted the radio's delay plus a whole status interval.
+        // 800 ms on, the next status names only the third send. That
+        // status came 800 ms after the last, so a send is overdue once it
+        // has outlasted the radio's delay plus those 800 ms: the eight sent
+        // in the first 333 ms, which missed a whole status.
         pacer.observe(0, wires[2], now + Duration::from_millis(33 * 15 + 805));
-        assert_eq!(pacer.totals().overdue_max, 13);
+        assert_eq!(pacer.totals().overdue_max, 8);
     }
 
     #[test]
