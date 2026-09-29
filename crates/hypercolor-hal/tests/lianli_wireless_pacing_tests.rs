@@ -994,6 +994,38 @@ fn a_cluster_with_persistently_late_echoes_does_not_starve_its_neighbour() {
     );
 }
 
+/// One cluster's own delay jumping mid-run, after the pacer has learned a
+/// low base delay: its statuses read as a backlog until the base catches
+/// up, and since a backlog is the shared TX's, its halvings reach its
+/// neighbour too. The neighbour's window still covers a status interval of
+/// frames, so it keeps streaming at the offered rate.
+#[test]
+fn a_neighbour_whose_delay_jumps_does_not_starve_a_healthy_cluster() {
+    let mut radio = FakeRadio::two_clusters();
+    radio.report_interval = STATUS_CADENCE;
+    let mut rig = Rig::connect(radio);
+    rig.frame = Box::new(|index| {
+        let mut colors = moving_frame(index);
+        colors.extend(moving_frame(index + 7_777));
+        colors
+    });
+    rig.run_for(Duration::from_secs(20));
+    rig.radio.clusters[1].report_delay = Some(Duration::from_millis(2_500));
+    let after = slices(&mut rig, 24);
+
+    for slice in &after {
+        assert!(
+            slice.taken[0] >= 135,
+            "the healthy cluster keeps at least 27 fps: {after:?}"
+        );
+        assert!(
+            slice.taken[1] > 5,
+            "the late cluster keeps streaming: {after:?}"
+        );
+    }
+    assert!(rig.radio.resets.is_empty(), "a late cluster is not a wedge");
+}
+
 /// Three clusters oversubscribing a slow radio with a one-second status for
 /// eight minutes: the backlog stays well short of the stall verdict, so
 /// the TX is never reset, and every cluster keeps streaming. Each cluster

@@ -30,15 +30,17 @@
 //!   overdue at [`BACKLOG_EVIDENCE`] advancing echoes in a row halves it,
 //!   at most once per [`DECREASE_HOLDOFF_STATUSES`] status intervals and
 //!   once per window of sends. Every cluster's frames wait in the one TX
-//!   queue, so the halving applies to every cluster on the controller. So
+//!   queue, so the halving applies to every cluster with frames out. So
 //!   the TX holds a bounded backlog when the radio really is slower than
 //!   the stream, and delivery tracks the radio's own rate.
 //! - Clusters are paced independently: a frame goes to every cluster it
 //!   changes that has room, and waits for the rest, where a newer frame
 //!   replaces it, so what goes out next is always the newest frame, never a
-//!   queue of stale ones. One cluster whose echoes lag, or one the RX
-//!   cannot hear, never throttles the others; only a backlog in the shared
-//!   TX shrinks them together.
+//!   queue of stale ones. One cluster whose echoes lag steadily, or one the
+//!   RX cannot hear, never throttles the others; a backlog in the shared TX
+//!   shrinks them together. A cluster whose own delay jumps by more than a
+//!   status interval reads as a backlog until its base delay catches up,
+//!   and its halvings then reach its neighbours too.
 //! - Each send gets its own wire tag: the frame's pixel hash mixed with a
 //!   send number that runs for the whole process from a wall-clock seed,
 //!   and never the tag the cluster echoes at that moment. An echo therefore
@@ -1006,9 +1008,15 @@ impl DeliveryPacer {
             // the cluster that saw the backlog leaves the others to keep it
             // full, and each cluster's base delay then absorbs it: with
             // three clusters on a slow radio the backlog grew past the stall
-            // verdict. So the whole controller answers it.
+            // verdict. So every cluster with frames in that queue answers
+            // it; one with nothing out holds none of it.
             for (other, peer) in self.links.iter_mut().enumerate() {
-                if other != cluster && !peer.holding && peer.may_decrease(now) {
+                if other != cluster
+                    && !peer.holding
+                    && peer.unresolved() > 0
+                    && !peer.absent(now)
+                    && peer.may_decrease(now)
+                {
                     peer.halve(now);
                     shared += 1;
                 }
@@ -1407,10 +1415,10 @@ mod tests {
     }
 
     #[test]
-    fn a_backlog_one_cluster_sees_halves_every_window_on_the_tx() {
+    fn a_backlog_one_cluster_sees_halves_every_window_with_frames_in_the_tx() {
         let now = Instant::now();
         let mut pacer = connected(now);
-        pacer.ensure_clusters(2);
+        pacer.ensure_clusters(5);
         for link in &mut pacer.links {
             link.window = 16;
             link.ssthresh = 16;
@@ -1424,18 +1432,42 @@ mod tests {
             let kind = pacer.decide(0, at).expect("room");
             wires.push(pacer.note_sent(0, content, kind, at));
         }
+        // Cluster 1 has frames out; 2 has none; 3 has frames out but its
+        // lighting is held; 4 has frames out but is still recovering from
+        // its own halving.
+        for link in &mut pacer.links[1..] {
+            link.last_seen_at = Some(now);
+        }
+        for cluster in [1, 3, 4] {
+            for index in 0..4 {
+                let content = frame(100 * u32::try_from(cluster).expect("small") + index);
+                pacer.submit(cluster, content);
+                let kind = pacer.decide(cluster, now).expect("room");
+                let _ = pacer.note_sent(cluster, content, kind, now);
+            }
+        }
+        pacer.links[3].holding = true;
+        pacer.links[4].recovery_until = pacer.links[4].next_seq - 1;
         pacer.links[0].sample_base_delay(now, Duration::from_millis(40));
         // Three statuses 550 ms apart, each confirming one more send while
         // the rest wait far past a status interval: a sustained backlog.
         let first = now + Duration::from_millis(33 * 15 + 1_500);
+        for link in &mut pacer.links[1..] {
+            link.last_seen_at = Some(first);
+        }
         for (step, wire) in wires[1..4].iter().enumerate() {
             let at = first + Duration::from_millis(550 * u64::try_from(step).expect("small"));
             pacer.observe(0, *wire, at);
         }
-        assert_eq!(pacer.links[0].window, 8, "the cluster that saw it halves");
+        let windows: Vec<u32> = pacer.links.iter().map(|link| link.window).collect();
         assert_eq!(
-            pacer.links[1].window, 8,
-            "its neighbour on the same TX halves with it"
+            windows,
+            [8, 8, 16, 16, 16],
+            "the cluster that saw it and its neighbour with frames out halve"
+        );
+        assert_eq!(
+            pacer.links[2].ssthresh, 16,
+            "a cluster with nothing out keeps its slow-start ceiling"
         );
         assert_eq!(pacer.totals().congestion_events, 2);
     }
