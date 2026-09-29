@@ -26,6 +26,7 @@ servo = [
     "dep:servo",
     "dep:dpi",
     "dep:gleam",
+    "dep:servo-allocator",
     "hypercolor-gpu-frame/servo-context",
     # The Windows CPU path renders through a hidden native window; the crate
     # stubs to "no platform" elsewhere.
@@ -116,6 +117,11 @@ gleam = { version = "0.15", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 tempfile = { workspace = true }
 
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+# Servo's global allocator; use-jemalloc restores jemalloc, which Servo 0.5
+# installed by default. Windows keeps the system allocator.
+servo-allocator = { workspace = true, features = ["use-jemalloc"], optional = true }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libpulse-binding = { workspace = true }
 zbus = { workspace = true }
@@ -141,7 +147,7 @@ criterion = { workspace = true }
 gif = { workspace = true }
 pollster = { workspace = true }
 stats_alloc = { workspace = true }
-trybuild = "1.0.120"
+trybuild = "1.0.121"
 
 [[test]]
 name = "alloc_contract_tests"

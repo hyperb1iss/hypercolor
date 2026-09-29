@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class SamplingModeType3Type(str, Enum):
+class SamplingModeType3Type(StrEnum):
     GAUSSIAN_AREA = "gaussian_area"
 
     def __str__(self) -> str:

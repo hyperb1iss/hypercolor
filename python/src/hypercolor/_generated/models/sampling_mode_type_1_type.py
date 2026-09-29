@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class SamplingModeType1Type(str, Enum):
+class SamplingModeType1Type(StrEnum):
     BILINEAR = "bilinear"
 
     def __str__(self) -> str:

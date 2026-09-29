@@ -11,6 +11,15 @@ updates:
     groups:
       rust:
         patterns: ["*"]
+    ignore:
+      # cc 1.5 passes .cc sources to MSVC as a split `-Tp <file>` pair
+      # (rust-lang/cc-rs#1930). sccache does not model /Tp as taking an
+      # operand and appends its own /WX- before the input
+      # (mozilla/sccache#2062), so cl compiles "/WX-" as the C++ source and
+      # the Windows Servo build fails in mozangle. Lift this once sccache
+      # handles split /Tp.
+      - dependency-name: "cc"
+        versions: [">=1.5.0"]
 
   - package-ecosystem: "cargo"
     directory: "/crates/hypercolor-ui"

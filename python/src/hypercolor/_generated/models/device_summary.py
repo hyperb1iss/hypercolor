@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.display_rotation import DisplayRotation
 from ..types import UNSET, Unset
@@ -64,7 +65,9 @@ class DeviceSummary:
     def to_dict(self) -> dict[str, Any]:
         from ..models.bridge_device_summary import BridgeDeviceSummary
         from ..models.device_auth_summary import DeviceAuthSummary
-        from ..models.device_components_response import DeviceComponentsResponse
+        from ..models.device_components_response import (
+            DeviceComponentsResponse,
+        )
 
         brightness = self.brightness
 
@@ -163,11 +166,15 @@ class DeviceSummary:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.bridge_device_summary import BridgeDeviceSummary
         from ..models.device_auth_summary import DeviceAuthSummary
-        from ..models.device_components_response import DeviceComponentsResponse
-        from ..models.device_connection_summary import DeviceConnectionSummary
+        from ..models.device_components_response import (
+            DeviceComponentsResponse,
+        )
+        from ..models.device_connection_summary import (
+            DeviceConnectionSummary,
+        )
         from ..models.device_origin import DeviceOrigin
         from ..models.driver_presentation import DriverPresentation
         from ..models.segment_summary import SegmentSummary
@@ -197,9 +204,9 @@ class DeviceSummary:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                attachments_type_1 = DeviceComponentsResponse.from_dict(data)
+                attachments_type_0 = DeviceComponentsResponse.from_dict(data)
 
-                return attachments_type_1
+                return attachments_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DeviceComponentsResponse | None | Unset, data)
@@ -214,9 +221,9 @@ class DeviceSummary:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                auth_type_1 = DeviceAuthSummary.from_dict(data)
+                auth_type_0 = DeviceAuthSummary.from_dict(data)
 
-                return auth_type_1
+                return auth_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DeviceAuthSummary | None | Unset, data)
@@ -231,9 +238,9 @@ class DeviceSummary:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                bridge_type_1 = BridgeDeviceSummary.from_dict(data)
+                bridge_type_0 = BridgeDeviceSummary.from_dict(data)
 
-                return bridge_type_1
+                return bridge_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(BridgeDeviceSummary | None | Unset, data)
@@ -255,9 +262,9 @@ class DeviceSummary:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                display_rotation_type_1 = DisplayRotation(data)
+                display_rotation_type_0 = DisplayRotation(data)
 
-                return display_rotation_type_1
+                return display_rotation_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DisplayRotation | None | Unset, data)

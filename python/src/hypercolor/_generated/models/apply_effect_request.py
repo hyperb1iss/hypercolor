@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from uuid import UUID
 
 from attrs import define as _attrs_define
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -90,7 +91,7 @@ class ApplyEffectRequest:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.apply_effect_request_controls_type_0 import (
             ApplyEffectRequestControlsType0,
         )
@@ -125,9 +126,9 @@ class ApplyEffectRequest:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                preset_id_type_1 = UUID(data)
+                preset_id_type_0 = UUID(data)
 
-                return preset_id_type_1
+                return preset_id_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | Unset | UUID, data)

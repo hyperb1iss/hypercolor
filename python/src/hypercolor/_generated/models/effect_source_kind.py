@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class EffectSourceKind(str, Enum):
+class EffectSourceKind(StrEnum):
     HTML = "html"
     NATIVE = "native"
     SHADER = "shader"

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -116,12 +117,16 @@ class OpenRgbStatus:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.device_coverage_row import DeviceCoverageRow
         from ..models.driver_config_entry import DriverConfigEntry
-        from ..models.open_rgb_endpoint_status import OpenRgbEndpointStatus
+        from ..models.open_rgb_endpoint_status import (
+            OpenRgbEndpointStatus,
+        )
         from ..models.open_rgb_install_hint import OpenRgbInstallHint
-        from ..models.open_rgb_permission_status import OpenRgbPermissionStatus
+        from ..models.open_rgb_permission_status import (
+            OpenRgbPermissionStatus,
+        )
 
         d = dict(src_dict)
         bridge_config = DriverConfigEntry.from_dict(d.pop("bridge_config"))

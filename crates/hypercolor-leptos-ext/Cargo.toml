@@ -78,7 +78,7 @@ axum = ["ws-core", "dep:axum"]
 
 [dependencies]
 axum = { workspace = true, optional = true }
-bytes = "1.11"
+bytes = "1.12"
 gloo-events = { version = "0.3", optional = true }
 js-sys = { version = "0.3", optional = true }
 serde = { workspace = true }
@@ -92,5 +92,5 @@ web-sys = { version = "0.3", optional = true }
 wasm-bindgen-test = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-proptest = "1.9"
+proptest = "1.11"
 tokio = { workspace = true, features = ["macros", "rt", "time"] }

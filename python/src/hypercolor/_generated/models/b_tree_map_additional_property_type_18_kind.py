@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class BTreeMapAdditionalPropertyType18Kind(str, Enum):
+class BTreeMapAdditionalPropertyType18Kind(StrEnum):
     UNKNOWN = "unknown"
 
     def __str__(self) -> str:

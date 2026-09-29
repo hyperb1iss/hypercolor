@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class EffectPresetOrigin(str, Enum):
+class EffectPresetOrigin(StrEnum):
     BUNDLED = "bundled"
     SAVED = "saved"
 

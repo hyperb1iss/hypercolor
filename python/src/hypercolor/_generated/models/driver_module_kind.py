@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DriverModuleKind(str, Enum):
+class DriverModuleKind(StrEnum):
     BRIDGE = "bridge"
     HAL = "hal"
     HOST = "host"

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ComponentCategoryType6(str, Enum):
+class ComponentCategoryType6(StrEnum):
     RADIATOR = "Radiator"
 
     def __str__(self) -> str:

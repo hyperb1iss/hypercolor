@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -66,7 +67,7 @@ class DeletePairingResponse:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.device_summary import DeviceSummary
 
         d = dict(src_dict)
@@ -80,9 +81,9 @@ class DeletePairingResponse:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                device_type_1 = DeviceSummary.from_dict(data)
+                device_type_0 = DeviceSummary.from_dict(data)
 
-                return device_type_1
+                return device_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DeviceSummary | None | Unset, data)

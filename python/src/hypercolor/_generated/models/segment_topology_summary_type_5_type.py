@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class SegmentTopologySummaryType5Type(str, Enum):
+class SegmentTopologySummaryType5Type(StrEnum):
     CUSTOM = "custom"
 
     def __str__(self) -> str:

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -36,7 +37,9 @@ class LatencyPercentilesStatus:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.latency_histogram_status import LatencyHistogramStatus
+        from ..models.latency_histogram_status import (
+            LatencyHistogramStatus,
+        )
 
         avg_ms = self.avg_ms
 
@@ -73,8 +76,10 @@ class LatencyPercentilesStatus:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.latency_histogram_status import LatencyHistogramStatus
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.latency_histogram_status import (
+            LatencyHistogramStatus,
+        )
 
         d = dict(src_dict)
         avg_ms = d.pop("avg_ms")
@@ -97,9 +102,9 @@ class LatencyPercentilesStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                cumulative_histogram_type_1 = LatencyHistogramStatus.from_dict(data)
+                cumulative_histogram_type_0 = LatencyHistogramStatus.from_dict(data)
 
-                return cumulative_histogram_type_1
+                return cumulative_histogram_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(LatencyHistogramStatus | None | Unset, data)

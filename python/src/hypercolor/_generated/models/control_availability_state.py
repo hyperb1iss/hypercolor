@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlAvailabilityState(str, Enum):
+class ControlAvailabilityState(StrEnum):
     AVAILABLE = "available"
     DISABLED = "disabled"
     HIDDEN = "hidden"

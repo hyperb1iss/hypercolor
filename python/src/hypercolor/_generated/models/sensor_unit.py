@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class SensorUnit(str, Enum):
+class SensorUnit(StrEnum):
     CELSIUS = "celsius"
     MEGABYTES = "megabytes"
     MHZ = "mhz"

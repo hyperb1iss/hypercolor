@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -74,11 +75,13 @@ class ControlObjectField:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.control_object_field_default_value_type_0 import (
             ControlObjectFieldDefaultValueType0,
         )
-        from ..models.control_object_field_value_type import ControlObjectFieldValueType
+        from ..models.control_object_field_value_type import (
+            ControlObjectFieldValueType,
+        )
 
         d = dict(src_dict)
         id = d.pop("id")

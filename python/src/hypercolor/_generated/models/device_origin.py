@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.driver_transport_kind_type_0 import DriverTransportKindType0
 from ..models.driver_transport_kind_type_1 import DriverTransportKindType1
@@ -56,19 +57,15 @@ class DeviceOrigin:
         driver_id = self.driver_id
 
         transport: dict[str, Any] | str
-        if isinstance(self.transport, DriverTransportKindType0):
-            transport = self.transport.value
-        elif isinstance(self.transport, DriverTransportKindType1):
-            transport = self.transport.value
-        elif isinstance(self.transport, DriverTransportKindType2):
-            transport = self.transport.value
-        elif isinstance(self.transport, DriverTransportKindType3):
-            transport = self.transport.value
-        elif isinstance(self.transport, DriverTransportKindType4):
-            transport = self.transport.value
-        elif isinstance(self.transport, DriverTransportKindType5):
-            transport = self.transport.value
-        elif isinstance(self.transport, DriverTransportKindType6):
+        if (
+            isinstance(self.transport, DriverTransportKindType0)
+            or isinstance(self.transport, DriverTransportKindType1)
+            or isinstance(self.transport, DriverTransportKindType2)
+            or isinstance(self.transport, DriverTransportKindType3)
+            or isinstance(self.transport, DriverTransportKindType4)
+            or isinstance(self.transport, DriverTransportKindType5)
+            or isinstance(self.transport, DriverTransportKindType6)
+        ):
             transport = self.transport.value
         else:
             transport = self.transport.to_dict()
@@ -94,8 +91,10 @@ class DeviceOrigin:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.driver_transport_kind_type_7 import DriverTransportKindType7
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.driver_transport_kind_type_7 import (
+            DriverTransportKindType7,
+        )
 
         d = dict(src_dict)
         backend_id = d.pop("backend_id")

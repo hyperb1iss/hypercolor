@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.effect_category import EffectCategory
 from ..models.effect_source_kind import EffectSourceKind
@@ -126,7 +127,7 @@ class EffectDetailResponse:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.control_definition import ControlDefinition
         from ..models.preset_template import PresetTemplate
 

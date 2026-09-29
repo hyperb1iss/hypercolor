@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ApplyImpactType5(str, Enum):
+class ApplyImpactType5(StrEnum):
     TOPOLOGY_REBUILD = "topology_rebuild"
 
     def __str__(self) -> str:

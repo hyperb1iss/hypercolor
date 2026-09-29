@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class LoopMode(str, Enum):
+class LoopMode(StrEnum):
     LOOP = "loop"
     NONE = "none"
     PING_PONG = "ping_pong"

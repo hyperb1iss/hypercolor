@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlValueKind(str, Enum):
+class ControlValueKind(StrEnum):
     BOOL = "bool"
     COLOR_LINEAR = "color_linear"
     COLOR_RGB = "color_rgb"

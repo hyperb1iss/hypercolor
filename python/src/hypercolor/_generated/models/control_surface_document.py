@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 if TYPE_CHECKING:
     from ..models.b_tree_map import BTreeMap
@@ -97,11 +98,17 @@ class ControlSurfaceDocument:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.b_tree_map import BTreeMap
-        from ..models.control_action_descriptor import ControlActionDescriptor
-        from ..models.control_field_descriptor import ControlFieldDescriptor
-        from ..models.control_group_descriptor import ControlGroupDescriptor
+        from ..models.control_action_descriptor import (
+            ControlActionDescriptor,
+        )
+        from ..models.control_field_descriptor import (
+            ControlFieldDescriptor,
+        )
+        from ..models.control_group_descriptor import (
+            ControlGroupDescriptor,
+        )
         from ..models.control_surface_document_values import (
             ControlSurfaceDocumentValues,
         )

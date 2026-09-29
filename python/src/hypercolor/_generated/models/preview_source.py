@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class PreviewSource(str, Enum):
+class PreviewSource(StrEnum):
     EFFECT_CANVAS = "effect_canvas"
     SCREEN_CAPTURE = "screen_capture"
     WEB_VIEWPORT = "web_viewport"

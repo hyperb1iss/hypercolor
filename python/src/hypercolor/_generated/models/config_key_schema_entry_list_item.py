@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.protection import Protection
 from ..models.redaction import Redaction
@@ -61,13 +62,12 @@ class ConfigKeySchemaEntryListItem:
         from ..models.apply_policy_type_3 import ApplyPolicyType3
 
         apply: dict[str, Any]
-        if isinstance(self.apply, ApplyPolicyType0):
-            apply = self.apply.to_dict()
-        elif isinstance(self.apply, ApplyPolicyType1):
-            apply = self.apply.to_dict()
-        elif isinstance(self.apply, ApplyPolicyType2):
-            apply = self.apply.to_dict()
-        elif isinstance(self.apply, ApplyPolicyType3):
+        if (
+            isinstance(self.apply, ApplyPolicyType0)
+            or isinstance(self.apply, ApplyPolicyType1)
+            or isinstance(self.apply, ApplyPolicyType2)
+            or isinstance(self.apply, ApplyPolicyType3)
+        ):
             apply = self.apply.to_dict()
         else:
             apply = self.apply.to_dict()
@@ -98,7 +98,7 @@ class ConfigKeySchemaEntryListItem:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.apply_policy_type_0 import ApplyPolicyType0
         from ..models.apply_policy_type_1 import ApplyPolicyType1
         from ..models.apply_policy_type_2 import ApplyPolicyType2

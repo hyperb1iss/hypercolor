@@ -32,6 +32,7 @@ Sources referenced for protocol knowledge:
 
 Vendored Dependencies
 
-- midir (vendor/midir/) — MIDI I/O library, patched for Hypercolor's use case
-  Original: https://github.com/Boddlnagg/midir
+- tachys (vendor/tachys/) — Leptos DOM renderer, patched so the web UI runs
+  under a Trusted Types content security policy
+  Original: https://github.com/leptos-rs/leptos
   License: MIT

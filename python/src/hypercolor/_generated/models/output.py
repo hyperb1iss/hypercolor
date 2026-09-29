@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.edge_behavior_type_0 import EdgeBehaviorType0
 from ..models.orientation import Orientation
@@ -142,7 +143,9 @@ class Output:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
+        from ..models.edge_behavior_fade_to_black import (
+            EdgeBehaviorFadeToBlack,
+        )
         from ..models.led_topology_type_0 import LedTopologyType0
         from ..models.led_topology_type_1 import LedTopologyType1
         from ..models.led_topology_type_2 import LedTopologyType2
@@ -172,17 +175,14 @@ class Output:
         size = self.size.to_dict()
 
         topology: dict[str, Any]
-        if isinstance(self.topology, LedTopologyType0):
-            topology = self.topology.to_dict()
-        elif isinstance(self.topology, LedTopologyType1):
-            topology = self.topology.to_dict()
-        elif isinstance(self.topology, LedTopologyType2):
-            topology = self.topology.to_dict()
-        elif isinstance(self.topology, LedTopologyType3):
-            topology = self.topology.to_dict()
-        elif isinstance(self.topology, LedTopologyType4):
-            topology = self.topology.to_dict()
-        elif isinstance(self.topology, LedTopologyType5):
+        if (
+            isinstance(self.topology, LedTopologyType0)
+            or isinstance(self.topology, LedTopologyType1)
+            or isinstance(self.topology, LedTopologyType2)
+            or isinstance(self.topology, LedTopologyType3)
+            or isinstance(self.topology, LedTopologyType4)
+            or isinstance(self.topology, LedTopologyType5)
+        ):
             topology = self.topology.to_dict()
         else:
             topology = self.topology.to_dict()
@@ -233,13 +233,12 @@ class Output:
         sampling_mode: dict[str, Any] | None | Unset
         if isinstance(self.sampling_mode, Unset):
             sampling_mode = UNSET
-        elif isinstance(self.sampling_mode, SamplingModeType0):
-            sampling_mode = self.sampling_mode.to_dict()
-        elif isinstance(self.sampling_mode, SamplingModeType1):
-            sampling_mode = self.sampling_mode.to_dict()
-        elif isinstance(self.sampling_mode, SamplingModeType2):
-            sampling_mode = self.sampling_mode.to_dict()
-        elif isinstance(self.sampling_mode, SamplingModeType3):
+        elif (
+            isinstance(self.sampling_mode, SamplingModeType0)
+            or isinstance(self.sampling_mode, SamplingModeType1)
+            or isinstance(self.sampling_mode, SamplingModeType2)
+            or isinstance(self.sampling_mode, SamplingModeType3)
+        ):
             sampling_mode = self.sampling_mode.to_dict()
         else:
             sampling_mode = self.sampling_mode
@@ -249,13 +248,12 @@ class Output:
         shape: dict[str, Any] | None | Unset
         if isinstance(self.shape, Unset):
             shape = UNSET
-        elif isinstance(self.shape, ZoneShapeType0):
-            shape = self.shape.to_dict()
-        elif isinstance(self.shape, ZoneShapeType1):
-            shape = self.shape.to_dict()
-        elif isinstance(self.shape, ZoneShapeType2):
-            shape = self.shape.to_dict()
-        elif isinstance(self.shape, ZoneShapeType3):
+        elif (
+            isinstance(self.shape, ZoneShapeType0)
+            or isinstance(self.shape, ZoneShapeType1)
+            or isinstance(self.shape, ZoneShapeType2)
+            or isinstance(self.shape, ZoneShapeType3)
+        ):
             shape = self.shape.to_dict()
         else:
             shape = self.shape
@@ -311,8 +309,10 @@ class Output:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.edge_behavior_fade_to_black import (
+            EdgeBehaviorFadeToBlack,
+        )
         from ..models.led_topology_type_0 import LedTopologyType0
         from ..models.led_topology_type_1 import LedTopologyType1
         from ..models.led_topology_type_2 import LedTopologyType2
@@ -419,9 +419,9 @@ class Output:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                attachment_type_1 = OutputComponent.from_dict(data)
+                attachment_type_0 = OutputComponent.from_dict(data)
 
-                return attachment_type_1
+                return attachment_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | OutputComponent | Unset, data)
@@ -495,9 +495,9 @@ class Output:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                orientation_type_1 = Orientation(data)
+                orientation_type_0 = Orientation(data)
 
-                return orientation_type_1
+                return orientation_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | Orientation | Unset, data)

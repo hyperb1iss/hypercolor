@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ComponentCategoryType8(str, Enum):
+class ComponentCategoryType8(StrEnum):
     RING = "Ring"
 
     def __str__(self) -> str:

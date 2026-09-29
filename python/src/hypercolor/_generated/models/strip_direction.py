@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class StripDirection(str, Enum):
+class StripDirection(StrEnum):
     BOTTOM_TO_TOP = "bottom_to_top"
     LEFT_TO_RIGHT = "left_to_right"
     RIGHT_TO_LEFT = "right_to_left"

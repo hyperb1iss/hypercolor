@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class TimeWave(str, Enum):
+class TimeWave(StrEnum):
     SAW = "saw"
     SINE = "sine"
     SQUARE = "square"

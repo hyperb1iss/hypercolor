@@ -3,8 +3,8 @@ import { cancel, confirm, intro, isCancel, select, text } from '@clack/prompts'
 import { isTemplateKind, normalizeEffectId, normalizeWorkspaceName } from './naming'
 import type { PromptedAddEffectOptions, PromptedScaffoldOptions, TemplateKind } from './types'
 
-function unwrapPrompt<T>(value: T | symbol): T {
-    if (!isCancel(value)) return value as T
+function unwrapPrompt<T>(value: T): Exclude<T, symbol> {
+    if (!isCancel(value)) return value as Exclude<T, symbol>
     cancel('Scaffolding canceled.')
     throw new Error('Prompt canceled')
 }

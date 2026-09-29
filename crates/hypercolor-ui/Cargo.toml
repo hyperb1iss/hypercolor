@@ -24,13 +24,13 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 futures-util = "0.3"
 wasm-streams = "0.5"
-bytes = "1.11"
+bytes = "1.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 hypercolor-color = { path = "../hypercolor-color" }
 hypercolor-types = { path = "../hypercolor-types" }
 hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["events", "canvas", "raf", "prelude", "ws-client-wasm"] }
-uuid = { version = "1.11", features = ["js"] }  # enable WASM RNG for transitive uuid
+uuid = { version = "1.26", features = ["js"] }  # enable WASM RNG for transitive uuid
 leptos_icons = "0.7"
 icondata = { version = "0.7", default-features = false, features = ["lucide"] }
 tachys = "=0.2.18"
@@ -93,7 +93,7 @@ web-sys = { version = "0.3", features = [
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "=0.3.73"
+wasm-bindgen-test = "=0.3.79"
 
 # The standalone crate does not inherit the root dev profile. Full debug info
 # pushes its native Windows test archive past the COFF 4 GiB limit.

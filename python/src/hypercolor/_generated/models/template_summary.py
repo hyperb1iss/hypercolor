@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.component_category_type_0 import ComponentCategoryType0
 from ..models.component_category_type_1 import ComponentCategoryType1
@@ -74,25 +75,18 @@ class TemplateSummary:
 
     def to_dict(self) -> dict[str, Any]:
         category: dict[str, Any] | str
-        if isinstance(self.category, ComponentCategoryType0):
-            category = self.category.value
-        elif isinstance(self.category, ComponentCategoryType1):
-            category = self.category.value
-        elif isinstance(self.category, ComponentCategoryType2):
-            category = self.category.value
-        elif isinstance(self.category, ComponentCategoryType3):
-            category = self.category.value
-        elif isinstance(self.category, ComponentCategoryType4):
-            category = self.category.value
-        elif isinstance(self.category, ComponentCategoryType5):
-            category = self.category.value
-        elif isinstance(self.category, ComponentCategoryType6):
-            category = self.category.value
-        elif isinstance(self.category, ComponentCategoryType7):
-            category = self.category.value
-        elif isinstance(self.category, ComponentCategoryType8):
-            category = self.category.value
-        elif isinstance(self.category, ComponentCategoryType9):
+        if (
+            isinstance(self.category, ComponentCategoryType0)
+            or isinstance(self.category, ComponentCategoryType1)
+            or isinstance(self.category, ComponentCategoryType2)
+            or isinstance(self.category, ComponentCategoryType3)
+            or isinstance(self.category, ComponentCategoryType4)
+            or isinstance(self.category, ComponentCategoryType5)
+            or isinstance(self.category, ComponentCategoryType6)
+            or isinstance(self.category, ComponentCategoryType7)
+            or isinstance(self.category, ComponentCategoryType8)
+            or isinstance(self.category, ComponentCategoryType9)
+        ):
             category = self.category.value
         else:
             category = self.category.to_dict()
@@ -140,8 +134,10 @@ class TemplateSummary:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.component_category_type_10 import ComponentCategoryType10
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.component_category_type_10 import (
+            ComponentCategoryType10,
+        )
 
         d = dict(src_dict)
 

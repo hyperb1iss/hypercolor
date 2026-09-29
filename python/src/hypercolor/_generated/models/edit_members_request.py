@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -30,7 +31,9 @@ class EditMembersRequest:
     changes: list[MemberEdit] | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.member_assignment_target import MemberAssignmentTarget
+        from ..models.member_assignment_target import (
+            MemberAssignmentTarget,
+        )
 
         scene_id = self.scene_id
 
@@ -64,8 +67,10 @@ class EditMembersRequest:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.member_assignment_target import MemberAssignmentTarget
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.member_assignment_target import (
+            MemberAssignmentTarget,
+        )
         from ..models.member_edit import MemberEdit
 
         d = dict(src_dict)
@@ -79,9 +84,9 @@ class EditMembersRequest:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                assignment_type_1 = MemberAssignmentTarget.from_dict(data)
+                assignment_type_0 = MemberAssignmentTarget.from_dict(data)
 
-                return assignment_type_1
+                return assignment_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MemberAssignmentTarget | None | Unset, data)

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.device_auth_state import DeviceAuthState
 from ..types import UNSET, Unset
@@ -70,7 +71,7 @@ class DeviceAuthSummary:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.pairing_descriptor import PairingDescriptor
 
         d = dict(src_dict)
@@ -86,9 +87,9 @@ class DeviceAuthSummary:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                descriptor_type_1 = PairingDescriptor.from_dict(data)
+                descriptor_type_0 = PairingDescriptor.from_dict(data)
 
-                return descriptor_type_1
+                return descriptor_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | PairingDescriptor | Unset, data)

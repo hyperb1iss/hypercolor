@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class EffectCategory(str, Enum):
+class EffectCategory(StrEnum):
     AMBIENT = "ambient"
     AUDIO = "audio"
     DISPLAY = "display"

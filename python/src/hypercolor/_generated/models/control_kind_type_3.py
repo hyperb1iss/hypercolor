@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlKindType3(str, Enum):
+class ControlKindType3(StrEnum):
     COMBOBOX = "combobox"
 
     def __str__(self) -> str:

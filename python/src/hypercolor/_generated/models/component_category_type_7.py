@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ComponentCategoryType7(str, Enum):
+class ComponentCategoryType7(StrEnum):
     MATRIX = "Matrix"
 
     def __str__(self) -> str:

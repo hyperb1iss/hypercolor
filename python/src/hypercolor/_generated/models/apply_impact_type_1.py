@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ApplyImpactType1(str, Enum):
+class ApplyImpactType1(StrEnum):
     LIVE = "live"
 
     def __str__(self) -> str:

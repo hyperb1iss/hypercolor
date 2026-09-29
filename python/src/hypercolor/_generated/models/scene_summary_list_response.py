@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -67,7 +68,7 @@ class SceneSummaryListResponse:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.page_info import PageInfo
         from ..models.scene_summary import SceneSummary
 
@@ -89,9 +90,9 @@ class SceneSummaryListResponse:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                page_type_1 = PageInfo.from_dict(data)
+                page_type_0 = PageInfo.from_dict(data)
 
-                return page_type_1
+                return page_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | PageInfo | Unset, data)

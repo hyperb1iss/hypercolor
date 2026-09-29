@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.orientation import Orientation
 from ..types import UNSET, Unset
@@ -100,17 +101,14 @@ class MemberPlacement:
         size = self.size.to_dict()
 
         topology: dict[str, Any]
-        if isinstance(self.topology, LedTopologyType0):
-            topology = self.topology.to_dict()
-        elif isinstance(self.topology, LedTopologyType1):
-            topology = self.topology.to_dict()
-        elif isinstance(self.topology, LedTopologyType2):
-            topology = self.topology.to_dict()
-        elif isinstance(self.topology, LedTopologyType3):
-            topology = self.topology.to_dict()
-        elif isinstance(self.topology, LedTopologyType4):
-            topology = self.topology.to_dict()
-        elif isinstance(self.topology, LedTopologyType5):
+        if (
+            isinstance(self.topology, LedTopologyType0)
+            or isinstance(self.topology, LedTopologyType1)
+            or isinstance(self.topology, LedTopologyType2)
+            or isinstance(self.topology, LedTopologyType3)
+            or isinstance(self.topology, LedTopologyType4)
+            or isinstance(self.topology, LedTopologyType5)
+        ):
             topology = self.topology.to_dict()
         else:
             topology = self.topology.to_dict()
@@ -147,7 +145,7 @@ class MemberPlacement:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.led_topology_type_0 import LedTopologyType0
         from ..models.led_topology_type_1 import LedTopologyType1
         from ..models.led_topology_type_2 import LedTopologyType2
@@ -239,9 +237,9 @@ class MemberPlacement:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                orientation_type_1 = Orientation(data)
+                orientation_type_0 = Orientation(data)
 
-                return orientation_type_1
+                return orientation_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | Orientation | Unset, data)

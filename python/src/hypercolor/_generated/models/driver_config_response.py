@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -69,7 +70,7 @@ class DriverConfigResponse:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.driver_config_entry import DriverConfigEntry
 
         d = dict(src_dict)
@@ -89,9 +90,9 @@ class DriverConfigResponse:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                default_type_1 = DriverConfigEntry.from_dict(data)
+                default_type_0 = DriverConfigEntry.from_dict(data)
 
-                return default_type_1
+                return default_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DriverConfigEntry | None | Unset, data)

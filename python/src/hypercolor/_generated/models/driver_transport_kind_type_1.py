@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DriverTransportKindType1(str, Enum):
+class DriverTransportKindType1(StrEnum):
     USB = "usb"
 
     def __str__(self) -> str:

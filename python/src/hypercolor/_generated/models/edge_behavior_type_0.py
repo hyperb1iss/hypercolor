@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class EdgeBehaviorType0(str, Enum):
+class EdgeBehaviorType0(StrEnum):
     CLAMP = "clamp"
     MIRROR = "mirror"
     WRAP = "wrap"

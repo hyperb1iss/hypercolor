@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class LedTopologyType2Type(str, Enum):
+class LedTopologyType2Type(StrEnum):
     RING = "ring"
 
     def __str__(self) -> str:

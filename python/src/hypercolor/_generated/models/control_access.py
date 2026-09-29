@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlAccess(str, Enum):
+class ControlAccess(StrEnum):
     READ_ONLY = "read_only"
     READ_WRITE = "read_write"
     WRITE_ONLY = "write_only"

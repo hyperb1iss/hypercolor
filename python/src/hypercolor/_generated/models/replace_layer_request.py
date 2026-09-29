@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
+from typing_extensions import Self
 
 from ..models.blend_mode import BlendMode
 from ..types import UNSET, Unset
@@ -131,7 +132,7 @@ class ReplaceLayerRequest:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.layer_adjust import LayerAdjust
         from ..models.layer_binding import LayerBinding
         from ..models.layer_source import LayerSource
@@ -148,9 +149,9 @@ class ReplaceLayerRequest:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                adjust_type_1 = LayerAdjust.from_dict(data)
+                adjust_type_0 = LayerAdjust.from_dict(data)
 
-                return adjust_type_1
+                return adjust_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(LayerAdjust | None | Unset, data)
@@ -189,9 +190,9 @@ class ReplaceLayerRequest:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                blend_type_1 = BlendMode(data)
+                blend_type_0 = BlendMode(data)
 
-                return blend_type_1
+                return blend_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(BlendMode | None | Unset, data)
@@ -233,9 +234,9 @@ class ReplaceLayerRequest:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                transform_type_1 = LayerTransform.from_dict(data)
+                transform_type_0 = LayerTransform.from_dict(data)
 
-                return transform_type_1
+                return transform_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(LayerTransform | None | Unset, data)

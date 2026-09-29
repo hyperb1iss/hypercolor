@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class BlendMode(str, Enum):
+class BlendMode(StrEnum):
     ADD = "add"
     ALPHA = "alpha"
     COLOR_DODGE = "color_dodge"

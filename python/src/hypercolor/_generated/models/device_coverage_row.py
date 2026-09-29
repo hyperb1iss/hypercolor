@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.coverage_active import CoverageActive
 from ..types import UNSET, Unset
@@ -39,8 +40,12 @@ class DeviceCoverageRow:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.coverage_bridge_device import CoverageBridgeDevice
-        from ..models.coverage_native_device import CoverageNativeDevice
+        from ..models.coverage_bridge_device import (
+            CoverageBridgeDevice,
+        )
+        from ..models.coverage_native_device import (
+            CoverageNativeDevice,
+        )
 
         active = self.active.value
 
@@ -81,10 +86,14 @@ class DeviceCoverageRow:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.coverage_bridge_device import CoverageBridgeDevice
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.coverage_bridge_device import (
+            CoverageBridgeDevice,
+        )
         from ..models.coverage_identity import CoverageIdentity
-        from ..models.coverage_native_device import CoverageNativeDevice
+        from ..models.coverage_native_device import (
+            CoverageNativeDevice,
+        )
 
         d = dict(src_dict)
         active = CoverageActive(d.pop("active"))
@@ -101,9 +110,9 @@ class DeviceCoverageRow:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                bridge_type_1 = CoverageBridgeDevice.from_dict(data)
+                bridge_type_0 = CoverageBridgeDevice.from_dict(data)
 
-                return bridge_type_1
+                return bridge_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(CoverageBridgeDevice | None | Unset, data)
@@ -118,9 +127,9 @@ class DeviceCoverageRow:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                native_type_1 = CoverageNativeDevice.from_dict(data)
+                native_type_0 = CoverageNativeDevice.from_dict(data)
 
-                return native_type_1
+                return native_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(CoverageNativeDevice | None | Unset, data)

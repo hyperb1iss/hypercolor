@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class Orientation(str, Enum):
+class Orientation(StrEnum):
     DIAGONAL = "diagonal"
     HORIZONTAL = "horizontal"
     RADIAL = "radial"

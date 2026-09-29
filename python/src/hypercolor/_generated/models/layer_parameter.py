@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class LayerParameter(str, Enum):
+class LayerParameter(StrEnum):
     BRIGHTNESS = "brightness"
     CONTRAST = "contrast"
     HUE_SHIFT = "hue_shift"

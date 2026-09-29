@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -50,12 +51,24 @@ class SegmentSummary:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.segment_topology_summary_type_0 import SegmentTopologySummaryType0
-        from ..models.segment_topology_summary_type_1 import SegmentTopologySummaryType1
-        from ..models.segment_topology_summary_type_2 import SegmentTopologySummaryType2
-        from ..models.segment_topology_summary_type_3 import SegmentTopologySummaryType3
-        from ..models.segment_topology_summary_type_4 import SegmentTopologySummaryType4
-        from ..models.segment_topology_summary_type_5 import SegmentTopologySummaryType5
+        from ..models.segment_topology_summary_type_0 import (
+            SegmentTopologySummaryType0,
+        )
+        from ..models.segment_topology_summary_type_1 import (
+            SegmentTopologySummaryType1,
+        )
+        from ..models.segment_topology_summary_type_2 import (
+            SegmentTopologySummaryType2,
+        )
+        from ..models.segment_topology_summary_type_3 import (
+            SegmentTopologySummaryType3,
+        )
+        from ..models.segment_topology_summary_type_4 import (
+            SegmentTopologySummaryType4,
+        )
+        from ..models.segment_topology_summary_type_5 import (
+            SegmentTopologySummaryType5,
+        )
 
         id = self.id
 
@@ -68,17 +81,14 @@ class SegmentSummary:
         topology_hint: dict[str, Any] | None | Unset
         if isinstance(self.topology_hint, Unset):
             topology_hint = UNSET
-        elif isinstance(self.topology_hint, SegmentTopologySummaryType0):
-            topology_hint = self.topology_hint.to_dict()
-        elif isinstance(self.topology_hint, SegmentTopologySummaryType1):
-            topology_hint = self.topology_hint.to_dict()
-        elif isinstance(self.topology_hint, SegmentTopologySummaryType2):
-            topology_hint = self.topology_hint.to_dict()
-        elif isinstance(self.topology_hint, SegmentTopologySummaryType3):
-            topology_hint = self.topology_hint.to_dict()
-        elif isinstance(self.topology_hint, SegmentTopologySummaryType4):
-            topology_hint = self.topology_hint.to_dict()
-        elif isinstance(self.topology_hint, SegmentTopologySummaryType5):
+        elif (
+            isinstance(self.topology_hint, SegmentTopologySummaryType0)
+            or isinstance(self.topology_hint, SegmentTopologySummaryType1)
+            or isinstance(self.topology_hint, SegmentTopologySummaryType2)
+            or isinstance(self.topology_hint, SegmentTopologySummaryType3)
+            or isinstance(self.topology_hint, SegmentTopologySummaryType4)
+            or isinstance(self.topology_hint, SegmentTopologySummaryType5)
+        ):
             topology_hint = self.topology_hint.to_dict()
         else:
             topology_hint = self.topology_hint
@@ -99,13 +109,25 @@ class SegmentSummary:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.segment_topology_summary_type_0 import SegmentTopologySummaryType0
-        from ..models.segment_topology_summary_type_1 import SegmentTopologySummaryType1
-        from ..models.segment_topology_summary_type_2 import SegmentTopologySummaryType2
-        from ..models.segment_topology_summary_type_3 import SegmentTopologySummaryType3
-        from ..models.segment_topology_summary_type_4 import SegmentTopologySummaryType4
-        from ..models.segment_topology_summary_type_5 import SegmentTopologySummaryType5
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.segment_topology_summary_type_0 import (
+            SegmentTopologySummaryType0,
+        )
+        from ..models.segment_topology_summary_type_1 import (
+            SegmentTopologySummaryType1,
+        )
+        from ..models.segment_topology_summary_type_2 import (
+            SegmentTopologySummaryType2,
+        )
+        from ..models.segment_topology_summary_type_3 import (
+            SegmentTopologySummaryType3,
+        )
+        from ..models.segment_topology_summary_type_4 import (
+            SegmentTopologySummaryType4,
+        )
+        from ..models.segment_topology_summary_type_5 import (
+            SegmentTopologySummaryType5,
+        )
 
         d = dict(src_dict)
         id = d.pop("id")

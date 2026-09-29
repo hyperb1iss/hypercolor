@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class AuditTransport(str, Enum):
+class AuditTransport(StrEnum):
     HTTP = "http"
     MCP = "mcp"
     WEBSOCKET = "websocket"

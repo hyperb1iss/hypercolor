@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class Corner(str, Enum):
+class Corner(StrEnum):
     BOTTOM_LEFT = "bottom_left"
     BOTTOM_RIGHT = "bottom_right"
     TOP_LEFT = "top_left"

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 if TYPE_CHECKING:
     from ..models.b_tree_map_additional_property_type_0 import (
@@ -71,8 +72,6 @@ T = TypeVar("T", bound="BTreeMap")
 
 @_attrs_define
 class BTreeMap:
-    """ """
-
     additional_properties: dict[
         str,
         BTreeMapAdditionalPropertyType0
@@ -154,41 +153,26 @@ class BTreeMap:
 
         field_dict: dict[str, Any] = {}
         for prop_name, prop in self.additional_properties.items():
-            if isinstance(prop, BTreeMapAdditionalPropertyType0):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType1):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType2):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType3):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType4):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType5):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType6):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType7):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType8):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType9):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType10):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType11):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType12):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType13):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType14):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType15):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType16):
-                field_dict[prop_name] = prop.to_dict()
-            elif isinstance(prop, BTreeMapAdditionalPropertyType17):
+            if (
+                isinstance(prop, BTreeMapAdditionalPropertyType0)
+                or isinstance(prop, BTreeMapAdditionalPropertyType1)
+                or isinstance(prop, BTreeMapAdditionalPropertyType2)
+                or isinstance(prop, BTreeMapAdditionalPropertyType3)
+                or isinstance(prop, BTreeMapAdditionalPropertyType4)
+                or isinstance(prop, BTreeMapAdditionalPropertyType5)
+                or isinstance(prop, BTreeMapAdditionalPropertyType6)
+                or isinstance(prop, BTreeMapAdditionalPropertyType7)
+                or isinstance(prop, BTreeMapAdditionalPropertyType8)
+                or isinstance(prop, BTreeMapAdditionalPropertyType9)
+                or isinstance(prop, BTreeMapAdditionalPropertyType10)
+                or isinstance(prop, BTreeMapAdditionalPropertyType11)
+                or isinstance(prop, BTreeMapAdditionalPropertyType12)
+                or isinstance(prop, BTreeMapAdditionalPropertyType13)
+                or isinstance(prop, BTreeMapAdditionalPropertyType14)
+                or isinstance(prop, BTreeMapAdditionalPropertyType15)
+                or isinstance(prop, BTreeMapAdditionalPropertyType16)
+                or isinstance(prop, BTreeMapAdditionalPropertyType17)
+            ):
                 field_dict[prop_name] = prop.to_dict()
             else:
                 field_dict[prop_name] = prop.to_dict()
@@ -196,7 +180,7 @@ class BTreeMap:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.b_tree_map_additional_property_type_0 import (
             BTreeMapAdditionalPropertyType0,
         )

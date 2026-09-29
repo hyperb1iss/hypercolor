@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -210,16 +211,26 @@ class SystemStatus:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.effect_health_status import EffectHealthStatus
         from ..models.input_status import InputStatus
         from ..models.latest_frame_status import LatestFrameStatus
-        from ..models.macos_daemon_ownership_status import MacosDaemonOwnershipStatus
-        from ..models.preview_runtime_status import PreviewRuntimeStatus
-        from ..models.render_acceleration_status import RenderAccelerationStatus
+        from ..models.macos_daemon_ownership_status import (
+            MacosDaemonOwnershipStatus,
+        )
+        from ..models.preview_runtime_status import (
+            PreviewRuntimeStatus,
+        )
+        from ..models.render_acceleration_status import (
+            RenderAccelerationStatus,
+        )
         from ..models.render_loop_status import RenderLoopStatus
-        from ..models.screen_capture_capacity_status import ScreenCaptureCapacityStatus
-        from ..models.session_performance_status import SessionPerformanceStatus
+        from ..models.screen_capture_capacity_status import (
+            ScreenCaptureCapacityStatus,
+        )
+        from ..models.session_performance_status import (
+            SessionPerformanceStatus,
+        )
 
         d = dict(src_dict)
         active_scene_snapshot_locked = d.pop("active_scene_snapshot_locked")
@@ -298,9 +309,9 @@ class SystemStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                latest_frame_type_1 = LatestFrameStatus.from_dict(data)
+                latest_frame_type_0 = LatestFrameStatus.from_dict(data)
 
-                return latest_frame_type_1
+                return latest_frame_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(LatestFrameStatus | None | Unset, data)
@@ -317,11 +328,11 @@ class SystemStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                macos_daemon_ownership_type_1 = MacosDaemonOwnershipStatus.from_dict(
+                macos_daemon_ownership_type_0 = MacosDaemonOwnershipStatus.from_dict(
                     data
                 )
 
-                return macos_daemon_ownership_type_1
+                return macos_daemon_ownership_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MacosDaemonOwnershipStatus | None | Unset, data)

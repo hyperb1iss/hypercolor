@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.driver_transport_kind_type_0 import DriverTransportKindType0
 from ..models.driver_transport_kind_type_1 import DriverTransportKindType1
@@ -64,19 +65,15 @@ class DriverTransportDescriptor:
             availability = self.availability.to_dict()
 
         kind: dict[str, Any] | str
-        if isinstance(self.kind, DriverTransportKindType0):
-            kind = self.kind.value
-        elif isinstance(self.kind, DriverTransportKindType1):
-            kind = self.kind.value
-        elif isinstance(self.kind, DriverTransportKindType2):
-            kind = self.kind.value
-        elif isinstance(self.kind, DriverTransportKindType3):
-            kind = self.kind.value
-        elif isinstance(self.kind, DriverTransportKindType4):
-            kind = self.kind.value
-        elif isinstance(self.kind, DriverTransportKindType5):
-            kind = self.kind.value
-        elif isinstance(self.kind, DriverTransportKindType6):
+        if (
+            isinstance(self.kind, DriverTransportKindType0)
+            or isinstance(self.kind, DriverTransportKindType1)
+            or isinstance(self.kind, DriverTransportKindType2)
+            or isinstance(self.kind, DriverTransportKindType3)
+            or isinstance(self.kind, DriverTransportKindType4)
+            or isinstance(self.kind, DriverTransportKindType5)
+            or isinstance(self.kind, DriverTransportKindType6)
+        ):
             kind = self.kind.value
         else:
             kind = self.kind.to_dict()
@@ -93,14 +90,16 @@ class DriverTransportDescriptor:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.driver_transport_availability_type_0 import (
             DriverTransportAvailabilityType0,
         )
         from ..models.driver_transport_availability_type_1 import (
             DriverTransportAvailabilityType1,
         )
-        from ..models.driver_transport_kind_type_7 import DriverTransportKindType7
+        from ..models.driver_transport_kind_type_7 import (
+            DriverTransportKindType7,
+        )
 
         d = dict(src_dict)
 

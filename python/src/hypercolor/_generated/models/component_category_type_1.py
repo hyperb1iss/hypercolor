@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ComponentCategoryType1(str, Enum):
+class ComponentCategoryType1(StrEnum):
     STRIP = "Strip"
 
     def __str__(self) -> str:

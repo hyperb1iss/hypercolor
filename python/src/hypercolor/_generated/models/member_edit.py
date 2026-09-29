@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -60,7 +61,7 @@ class MemberEdit:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.member_state import MemberState
 
         d = dict(src_dict)
@@ -73,9 +74,9 @@ class MemberEdit:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                after_type_1 = MemberState.from_dict(data)
+                after_type_0 = MemberState.from_dict(data)
 
-                return after_type_1
+                return after_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MemberState | None | Unset, data)
@@ -90,9 +91,9 @@ class MemberEdit:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                before_type_1 = MemberState.from_dict(data)
+                before_type_0 = MemberState.from_dict(data)
 
-                return before_type_1
+                return before_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MemberState | None | Unset, data)

@@ -5,6 +5,7 @@ from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.device_class_hint import DeviceClassHint
 from ..types import UNSET, Unset
@@ -95,7 +96,7 @@ class DriverPresentation:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         d = dict(src_dict)
         label = d.pop("label")
 
@@ -124,9 +125,9 @@ class DriverPresentation:
             try:
                 if not isinstance(data, str):
                     raise TypeError()
-                default_device_class_type_1 = DeviceClassHint(data)
+                default_device_class_type_0 = DeviceClassHint(data)
 
-                return default_device_class_type_1
+                return default_device_class_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DeviceClassHint | None | Unset, data)

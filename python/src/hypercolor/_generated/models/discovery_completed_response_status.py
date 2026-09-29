@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DiscoveryCompletedResponseStatus(str, Enum):
+class DiscoveryCompletedResponseStatus(StrEnum):
     COMPLETED = "completed"
 
     def __str__(self) -> str:

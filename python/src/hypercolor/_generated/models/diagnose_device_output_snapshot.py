@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 if TYPE_CHECKING:
     from ..models.diagnose_device_output_item import DiagnoseDeviceOutputItem
@@ -70,8 +71,10 @@ class DiagnoseDeviceOutputSnapshot:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.diagnose_device_output_item import DiagnoseDeviceOutputItem
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.diagnose_device_output_item import (
+            DiagnoseDeviceOutputItem,
+        )
 
         d = dict(src_dict)
         dropped_frames_total = d.pop("dropped_frames_total")

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class FitMode(str, Enum):
+class FitMode(StrEnum):
     CONTAIN = "contain"
     COVER = "cover"
     MIRROR = "mirror"

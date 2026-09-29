@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 if TYPE_CHECKING:
     from ..models.apply_control_changes_response import ApplyControlChangesResponse
@@ -43,8 +44,10 @@ class ApplyControlSurfaceValuesResponse200:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.apply_control_changes_response import ApplyControlChangesResponse
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.apply_control_changes_response import (
+            ApplyControlChangesResponse,
+        )
         from ..models.response_meta import ResponseMeta
 
         d = dict(src_dict)

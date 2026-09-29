@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ApplyPolicyType0Kind(str, Enum):
+class ApplyPolicyType0Kind(StrEnum):
     LIVE = "live"
 
     def __str__(self) -> str:

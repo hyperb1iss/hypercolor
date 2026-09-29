@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.macos_capability_owner import MacosCapabilityOwner
 from ..types import UNSET, Unset
@@ -81,7 +82,7 @@ class MacosDaemonOwnershipStatus:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.macos_daemon_owner_conflict_status import (
             MacosDaemonOwnerConflictStatus,
         )
@@ -104,9 +105,9 @@ class MacosDaemonOwnershipStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                conflict_type_1 = MacosDaemonOwnerConflictStatus.from_dict(data)
+                conflict_type_0 = MacosDaemonOwnerConflictStatus.from_dict(data)
 
-                return conflict_type_1
+                return conflict_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MacosDaemonOwnerConflictStatus | None | Unset, data)
@@ -123,11 +124,11 @@ class MacosDaemonOwnershipStatus:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                recovery_required_type_1 = (
+                recovery_required_type_0 = (
                     MacosDaemonOwnerRecoveryRequiredStatus.from_dict(data)
                 )
 
-                return recovery_required_type_1
+                return recovery_required_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(MacosDaemonOwnerRecoveryRequiredStatus | None | Unset, data)

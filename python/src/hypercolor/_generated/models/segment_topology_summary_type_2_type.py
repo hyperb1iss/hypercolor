@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class SegmentTopologySummaryType2Type(str, Enum):
+class SegmentTopologySummaryType2Type(StrEnum):
     RING = "ring"
 
     def __str__(self) -> str:

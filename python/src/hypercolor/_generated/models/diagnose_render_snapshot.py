@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -29,7 +30,9 @@ class DiagnoseRenderSnapshot:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.diagnose_latest_frame_snapshot import DiagnoseLatestFrameSnapshot
+        from ..models.diagnose_latest_frame_snapshot import (
+            DiagnoseLatestFrameSnapshot,
+        )
 
         recent_window = self.recent_window.to_dict()
 
@@ -54,8 +57,10 @@ class DiagnoseRenderSnapshot:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.diagnose_latest_frame_snapshot import DiagnoseLatestFrameSnapshot
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.diagnose_latest_frame_snapshot import (
+            DiagnoseLatestFrameSnapshot,
+        )
         from ..models.diagnose_render_window_snapshot import (
             DiagnoseRenderWindowSnapshot,
         )
@@ -73,9 +78,9 @@ class DiagnoseRenderSnapshot:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                latest_frame_type_1 = DiagnoseLatestFrameSnapshot.from_dict(data)
+                latest_frame_type_0 = DiagnoseLatestFrameSnapshot.from_dict(data)
 
-                return latest_frame_type_1
+                return latest_frame_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(DiagnoseLatestFrameSnapshot | None | Unset, data)

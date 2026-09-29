@@ -27,16 +27,16 @@ tokio = { workspace = true }
 tokio-serial = "5"
 zerocopy = { workspace = true }
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw", "macos-shared-device", "windows-native"] }
-midir = "0.10.3"
+midir = "0.11.0"
 image = { workspace = true }
 turbojpeg = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 alsa = "0.11"
-async-hid = { version = "0.5.0", default-features = false, features = ["tokio"] }
+async-hid = { version = "0.5.3", default-features = false, features = ["tokio"] }
 futures-util = { workspace = true }
 i2cdev = "0.6.2"
-nix = { version = "0.30", default-features = false }
+nix = { version = "0.31", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 hypercolor-windows-pawnio = { path = "../hypercolor-windows-pawnio" }

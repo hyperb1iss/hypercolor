@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class LedTopologyType0Type(str, Enum):
+class LedTopologyType0Type(StrEnum):
     STRIP = "strip"
 
     def __str__(self) -> str:

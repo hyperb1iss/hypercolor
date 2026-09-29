@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class Redaction(str, Enum):
+class Redaction(StrEnum):
     PLAIN = "plain"
     SECRET = "secret"
 

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ControlKindType6(str, Enum):
+class ControlKindType6(StrEnum):
     AREA = "area"
 
     def __str__(self) -> str:

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..types import UNSET, Unset
 
@@ -133,7 +134,7 @@ class ZoneResource:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.scene_layer import SceneLayer
         from ..models.zone_layout_resource import ZoneLayoutResource
         from ..models.zone_member import ZoneMember
@@ -209,9 +210,9 @@ class ZoneResource:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                layout_type_1 = ZoneLayoutResource.from_dict(data)
+                layout_type_0 = ZoneLayoutResource.from_dict(data)
 
-                return layout_type_1
+                return layout_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             return cast(None | Unset | ZoneLayoutResource, data)

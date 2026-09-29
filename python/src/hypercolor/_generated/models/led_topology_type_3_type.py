@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class LedTopologyType3Type(str, Enum):
+class LedTopologyType3Type(StrEnum):
     CONCENTRIC_RINGS = "concentric_rings"
 
     def __str__(self) -> str:

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class MediaAuthorizationAdapter(str, Enum):
+class MediaAuthorizationAdapter(StrEnum):
     MUSIC = "music"
     SPOTIFY = "spotify"
 

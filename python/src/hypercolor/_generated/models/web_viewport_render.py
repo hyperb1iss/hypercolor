@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class WebViewportRender(str, Enum):
+class WebViewportRender(StrEnum):
     LIVE = "live"
     SNAPSHOT = "snapshot"
 

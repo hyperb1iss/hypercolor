@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class CoverageActive(str, Enum):
+class CoverageActive(StrEnum):
     BRIDGE = "bridge"
     CONFLICT = "conflict"
     NATIVE = "native"

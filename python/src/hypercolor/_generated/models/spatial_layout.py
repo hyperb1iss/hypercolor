@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
+from typing_extensions import Self
 
 from ..models.edge_behavior_type_0 import EdgeBehaviorType0
 from ..types import UNSET, Unset
@@ -91,11 +92,11 @@ class SpatialLayout:
         default_sampling_mode: dict[str, Any] | Unset
         if isinstance(self.default_sampling_mode, Unset):
             default_sampling_mode = UNSET
-        elif isinstance(self.default_sampling_mode, SamplingModeType0):
-            default_sampling_mode = self.default_sampling_mode.to_dict()
-        elif isinstance(self.default_sampling_mode, SamplingModeType1):
-            default_sampling_mode = self.default_sampling_mode.to_dict()
-        elif isinstance(self.default_sampling_mode, SamplingModeType2):
+        elif (
+            isinstance(self.default_sampling_mode, SamplingModeType0)
+            or isinstance(self.default_sampling_mode, SamplingModeType1)
+            or isinstance(self.default_sampling_mode, SamplingModeType2)
+        ):
             default_sampling_mode = self.default_sampling_mode.to_dict()
         else:
             default_sampling_mode = self.default_sampling_mode.to_dict()
@@ -128,8 +129,10 @@ class SpatialLayout:
         return field_dict
 
     @classmethod
-    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        from ..models.edge_behavior_fade_to_black import (
+            EdgeBehaviorFadeToBlack,
+        )
         from ..models.output import Output
         from ..models.sampling_mode_type_0 import SamplingModeType0
         from ..models.sampling_mode_type_1 import SamplingModeType1

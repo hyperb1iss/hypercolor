@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class ComponentOrigin(str, Enum):
+class ComponentOrigin(StrEnum):
     BUILT_IN = "built_in"
     USER = "user"
 

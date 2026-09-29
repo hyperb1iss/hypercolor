@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class BTreeMapAdditionalPropertyType16Kind(str, Enum):
+class BTreeMapAdditionalPropertyType16Kind(StrEnum):
     LIST = "list"
 
     def __str__(self) -> str:

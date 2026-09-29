@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class LiveSection(str, Enum):
+class LiveSection(StrEnum):
     AUDIO = "audio"
     CAPTURE = "capture"
     INPUT = "input"

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class DriverTransportKindType0(str, Enum):
+class DriverTransportKindType0(StrEnum):
     NETWORK = "network"
 
     def __str__(self) -> str:

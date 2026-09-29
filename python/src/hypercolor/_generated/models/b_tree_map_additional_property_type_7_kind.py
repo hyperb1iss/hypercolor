@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class BTreeMapAdditionalPropertyType7Kind(str, Enum):
+class BTreeMapAdditionalPropertyType7Kind(StrEnum):
     MAC = "mac"
 
     def __str__(self) -> str:
