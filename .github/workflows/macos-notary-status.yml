@@ -1,0 +1,98 @@
+name: macOS Notary Status
+
+# Lists the team's recent Apple notarization submissions and their status,
+# and prints Apple's log for one submission on request. Answers "is Apple
+# still reviewing?" from the repository's own App Store Connect API key,
+# without a Mac or a maintainer's keychain. Runs on Ubuntu because the
+# Notary REST API needs only an ES256-signed token.
+
+on:
+  workflow_dispatch:
+    inputs:
+      submission_id:
+        description: "Optional submission ID to fetch Apple's notarization log for"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    name: Notary submissions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install token dependencies
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/notary-venv"
+          "${RUNNER_TEMP}/notary-venv/bin/pip" install --quiet "pyjwt[crypto]==2.10.1"
+
+      - name: Query the Notary API
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          SUBMISSION_ID: ${{ inputs.submission_id }}
+        run: |
+          "${RUNNER_TEMP}/notary-venv/bin/python" - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          import jwt
+
+          now = int(time.time())
+          token = jwt.encode(
+              {
+                  "iss": os.environ["APPLE_API_ISSUER"],
+                  "iat": now,
+                  "exp": now + 900,
+                  "aud": "appstoreconnect-v1",
+              },
+              os.environ["APPLE_API_KEY_CONTENT"],
+              algorithm="ES256",
+              headers={"kid": os.environ["APPLE_API_KEY_ID"], "typ": "JWT"},
+          )
+          base = "https://appstoreconnect.apple.com/notary/v2/submissions"
+
+
+          def get(url):
+              request = urllib.request.Request(
+                  url, headers={"Authorization": f"Bearer {token}"}
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+
+          rows = get(base).get("data", [])
+          summary = ["| Created | Status | Submission | Name |", "| --- | --- | --- | --- |"]
+          for row in rows:
+              attributes = row["attributes"]
+              line = (
+                  f"{attributes.get('createdDate')}  {attributes.get('status'):<12}"
+                  f"  {row['id']}  {attributes.get('name')}"
+              )
+              print(line)
+              summary.append(
+                  f"| {attributes.get('createdDate')} | {attributes.get('status')}"
+                  f" | `{row['id']}` | {attributes.get('name')} |"
+              )
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("## Notary submissions\n\n" + "\n".join(summary) + "\n")
+
+          submission = os.environ.get("SUBMISSION_ID", "").strip()
+          if submission:
+              info = get(f"{base}/{submission}")["data"]["attributes"]
+              print(f"\n{submission}: {info.get('status')}")
+              try:
+                  logs = get(f"{base}/{submission}/logs")["data"]["attributes"]
+              except urllib.error.HTTPError as error:
+                  print(f"no log yet (HTTP {error.code}); Apple publishes it on completion")
+              else:
+                  url = logs.get("developerLogUrl")
+                  if url:
+                      with urllib.request.urlopen(url, timeout=30) as response:
+                          print(json.dumps(json.load(response), indent=2))
+          PY
