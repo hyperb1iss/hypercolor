@@ -65,7 +65,8 @@ test('publication retains every validation gate while compilation overlaps it', 
     'rust-test-servo', 'rust-windows', 'rust-deny', 'sdk', 'ui', 'e2e',
     'web-assets', 'python', 'python-generated',
   ];
-  assert.deepEqual(needs('create-release'), ['build-release', 'build-native-app', ...validation]);
+  assert.deepEqual(needs('sign-macos'), ['build-native-app', 'release-credentials', 'web-assets']);
+  assert.deepEqual(needs('create-release'), ['build-release', 'build-native-app', 'sign-macos', ...validation]);
   // Preserve GitHub's implicit success() gate: failed or skipped validation
   // must never become publishable through always() or !cancelled().
   const condition = body('create-release').split('    needs:')[0];
