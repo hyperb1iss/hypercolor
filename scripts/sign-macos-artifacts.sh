@@ -383,7 +383,8 @@ verify_signature() {
     || die "designated requirement identifier mismatch for ${path}"
   grep -F 'anchor apple generic' <<< "${requirement}" >/dev/null \
     || die "designated requirement anchor mismatch for ${path}"
-  grep -F "certificate leaf[subject.OU] = \"${APPLE_TEAM_ID}\"" <<< "${requirement}" >/dev/null \
+  # codesign quotes the OU only when it does not start with a letter.
+  grep -E "certificate leaf\[subject\.OU\] = \"?${APPLE_TEAM_ID}\"?( |$)" <<< "${requirement}" >/dev/null \
     || die "designated requirement team mismatch for ${path}"
 
   ensure_signing_tmp
@@ -544,6 +545,26 @@ write_object_inventory() {
   jq -s . "${records}" > "${output}"
 }
 
+# hdiutil create intermittently fails with "Resource busy" on GitHub macOS
+# runners while background scanners hold the staging volume
+# (actions/runner-images#7522). That is the runner, not the image, so
+# retry the create a bounded number of times.
+create_dmg() {
+  local stage="$1"
+  local dmg="$2"
+  local attempt
+  for attempt in 1 2 3 4; do
+    rm -f "${dmg}"
+    if hdiutil create -volname Hypercolor -srcfolder "${stage}" \
+      -ov -format UDZO "${dmg}" >/dev/null; then
+      return 0
+    fi
+    printf 'hdiutil create failed (attempt %s of 4); retrying\n' "${attempt}" >&2
+    sleep $((attempt * 5))
+  done
+  die "hdiutil could not create ${dmg}"
+}
+
 sign_dmg() {
   local dmg="$1"
   local args=(--force --sign "${APPLE_SIGNING_IDENTITY}" --timestamp)
@@ -688,10 +709,11 @@ build_app_artifacts() {
   mkdir -p "${dmg_stage}"
   ditto "${app}" "${dmg_stage}/Hypercolor.app"
   ln -s /Applications "${dmg_stage}/Applications"
+  # A restored build cache can carry DMGs from an earlier version, and the
+  # upload glob takes the whole directory, so start from an empty one.
+  rm -rf "${dmg_dir}"
   mkdir -p "${dmg_dir}"
-  rm -f "${dmg}"
-  hdiutil create -volname Hypercolor -srcfolder "${dmg_stage}" \
-    -ov -format UDZO "${dmg}" >/dev/null
+  create_dmg "${dmg_stage}" "${dmg}"
   sign_dmg "${dmg}"
   notarize "${dmg}" "${dmg_receipt}"
   xcrun stapler staple "${dmg}"
