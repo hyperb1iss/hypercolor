@@ -5,7 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DeviceState};
 
-use crate::{DiscoveredDevice, DriverControlHost};
+use crate::{DeviceInputSink, DiscoveredDevice, DriverControlHost};
 
 /// Read-only tracked-device view passed into pairing and auth-summary logic.
 #[derive(Debug, Clone, Copy)]
@@ -120,6 +120,11 @@ pub trait DriverHost: Send + Sync {
 
     /// Access control-surface host services when the daemon supports them.
     fn control_host(&self) -> Option<&dyn DriverControlHost> {
+        None
+    }
+
+    /// Accept input from driver-owned devices when the daemon supports it.
+    fn device_input(&self) -> Option<Arc<dyn DeviceInputSink>> {
         None
     }
 }

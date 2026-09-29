@@ -432,7 +432,9 @@ fn normalize_queued_interaction(interaction: &mut crate::input::InteractionData)
                     | InputEvent::MidiNote { .. }
                     | InputEvent::MidiControlChange { .. }
                     | InputEvent::MidiPitchBend { .. }
-                    | InputEvent::MidiRealtime { .. } => None,
+                    | InputEvent::MidiRealtime { .. }
+                    | InputEvent::Touch { .. }
+                    | InputEvent::DeviceButton { .. } => None,
                 }),
         );
 }
