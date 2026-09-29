@@ -782,6 +782,12 @@ run_selftest() {
 
   codesign_object "${binary}" "${identifier}" none
   verify_signature "${binary}" "${identifier}" none
+  # The same requirement the standalone installer's verifier checks on a
+  # user's Mac, proven here against a real Developer ID signature.
+  codesign --verify --strict \
+    -R="=anchor apple generic and certificate leaf[subject.OU] = \"${APPLE_TEAM_ID}\"" \
+    "${binary}" \
+    || die "the installer's signature requirement rejects a release signature"
   ditto -c -k --keepParent "${binary}" "${archive}"
   notarize "${archive}" "${SIGNING_TMP}/selftest-notarization.json"
   printf 'macOS signing selftest passed: signed for team %s and notarized\n' \
