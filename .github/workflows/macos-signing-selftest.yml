@@ -14,6 +14,7 @@ on:
       - scripts/sign-macos-artifacts.sh
       - scripts/macos-signing-keychain.c
       - scripts/with-macos-signing.sh
+      - packaging/macos/signing-manifest.tsv
       - .github/workflows/macos-signing-selftest.yml
 
 permissions:
@@ -36,6 +37,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Select Xcode
         run: |
@@ -51,4 +54,6 @@ jobs:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          # Fail with the submission's status instead of a silent job cancel.
+          NOTARY_WAIT_TIMEOUT: 20m
         run: bash scripts/with-macos-signing.sh scripts/sign-macos-artifacts.sh selftest

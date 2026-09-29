@@ -9,8 +9,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="${ROOT_DIR}/packaging/macos/signing-manifest.tsv"
 SIGNING_TMP=""
 SIGNING_KEYCHAIN=""
-ORIGINAL_KEYCHAIN_SEARCH_LIST=()
-KEYCHAIN_SEARCH_LIST_CHANGED=0
+KEYCHAIN_ON_SEARCH_LIST=0
 
 die() {
   printf 'macOS signing failed: %s\n' "$*" >&2
@@ -47,10 +46,8 @@ EOF
 }
 
 cleanup() {
-  if [[ "${KEYCHAIN_SEARCH_LIST_CHANGED}" == 1 ]]; then
-    security list-keychains -d user -s \
-      ${ORIGINAL_KEYCHAIN_SEARCH_LIST[@]+"${ORIGINAL_KEYCHAIN_SEARCH_LIST[@]}"} \
-      >/dev/null 2>&1 || true
+  if [[ "${KEYCHAIN_ON_SEARCH_LIST}" == 1 ]]; then
+    remove_signing_keychain_from_search_list || true
   fi
   if [[ -n "${SIGNING_KEYCHAIN}" && -f "${SIGNING_KEYCHAIN}" ]]; then
     security delete-keychain "${SIGNING_KEYCHAIN}" >/dev/null 2>&1 || true
@@ -217,19 +214,55 @@ prepare_signing_identity() {
     || die "signing identity is not visible on the keychain search list"
 }
 
-add_signing_keychain_to_search_list() {
-  local entry
-  ORIGINAL_KEYCHAIN_SEARCH_LIST=()
+# Prints the user keychain search list one unquoted path per line, skipping
+# the ephemeral signing keychain. Fails when the list cannot be read, so a
+# caller never mistakes a failed read for an empty list.
+current_search_list_without_signing_keychain() {
+  local listing entry
+  listing="$(security list-keychains -d user)" || return 1
   while IFS= read -r entry; do
     entry="$(printf '%s' "${entry}" | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')"
-    if [[ -n "${entry}" ]]; then
-      ORIGINAL_KEYCHAIN_SEARCH_LIST+=("${entry}")
+    # security may report the temp keychain under /private/var for /var.
+    if [[ -n "${entry}" && "${entry}" != "${SIGNING_KEYCHAIN}" \
+      && "${entry}" != "/private${SIGNING_KEYCHAIN}" ]]; then
+      printf '%s\n' "${entry}"
     fi
-  done < <(security list-keychains -d user)
-  KEYCHAIN_SEARCH_LIST_CHANGED=1
+  done <<< "${listing}"
+}
+
+read_search_list_into() {
+  local entries entry
+  entries="$(current_search_list_without_signing_keychain)" \
+    || die "could not read the keychain search list"
+  SEARCH_LIST=()
+  while IFS= read -r entry; do
+    if [[ -n "${entry}" ]]; then
+      SEARCH_LIST+=("${entry}")
+    fi
+  done <<< "${entries}"
+}
+
+add_signing_keychain_to_search_list() {
+  local SEARCH_LIST
+  read_search_list_into
+  KEYCHAIN_ON_SEARCH_LIST=1
   security list-keychains -d user -s "${SIGNING_KEYCHAIN}" \
-    ${ORIGINAL_KEYCHAIN_SEARCH_LIST[@]+"${ORIGINAL_KEYCHAIN_SEARCH_LIST[@]}"} \
+    ${SEARCH_LIST[@]+"${SEARCH_LIST[@]}"} \
     || die "could not add the signing keychain to the search list"
+}
+
+# Drops only this run's keychain from whatever the search list holds now,
+# so a concurrent signing run keeps its own entry.
+remove_signing_keychain_from_search_list() {
+  local SEARCH_LIST entries entry
+  entries="$(current_search_list_without_signing_keychain)" || return 1
+  SEARCH_LIST=()
+  while IFS= read -r entry; do
+    if [[ -n "${entry}" ]]; then
+      SEARCH_LIST+=("${entry}")
+    fi
+  done <<< "${entries}"
+  security list-keychains -d user -s ${SEARCH_LIST[@]+"${SEARCH_LIST[@]}"} >/dev/null 2>&1
 }
 
 validate_notary_credentials() {
@@ -442,23 +475,48 @@ verify_scope() {
   done < <(find "${scope_root}" -type f -print0)
 }
 
+# Submits, logs the submission ID before waiting so a stalled Apple queue is
+# traceable, waits (bounded by NOTARY_WAIT_TIMEOUT when set, for example
+# "25m"), and records notarytool's final status as the receipt.
 notarize() {
   local submission="$1"
   local receipt="$2"
+  local auth=()
   if [[ -n "${APPLE_API_KEY_ID:-}" ]]; then
-    xcrun notarytool submit "${submission}" --wait --output-format json \
-      --key "${APPLE_API_KEY_PATH}" --key-id "${APPLE_API_KEY_ID}" \
-      --issuer "${APPLE_API_ISSUER}" > "${receipt}"
+    auth=(--key "${APPLE_API_KEY_PATH}" --key-id "${APPLE_API_KEY_ID}"
+      --issuer "${APPLE_API_ISSUER}")
   else
-    local profile_args=(--keychain-profile "${APPLE_NOTARY_KEYCHAIN_PROFILE}")
+    auth=(--keychain-profile "${APPLE_NOTARY_KEYCHAIN_PROFILE}")
     if [[ -n "${APPLE_NOTARY_KEYCHAIN_PATH:-}" ]]; then
-      profile_args+=(--keychain "${APPLE_NOTARY_KEYCHAIN_PATH}")
+      auth+=(--keychain "${APPLE_NOTARY_KEYCHAIN_PATH}")
     fi
-    xcrun notarytool submit "${submission}" --wait --output-format json \
-      "${profile_args[@]}" > "${receipt}"
   fi
-  jq -e '.status == "Accepted"' "${receipt}" >/dev/null \
-    || die "Apple notarization did not accept ${submission}"
+
+  local submitted submission_id
+  submitted="$(xcrun notarytool submit "${submission}" --output-format json "${auth[@]}")" \
+    || die "notarytool could not submit ${submission}"
+  submission_id="$(jq -r '.id // empty' <<< "${submitted}")"
+  [[ -n "${submission_id}" ]] \
+    || die "notarytool returned no submission ID for ${submission}"
+  printf 'notarization submission %s for %s\n' \
+    "${submission_id}" "$(basename "${submission}")"
+
+  local wait_args=()
+  if [[ -n "${NOTARY_WAIT_TIMEOUT:-}" ]]; then
+    wait_args=(--timeout "${NOTARY_WAIT_TIMEOUT}")
+  fi
+  xcrun notarytool wait "${submission_id}" \
+    ${wait_args[@]+"${wait_args[@]}"} "${auth[@]}" >/dev/null || true
+  xcrun notarytool info "${submission_id}" --output-format json "${auth[@]}" \
+    > "${receipt}" \
+    || die "notarytool could not report submission ${submission_id}"
+
+  if ! jq -e '.status == "Accepted"' "${receipt}" >/dev/null; then
+    printf 'notarization submission %s status: %s\n' \
+      "${submission_id}" "$(jq -r '.status // "unknown"' "${receipt}")" >&2
+    xcrun notarytool log "${submission_id}" "${auth[@]}" >&2 || true
+    die "Apple notarization did not accept ${submission}"
+  fi
 }
 
 write_object_inventory() {
