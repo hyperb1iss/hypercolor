@@ -812,7 +812,8 @@ fn release_ci_publishes_signed_macos_apps() {
 fn macos_release_tools_use_the_manifest_signing_actor() {
     assert!(!CI_WORKFLOW.contains(r#"APPLE_SIGNING_IDENTITY: "-""#));
     assert!(
-        CI_WORKFLOW.contains("scripts/with-macos-signing.sh scripts/sign-macos-artifacts.sh sign-app")
+        CI_WORKFLOW
+            .contains("scripts/with-macos-signing.sh scripts/sign-macos-artifacts.sh sign-app")
     );
     assert!(BUILD_MAC_INSTALLER_SH.contains(r#"--bundles app"#));
     assert!(!BUILD_MAC_INSTALLER_SH.contains("dmg,app"));
