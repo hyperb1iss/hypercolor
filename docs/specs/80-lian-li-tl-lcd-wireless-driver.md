@@ -955,29 +955,41 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   carries it, so a send is overdue only once it has had time to land and
   to be caught by a status: its age exceeds the base delay (the smallest
   echo age over the last minute, kept as the smallest of each 10 s), plus
-  the measured status interval (600 ms until measured), plus the poll
-  spacing and 35 ms of jitter. Judged against the send's own latency
+  a status interval, plus the poll spacing and 35 ms of jitter. The status
+  interval is the longest of the last four measured, or the running
+  average if that is longer (600 ms until measured), so a cadence that
+  just slowed, as it did from 550 ms to a second on the owner's rig,
+  counts from its first slow status. In effect a send is overdue once it
+  missed a status it should have been in. Judged against the send's own
+  latency
   instead, stale statuses on the owner's rig read as backlog 1 to 7 times
   per 10 s, and delivery sawtoothed between 3.9 and 26.4 fps (PR 320,
   2026-09-28).
 - **Only sustained evidence shrinks the window.** More than one overdue at
   three advancing echoes in a row halves the window; the window does not
   grow while such a run is open. Halvings come at most once per three
-  status intervals and once per window of sends. The minute-long base
-  delay matters: with a 10 s memory the base rose with a backlog that grew
+  status intervals and once per window of sends. Every cluster's frames
+  wait in the one TX queue, so a halving applies to every cluster on the
+  controller that is not already inside its own holdoff: with clusters
+  halving alone, the others kept the shared queue full, and three
+  clusters on a slow radio at a one-second status grew past the 5 s stall
+  verdict into a TX reset in simulation. The minute-long base delay
+  matters too: with a 10 s memory the base rose with a backlog that grew
   by less than a status interval per span, and two clusters sharing a slow
   radio grew without bound in simulation.
 - **What the tolerance costs.** On a radio slower than the stream the TX
   holds about two status intervals of what the radio carries before the
   window answers, where a per-send rule held a few transfers. In the fake
   radio at 16.7 transfers a second and a 333 ms status, one cluster settles
-  near 50 envelopes (0.7 s mean echo age), two near 78 (1.2 s), and three
-  at a one-second status reach 3 to 4 s. Delivery stays at 84 to 90% of
-  the radio's rate, and the backlog stays bounded over 30 minutes. A radio
-  that keeps up holds no backlog at any cadence.
-- **Clusters are independent.** A frame goes to every cluster it changes
-  that has room and waits for the rest; one slow or unheard cluster never
-  throttles another. A frame's delivery acknowledgement counts only the
+  near 50 envelopes (0.7 s mean echo age), two near 75 (1.1 s), and three
+  near 95 (1.4 s); three at a one-second status hold about 165 (2.6 s),
+  and four about 210 (3.3 s). Delivery stays at 78 to 95% of the radio's
+  rate, and the backlog stays bounded with no reset over 30 minutes. A
+  radio that keeps up holds no backlog at any cadence.
+- **Clusters are paced independently.** A frame goes to every cluster it
+  changes that has room and waits for the rest; one cluster whose echoes
+  lag, or one the RX cannot hear, never throttles another. Only a backlog
+  in the shared TX shrinks them together. A frame's delivery acknowledgement counts only the
   pixels written (`Protocol::written_frame_bytes`); a frame written to no
   cluster is acknowledged as suppressed.
 - **The frame pump.** The protocol's frame pump (`Protocol::frame_pump_interval`
@@ -993,11 +1005,13 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   controller, so they cannot mark a status refresh; the echo's own changes
   do.
 - **Timeouts.** No echo progress for three status intervals, or the usual
-  echo age plus two when echoes lag further (0.5 to 3 s; 1.5 s before any
-  echo), gives up on the sends out: the window collapses to 2 and the
-  newest frame goes out as a probe, one at a time, the timeout doubling
-  to 6 s. A timeout before any echo has been seen keeps slow start's
-  ceiling, since it only proves the first guess was short. No send of any
+  echo age plus two when echoes lag further (0.5 to 3 s; at least 1.5 s
+  until an echo interval is measured), gives up on the sends out: the
+  window collapses to 2 and the newest frame goes out as a probe, one at a
+  time, the timeout doubling to 6 s. A timeout before an echo interval is
+  measured keeps slow start's ceiling, since it only proves the guess was
+  short. Guessing the interval from the first echo's age timed out fans on
+  a 550 ms cadence half a second after a quick first echo. No send of any
   kind goes out while 64 are unresolved, which bounds what the TX can hold
   for a cluster even when the radio stops.
 - **Restores after upkeep.** Every fan-speed upkeep leaves each cluster
