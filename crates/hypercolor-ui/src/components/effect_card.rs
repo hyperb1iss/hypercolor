@@ -15,6 +15,7 @@ use leptos_icons::Icon;
 use crate::api::EffectSummary;
 use crate::color;
 use crate::icons::*;
+use crate::media::{MediaUse, use_media_source};
 use crate::style_utils::category_style;
 use crate::thumbnails::{Thumbnail, ThumbnailStore};
 
@@ -97,7 +98,10 @@ pub fn EffectCard(
     let source_label_text = source_label(source);
     let show_source_icon = source != EffectSourceKind::Native;
     let is_html = source == EffectSourceKind::Html;
-    let cover_url = effect.cover_image_url.clone();
+    let cover = use_media_source(
+        Signal::stored(effect.cover_image_url.clone()),
+        MediaUse::Artwork,
+    );
     let (cover_hidden, set_cover_hidden) = signal(false);
 
     view! {
@@ -153,7 +157,7 @@ pub fn EffectCard(
             // `loading="lazy"` on absolute-positioned images breaks Chrome's
             // visibility math — cards below the first row never trigger a load.
             // `decoding="async"` still lets the browser off-thread decode.
-            {cover_url.map(|url| view! {
+            {move || cover.get().url().map(|url| view! {
                 <img
                     class=move || {
                         let base = "absolute inset-0 w-full h-full object-cover pointer-events-none \

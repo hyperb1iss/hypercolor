@@ -10,6 +10,7 @@ use crate::color;
 use crate::components::perf_charts::{DistributionBar, Sparkline, StackSegment, StackedBar};
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
+use crate::media::{MediaUse, use_media_source};
 use crate::style_utils::category_style;
 use crate::thumbnails::{Thumbnail, ThumbnailStore};
 use crate::ws::PerformanceMetrics;
@@ -429,7 +430,10 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
     let thumb_id = effect.id.clone();
     let thumb_version = effect.version.clone();
     let name = effect.name.clone();
-    let cover_url = effect.cover_image_url.clone();
+    let cover = use_media_source(
+        Signal::stored(effect.cover_image_url.clone()),
+        MediaUse::Artwork,
+    );
     let (cover_hidden, set_cover_hidden) = signal(false);
     let category = effect.category;
     let audio_reactive = effect.audio_reactive;
@@ -545,7 +549,7 @@ fn FavoriteCinemaCard(effect: EffectSummary, index: usize) -> impl IntoView {
                     },
                 )}
 
-                {cover_url.map(|url| view! {
+                {move || cover.get().url().map(|url| view! {
                     <img
                         class=move || {
                             let base = "absolute inset-0 w-full h-full object-cover \

@@ -23,10 +23,13 @@ use crate::components::media_grid::{MediaGrid, asset_kind};
 use crate::components::media_kind::{
     format_bytes, format_duration, format_timecode, kind_accent, kind_icon, kind_label,
 };
-use crate::components::media_preview::{MediaPreview, VideoMeta};
+use crate::components::media_preview::{
+    MediaPreview, VideoMeta, asset_blob_route, asset_media_use,
+};
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::page_search_bar::PageSearchBar;
 use crate::icons::*;
+use crate::media::{MediaUse, use_media_source};
 use crate::style_utils::filter_chips;
 use crate::toasts;
 
@@ -513,11 +516,16 @@ fn MediaDetail(
                     let accent = kind_accent(kind);
                     let icon = kind_icon(kind);
                     let label = kind_label(kind);
-                    let blob_url = crate::api::client::daemon_url(&format!(
-                        "/api/v1/assets/{}/blob",
-                        asset.id
-                    ))
-                    .unwrap_or_default();
+                    // A bridged page loads only allowlisted media, so other
+                    // kinds offer no download there.
+                    let download_use = asset_media_use(kind);
+                    let download_route = (download_use.is_some()
+                        || !crate::remote_bridge::is_available())
+                    .then(|| asset_blob_route(&asset));
+                    let download = use_media_source(
+                        Signal::stored(download_route),
+                        download_use.unwrap_or(MediaUse::Artwork),
+                    );
                     let header_name = asset.name.clone();
                     let download_name = asset.name.clone();
                     let type_text = asset.mime_type.clone();
@@ -619,14 +627,16 @@ fn MediaDetail(
                                     <Icon icon=LuSave width="13px" height="13px" />
                                     "Save"
                                 </button>
-                                <a
-                                    href=blob_url
-                                    download=download_name
-                                    title="Download original"
-                                    class="inline-flex items-center justify-center rounded-lg border border-edge-subtle bg-surface-sunken/45 p-2 text-fg-secondary transition-colors hover:bg-surface-hover/30 hover:text-fg-primary btn-press"
-                                >
-                                    <Icon icon=LuDownload width="14px" height="14px" />
-                                </a>
+                                {move || download.get().url().map(|href| view! {
+                                    <a
+                                        href=href
+                                        download=download_name.clone()
+                                        title="Download original"
+                                        class="inline-flex items-center justify-center rounded-lg border border-edge-subtle bg-surface-sunken/45 p-2 text-fg-secondary transition-colors hover:bg-surface-hover/30 hover:text-fg-primary btn-press"
+                                    >
+                                        <Icon icon=LuDownload width="14px" height="14px" />
+                                    </a>
+                                })}
                                 <button
                                     type="button"
                                     class="inline-flex items-center justify-center rounded-lg border border-red-400/20 bg-red-400/5 p-2 text-red-300 transition-colors hover:bg-red-400/10 btn-press"

@@ -295,7 +295,7 @@ fn SurfaceStage() -> impl IntoView {
                                         view! {
                                             <DisplayPreviewSurface
                                                 frame=screen_frame
-                                                fallback_src=api::display_preview_url(
+                                                fallback_route=api::display_preview_route(
                                                     &display.id,
                                                     None,
                                                 )

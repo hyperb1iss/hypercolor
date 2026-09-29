@@ -19,6 +19,7 @@ use crate::api;
 use crate::components::media_grid::asset_kind;
 use crate::components::media_kind::{format_timecode, kind_accent, kind_icon, kind_label};
 use crate::icons::*;
+use crate::media::{MediaUse, use_media_source};
 
 /// Loaded intrinsic metadata reported by the `<video>` element once it has
 /// read the clip header — the daemon does not decode video, so the player is
@@ -37,25 +38,47 @@ pub fn MediaPreview(
     on_video_loaded: Option<Callback<VideoMeta>>,
 ) -> impl IntoView {
     let kind = asset_kind(&asset);
-    let blob_url = crate::api::client::daemon_url(&format!("/api/v1/assets/{}/blob", asset.id))
-        .unwrap_or_default();
+    let blob_route = asset_blob_route(&asset);
 
     match kind {
-        "video" => view! {
-            <VideoClipPlayer src=blob_url on_loaded=on_video_loaded />
+        "video" => {
+            let clip = use_media_source(Signal::stored(Some(blob_route)), MediaUse::Clip);
+            view! {
+                <VideoClipPlayer src=Signal::derive(move || clip.get().url()) on_loaded=on_video_loaded />
+            }
+            .into_any()
         }
-        .into_any(),
-        "image" | "gif" => view! {
-            <div class="overflow-hidden rounded-xl border border-edge-subtle">
-                <img
-                    src=blob_url
-                    alt=""
-                    class="aspect-video w-full bg-surface-sunken/60 object-contain"
-                />
-            </div>
+        "image" | "gif" => {
+            let still = use_media_source(Signal::stored(Some(blob_route)), MediaUse::Artwork);
+            view! {
+                <div class="overflow-hidden rounded-xl border border-edge-subtle">
+                    <img
+                        src=move || still.get().url()
+                        alt=""
+                        class="aspect-video w-full bg-surface-sunken/60 object-contain"
+                    />
+                </div>
+            }
+            .into_any()
         }
-        .into_any(),
         _ => view! { <PreviewPlaceholder asset=asset /> }.into_any(),
+    }
+}
+
+/// Daemon route of an asset's original bytes.
+#[must_use]
+pub fn asset_blob_route(asset: &api::MediaAssetRecord) -> String {
+    format!("/api/v1/assets/{}/blob", asset.id)
+}
+
+/// How an asset of `kind` loads as media, or `None` when it is not a raster
+/// image or a clip.
+#[must_use]
+pub fn asset_media_use(kind: &str) -> Option<MediaUse> {
+    match kind {
+        "video" => Some(MediaUse::Clip),
+        "image" | "gif" => Some(MediaUse::Artwork),
+        _ => None,
     }
 }
 
@@ -84,7 +107,9 @@ fn PreviewPlaceholder(asset: api::MediaAssetRecord) -> impl IntoView {
 /// sync with what the `<video>` is actually doing.
 #[component]
 pub fn VideoClipPlayer(
-    #[prop(into)] src: String,
+    /// The clip's URL; `None` while it resolves.
+    #[prop(into)]
+    src: Signal<Option<String>>,
     on_loaded: Option<Callback<VideoMeta>>,
 ) -> impl IntoView {
     let video_ref = NodeRef::<html::Video>::new();
@@ -180,7 +205,7 @@ pub fn VideoClipPlayer(
             <div class="relative overflow-hidden rounded-xl border border-edge-subtle bg-black">
                 <video
                     node_ref=video_ref
-                    src=src
+                    src=move || src.get()
                     class="aspect-video w-full bg-black object-contain"
                     playsinline=""
                     preload="metadata"

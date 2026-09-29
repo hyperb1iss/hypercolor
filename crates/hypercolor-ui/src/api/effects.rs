@@ -70,10 +70,11 @@ impl PrimaryEffectView {
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
 
-/// Fetch all registered effects.
+/// Fetch all registered effects. A cover stays a daemon route, which a
+/// media site resolves through [`crate::media::use_media_source`].
 pub async fn fetch_effects() -> ApiResult<Vec<EffectSummary>> {
     let list: EffectListResponse = client::fetch_json("/api/v1/effects").await?;
-    Ok(list.items.into_iter().map(route_effect_summary).collect())
+    Ok(list.items)
 }
 
 /// Project the primary zone's top effect layer from the live scene tree.
@@ -97,19 +98,7 @@ pub async fn fetch_primary_effect_view() -> ApiResult<Option<PrimaryEffectView>>
 
 /// Fetch detailed metadata for one effect.
 pub async fn fetch_effect_detail(id: &str) -> ApiResult<EffectDetailResponse> {
-    let mut detail: EffectDetailResponse =
-        client::fetch_json(&format!("/api/v1/effects/{}", path_segment(id))).await?;
-    detail.cover_image_url = route_cover_image_url(detail.cover_image_url);
-    Ok(detail)
-}
-
-fn route_effect_summary(mut effect: EffectSummary) -> EffectSummary {
-    effect.cover_image_url = route_cover_image_url(effect.cover_image_url);
-    effect
-}
-
-fn route_cover_image_url(cover_image_url: Option<String>) -> Option<String> {
-    cover_image_url.and_then(|url| client::daemon_url(&url))
+    client::fetch_json(&format!("/api/v1/effects/{}", path_segment(id))).await
 }
 
 /// Fetch the bundled and saved preset stack for one effect.
@@ -516,25 +505,5 @@ mod tests {
         assert_eq!(observed_layer.borrow().as_str(), new_layer);
         assert_eq!(result.effect_id, effect);
         assert_eq!(result.layer_id, new_layer);
-    }
-
-    #[test]
-    fn effect_cover_urls_require_verified_native_route_and_preserve_browser_same_origin() {
-        crate::api::client::reset_daemon_transport_for_test();
-        let route = Some("/api/v1/effects/prism/cover".to_owned());
-        assert_eq!(super::route_cover_image_url(route.clone()), route);
-
-        crate::api::client::begin_native_daemon_verification();
-        assert_eq!(super::route_cover_image_url(route.clone()), None);
-
-        crate::api::client::install_verified_daemon_connection(
-            "http://127.0.0.1:9420",
-            Some("protected"),
-        );
-        assert_eq!(
-            super::route_cover_image_url(route),
-            Some("http://127.0.0.1:9420/api/v1/effects/prism/cover".to_owned())
-        );
-        crate::api::client::reset_daemon_transport_for_test();
     }
 }
