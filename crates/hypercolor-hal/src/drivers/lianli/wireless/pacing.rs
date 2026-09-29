@@ -51,8 +51,10 @@
 //!   echo interval, the rest follow a sixth of one apart.
 //! - No echo progress for three echo intervals (a timeout) means the sends
 //!   out were lost: the window collapses to [`MIN_WINDOW`] and the newest
-//!   frame goes out again, one probe at a time, backing off. Nothing is
-//!   ever sent while [`MAX_WINDOW`] sends are unresolved.
+//!   frame goes out again, one probe at a time, backing off. Until an echo
+//!   interval is measured the timeout is at least [`ECHO_TIMEOUT_UNKNOWN`],
+//!   and a timeout then leaves slow start's ceiling alone. Nothing is ever
+//!   sent while [`MAX_WINDOW`] sends are unresolved.
 //! - Fan-speed upkeep can knock a receiver back to its onboard lighting
 //!   without changing its echo, so every upkeep leaves each cluster owing a
 //!   restore, sent with the next room in its window.
@@ -444,12 +446,20 @@ impl ClusterLink {
     fn timeout(&self) -> Duration {
         let base = match (self.echo_gap, self.echo_age) {
             (None, None) => ECHO_TIMEOUT_UNKNOWN,
-            (gap, age) => {
-                let gap = gap.or(age).unwrap_or(ECHO_TIMEOUT_UNKNOWN);
+            (measured, age) => {
+                let gap = measured.or(age).unwrap_or(ECHO_TIMEOUT_UNKNOWN);
                 let age = age.unwrap_or(Duration::ZERO);
-                (gap * 3)
+                let timeout = (gap * 3)
                     .max(age + gap * 2)
-                    .clamp(ECHO_TIMEOUT_MIN, ECHO_TIMEOUT_MAX)
+                    .clamp(ECHO_TIMEOUT_MIN, ECHO_TIMEOUT_MAX);
+                // Until a status interval is measured, one echo's age says
+                // nothing about when the next status comes: a quick first
+                // echo from fans on a 550 ms cadence timed out otherwise.
+                if measured.is_some() {
+                    timeout
+                } else {
+                    timeout.max(ECHO_TIMEOUT_UNKNOWN)
+                }
             }
         };
         base.saturating_mul(1 << self.timeouts.min(3))
@@ -700,10 +710,10 @@ impl DeliveryPacer {
                 );
             }
             link.lost_through = link.next_seq - 1;
-            // A timeout before any echo was seen only means the first
+            // A timeout before the status interval is known only means the
             // guess at the timeout was short; it says nothing about how
             // much the radio carries, so slow start keeps its ceiling.
-            if link.echo_age.is_some() {
+            if link.echo_gap.is_some() {
                 link.ssthresh = (link.window / 2).max(MIN_WINDOW);
             }
             link.window = MIN_WINDOW;

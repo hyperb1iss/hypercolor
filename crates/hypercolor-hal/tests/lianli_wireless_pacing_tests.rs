@@ -281,6 +281,26 @@ fn a_jittery_550_ms_status_holds_delivery_near_the_offered_rate() {
     assert!(rig.radio.resets.is_empty());
 }
 
+/// Fans on a 550 ms cadence can answer the first send quickly, before any
+/// status interval is known. That quick echo is no measure of when the
+/// next status comes: the timeout fired half a second after it, cut slow
+/// start short, and the window crawled up by one a status after that.
+#[test]
+fn a_quick_first_echo_does_not_time_out_a_slow_status_cadence() {
+    let mut radio = FakeRadio::one_cluster();
+    radio.report_interval = Duration::from_millis(550);
+    let mut rig = Rig::connect(radio);
+    rig.run_for(Duration::from_secs(5));
+    let stats = rig.stats();
+
+    assert_eq!(stats.timeouts, 0, "{stats:?}");
+    assert!(
+        rig.protocol_window(0).is_some_and(|window| window >= 20),
+        "slow start covers a 550 ms status within seconds: {:?}",
+        rig.protocol_window(0)
+    );
+}
+
 /// A status as slow as a second, which the owner's rig also showed: the
 /// window grows to cover it.
 #[test]
