@@ -207,6 +207,17 @@ pub struct FakeCluster {
     pub deaf: bool,
     /// This receiver's reports lag by this much instead of the radio's.
     pub report_delay: Option<Duration>,
+    /// A fan-side stall: the receiver drops every RGB transfer until it
+    /// hears a session start (the first clock broadcast of a session) after
+    /// a rest of at least this long with no RGB addressed to it. A TX reset
+    /// alone never clears it, nor does a session start without the rest.
+    /// `Duration::MAX` never clears.
+    pub stall: Option<Duration>,
+    last_rgb_at: Duration,
+    /// The stalled receiver has had its rest.
+    rested: bool,
+    /// When the stall cleared.
+    pub stall_cleared_at: Option<Duration>,
 }
 
 impl FakeCluster {
@@ -223,6 +234,36 @@ impl FakeCluster {
             assembler: TransferAssembler::default(),
             deaf: false,
             report_delay: None,
+            stall: None,
+            last_rgb_at: Duration::ZERO,
+            rested: false,
+            stall_cleared_at: None,
+        }
+    }
+
+    /// Stall from `now`, until a session start that follows a rest of at
+    /// least `quiet` with no RGB addressed to this receiver.
+    pub fn stall_from(&mut self, now: Duration, quiet: Duration) {
+        self.stall = Some(quiet);
+        self.last_rgb_at = now;
+        self.rested = false;
+        self.stall_cleared_at = None;
+    }
+
+    fn note_rest(&mut self, now: Duration) {
+        if let Some(quiet) = self.stall
+            && now.saturating_sub(self.last_rgb_at) >= quiet
+        {
+            self.rested = true;
+        }
+    }
+
+    fn hear_session_start(&mut self, now: Duration) {
+        self.note_rest(now);
+        if self.stall.is_some() && self.rested {
+            self.stall = None;
+            self.rested = false;
+            self.stall_cleared_at = Some(now);
         }
     }
 
@@ -244,6 +285,11 @@ impl FakeCluster {
     }
 
     fn take_rgb(&mut self, envelope: &[u8; RF_ENVELOPE_LEN], now: Duration, delay: Duration) {
+        if self.stall.is_some() {
+            self.note_rest(now);
+            self.last_rgb_at = now;
+            return;
+        }
         if let Some((tag, content)) = self.assembler.take(envelope) {
             self.applied = tag;
             self.applied_log.push(content);
@@ -251,6 +297,13 @@ impl FakeCluster {
             self.reportable.push_back((now + delay, tag));
         }
     }
+}
+
+/// Whether `bytes` is the clock broadcast a session sends first: its
+/// leading 50 payload bytes all carry the sub-command.
+fn is_session_start_clock(bytes: &[u8; RF_ENVELOPE_LEN]) -> bool {
+    let marker = RfSubCommand::ClockSync as u8;
+    bytes[1] == marker && bytes[14..64].iter().all(|byte| *byte == marker)
 }
 
 /// An envelope the TX has queued for the air.
@@ -298,6 +351,8 @@ pub struct FakeRadio {
     pub tx_transfers: Vec<(Duration, [u8; 4], [u8; 4])>,
     pub rx_polls: Vec<(Duration, u8)>,
     pub resets: Vec<Duration>,
+    /// When a session-start clock broadcast went out on the air.
+    pub session_starts: Vec<Duration>,
 }
 
 impl FakeRadio {
@@ -332,6 +387,7 @@ impl FakeRadio {
             tx_transfers: Vec::new(),
             rx_polls: Vec::new(),
             resets: Vec::new(),
+            session_starts: Vec::new(),
         }
     }
 
@@ -409,6 +465,15 @@ impl FakeRadio {
 
     fn deliver(&mut self, envelope: &AirEnvelope, now: Duration) {
         let bytes = &envelope.bytes;
+        if bytes[0] == RF_SELECT && is_session_start_clock(bytes) {
+            self.session_starts.push(now);
+            for cluster in &mut self.clusters {
+                if !cluster.deaf {
+                    cluster.hear_session_start(now);
+                }
+            }
+            return;
+        }
         if bytes[0] != RF_SELECT || bytes[1] != RfSubCommand::SetRgb as u8 {
             return;
         }
@@ -548,6 +613,26 @@ pub struct Rig {
     /// Commands the keepalive has returned since the protocol asked for
     /// the TX reset: none is the contract.
     pub commands_after_reset: usize,
+    /// Reconnect like the device lifecycle: when a session ends (the TX
+    /// reset, or the protocol asking to be connected afresh), nothing
+    /// reaches the controller for this long, then a new protocol runs the
+    /// whole connect sequence. `None` leaves the ended session in place.
+    pub reconnect_delay: Option<Duration>,
+    /// When each session connected.
+    pub sessions: Vec<Duration>,
+    /// Why each session ended, when the rig reconnected it.
+    pub session_ends: Vec<SessionEnd>,
+    reset_in_session: bool,
+    down_until: Option<Duration>,
+}
+
+/// How a session ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEnd {
+    /// The protocol asked for the TX reset.
+    TxReset,
+    /// The protocol asked to be connected afresh.
+    Restart,
 }
 
 /// A frame whose pixels, and so whose tag, change every frame.
@@ -582,20 +667,52 @@ impl Rig {
             last_taken: None,
             taken_log: Vec::new(),
             commands_after_reset: 0,
+            reconnect_delay: None,
+            sessions: Vec::new(),
+            session_ends: Vec::new(),
+            reset_in_session: false,
+            down_until: None,
         };
-        let init = rig.protocol.init_sequence();
-        rig.execute(&init);
-        let diagnostics = rig.protocol.connection_diagnostics();
-        rig.execute(&diagnostics);
-        rig.tick = rig
+        rig.begin_session();
+        rig
+    }
+
+    /// Run the connect sequence on the current protocol and start its
+    /// keepalive and frame pump.
+    fn begin_session(&mut self) {
+        self.sessions.push(self.now());
+        self.reset_in_session = false;
+        self.down_until = None;
+        let init = self.protocol.init_sequence();
+        self.execute(&init);
+        let diagnostics = self.protocol.connection_diagnostics();
+        self.execute(&diagnostics);
+        self.tick = self
             .protocol
             .keepalive()
             .expect("the controller keeps alive")
             .interval;
-        rig.next_tick_at = rig.clock.elapsed() + rig.tick;
-        rig.pump = rig.protocol.frame_pump_interval();
-        rig.next_pump_at = rig.clock.elapsed() + rig.pump.unwrap_or(Duration::MAX / 4);
-        rig
+        self.next_tick_at = self.clock.elapsed() + self.tick;
+        self.pump = self.protocol.frame_pump_interval();
+        self.next_pump_at = self.clock.elapsed() + self.pump.unwrap_or(Duration::MAX / 4);
+    }
+
+    /// After a batch: end the session the way the actor does when the
+    /// protocol asked for the TX reset or a fresh connect, if the rig
+    /// reconnects.
+    fn end_session_if_asked(&mut self, commands: &[ProtocolCommand]) {
+        let Some(delay) = self.reconnect_delay else {
+            return;
+        };
+        let end = if commands.iter().any(is_tx_reset) {
+            SessionEnd::TxReset
+        } else if self.protocol.session_restart().is_some() {
+            SessionEnd::Restart
+        } else {
+            return;
+        };
+        self.session_ends.push(end);
+        self.down_until = Some(self.now() + delay);
     }
 
     /// End this session and connect a new protocol to the same radio, as a
@@ -653,6 +770,20 @@ impl Rig {
         let end = self.now() + duration;
         while self.now() < end {
             let now = self.now();
+            if let Some(until) = self.down_until {
+                if now >= until {
+                    self.protocol = protocol_on(&self.clock);
+                    self.begin_session();
+                } else {
+                    self.advance(
+                        until
+                            .min(end)
+                            .saturating_sub(now)
+                            .max(Duration::from_micros(10)),
+                    );
+                }
+                continue;
+            }
             if now >= self.next_tick_at {
                 while self.next_tick_at <= now {
                     self.next_tick_at += self.tick;
@@ -696,10 +827,14 @@ impl Rig {
     }
 
     fn run_batch(&mut self, commands: &[ProtocolCommand]) {
-        if !self.radio.resets.is_empty() {
+        if self.reset_in_session {
             self.commands_after_reset += commands.len();
         }
+        if commands.iter().any(is_tx_reset) {
+            self.reset_in_session = true;
+        }
         self.execute(commands);
+        self.end_session_if_asked(commands);
     }
 
     /// Run commands the way the USB actor does.

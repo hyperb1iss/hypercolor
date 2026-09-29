@@ -24,7 +24,10 @@
 //! wedged in [`health`], resets it through its partner the way L-Connect
 //! does, and ends the session instead of writing on into a dead endpoint. A
 //! TX whose fans stop confirming frames takes the same path, on the
-//! protocol's word.
+//! protocol's word. Fans that stay silent past their TX resets are the
+//! fans' stall, not the TX's: their RGB rests while upkeep carries on, and
+//! then the protocol asks the backend to connect the controller afresh
+//! ([`Protocol::session_restart`]), on a growing schedule ([`pacing`]).
 
 pub mod crypto;
 pub mod discovery;
@@ -900,9 +903,9 @@ impl Protocol for WirelessControllerProtocol {
         state.topology_frozen = true;
         Self::fit_pacer(state);
         let mut commands = Vec::new();
-        // After asking for the TX reset the session is over; the transport
-        // ends it, and nothing more is written to a TX being reset.
-        if state.pacer.reset_requested() {
+        // After asking for the TX reset or a fresh connect the session is
+        // over, and nothing more is written.
+        if state.pacer.silenced() {
             return commands;
         }
         Self::upkeep(state, now, &mut commands);
@@ -926,8 +929,9 @@ impl Protocol for WirelessControllerProtocol {
     }
 
     /// The pacer's tick. A verdict on fans that stopped confirming comes
-    /// first: the TX reset and nothing else, or, once a cluster's reset
-    /// budget is spent, its lighting held while the rest carry on. Then
+    /// first: the TX reset and nothing else; once a cluster's reset budget
+    /// is spent, a rest of its lighting while the rest carry on; and when
+    /// the rest runs out, nothing, as the session ends for a reconnect. Then
     /// whatever the window allows now, and an echo poll when one is due. A
     /// tick with nothing due leaves `commands` empty.
     fn pump_frame_into(&self, commands: &mut Vec<ProtocolCommand>) {
@@ -956,7 +960,26 @@ impl Protocol for WirelessControllerProtocol {
                 commands.push(Self::tx_reset_command());
                 return;
             }
-            Some(StallVerdict::Hold { .. }) | None => {}
+            // The session ends; the backend reads the reason and reconnects.
+            Some(StallVerdict::Reconnect { .. }) => return,
+            Some(StallVerdict::Rest { cluster, .. }) => {
+                // What the stalled fans report, for the next time this
+                // happens on hardware.
+                if let Some(record) = state.table.clusters.get(cluster) {
+                    info!(
+                        cluster,
+                        mac = %format_mac(record.mac),
+                        channel = record.channel,
+                        rx_type = record.rx_type,
+                        echo = ?record.effect_index,
+                        cmd_seq = record.cmd_seq,
+                        pwm = ?record.pwm,
+                        rpm = ?record.rpm,
+                        "L-Wireless stalled cluster's record as the RX reports it"
+                    );
+                }
+            }
+            None => {}
         }
         state.pacer.note_absences(now);
 
@@ -969,6 +992,17 @@ impl Protocol for WirelessControllerProtocol {
         }
         state.pacer.note_tx_packets(Self::tx_packets(commands));
         state.pacer.report_if_due(now);
+    }
+
+    /// Fans that stopped confirming past their TX resets rest, then ask for
+    /// the whole connect sequence again (see [`pacing`]).
+    fn session_restart(&self) -> Option<String> {
+        self.state
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pacer
+            .restart_reason()
+            .map(str::to_owned)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

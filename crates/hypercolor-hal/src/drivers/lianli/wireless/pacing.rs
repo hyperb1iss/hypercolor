@@ -66,9 +66,14 @@
 //!   stopped delivering: the protocol asks the transport for the vendor
 //!   reset, which ends the session the way a refused write does. At most
 //!   [`MAX_RESETS_WITHOUT_DELIVERY`] resets are asked for on behalf of one
-//!   cluster until it confirms a frame again, across sessions; past that
-//!   the cluster's lighting is held and the log says to power-cycle the
-//!   controller, while clusters that still confirm keep streaming.
+//!   cluster until it confirms a frame again, across sessions.
+//! - Past that the stall is the fans', not the TX's: the cluster's RGB
+//!   rests (upkeep goes on, so its fans hold their speed and clock), then
+//!   the session ends so the connect sequence runs again on fresh handles.
+//!   The rests grow ([`RECONNECT_RESTS`]); after the last, the log says to
+//!   power-cycle the controller, and a reconnect still follows every
+//!   [`RECONNECT_REST_HELD`]. Clusters that still confirm keep streaming
+//!   through a rest. Any confirmed frame clears the cluster's budget.
 //!
 //! Counters feed [`DeliveryStats`] and a periodic info line comparing frames
 //! sent with frames the echoes confirmed.
@@ -142,6 +147,24 @@ const HEARD_WITHIN: Duration = Duration::from_secs(1);
 /// Resets asked for on behalf of one cluster before it confirms a frame
 /// again.
 pub const MAX_RESETS_WITHOUT_DELIVERY: u32 = 2;
+/// Once a cluster's reset budget is spent, how long its RGB rests before
+/// each reconnect runs the connect sequence again. On the owner's rig,
+/// three TX resets and three reconnects within 25 s did not bring stalled
+/// fans back, and a connect after 99 minutes without RGB did at once. How
+/// short a rest suffices is unknown, so they grow.
+pub const RECONNECT_RESTS: [Duration; 5] = [
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+    Duration::from_mins(1),
+    Duration::from_mins(2),
+    Duration::from_mins(5),
+];
+/// Reconnects asked for on behalf of one cluster before the log says to
+/// power-cycle the controller.
+pub const MAX_RECONNECTS_WITHOUT_DELIVERY: u32 = 5;
+/// The rest before each reconnect after that: the only recovery seen came
+/// after a long rest, so the reconnects never stop, only slow.
+pub const RECONNECT_REST_HELD: Duration = Duration::from_mins(10);
 /// A cluster missing from every table reply for this long is not heard.
 pub const ABSENT_AFTER: Duration = Duration::from_secs(3);
 /// How often the delivery report is logged.
@@ -180,13 +203,26 @@ pub enum StallVerdict {
         /// included.
         resets: u32,
     },
-    /// The cluster's reset budget is spent: hold its lighting for this
-    /// session.
-    Hold {
+    /// The cluster's reset budget is spent: its RGB rests, with upkeep
+    /// going on, until the reconnect.
+    Rest {
         /// Index of the cluster that stopped confirming.
         cluster: usize,
         /// How long nothing has been confirmed.
         unconfirmed_for: Duration,
+        /// How long the rest lasts.
+        rest: Duration,
+        /// The reconnect the rest leads to, counted since the cluster last
+        /// confirmed a frame.
+        attempt: u32,
+    },
+    /// A rest ran out: the session ends so the connect sequence runs again.
+    Reconnect {
+        /// Index of the cluster the reconnect is for.
+        cluster: usize,
+        /// Reconnects asked for since the cluster last confirmed a frame,
+        /// this one included.
+        attempt: u32,
     },
 }
 
@@ -363,6 +399,8 @@ struct ClusterLink {
     last_echo: Option<Tag>,
     restore_owed: bool,
     holding: bool,
+    /// When a resting cluster's reconnect is due.
+    rest_until: Option<Instant>,
     stall_warned: bool,
     absent_logged: bool,
 }
@@ -403,6 +441,7 @@ impl Default for ClusterLink {
             last_echo: None,
             restore_owed: false,
             holding: false,
+            rest_until: None,
             stall_warned: false,
             absent_logged: false,
         }
@@ -623,6 +662,8 @@ impl ClusterLink {
 pub struct DeliveryPacer {
     links: Vec<ClusterLink>,
     reset_requested: bool,
+    /// Why the session asked to be connected afresh, once it has.
+    restart: Option<String>,
     totals: DeliveryStats,
     interval: DeliveryStats,
     interval_started_at: Option<Instant>,
@@ -635,10 +676,18 @@ impl DeliveryPacer {
         self.totals
     }
 
-    /// Whether the session sends RGB no more: the TX reset was asked for.
+    /// Whether the session sends nothing more: the TX reset or a fresh
+    /// connect was asked for.
     #[must_use]
     pub const fn silenced(&self) -> bool {
-        self.reset_requested
+        self.reset_requested || self.restart.is_some()
+    }
+
+    /// Why the session asked to be connected afresh, if it has: the
+    /// session is over, and the connect sequence should run again.
+    #[must_use]
+    pub fn restart_reason(&self) -> Option<&str> {
+        self.restart.as_deref()
     }
 
     /// Whether the protocol has asked for the TX reset: the session is
@@ -648,7 +697,8 @@ impl DeliveryPacer {
         self.reset_requested
     }
 
-    /// Clusters whose lighting is held because their reset budget is spent.
+    /// Clusters whose lighting is held because their reset budget is spent:
+    /// resting until a reconnect.
     #[must_use]
     pub fn held_clusters(&self) -> usize {
         self.links.iter().filter(|link| link.holding).count()
@@ -1050,8 +1100,16 @@ impl DeliveryPacer {
                 stats.congestion_events += 1 + shared;
             }
         });
-        if let Some(mac) = mac {
-            forget_resets(mac);
+        if let Some(mac) = mac
+            && let Some(recovery) = forget_recovery(mac)
+            && recovery.reconnects > 0
+        {
+            info!(
+                cluster,
+                resets = recovery.resets,
+                reconnects = recovery.reconnects,
+                "L-Wireless fans confirm frames again after reconnecting"
+            );
         }
     }
 
@@ -1073,6 +1131,17 @@ impl DeliveryPacer {
     pub fn stall_verdict(&mut self, now: Instant) -> Option<StallVerdict> {
         if self.silenced() {
             return None;
+        }
+        for (cluster, link) in self.links.iter_mut().enumerate() {
+            if link.rest_until.is_some_and(|until| now >= until) {
+                link.rest_until = None;
+                let attempt = link.mac.map_or(1, note_reconnect);
+                self.restart = Some(format!(
+                    "L-Wireless fans on cluster {cluster} confirm no frame after their TX resets; \
+                     reconnecting to run the connect sequence again (attempt {attempt})"
+                ));
+                return Some(StallVerdict::Reconnect { cluster, attempt });
+            }
         }
         for (cluster, link) in self.links.iter_mut().enumerate() {
             if link.holding || link.unresolved() == 0 {
@@ -1098,8 +1167,8 @@ impl DeliveryPacer {
             if unconfirmed_for < ECHO_STALL {
                 continue;
             }
-            let resets = link.mac.map_or(0, resets_without_delivery);
-            if resets < MAX_RESETS_WITHOUT_DELIVERY {
+            let recovery = link.mac.map(recovery_of).unwrap_or_default();
+            if recovery.resets < MAX_RESETS_WITHOUT_DELIVERY {
                 self.reset_requested = true;
                 let resets = link.mac.map_or(1, note_reset);
                 return Some(StallVerdict::Reset {
@@ -1109,16 +1178,47 @@ impl DeliveryPacer {
                     resets,
                 });
             }
+            let done = recovery.reconnects;
+            let rest = usize::try_from(done)
+                .ok()
+                .and_then(|index| RECONNECT_RESTS.get(index))
+                .copied()
+                .unwrap_or(RECONNECT_REST_HELD);
+            let attempt = done.saturating_add(1);
             link.holding = true;
-            error!(
-                cluster,
-                unconfirmed_ms = millis(unconfirmed_for),
-                resets,
-                "L-Wireless fans still confirm no frame after {resets} TX resets; holding their lighting. Power-cycle the controller"
-            );
-            return Some(StallVerdict::Hold {
+            link.rest_until = Some(now + rest);
+            match done.cmp(&MAX_RECONNECTS_WITHOUT_DELIVERY) {
+                std::cmp::Ordering::Less => warn!(
+                    cluster,
+                    unconfirmed_ms = millis(unconfirmed_for),
+                    resets = recovery.resets,
+                    rest_s = rest.as_secs(),
+                    attempt,
+                    "L-Wireless fans still confirm no frame after {} TX resets; resting their lighting, then reconnecting to run the connect sequence again",
+                    recovery.resets
+                ),
+                std::cmp::Ordering::Equal => error!(
+                    cluster,
+                    unconfirmed_ms = millis(unconfirmed_for),
+                    resets = recovery.resets,
+                    reconnects = done,
+                    rest_s = rest.as_secs(),
+                    "L-Wireless fans confirm no frame after {} TX resets and {done} reconnects; holding their lighting. Power-cycle the controller. Reconnecting every {} minutes meanwhile",
+                    recovery.resets,
+                    RECONNECT_REST_HELD.as_secs() / 60
+                ),
+                std::cmp::Ordering::Greater => info!(
+                    cluster,
+                    reconnects = done,
+                    rest_s = rest.as_secs(),
+                    "L-Wireless fans still confirm no frame; reconnecting again after the rest"
+                ),
+            }
+            return Some(StallVerdict::Rest {
                 cluster,
                 unconfirmed_for,
+                rest,
+                attempt,
             });
         }
         None
@@ -1238,43 +1338,74 @@ fn next_send_number() -> u32 {
     .fetch_add(1, Ordering::Relaxed)
 }
 
-/// Resets asked for on behalf of each cluster (by radio MAC) since it last
-/// confirmed a frame. Kept for the process, so a reconnect cannot turn a TX
-/// that stays dead into a reset loop, and per cluster, so fans that still
-/// confirm cannot renew a failing cluster's budget.
-fn reset_budget() -> &'static Mutex<HashMap<Mac, u32>> {
-    static RESETS: OnceLock<Mutex<HashMap<Mac, u32>>> = OnceLock::new();
-    RESETS.get_or_init(|| Mutex::new(HashMap::new()))
+/// What recovering a cluster that stopped confirming has cost since it
+/// last confirmed a frame: TX resets, then reconnects.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Recovery {
+    resets: u32,
+    reconnects: u32,
+}
+
+/// Each cluster's recovery (by radio MAC) since it last confirmed a frame.
+/// Kept for the process, so a reconnect cannot turn a TX that stays dead
+/// into a reset loop, and per cluster, so fans that still confirm cannot
+/// renew a failing cluster's budget.
+fn recovery_budget() -> &'static Mutex<HashMap<Mac, Recovery>> {
+    static RECOVERY: OnceLock<Mutex<HashMap<Mac, Recovery>>> = OnceLock::new();
+    RECOVERY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn recovery_of(mac: Mac) -> Recovery {
+    recovery_budget()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&mac)
+        .copied()
+        .unwrap_or_default()
 }
 
 /// Resets asked for on behalf of the cluster `mac` since it last confirmed
 /// a frame.
 #[must_use]
 pub fn resets_without_delivery(mac: Mac) -> u32 {
-    reset_budget()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&mac)
-        .copied()
-        .unwrap_or(0)
+    recovery_of(mac).resets
+}
+
+/// Reconnects asked for on behalf of the cluster `mac` since it last
+/// confirmed a frame.
+#[must_use]
+pub fn reconnects_without_delivery(mac: Mac) -> u32 {
+    recovery_of(mac).reconnects
 }
 
 fn note_reset(mac: Mac) -> u32 {
-    let mut resets = reset_budget()
+    let mut budget = recovery_budget()
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    let count = resets.entry(mac).or_insert(0);
-    *count = count.saturating_add(1);
-    *count
+    let recovery = budget.entry(mac).or_default();
+    recovery.resets = recovery.resets.saturating_add(1);
+    recovery.resets
 }
 
-fn forget_resets(mac: Mac) {
-    let mut resets = reset_budget()
+fn note_reconnect(mac: Mac) -> u32 {
+    let mut budget = recovery_budget()
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    if !resets.is_empty() {
-        resets.remove(&mac);
+    let recovery = budget.entry(mac).or_default();
+    recovery.reconnects = recovery.reconnects.saturating_add(1);
+    recovery.reconnects
+}
+
+/// The cluster `mac` confirmed a frame: its recovery starts over. Returns
+/// what it had cost.
+fn forget_recovery(mac: Mac) -> Option<Recovery> {
+    let mut budget = recovery_budget()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if budget.is_empty() {
+        return None;
     }
+    budget.remove(&mac)
 }
 
 fn millis(duration: Duration) -> u64 {
@@ -1472,6 +1603,68 @@ mod tests {
             "a cluster with nothing out keeps its slow-start ceiling"
         );
         assert_eq!(pacer.totals().congestion_events, 2);
+    }
+
+    #[test]
+    fn a_spent_reset_budget_rests_then_asks_for_a_reconnect_on_a_growing_schedule() {
+        let mac = [0x5E, 0x57, 0x0B, 0x0D, 0x6E, 0x01];
+        let now = Instant::now();
+        for _ in 0..MAX_RESETS_WITHOUT_DELIVERY {
+            note_reset(mac);
+        }
+        let schedule = RECONNECT_RESTS
+            .iter()
+            .copied()
+            .chain([RECONNECT_REST_HELD, RECONNECT_REST_HELD]);
+        for (done, rest) in schedule.enumerate() {
+            let attempt = u32::try_from(done + 1).expect("small");
+            let mut pacer = connected(now);
+            pacer.fit_clusters(&[mac]);
+            send_all(&mut pacer, &[T1], now);
+            let stalled = now + ECHO_STALL;
+            pacer.links[0].last_seen_at = Some(stalled);
+            match pacer.stall_verdict(stalled) {
+                Some(StallVerdict::Rest {
+                    rest: got,
+                    attempt: got_attempt,
+                    ..
+                }) => {
+                    assert_eq!((got, got_attempt), (rest, attempt), "session {done}");
+                }
+                other => panic!("session {done}: a rest past the reset budget, not {other:?}"),
+            }
+            assert!(!pacer.silenced(), "a rest does not end the session");
+            pacer.submit(0, T2);
+            assert_eq!(pacer.decide(0, stalled), None, "no RGB while resting");
+            assert_eq!(pacer.held_clusters(), 1);
+            let almost = (stalled + rest)
+                .checked_sub(Duration::from_millis(1))
+                .expect("a rest is longer than a millisecond");
+            assert!(pacer.stall_verdict(almost).is_none());
+            match pacer.stall_verdict(stalled + rest) {
+                Some(StallVerdict::Reconnect {
+                    attempt: got_attempt,
+                    ..
+                }) => assert_eq!(got_attempt, attempt),
+                other => panic!("session {done}: the rest ends in a reconnect, not {other:?}"),
+            }
+            assert!(pacer.silenced(), "nothing more is written");
+            assert!(
+                pacer
+                    .restart_reason()
+                    .is_some_and(|reason| reason.contains("connect sequence")),
+                "{:?}",
+                pacer.restart_reason()
+            );
+            assert_eq!(reconnects_without_delivery(mac), attempt);
+        }
+        assert_eq!(
+            forget_recovery(mac),
+            Some(Recovery {
+                resets: MAX_RESETS_WITHOUT_DELIVERY,
+                reconnects: MAX_RECONNECTS_WITHOUT_DELIVERY + 2,
+            })
+        );
     }
 
     #[test]

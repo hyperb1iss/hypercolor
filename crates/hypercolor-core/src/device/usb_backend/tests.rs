@@ -2373,6 +2373,128 @@ async fn lianli_fans_that_stop_confirming_end_the_actor_through_the_wedge_path()
     }
 }
 
+/// One actor session over `pair` for the controller `controller`, fed a
+/// changing frame every 33 ms until the actor ends or `bound` passes.
+/// Returns how it ended and the writes it made.
+async fn run_lianli_session(
+    master: [u8; 6],
+    controller: &'static str,
+    pair: &Arc<EchoingWirelessPair>,
+    bound: Duration,
+) -> (Option<anyhow::Result<()>>, Vec<(TransferType, Vec<u8>)>) {
+    use hypercolor_hal::drivers::lianli::wireless::transport::WirelessControllerTransport;
+
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let transport: Arc<dyn Transport> = Arc::new(WirelessControllerTransport::new(
+        Box::new(SharedEchoingWirelessPair(Arc::clone(pair))),
+        controller,
+    ));
+    let protocol: Arc<dyn Protocol> = paced_wireless_protocol(master);
+    let sends_before = pair.state().sends.len();
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "lianli-recovery-test-device",
+        protocol,
+        transport,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+    let started = tokio::time::Instant::now();
+    let mut frame = 0_u8;
+    while !actor.is_finished() && started.elapsed() < bound {
+        frame = frame.wrapping_add(1);
+        frame_tx.send_replace(Some(wireless_frame(frame)));
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    }
+    let result = if actor.is_finished() {
+        Some(actor.await.expect("actor task joins"))
+    } else {
+        actor.abort();
+        None
+    };
+    let sends = pair.state().sends[sends_before..].to_vec();
+    (result, sends)
+}
+
+/// Fans that stop confirming past the TX-reset budget: the next session
+/// sends no reset but rests the cluster's RGB with upkeep going on, then
+/// ends the actor as a disconnect asking for a fresh connect, which the
+/// lifecycle turns into a reconnect. When the fans confirm again, their
+/// recovery budget starts over.
+#[tokio::test(start_paused = true)]
+async fn lianli_fans_past_their_reset_budget_rest_then_end_the_actor_for_a_fresh_connect() {
+    use hypercolor_hal::drivers::lianli::wireless::pacing::{
+        MAX_RESETS_WITHOUT_DELIVERY, RECONNECT_RESTS, reconnects_without_delivery,
+        resets_without_delivery,
+    };
+
+    let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x05];
+    let cluster = echoing_cluster(master);
+    let controller = "usb-backend-test-lianli-fan-stall";
+    let pair = Arc::new(EchoingWirelessPair::new(master, Duration::from_millis(10)));
+    pair.state().rf_dead = true;
+    let is_reset = |(_, data): &(TransferType, Vec<u8>)| data.first() == Some(&0x15);
+
+    for session in 0..MAX_RESETS_WITHOUT_DELIVERY {
+        let (result, sends) =
+            run_lianli_session(master, controller, &pair, Duration::from_secs(15)).await;
+        assert!(
+            matches!(result, Some(Err(_))),
+            "session {session} ends with the TX reset"
+        );
+        assert_eq!(sends.iter().filter(|send| is_reset(send)).count(), 1);
+    }
+    assert_eq!(
+        resets_without_delivery(cluster),
+        MAX_RESETS_WITHOUT_DELIVERY
+    );
+
+    let started = tokio::time::Instant::now();
+    let (result, sends) =
+        run_lianli_session(master, controller, &pair, Duration::from_mins(1)).await;
+    let ended_after = started.elapsed();
+    let error = result
+        .expect("the session ends by itself")
+        .expect_err("it ends as a disconnect");
+    let chain = format!("{error:#}");
+    assert!(
+        chain.contains("reconnecting to run the connect sequence again"),
+        "the reason names the fresh connect: {chain}"
+    );
+    assert_eq!(
+        UsbBackend::classify_frame_write_error(&error),
+        actor::FrameWriteDisposition::Fatal,
+        "a disconnect, so the lifecycle reconnects"
+    );
+    assert!(
+        !sends.iter().any(is_reset),
+        "past the budget, no further TX reset"
+    );
+    assert!(
+        ended_after >= RECONNECT_RESTS[0],
+        "the rest comes first: ended after {ended_after:?}"
+    );
+    let upkeep = sends
+        .iter()
+        .filter(|(transfer, _)| *transfer == TransferType::Primary)
+        .count();
+    assert!(
+        upkeep >= 8 * 8,
+        "fan-speed and clock upkeep carry on through the rest: {upkeep} TX writes"
+    );
+    assert_eq!(reconnects_without_delivery(cluster), 1);
+
+    // The fans answer again on the fresh connect.
+    pair.state().rf_dead = false;
+    let (result, _) = run_lianli_session(master, controller, &pair, Duration::from_secs(5)).await;
+    assert!(result.is_none(), "the recovered session streams on");
+    assert_eq!(resets_without_delivery(cluster), 0);
+    assert_eq!(reconnects_without_delivery(cluster), 0);
+}
+
 async fn assert_transient_frame_failure_survival(
     parallel_transfer_lanes: bool,
     failure: InjectedPrimaryFailure,

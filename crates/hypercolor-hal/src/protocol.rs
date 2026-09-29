@@ -99,6 +99,18 @@ pub trait Protocol: Send + Sync {
         commands.clear();
     }
 
+    /// Why the protocol wants its session ended and the device connected
+    /// afresh, if it does.
+    ///
+    /// `None`, the default, means carry on. A protocol that decides the
+    /// device needs its whole connect sequence again, on fresh transport
+    /// handles, returns the reason; the backend checks after every pump
+    /// and keepalive tick, writes nothing more, and ends the session as a
+    /// disconnect, so the device lifecycle reconnects it.
+    fn session_restart(&self) -> Option<String> {
+        None
+    }
+
     /// Pixel bytes of the frame most recently encoded that the protocol
     /// wrote, when that is not the whole payload.
     ///
