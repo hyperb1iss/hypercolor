@@ -60,8 +60,9 @@ and staples the app and DMG through an App Store Connect API key, assembles
 and notarizes the standalone tarball, and verifies that every signature
 carries `APPLE_TEAM_ID` before uploading the release artifacts. Because
 signing has its own job and time budget, a slow Apple queue or a failed
-notarization is rerun with "Re-run failed jobs" in minutes instead of
-rebuilding for four hours. The `release-credentials` job checks all seven
+notarization is rerun with "Re-run failed jobs" without rebuilding for
+four hours; the rerun still waits for a macOS runner and pays for the
+notarizations again. The `release-credentials` job checks all seven
 Apple secrets before any artifact job starts, and the Release workflow
 refuses a non-dry run while any of them is missing.
 

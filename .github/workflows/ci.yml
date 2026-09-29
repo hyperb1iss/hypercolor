@@ -1754,10 +1754,12 @@ jobs:
           install -m755 "${CARGO_TARGET_DIR}/release/hypercolor" "${payload}/bin/hypercolor"
           install -m755 "${CARGO_TARGET_DIR}/${{ matrix.rust-target }}/release/hypercolor-app" "${payload}/bin/hypercolor-app"
           printf '%s\n' '${{ steps.version.outputs.version }}' > "${payload}/version"
-          # macOS tar would otherwise archive extended attributes as
-          # AppleDouble entries, and codesign rejects bundle detritus.
+          # macOS tar would otherwise archive extended attributes (as
+          # AppleDouble entries and pax headers), codesign rejects bundle
+          # detritus, and restoring kernel-protected com.apple.provenance
+          # as a normal user can fail the unpack.
           export COPYFILE_DISABLE=1
-          tar -cf "${RUNNER_TEMP}/unsigned-${{ matrix.target }}.tar" \
+          tar --no-xattrs -cf "${RUNNER_TEMP}/unsigned-${{ matrix.target }}.tar" \
             -C "${payload}" version bin \
             -C "${CARGO_TARGET_DIR}/${{ matrix.rust-target }}/release/bundle/macos" Hypercolor.app
 
@@ -1786,8 +1788,10 @@ jobs:
 
   # ── Sign macOS Release Artifacts ──────────────────────────────
   # Runs on a fresh runner from build-native-app's unsigned payload, so the
-  # three notarizations get their own six-hour budget and a failed or slow
-  # notarization reruns in minutes instead of rebuilding for four hours.
+  # three notarizations get their own job budget and a failed or slow
+  # notarization reruns without rebuilding for four hours. Each leg runs on
+  # its own architecture: dist.sh only generates shell completions when the
+  # host matches the target, so the x64 leg must stay on an Intel runner.
   sign-macos:
     name: Sign macOS (${{ matrix.target }})
     if: >-
@@ -1850,7 +1854,7 @@ jobs:
           payload="${RUNNER_TEMP}/unsigned-payload"
           rm -rf "${payload}"
           mkdir -p "${payload}"
-          tar -xpf "${RUNNER_TEMP}/unsigned/unsigned-${{ matrix.target }}.tar" -C "${payload}"
+          tar --no-xattrs -xpf "${RUNNER_TEMP}/unsigned/unsigned-${{ matrix.target }}.tar" -C "${payload}"
           version="$(cat "${payload}/version")"
           if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
             echo "unsigned payload carries an invalid version: ${version}" >&2
@@ -1930,6 +1934,8 @@ jobs:
             dist/hypercolor-*.tar.gz
             dist/hypercolor-*.tar.gz.sha256
           if-no-files-found: error
+          # A rerun after a partial upload replaces rather than conflicts.
+          overwrite: true
 
       - name: Upload native release bundle
         uses: actions/upload-artifact@v7
@@ -1937,6 +1943,7 @@ jobs:
           name: hypercolor-app-${{ steps.payload.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
           path: target/${{ matrix.rust-target }}/release/bundle/dmg/*.dmg*
           if-no-files-found: error
+          overwrite: true
 
   # ── Build Release Tarballs ────────────────────────────────────
   build-release-smoke:

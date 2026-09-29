@@ -717,6 +717,12 @@ sign_app_bundle() {
   local arch="$4"
 
   [[ -d "${app}" ]] || die "Tauri app bundle is missing: ${app}"
+  # The DMG directory is derived from, and emptied beside, the bundle, so
+  # refuse any path outside Tauri's <profile>/bundle/macos layout before
+  # anything is signed or deleted.
+  [[ "$(basename -- "$(dirname -- "${app}")")" == "macos" \
+    && "$(basename -- "$(dirname -- "$(dirname -- "${app}")")")" == "bundle" ]] \
+    || die "app bundle must sit in a Tauri bundle/macos directory: ${app}"
   prepare_signing_identity
   validate_notary_credentials
   for command in ditto file find hdiutil jq plutil sed xcrun; do

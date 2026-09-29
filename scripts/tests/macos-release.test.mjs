@@ -68,6 +68,15 @@ test('macOS signing runs in its own job from an unsigned build payload', () => {
   assert.match(sign, /name: hypercolor-tarball-\$\{\{ steps\.payload\.outputs\.version \}\}-\$\{\{ matrix\.target \}\}/);
   assert.match(sign, /name: hypercolor-app-\$\{\{ steps\.payload\.outputs\.version \}\}-\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.artifact-kind \}\}/);
   assert.match(sign, /path: target\/\$\{\{ matrix\.rust-target \}\}\/release\/bundle\/dmg\/\*\.dmg\*/);
+  // The unsigned payload must never reach a release: create-release only
+  // downloads artifacts matching its pattern, which unsigned-* cannot match.
+  const releaseJob = body('create-release');
+  const pattern = releaseJob.match(/pattern: (\S+)/)[1];
+  const glob = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`);
+  assert.ok(!glob.test('unsigned-macos-arm64') && !glob.test('unsigned-macos-x64'));
+  // Signing runs exactly when the build it signs runs.
+  const condition = job => job.match(/^    if: >-\n((?:      .*\n)+)/m)[1];
+  assert.equal(condition(sign), condition(build));
 });
 
 test('native app version validation accepts an exact stamped prerelease', () => {
