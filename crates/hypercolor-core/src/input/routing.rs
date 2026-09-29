@@ -11,7 +11,7 @@ use super::{
     InteractionData, InteractionTransientTotals, SourceKind, SourceStatus,
     SourceStatusAvailability, SourceStatusHandle,
 };
-use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent, TouchPhase};
 
 /// Stable identity for one interaction consumer lifetime.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1092,7 +1092,9 @@ impl ConsumerRouteState {
                 | InputEvent::MidiNote { .. }
                 | InputEvent::MidiControlChange { .. }
                 | InputEvent::MidiPitchBend { .. }
-                | InputEvent::MidiRealtime { .. } => {}
+                | InputEvent::MidiRealtime { .. }
+                | InputEvent::Touch { .. }
+                | InputEvent::DeviceButton { .. } => {}
             }
         }
         interaction.keyboard.recent_keys.truncate(recent_count);
@@ -1430,7 +1432,9 @@ fn synthetic_release(press: &TimedInputEvent, now_ms: u64) -> TimedInputEvent {
     match &mut release.event {
         InputEvent::Key { state, .. }
         | InputEvent::MouseButton { state, .. }
-        | InputEvent::MidiNote { state, .. } => *state = InputButtonState::Released,
+        | InputEvent::MidiNote { state, .. }
+        | InputEvent::DeviceButton { state, .. } => *state = InputButtonState::Released,
+        InputEvent::Touch { phase, .. } => *phase = TouchPhase::Cancelled,
         InputEvent::PointerScroll { .. }
         | InputEvent::MidiControlChange { .. }
         | InputEvent::MidiPitchBend { .. }
