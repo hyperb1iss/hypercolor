@@ -356,6 +356,7 @@ impl UsbBackend {
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
         protocol.pump_frame_into(commands);
+        Self::check_session_restart(device_id, protocol)?;
         if commands.is_empty() {
             return Ok(());
         }
@@ -456,6 +457,22 @@ impl UsbBackend {
         }
     }
 
+    /// End the session, writing nothing more, when the protocol asks for a
+    /// fresh connect. It ends as a disconnect, so the lifecycle reconnects
+    /// the device and its whole connect sequence runs again.
+    fn check_session_restart(device_id: DeviceId, protocol: &dyn Protocol) -> Result<()> {
+        match protocol.session_restart() {
+            Some(reason) => {
+                Err(
+                    anyhow::Error::new(TransportError::Disconnected { detail: reason }).context(
+                        format!("USB device {device_id} asked to be connected afresh"),
+                    ),
+                )
+            }
+            None => Ok(()),
+        }
+    }
+
     async fn run_keepalive_commands(
         device_id: DeviceId,
         device_name: &'static str,
@@ -463,6 +480,7 @@ impl UsbBackend {
         transport: &dyn Transport,
     ) -> Result<()> {
         let commands = protocol.keepalive_commands();
+        Self::check_session_restart(device_id, protocol)?;
         if commands.is_empty() {
             return Ok(());
         }
