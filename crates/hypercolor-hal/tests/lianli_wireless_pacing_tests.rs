@@ -16,11 +16,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use fake::{FRAME_PERIOD, FakeRadio, LEDS, Rig, content_of, moving_frame};
+use fake::{FRAME_PERIOD, FakeRadio, LEDS, Rig, SessionEnd, content_of, moving_frame};
 use hypercolor_hal::drivers::lianli::wireless::pacing::{
     ECHO_STALL, MAX_RESETS_WITHOUT_DELIVERY, MAX_WINDOW, resets_without_delivery,
 };
 use hypercolor_hal::protocol::{Protocol, TransferType};
+
+/// How long the device lifecycle takes to reconnect a controller whose
+/// session ended: about 1.5 s on the owner's rig.
+const RECONNECT_DELAY: Duration = Duration::from_millis(1_500);
 
 /// Envelopes one transfer puts on the air: the header twice, one data
 /// envelope for three fans' worth of compressed pixels.
@@ -589,10 +593,11 @@ fn fans_that_stop_confirming_end_in_one_tx_reset_not_endless_resends() {
 
 /// Firmware whose echo never tracks live frames, or a TX a reset does not
 /// revive, must not turn into a reset loop across reconnects: each cluster
-/// gets a small reset budget until it confirms a frame again, and past it
-/// the cluster's lighting is held.
+/// gets a small reset budget until it confirms a frame again. Past it the
+/// cluster's lighting rests, with no RGB at all, and the session then asks
+/// to be connected afresh instead of resetting the TX again.
 #[test]
-fn a_tx_that_never_delivers_spends_a_bounded_reset_budget_then_holds() {
+fn a_tx_that_never_delivers_spends_a_bounded_reset_budget_then_rests() {
     let mut radio = FakeRadio::one_cluster();
     radio.rf_dead = true;
     let cluster = radio.clusters[0].mac;
@@ -616,12 +621,16 @@ fn a_tx_that_never_delivers_spends_a_bounded_reset_budget_then_holds() {
         } else {
             assert!(
                 rig.radio.resets.is_empty(),
-                "the budget is spent, so the session holds instead"
+                "the budget is spent, so the session rests instead"
             );
             assert_eq!(
                 rig.transfers_since(settled),
                 0,
-                "a held cluster gets no RGB at all, not a slow probe"
+                "a resting cluster gets no RGB at all, not a slow probe"
+            );
+            assert!(
+                rig.protocol.session_restart().is_some(),
+                "after the rest the session asks to be connected afresh"
             );
         }
         assert_eq!(rig.commands_after_reset, 0);
@@ -646,44 +655,47 @@ fn a_tx_that_never_delivers_spends_a_bounded_reset_budget_then_holds() {
 
 /// A healthy cluster confirming frames must not renew the reset budget of
 /// a cluster beside it that never does, or the controller would be reset
-/// forever. The failing cluster is held once its budget is spent, and the
-/// healthy one keeps streaming.
+/// forever. Once the failing cluster's budget is spent it rests between
+/// reconnects, and the healthy one streams through every rest, losing only
+/// the moment each reconnect takes.
 #[test]
 fn a_healthy_cluster_does_not_renew_a_failing_clusters_reset_budget() {
     let mut radio = FakeRadio::two_clusters();
     radio.clusters[1].deaf = true;
     let failing = radio.clusters[1].mac;
     let mut rig = Rig::connect(radio);
+    rig.reconnect_delay = Some(RECONNECT_DELAY);
     rig.frame = Box::new(|index| {
         let mut colors = moving_frame(index);
         colors.extend(moving_frame(index + 7_777));
         colors
     });
 
-    let mut resets = 0;
-    for session in 0..=MAX_RESETS_WITHOUT_DELIVERY {
-        if session > 0 {
-            rig = rig.reconnect();
-        }
-        rig.run_for(ECHO_STALL + Duration::from_secs(10));
-        resets += rig.radio.resets.len();
-    }
+    rig.run_for(Duration::from_mins(2));
     assert_eq!(
-        u32::try_from(resets).expect("small"),
+        u32::try_from(rig.radio.resets.len()).expect("small"),
         MAX_RESETS_WITHOUT_DELIVERY,
-        "the failing cluster's budget bounds the resets"
+        "the failing cluster's budget bounds the resets: {:?}",
+        rig.session_ends
     );
     assert_eq!(
         resets_without_delivery(failing),
         MAX_RESETS_WITHOUT_DELIVERY
     );
+    assert!(
+        rig.session_ends.contains(&SessionEnd::Restart),
+        "past the budget, rests lead to reconnects: {:?}",
+        rig.session_ends
+    );
 
     let healthy_before = rig.radio.clusters[0].applied_log.len();
-    rig.run_for(Duration::from_secs(5));
-    assert!(rig.radio.resets.is_empty(), "no further reset");
+    let started = rig.now();
+    rig.run_for(Duration::from_mins(1));
+    let offered = rig.now().saturating_sub(started).as_millis() / FRAME_PERIOD.as_millis();
+    let taken = rig.radio.clusters[0].applied_log.len() - healthy_before;
     assert!(
-        rig.radio.clusters[0].applied_log.len() > healthy_before + 50,
-        "the healthy cluster keeps streaming beside the held one"
+        taken * 100 >= usize::try_from(offered).expect("small") * 90,
+        "the healthy cluster streams through the failing one's rest: {taken} of {offered} frames"
     );
 }
 
