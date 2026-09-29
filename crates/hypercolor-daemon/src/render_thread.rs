@@ -394,10 +394,12 @@ impl RenderThread {
                         return Ok(());
                     }
                 };
-                let mut input_pump = match runtime.block_on(InputPublicationPump::start(
-                    state.input_manager.clone(),
-                    pump_demands,
-                )) {
+                let mut input_pump =
+                    match runtime.block_on(InputPublicationPump::start(
+                        state.input_manager.clone(),
+                        pump_demands,
+                        Some(state.interaction_routing.device_input().clone()),
+                    )) {
                     Ok(pump) => pump,
                     Err(error) => {
                         let _ = ready_tx.send(Err(error));
