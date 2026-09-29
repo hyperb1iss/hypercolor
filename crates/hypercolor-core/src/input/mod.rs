@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod browser;
+pub mod device;
 pub mod evdev;
 mod graph;
 mod host_fold;
@@ -25,6 +26,10 @@ pub use browser::{
     BrowserInputChildSlot, BrowserInputEdge, BrowserInputHandle, BrowserInputPublicationId,
     BrowserInputRegistryError, BrowserInputRegistryHandle, BrowserInputRegistrySnapshot,
     BrowserPreviewId,
+};
+pub use device::{
+    DeviceInputAttachment, DeviceInputChildSlot, DeviceInputHandle, DeviceInputPublicationId,
+    DeviceInputRegistryError, DeviceInputRegistryHandle, DeviceInputRegistrySnapshot,
 };
 pub use evdev::{DeviceOpenState, DeviceOpenStatus, EvdevHostInput};
 pub use graph::{
@@ -59,14 +64,14 @@ pub use status::{
 };
 pub use traits::{
     AudioSource, AudioSourceRole, CapabilityActionDisposition, CapabilityActionIdentity,
-    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, InteractionBatch,
-    InteractionData, InteractionDegradation, InteractionDiagnostics, InteractionSource,
-    InteractionSourceRole, KeyboardData, ManagedSource, ManagedSourceKey, ManagedSourceRole,
-    MotionAggregate, MouseData, PointerMode, ProtectedSourceAuthorizationAction,
+    DataSource, DataSourceKind, DataSourceRole, DeviceButtonHold, DeviceInteractionData, InputData,
+    InputSource, InteractionBatch, InteractionData, InteractionDegradation, InteractionDiagnostics,
+    InteractionSource, InteractionSourceRole, KeyboardData, ManagedSource, ManagedSourceKey,
+    ManagedSourceRole, MotionAggregate, MouseData, PointerMode, ProtectedSourceAuthorizationAction,
     ResolvedProtectedSourceAction, ScreenData, ScreenSource, ScreenSourcePickerAction,
     ScreenSourceRole, ScreenZoneColors, ScrollAggregate, SourceCapabilityConflict,
     SourceCapabilityContext, SourceDiagnosticArtifact, SourceDiagnosticArtifactAction, SourceRole,
-    SourceRoleBinding,
+    SourceRoleBinding, TouchContact,
 };
 pub use windows::WindowsHostInput;
 #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
