@@ -9,6 +9,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="${ROOT_DIR}/packaging/macos/signing-manifest.tsv"
 SIGNING_TMP=""
 SIGNING_KEYCHAIN=""
+KEYCHAIN_ON_SEARCH_LIST=0
 
 die() {
   printf 'macOS signing failed: %s\n' "$*" >&2
@@ -27,10 +28,14 @@ Commands:
     --target <triple> --team-id <team>
   verify-standalone --directory <distribution> --target <triple>
     --team-id <team>
+  selftest
 
 The app command pre-signs the staged daemon sidecar, builds only the Tauri
 app bundle, reapplies every manifest signature, notarizes and staples the app,
 then creates, signs, notarizes, and staples a separate DMG.
+
+The selftest command signs, verifies, and notarizes a throwaway binary to
+prove the credentials and keychain handling without a release build.
 
 Signing requires APPLE_SIGNING_IDENTITY and APPLE_TEAM_ID. The identity may
 already be installed, or APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD may
@@ -41,6 +46,9 @@ EOF
 }
 
 cleanup() {
+  if [[ "${KEYCHAIN_ON_SEARCH_LIST}" == 1 ]]; then
+    remove_signing_keychain_from_search_list || true
+  fi
   if [[ -n "${SIGNING_KEYCHAIN}" && -f "${SIGNING_KEYCHAIN}" ]]; then
     security delete-keychain "${SIGNING_KEYCHAIN}" >/dev/null 2>&1 || true
   fi
@@ -99,9 +107,9 @@ validate_manifest() {
   done < "${MANIFEST}"
 
   [[ "${count}" -eq 6 ]] || die "expected 6 signing manifest entries, found ${count}"
-  manifest_has app 'Contents/MacOS/Hypercolor' 'tech.hyperbliss.hypercolor' \
+  manifest_has app 'Contents/MacOS/hypercolor-app' 'tech.hyperbliss.hypercolor' \
     || die "manifest is missing the app identity"
-  manifest_has app 'Contents/MacOS/hypercolor-daemon-{target}' 'tech.hyperbliss.hypercolor.sidecar' \
+  manifest_has app 'Contents/MacOS/hypercolor-daemon' 'tech.hyperbliss.hypercolor.sidecar' \
     || die "manifest is missing the daemon sidecar identity"
   manifest_has standalone 'bin/hypercolor-daemon' 'tech.hyperbliss.hypercolor.daemon' \
     || die "manifest is missing the standalone daemon identity"
@@ -196,6 +204,65 @@ prepare_signing_identity() {
   security find-identity -v -p codesigning "${SIGNING_KEYCHAIN}" \
     | grep -F "${APPLE_SIGNING_IDENTITY}" >/dev/null \
     || die "imported certificate does not provide APPLE_SIGNING_IDENTITY"
+
+  # codesign only resolves identities from keychains on the user search
+  # list, even when --keychain names the file, so the ephemeral keychain
+  # joins the front of that list until cleanup restores the original.
+  add_signing_keychain_to_search_list
+  security find-identity -v -p codesigning \
+    | grep -F "${APPLE_SIGNING_IDENTITY}" >/dev/null \
+    || die "signing identity is not visible on the keychain search list"
+}
+
+# Prints the user keychain search list one unquoted path per line, skipping
+# the ephemeral signing keychain. Fails when the list cannot be read, so a
+# caller never mistakes a failed read for an empty list.
+current_search_list_without_signing_keychain() {
+  local listing entry
+  listing="$(security list-keychains -d user)" || return 1
+  while IFS= read -r entry; do
+    entry="$(printf '%s' "${entry}" | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')"
+    # security may report the temp keychain under /private/var for /var.
+    if [[ -n "${entry}" && "${entry}" != "${SIGNING_KEYCHAIN}" \
+      && "${entry}" != "/private${SIGNING_KEYCHAIN}" ]]; then
+      printf '%s\n' "${entry}"
+    fi
+  done <<< "${listing}"
+}
+
+read_search_list_into() {
+  local entries entry
+  entries="$(current_search_list_without_signing_keychain)" \
+    || die "could not read the keychain search list"
+  SEARCH_LIST=()
+  while IFS= read -r entry; do
+    if [[ -n "${entry}" ]]; then
+      SEARCH_LIST+=("${entry}")
+    fi
+  done <<< "${entries}"
+}
+
+add_signing_keychain_to_search_list() {
+  local SEARCH_LIST
+  read_search_list_into
+  KEYCHAIN_ON_SEARCH_LIST=1
+  security list-keychains -d user -s "${SIGNING_KEYCHAIN}" \
+    ${SEARCH_LIST[@]+"${SEARCH_LIST[@]}"} \
+    || die "could not add the signing keychain to the search list"
+}
+
+# Drops only this run's keychain from whatever the search list holds now,
+# so a concurrent signing run keeps its own entry.
+remove_signing_keychain_from_search_list() {
+  local SEARCH_LIST entries entry
+  entries="$(current_search_list_without_signing_keychain)" || return 1
+  SEARCH_LIST=()
+  while IFS= read -r entry; do
+    if [[ -n "${entry}" ]]; then
+      SEARCH_LIST+=("${entry}")
+    fi
+  done <<< "${entries}"
+  security list-keychains -d user -s ${SEARCH_LIST[@]+"${SEARCH_LIST[@]}"} >/dev/null 2>&1
 }
 
 validate_notary_credentials() {
@@ -316,7 +383,8 @@ verify_signature() {
     || die "designated requirement identifier mismatch for ${path}"
   grep -F 'anchor apple generic' <<< "${requirement}" >/dev/null \
     || die "designated requirement anchor mismatch for ${path}"
-  grep -F "certificate leaf[subject.OU] = \"${APPLE_TEAM_ID}\"" <<< "${requirement}" >/dev/null \
+  # codesign quotes the OU only when it does not start with a letter.
+  grep -E "certificate leaf\[subject\.OU\] = \"?${APPLE_TEAM_ID}\"?( |$)" <<< "${requirement}" >/dev/null \
     || die "designated requirement team mismatch for ${path}"
 
   ensure_signing_tmp
@@ -357,7 +425,7 @@ sign_scope() {
   local scope_root="$1"
   local scope="$2"
   local target="$3"
-  local app_main="${scope_root}/Contents/MacOS/Hypercolor"
+  local app_main="${scope_root}/Contents/MacOS/hypercolor-app"
   local macho_count=0
   local path relative_path
 
@@ -376,7 +444,7 @@ sign_scope() {
   [[ "${macho_count}" -gt 0 ]] || die "no Mach-O objects found in ${scope_root}"
 
   if [[ "${scope}" == "app" ]]; then
-    resolve_rule app 'Contents/MacOS/Hypercolor' "${target}"
+    resolve_rule app 'Contents/MacOS/hypercolor-app' "${target}"
     codesign_object "${scope_root}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
     verify_signature "${scope_root}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
   fi
@@ -397,7 +465,7 @@ verify_scope() {
 
   assert_scope_files "${scope_root}" "${scope}" "${target}"
   if [[ "${scope}" == "app" ]]; then
-    resolve_rule app 'Contents/MacOS/Hypercolor' "${target}"
+    resolve_rule app 'Contents/MacOS/hypercolor-app' "${target}"
     verify_signature "${scope_root}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
   fi
   while IFS= read -r -d '' path; do
@@ -408,23 +476,48 @@ verify_scope() {
   done < <(find "${scope_root}" -type f -print0)
 }
 
+# Submits, logs the submission ID before waiting so a stalled Apple queue is
+# traceable, waits (bounded by NOTARY_WAIT_TIMEOUT when set, for example
+# "25m"), and records notarytool's final status as the receipt.
 notarize() {
   local submission="$1"
   local receipt="$2"
+  local auth=()
   if [[ -n "${APPLE_API_KEY_ID:-}" ]]; then
-    xcrun notarytool submit "${submission}" --wait --output-format json \
-      --key "${APPLE_API_KEY_PATH}" --key-id "${APPLE_API_KEY_ID}" \
-      --issuer "${APPLE_API_ISSUER}" > "${receipt}"
+    auth=(--key "${APPLE_API_KEY_PATH}" --key-id "${APPLE_API_KEY_ID}"
+      --issuer "${APPLE_API_ISSUER}")
   else
-    local profile_args=(--keychain-profile "${APPLE_NOTARY_KEYCHAIN_PROFILE}")
+    auth=(--keychain-profile "${APPLE_NOTARY_KEYCHAIN_PROFILE}")
     if [[ -n "${APPLE_NOTARY_KEYCHAIN_PATH:-}" ]]; then
-      profile_args+=(--keychain "${APPLE_NOTARY_KEYCHAIN_PATH}")
+      auth+=(--keychain "${APPLE_NOTARY_KEYCHAIN_PATH}")
     fi
-    xcrun notarytool submit "${submission}" --wait --output-format json \
-      "${profile_args[@]}" > "${receipt}"
   fi
-  jq -e '.status == "Accepted"' "${receipt}" >/dev/null \
-    || die "Apple notarization did not accept ${submission}"
+
+  local submitted submission_id
+  submitted="$(xcrun notarytool submit "${submission}" --output-format json "${auth[@]}")" \
+    || die "notarytool could not submit ${submission}"
+  submission_id="$(jq -r '.id // empty' <<< "${submitted}")"
+  [[ -n "${submission_id}" ]] \
+    || die "notarytool returned no submission ID for ${submission}"
+  printf 'notarization submission %s for %s\n' \
+    "${submission_id}" "$(basename "${submission}")"
+
+  local wait_args=()
+  if [[ -n "${NOTARY_WAIT_TIMEOUT:-}" ]]; then
+    wait_args=(--timeout "${NOTARY_WAIT_TIMEOUT}")
+  fi
+  xcrun notarytool wait "${submission_id}" \
+    ${wait_args[@]+"${wait_args[@]}"} "${auth[@]}" >/dev/null || true
+  xcrun notarytool info "${submission_id}" --output-format json "${auth[@]}" \
+    > "${receipt}" \
+    || die "notarytool could not report submission ${submission_id}"
+
+  if ! jq -e '.status == "Accepted"' "${receipt}" >/dev/null; then
+    printf 'notarization submission %s status: %s\n' \
+      "${submission_id}" "$(jq -r '.status // "unknown"' "${receipt}")" >&2
+    xcrun notarytool log "${submission_id}" "${auth[@]}" >&2 || true
+    die "Apple notarization did not accept ${submission}"
+  fi
 }
 
 write_object_inventory() {
@@ -450,6 +543,26 @@ write_object_inventory() {
       >> "${records}"
   done < <(find "${scope_root}" -type f -print0)
   jq -s . "${records}" > "${output}"
+}
+
+# hdiutil create intermittently fails with "Resource busy" on GitHub macOS
+# runners while background scanners hold the staging volume
+# (actions/runner-images#7522). That is the runner, not the image, so
+# retry the create a bounded number of times.
+create_dmg() {
+  local stage="$1"
+  local dmg="$2"
+  local attempt
+  for attempt in 1 2 3 4; do
+    rm -f "${dmg}"
+    if hdiutil create -volname Hypercolor -srcfolder "${stage}" \
+      -ov -format UDZO "${dmg}" >/dev/null; then
+      return 0
+    fi
+    printf 'hdiutil create failed (attempt %s of 4); retrying\n' "${attempt}" >&2
+    sleep $((attempt * 5))
+  done
+  die "hdiutil could not create ${dmg}"
 }
 
 sign_dmg() {
@@ -556,7 +669,7 @@ build_app_artifacts() {
   done
 
   local staged_sidecar="${ROOT_DIR}/target/bundle-stage/binaries/hypercolor-daemon-${target}"
-  resolve_rule app "Contents/MacOS/hypercolor-daemon-${target}" "${target}"
+  resolve_rule app 'Contents/MacOS/hypercolor-daemon' "${target}"
   [[ -f "${staged_sidecar}" ]] || die "staged daemon sidecar is missing: ${staged_sidecar}"
   codesign_object "${staged_sidecar}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
   verify_signature "${staged_sidecar}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
@@ -596,10 +709,11 @@ build_app_artifacts() {
   mkdir -p "${dmg_stage}"
   ditto "${app}" "${dmg_stage}/Hypercolor.app"
   ln -s /Applications "${dmg_stage}/Applications"
+  # A restored build cache can carry DMGs from an earlier version, and the
+  # upload glob takes the whole directory, so start from an empty one.
+  rm -rf "${dmg_dir}"
   mkdir -p "${dmg_dir}"
-  rm -f "${dmg}"
-  hdiutil create -volname Hypercolor -srcfolder "${dmg_stage}" \
-    -ov -format UDZO "${dmg}" >/dev/null
+  create_dmg "${dmg_stage}" "${dmg}"
   sign_dmg "${dmg}"
   notarize "${dmg}" "${dmg_receipt}"
   xcrun stapler staple "${dmg}"
@@ -646,6 +760,38 @@ sign_standalone_artifacts() {
     '{team_id: $team_id, target: $target, objects: $objects[0], notarization: $notarization[0]}' \
     > "${provenance}"
   printf 'signed standalone distribution: %s\n' "${directory}"
+}
+
+# Exercises the release credentials end to end on a throwaway binary: the
+# same keychain import, codesign, verification, and notarytool paths the app
+# and standalone commands use, in minutes instead of a full release build.
+run_selftest() {
+  local identifier="tech.hyperbliss.hypercolor.signing-selftest"
+  for command in ditto jq xcrun; do
+    require "${command}"
+  done
+  prepare_signing_identity
+  validate_notary_credentials
+
+  ensure_signing_tmp
+  local source="${SIGNING_TMP}/selftest.c"
+  local binary="${SIGNING_TMP}/hypercolor-signing-selftest"
+  local archive="${SIGNING_TMP}/hypercolor-signing-selftest.zip"
+  printf 'int main(void) { return 0; }\n' > "${source}"
+  xcrun --sdk macosx clang -mmacosx-version-min=15.2 -o "${binary}" "${source}"
+
+  codesign_object "${binary}" "${identifier}" none
+  verify_signature "${binary}" "${identifier}" none
+  # The same requirement the standalone installer's verifier checks on a
+  # user's Mac, proven here against a real Developer ID signature.
+  codesign --verify --strict \
+    -R "=anchor apple generic and certificate leaf[subject.OU] = \"${APPLE_TEAM_ID}\"" \
+    "${binary}" \
+    || die "the installer's signature requirement rejects a release signature"
+  ditto -c -k --keepParent "${binary}" "${archive}"
+  notarize "${archive}" "${SIGNING_TMP}/selftest-notarization.json"
+  printf 'macOS signing selftest passed: signed for team %s and notarized\n' \
+    "${APPLE_TEAM_ID}"
 }
 
 validate_manifest
@@ -745,6 +891,10 @@ case "${command_name}" in
     APPLE_TEAM_ID="${team_id}"
     verify_standalone_artifacts "${directory}" "${target}"
     printf 'verified signed standalone artifacts\n'
+    ;;
+  selftest)
+    [[ "$#" -eq 0 ]] || die "selftest takes no arguments"
+    run_selftest
     ;;
   -h|--help|help)
     usage

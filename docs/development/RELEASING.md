@@ -10,7 +10,8 @@ AI-generated notes, and registry publishes.
 2. Enter the version without the leading `v` (e.g. `0.3.0` or `0.3.0-rc.1`).
 3. Leave **dry run** checked for the first pass. Review the
    `release-preview-v<version>` artifact (release notes + changelog).
-4. Complete the signed macOS acceptance checkpoint below.
+4. Run the signed macOS smoke checkpoint below against a signed rehearsal
+   build.
 5. Re-run with dry run unchecked to ship.
 
 What the Release workflow does, in order:
@@ -38,46 +39,57 @@ What the Release workflow does, in order:
    with `GITHUB_TOKEN` never fire `on: push` workflows; the tag-lane jobs
    in ci.yml accept `workflow_dispatch` for exactly this reason.
 
-The CI tag lane then builds the Linux and Windows artifacts, creates the
-GitHub Release with the committed notes, publishes `hypercolor` +
+The CI tag lane then builds the Linux, Windows, and signed macOS artifacts,
+creates the GitHub Release with the committed notes, publishes `hypercolor` +
 `create-hypercolor` to npm (with provenance; prereleases go to the `next`
 dist-tag), publishes the Python client to PyPI (stable only), and updates
 the AUR metadata (stable only).
 
 The tag lane also updates the Homebrew tap: `update-homebrew` renders
-`packaging/homebrew/hypercolor.rb` with `scripts/homebrew-formula.mjs`,
-filling the Linux stanzas from the tarballs it just published and carrying
-the macOS stanzas forward from the formula already in
-`hyperb1iss/homebrew-tap`, so Linux users track every stable tag while macOS
-users keep the last accepted build until the signed lane promotes a newer one.
+`packaging/homebrew/hypercolor.rb` and `packaging/homebrew/hypercolor-app.rb`
+with `scripts/homebrew-formula.mjs`, filling every Linux and macOS stanza and
+both cask architectures from the tarballs and DMGs the release just published.
 
-Public CI ships no macOS artifacts: macOS binaries require Developer ID
-signing that repository runners cannot perform, so signed macOS tarballs and
-the `hypercolor-app` cask are produced, attached, and promoted into the tap
-through the signed acceptance checkpoint below.
+macOS artifacts are Developer ID signed and notarized on the GitHub macOS
+runners. The `release-credentials` job checks all seven Apple secrets before
+any artifact job starts, so a tag lane with a missing secret fails in seconds
+instead of after an hour of builds. Each macOS job imports the certificate
+into an ephemeral keychain, signs every binary with the hardened runtime,
+notarizes and staples the app and DMG through an App Store Connect API key,
+and then verifies that every signature carries `APPLE_TEAM_ID` before the
+artifact is uploaded. The Release workflow refuses a non-dry run while any of
+the seven secrets is missing.
 
-## Signed macOS acceptance checkpoint
+## Signed macOS smoke checkpoint
 
-Spec 76 acceptance is a manual release checkpoint until the physical-hardware
-harness is automated. Before shipping a release that includes macOS screen
-capture or host input changes, run the signed packaged release candidate on
-the required Apple Silicon and Intel hardware and retain one acceptance bundle
-covering:
+Before the non-dry run, build signed artifacts without a tag by dispatching
+**CI/CD** with `release_artifacts: full` from the release source. Leave
+`release_version` blank: the artifact jobs reject any version whose base
+differs from the current Cargo version, which the release commit has not
+stamped yet, so the version being cut does not build. The blank default
+(`<cargo version>-ci.0`) always does. Download the arm64 DMG from that run and check it on an
+Apple Silicon Mac:
 
-- the signed TCC owner matrix and selected capability topology, including the
-  broker decision;
-- keyboard, pointer, SDR, HDR, picker, lifecycle, and teardown acceptance for
-  the rows supported by each machine;
-- the Section 19 latency, cadence, zero-copy, byte-reconciliation, and
-  30-minute results, plus the Section 18.5 four-hour combined soak; and
-- one Metal 4 qualification and adoption artifact for every active device that
-  exposes the required facilities.
+- `spctl -a -vvv -t open --context context:primary-signature` on the DMG and
+  `spctl -a -vvv` on the installed app both report
+  `source=Notarized Developer ID`, and `xcrun stapler validate` passes on both;
+- the app opens from a browser download with no unidentified-developer
+  warning;
+- the Screen Recording and Input Monitoring prompts name Hypercolor, and the
+  grants survive a quit and relaunch;
+- a screen-reactive effect renders from live capture, keyboard and pointer
+  input reach an interactive effect, and quitting from the tray stops the
+  daemon; and
+- `hypercolor --version` from the macOS tarball runs after a browser download.
 
-Record the immutable artifact location and checksum in the release checklist.
-CI fixtures, unsigned local runs, and a successful build do not replace this
-evidence. If the signed bundle does not exist or any required row fails, stop
-after the dry run. The repository does not currently contain a completed
-physical-acceptance bundle.
+If any row fails, stop after the dry run. Intel builds get CI verification
+only (signature, notarization, team ID, architecture, and deployment target)
+and no hardware row, because the project has no Intel test machine.
+
+The full Spec 76 physical matrix (signed TCC owner topology, SDR and HDR rows,
+the Section 19 latency and cadence contracts, the four-hour soak, and Metal 4
+qualification) remains the target once the physical-hardware harness is
+automated. It is not a release gate until then.
 
 The native and standalone artifact jobs also wait for the Python OpenAPI and
 WebSocket drift checks. GitHub Release creation cannot run unless both checks
@@ -85,14 +97,62 @@ and both artifact lanes succeed.
 
 ## Required configuration
 
-| What | Where | Used for |
-| --- | --- | --- |
-| `ANTHROPIC_API_KEY` | repo secret | git-iris release notes + changelog (required) |
-| npm trusted publishers | npmjs.com package settings | `publish-npm` uses OIDC (no token, automatic provenance); register repo `hyperb1iss/hypercolor`, workflow `ci.yml` on **both** `hypercolor` and `create-hypercolor` |
-| PyPI trusted publisher | pypi.org project settings | `publish-pypi` uses OIDC; register repo `hyperb1iss/hypercolor`, workflow `ci.yml` |
-| `HOMEBREW_TAP_TOKEN` | repo secret | `update-homebrew` pushes the rendered formula to `hyperb1iss/homebrew-tap`; a fine-grained PAT scoped to that repository with Contents read/write; the job fails loudly when it is missing or cannot push |
-| `AUR_SSH_PRIVATE_KEY` | repo secret | `update-aur` pushes `hypercolor-bin` to the AUR over SSH; the matching public key must be registered on the AUR account (1Password: "SSH Key: hypercolor AUR CI") |
-| `GIT_IRIS_MODEL` | repo variable, optional | override git-iris's default Anthropic model |
+| What                         | Where                      | Used for                                                                                                                                                                                                  |
+| ---------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`          | repo secret                | git-iris release notes + changelog (required)                                                                                                                                                             |
+| npm trusted publishers       | npmjs.com package settings | `publish-npm` uses OIDC (no token, automatic provenance); register repo `hyperb1iss/hypercolor`, workflow `ci.yml` on **both** `hypercolor` and `create-hypercolor`                                       |
+| PyPI trusted publisher       | pypi.org project settings  | `publish-pypi` uses OIDC; register repo `hyperb1iss/hypercolor`, workflow `ci.yml`                                                                                                                        |
+| `HOMEBREW_TAP_TOKEN`         | repo secret                | `update-homebrew` pushes the rendered formula to `hyperb1iss/homebrew-tap`; a fine-grained PAT scoped to that repository with Contents read/write; the job fails loudly when it is missing or cannot push |
+| `AUR_SSH_PRIVATE_KEY`        | repo secret                | `update-aur` pushes `hypercolor-bin` to the AUR over SSH; the matching public key must be registered on the AUR account (1Password: "SSH Key: hypercolor AUR CI")                                         |
+| `GIT_IRIS_MODEL`             | repo variable, optional    | override git-iris's default Anthropic model                                                                                                                                                               |
+| `APPLE_TEAM_ID`              | repo secret                | the ten-character Apple Developer team ID; every signature is verified against it                                                                                                                         |
+| `APPLE_SIGNING_IDENTITY`     | repo secret                | the certificate's full common name, `Developer ID Application: <team name> (<team id>)`                                                                                                                   |
+| `APPLE_CERTIFICATE`          | repo secret                | base64 of a PKCS#12 bundle holding the Developer ID Application certificate and its private key                                                                                                           |
+| `APPLE_CERTIFICATE_PASSWORD` | repo secret                | the PKCS#12 export password                                                                                                                                                                               |
+| `APPLE_API_KEY_ID`           | repo secret                | App Store Connect API key ID, used by `notarytool`                                                                                                                                                        |
+| `APPLE_API_ISSUER`           | repo secret                | App Store Connect issuer ID (a UUID shown above the key list)                                                                                                                                             |
+| `APPLE_API_KEY_CONTENT`      | repo secret                | the full text of the `AuthKey_<id>.p8` file, including the BEGIN and END lines                                                                                                                            |
+
+### Provisioning the Apple credentials
+
+Only the Account Holder can create a Developer ID certificate. Everything
+below runs on any machine with OpenSSL; no Mac is needed.
+
+1. Generate a key and signing request:
+   `openssl genrsa -out developer-id.key 2048` then
+   `openssl req -new -key developer-id.key -out developer-id.csr -subj "/emailAddress=<you>/CN=<name>/C=US"`.
+2. In the Apple Developer portal, open **Certificates → +**, choose
+   **Developer ID Application** with the **G2 Sub-CA**, upload the CSR, and
+   download `developerID_application.cer`.
+3. Build the PKCS#12 bundle with 3DES and a SHA-1 MAC, carrying the
+   [Developer ID G2 intermediate](https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer)
+   so the chain is complete. OpenSSL 3 defaults to AES and PBKDF2, which
+   `SecItemImport` on the runners can reject. Convert both DER files to PEM
+   with `openssl x509 -inform DER -in <file>.cer -out <file>.pem`, then run
+   `openssl pkcs12 -export -inkey developer-id.key -in developer-id.pem -certfile DeveloperIDG2CA.pem -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 -out developer-id.p12`.
+   The certificate subject's CN is `APPLE_SIGNING_IDENTITY` and its OU is
+   `APPLE_TEAM_ID`. `openssl verify` reports an unhandled critical extension
+   on the leaf; that is Apple's private Developer ID marker, and
+   `-ignore_critical` confirms the chain.
+4. In App Store Connect, open **Users and Access → Integrations → Team
+   Keys**, generate a key with the **Developer** role, and download the
+   `.p8`. Apple offers the download exactly once.
+5. Store the key, CSR, certificate, PKCS#12 bundle, its password, and the
+   `.p8` in 1Password, then set the secrets from the files so no value lands
+   in shell history: `openssl base64 -A -in developer-id.p12 | gh secret set APPLE_CERTIFICATE`,
+   `gh secret set APPLE_API_KEY_CONTENT < AuthKey_<id>.p8`, and so on.
+
+The Developer ID certificate is valid for five years. Rotating it means
+repeating steps 1 to 3 and replacing `APPLE_CERTIFICATE` and
+`APPLE_CERTIFICATE_PASSWORD`; the identity string and team ID stay the same.
+
+After provisioning or rotating any of these secrets, run **Actions → macOS
+Signing Selftest → Run workflow**. It signs, verifies, and notarizes a
+throwaway binary through the same scripts the release lane uses and
+reports in minutes. The same workflow runs on pull requests that touch
+the signing scripts. A brand-new team's first notarizations can sit
+"In Progress" for hours while Apple reviews the account; the selftest then
+fails with the submission ID and its status instead of hanging.
 
 ## Version alignment
 

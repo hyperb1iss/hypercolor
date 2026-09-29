@@ -727,7 +727,7 @@ mod tests {
     fn live_app_code_path_accepts_its_bundle_root() {
         let directory = tempfile::tempdir().expect("temporary directory should build");
         let bundle = directory.path().join("Hypercolor.app");
-        let executable = bundle.join("Contents/MacOS/Hypercolor");
+        let executable = bundle.join("Contents/MacOS/hypercolor-app");
         std::fs::create_dir_all(
             executable
                 .parent()

@@ -1747,6 +1747,9 @@ jobs:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          # A stalled Apple queue fails with the submission status instead of
+          # running into the six-hour job limit and losing every artifact.
+          NOTARY_WAIT_TIMEOUT: 30m
         run: |
           bash scripts/with-macos-signing.sh scripts/sign-macos-artifacts.sh app \
             --target '${{ matrix.rust-target }}' \
@@ -1776,6 +1779,9 @@ jobs:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          # A stalled Apple queue fails with the submission status instead of
+          # running into the six-hour job limit and losing every artifact.
+          NOTARY_WAIT_TIMEOUT: 30m
         run: |
           # The sidecars use the host profile; Tauri builds the app with an
           # explicit target. Package those exact binaries without recompiling.
