@@ -66,8 +66,8 @@ Before the non-dry run, build signed artifacts without a tag by dispatching
 **CI/CD** with `release_artifacts: full` from the release source. Leave
 `release_version` blank: the artifact jobs reject any version whose base
 differs from the current Cargo version, which the release commit has not
-stamped yet, so the blank default (`<cargo version>-ci.0`) is the only
-value that builds. Download the arm64 DMG from that run and check it on an
+stamped yet, so the version being cut does not build. The blank default
+(`<cargo version>-ci.0`) always does. Download the arm64 DMG from that run and check it on an
 Apple Silicon Mac:
 
 - `spctl -a -vvv -t open --context context:primary-signature` on the DMG and
@@ -139,12 +139,20 @@ below runs on any machine with OpenSSL; no Mac is needed.
    `.p8`. Apple offers the download exactly once.
 5. Store the key, CSR, certificate, PKCS#12 bundle, its password, and the
    `.p8` in 1Password, then set the secrets from the files so no value lands
-   in shell history: `base64 -w0 developer-id.p12 | gh secret set APPLE_CERTIFICATE`,
+   in shell history: `openssl base64 -A -in developer-id.p12 | gh secret set APPLE_CERTIFICATE`,
    `gh secret set APPLE_API_KEY_CONTENT < AuthKey_<id>.p8`, and so on.
 
 The Developer ID certificate is valid for five years. Rotating it means
 repeating steps 1 to 3 and replacing `APPLE_CERTIFICATE` and
 `APPLE_CERTIFICATE_PASSWORD`; the identity string and team ID stay the same.
+
+After provisioning or rotating any of these secrets, run **Actions → macOS
+Signing Selftest → Run workflow**. It signs, verifies, and notarizes a
+throwaway binary through the same scripts the release lane uses and
+reports in minutes. The same workflow runs on pull requests that touch
+the signing scripts. A brand-new team's first notarizations can sit
+"In Progress" for hours while Apple reviews the account; the selftest then
+fails with the submission ID and its status instead of hanging.
 
 ## Version alignment
 

@@ -46,9 +46,9 @@ Release notes have two canonical homes:
 
 ## Release channels
 
-Public CI updates every channel from release tags: Linux, Windows, and
-Developer ID signed and notarized macOS artifacts on GitHub Releases, plus
-Homebrew, AUR, npm, and PyPI.
+Public CI publishes every release tag to GitHub Releases (Linux, Windows,
+and Developer ID signed and notarized macOS artifacts) and npm. Homebrew,
+the AUR, and PyPI update on stable tags only.
 
 | Channel | What ships there |
 |---|---|
