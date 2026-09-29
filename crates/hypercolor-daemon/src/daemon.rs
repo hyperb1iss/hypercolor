@@ -874,18 +874,29 @@ mod tests {
     use crate::extensions::DaemonLifecycleExtension;
     use crate::startup::{DaemonState, default_config};
 
-    struct DataDirOverride;
+    /// Serializes the tests here that relocate the process-wide directories.
+    static PATH_OVERRIDES: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-    impl DataDirOverride {
-        fn install(path: std::path::PathBuf) -> Self {
-            ConfigManager::set_data_dir_override(Some(path));
-            Self
+    /// Relocates the config and data directories, and with them the state
+    /// directory, into one fixture root for the life of the guard.
+    struct PathOverrides {
+        _lock: tokio::sync::MutexGuard<'static, ()>,
+    }
+
+    impl PathOverrides {
+        async fn install(root: &std::path::Path) -> Self {
+            let lock = PATH_OVERRIDES.lock().await;
+            ConfigManager::set_config_dir_override(Some(root.join("config")));
+            ConfigManager::set_data_dir_override(Some(root.join("data")));
+            Self { _lock: lock }
         }
     }
 
-    impl Drop for DataDirOverride {
+    impl Drop for PathOverrides {
         fn drop(&mut self) {
             ConfigManager::set_data_dir_override(None);
+            ConfigManager::set_config_dir_override(None);
         }
     }
 
@@ -1010,7 +1021,7 @@ mod tests {
     #[tokio::test]
     async fn api_ready_hooks_receive_the_serving_state_in_registration_order() {
         let directory = tempfile::tempdir().expect("daemon test directory should be created");
-        let _data_dir = DataDirOverride::install(directory.path().join("data"));
+        let _paths = PathOverrides::install(directory.path()).await;
         let mut config = default_config();
         config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
         let config_manager = Arc::new(ConfigManager::from_config_unchecked(
@@ -1046,7 +1057,7 @@ mod tests {
     #[tokio::test]
     async fn extension_installers_observe_the_same_resolved_ui_directory_as_the_router() {
         let directory = tempfile::tempdir().expect("daemon test directory should be created");
-        let _data_dir = DataDirOverride::install(directory.path().join("data"));
+        let _paths = PathOverrides::install(directory.path()).await;
         let mut config = default_config();
         config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
         let config_manager = Arc::new(ConfigManager::from_config_unchecked(

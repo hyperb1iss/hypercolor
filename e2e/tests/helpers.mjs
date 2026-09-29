@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
+import { isolatedEnv } from "../harness/environment.mjs";
 import { readRunStateSync } from "../harness/state.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -49,13 +50,7 @@ export async function callCli(args, { json = true } = {}) {
 
   const result = await execFileAsync(stack.cliBinary, commandArgs, {
     cwd: stack.repoRoot,
-    env: {
-      ...process.env,
-      HOME: stack.homeDir,
-      XDG_CONFIG_HOME: stack.xdgConfigHome,
-      XDG_DATA_HOME: stack.xdgDataHome,
-      XDG_CACHE_HOME: stack.xdgCacheHome,
-    },
+    env: isolatedEnv(stack),
     timeout: 15_000,
   });
 

@@ -52,25 +52,26 @@ pub trait CliExtension {
 )]
 pub struct Cli {
     // ── Connection ──────────────────────────────────────────────────
-    /// Daemon hostname or IP
+    // Host and port carry no clap default: `None` is the only way to tell
+    // "not given" apart from "given the default value", and a value the
+    // caller named must always beat the profile.
+    /// Daemon hostname or IP [default: the profile's host, else localhost]
     #[arg(
         long,
         global = true,
-        default_value = "localhost",
         env = "HYPERCOLOR_HOST",
         help_heading = "Connection"
     )]
-    host: String,
+    host: Option<String>,
 
-    /// Daemon port
+    /// Daemon port [default: the profile's port, else 9420]
     #[arg(
         long,
         global = true,
-        default_value_t = 9420,
         env = "HYPERCOLOR_PORT",
         help_heading = "Connection"
     )]
-    port: u16,
+    port: Option<u16>,
 
     /// Bearer token for authenticated requests
     #[arg(
@@ -125,6 +126,20 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Commands,
+}
+
+impl Cli {
+    /// The connection settings this invocation named, by flag or by their
+    /// `HYPERCOLOR_*` environment variables; clap already lets a flag beat
+    /// its variable.
+    fn connection_request(&self) -> config::ConnectionRequest {
+        config::ConnectionRequest {
+            host: self.host.clone(),
+            port: self.port,
+            api_key: self.api_key.clone(),
+            profile: self.profile.clone(),
+        }
+    }
 }
 
 /// Top-level subcommands.
@@ -362,15 +377,10 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
     // stderr, so dispatch before CLI tracing initialization.
     #[cfg(feature = "tui")]
     if matches!(cli.command, Commands::Tui(_)) {
+        let conn = config::resolve_connection(&cli.connection_request())?;
         let Commands::Tui(args) = cli.command else {
             unreachable!()
         };
-        let conn = config::resolve_connection(
-            &cli.host,
-            cli.port,
-            cli.api_key.as_deref(),
-            cli.profile.as_deref(),
-        )?;
         return hypercolor_tui::launch(
             conn.host,
             conn.port,
@@ -383,12 +393,7 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
 
     init_tracing(cli.verbose);
 
-    let conn = config::resolve_connection(
-        &cli.host,
-        cli.port,
-        cli.api_key.as_deref(),
-        cli.profile.as_deref(),
-    )?;
+    let conn = config::resolve_connection(&cli.connection_request())?;
 
     let ctx = OutputContext::new(
         cli.format,
