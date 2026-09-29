@@ -3,6 +3,46 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MACOS_SIGNING_ACTOR="${ROOT_DIR}/scripts/sign-macos-artifacts.sh"
+# The project's Apple Developer team. It is public, since every signature
+# the team makes embeds it; APPLE_TEAM_ID overrides it for a rotated team.
+HYPERCOLOR_RELEASE_TEAM_ID="243NC5W5WS"
+RELEASE_TEAM_ID="${APPLE_TEAM_ID:-${HYPERCOLOR_RELEASE_TEAM_ID}}"
+
+# A user install fetches this verifier on its own, without the repository's
+# signing actor, so macOS signatures are checked with the system codesign:
+# a strict verification against an Apple-anchored requirement pinned to the
+# release team, plus the hardened runtime and a Developer ID authority. The
+# archive digest and manifest checks already pin every byte.
+verify_macos_binaries_natively() {
+  local root="$1"
+  local binary path metadata
+  command -v codesign >/dev/null 2>&1 || {
+    echo "codesign is required to verify a macOS release" >&2
+    exit 1
+  }
+  for binary in hypercolor-daemon hypercolor hypercolor-app; do
+    path="${root}/bin/${binary}"
+    [[ -f "${path}" ]] || {
+      echo "missing macOS binary: bin/${binary}" >&2
+      exit 1
+    }
+    codesign --verify --strict \
+      -R="=anchor apple generic and certificate leaf[subject.OU] = \"${RELEASE_TEAM_ID}\"" \
+      "${path}" || {
+      echo "bin/${binary} is not validly signed by team ${RELEASE_TEAM_ID}" >&2
+      exit 1
+    }
+    metadata="$(codesign -d --verbose=4 "${path}" 2>&1)"
+    grep -F 'flags=0x10000(runtime)' <<< "${metadata}" >/dev/null || {
+      echo "bin/${binary} lacks the hardened runtime" >&2
+      exit 1
+    }
+    grep -F 'Authority=Developer ID Application:' <<< "${metadata}" >/dev/null || {
+      echo "bin/${binary} is not signed with a Developer ID certificate" >&2
+      exit 1
+    }
+  done
+}
 
 if [[ "${1:-}" == "--macos-app" ]]; then
   app="${2:-}"
@@ -13,16 +53,12 @@ if [[ "${1:-}" == "--macos-app" ]]; then
     echo "usage: scripts/verify-release-artifact.sh --macos-app <app> <dmg> <provenance> <target>" >&2
     exit 2
   }
-  [[ -n "${APPLE_TEAM_ID:-}" ]] || {
-    echo "APPLE_TEAM_ID is required for macOS release verification" >&2
-    exit 1
-  }
   "${MACOS_SIGNING_ACTOR}" verify-app \
     --app "${app}" \
     --dmg "${dmg}" \
     --provenance "${provenance}" \
     --target "${target}" \
-    --team-id "${APPLE_TEAM_ID}"
+    --team-id "${RELEASE_TEAM_ID}"
   exit 0
 fi
 
@@ -521,19 +557,19 @@ case "${platform}" in
       echo "missing macOS launchd plist" >&2
       exit 1
     }
-    [[ -n "${APPLE_TEAM_ID:-}" ]] || {
-      echo "APPLE_TEAM_ID is required for macOS release verification" >&2
-      exit 1
-    }
     case "${platform}" in
       macos-arm64) macos_target="aarch64-apple-darwin" ;;
       macos-amd64) macos_target="x86_64-apple-darwin" ;;
       *) echo "unsupported macOS platform: ${platform}" >&2; exit 1 ;;
     esac
-    "${MACOS_SIGNING_ACTOR}" verify-standalone \
-      --directory "${root_dir}" \
-      --target "${macos_target}" \
-      --team-id "${APPLE_TEAM_ID}"
+    if [[ -f "${MACOS_SIGNING_ACTOR}" ]]; then
+      "${MACOS_SIGNING_ACTOR}" verify-standalone \
+        --directory "${root_dir}" \
+        --target "${macos_target}" \
+        --team-id "${RELEASE_TEAM_ID}"
+    else
+      verify_macos_binaries_natively "${root_dir}"
+    fi
     ;;
 esac
 
