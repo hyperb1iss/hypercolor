@@ -272,7 +272,10 @@ fn worker_invalidation_is_atomic_across_branches_and_stale_safe() {
     bind_current_macos_exact_runtime(&mut runtimes, &source, &hub, bound_at)
         .expect("current runtime binds")
         .expect("current runtime exists");
-    let captured_at = bound_at + Duration::from_millis(20);
+    // Binding seeds each branch's first deadline from the real clock, so the
+    // first frame is stamped after bind returns; offsetting from `bound_at`
+    // loses the race whenever a loaded runner stalls past the offset.
+    let captured_at = Instant::now() + Duration::from_millis(20);
     let first = cpu_capture_frame(&source, 1, captured_at, [32, 64, 96, 255]);
     publish_cpu_frame(&exact, &mut runtimes, &source, &first);
     let leases = descriptors
@@ -405,7 +408,9 @@ fn worker_invalidation_is_atomic_across_branches_and_stale_safe() {
     bind_current_macos_exact_runtime(&mut runtimes, &source, &hub, replacement_bound_at)
         .expect("replacement runtime binds")
         .expect("replacement runtime exists");
-    let replacement_at = replacement_bound_at + Duration::from_millis(20);
+    // Same rule for the replacement binding: its deadline comes from the
+    // real clock, which may have passed the synthetic timeline by now.
+    let replacement_at = Instant::now().max(replacement_bound_at) + Duration::from_millis(20);
     let replacement_frame = cpu_capture_frame(&source, 3, replacement_at, [48, 48, 48, 255]);
     publish_cpu_frame(&exact, &mut runtimes, &source, &replacement_frame);
     let replacement_lease = hub
