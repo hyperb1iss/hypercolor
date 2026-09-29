@@ -1,12 +1,63 @@
-//! Generic browser bridge for host-served Remote UI builds.
+//! Generic browser bridge for Remote UI builds.
 //!
 //! The module knows only the JavaScript transport contract. Cloud identity,
 //! tickets, encryption, and account policy remain in the embedding loader.
+//!
+//! Beyond the required members, a bridge may report its transport path
+//! through an optional `transportPath()` method returning
+//! `{ kind, generation }`, and a [`TRANSPORT_PATH_EVENT`] on `window` whose
+//! `detail` has the same shape. The preview sizes its stream from it.
 
 use crate::route_ui::UiMount;
 
 pub const CONTRACT_MIN: u32 = 1;
 pub const CONTRACT_MAX: u32 = 1;
+
+/// Window event a bridge dispatches when its transport path changes.
+pub const TRANSPORT_PATH_EVENT: &str = "hypercolor:remote-transport-path";
+
+/// One transport path report from the bridge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransportPathReport {
+    /// Path kind, such as `local`, `direct`, or a relay kind.
+    pub kind: String,
+    /// Monotonic generation; a report older than one already seen is stale.
+    pub generation: u64,
+}
+
+impl TransportPathReport {
+    /// Validate a report's raw fields: a non-empty kind and a generation
+    /// that is a non-negative safe integer.
+    #[must_use]
+    pub fn from_parts(kind: Option<String>, generation: Option<f64>) -> Option<Self> {
+        const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+        let kind = kind.filter(|kind| !kind.is_empty())?;
+        let generation = generation.filter(|generation| {
+            generation.is_finite()
+                && *generation >= 0.0
+                && generation.fract() == 0.0
+                && *generation <= MAX_SAFE_INTEGER
+        })?;
+        Some(Self {
+            kind,
+            generation: generation as u64,
+        })
+    }
+}
+
+/// Native builds never expose the browser Remote bridge.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub const fn current_transport_path() -> Option<TransportPathReport> {
+    None
+}
+
+/// Native builds never receive bridge path events.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn transport_path_from_event(_event: &web_sys::Event) -> Option<TransportPathReport> {
+    None
+}
 
 /// Whether this browser page exposes the Remote host bridge.
 ///
@@ -44,7 +95,7 @@ pub fn resolve_remote_api_url(mount: &str, daemon_id: &str, value: &str) -> Opti
     if mount.trim_end_matches('/') != expected_mount {
         return None;
     }
-    let mount = UiMount::new(mount, mount).ok()?;
+    let mount = UiMount::new(mount, "").ok()?;
     let suffix = query.map_or_else(String::new, |query| format!("?{query}"));
     Some(format!("{}/_d{path}{suffix}", mount.route_base()))
 }
@@ -130,13 +181,13 @@ mod browser {
     };
 
     use super::{
-        CONTRACT_MAX, CONTRACT_MIN, UiMount, resolve_remote_api_url,
+        CONTRACT_MAX, CONTRACT_MIN, TransportPathReport, UiMount, resolve_remote_api_url,
         resolve_remote_api_url_from_base,
     };
 
     pub struct RemoteBridge {
         value: JsValue,
-        pub mount: UiMount,
+        routes: UiMount,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,11 +199,46 @@ mod browser {
         pub fn ready(&self) {
             let _ = call0(&self.value, "ready");
         }
+
+        /// The mount the bridged application runs under. Routes live under
+        /// the bridge's daemon mount; static assets stay at the base the
+        /// application was built with, never under the daemon mount.
+        #[must_use]
+        pub fn ui_mount(&self, application: &UiMount) -> UiMount {
+            application.with_routes_from(&self.routes)
+        }
     }
 
     #[must_use]
     pub fn is_available() -> bool {
         bridge_value().is_some()
+    }
+
+    /// The bridge's current transport path, when it reports one.
+    #[must_use]
+    pub fn current_transport_path() -> Option<TransportPathReport> {
+        let bridge = bridge_value()?;
+        let report = method(&bridge, "transportPath").ok()?.call0(&bridge).ok()?;
+        transport_path_from_value(&report)
+    }
+
+    /// Read the report a [`super::TRANSPORT_PATH_EVENT`] carries in `detail`.
+    #[must_use]
+    pub fn transport_path_from_event(event: &web_sys::Event) -> Option<TransportPathReport> {
+        let detail = get(event.as_ref(), "detail").ok()?;
+        transport_path_from_value(&detail)
+    }
+
+    fn transport_path_from_value(value: &JsValue) -> Option<TransportPathReport> {
+        if !value.is_object() {
+            return None;
+        }
+        TransportPathReport::from_parts(
+            get(value, "kind").ok().and_then(|kind| kind.as_string()),
+            get(value, "generation")
+                .ok()
+                .and_then(|generation| generation.as_f64()),
+        )
     }
 
     pub fn initialize() -> Result<Option<RemoteBridge>, RemoteBridgeError> {
@@ -186,7 +272,7 @@ mod browser {
         }
         let daemon_id = string(&value, "daemonId")?;
         let mount_value = string(&value, "mount")?;
-        let mount = UiMount::new(&mount_value, &mount_value).map_err(|_| "remote_mount_invalid")?;
+        let routes = UiMount::new(&mount_value, "").map_err(|_| "remote_mount_invalid")?;
         let base = resolve_remote_api_url(&mount_value, &daemon_id, "/api/v1")
             .ok_or("remote_mount_invalid")?
             .trim_end_matches("/api/v1")
@@ -200,7 +286,7 @@ mod browser {
             .map_err(|_| "remote_http_transport_unavailable")?;
         install_websocket_transport(Rc::new(BridgeWebSocket(bridge)))
             .map_err(|_| "remote_socket_transport_unavailable")?;
-        Ok(RemoteBridge { value, mount })
+        Ok(RemoteBridge { value, routes })
     }
 
     fn fatal(value: &JsValue, code: &str) {
@@ -914,11 +1000,41 @@ export function socketHandlersCleared() {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use browser::{RemoteBridge, RemoteBridgeError, initialize, is_available};
+pub use browser::{
+    RemoteBridge, RemoteBridgeError, current_transport_path, initialize, is_available,
+    transport_path_from_event,
+};
 
 #[cfg(test)]
 mod tests {
-    use super::{is_available, resolve_remote_api_url};
+    use super::{TransportPathReport, is_available, resolve_remote_api_url};
+
+    #[test]
+    fn path_reports_need_a_kind_and_a_safe_generation() {
+        assert_eq!(
+            TransportPathReport::from_parts(Some("direct".to_owned()), Some(7.0)),
+            Some(TransportPathReport {
+                kind: "direct".to_owned(),
+                generation: 7,
+            })
+        );
+        for (kind, generation) in [
+            (None, Some(1.0)),
+            (Some(String::new()), Some(1.0)),
+            (Some("direct".to_owned()), None),
+            (Some("direct".to_owned()), Some(-1.0)),
+            (Some("direct".to_owned()), Some(1.5)),
+            (Some("direct".to_owned()), Some(f64::NAN)),
+            (Some("direct".to_owned()), Some(f64::INFINITY)),
+            (Some("direct".to_owned()), Some(9_007_199_254_740_992.0)),
+        ] {
+            assert_eq!(
+                TransportPathReport::from_parts(kind.clone(), generation),
+                None,
+                "{kind:?} {generation:?}"
+            );
+        }
+    }
 
     const DAEMON: &str = "018f4c36-4a44-7cc9-9f57-0d2e9224d2f1";
 
