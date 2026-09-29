@@ -17,12 +17,19 @@
 //!   [`MAX_WINDOW`]. It grows only while it holds frames back, so a scene
 //!   the render path offers slower than the radio carries never inflates it.
 //! - Each echo measures the TX backlog directly: sends made after the
-//!   confirmed one that had time to arrive (their age exceeds the smallest
-//!   echo age seen lately, plus the poll spacing and a frame of jitter) but
-//!   did not are overdue. More than [`OVERDUE_LIMIT`] overdue means the TX
-//!   holds more than the radio drains, and the window halves, once per
-//!   window of sends. So the TX never holds more than a few frames beyond
-//!   what the radio carries, and delivery tracks the radio's own rate.
+//!   confirmed one that had time to arrive and to show up in a status are
+//!   overdue. "Time" is the smallest echo age seen lately, plus one full
+//!   status interval, since a status can be a snapshot that much older
+//!   than when the RX hands it over, plus the poll spacing and a frame of
+//!   jitter. Judged against the send's own latency instead, stale statuses
+//!   on real fans read as backlog and kept halving a window the radio
+//!   could fill.
+//! - Only sustained evidence shrinks the window: more than [`OVERDUE_LIMIT`]
+//!   overdue at [`BACKLOG_EVIDENCE`] advancing echoes in a row halves it,
+//!   at most once per [`DECREASE_HOLDOFF_STATUSES`] status intervals and
+//!   once per window of sends. So the TX holds a bounded backlog when the
+//!   radio really is slower than the stream, and delivery tracks the
+//!   radio's own rate.
 //! - Clusters are paced independently: a frame goes to every cluster it
 //!   changes that has room, and waits for the rest, where a newer frame
 //!   replaces it, so what goes out next is always the newest frame, never a
@@ -76,14 +83,29 @@ pub const INITIAL_WINDOW: u32 = 2;
 pub const MIN_WINDOW: u32 = 2;
 /// The window never grows past this, and no send of any kind goes out while
 /// this many are unresolved: the most the TX can ever hold for a cluster.
-pub const MAX_WINDOW: u32 = 32;
-/// Overdue sends at an echo beyond which the TX is holding a backlog.
+/// Fans have refreshed their status as slowly as once a second, which
+/// needs about 33 frames in flight at 30 fps; this leaves room for a
+/// missed status on top.
+pub const MAX_WINDOW: u32 = 64;
+/// Overdue sends at an echo beyond which the TX may be holding a backlog.
 pub const OVERDUE_LIMIT: u64 = 1;
+/// Advancing echoes in a row that must each find a backlog before the
+/// window halves: one stale status is not a backlog.
+pub const BACKLOG_EVIDENCE: u32 = 3;
+/// Status intervals that must pass between two halvings.
+pub const DECREASE_HOLDOFF_STATUSES: u32 = 3;
+/// The status interval assumed before one has been measured.
+pub const STATUS_UNKNOWN: Duration = Duration::from_millis(600);
 /// Jitter allowed on top of the poll spacing before a send counts overdue:
 /// about one frame interval at 30 fps.
 const OVERDUE_SLACK: Duration = Duration::from_millis(35);
-/// How long echo ages are remembered for the base-delay minimum.
-const BASE_DELAY_SPAN: Duration = Duration::from_secs(10);
+/// Echo ages are kept as the smallest in each bucket of this length, for
+/// [`BASE_BUCKETS`] buckets: the base delay is the smallest echo age over
+/// the last minute. A shorter memory rises with a backlog that grows by
+/// less than a status interval per span, and the backlog is never seen:
+/// two clusters sharing a slow radio grew without bound that way.
+const BASE_BUCKET: Duration = Duration::from_secs(10);
+const BASE_BUCKETS: u32 = 6;
 /// Echo-poll spacing before the echo cadence is known.
 pub const ECHO_POLL_DEFAULT: Duration = Duration::from_millis(40);
 /// Bounds on echo-poll spacing.
@@ -303,6 +325,12 @@ struct ClusterLink {
     recovery_until: u64,
     /// A frame waited for room since the last advancing echo.
     window_limited: bool,
+    /// Advancing echoes in a row that found a backlog.
+    backlog_streak: u32,
+    last_decrease_at: Option<Instant>,
+    /// The first send made after an echo left nothing out; an advance soon
+    /// after still samples the status cadence.
+    resumed_at: Option<Instant>,
     timeouts: u32,
     /// When the timeout clock last started: the first send after idle, a
     /// progress echo, or a timeout.
@@ -345,6 +373,9 @@ impl Default for ClusterLink {
             avoid_credit: 0,
             recovery_until: 0,
             window_limited: false,
+            backlog_streak: 0,
+            last_decrease_at: None,
+            resumed_at: None,
             timeouts: 0,
             rto_from: None,
             last_progress_at: None,
@@ -459,14 +490,20 @@ impl ClusterLink {
     }
 
     fn sample_base_delay(&mut self, now: Instant, age: Duration) {
+        let span = BASE_BUCKET.saturating_mul(BASE_BUCKETS);
         while self
             .base_delays
             .front()
-            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > BASE_DELAY_SPAN)
+            .is_some_and(|(start, _)| now.saturating_duration_since(*start) >= span)
         {
             self.base_delays.pop_front();
         }
-        self.base_delays.push_back((now, age));
+        match self.base_delays.back_mut() {
+            Some((start, smallest)) if now.saturating_duration_since(*start) < BASE_BUCKET => {
+                *smallest = (*smallest).min(age);
+            }
+            _ => self.base_delays.push_back((now, age)),
+        }
     }
 
     /// Fold one echo interval into the running average, clipped so one
@@ -480,20 +517,42 @@ impl ClusterLink {
         self.echo_age = Some(smooth(self.echo_age, sample));
     }
 
-    /// Grow or shrink the window on an advancing echo that confirmed
-    /// `sends` sends and found `overdue` of the later ones overdue. Returns
-    /// whether the window halved.
-    fn adjust_window(&mut self, sends: u64, overdue: u64) -> bool {
+    /// The status interval: measured, or assumed until it is.
+    fn status_interval(&self) -> Duration {
+        self.echo_gap.unwrap_or(STATUS_UNKNOWN)
+    }
+
+    /// Grow or shrink the window on an advancing echo at `now` that
+    /// confirmed `sends` sends and found `overdue` of the later ones
+    /// overdue. Returns whether the window halved.
+    fn adjust_window(&mut self, sends: u64, overdue: u64, now: Instant) -> bool {
         let sends = u32::try_from(sends).unwrap_or(u32::MAX);
-        if overdue > OVERDUE_LIMIT && self.acked_seq >= self.recovery_until {
+        if overdue > OVERDUE_LIMIT {
+            self.backlog_streak = self.backlog_streak.saturating_add(1);
+        } else {
+            self.backlog_streak = 0;
+        }
+        let holdoff = self
+            .status_interval()
+            .saturating_mul(DECREASE_HOLDOFF_STATUSES);
+        let held_off = self
+            .last_decrease_at
+            .is_some_and(|at| now.saturating_duration_since(at) < holdoff);
+        if self.backlog_streak >= BACKLOG_EVIDENCE
+            && self.acked_seq >= self.recovery_until
+            && !held_off
+        {
             self.ssthresh = (self.window / 2).max(MIN_WINDOW);
             self.window = self.ssthresh;
             self.avoid_credit = 0;
             self.recovery_until = self.next_seq - 1;
             self.window_limited = false;
+            self.backlog_streak = 0;
+            self.last_decrease_at = Some(now);
             return true;
         }
-        if std::mem::take(&mut self.window_limited) && self.acked_seq >= self.recovery_until {
+        let limited = std::mem::take(&mut self.window_limited);
+        if limited && self.backlog_streak == 0 && self.acked_seq >= self.recovery_until {
             if self.window < self.ssthresh {
                 self.window = self
                     .window
@@ -723,6 +782,9 @@ impl DeliveryPacer {
         }
         if link.unresolved() == 0 {
             link.last_progress_at = Some(now);
+            if link.last_advance_at.is_some() && link.resumed_at.is_none() {
+                link.resumed_at = Some(now);
+            }
         }
         if link.in_flight() == 0 {
             link.rto_from = Some(now);
@@ -841,19 +903,36 @@ impl DeliveryPacer {
         let age = now.saturating_duration_since(confirmed.sent_at);
         link.sample_base_delay(now, age);
         link.sample_age(age);
-        let slack = link.poll_spacing() + OVERDUE_SLACK;
-        let base = link.base_delay().unwrap_or(age);
+        // A send is overdue once it has had time to land and to be caught
+        // by a status: the radio's own delay, a whole status interval (a
+        // status can be a snapshot that much older than its arrival), the
+        // poll spacing, and a frame of jitter.
+        let due_after = link.base_delay().unwrap_or(age)
+            + link.status_interval()
+            + link.poll_spacing()
+            + OVERDUE_SLACK;
         let overdue = link
             .log
             .iter()
             .skip(position + 1)
-            .filter(|sent| sent.sent_at + base + slack <= now)
+            .filter(|sent| sent.sent_at + due_after <= now)
             .count();
         let overdue = u64::try_from(overdue).unwrap_or(u64::MAX);
+        // The time since the last advance samples the status cadence when
+        // sends were out all along, or resumed promptly after it.
+        let prompt = link.status_interval() / 4;
+        let streaming = link.out_after_advance
+            || link
+                .last_advance_at
+                .zip(link.resumed_at)
+                .is_some_and(|(advance, resumed)| {
+                    resumed.saturating_duration_since(advance) <= prompt
+                });
         let gap = link
             .last_advance_at
-            .filter(|_| link.out_after_advance)
+            .filter(|_| streaming)
             .map(|previous| now.saturating_duration_since(previous));
+        link.resumed_at = None;
         if let Some(gap) = gap {
             link.sample_gap(gap);
         }
@@ -871,7 +950,7 @@ impl DeliveryPacer {
         if std::mem::take(&mut link.stall_warned) {
             info!(cluster, "wireless fans confirming frames again");
         }
-        let halved = link.adjust_window(sends, overdue);
+        let halved = link.adjust_window(sends, overdue, now);
         if halved {
             debug!(
                 cluster,
@@ -1008,6 +1087,12 @@ impl DeliveryPacer {
             .map(|link| link.window.to_string())
             .collect::<Vec<_>>()
             .join("/");
+        let statuses = self
+            .links
+            .iter()
+            .map(|link| link.echo_gap.map_or(0, millis).to_string())
+            .collect::<Vec<_>>()
+            .join("/");
         info!(
             clusters,
             window_s = elapsed.as_secs(),
@@ -1016,6 +1101,7 @@ impl DeliveryPacer {
             delivered_fps = per_cluster(interval.frames_delivered),
             coalesced = interval.frames_coalesced,
             window = %windows,
+            status_ms = %statuses,
             echoes_per_s = per_second(interval.echo_advances),
             advance_mean = interval
                 .advance_mean()
@@ -1222,17 +1308,52 @@ mod tests {
     }
 
     #[test]
-    fn an_overdue_backlog_halves_the_window_once_per_window() {
+    fn only_a_sustained_backlog_halves_the_window_and_not_too_often() {
+        let now = Instant::now();
+        let mut link = ClusterLink {
+            window: 16,
+            ssthresh: 16,
+            echo_gap: Some(Duration::from_millis(550)),
+            next_seq: 100,
+            acked_seq: 50,
+            ..ClusterLink::default()
+        };
+        let mut at = now;
+        // One stale status, then a clean one, then another stale one: no
+        // run of evidence, no halving.
+        for overdue in [4, 0, 4, 1, 4] {
+            at += Duration::from_millis(550);
+            assert!(!link.adjust_window(1, overdue, at));
+        }
+        assert_eq!(link.window, 16);
+        // The last of those opened a run; two more make three in a row.
+        at += Duration::from_millis(550);
+        assert!(!link.adjust_window(1, 4, at));
+        at += Duration::from_millis(550);
+        assert!(link.adjust_window(1, 4, at), "the third in a row halves");
+        assert_eq!(link.window, 8);
+        // Past the recovery point, a new run of three inside the holdoff
+        // does not halve again.
+        link.acked_seq = link.recovery_until;
+        for _ in 0..3 {
+            at += Duration::from_millis(300);
+            assert!(!link.adjust_window(1, 4, at));
+        }
+        assert_eq!(link.window, 8, "at most one halving per three statuses");
+        at += Duration::from_millis(1_700);
+        assert!(link.adjust_window(1, 4, at), "after the holdoff it may");
+        assert_eq!(link.window, 4);
+    }
+
+    #[test]
+    fn a_send_is_overdue_only_after_a_whole_status_interval() {
         let now = Instant::now();
         let mut pacer = connected(now);
         pacer.links[0].window = 16;
-        pacer.links[0].ssthresh = 16;
-        // Sixteen sends 30 ms apart; the echo 500 ms after the last names
-        // only the third, so the ones between had time to arrive and did
-        // not: the TX holds a backlog.
+        pacer.links[0].echo_gap = Some(Duration::from_millis(550));
         let mut wires = Vec::new();
         for index in 0..16 {
-            let at = now + Duration::from_millis(30 * index);
+            let at = now + Duration::from_millis(33 * index);
             pacer.submit(0, frame(u32::try_from(index).expect("small") + 1));
             let kind = pacer.decide(0, at).expect("room");
             wires.push(pacer.note_sent(
@@ -1243,15 +1364,15 @@ mod tests {
             ));
         }
         pacer.links[0].sample_base_delay(now, Duration::from_millis(40));
-        let echo_at = now + Duration::from_millis(30 * 15 + 500);
-        pacer.observe(0, wires[2], echo_at);
-        assert_eq!(pacer.links[0].window, 8, "the window halves");
-        pacer.observe(0, wires[3], echo_at + Duration::from_millis(10));
-        assert_eq!(
-            pacer.links[0].window, 8,
-            "once per window of sends, not on every echo that still sees it"
-        );
-        assert_eq!(pacer.totals().congestion_events, 1);
+        // A status 450 ms stale arrives just after the last send: it names
+        // the second send. Everything after it is younger than a status
+        // interval plus the radio's delay, so none is overdue.
+        pacer.observe(0, wires[1], now + Duration::from_millis(33 * 15 + 5));
+        assert_eq!(pacer.totals().overdue_max, 0);
+        // 800 ms on, the next status names only the third send: the rest
+        // outlasted the radio's delay plus a whole status interval.
+        pacer.observe(0, wires[2], now + Duration::from_millis(33 * 15 + 805));
+        assert_eq!(pacer.totals().overdue_max, 13);
     }
 
     #[test]
@@ -1279,7 +1400,7 @@ mod tests {
         let mut pacer = connected(now);
         let mut at = now;
         let mut index = 0;
-        for _ in 0..40 {
+        for _ in 0..80 {
             // The radio is dead: nothing ever echoes. Timeouts keep freeing
             // window room, but the bound on unresolved sends holds.
             for _ in 0..8 {
