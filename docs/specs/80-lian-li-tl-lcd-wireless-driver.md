@@ -926,11 +926,14 @@ frames again shows in the delivery report.
 L-Connect streams an effect until the device's record echoes its effect
 index and sends nothing more (`MasterDevice.SyncRgbData`). The live stream
 paces on the same echo, but the echo is a status the fans refresh on their
-own cadence: about every 333 ms on the owner's V1 rig, and 500 ms for part
-of one run. Paced one frame per echo, the stream ran at 3 fps on that rig
-(PR 318, measured on hardware 2026-09-28). So the echo is treated as a
-cumulative acknowledgement and each cluster keeps a window of frames in
-flight, like a TCP sender (`wireless/pacing.rs`):
+own cadence: about every 333 ms on the owner's V1 rig, 500 ms for part of
+one run, and 550 ms to about a second in another. Paced one frame per
+echo, the stream ran at 3 fps on that rig (PR 318, measured on hardware
+2026-09-28). So the echo is treated as a cumulative acknowledgement and
+each cluster keeps a window of frames in flight, like a TCP sender
+(`wireless/pacing.rs`). The hardware bears out the cumulative reading: with
+a window of 29 to 30, single echoes advanced by up to 29 sends and the fans
+confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
 
 - **The echo acknowledges cumulatively.** Each send carries a tag unique
   among the cluster's sends still out (§6.7; a hashed tag that collides with
@@ -942,17 +945,36 @@ flight, like a TCP sender (`wireless/pacing.rs`):
 - **A sliding window per cluster.** A cluster may have up to its window of
   sends unconfirmed. The window starts at 2, grows by the confirmed sends
   per echo while it is the limit (slow start, doubling per status), then
-  by one per window of confirmed sends, up to 32. It grows only while it
+  by one per window of confirmed sends, up to 64 (a one-second status at
+  30 fps needs about 33 in flight). It grows only while it
   holds frames back, so a scene offered slower than the radio carries
   never inflates it. A frame that arrives with no room is held, and a
   newer frame replaces it, so what goes out next is always the newest.
-- **Backlog, measured at each echo.** Sends made after the confirmed one
-  whose age exceeds the smallest echo age seen in the last 10 s, plus the
-  poll spacing and 35 ms of jitter, had time to arrive and did not: they
-  are overdue, and the TX is holding them. More than one overdue halves the
-  window, once per window of sends. The TX therefore holds at most a few
-  transfers beyond what the radio drains, and delivery settles at the
-  radio's own rate.
+- **Backlog, judged against the status cadence.** A status can be a
+  snapshot up to a whole status interval older than the reply that
+  carries it, so a send is overdue only once it has had time to land and
+  to be caught by a status: its age exceeds the base delay (the smallest
+  echo age over the last minute, kept as the smallest of each 10 s), plus
+  the measured status interval (600 ms until measured), plus the poll
+  spacing and 35 ms of jitter. Judged against the send's own latency
+  instead, stale statuses on the owner's rig read as backlog 1 to 7 times
+  per 10 s, and delivery sawtoothed between 3.9 and 26.4 fps (PR 320,
+  2026-09-28).
+- **Only sustained evidence shrinks the window.** More than one overdue at
+  three advancing echoes in a row halves the window; the window does not
+  grow while such a run is open. Halvings come at most once per three
+  status intervals and once per window of sends. The minute-long base
+  delay matters: with a 10 s memory the base rose with a backlog that grew
+  by less than a status interval per span, and two clusters sharing a slow
+  radio grew without bound in simulation.
+- **What the tolerance costs.** On a radio slower than the stream the TX
+  holds about two status intervals of what the radio carries before the
+  window answers, where a per-send rule held a few transfers. In the fake
+  radio at 16.7 transfers a second and a 333 ms status, one cluster settles
+  near 50 envelopes (0.7 s mean echo age), two near 78 (1.2 s), and three
+  at a one-second status reach 3 to 4 s. Delivery stays at 84 to 90% of
+  the radio's rate, and the backlog stays bounded over 30 minutes. A radio
+  that keeps up holds no backlog at any cadence.
 - **Clusters are independent.** A frame goes to every cluster it changes
   that has room and waits for the rest; one slow or unheard cluster never
   throttles another. A frame's delivery acknowledgement counts only the
@@ -976,7 +998,7 @@ flight, like a TCP sender (`wireless/pacing.rs`):
   newest frame goes out as a probe, one at a time, the timeout doubling
   to 6 s. A timeout before any echo has been seen keeps slow start's
   ceiling, since it only proves the first guess was short. No send of any
-  kind goes out while 32 are unresolved, which bounds what the TX can hold
+  kind goes out while 64 are unresolved, which bounds what the TX can hold
   for a cluster even when the radio stops.
 - **Restores after upkeep.** Every fan-speed upkeep leaves each cluster
   owing a restore, paid by the next room in its window.
@@ -995,12 +1017,14 @@ flight, like a TCP sender (`wireless/pacing.rs`):
 
 Every 10 s the protocol logs `L-Wireless RGB delivery` at info with the
 offered, sent, and delivered frame rates, coalesced frames, each cluster's
-window, echoes per second, the mean and largest number of frames one echo
+window and status interval (`status_ms`, 0 until measured), echoes per
+second, the mean and largest number of frames one echo
 retired (`advance_mean`, `advance_max`: above one means the echoed tag
 jumped several sends between polls; the sends in between are retired
 under the in-order relay assumption, and whether each was displayed is
-unknown), the status interval
-(`echo_gap_ms`), the
+unknown), the status interval averaged over the report
+(`echo_gap_ms`; sampled while sends were out across an echo, or resumed
+within a quarter interval of one), the
 confirmed send's age (`echo_ms_mean`, `echo_ms_max`), the most sends found
 overdue, window halvings, timeouts, resends, restores, late echoes, drifts,
 polls and replies per second, TX packets queued per second, and held
