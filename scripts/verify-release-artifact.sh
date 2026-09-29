@@ -27,7 +27,7 @@ verify_macos_binaries_natively() {
       exit 1
     }
     codesign --verify --strict \
-      -R="=anchor apple generic and certificate leaf[subject.OU] = \"${RELEASE_TEAM_ID}\"" \
+      -R "=anchor apple generic and certificate leaf[subject.OU] = \"${RELEASE_TEAM_ID}\"" \
       "${path}" || {
       echo "bin/${binary} is not validly signed by team ${RELEASE_TEAM_ID}" >&2
       exit 1

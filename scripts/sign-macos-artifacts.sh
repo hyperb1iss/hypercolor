@@ -785,7 +785,7 @@ run_selftest() {
   # The same requirement the standalone installer's verifier checks on a
   # user's Mac, proven here against a real Developer ID signature.
   codesign --verify --strict \
-    -R="=anchor apple generic and certificate leaf[subject.OU] = \"${APPLE_TEAM_ID}\"" \
+    -R "=anchor apple generic and certificate leaf[subject.OU] = \"${APPLE_TEAM_ID}\"" \
     "${binary}" \
     || die "the installer's signature requirement rejects a release signature"
   ditto -c -k --keepParent "${binary}" "${archive}"
