@@ -19,6 +19,7 @@ use crate::api;
 use crate::components::media_kind::{
     format_bytes, kind_accent, kind_from_mime, kind_has_thumbnail, kind_icon, kind_label,
 };
+use crate::media::{MediaUse, use_media_source};
 
 /// Responsive grid of media cards. `selected_id` drives the highlight;
 /// pass an always-`None` signal where selection is not meaningful (the
@@ -62,9 +63,10 @@ fn AssetCard(
     let icon = kind_icon(kind);
     let label = kind_label(kind);
     let has_thumb = kind_has_thumbnail(kind);
-    let thumbnail_url =
-        crate::api::client::daemon_url(&format!("/api/v1/assets/{}/thumbnail", asset.id))
-            .unwrap_or_default();
+    let thumbnail = use_media_source(
+        Signal::stored(has_thumb.then(|| format!("/api/v1/assets/{}/thumbnail", asset.id))),
+        MediaUse::Artwork,
+    );
     let meta_line = format!(
         "{} · {}",
         format_bytes(asset.byte_len),
@@ -90,12 +92,14 @@ fn AssetCard(
         >
             {if has_thumb {
                 view! {
-                    <img
-                        class="absolute inset-0 h-full w-full scale-[1.02] object-cover transition-transform duration-500 group-hover:scale-[1.06]"
-                        src=thumbnail_url
-                        alt=""
-                        decoding="async"
-                    />
+                    {move || thumbnail.get().url().map(|url| view! {
+                        <img
+                            class="absolute inset-0 h-full w-full scale-[1.02] object-cover transition-transform duration-500 group-hover:scale-[1.06]"
+                            src=url
+                            alt=""
+                            decoding="async"
+                        />
+                    })}
                 }
                 .into_any()
             } else {

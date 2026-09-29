@@ -417,6 +417,7 @@ fn ControlWidget(
                     on_change=on_change
                     preview_source=preview_frame
                     preview_consumer_count=preview_consumer_count
+                    main_canvas=matches!(preview_source, Some(PreviewSource::EffectCanvas))
                     accent_rgb=accent_rgb
                     aspect_lock=def.aspect_lock
                     url_input=url_input

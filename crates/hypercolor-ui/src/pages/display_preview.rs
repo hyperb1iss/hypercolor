@@ -127,8 +127,8 @@ pub fn DisplayPreviewPage() -> impl IntoView {
                             "relative max-h-[calc(100vh-3rem)] max-w-[calc(100vw-3rem)] overflow-hidden rounded-xl border border-white/10 bg-black shadow-[0_0_80px_rgba(0,0,0,0.65)]"
                         };
                         let alt_text = format!("Full-screen preview of {}", display.name);
-                        let fallback_src =
-                            api::display_preview_url(&display.id, Some(face_refresh_tick.get()));
+                        let fallback_route =
+                            api::display_preview_route(&display.id, Some(face_refresh_tick.get()));
 
                         view! {
                             <div class="absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-3 p-4">
@@ -147,7 +147,7 @@ pub fn DisplayPreviewPage() -> impl IntoView {
                             </div>
                             <DisplayPreviewSurface
                                 frame=preview_frame
-                                fallback_src=fallback_src
+                                fallback_route=fallback_route
                                 aspect_ratio=aspect
                                 aria_label=alt_text
                                 container_class=container_class

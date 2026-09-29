@@ -225,15 +225,6 @@ fn encode_frame_to_webp(frame: &CanvasFrame) -> Result<String, JsValue> {
     canvas.to_data_url_with_type_and_encoder_options("image/webp", &JsValue::from_f64(WEBP_QUALITY))
 }
 
-/// Daemon URL for an effect's card artwork.
-///
-/// Keyed by effect id so the daemon owns cover resolution — it decides between
-/// a curated override and the cover the effect ships inline.
-pub fn effect_cover_url(effect_id: &str) -> String {
-    crate::api::client::daemon_url(&format!("/api/v1/effects/{effect_id}/cover"))
-        .unwrap_or_default()
-}
-
 /// Kick off a HEAD probe for an effect's cover and update `probe_cache` with
 /// the result. Idempotent — callers should check for an existing entry before
 /// spawning.

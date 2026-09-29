@@ -431,15 +431,22 @@ fn validate_relative_path(path: &str) -> ApiResult<()> {
     Ok(())
 }
 
-async fn dispatch(request: HttpRequest) -> Result<HttpResponse, ApiError> {
-    validate_relative_path(&request.path)?;
-    let transport = HTTP_TRANSPORT.with_borrow_mut(|state| {
+/// The transport daemon calls travel through: the installed provider, or
+/// the browser's own `fetch` when none is installed. Taking it closes the
+/// install window, like any daemon call.
+pub(crate) fn http_transport() -> Rc<dyn HttpTransport> {
+    HTTP_TRANSPORT.with_borrow_mut(|state| {
         state.used = true;
         state
             .provider
             .clone()
             .unwrap_or_else(|| Rc::new(BrowserHttpTransport))
-    });
+    })
+}
+
+async fn dispatch(request: HttpRequest) -> Result<HttpResponse, ApiError> {
+    validate_relative_path(&request.path)?;
+    let transport = http_transport();
     transport
         .send(request)
         .await

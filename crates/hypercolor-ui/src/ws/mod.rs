@@ -21,6 +21,5 @@ pub use messages::{
 };
 pub use preview::{
     DEFAULT_PREVIEW_FPS_CAP, PREVIEW_COUNTERS_GLOBAL, PREVIEW_GAP_BUCKET_BOUNDS_MS,
-    PreviewCounterHandle, PreviewCounterSnapshot, PreviewCounters, PreviewTag, RemotePreviewPath,
-    RemotePreviewProfile,
+    PreviewCounterHandle, PreviewCounterSnapshot, PreviewCounters, PreviewTag,
 };

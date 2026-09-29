@@ -112,12 +112,12 @@ pub async fn update_display_face_composition(
         .await
 }
 
-/// URL of the latest composited preview JPEG for a display.
+/// Daemon route of the latest composited preview JPEG for a display, which
+/// a media site resolves through [`crate::media::use_media_source`].
 #[must_use]
-pub fn display_preview_url(display_id: &str, cache_buster: Option<u64>) -> String {
-    client::daemon_url(&cache_buster.map_or_else(
+pub fn display_preview_route(display_id: &str, cache_buster: Option<u64>) -> String {
+    cache_buster.map_or_else(
         || format!("/api/v1/displays/{display_id}/frame"),
         |cb| format!("/api/v1/displays/{display_id}/frame?ts={cb}"),
-    ))
-    .unwrap_or_default()
+    )
 }

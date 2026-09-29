@@ -34,6 +34,8 @@ use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 use super::preview_runtime::{
     PresentedHook, PreviewRenderOutcome, PreviewRuntime, PreviewRuntimeInitError,
 };
+use super::remote_video_preview::RemoteVideoPreview;
+use crate::remote_preview::RemotePreviewContext;
 
 type PresentCallback = Rc<dyn Fn()>;
 type PresentScheduler = Rc<RefCell<Option<PresentCallback>>>;
@@ -329,7 +331,27 @@ pub fn CanvasPreview(
     #[prop(default = false)]
     allow_interactive: bool,
     #[prop(default = "main".to_owned())] interactive_preview_id: String,
+    /// This surface shows the main composed canvas. Under a Remote bridge it
+    /// plays the bridge's video track, or shows a still, instead of `frame`,
+    /// since no canvas frames stream over Remote. Other surfaces keep
+    /// `frame`.
+    #[prop(default = false)]
+    main_canvas: bool,
 ) -> impl IntoView {
+    if main_canvas && let Some(remote) = use_context::<RemotePreviewContext>() {
+        return view! {
+            <RemoteVideoPreview
+                context=remote
+                max_width=max_width
+                aspect_ratio=aspect_ratio
+                aria_label=aria_label
+                show_fps=show_fps
+                fps_label=fps_label
+                report_presenter_telemetry=report_presenter_telemetry
+            />
+        }
+        .into_any();
+    }
     let canvas_ref = NodeRef::<Canvas>::new();
     let mounted_canvas = Rc::new(RefCell::new(None::<web_sys::HtmlCanvasElement>));
     let latest_frame = Rc::new(RefCell::new(None::<CanvasFrame>));
@@ -1213,4 +1235,5 @@ pub fn CanvasPreview(
             }}
         </div>
     }
+    .into_any()
 }

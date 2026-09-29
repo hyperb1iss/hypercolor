@@ -600,6 +600,14 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     provide_context(FrameAnalysisContext {
         live_canvas: live_canvas_analysis,
     });
+    // A bridged page gets its main canvas as the bridge's video track, and
+    // the ambient palette samples that video instead of socket frames.
+    if crate::remote_bridge::is_available() {
+        provide_context(crate::remote_preview::RemotePreviewContext::new(
+            crate::remote_bridge::preview_channel(),
+            Some(set_live_canvas_analysis),
+        ));
+    }
 
     // Daemon capability advertisement (§9.6). Fetched once — the set is
     // fixed per daemon build — and exposed as a context so multi-zone

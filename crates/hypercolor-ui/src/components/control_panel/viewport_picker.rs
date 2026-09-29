@@ -48,6 +48,9 @@ pub(super) fn ViewportPicker(
     #[prop(optional_no_strip)] aspect_lock: Option<f32>,
     #[prop(optional_no_strip)] url_input: Option<UrlInputBinding>,
     #[prop(optional_no_strip)] aspect_ratio: Option<String>,
+    /// The preview shows the main composed canvas.
+    #[prop(default = false)]
+    main_canvas: bool,
 ) -> impl IntoView {
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
     let (interaction, set_interaction) = signal(None::<ViewportInteractionState>);
@@ -310,6 +313,7 @@ pub(super) fn ViewportPicker(
         (Some(aspect_ratio), Some(consumer_count)) => view! {
             <CanvasPreview
                 frame=preview_source
+                main_canvas=main_canvas
                 fps=Signal::derive(|| 0.0_f32)
                 fps_target=Signal::derive(|| 0_u32)
                 max_width="100%".to_string()
@@ -322,6 +326,7 @@ pub(super) fn ViewportPicker(
         (Some(aspect_ratio), None) => view! {
             <CanvasPreview
                 frame=preview_source
+                main_canvas=main_canvas
                 fps=Signal::derive(|| 0.0_f32)
                 fps_target=Signal::derive(|| 0_u32)
                 max_width="100%".to_string()
@@ -333,6 +338,7 @@ pub(super) fn ViewportPicker(
         (None, Some(consumer_count)) => view! {
             <CanvasPreview
                 frame=preview_source
+                main_canvas=main_canvas
                 fps=Signal::derive(|| 0.0_f32)
                 fps_target=Signal::derive(|| 0_u32)
                 max_width="100%".to_string()
@@ -344,6 +350,7 @@ pub(super) fn ViewportPicker(
         (None, None) => view! {
             <CanvasPreview
                 frame=preview_source
+                main_canvas=main_canvas
                 fps=Signal::derive(|| 0.0_f32)
                 fps_target=Signal::derive(|| 0_u32)
                 max_width="100%".to_string()

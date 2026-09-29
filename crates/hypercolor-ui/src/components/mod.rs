@@ -34,6 +34,7 @@ pub mod perf_charts;
 pub mod preset_panel;
 pub mod preview_cabinet;
 pub mod preview_runtime;
+pub mod remote_video_preview;
 pub mod resize_handle;
 pub mod scene_switcher;
 pub mod section_label;

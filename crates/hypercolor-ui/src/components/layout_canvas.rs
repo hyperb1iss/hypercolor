@@ -430,6 +430,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                             fps_target=preview_target_fps
                             show_fps=false
                             aspect_ratio=preview_aspect_ratio
+                            main_canvas=true
                         />
                     </div>
 

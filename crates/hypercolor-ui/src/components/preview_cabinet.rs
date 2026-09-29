@@ -200,6 +200,7 @@ pub fn PreviewCabinet(
                     fps_target=ws.preview_target_fps
                     report_presenter_telemetry=report_telemetry
                     allow_interactive=true
+                    main_canvas=true
                 />
 
                 // Maximize / exit-fullscreen button — floats above the scrim
