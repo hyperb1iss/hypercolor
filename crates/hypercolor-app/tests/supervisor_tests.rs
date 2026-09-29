@@ -162,7 +162,7 @@ fn ui_dir_candidates_include_resource_dir_layouts() {
 
 #[test]
 fn candidates_include_macos_app_resources_from_contents_macos_exe() {
-    let app_path = Path::new("/Applications/Hypercolor.app/Contents/MacOS/Hypercolor");
+    let app_path = Path::new("/Applications/Hypercolor.app/Contents/MacOS/hypercolor-app");
     let resource_dir = macos_app_resource_dir(app_path).expect("resource dir should resolve");
 
     assert!(normalized(&resource_dir).ends_with("Hypercolor.app/Contents/Resources"));

@@ -22,8 +22,11 @@ pub const MACOS_OWNER_COORDINATION_LOCK_FILE_NAME: &str = "macos-daemon-owner.lo
 pub const MACOS_APP_PRODUCT_NAME: &str = "Hypercolor";
 /// LaunchAgent property-list file installed by Tauri autostart.
 pub const MACOS_APP_LAUNCH_AGENT_PLIST_FILE_NAME: &str = "Hypercolor.plist";
-/// Main executable location within the signed Tauri app bundle.
-pub const MACOS_APP_BUNDLE_EXECUTABLE_RELATIVE_PATH: &str = "Contents/MacOS/Hypercolor";
+/// Main executable location within the signed Tauri app bundle. Tauri keeps
+/// the cargo binary name for the executable (`CFBundleExecutable`), so this
+/// is `hypercolor-app`, never the product name: on a case-insensitive volume
+/// `Contents/MacOS/Hypercolor` would resolve to the `hypercolor` CLI sidecar.
+pub const MACOS_APP_BUNDLE_EXECUTABLE_RELATIVE_PATH: &str = "Contents/MacOS/hypercolor-app";
 /// Binary names the app bundle's main executable may carry. Tauri names
 /// the `.app` folder after the product but keeps the cargo binary name
 /// for the executable, so real bundles ship `hypercolor-app`; the

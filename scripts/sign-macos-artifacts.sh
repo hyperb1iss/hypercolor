@@ -107,9 +107,9 @@ validate_manifest() {
   done < "${MANIFEST}"
 
   [[ "${count}" -eq 6 ]] || die "expected 6 signing manifest entries, found ${count}"
-  manifest_has app 'Contents/MacOS/Hypercolor' 'tech.hyperbliss.hypercolor' \
+  manifest_has app 'Contents/MacOS/hypercolor-app' 'tech.hyperbliss.hypercolor' \
     || die "manifest is missing the app identity"
-  manifest_has app 'Contents/MacOS/hypercolor-daemon-{target}' 'tech.hyperbliss.hypercolor.sidecar' \
+  manifest_has app 'Contents/MacOS/hypercolor-daemon' 'tech.hyperbliss.hypercolor.sidecar' \
     || die "manifest is missing the daemon sidecar identity"
   manifest_has standalone 'bin/hypercolor-daemon' 'tech.hyperbliss.hypercolor.daemon' \
     || die "manifest is missing the standalone daemon identity"
@@ -424,7 +424,7 @@ sign_scope() {
   local scope_root="$1"
   local scope="$2"
   local target="$3"
-  local app_main="${scope_root}/Contents/MacOS/Hypercolor"
+  local app_main="${scope_root}/Contents/MacOS/hypercolor-app"
   local macho_count=0
   local path relative_path
 
@@ -443,7 +443,7 @@ sign_scope() {
   [[ "${macho_count}" -gt 0 ]] || die "no Mach-O objects found in ${scope_root}"
 
   if [[ "${scope}" == "app" ]]; then
-    resolve_rule app 'Contents/MacOS/Hypercolor' "${target}"
+    resolve_rule app 'Contents/MacOS/hypercolor-app' "${target}"
     codesign_object "${scope_root}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
     verify_signature "${scope_root}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
   fi
@@ -464,7 +464,7 @@ verify_scope() {
 
   assert_scope_files "${scope_root}" "${scope}" "${target}"
   if [[ "${scope}" == "app" ]]; then
-    resolve_rule app 'Contents/MacOS/Hypercolor' "${target}"
+    resolve_rule app 'Contents/MacOS/hypercolor-app' "${target}"
     verify_signature "${scope_root}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
   fi
   while IFS= read -r -d '' path; do
@@ -648,7 +648,7 @@ build_app_artifacts() {
   done
 
   local staged_sidecar="${ROOT_DIR}/target/bundle-stage/binaries/hypercolor-daemon-${target}"
-  resolve_rule app "Contents/MacOS/hypercolor-daemon-${target}" "${target}"
+  resolve_rule app 'Contents/MacOS/hypercolor-daemon' "${target}"
   [[ -f "${staged_sidecar}" ]] || die "staged daemon sidecar is missing: ${staged_sidecar}"
   codesign_object "${staged_sidecar}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"
   verify_signature "${staged_sidecar}" "${RULE_IDENTIFIER}" "${RULE_ENTITLEMENTS}"

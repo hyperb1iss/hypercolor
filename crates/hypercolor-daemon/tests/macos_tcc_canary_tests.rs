@@ -1649,7 +1649,7 @@ fn launcher(topology: MacosDaemonOwner) -> MacosTccCanaryLauncherEvidence {
         parent_executable_path: Some(if topology == MacosDaemonOwner::Standalone {
             PathBuf::from("/bin/zsh")
         } else {
-            PathBuf::from("/Applications/Hypercolor.app/Contents/MacOS/Hypercolor")
+            PathBuf::from("/Applications/Hypercolor.app/Contents/MacOS/hypercolor-app")
         }),
         parent_signing,
         launchctl_pid_matches: Some(true),

@@ -313,21 +313,21 @@ fn macos_daemon_signing_contract_is_exact() {
 
     let expected_manifest = BTreeMap::from([
         (
-            ("app", "Contents/MacOS/Hypercolor"),
+            ("app", "Contents/MacOS/hypercolor-app"),
             (
                 "tech.hyperbliss.hypercolor",
                 "crates/hypercolor-app/entitlements.plist",
             ),
         ),
         (
-            ("app", "Contents/MacOS/hypercolor-daemon-{target}"),
+            ("app", "Contents/MacOS/hypercolor-daemon"),
             (
                 "tech.hyperbliss.hypercolor.sidecar",
                 "packaging/macos/daemon-sidecar.entitlements.plist",
             ),
         ),
         (
-            ("app", "Contents/MacOS/hypercolor-{target}"),
+            ("app", "Contents/MacOS/hypercolor"),
             ("tech.hyperbliss.hypercolor.cli", "none"),
         ),
         (
