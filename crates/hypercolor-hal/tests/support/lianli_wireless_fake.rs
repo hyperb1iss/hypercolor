@@ -270,6 +270,13 @@ pub struct FakeRadio {
     pub report_interval: Duration,
     /// How long after a receiver takes a transfer its reports carry it.
     pub report_delay: Duration,
+    /// Each status comes this much earlier or later than the interval,
+    /// at random.
+    pub report_jitter: Duration,
+    /// Each status is a snapshot up to this much older than when the RX
+    /// hands it over, at random: the staleness the owner's rig showed.
+    pub snapshot_lag: Duration,
+    rng: u64,
     /// The TX takes packets but puts nothing on the air.
     pub rf_dead: bool,
     /// The RX stops hearing the fans: they drop out of its table.
@@ -308,6 +315,9 @@ impl FakeRadio {
             air_time: Duration::from_millis(2),
             report_interval: Duration::from_millis(10),
             report_delay: Duration::ZERO,
+            report_jitter: Duration::ZERO,
+            snapshot_lag: Duration::ZERO,
+            rng: 0x9E37_79B9_7F4A_7C15,
             rf_dead: false,
             fans_silent: false,
             drop_rgb_envelope: None,
@@ -363,16 +373,38 @@ impl FakeRadio {
                 self.air_free_at = next;
                 self.deliver(&envelope, next);
             } else {
-                for cluster in &mut self.clusters {
-                    if cluster.next_report_at == next {
-                        if !self.fans_silent {
-                            cluster.report(next);
-                        }
-                        cluster.next_report_at = next + self.report_interval;
+                for index in 0..self.clusters.len() {
+                    if self.clusters[index].next_report_at != next {
+                        continue;
                     }
+                    let lag = self.random_up_to(self.snapshot_lag);
+                    let jitter = self.random_up_to(self.report_jitter * 2);
+                    let silent = self.fans_silent;
+                    let interval = self.report_interval;
+                    let early = self.report_jitter;
+                    let cluster = &mut self.clusters[index];
+                    if !silent {
+                        cluster.report(next.saturating_sub(lag));
+                    }
+                    cluster.next_report_at = (next + interval + jitter)
+                        .saturating_sub(early)
+                        .max(next + Duration::from_millis(1));
                 }
             }
         }
+    }
+
+    /// A deterministic pseudo-random duration in `0..=max`.
+    fn random_up_to(&mut self, max: Duration) -> Duration {
+        if max.is_zero() {
+            return Duration::ZERO;
+        }
+        // xorshift64: reproducible runs, no dependency.
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 7;
+        self.rng ^= self.rng << 17;
+        let span = u64::try_from(max.as_micros()).expect("short span");
+        Duration::from_micros(self.rng % (span + 1))
     }
 
     fn deliver(&mut self, envelope: &AirEnvelope, now: Duration) {
@@ -593,6 +625,12 @@ impl Rig {
     #[must_use]
     pub fn stats(&self) -> DeliveryStats {
         self.protocol.delivery_stats()
+    }
+
+    /// The protocol's current window for cluster `cluster`.
+    #[must_use]
+    pub fn protocol_window(&self, cluster: usize) -> Option<u32> {
+        self.protocol.delivery_window(cluster)
     }
 
     fn advance(&mut self, by: Duration) {

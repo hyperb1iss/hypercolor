@@ -174,9 +174,9 @@ pub struct FanCluster {
     /// The effect tag last accepted by the receiver: the acknowledgement
     /// RGB delivery paces on.
     pub effect_index: [u8; 4],
-    /// The receiver's clock as of its last report, raw (spec 80 section
-    /// 6.5: ticks of 0.625 ms). It advances each time the RX hears the
-    /// cluster, so two polls with the same value saw the same report.
+    /// The record's clock, raw (spec 80 section 6.5: ticks of 0.625 ms).
+    /// On the V1 controller it changes on every table reply, so it does not
+    /// mark when the fans last refreshed their status.
     pub clock: [u8; 4],
 }
 

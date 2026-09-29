@@ -786,10 +786,10 @@ After the first device table poll, init sends the RX setup the reference
 daemon sends once after discovery starts: `10 01 04 34` and `10 01 04 37`
 (replies read but not required) and the LCD-mode switch `10 01 04 30`.
 
-Live streaming = `total_frames: 1` per transfer. A cluster gets a new
-transfer only once its record echoes the last one (§6.11), so the delivered
-rate is whatever the radio confirms, up to what the render path offers; the
-spec sets no artificial cap. Firmware-looped animation upload is the
+Live streaming = `total_frames: 1` per transfer. Each cluster keeps a window
+of transfers in flight, and its record's echo acknowledges them
+cumulatively (§6.11), so the delivered rate is whatever the radio drains,
+up to what the render path offers; the spec sets no artificial cap. Firmware-looped animation upload is the
 documented optimization path for static effects.
 
 ### 6.8 Steady-state upkeep: the v1 keepalive policy
@@ -828,9 +828,8 @@ PWM writes can interrupt direct RGB output and briefly expose the receiver's
 onboard rainbow effect. After writing the PWM batch, upkeep immediately
 re-sends each cluster's latest RGB frame through the normal transfer codec,
 before clock or pairing work. The restore goes through the pacing window
-(§6.11): a cluster with a transfer still out gets nothing extra, since that
-transfer lands after the PWM anyway and its bounded wait resends one the
-PWM interrupted. Recovery starts only after a frame has been encoded,
+(§6.11): every upkeep leaves each cluster owing one, sent right away where
+the window has room and with the next room otherwise. Recovery starts only after a frame has been encoded,
 preserves black frames, and never re-arms streaming mode. The cached frame
 belongs to the connection session and is cleared on init.
 The upstream driver documents the same interruption in
@@ -926,87 +925,130 @@ frames again shows in the delivery report.
 
 L-Connect streams an effect until the device's record echoes its effect
 index and sends nothing more (`MasterDevice.SyncRgbData`). The live stream
-holds to the same contract, per cluster (`wireless/pacing.rs`):
+paces on the same echo, but the echo is a status the fans refresh on their
+own cadence: about every 333 ms on the owner's V1 rig, 500 ms for part of
+one run, and 550 ms to about a second in another. Paced one frame per
+echo, the stream ran at 3 fps on that rig (PR 318, measured on hardware
+2026-09-28). So the echo is treated as a cumulative acknowledgement and
+each cluster keeps a window of frames in flight, like a TCP sender
+(`wireless/pacing.rs`). The hardware bears out the cumulative reading: with
+a window of 29 to 30, single echoes advanced by up to 29 sends and the fans
+confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
 
-- **Window of one, a frame at a time.** A cluster gets a new transfer only
-  when its record echoes the last one, and a frame moves as one: it goes to
-  every cluster it changes once no cluster in step has a transfer out, or
-  it is held whole. A newer frame replaces a held one, so what goes out
-  next is always the newest frame and stale frames are never queued. A
-  cluster falls out of step while the RX cannot hear it, while its
-  lighting is held, and once its transfer outlasts the first bounded wait:
-  the others carry on without it, it catches up on its own resends, and it
-  rejoins when it confirms. One slow or failing cluster never stalls the
-  rest.
-- **Every send is its own acknowledgement.** Each transfer carries a tag
-  unique to that send (§6.7), so a restore of the frame already showing, a
-  resend of a frame that did not land, or the first frame after a
-  reconnect is confirmed by its own arrival and never by a report the RX
-  cached before it.
+- **The echo acknowledges cumulatively.** Each send carries a tag unique
+  among the cluster's sends still out (§6.7; a hashed tag that collides with
+  one is skipped). An echo naming a send confirms that send and, since the
+  TX relays in order, retires every send before it. Delivered frames are
+  counted from how far each echo advances: the rate the radio drains
+  frames. A frame lost on the air but overtaken before the next status is
+  retired too, so this is an upper bound on frames shown.
+- **A sliding window per cluster.** A cluster may have up to its window of
+  sends unconfirmed. The window starts at 2, grows by the confirmed sends
+  per echo while it is the limit (slow start, doubling per status), then
+  by one per window of confirmed sends, up to 64 (a one-second status at
+  30 fps needs about 33 in flight). It grows only while it
+  holds frames back, so a scene offered slower than the radio carries
+  never inflates it. A frame that arrives with no room is held, and a
+  newer frame replaces it, so what goes out next is always the newest.
+- **Backlog, judged against the status cadence.** A status can be a
+  snapshot up to a whole status interval older than the reply that
+  carries it, so a send is overdue only once it has had time to land and
+  to be caught by a status: its age exceeds the base delay (the smallest
+  echo age over the last minute, kept as the smallest of each 10 s), plus
+  a status interval, plus the poll spacing and 35 ms of jitter. The status
+  interval is the longest of the last four measured, or the running
+  average if that is longer (600 ms until measured), so a cadence that
+  just slowed, as it did from 550 ms to a second on the owner's rig,
+  counts from its first slow status. In effect a send is overdue once it
+  missed a status it should have been in. Judged against the send's own
+  latency
+  instead, stale statuses on the owner's rig read as backlog 1 to 7 times
+  per 10 s, and delivery sawtoothed between 3.9 and 26.4 fps (PR 320,
+  2026-09-28).
+- **Only sustained evidence shrinks the window.** More than one overdue at
+  three advancing echoes in a row halves the window; the window does not
+  grow while such a run is open. Halvings come at most once per three
+  status intervals and once per window of sends. Every cluster's frames
+  wait in the one TX queue, so a halving applies to every cluster with
+  sends out that the RX can hear and that is not already inside its own
+  holdoff or recovery: with clusters
+  halving alone, the others kept the shared queue full, and three
+  clusters on a slow radio at a one-second status grew past the 5 s stall
+  verdict into a TX reset in simulation. The minute-long base delay
+  matters too: with a 10 s memory the base rose with a backlog that grew
+  by less than a status interval per span, and two clusters sharing a slow
+  radio grew without bound in simulation.
+- **What the tolerance costs.** On a radio slower than the stream the TX
+  holds about two status intervals of what the radio carries before the
+  window answers, where a per-send rule held a few transfers. In the fake
+  radio at 16.7 transfers a second and a 333 ms status, one cluster settles
+  near 50 envelopes (0.7 s mean echo age), two near 75 (1.1 s), and three
+  near 95 (1.4 s); three at a one-second status hold about 165 (2.6 s),
+  and four about 210 (3.3 s). Delivery stays at 78 to 95% of the radio's
+  rate, and the backlog stays bounded with no reset over 30 minutes. A
+  radio that keeps up holds no backlog at any cadence.
+- **Clusters are paced independently.** A frame goes to every cluster it
+  changes that has room and waits for the rest; one cluster whose echoes
+  lag steadily, or one the RX cannot hear, never throttles another. A
+  backlog in the shared TX shrinks them together. The exception: a
+  cluster whose own delay jumps by more than a status interval mid-run
+  reads as a backlog until its base delay catches up (about a minute),
+  and its halvings reach its neighbours. In simulation, a 1.5 to 2.5 s
+  jump on one of two clusters left the other at 29 to 31 fps throughout,
+  while the jumped cluster regrew by one frame per status. A frame's delivery acknowledgement counts only the
+  pixels written (`Protocol::written_frame_bytes`); a frame written to no
+  cluster is acknowledged as suppressed.
 - **The frame pump.** The protocol's frame pump (`Protocol::frame_pump_interval`
   and `pump_frame_into`) runs every 5 ms and returns nothing when nothing is
-  due. While a transfer is out it polls the table for the echo, and the
-  moment a confirmation lands it sends the held frame, so delivery never
-  waits for the next render frame. The backend handles pumped writes as
-  frame traffic: a transient write error is logged and the lane continues,
-  where a failed keepalive would end the session. Resends run only on the
-  pump, so a frame the render path hands over is written whole to the
-  clusters in step or held whole: a held frame is acknowledged to the
-  output queue as suppressed, not completed, and a written one counts only
-  the pixels it wrote (`Protocol::written_frame_bytes`). A cluster out of
-  step gets its newest pixels later on the pump, untracked, like upkeep, so
-  a frame written while one cluster lags, is unheard, or is held completes
-  for the clusters in step. The delivery statuses have no partial
-  disposition; adding one is a separate change to the driver API.
-- **Echo polls.** One page (448 bytes, read to exactly that length, no gap
-  timeout) while every record fits in a page, otherwise two. The first poll
-  after a send waits three quarters of the running echo time, later polls
-  follow an eighth of it apart (10 ms at least), and both back off as a
-  wait drags on, to 250 ms. A poll's reply may be missing; the next asks
-  again. Polls read the RX's cached table over USB and put nothing on the
-  air.
-- **Bounded wait and resync.** A transfer unconfirmed after four echo
-  times (150 ms to 1 s; 300 ms before any echo has been seen) goes out
-  again carrying the newest frame, and each further resend of the chain
-  waits twice as long, to 2 s. No send goes out while four transfers are
-  unresolved. The TX relays in order, so an echo of one transfer resolves
-  it and everything sent before it, and frees exactly that many; a late
-  echo never renews the budget beyond what it resolved. Nothing on the host
-  tells a lost transfer from one still queued in the TX, so a resend is a
-  bet: a cluster has one transfer out in steady state, and a second, third,
-  or fourth only after that many bounded waits passed with no echo at all.
-  This is the one place the window of one bends, and the bound is hard. An echo of an older transfer (one that landed
-  after its wait ran out) counts as delivered late, teaches the echo time,
-  and restarts the stall clock, since it proves the radio delivers. Each
-  echo-time sample is clipped to four running averages, so one outlier
-  cannot stretch every later wait.
+  due. It polls the table while sends are unconfirmed and sends the held
+  frame the moment an echo frees room. Pumped writes get frame-write error
+  handling: a transient error is logged and the lane continues.
+- **Echo polls follow the status cadence.** One page (448 bytes, read to
+  exactly that length) while every record fits in a page, otherwise two.
+  After an advancing echo the first poll waits for three quarters of the
+  learned status interval, and the rest follow a sixth of it apart (20 to
+  100 ms). The record's clock bytes change on every reply on the V1
+  controller, so they cannot mark a status refresh; the echo's own changes
+  do.
+- **Timeouts.** No echo progress for three status intervals, or the usual
+  echo age plus two when echoes lag further (0.5 to 3 s; at least 1.5 s
+  until an echo interval is measured), gives up on the sends out: the
+  window collapses to 2 and the newest frame goes out as a probe, one at a
+  time, the timeout doubling to 6 s. A timeout before an echo interval is
+  measured keeps slow start's ceiling, since it only proves the guess was
+  short. Guessing the interval from the first echo's age timed out fans on
+  a 550 ms cadence half a second after a quick first echo. No send of any
+  kind goes out while 64 are unresolved, which bounds what the TX can hold
+  for a cluster even when the radio stops.
 - **Restores after upkeep.** Every fan-speed upkeep leaves each cluster
-  owing a restore, which the next transfer it gets pays. Where the window
-  is closed, the restore goes out once the transfer ahead resolves, since
-  that transfer may have landed before the PWM.
+  owing a restore, paid by the next room in its window.
 - **Unheard fans.** A cluster missing from every table reply for 3 s is sent
-  nothing until it answers; then its wait starts over.
+  nothing until it answers; then the sends out are given up and the newest
+  frame goes out.
 - **Stall verdict.** A cluster that is heard (in a reply within the last
-  second) but confirms nothing for 5 s is a TX that stopped delivering: the protocol writes the partner reset (§6.10)
-  and sends nothing more. Each cluster (by radio MAC) can cause two such
-  resets per process until it confirms a frame again, so a healthy cluster
-  cannot renew a failing one's budget; once it is spent, the failing
-  cluster's lighting is held with no RGB and an error that the controller
-  needs a power cycle, while clusters that still confirm keep streaming. A
-  TX the reset does not revive, or firmware whose echo never tracks live
-  frames, ends in that bounded failure instead of a reset loop or endless
-  resends.
+  second) but confirms nothing for 5 s is a TX that stopped delivering: the
+  protocol writes the partner reset (§6.10) and sends nothing more. Each
+  cluster (by radio MAC) can cause two such resets per process until it
+  confirms a frame again; once they are spent, its lighting is held with an
+  error to power-cycle the controller, while clusters that still confirm
+  keep streaming.
 - **Shutdown.** The final frame the backend sends before shutdown goes out
-  even if the window held it, including when the fans showed that frame
-  before the transfer still out, but never past the bound on unresolved
-  transfers.
+  even if the window held it, within the bound on unresolved sends.
 
 Every 10 s the protocol logs `L-Wireless RGB delivery` at info with the
-offered, sent, and delivered frame rates, coalesced frames, resends,
-restores, late echoes, drifts, the mean and maximum echo time, polls and
-replies per second, how often the RX actually heard each cluster (its clock
-field moved), TX packets queued per second (which a per-second URB count on
-the TX should match outside write failures), and how many clusters are held.
+offered, sent, and delivered frame rates, coalesced frames, each cluster's
+window and status interval (`status_ms`, 0 until measured), echoes per
+second, the mean and largest number of frames one echo
+retired (`advance_mean`, `advance_max`: above one means the echoed tag
+jumped several sends between polls; the sends in between are retired
+under the in-order relay assumption, and whether each was displayed is
+unknown), the status interval averaged over the report
+(`echo_gap_ms`; sampled while sends were out across an echo, or resumed
+within a quarter interval of one), the
+confirmed send's age (`echo_ms_mean`, `echo_ms_max`), the most sends found
+overdue, window halvings, timeouts, resends, restores, late echoes, drifts,
+polls and replies per second, TX packets queued per second, and held
+clusters.
 
 ## 7. Wireless LCD Receiver Protocol (0x1CBE)
 
@@ -1313,10 +1355,10 @@ Registration and data surfaces:
     measure delivery on the receivers' echoed effect index and log the
     onset of the next wedge; §6.10 makes that onset visible and tries the
     vendor reset. §6.11 now does both: RGB is paced on the echo, and the
-    delivery report is the measurement. No capture before it holds a table
-    poll with a fan record, so the echo time and the delivered rate of the
-    unpaced driver were never observed; the first soak on the paced build
-    supplies them.
+    delivery report is the measurement. The first paced build (one frame
+    per echo, PR 318) showed on hardware that the echo refreshes about
+    every 333 ms (500 ms for part of the run) whatever is sent, and ran the
+    fans at 3 fps; the sliding window replaced it.
 
 ## 12. Testing Strategy
 
