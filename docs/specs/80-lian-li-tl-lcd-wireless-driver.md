@@ -969,8 +969,9 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   three advancing echoes in a row halves the window; the window does not
   grow while such a run is open. Halvings come at most once per three
   status intervals and once per window of sends. Every cluster's frames
-  wait in the one TX queue, so a halving applies to every cluster on the
-  controller that is not already inside its own holdoff: with clusters
+  wait in the one TX queue, so a halving applies to every cluster with
+  sends out that the RX can hear and that is not already inside its own
+  holdoff or recovery: with clusters
   halving alone, the others kept the shared queue full, and three
   clusters on a slow radio at a one-second status grew past the 5 s stall
   verdict into a TX reset in simulation. The minute-long base delay
@@ -988,8 +989,13 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   radio that keeps up holds no backlog at any cadence.
 - **Clusters are paced independently.** A frame goes to every cluster it
   changes that has room and waits for the rest; one cluster whose echoes
-  lag, or one the RX cannot hear, never throttles another. Only a backlog
-  in the shared TX shrinks them together. A frame's delivery acknowledgement counts only the
+  lag steadily, or one the RX cannot hear, never throttles another. A
+  backlog in the shared TX shrinks them together. The exception: a
+  cluster whose own delay jumps by more than a status interval mid-run
+  reads as a backlog until its base delay catches up (about a minute),
+  and its halvings reach its neighbours. In simulation, a 1.5 to 2.5 s
+  jump on one of two clusters left the other at 29 to 31 fps throughout,
+  while the jumped cluster regrew by one frame per status. A frame's delivery acknowledgement counts only the
   pixels written (`Protocol::written_frame_bytes`); a frame written to no
   cluster is acknowledged as suppressed.
 - **The frame pump.** The protocol's frame pump (`Protocol::frame_pump_interval`
