@@ -922,20 +922,25 @@ first TX write after the reset closes the wedge; whether the fans confirm
 frames again shows in the delivery report.
 
 The fans can also stop taking frames when the TX is fine. On the owner's rig
-on 2026-09-29, 29 minutes into a soak at a steady 28 fps, the fans stopped
-confirming while the TX took every write. Three TX resets followed, each
-ending the session, and each reconnect ran the whole connect sequence within
-about 1.5 s. The TX took commands again within about a second each time, but
-the fans confirmed only a few frames between the first and second (their
-echo also named two tags the session never sent) and nothing after. The
-driver then held their lighting. A daemon restart 99 minutes later, after
-RGB silence the whole time while fan-speed and clock upkeep continued,
+on 2026-09-29 (UTC), 29 minutes into a soak at a steady 28 fps, the fans
+stopped confirming while the TX took every write. Three TX resets followed,
+each ending the session, and each reconnect ran the whole connect sequence
+within about 1.5 s. The TX took commands again within about a second each
+time, but the fans confirmed only a few frames between the first and second
+(their echo also named two tags the session never sent) and nothing after.
+The driver then held their lighting. A daemon restart 99 minutes later,
+after RGB silence the whole time while fan-speed and clock upkeep continued,
 brought them back at once. So a reconnect alone does not clear this stall,
-while a reconnect after a long rest did. Of the connect sequence, only the
-first clock broadcast of a session (§6.8) and the fan-speed envelopes reach
-the fans, and both went out in the three reconnects that failed. The rest
-of the sequence is local to the TX and RX: the TX's own reset, the master
-query, the table poll, the RX setup, and the streaming preamble.
+while a reconnect after a long rest did. The restart differed in two more
+ways the evidence cannot separate from the rest: time had passed, and it
+also reconnected the three TL Wireless LCD devices (`1cbe:0006`, the same
+fans' wired LCD links), which an in-process reconnect of the controller
+never touches. They logged nothing around the stall. Of the connect
+sequence, only the first clock broadcast of a session (§6.8) and the
+fan-speed envelopes reach the fans, and both went out in the three
+reconnects that failed. The rest of the sequence is local to the TX and RX:
+the TX's own reset, the master query, the table poll, the RX setup, and the
+streaming preamble.
 
 The driver therefore recovers in stages, per cluster (by radio MAC), across
 sessions:
