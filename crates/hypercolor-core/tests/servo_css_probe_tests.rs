@@ -18,6 +18,7 @@
 //! | clip-path-circle     | yes     | yes     |
 //! | aspect-media-query   | yes     | yes     |
 //! | transform-translate  | yes     | yes     |
+//! | webgl2-clear         | yes     | yes     |
 //!
 //! Consequences for the SDK: flexbox (including gap), transforms,
 //! `clip-path: circle()` (the face circular mask), and aspect-ratio media
@@ -25,6 +26,10 @@
 //! 0.5 and earlier left stacked full-width; faces built for older daemons
 //! still cannot rely on grid. JS over the display descriptor remains the
 //! baseline for device-specific geometry.
+//!
+//! The `webgl2-clear` probe is not CSS, but it rides this harness because
+//! every shader effect needs a WebGL2 context, and Servo 0.6 made WebGL an
+//! opt-in cargo feature that a dependency change can silently drop.
 //!
 //! Heavy fixture: set `HYPERCOLOR_RUN_SERVO_CSS_PROBES=1` to run. The child
 //! process pattern mirrors the Servo GPU parity test — Servo teardown can
@@ -73,6 +78,8 @@ grid 480x480 pass
 grid 960x160 pass
 transform-translate 480x480 pass
 transform-translate 960x160 pass
+webgl2-clear 480x480 pass
+webgl2-clear 960x160 pass
 ";
 
 const RED: [u8; 3] = [255, 0, 0];
@@ -128,11 +135,14 @@ fn probe_checks(probe: &str, width: u32, height: u32) -> Vec<Check> {
             vec![check(0.5, 0.5, if wide { GREEN } else { BLUE })]
         }
         "transform-translate" => vec![check(0.75, 0.75, RED), check(0.25, 0.25, BLACK)],
+        // Red page background shows through unless a WebGL2 context exists
+        // and clears the full-page canvas to green.
+        "webgl2-clear" => vec![check(0.5, 0.5, GREEN), check(0.1, 0.1, GREEN)],
         other => panic!("unknown probe '{other}'"),
     }
 }
 
-const PROBES: [&str; 7] = [
+const PROBES: [&str; 8] = [
     "aspect-media",
     "clip-path-circle",
     "flex-column",
@@ -140,6 +150,7 @@ const PROBES: [&str; 7] = [
     "flex-row",
     "grid",
     "transform-translate",
+    "webgl2-clear",
 ];
 
 #[test]

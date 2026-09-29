@@ -110,7 +110,9 @@ base = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 dpi = { workspace = true, optional = true }
 nvml-wrapper = { workspace = true }
-servo = { workspace = true, features = ["baked-in-resources", "js_jit"], optional = true }
+# Servo 0.6 made WebGL an opt-in feature (0.5 always built it). Every
+# shader effect goes through WebGL2, so the renderer must request it.
+servo = { workspace = true, features = ["baked-in-resources", "js_jit", "webgl"], optional = true }
 # Pinned to match Servo's `Rc<dyn gleam::gl::Gl>` so the direct
 # glReadPixels path in servo/worker.rs can call into Servo's context.
 gleam = { version = "0.15", optional = true }
