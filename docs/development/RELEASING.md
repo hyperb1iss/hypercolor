@@ -51,14 +51,19 @@ with `scripts/homebrew-formula.mjs`, filling every Linux and macOS stanza and
 both cask architectures from the tarballs and DMGs the release just published.
 
 macOS artifacts are Developer ID signed and notarized on the GitHub macOS
-runners. The `release-credentials` job checks all seven Apple secrets before
-any artifact job starts, so a tag lane with a missing secret fails in seconds
-instead of after an hour of builds. Each macOS job imports the certificate
-into an ephemeral keychain, signs every binary with the hardened runtime,
-notarizes and staples the app and DMG through an App Store Connect API key,
-and then verifies that every signature carries `APPLE_TEAM_ID` before the
-artifact is uploaded. The Release workflow refuses a non-dry run while any of
-the seven secrets is missing.
+runners in two stages. `build-native-app` compiles the sidecars and the
+unsigned Tauri app bundle, then uploads them per architecture as an
+`unsigned-macos-*` payload; it never holds Apple credentials. `sign-macos`
+picks that payload up on a fresh runner, imports the certificate into an
+ephemeral keychain, signs every binary with the hardened runtime, notarizes
+and staples the app and DMG through an App Store Connect API key, assembles
+and notarizes the standalone tarball, and verifies that every signature
+carries `APPLE_TEAM_ID` before uploading the release artifacts. Because
+signing has its own job and time budget, a slow Apple queue or a failed
+notarization is rerun with "Re-run failed jobs" in minutes instead of
+rebuilding for four hours. The `release-credentials` job checks all seven
+Apple secrets before any artifact job starts, and the Release workflow
+refuses a non-dry run while any of them is missing.
 
 ## Signed macOS smoke checkpoint
 

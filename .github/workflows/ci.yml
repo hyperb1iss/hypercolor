@@ -1552,22 +1552,17 @@ jobs:
             artifact-path: |
               target/release/bundle/nsis/*.exe
               crates/hypercolor-app/target/release/bundle/nsis/*.exe
+          # macOS builds stop at an unsigned app bundle. sign-macos signs,
+          # notarizes, and packages it on a fresh runner with its own time
+          # budget, so a slow Apple queue never costs a rebuild.
           - target: macos-arm64
             os: macos-26
             rust-target: aarch64-apple-darwin
             bundles: app
-            artifact-kind: dmg
-            cask_arch: arm64
-            artifact-path: |
-              target/aarch64-apple-darwin/release/bundle/dmg/*.dmg*
           - target: macos-x64
             os: macos-26-intel
             rust-target: x86_64-apple-darwin
             bundles: app
-            artifact-kind: dmg
-            cask_arch: x86_64
-            artifact-path: |
-              target/x86_64-apple-darwin/release/bundle/dmg/*.dmg*
     runs-on: ${{ matrix.os }}
     env:
       # Absolute on purpose. Cargo resolves a relative CARGO_TARGET_DIR
@@ -1737,81 +1732,46 @@ jobs:
           $buildArgs += "--no-sign"
           cargo tauri build @buildArgs @configArgs
 
-      - name: Build signed and notarized macOS app
+      - name: Build unsigned macOS app bundle
         if: runner.os == 'macOS'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-          # A stalled Apple queue fails with the submission status instead of
-          # running into the six-hour job limit and losing every artifact.
-          NOTARY_WAIT_TIMEOUT: 30m
-        run: |
-          bash scripts/with-macos-signing.sh scripts/sign-macos-artifacts.sh app \
-            --target '${{ matrix.rust-target }}' \
-            --version '${{ steps.version.outputs.version }}' \
-            --arch '${{ matrix.cask_arch }}' --ci
+        working-directory: crates/hypercolor-app
+        run: >-
+          cargo tauri build --ci --bundles app --no-sign
+          --config tauri.bundle.conf.json --target '${{ matrix.rust-target }}'
 
-      - name: Verify signed macOS app
-        if: matrix.cask_arch != ''
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          profile_dir="target/${{ matrix.rust-target }}/release"
-          app="${profile_dir}/bundle/macos/Hypercolor.app"
-          ./scripts/verify-macos-deployment-target.sh "${app}"
-          dmg="${profile_dir}/bundle/dmg/Hypercolor-${{ steps.version.outputs.version }}-${{ matrix.cask_arch }}.dmg"
-          ./scripts/sign-macos-artifacts.sh verify-app \
-            --app "$app" --dmg "$dmg" --provenance "${dmg}.notarization.json" \
-            --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
-
-      - name: Assemble signed macOS distribution
+      - name: Package unsigned macOS payload
         if: runner.os == 'macOS'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-          # A stalled Apple queue fails with the submission status instead of
-          # running into the six-hour job limit and losing every artifact.
-          NOTARY_WAIT_TIMEOUT: 30m
         run: |
+          set -euo pipefail
+          # One tar per architecture: the artifact store keeps plain files,
+          # and the signing job needs the bundle's modes and layout intact.
           # The sidecars use the host profile; Tauri builds the app with an
-          # explicit target. Package those exact binaries without recompiling.
-          bin_dir="${RUNNER_TEMP}/macos-release-binaries"
-          mkdir -p "${bin_dir}"
-          install -m755 "${CARGO_TARGET_DIR}/release/hypercolor-daemon" "${bin_dir}/hypercolor-daemon"
-          install -m755 "${CARGO_TARGET_DIR}/release/hypercolor" "${bin_dir}/hypercolor"
-          install -m755 "${CARGO_TARGET_DIR}/${{ matrix.rust-target }}/release/hypercolor-app" "${bin_dir}/hypercolor-app"
-          bash scripts/with-macos-signing.sh scripts/dist.sh --ci --skip-docs \
-            --web-assets web-assets --target '${{ matrix.rust-target }}' \
-            --bin-dir "${bin_dir}" --version '${{ steps.version.outputs.version }}'
-          platform="macos-arm64"
-          if [[ '${{ matrix.cask_arch }}' == 'x86_64' ]]; then platform="macos-amd64"; fi
-          dist_name="hypercolor-${{ steps.version.outputs.version }}-${platform}"
-          ./scripts/sign-macos-artifacts.sh verify-standalone \
-            --directory "dist/${dist_name}" \
-            --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
-          (cd dist && shasum -a 256 "${dist_name}.tar.gz" > "${dist_name}.tar.gz.sha256")
+          # explicit target. Ship those exact binaries for dist.sh.
+          payload="${RUNNER_TEMP}/unsigned-macos"
+          rm -rf "${payload}"
+          mkdir -p "${payload}/bin"
+          install -m755 "${CARGO_TARGET_DIR}/release/hypercolor-daemon" "${payload}/bin/hypercolor-daemon"
+          install -m755 "${CARGO_TARGET_DIR}/release/hypercolor" "${payload}/bin/hypercolor"
+          install -m755 "${CARGO_TARGET_DIR}/${{ matrix.rust-target }}/release/hypercolor-app" "${payload}/bin/hypercolor-app"
+          printf '%s\n' '${{ steps.version.outputs.version }}' > "${payload}/version"
+          # macOS tar would otherwise archive extended attributes as
+          # AppleDouble entries, and codesign rejects bundle detritus.
+          export COPYFILE_DISABLE=1
+          tar -cf "${RUNNER_TEMP}/unsigned-${{ matrix.target }}.tar" \
+            -C "${payload}" version bin \
+            -C "${CARGO_TARGET_DIR}/${{ matrix.rust-target }}/release/bundle/macos" Hypercolor.app
 
-      - name: Upload macOS release tarball
+      - name: Upload unsigned macOS payload
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
-          name: hypercolor-tarball-${{ steps.version.outputs.version }}-${{ matrix.target }}
-          path: |
-            dist/hypercolor-*.tar.gz
-            dist/hypercolor-*.tar.gz.sha256
+          name: unsigned-${{ matrix.target }}
+          path: ${{ runner.temp }}/unsigned-${{ matrix.target }}.tar
           if-no-files-found: error
+          retention-days: 7
 
       - name: Upload native release bundle
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: hypercolor-app-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
@@ -1823,6 +1783,160 @@ jobs:
         uses: ./.github/actions/rust-build-cache
         with:
           phase: save
+
+  # ── Sign macOS Release Artifacts ──────────────────────────────
+  # Runs on a fresh runner from build-native-app's unsigned payload, so the
+  # three notarizations get their own six-hour budget and a failed or slow
+  # notarization reruns in minutes instead of rebuilding for four hours.
+  sign-macos:
+    name: Sign macOS (${{ matrix.target }})
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' &&
+      inputs.release_artifacts == 'full')
+    needs: [build-native-app, release-credentials, web-assets]
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            os: macos-26
+            rust-target: aarch64-apple-darwin
+            artifact-kind: dmg
+            cask_arch: arm64
+          - target: macos-x64
+            os: macos-26-intel
+            rust-target: x86_64-apple-darwin
+            artifact-kind: dmg
+            cask_arch: x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Qualify macOS runner and SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer"
+          xcodebuild -version
+          sdk_version="$(xcrun --show-sdk-version)"
+          printf 'macOS SDK: %s\n' "${sdk_version}"
+          test "${sdk_version%%.*}" = "26"
+
+      # dist.sh reads the host triple from rustc even when it packages
+      # pre-built binaries.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.rust-target }}
+
+      - name: Download unsigned macOS payload
+        uses: actions/download-artifact@v8
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: ${{ runner.temp }}/unsigned
+
+      - name: Download web assets
+        uses: actions/download-artifact@v8
+        with:
+          name: web-assets
+          path: web-assets/
+
+      - name: Unpack unsigned macOS payload
+        id: payload
+        run: |
+          set -euo pipefail
+          payload="${RUNNER_TEMP}/unsigned-payload"
+          rm -rf "${payload}"
+          mkdir -p "${payload}"
+          tar -xpf "${RUNNER_TEMP}/unsigned/unsigned-${{ matrix.target }}.tar" -C "${payload}"
+          version="$(cat "${payload}/version")"
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "unsigned payload carries an invalid version: ${version}" >&2
+            exit 1
+          fi
+          # Restore the bundle where build-native-app's Tauri build left it,
+          # so every later path matches a single-job build.
+          bundle_dir="target/${{ matrix.rust-target }}/release/bundle/macos"
+          mkdir -p "${bundle_dir}"
+          mv "${payload}/Hypercolor.app" "${bundle_dir}/Hypercolor.app"
+          {
+            echo "version=${version}"
+            echo "bin-dir=${payload}/bin"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sign and notarize macOS app
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          # A stalled Apple queue fails with the submission status instead of
+          # running into the job limit.
+          NOTARY_WAIT_TIMEOUT: 60m
+        run: |
+          bash scripts/with-macos-signing.sh scripts/sign-macos-artifacts.sh sign-app \
+            --app 'target/${{ matrix.rust-target }}/release/bundle/macos/Hypercolor.app' \
+            --target '${{ matrix.rust-target }}' \
+            --version '${{ steps.payload.outputs.version }}' \
+            --arch '${{ matrix.cask_arch }}'
+
+      - name: Verify signed macOS app
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          profile_dir="target/${{ matrix.rust-target }}/release"
+          app="${profile_dir}/bundle/macos/Hypercolor.app"
+          ./scripts/verify-macos-deployment-target.sh "${app}"
+          dmg="${profile_dir}/bundle/dmg/Hypercolor-${{ steps.payload.outputs.version }}-${{ matrix.cask_arch }}.dmg"
+          ./scripts/sign-macos-artifacts.sh verify-app \
+            --app "$app" --dmg "$dmg" --provenance "${dmg}.notarization.json" \
+            --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
+
+      - name: Assemble signed macOS distribution
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          # A stalled Apple queue fails with the submission status instead of
+          # running into the job limit.
+          NOTARY_WAIT_TIMEOUT: 60m
+        run: |
+          version='${{ steps.payload.outputs.version }}'
+          bash scripts/with-macos-signing.sh scripts/dist.sh --ci --skip-docs \
+            --web-assets web-assets --target '${{ matrix.rust-target }}' \
+            --bin-dir '${{ steps.payload.outputs.bin-dir }}' --version "${version}"
+          platform="macos-arm64"
+          if [[ '${{ matrix.cask_arch }}' == 'x86_64' ]]; then platform="macos-amd64"; fi
+          dist_name="hypercolor-${version}-${platform}"
+          ./scripts/sign-macos-artifacts.sh verify-standalone \
+            --directory "dist/${dist_name}" \
+            --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
+          (cd dist && shasum -a 256 "${dist_name}.tar.gz" > "${dist_name}.tar.gz.sha256")
+
+      - name: Upload macOS release tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: hypercolor-tarball-${{ steps.payload.outputs.version }}-${{ matrix.target }}
+          path: |
+            dist/hypercolor-*.tar.gz
+            dist/hypercolor-*.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Upload native release bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: hypercolor-app-${{ steps.payload.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
+          path: target/${{ matrix.rust-target }}/release/bundle/dmg/*.dmg*
+          if-no-files-found: error
 
   # ── Build Release Tarballs ────────────────────────────────────
   build-release-smoke:
@@ -2143,7 +2257,7 @@ jobs:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/')
-    needs: [build-release, build-native-app, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
+    needs: [build-release, build-native-app, sign-macos, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     runs-on: ubuntu-latest
     permissions:
       contents: write
