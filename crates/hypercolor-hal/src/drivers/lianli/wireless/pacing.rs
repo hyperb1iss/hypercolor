@@ -1418,7 +1418,7 @@ mod tests {
     fn a_backlog_one_cluster_sees_halves_every_window_with_frames_in_the_tx() {
         let now = Instant::now();
         let mut pacer = connected(now);
-        pacer.ensure_clusters(5);
+        pacer.ensure_clusters(6);
         for link in &mut pacer.links {
             link.window = 16;
             link.ssthresh = 16;
@@ -1434,11 +1434,12 @@ mod tests {
         }
         // Cluster 1 has frames out; 2 has none; 3 has frames out but its
         // lighting is held; 4 has frames out but is still recovering from
-        // its own halving.
+        // its own halving; 5 has frames out but drops out of the RX's
+        // table, last heard more than 3 s before the halving.
         for link in &mut pacer.links[1..] {
             link.last_seen_at = Some(now);
         }
-        for cluster in [1, 3, 4] {
+        for cluster in [1, 3, 4, 5] {
             for index in 0..4 {
                 let content = frame(100 * u32::try_from(cluster).expect("small") + index);
                 pacer.submit(cluster, content);
@@ -1452,7 +1453,7 @@ mod tests {
         // Three statuses 550 ms apart, each confirming one more send while
         // the rest wait far past a status interval: a sustained backlog.
         let first = now + Duration::from_millis(33 * 15 + 1_500);
-        for link in &mut pacer.links[1..] {
+        for link in &mut pacer.links[1..5] {
             link.last_seen_at = Some(first);
         }
         for (step, wire) in wires[1..4].iter().enumerate() {
@@ -1460,9 +1461,10 @@ mod tests {
             pacer.observe(0, *wire, at);
         }
         let windows: Vec<u32> = pacer.links.iter().map(|link| link.window).collect();
+        assert!(pacer.links[5].absent(first + Duration::from_millis(1_100)));
         assert_eq!(
             windows,
-            [8, 8, 16, 16, 16],
+            [8, 8, 16, 16, 16, 16],
             "the cluster that saw it and its neighbour with frames out halve"
         );
         assert_eq!(
