@@ -64,16 +64,26 @@ test('macOS signing runs in its own job from an unsigned build payload', () => {
   assert.match(sign, /^    timeout-minutes: (\d+)$/m);
   assert.ok(Number(sign.match(/^    timeout-minutes: (\d+)$/m)[1]) < 360);
   assert.match(sign, /name: unsigned-\$\{\{ matrix\.target \}\}/);
-  // Release assets keep the names create-release and update-homebrew read.
+  // Release assets keep the names attach-macos and update-homebrew read.
   assert.match(sign, /name: hypercolor-tarball-\$\{\{ steps\.payload\.outputs\.version \}\}-\$\{\{ matrix\.target \}\}/);
   assert.match(sign, /name: hypercolor-app-\$\{\{ steps\.payload\.outputs\.version \}\}-\$\{\{ matrix\.target \}\}-\$\{\{ matrix\.artifact-kind \}\}/);
   assert.match(sign, /path: target\/\$\{\{ matrix\.rust-target \}\}\/release\/bundle\/dmg\/\*\.dmg\*/);
   // The unsigned payload must never reach a release: create-release only
   // downloads artifacts matching its pattern, which unsigned-* cannot match.
-  const releaseJob = body('create-release');
-  const pattern = releaseJob.match(/pattern: (\S+)/)[1];
-  const glob = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`);
-  assert.ok(!glob.test('unsigned-macos-arm64') && !glob.test('unsigned-macos-x64'));
+  const toGlob = pattern => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`);
+  for (const id of ['create-release', 'attach-macos']) {
+    const glob = toGlob(body(id).match(/pattern: (\S+)/)[1]);
+    assert.ok(!glob.test('unsigned-macos-arm64') && !glob.test('unsigned-macos-x64'), `${id} must not download unsigned payloads`);
+  }
+  // The signed macOS artifacts attach-macos downloads are exactly the ones
+  // sign-macos uploads, and create-release never publishes macOS assets.
+  const attachGlob = toGlob(body('attach-macos').match(/pattern: (\S+)/)[1]);
+  assert.ok(attachGlob.test('hypercolor-tarball-0.6.0-macos-arm64'));
+  assert.ok(attachGlob.test('hypercolor-app-0.6.0-macos-x64-dmg'));
+  assert.ok(!attachGlob.test('hypercolor-app-0.6.0-windows-x64-nsis'));
+  const releaseFilter = body('create-release');
+  assert.match(releaseFilter, /! -name '\*-macos-\*'/);
+  assert.doesNotMatch(releaseFilter, /-name '\*\.dmg'/);
   // Signing runs exactly when the build it signs runs.
   const condition = job => job.match(/^    if: >-\n((?:      .*\n)+)/m)[1];
   assert.equal(condition(sign), condition(build));
@@ -261,4 +271,71 @@ test "$7" = fixture-team
       rmSync(signRunner, { recursive: true, force: true });
     }
   }
+});
+
+test('attach-macos adds only the signed macOS assets the release lacks', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const job = workflow.match(/^  attach-macos:\n([\s\S]*?)(?=^  [a-z][\w-]*:|^  # ──)/m)?.[1];
+  assert.ok(job, 'attach-macos job exists');
+  assert.match(job, /^      contents: write$/m);
+  const step = job.match(/      - name: Attach signed macOS artifacts to the release\n([\s\S]*)/)?.[1];
+  const run = step?.match(/^        run: \|\n([\s\S]*)/m)?.[1];
+  assert.ok(run, 'attach step has a shell body');
+  const shell = run.replace(/^          /gm, '');
+  const assets = [
+    'hypercolor-0.6.0-macos-arm64.tar.gz', 'hypercolor-0.6.0-macos-arm64.tar.gz.sha256',
+    'hypercolor-0.6.0-macos-amd64.tar.gz', 'hypercolor-0.6.0-macos-amd64.tar.gz.sha256',
+    'Hypercolor-0.6.0-arm64.dmg', 'Hypercolor-0.6.0-arm64.dmg.notarization.json',
+    'Hypercolor-0.6.0-x86_64.dmg', 'Hypercolor-0.6.0-x86_64.dmg.notarization.json',
+  ];
+  // Substitute only the release transport: `view` lists the published
+  // asset names, and `upload` records what it would publish.
+  const gh = `gh() {
+    case "$1 $2" in
+      'release view') cat "$RELEASE_STATE" ;;
+      'release upload')
+        shift 2; shift; shift 2
+        for file in "$@"; do basename "$file" | tee -a "$RELEASE_STATE" >> "$UPLOAD_LOG"; done ;;
+      *) return 99 ;;
+    esac
+  }
+  `;
+  const run_attach = (published, artifacts = assets) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'attach-macos-'));
+    try {
+      mkdirSync(path.join(dir, 'macos-artifacts'));
+      for (const name of artifacts) writeFileSync(path.join(dir, 'macos-artifacts', name), name);
+      // A Linux asset already on the release must never be re-uploaded.
+      writeFileSync(path.join(dir, 'state'), ['hypercolor-0.6.0-linux-amd64.tar.gz', ...published].join('\n') + '\n');
+      writeFileSync(path.join(dir, 'uploads'), '');
+      const result = spawnSync('bash', ['-c', gh + shell], {
+        cwd: dir,
+        env: { ...process.env, GITHUB_REF_NAME: 'v0.6.0', REPOSITORY: 'hyperb1iss/hypercolor',
+          RELEASE_STATE: path.join(dir, 'state'), UPLOAD_LOG: path.join(dir, 'uploads') },
+        encoding: 'utf8',
+      });
+      const uploads = readFileSync(path.join(dir, 'uploads'), 'utf8').split('\n').filter(Boolean).sort();
+      return { status: result.status, stdout: result.stdout, stderr: result.stderr, uploads };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  const first = run_attach([]);
+  assert.equal(first.status, 0, first.stderr);
+  assert.deepEqual(first.uploads, [...assets].sort());
+
+  const rerun = run_attach(assets);
+  assert.equal(rerun.status, 0, rerun.stderr);
+  assert.deepEqual(rerun.uploads, []);
+  assert.match(rerun.stdout, /already carries every macOS artifact/);
+
+  const partial = run_attach(assets.slice(0, 3));
+  assert.equal(partial.status, 0, partial.stderr);
+  assert.deepEqual(partial.uploads, assets.slice(3).sort());
+
+  const incomplete = run_attach([], assets.slice(0, 7));
+  assert.equal(incomplete.status, 1);
+  assert.match(incomplete.stderr, /expected 8 signed macOS artifacts, found 7/);
+  assert.deepEqual(incomplete.uploads, []);
 });

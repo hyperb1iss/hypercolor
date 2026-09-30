@@ -2264,7 +2264,7 @@ jobs:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/')
-    needs: [build-release, build-native-app, sign-macos, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
+    needs: [build-release, build-native-app, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -2286,10 +2286,13 @@ jobs:
           # Only the end-user distributables. The native-app artifacts also
           # carry the raw .app bundle tree; an unfiltered find flattens its
           # hundreds of internal files into individual release assets.
+          # macOS assets never publish here, even when sign-macos happened to
+          # finish first: attach-macos owns them, so Apple's notarization
+          # queue never delays the Linux and Windows release.
           mapfile -t files < <(find release-artifacts -type f \
             \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' \
-               -o -name '*.deb' -o -name '*-setup.exe' \
-               -o -name '*.dmg' -o -name '*.dmg.notarization.json' \) | sort)
+               -o -name '*.deb' -o -name '*-setup.exe' \) \
+            ! -name '*-macos-*' | sort)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No release artifacts found" >&2
             exit 1
@@ -2313,6 +2316,64 @@ jobs:
           fi
 
           gh release create "${args[@]}" "${files[@]}"
+
+  # ── Attach macOS Release Artifacts ─────────────────────────────
+  # Apple notarization can hold a submission for hours, so the GitHub
+  # Release and every other channel publish without waiting for it. Once
+  # sign-macos succeeds, on the first attempt or on a later "Re-run failed
+  # jobs" of the tag run, this attaches the signed tarballs and DMGs to the
+  # same release and update-homebrew follows. Assets the release already
+  # carries keep their published digests, so a rerun never clobbers them.
+  attach-macos:
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      startsWith(github.ref, 'refs/tags/')
+    needs: [create-release, sign-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: hypercolor-*-macos-*
+          path: macos-artifacts/
+          merge-multiple: true
+
+      - name: Attach signed macOS artifacts to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find macos-artifacts -type f \
+            \( -name 'hypercolor-*-macos-*.tar.gz' \
+               -o -name 'hypercolor-*-macos-*.tar.gz.sha256' \
+               -o -name '*.dmg' -o -name '*.dmg.notarization.json' \) | sort)
+          # Two architectures, each with a tarball, its checksum, a DMG,
+          # and the DMG's notarization receipt.
+          if [ "${#files[@]}" -ne 8 ]; then
+            echo "expected 8 signed macOS artifacts, found ${#files[@]}" >&2
+            printf '  %s\n' "${files[@]}" >&2
+            exit 1
+          fi
+          existing="$(gh release view "${GITHUB_REF_NAME}" --repo "${REPOSITORY}" \
+            --json assets --jq '.assets[].name')"
+          missing=()
+          for file in "${files[@]}"; do
+            name="$(basename "${file}")"
+            if grep -qxF "${name}" <<<"${existing}"; then
+              echo "keeping published ${name}"
+            else
+              missing+=("${file}")
+            fi
+          done
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "Release ${GITHUB_REF_NAME} already carries every macOS artifact"
+            exit 0
+          fi
+          echo "Attaching ${#missing[@]} macOS artifacts to ${GITHUB_REF_NAME}"
+          gh release upload "${GITHUB_REF_NAME}" --repo "${REPOSITORY}" "${missing[@]}"
 
   # ── Publish npm Packages ───────────────────────────────────────
   # Uses npm trusted publishing (OIDC): no token, and provenance is
@@ -2500,7 +2561,7 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/') &&
       !contains(github.ref_name, '-')
-    needs: create-release
+    needs: attach-macos
     runs-on: ubuntu-latest
     permissions:
       contents: read
