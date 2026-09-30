@@ -1,0 +1,7 @@
+services:
+  hypercolor:
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${HOST_RENDER_GID:?Set HOST_RENDER_GID to the host render group ID}"
+      - "${HOST_VIDEO_GID:?Set HOST_VIDEO_GID to the host video group ID}"

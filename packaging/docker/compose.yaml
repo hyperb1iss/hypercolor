@@ -1,0 +1,14 @@
+services:
+  hypercolor:
+    image: ghcr.io/hyperb1iss/hypercolor:${HYPERCOLOR_VERSION:-latest}
+    network_mode: host
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      HYPERCOLOR_API_KEY: ${HYPERCOLOR_API_KEY:?Set HYPERCOLOR_API_KEY in .env}
+    volumes:
+      - hypercolor-data:/var/lib/hypercolor
+
+volumes:
+  hypercolor-data:
