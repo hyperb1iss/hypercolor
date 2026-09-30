@@ -40,6 +40,8 @@ pub fn missing_gl_external_memory_functions(
         (c"glImportMemoryFdEXT", "glImportMemoryFdEXT"),
         (c"glTexStorageMem2DEXT", "glTexStorageMem2DEXT"),
         (c"glDeleteMemoryObjectsEXT", "glDeleteMemoryObjectsEXT"),
+        (c"glGetUnsignedBytevEXT", "glGetUnsignedBytevEXT"),
+        (c"glGetUnsignedBytei_vEXT", "glGetUnsignedBytei_vEXT"),
     ]
     .into_iter()
     .filter_map(|(symbol, name)| get_proc_address(symbol).is_null().then_some(name))

@@ -59,15 +59,18 @@ use crate::effect::traits::EffectRenderOutput;
 use crate::effect::traits::ImportedEffectFrame;
 
 mod console;
+mod frame_clock;
 mod frame_updates;
 mod readback;
 mod runtime_html;
 mod scheduler;
 mod shared;
+mod wake;
 
 use console::{
     find_initialization_failure_message, format_console_message, summarize_console_messages,
 };
+use frame_clock::{FrameClockRenderingContext, ServoFrameClock};
 use frame_updates::{combined_script, render_update_preview};
 use readback::read_framebuffer_into_canvas;
 pub(super) use runtime_html::{
@@ -85,10 +88,17 @@ pub(super) use shared::{
     acquire_servo_worker, poison_shared_servo_worker_if_fatal, servo_worker_is_fatal_error,
 };
 pub use shared::{servo_memory_report_snapshot, shutdown_servo_runtime};
+use wake::{ServoEventLoopWaker, ServoWakeSignal, WakingSender};
 
 pub(super) const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const URL_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
+/// Longest a tick waits for an animating page to publish its pending frame.
+/// The cap bounds the cost of a tick where the page draws nothing.
+const ANIMATION_FRAME_GRACE: Duration = Duration::from_millis(2);
+/// Consecutive fruitless waits after which a session stops waiting for
+/// animation frames, until the page publishes one on its own again.
+const ANIMATION_FRAME_MISS_LIMIT: u32 = 3;
 pub(super) const HARD_STALL_TIMEOUT: Duration = Duration::from_millis(500);
 pub(super) const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
 const SCHEDULER_DRAIN_LIMIT: usize = 64;
@@ -107,6 +117,7 @@ const TRANSPARENT_READBACK_STARTUP_GRACE_FRAMES: u64 = 2;
 struct ServoRenderStageTimings {
     evaluate_scripts_us: u64,
     event_loop_us: u64,
+    frame_wait_us: u64,
     paint_us: u64,
     readback_us: u64,
     total_us: u64,
@@ -276,6 +287,7 @@ fn log_servo_render_stage_timings(
         reused_cached_canvas,
         evaluate_scripts_us = timings.evaluate_scripts_us,
         event_loop_us = timings.event_loop_us,
+        frame_wait_us = timings.frame_wait_us,
         paint_us = timings.paint_us,
         readback_us = timings.readback_us,
         total_us = timings.total_us,
@@ -286,6 +298,10 @@ fn log_servo_render_stage_timings(
 struct ServoSession {
     webview: Option<WebView>,
     rendering_context: Rc<dyn RenderingContext>,
+    /// Starts Servo frames for this session's painter on each render tick.
+    frame_clock: Rc<ServoFrameClock>,
+    /// Consecutive ticks whose animation-frame wait timed out.
+    animation_frame_misses: u32,
     delegate: Rc<HypercolorWebViewDelegate>,
     loaded_html_path: Option<PathBuf>,
     script_buffer: String,
@@ -343,6 +359,7 @@ struct ServoWorkerRuntime {
     sessions: HashMap<ServoSessionId, ServoSession>,
     servo: Servo,
     platform: ServoPlatformHost,
+    wake_signal: Arc<ServoWakeSignal>,
 }
 
 impl ServoWorkerRuntime {
@@ -353,13 +370,16 @@ impl ServoWorkerRuntime {
     fn new() -> Result<Self> {
         install_rustls_provider();
 
+        let wake_signal = Arc::new(ServoWakeSignal::default());
         let servo = ServoBuilder::default()
             .preferences(trimmed_servo_preferences())
+            .event_loop_waker(Box::new(ServoEventLoopWaker::new(Arc::clone(&wake_signal))))
             .build();
         Ok(Self {
             sessions: HashMap::new(),
             servo,
             platform: ServoPlatformHost::select(),
+            wake_signal,
         })
     }
 
@@ -514,7 +534,11 @@ impl ServoWorkerRuntime {
         let mut rendering_context_handle = self.create_rendering_context(width, height)?;
         #[cfg(not(feature = "servo-gpu-import"))]
         let rendering_context_handle = self.create_rendering_context(width, height)?;
-        let rendering_context = rendering_context_handle.rendering_context.clone();
+        let frame_clock = Rc::new(ServoFrameClock::default());
+        let rendering_context: Rc<dyn RenderingContext> = Rc::new(FrameClockRenderingContext::new(
+            rendering_context_handle.rendering_context.clone(),
+            Rc::clone(&frame_clock),
+        ));
         #[cfg(feature = "servo-gpu-import")]
         let gpu_import = ServoGpuImportBackend::new(&mut rendering_context_handle);
         rendering_context.make_current().map_err(|error| {
@@ -534,6 +558,8 @@ impl ServoWorkerRuntime {
             ServoSession {
                 webview: Some(webview),
                 rendering_context,
+                frame_clock,
+                animation_frame_misses: 0,
                 delegate,
                 loaded_html_path: None,
                 script_buffer: String::new(),
@@ -651,6 +677,7 @@ impl ServoWorkerRuntime {
             session.renders_since_load = 0;
             session.last_canvas = None;
             session.consecutive_no_ready_frames = 0;
+            session.animation_frame_misses = 0;
         }
         self.active_webview(session_id)?.load(url.clone());
         self.wait_for_load_completion(session_id, timeout, Some(url.as_str()))?;
@@ -799,11 +826,16 @@ impl ServoWorkerRuntime {
             }
 
             // Let timers/RAF advance after this tick's control/audio injection.
+            // Starting the frame first releases any readiness Servo is holding
+            // for the refresh driver, so this spin reports it on this tick.
             let event_loop_start = Instant::now();
             self.set_webview_throttled(session_id, false)?;
+            self.session(session_id)?.frame_clock.start_frame();
             self.servo.spin_event_loop();
             timings.event_loop_us = elapsed_micros(event_loop_start);
-            let frame_ready = self.session(session_id)?.delegate.take_frame_ready();
+            let frame_wait_start = Instant::now();
+            let frame_ready = self.await_animation_frame(session_id, update_count)?;
+            timings.frame_wait_us = elapsed_micros(frame_wait_start);
             if frame_ready {
                 trace!("Servo delegate signaled new frame");
             }
@@ -947,11 +979,14 @@ impl ServoWorkerRuntime {
 
     fn memory_report(&mut self) -> Result<ServoMemoryReportSnapshot> {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
+        // The report arrives on whichever Servo thread finishes it, outside
+        // any embedder channel, so Servo never wakes the worker for it.
+        let response_tx = WakingSender::new(response_tx, Arc::clone(&self.wake_signal));
         let callback = GenericCallback::new(move |result: Result<MemoryReportResult, _>| {
             let result = result
                 .map(ServoMemoryReportSnapshot::from_servo_result)
                 .map_err(|error| anyhow!("Servo memory report callback failed: {error:?}"));
-            let _ = response_tx.send(result);
+            response_tx.send(result);
         })
         .context("failed to create Servo memory report callback")?;
 
@@ -974,7 +1009,7 @@ impl ServoWorkerRuntime {
                     WORKER_READY_TIMEOUT.as_millis()
                 );
             }
-            std::thread::sleep(Duration::from_millis(1));
+            self.wake_signal.wait_until(deadline);
         }
     }
 
@@ -1005,6 +1040,55 @@ impl ServoWorkerRuntime {
         result
     }
 
+    /// Reports whether Servo has a new frame for this session, waiting
+    /// briefly when an animating page still owes one.
+    ///
+    /// The previous paint asked the page for an animation frame, and the
+    /// script thread tends to flush that rendering update when this tick's
+    /// script evaluation reaches it, so the frame can land just after the
+    /// evaluation returns. Painting before it arrives repeats the previous
+    /// frame. Sessions whose page keeps drawing nothing stop waiting after
+    /// [`ANIMATION_FRAME_MISS_LIMIT`] misses and re-arm once a frame shows up
+    /// on its own.
+    fn await_animation_frame(
+        &mut self,
+        session_id: ServoSessionId,
+        update_count: usize,
+    ) -> Result<bool> {
+        if self.session(session_id)?.delegate.take_frame_ready() {
+            self.session_mut(session_id)?.animation_frame_misses = 0;
+            return Ok(true);
+        }
+        let should_wait = update_count > 0
+            && self.session(session_id)?.animation_frame_misses < ANIMATION_FRAME_MISS_LIMIT
+            && self.active_webview(session_id)?.animating();
+        if !should_wait {
+            return Ok(false);
+        }
+
+        let deadline = Instant::now() + ANIMATION_FRAME_GRACE;
+        let frame_ready = loop {
+            // Servo may have asked for another frame start during this
+            // tick's spins; readiness stays withheld until it gets one.
+            self.session(session_id)?.frame_clock.start_frame();
+            self.wake_signal.wait_until(deadline);
+            self.servo.spin_event_loop();
+            if self.session(session_id)?.delegate.take_frame_ready() {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+        };
+        let session = self.session_mut(session_id)?;
+        session.animation_frame_misses = if frame_ready {
+            0
+        } else {
+            session.animation_frame_misses.saturating_add(1)
+        };
+        Ok(frame_ready)
+    }
+
     fn resize_if_needed(&self, session_id: ServoSessionId, width: u32, height: u32) -> Result<()> {
         let new_size = PhysicalSize::new(width, height);
         let session = self.session(session_id)?;
@@ -1028,12 +1112,15 @@ impl ServoWorkerRuntime {
             });
 
         let deadline = Instant::now() + SCRIPT_TIMEOUT;
-        while result_slot.borrow().is_none() {
+        loop {
             self.servo.spin_event_loop();
+            if result_slot.borrow().is_some() {
+                break;
+            }
             if Instant::now() >= deadline {
                 bail!("timed out waiting for JavaScript callback");
             }
-            std::thread::sleep(Duration::from_millis(1));
+            self.wake_signal.wait_until(deadline);
         }
 
         let result = result_slot
@@ -1097,7 +1184,7 @@ impl ServoWorkerRuntime {
                 }
                 bail!("{message}");
             }
-            std::thread::sleep(Duration::from_millis(1));
+            self.wake_signal.wait_until(deadline);
         }
     }
 }

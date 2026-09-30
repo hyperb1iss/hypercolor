@@ -21,6 +21,8 @@ type GlMemoryObjectParameterivExt = unsafe extern "system" fn(u32, u32, *const i
 type GlImportMemoryFdExt = unsafe extern "system" fn(u32, u64, u32, i32);
 type GlTexStorageMem2DExt = unsafe extern "system" fn(u32, i32, u32, i32, i32, u32, u64);
 type GlDeleteMemoryObjectsExt = unsafe extern "system" fn(i32, *const u32);
+type GlGetUnsignedBytevExt = unsafe extern "system" fn(u32, *mut u8);
+type GlGetUnsignedByteiVExt = unsafe extern "system" fn(u32, u32, *mut u8);
 
 /// Loaded GL entry points for `GL_EXT_memory_object_fd`.
 #[derive(Clone, Copy)]
@@ -35,6 +37,10 @@ pub struct GlExternalMemoryFunctions {
     pub tex_storage_mem_2d_ext: GlTexStorageMem2DExt,
     /// `glDeleteMemoryObjectsEXT`
     pub delete_memory_objects_ext: GlDeleteMemoryObjectsExt,
+    /// `glGetUnsignedBytevEXT`
+    pub get_unsigned_bytev_ext: GlGetUnsignedBytevExt,
+    /// `glGetUnsignedBytei_vEXT`
+    pub get_unsigned_bytei_v_ext: GlGetUnsignedByteiVExt,
 }
 
 impl GlExternalMemoryFunctions {
@@ -68,6 +74,16 @@ impl GlExternalMemoryFunctions {
             "glDeleteMemoryObjectsEXT",
             &mut get_proc_address,
         )?;
+        let get_unsigned_bytev_ext = get_required_proc_address(
+            c"glGetUnsignedBytevEXT",
+            "glGetUnsignedBytevEXT",
+            &mut get_proc_address,
+        )?;
+        let get_unsigned_bytei_v_ext = get_required_proc_address(
+            c"glGetUnsignedBytei_vEXT",
+            "glGetUnsignedBytei_vEXT",
+            &mut get_proc_address,
+        )?;
 
         Ok(Self {
             // SAFETY: the symbol is loaded from the current GL context using
@@ -99,6 +115,18 @@ impl GlExternalMemoryFunctions {
             delete_memory_objects_ext: unsafe {
                 std::mem::transmute::<*const c_void, GlDeleteMemoryObjectsExt>(
                     delete_memory_objects_ext,
+                )
+            },
+            // SAFETY: the symbol is loaded from the current GL context using
+            // the exact ABI and signature specified by GL_EXT_memory_object.
+            get_unsigned_bytev_ext: unsafe {
+                std::mem::transmute::<*const c_void, GlGetUnsignedBytevExt>(get_unsigned_bytev_ext)
+            },
+            // SAFETY: the symbol is loaded from the current GL context using
+            // the exact ABI and signature specified by GL_EXT_memory_object.
+            get_unsigned_bytei_v_ext: unsafe {
+                std::mem::transmute::<*const c_void, GlGetUnsignedByteiVExt>(
+                    get_unsigned_bytei_v_ext,
                 )
             },
         })

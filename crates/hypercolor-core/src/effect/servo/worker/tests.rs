@@ -665,3 +665,118 @@ fn load_completion_url_rejects_blank_page() {
         None
     ));
 }
+
+#[test]
+fn wake_signal_latches_a_wake_raised_before_the_wait() {
+    let signal = ServoWakeSignal::default();
+    signal.wake();
+
+    let started = Instant::now();
+    signal.wait_until(started + Duration::from_secs(5));
+
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "a latched wake should return without waiting for the deadline"
+    );
+}
+
+#[test]
+fn wake_signal_consumes_the_latch_and_honors_the_deadline() {
+    let signal = ServoWakeSignal::default();
+    signal.wake();
+    signal.wait_until(Instant::now() + Duration::from_secs(5));
+
+    let started = Instant::now();
+    signal.wait_until(started + Duration::from_millis(20));
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(20),
+        "a consumed latch should leave the next wait blocked until its deadline"
+    );
+}
+
+#[test]
+fn event_loop_waker_releases_a_blocked_wait_from_another_thread() {
+    let signal = Arc::new(ServoWakeSignal::default());
+    let waker = servo::EventLoopWaker::clone_box(&ServoEventLoopWaker::new(Arc::clone(&signal)));
+
+    let waking_thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(10));
+        waker.wake();
+    });
+    let started = Instant::now();
+    signal.wait_until(started + Duration::from_secs(5));
+    waking_thread.join().expect("waking thread should finish");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "a cross-thread wake should release the wait well before the deadline"
+    );
+}
+
+#[test]
+fn frame_clock_runs_every_registered_callback_once_per_frame() {
+    let clock = ServoFrameClock::default();
+    let fired = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for _ in 0..2 {
+        let fired = Arc::clone(&fired);
+        servo::RefreshDriver::observe_next_frame(
+            &clock,
+            Box::new(move || {
+                fired.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+    }
+    assert_eq!(clock.pending_callbacks(), 2);
+
+    clock.start_frame();
+    assert_eq!(fired.load(Ordering::Relaxed), 2);
+    assert_eq!(clock.pending_callbacks(), 0);
+
+    clock.start_frame();
+    assert_eq!(
+        fired.load(Ordering::Relaxed),
+        2,
+        "a frame with no new observers should not replay old callbacks"
+    );
+}
+
+#[test]
+fn waking_sender_disconnects_then_wakes_when_dropped_undelivered() {
+    let signal = Arc::new(ServoWakeSignal::default());
+    let (reply_tx, reply_rx) = mpsc::sync_channel::<u32>(1);
+    let reply_tx = WakingSender::new(reply_tx, Arc::clone(&signal));
+
+    let dropping_thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(10));
+        drop(reply_tx);
+    });
+    let started = Instant::now();
+    signal.wait_until(started + Duration::from_secs(5));
+    dropping_thread
+        .join()
+        .expect("dropping thread should finish");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "dropping the sender should release the wait well before the deadline"
+    );
+    assert_eq!(
+        reply_rx.try_recv(),
+        Err(TryRecvError::Disconnected),
+        "the woken worker should already see the reply channel disconnected"
+    );
+}
+
+#[test]
+fn waking_sender_delivers_then_wakes() {
+    let signal = Arc::new(ServoWakeSignal::default());
+    let (reply_tx, reply_rx) = mpsc::sync_channel::<u32>(1);
+    WakingSender::new(reply_tx, Arc::clone(&signal)).send(7);
+
+    let started = Instant::now();
+    signal.wait_until(started + Duration::from_secs(5));
+
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(reply_rx.try_recv(), Ok(7));
+}

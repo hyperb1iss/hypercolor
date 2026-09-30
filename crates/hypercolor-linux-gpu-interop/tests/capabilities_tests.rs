@@ -61,6 +61,8 @@ fn missing_gl_function_report_is_stable() {
             "glImportMemoryFdEXT",
             "glTexStorageMem2DEXT",
             "glDeleteMemoryObjectsEXT",
+            "glGetUnsignedBytevEXT",
+            "glGetUnsignedBytei_vEXT",
         ]
     );
 }
@@ -110,16 +112,20 @@ fn gl_loader_accepts_all_required_symbols() {
     ) {
     }
     unsafe extern "system" fn delete_memory_objects_ext(_count: i32, _objects: *const u32) {}
+    unsafe extern "system" fn get_unsigned_bytev_ext(_pname: u32, _data: *mut u8) {}
+    unsafe extern "system" fn get_unsigned_bytei_v_ext(_target: u32, _index: u32, _data: *mut u8) {}
 
-    let result = GlExternalMemoryFunctions::load_from(|symbol| {
-        symbol_ptr(
+    let result = GlExternalMemoryFunctions::load_from(|symbol| match symbol.to_bytes() {
+        b"glGetUnsignedBytevEXT" => get_unsigned_bytev_ext as *const c_void,
+        b"glGetUnsignedBytei_vEXT" => get_unsigned_bytei_v_ext as *const c_void,
+        _ => symbol_ptr(
             symbol,
             create_memory_objects_ext,
             memory_object_parameteriv_ext,
             import_memory_fd_ext,
             tex_storage_mem_2d_ext,
             delete_memory_objects_ext,
-        )
+        ),
     });
 
     #[cfg(target_os = "linux")]

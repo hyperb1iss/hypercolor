@@ -208,6 +208,8 @@ pub enum GpuFrameImportFallbackReason {
     VulkanD3d11ImportFailed,
     /// A Windows import publication became stale.
     WindowsImportStaleFrame,
+    /// The producing and consuming APIs report different GPUs or drivers.
+    DeviceUuidMismatch,
 }
 
 impl GpuFrameImportFallbackReason {
@@ -241,6 +243,7 @@ impl GpuFrameImportFallbackReason {
             Self::AdapterLuidMismatch => 24,
             Self::VulkanD3d11ImportFailed => 25,
             Self::WindowsImportStaleFrame => 26,
+            Self::DeviceUuidMismatch => 27,
         }
     }
 
@@ -274,6 +277,7 @@ impl GpuFrameImportFallbackReason {
             24 => Some(Self::AdapterLuidMismatch),
             25 => Some(Self::VulkanD3d11ImportFailed),
             26 => Some(Self::WindowsImportStaleFrame),
+            27 => Some(Self::DeviceUuidMismatch),
             _ => None,
         }
     }
@@ -308,6 +312,7 @@ impl GpuFrameImportFallbackReason {
             Self::AdapterLuidMismatch => "adapter_luid_mismatch",
             Self::VulkanD3d11ImportFailed => "vulkan_d3d11_import_failed",
             Self::WindowsImportStaleFrame => "windows_import_stale_frame",
+            Self::DeviceUuidMismatch => "device_uuid_mismatch",
         }
     }
 }

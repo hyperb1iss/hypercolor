@@ -1,6 +1,6 @@
 #![cfg(all(target_os = "linux", feature = "raw-gl-fixture"))]
 
-use std::sync::mpsc;
+use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
 
 use euclid::default::Size2D;
 use glow::HasContext;
@@ -25,12 +25,23 @@ const IMPORT_ITERATIONS: usize = 8;
 const POOLED_IMPORT_SLOTS: usize = 2;
 const RUN_FIXTURE_ENV: &str = "HYPERCOLOR_RUN_GPU_INTEROP_FIXTURE";
 
-#[test]
-fn raw_gl_solid_color_import_matches_wgpu_readback() {
+/// Held for the whole of each fixture: creating GL contexts from parallel
+/// test threads deadlocks in the driver, so the fixtures run one at a time.
+static FIXTURE_LOCK: Mutex<()> = Mutex::new(());
+
+fn acquire_fixture() -> Option<MutexGuard<'static, ()>> {
     if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
         eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
-        return;
+        return None;
     }
+    Some(FIXTURE_LOCK.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
+#[test]
+fn raw_gl_solid_color_import_matches_wgpu_readback() {
+    let Some(_fixture) = acquire_fixture() else {
+        return;
+    };
 
     let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
     let raw_gl =
@@ -67,10 +78,9 @@ fn raw_gl_solid_color_import_matches_wgpu_readback() {
 
 #[test]
 fn raw_gl_orientation_import_preserves_top_left_wgpu_readback() {
-    if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
-        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
+    let Some(_fixture) = acquire_fixture() else {
         return;
-    }
+    };
 
     let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
     let raw_gl =
@@ -101,10 +111,9 @@ fn raw_gl_orientation_import_preserves_top_left_wgpu_readback() {
 
 #[test]
 fn raw_gl_pooled_importer_reuses_slots_and_matches_wgpu_readback() {
-    if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
-        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
+    let Some(_fixture) = acquire_fixture() else {
         return;
-    }
+    };
 
     let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
     let raw_gl =
@@ -146,10 +155,9 @@ fn raw_gl_pooled_importer_reuses_slots_and_matches_wgpu_readback() {
 
 #[test]
 fn raw_gl_pooled_importer_reports_exhaustion_when_slots_are_held() {
-    if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
-        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
+    let Some(_fixture) = acquire_fixture() else {
         return;
-    }
+    };
 
     let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
     let raw_gl =
@@ -201,10 +209,9 @@ fn raw_gl_pooled_importer_reports_exhaustion_when_slots_are_held() {
 
 #[test]
 fn raw_gl_pipelined_importer_reuses_latest_completed_frame_when_slots_are_held() {
-    if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
-        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
+    let Some(_fixture) = acquire_fixture() else {
         return;
-    }
+    };
 
     let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
     let raw_gl =
@@ -261,10 +268,9 @@ fn raw_gl_pipelined_importer_reuses_latest_completed_frame_when_slots_are_held()
 
 #[test]
 fn raw_gl_pipelined_importer_replaces_completed_identity_when_slot_is_reused() {
-    if std::env::var_os(RUN_FIXTURE_ENV).is_none() {
-        eprintln!("set {RUN_FIXTURE_ENV}=1 to run the raw GL import fixture");
+    let Some(_fixture) = acquire_fixture() else {
         return;
-    }
+    };
 
     let wgpu = WgpuFixture::new().expect("raw GL import fixture should create wgpu device");
     let raw_gl =
@@ -330,6 +336,7 @@ impl WgpuFixture {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: None,
+                ..Default::default()
             })) {
                 Ok(adapter) => adapter,
                 Err(error) => return Err(format!("could not create wgpu adapter: {error}")),
@@ -604,7 +611,9 @@ fn read_texture_pixels(
         .expect("fixture readback channel should receive map result")
         .expect("fixture readback buffer should map");
 
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("fixture readback range should be mapped after the map callback");
     let mut pixels = vec![0; (height * unpadded_bytes_per_row) as usize];
     for (target, source) in pixels
         .chunks_exact_mut(unpadded_bytes_per_row as usize)
