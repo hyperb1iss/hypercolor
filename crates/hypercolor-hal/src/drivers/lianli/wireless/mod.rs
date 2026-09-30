@@ -134,6 +134,8 @@ struct WirelessState {
     /// A bind converged; the next upkeep tick writes it to flash.
     save_pending: bool,
     topology_frozen: bool,
+    /// A newly heard bound cluster needs the backend to publish fresh routing.
+    topology_restart: bool,
     streaming_started: bool,
     clock_sent: bool,
     /// The last submitted pixels, including black frames, retained across idle upkeep.
@@ -166,6 +168,25 @@ impl WirelessState {
         let fresh = std::mem::take(&mut table.clusters);
 
         if self.topology_frozen {
+            if self.save_pending {
+                // Let upkeep commit a converged pairing before ending the
+                // session. A later table can request topology publication;
+                // the actor finishes the upkeep batch before reconnecting.
+                self.topology_restart = false;
+            } else if complete_membership
+                && fresh.iter().any(|record| {
+                    !self
+                        .table
+                        .clusters
+                        .iter()
+                        .any(|known| known.mac == record.mac)
+                })
+            {
+                // Published segments belong to the connect-time table. A
+                // returning fan cannot be added in place, but an empty
+                // published table must not hide it for the whole session.
+                self.topology_restart = true;
+            }
             self.table.motherboard_pwm = table.motherboard_pwm;
             self.table.declared_records = table.declared_records;
             self.table.complete_membership = complete_membership;
@@ -186,6 +207,7 @@ impl WirelessState {
                 debug!(
                     known,
                     seen,
+                    restart_requested = self.topology_restart,
                     "wireless cluster membership changed; routing keeps the connect-time set until reconnect"
                 );
             }
@@ -1003,15 +1025,17 @@ impl Protocol for WirelessControllerProtocol {
         state.pacer.report_if_due(now);
     }
 
-    /// Fans that stopped confirming past their TX resets rest, then ask for
-    /// the whole connect sequence again (see [`pacing`]).
+    /// Republish routing when a bound fan appears outside the frozen set.
+    /// Fans that stopped confirming past their TX resets also request a
+    /// fresh connect after their rest (see [`pacing`]).
     fn session_restart(&self) -> Option<String> {
-        self.state
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pacer
-            .restart_reason()
-            .map(str::to_owned)
+        let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
+        if state.topology_restart {
+            return Some(
+                "L-Wireless bound fans appeared outside the published routing; reconnecting to discover their LED segments".to_owned(),
+            );
+        }
+        state.pacer.restart_reason().map(str::to_owned)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

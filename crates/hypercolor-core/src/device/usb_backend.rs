@@ -612,6 +612,10 @@ struct UsbFrameSink {
 
 #[async_trait::async_trait]
 impl DeviceFrameSink for UsbFrameSink {
+    fn is_closed(&self) -> bool {
+        !self.active.load(Ordering::Acquire) || self.frame_tx.is_closed()
+    }
+
     async fn write_colors_shared(&self, colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
         self.publish(Arc::new(UsbFramePayload::untracked(colors)))
     }
@@ -672,7 +676,7 @@ impl UsbFrameSink {
     }
 
     fn ensure_ready(&self) -> Result<(), DeviceError> {
-        if !self.active.load(Ordering::Acquire) {
+        if self.is_closed() {
             return Err(DeviceError::Disconnected {
                 device: self.device_id.to_string(),
             });

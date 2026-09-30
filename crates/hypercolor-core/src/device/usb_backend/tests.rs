@@ -1778,6 +1778,8 @@ struct EchoingWirelessPair {
 #[derive(Default)]
 struct EchoingWirelessState {
     rf_dead: bool,
+    /// Advertise an unpaired fan until its bind carrier reaches the TX.
+    unbound: bool,
     /// Fail the next TX write with an I/O error, once.
     fail_next_tx: bool,
     envelope: Vec<u8>,
@@ -1842,9 +1844,11 @@ impl EchoingWirelessPair {
         reply[..4].copy_from_slice(&[0x10, 1, 0x80, 0]);
         let record = &mut reply[4..46];
         record[0..6].copy_from_slice(&echoing_cluster(master));
-        record[6..12].copy_from_slice(&master);
+        if !state.unbound {
+            record[6..12].copy_from_slice(&master);
+        }
         record[12] = 8;
-        record[13] = 3;
+        record[13] = if state.unbound { 0xFE } else { 3 };
         state.clock = state.clock.wrapping_add(1);
         record[14..18].copy_from_slice(&state.clock.to_be_bytes());
         record[19] = 3;
@@ -1886,6 +1890,13 @@ impl EchoingWirelessPair {
             return Ok(());
         }
         let envelope = std::mem::take(&mut state.envelope);
+        if envelope[..2] == [0x12, 0x10]
+            && envelope[2..8] == echoing_cluster(self.master)
+            && envelope[8..14] == self.master
+            && data[3] == 0xFE
+        {
+            state.unbound = false;
+        }
         if envelope[0] != 0x12 || envelope[1] != 0x20 {
             return Ok(());
         }
@@ -2072,6 +2083,232 @@ fn wireless_frame(index: u8) -> Arc<UsbFramePayload> {
 fn wireless_content(index: u8) -> [u8; 4] {
     let raw: Vec<u8> = [index, 0x20, 0x40].repeat(ECHOING_LEDS);
     hypercolor_hal::drivers::lianli::wireless::frame::effect_index_for(&raw)
+}
+
+/// A controller discovered without fans must reconnect when upkeep finds
+/// them, even when its empty published routing receives no LED frames.
+#[tokio::test(start_paused = true)]
+async fn a_lianli_fan_found_after_empty_discovery_restarts_the_idle_actor() {
+    let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x06];
+    let protocol = paced_wireless_protocol(master);
+    let mut empty_table = vec![0_u8; 448];
+    empty_table[..4].copy_from_slice(&[0x10, 0, 0x80, 0]);
+    protocol
+        .parse_response(&empty_table)
+        .expect("discovery can finish before any fan answers");
+    assert_eq!(protocol.total_leds(), 0);
+
+    let (_frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let pair = Arc::new(EchoingWirelessPair::new(master, Duration::ZERO));
+    let actor_protocol: Arc<dyn Protocol> = protocol.clone();
+    let transport: Arc<dyn Transport> = pair.clone();
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "lianli-empty-discovery-test-device",
+        actor_protocol,
+        transport,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    let error = timeout(Duration::from_secs(2), actor)
+        .await
+        .expect("the pump notices the topology learned by the first upkeep")
+        .expect("actor task joins")
+        .expect_err("newly discovered fans require republishing device segments");
+    assert!(
+        error.chain().any(|cause| matches!(
+            cause.downcast_ref::<TransportError>(),
+            Some(TransportError::Disconnected { .. })
+        )),
+        "the lifecycle must receive a reconnectable disconnect: {error:#}"
+    );
+    assert!(protocol.session_restart().is_some());
+    assert_eq!(protocol.total_leds(), 0, "published routing stays frozen");
+    assert_eq!(protocol.delivery_stats().frames_offered, 0);
+    let state = pair.state();
+    assert_eq!(state.clock, 1, "the first upkeep discovers the fan");
+    assert!(state.transfers.is_empty(), "no LED frame was submitted");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lianli_late_pairing_reaches_flash_before_the_idle_actor_restarts() {
+    use hypercolor_hal::drivers::lianli::wireless::frame::save_config_envelope;
+
+    let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x07];
+    let protocol = paced_wireless_protocol(master);
+    let mut empty_table = vec![0_u8; 448];
+    empty_table[..4].copy_from_slice(&[0x10, 0, 0x80, 0]);
+    protocol
+        .parse_response(&empty_table)
+        .expect("discovery finishes before the unpaired fan appears");
+
+    let (_frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (_display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let pair = Arc::new(EchoingWirelessPair::new(master, Duration::ZERO));
+    pair.state().unbound = true;
+    let actor_protocol: Arc<dyn Protocol> = protocol.clone();
+    let transport: Arc<dyn Transport> = pair.clone();
+    let actor = tokio::spawn(UsbBackend::test_run_device_actor(
+        DeviceId::new(),
+        "lianli-late-pairing-test-device",
+        actor_protocol,
+        transport,
+        frame_rx,
+        display_rx,
+        command_rx,
+    ));
+
+    let error = timeout(Duration::from_secs(5), actor)
+        .await
+        .expect("upkeep pairs and saves the fan before requesting new routing")
+        .expect("actor task joins")
+        .expect_err("the paired fan requires a topology reconnect");
+    assert!(
+        error.chain().any(|cause| matches!(
+            cause.downcast_ref::<TransportError>(),
+            Some(TransportError::Disconnected { .. })
+        )),
+        "the lifecycle must receive a reconnectable disconnect: {error:#}"
+    );
+    assert_eq!(protocol.total_leds(), 0, "published routing stays frozen");
+    assert_eq!(protocol.delivery_stats().frames_offered, 0);
+    let state = pair.state();
+    assert!(!state.unbound, "the fan received the actor's bind carrier");
+    let flash_writes: Vec<_> = save_config_envelope(master)
+        .usb_packets(8, 0xFF)
+        .into_iter()
+        .map(|packet| (TransferType::Primary, packet.to_vec()))
+        .cycle()
+        .take(12)
+        .collect();
+    assert!(
+        state.sends.ends_with(&flash_writes),
+        "all three complete SaveConfig envelopes reach USB before disconnect"
+    );
+    assert!(state.transfers.is_empty(), "no LED frame was submitted");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_closed_empty_wireless_actor_reports_failure_through_duplicate_output() {
+    use crate::device::output_queue::{OutputLane, OutputQueue};
+    use hypercolor_driver_api::OutputCadence;
+
+    let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x08];
+    let protocol = paced_wireless_protocol(master);
+    let mut empty_table = vec![0_u8; 448];
+    empty_table[..4].copy_from_slice(&[0x10, 0, 0x80, 0]);
+    protocol
+        .parse_response(&empty_table)
+        .expect("discovery finishes before the fan appears");
+
+    let device_id = DeviceId::new();
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (_command_tx, command_rx) = mpsc::unbounded_channel();
+    let active = Arc::new(AtomicBool::new(true));
+    let lifecycle_gate = Arc::new(Mutex::new(()));
+    let last_async_error = Arc::new(Mutex::new(None));
+    let sink = Arc::new(UsbFrameSink {
+        device_id,
+        frame_tx: frame_tx.clone(),
+        active: Arc::clone(&active),
+        lifecycle_gate: Arc::clone(&lifecycle_gate),
+        last_async_error: Arc::clone(&last_async_error),
+    });
+    let pair = Arc::new(EchoingWirelessPair::new(master, Duration::ZERO));
+    let actor_protocol: Arc<dyn Protocol> = protocol.clone();
+    let transport: Arc<dyn Transport> = pair.clone();
+    let actor = UsbBackend::spawn_device_actor(
+        device_id,
+        "lianli-closed-output-test-device",
+        actor_protocol,
+        transport,
+        Arc::clone(&active),
+        lifecycle_gate,
+        frame_tx,
+        frame_rx,
+        display_tx,
+        display_rx,
+        command_rx,
+        last_async_error,
+    );
+    let mut queue = OutputQueue::spawn(
+        USB_OUTPUT_BACKEND_ID.to_owned(),
+        device_id,
+        OutputLane::frame_sink(sink.clone()),
+        OutputCadence::from_fps(0),
+    );
+
+    queue.push(Vec::new());
+    for _ in 0..100 {
+        if queue
+            .statistics(USB_OUTPUT_BACKEND_ID, device_id, Vec::new())
+            .frames_sent
+            == 1
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let initial = queue.statistics(USB_OUTPUT_BACKEND_ID, device_id, Vec::new());
+    assert_eq!(initial.frames_sent, 1, "the initial empty frame completes");
+    assert_eq!(initial.completed_payload_bytes, 0);
+    assert!(!sink.is_closed());
+    assert_eq!(
+        pair.state().clock,
+        0,
+        "upkeep has not discovered the fan yet"
+    );
+
+    queue.push(Vec::new());
+    let duplicate = queue.statistics(USB_OUTPUT_BACKEND_ID, device_id, Vec::new());
+    assert_eq!(duplicate.accepted, 2);
+    assert_eq!(duplicate.frames_received, 1);
+    assert_eq!(duplicate.frames_suppressed, 1);
+
+    timeout(Duration::from_secs(2), actor)
+        .await
+        .expect("upkeep discovers the fan and closes the actor")
+        .expect("actor wrapper joins");
+    assert!(sink.is_closed());
+    assert!(!active.load(Ordering::Acquire));
+    assert!(protocol.session_restart().is_some());
+
+    queue.push(Vec::new());
+    for _ in 0..100 {
+        if queue
+            .async_write_failure(USB_OUTPUT_BACKEND_ID.to_owned(), device_id)
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let failure = queue
+        .async_write_failure(USB_OUTPUT_BACKEND_ID.to_owned(), device_id)
+        .expect("identical output must expose the actor disconnect to lifecycle");
+    assert!(matches!(failure.error, DeviceError::Disconnected { .. }));
+    assert!(failure.is_current());
+    assert_eq!(failure.delivery_id.sequence, 3);
+    assert_eq!(
+        failure.delivery_id.queue_generation,
+        initial.queue_generation
+    );
+    let final_stats = queue.statistics(USB_OUTPUT_BACKEND_ID, device_id, Vec::new());
+    assert_eq!(final_stats.frames_received, 2);
+    assert_eq!(final_stats.transport_failed, 1);
+    assert_eq!(final_stats.frames_suppressed, 1);
+    assert_eq!(protocol.delivery_stats().frames_offered, 1);
+    assert!(
+        queue
+            .async_write_failure(USB_OUTPUT_BACKEND_ID.to_owned(), device_id)
+            .is_some()
+    );
 }
 
 /// A frame that arrives while the window is full is held, and the frame

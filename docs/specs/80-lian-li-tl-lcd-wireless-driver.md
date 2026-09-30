@@ -744,9 +744,12 @@ another. Only fan clusters (record type 0) bound to this controller's MAC
 enter the set; receivers bound elsewhere and AIO or case gear heard on the
 channel are ignored, and unbound receivers are paired first (§6.4). A truncated reply (fewer whole records
 than the count byte) keeps the last table. Segment topology is published to
-the daemon only at connect/reconnect, so v1 surfaces membership changes (a
-newly bound fan) after a rescan/reconnect; live topology-change publication
-is a named follow-up, not silently promised.
+the daemon only at connect/reconnect. When a complete, valid table contains
+a bound fan outside the frozen set, the protocol requests a reconnect to
+publish its LED segments. This also recovers a session that connected with
+no fans while their receivers were restarting. Temporary omissions of known
+fans do not request a reconnect, and truncated or invalid membership cannot
+establish a new cluster.
 
 ### 6.6 Group correlation (future)
 
