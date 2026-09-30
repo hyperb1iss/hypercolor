@@ -136,6 +136,8 @@ jobs:
               - 'scripts/dist.sh'
               - 'scripts/verify-release-artifact.sh'
               - 'scripts/tests/release-artifact-tests.sh'
+              - 'scripts/tests/docker-smoke.mjs'
+              - 'scripts/tests/docker-workflow.test.mjs'
               - 'scripts/homebrew-formula.mjs'
               - 'scripts/tests/homebrew-formula.test.mjs'
               - 'packaging/**'
@@ -179,6 +181,9 @@ jobs:
               - '.github/actions/bun-cache/**'
               - '.github/workflows/ci.yml'
             ui:
+              - 'packaging/docker/**'
+              - 'scripts/tests/docker-smoke.mjs'
+              - 'scripts/tests/docker-workflow.test.mjs'
               - 'crates/hypercolor-ui/**'
               - 'crates/hypercolor-leptos-ext/**'
               - 'protocol/**'
@@ -201,6 +206,9 @@ jobs:
               - 'scripts/check-retired-api-docs.sh'
               - 'scripts/gen-compat.ts'
             workflow:
+              - 'packaging/docker/**'
+              - 'scripts/tests/docker-smoke.mjs'
+              - 'scripts/tests/docker-workflow.test.mjs'
               - '.github/workflows/**'
               - '.github/actions/**'
               - 'scripts/homebrew-formula.mjs'
@@ -242,8 +250,25 @@ jobs:
       - name: Test release orchestration
         run: node --test scripts/tests/release-workflow.test.mjs scripts/tests/resolve-release-version.test.mjs scripts/tests/macos-release.test.mjs
 
+      - name: Test Docker release contracts
+        run: node --test scripts/tests/docker-workflow.test.mjs
+
+      - name: Validate Docker Compose
+        env:
+          HYPERCOLOR_API_KEY: ci-compose-validation
+          HOST_RENDER_GID: "109"
+          HOST_VIDEO_GID: "44"
+        run: |
+          docker compose -f packaging/docker/compose.yaml config --quiet
+          docker compose -f packaging/docker/compose.yaml -f packaging/docker/compose.gpu.yaml config --quiet
+
       - name: Actionlint
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
+        # GitHub supports queue:max; actionlint's schema is pending upstream #654.
+        # Docker contracts validate this sole queue key; every other error stays fatal.
+        run: >-
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          -ignore '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
+          .github/workflows/*.yml
 
   # ── Rust Check (fmt + clippy) ──────────────────────────────────
   rust-check-shared:
@@ -1309,6 +1334,46 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  docker-e2e:
+    name: Docker / Headless HTML and WLED
+    needs: e2e-assemble
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download Servo e2e stack
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-stack-servo
+          path: e2e-stack
+
+      - name: Stage Docker runtime payload
+        run: |
+          mkdir -p docker-context/bin docker-context/share/hypercolor/effects/bundled docker-context/share/hypercolor/ui
+          install -m755 e2e-stack/bin/hypercolor-daemon docker-context/bin/hypercolor-daemon
+          install -m755 e2e-stack/bin/hypercolor docker-context/bin/hypercolor
+          cp -R e2e-stack/effects/. docker-context/share/hypercolor/effects/bundled/
+          cp -R e2e-stack/ui/. docker-context/share/hypercolor/ui/
+
+      - uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Build Docker runtime
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: docker-context
+          file: packaging/docker/Dockerfile
+          load: true
+          tags: hypercolor-container:proof
+          build-args: |
+            VERSION=ci
+            REVISION=${{ github.sha }}
+
+      - name: Prove container rendering, WLED output, and persistence
+        run: node scripts/tests/docker-smoke.mjs hypercolor-container:proof
+
   e2e:
     name: E2E / ${{ matrix.label }}
     needs: [rust-check-shared, e2e-assemble]
@@ -2036,6 +2101,40 @@ jobs:
           fi
           ./scripts/verify-deb-package.sh "${debs[0]}"
 
+      - name: Stage verified Docker runtime payload
+        run: |
+          mkdir -p docker-context
+          tar -xzf "dist/${{ steps.version.outputs.dist_name }}.tar.gz" \
+            --strip-components=1 -C docker-context
+
+      - uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Build Docker runtime
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: docker-context
+          file: packaging/docker/Dockerfile
+          load: true
+          tags: hypercolor-container:linux-amd64
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            REVISION=${{ github.sha }}
+
+      - name: Prove container rendering, WLED output, and persistence
+        run: node scripts/tests/docker-smoke.mjs hypercolor-container:linux-amd64
+
+      - name: Export tested Docker image
+        run: docker image save --output hypercolor-container-linux-amd64.tar hypercolor-container:linux-amd64
+
+      - name: Upload tested Docker image
+        uses: actions/upload-artifact@v7
+        with:
+          name: container-linux-amd64
+          path: hypercolor-container-linux-amd64.tar
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
       - name: Upload release tarball smoke
         uses: actions/upload-artifact@v7
         with:
@@ -2235,6 +2334,40 @@ jobs:
           fi
           ./scripts/verify-deb-package.sh "${debs[0]}"
 
+      - name: Stage verified Docker runtime payload
+        run: |
+          mkdir -p docker-context
+          tar -xzf "dist/${{ steps.version.outputs.dist_name }}.tar.gz" \
+            --strip-components=1 -C docker-context
+
+      - uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Build Docker runtime
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: docker-context
+          file: packaging/docker/Dockerfile
+          load: true
+          tags: hypercolor-container:${{ matrix.target }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            REVISION=${{ github.sha }}
+
+      - name: Prove container rendering, WLED output, and persistence
+        run: node scripts/tests/docker-smoke.mjs hypercolor-container:${{ matrix.target }}
+
+      - name: Export tested Docker image
+        run: docker image save --output hypercolor-container-${{ matrix.target }}.tar hypercolor-container:${{ matrix.target }}
+
+      - name: Upload tested Docker image
+        uses: actions/upload-artifact@v7
+        with:
+          name: container-${{ matrix.target }}
+          path: hypercolor-container-${{ matrix.target }}.tar
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
       - name: Upload release tarball
         uses: actions/upload-artifact@v7
         with:
@@ -2319,6 +2452,71 @@ jobs:
           fi
 
           gh release create "${args[@]}" "${files[@]}"
+
+  # Publish the same native images that passed the container smoke test.
+  publish-docker:
+    name: Publish Docker image
+    needs: [create-release, build-release]
+    # All releases share the mutable latest tag. Queue publication, not builds.
+    concurrency:
+      group: hypercolor-docker-publication
+      cancel-in-progress: false
+      queue: max
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      startsWith(github.ref, 'refs/tags/') &&
+      github.repository == 'hyperb1iss/hypercolor'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download tested Docker images
+        uses: actions/download-artifact@v8
+        with:
+          pattern: container-linux-*
+          path: container-images
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish tested images and multiarch index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image=ghcr.io/hyperb1iss/hypercolor
+          version="${GITHUB_REF_NAME#v}"
+          sources=()
+          for arch in amd64 arm64; do
+            docker image load --input "container-images/hypercolor-container-linux-${arch}.tar"
+            local_image="hypercolor-container:linux-${arch}"
+            actual_arch="$(docker image inspect "${local_image}" --format '{{.Architecture}}')"
+            if [[ "${actual_arch}" != "${arch}" ]]; then
+              printf 'Docker image architecture %s does not match %s\n' "${actual_arch}" "${arch}" >&2
+              exit 1
+            fi
+            remote_image="${image}:${version}-${arch}"
+            docker image tag "${local_image}" "${remote_image}"
+            docker image push "${remote_image}"
+            sources+=("$(docker image inspect "${remote_image}" --format '{{index .RepoDigests 0}}')")
+          done
+          tags=(--tag "${image}:${version}")
+          if [[ "${version}" != *-* ]]; then
+            latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+            if [[ "${latest_tag}" == "${GITHUB_REF_NAME}" ]]; then
+              tags+=(--tag "${image}:latest")
+            fi
+          fi
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+          docker buildx imagetools inspect "${image}:${version}"
 
   # ── Attach macOS Release Artifacts ─────────────────────────────
   # Apple notarization can hold a submission for hours, so the GitHub

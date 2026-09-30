@@ -29,6 +29,16 @@ alias py := python-verify
 
 # ─── Core ─────────────────────────────────────────────────
 
+# Package an extracted Linux release distribution as a container image
+[linux]
+docker-build dist_dir image="hypercolor:local":
+    {{ env_var_or_default("CONTAINER_ENGINE", "docker") }} build --file "{{ justfile_directory() }}/packaging/docker/Dockerfile" --tag "{{ image }}" "{{ dist_dir }}"
+
+# Prove headless HTML rendering, WLED delivery, persistence, and shutdown
+[linux]
+docker-test image="hypercolor:local":
+    node scripts/tests/docker-smoke.mjs "{{ image }}"
+
 # Run all checks (boundary, format, lint, test)
 verify: oss-boundary-check-strict api-doc-route-check macos-gpu-only-check build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
     @echo '✅ All checks passed'

@@ -23,6 +23,7 @@ and laptop-lid settings are accepted but nothing emits those events yet.
 | A regular user who wants things to work | Windows | [Desktop installer](#windows-installer) |
 | A regular user who wants things to work | macOS | [DMG or Homebrew](#macos-dmg) |
 | An Arch Linux user | Linux | [AUR package](#aur) |
+| A WLED or network lighting user with a server or NAS | Linux | [Docker](@/guide/docker.md) |
 | A developer or contributor | Any | [Build from source](#build-from-source) |
 
 If you are not sure whether you are a developer, you are not a developer. Start with the prebuilt path.
