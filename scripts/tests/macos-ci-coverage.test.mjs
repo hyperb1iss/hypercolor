@@ -66,10 +66,31 @@ test('publication retains every validation gate while compilation overlaps it', 
     'web-assets', 'python', 'python-generated',
   ];
   assert.deepEqual(needs('sign-macos'), ['build-native-app', 'release-credentials', 'web-assets']);
-  assert.deepEqual(needs('create-release'), ['build-release', 'build-native-app', 'sign-macos', ...validation]);
+  // Apple notarization never gates the release: create-release waits for
+  // the unsigned builds and validation only, and attach-macos adds the
+  // signed macOS assets once sign-macos succeeds.
+  assert.deepEqual(needs('create-release'), ['build-release', 'build-native-app', ...validation]);
+  assert.deepEqual(needs('attach-macos'), ['create-release', 'sign-macos']);
   // Preserve GitHub's implicit success() gate: failed or skipped validation
   // must never become publishable through always() or !cancelled().
-  const condition = body('create-release').split('    needs:')[0];
-  assert.doesNotMatch(condition, /always\(|cancelled\(|failure\(/);
-  assert.match(condition, /startsWith\(github.ref, 'refs\/tags\/'\)/);
+  for (const id of ['create-release', 'attach-macos']) {
+    const condition = body(id).split('    needs:')[0];
+    assert.doesNotMatch(condition, /always\(|cancelled\(|failure\(/);
+    assert.match(condition, /startsWith\(github.ref, 'refs\/tags\/'\)/);
+  }
+});
+
+test('only Homebrew waits for macOS; every other channel follows create-release', () => {
+  const job = id => workflow.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'))?.[1];
+  const needs = id => job(id)?.match(/^    needs: (.+)$/m)?.[1];
+  // The formula and cask need all four macOS checksums, so Homebrew moves
+  // with the macOS assets; nothing else may depend on Apple.
+  assert.equal(needs('update-homebrew'), 'attach-macos');
+  assert.equal(needs('update-aur'), 'create-release');
+  assert.equal(needs('update-nix'), 'create-release');
+  assert.equal(needs('publish-npm'), '[sdk, create-release]');
+  assert.equal(needs('publish-pypi'), '[python-build, create-release]');
+  for (const id of ['update-aur', 'update-nix', 'publish-npm', 'publish-pypi']) {
+    assert.doesNotMatch(job(id), /macos|\.dmg|darwin/i, `${id} must not read macOS assets`);
+  }
 });

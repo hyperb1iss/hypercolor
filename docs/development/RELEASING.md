@@ -40,7 +40,9 @@ What the Release workflow does, in order:
    in ci.yml accept `workflow_dispatch` for exactly this reason.
 
 The CI tag lane then builds the Linux, Windows, and signed macOS artifacts,
-creates the GitHub Release with the committed notes, publishes `hypercolor` +
+creates the GitHub Release with the committed notes and the Linux and
+Windows artifacts, attaches the signed macOS artifacts once Apple has
+notarized them, publishes `hypercolor` +
 `create-hypercolor` to npm (with provenance; prereleases go to the `next`
 dist-tag), publishes the Python client to PyPI (stable only), and updates
 the AUR metadata (stable only).
@@ -49,6 +51,8 @@ The tag lane also updates the Homebrew tap: `update-homebrew` renders
 `packaging/homebrew/hypercolor.rb` and `packaging/homebrew/hypercolor-app.rb`
 with `scripts/homebrew-formula.mjs`, filling every Linux and macOS stanza and
 both cask architectures from the tarballs and DMGs the release just published.
+It runs after the macOS artifacts are attached, because the formula and cask
+need all four macOS checksums.
 
 macOS artifacts are Developer ID signed and notarized on the GitHub macOS
 runners in two stages. `build-native-app` compiles the sidecars and the
@@ -58,11 +62,21 @@ picks that payload up on a fresh runner, imports the certificate into an
 ephemeral keychain, signs every binary with the hardened runtime, notarizes
 and staples the app and DMG through an App Store Connect API key, assembles
 and notarizes the standalone tarball, and verifies that every signature
-carries `APPLE_TEAM_ID` before uploading the release artifacts. Because
-signing has its own job and time budget, a slow Apple queue or a failed
-notarization is rerun with "Re-run failed jobs" without rebuilding for
-four hours; the rerun still waits for a macOS runner and pays for the
-notarizations again. The `release-credentials` job checks all seven
+carries `APPLE_TEAM_ID` before uploading the release artifacts.
+
+Apple can hold a notarization for hours, so macOS never gates the rest of
+the release. `create-release` publishes the Linux and Windows artifacts
+without waiting for `sign-macos`, and npm, PyPI, the AUR, and Nix follow it.
+`attach-macos` then adds the signed tarballs and DMGs to the same release
+once both `sign-macos` legs succeed, uploading only assets the release does
+not already carry, and `update-homebrew` runs after it. If a `sign-macos`
+leg times out waiting on Apple, check **Actions → macOS Notary Status → Run
+workflow**, which lists the team's submissions and their status. Once Apple
+has cleared the queue, use "Re-run failed jobs" on the tag's CI/CD run: the
+signing legs pick up the same unsigned payloads (kept for seven days)
+without rebuilding, and `attach-macos` and `update-homebrew` follow. The
+rerun still waits for a macOS runner and submits new notarizations. The
+`release-credentials` job checks all seven
 Apple secrets before any artifact job starts, and the Release workflow
 refuses a non-dry run while any of them is missing.
 
