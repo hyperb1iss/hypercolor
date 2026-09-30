@@ -320,7 +320,8 @@ pub(super) fn record_servo_gpu_import_failure(
         GpuFrameImportFallbackReason::WindowsImportStaleFrame => {
             let _ = SERVO_RENDER_GPU_IMPORT_STALE_FRAME_TOTAL.fetch_add(1, Ordering::Relaxed);
         }
-        GpuFrameImportFallbackReason::AdapterLuidMismatch => {
+        GpuFrameImportFallbackReason::AdapterLuidMismatch
+        | GpuFrameImportFallbackReason::DeviceUuidMismatch => {
             let _ = SERVO_RENDER_GPU_IMPORT_ADAPTER_MISMATCH_TOTAL.fetch_add(1, Ordering::Relaxed);
         }
         _ => {}

@@ -196,6 +196,8 @@ pub fn missing_gl_external_memory_functions(
         "glImportMemoryFdEXT",
         "glTexStorageMem2DEXT",
         "glDeleteMemoryObjectsEXT",
+        "glGetUnsignedBytevEXT",
+        "glGetUnsignedBytei_vEXT",
     ]
 }
 

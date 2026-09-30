@@ -10,6 +10,7 @@ use crate::{ImportedEffectFrame, ImportedFrameFormat};
 const DEFAULT_IMPORT_SLOT_COUNT: usize = 8;
 
 mod capabilities;
+mod device_identity;
 mod fence;
 mod gl_external_memory;
 mod loader;
@@ -115,6 +116,15 @@ pub enum LinuxGpuInteropError {
         /// Number of slots in the import pool.
         slot_count: usize,
     },
+
+    /// The GL context and the Vulkan device run on different GPUs or drivers.
+    #[error("GL and Vulkan report different GPUs or drivers (GL {gl}; Vulkan {vulkan})")]
+    DeviceUuidMismatch {
+        /// UUIDs the GL context reports.
+        gl: String,
+        /// UUIDs the Vulkan device reports.
+        vulkan: String,
+    },
 }
 
 impl GpuFrameImportError for LinuxGpuInteropError {
@@ -137,6 +147,7 @@ impl GpuFrameImportError for LinuxGpuInteropError {
                 GpuFrameImportFallbackReason::GlFramebufferIncomplete
             }
             Self::ImportSlotsExhausted { .. } => GpuFrameImportFallbackReason::ImportSlotsExhausted,
+            Self::DeviceUuidMismatch { .. } => GpuFrameImportFallbackReason::DeviceUuidMismatch,
         }
     }
 }
@@ -273,6 +284,7 @@ impl LinuxGlFramebufferImporter {
         // wrapped; raw handles only escape inside wgpu's drop callbacks.
         let hal_device = unsafe { device.as_hal::<wgpu_hal::api::Vulkan>() }
             .ok_or(LinuxGpuInteropError::MissingWgpuVulkanDevice)?;
+        device_identity::verify_shared_physical_device(gl, &gl_external_memory, &hal_device)?;
         let slot_pool = ImportedFrameSlotPool::create(
             device,
             &hal_device,
