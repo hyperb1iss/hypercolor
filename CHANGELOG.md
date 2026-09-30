@@ -5,6 +5,79 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-30
+
+Managed Linux release installs land as their own crate with recorded authority, probation and rollback, the daemon gains state history and a persistent audit trail, and the Lian Li L-Wireless and Ableton Push 2 drivers get acknowledgement-paced output. The release also ships a Nix flake, a reworked signed macOS lane, and a large dependency refresh.
+
+### Added
+
+- ✨ Add the `hypercolor-install` crate driving Linux installs through one replayable orchestration with recorded roots, elected managed authority, candidate probation, rollback reports and unreferenced-release cleanup (d58286a, 6748ee6, 0d3b113)
+- ✨ Add a Nix flake with a binary package and a NixOS module, plus CI that builds the flake and pins it after each release (a71c3d3, 200cf4b)
+- ✨ Keep rolling previous generations of every daemon-owned store and record state-changing requests in a persistent audit log exposed through `/api/v1/system/audit` (d747311, 960fa0a, f4ea3ab)
+- ✨ Support a host-installed HTTP/WebSocket transport and strict browser CSP in the shared UI through the new `remote_bridge` module (a0c4779)
+- ✨ Play the Remote canvas preview as video over bridge contract 2 and count preview frames received, displayed and dropped (191f133, 6b28db0, 76b50c1)
+- ✨ Run managed services through a stable launcher sandbox and add the `__launch` command that managed units start (b200a49, 1b85070)
+- ✨ Inventory durable stores and ship the inventory as a release file for tooling (0f407ac, 721e951)
+- ✨ Log Push 2 firmware, power source and uptime at connect, and report a stalled MIDI output from the kernel backlog (065c368, b57e72d)
+- ✨ Add a macOS signing selftest and a notary status workflow (58d15d5, 9b0d796)
+
+### Changed
+
+- 🔄 Move the release installer out of `hypercolor-cli` into `hypercolor-install`, leaving release compatibility decisions to other tools (3438c84, de6c63e)
+- 🔄 Rework the macOS release lane: sign artifacts in their own job, bound each notarization wait at thirty minutes, and publish the release without waiting on Apple (a48d642, e32fd20, a2e2f6c)
+- 🔄 Overlap release validation and reuse macOS binaries in CI (#298)
+- 🔄 Refresh workspace, UI, SDK and Python dependencies, including utoipa 6, Servo 0.6, `dirs` 7, `nix` 0.31, `tokio-tungstenite` 0.30, `mdns-sd` 0.21, `tao` 0.37, wasm-bindgen 0.2.129, Playwright 1.63 and Bun 1.4.2
+- 🔄 Pace Lian Li L-Wireless RGB over a sliding window of echoed frame tags, judging backlog and staleness against the observed status cadence (718268f, 60a82c1)
+- 🔄 Drop the systemd CPU and memory caps from the daemon units (c9aa037)
+- 🔄 Retire Linux-first framing across specs, design notes and README, and open the README with the lockup banner (7e4449e, 5b272ae, e1035c8)
+- 🔄 Isolate test state: sandbox the daemon e2e harness, relocate lifecycle directories, and separate the Playwright stack's state and connection environment (09e0cc2, f9a4875, 5afa950)
+
+### Fixed
+
+- 🐛 Repair installation and automate package publishing (#285)
+- 🐛 Isolate empty application state storage in the daemon (#300)
+- 🐛 Write Push 2 raw MIDI messages whole or not at all, pace LED output on device acknowledgements, and pack touch strip LEDs as the interface manual specifies (49f9049, cca0275, 712f199)
+- 🐛 Reset a wedged L-Wireless dongle through its partner, rest fans past their TX resets and reconnect, and bound resends by unresolved transfers (56596ff, 1761203, fb55138)
+- 🐛 Report the served identity version from `/health` and treat epoch-normalized UI mtimes as unknown age (9a5b131, acf0e64)
+- 🐛 Restore observed device names when clearing overrides (0470c70)
+- 🐛 Let named connection settings beat the profile in the CLI (0c5c0ba)
+- 🐛 Load the variable Satoshi font from a CDN that actually serves it (313f2ba, fc3d94d)
+- 🐛 Keep the application asset base correct under a Remote bridge and keep the JPEG preview moving when the worker cannot (030f1c9, 198ed4b)
+- 🐛 Restore jemalloc as the daemon's global allocator and turn WebGL back on for the Servo 0.6 renderer (3a3b7c6, bfa967c)
+- 🐛 Put the signing keychain on the codesign search list, keep macOS artifacts world-readable, and publish only this build's DMG (0f2e625, a143c57, 16435db)
+- 🐛 Create the daemon state directories before the Nix unit starts and create the service's writable directories before its sandbox (58f4175, 465a02a)
+
+### Security
+
+- 🔒 Bump rustls to 0.23.45 for RUSTSEC-2026-0285 (f277f2b)
+- 🔒 Run the UI correctly under a host-enforced strict CSP (`require-trusted-types-for 'script'`) through a scoped `hc-static` Trusted Types policy in the vendored tachys patch, with `scripts/check-ui-html-sinks.sh` gating raw HTML sinks in CI (a0c4779)
+- 🔒 Verify macOS release signatures on a user's Mac before installing (50ce855, 8ddcab3)
+- 🔒 Refuse public directories another account can write and require trusted ancestry above every recorded install root (c0d5b07, 947343d)
+- 🔒 Drive systemd through the user manager's private socket instead of a shared bus path (21bc3e1)
+
+### Removed
+
+- 🔥 Remove the vendored `midir` fork in favor of upstream midir 0.11 (f280e10)
+- 🔥 Drop the JPEG profile from the Remote canvas preview now that it plays as video (191f133)
+- 🔥 Drop workspace dependencies no crate inherits (e48137f)
+
+### Breaking Changes
+
+- **Linux releases must declare the managed package contract.** Non-macOS releases without it are refused at install time (f2f6c0b, 84fbb3f).
+  - Rebuild releases with the current `scripts/dist.sh`; see `docs/content/guide/linux-release-installs.md` for what a release declares about your data.
+- **Managed Linux installs use a recorded, retained topology** with elected authority, probation and an explicit release unit rather than a launcher indirection (5dc38a0, 6a15616).
+  - Existing installs are adopted on the next `hypercolor install`; `--uninstall` removes releases from the recorded roots, including an interrupted upgrade.
+- **Install internals moved** from `hypercolor-cli::install` to the new `hypercolor-install` crate (3438c84).
+  - Update any direct imports; the CLI surface is unchanged.
+
+### Metrics
+
+- Total Commits: 307
+- Files Changed: 1,144
+- Insertions: +97,595
+- Deletions: -27,077
+<!-- -------------------------------------------------------------- -->
+
 ## [0.5.1] - 2026-09-10
 
 Studio control edits retain panel state, device assignments gain automatic
