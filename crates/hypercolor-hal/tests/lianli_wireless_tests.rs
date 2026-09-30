@@ -95,6 +95,7 @@ fn an_empty_rx_table_has_no_clusters_and_a_motherboard_duty() {
     let table = parse_device_table(&captured_empty_rx_table(), Some(MASTER_MAC))
         .expect("a page-sized reply is a table");
     assert!(table.clusters.is_empty());
+    assert!(table.complete_membership);
     assert_eq!(
         table.motherboard_pwm,
         Some(255),
@@ -182,6 +183,15 @@ fn a_record_without_the_validation_byte_is_dropped() {
     bad[41] = 0x00;
     let table = parse_device_table(&table_with(&[bad]), None).expect("table");
     assert!(table.clusters.is_empty());
+    assert!(!table.complete_membership);
+}
+
+#[test]
+fn a_zero_address_cannot_establish_table_membership() {
+    let invalid = record([0; 6], 0x00, 2, 28);
+    let table = parse_device_table(&table_with(&[invalid]), None).expect("table");
+    assert!(table.clusters.is_empty());
+    assert!(!table.complete_membership);
 }
 
 #[test]
@@ -1039,6 +1049,79 @@ fn a_truncated_reply_still_carries_the_echoes_it_holds() {
         Err(DiscoveryError::StatusEcho),
         "a status packet carries no records"
     );
+}
+
+#[test]
+fn complete_table_absence_gets_a_fresh_probe_on_return() {
+    let protocol = discovered_protocol();
+    let colors = [[128, 32, 64]; 5 * 26];
+    let _ = protocol.encode_frame(&colors);
+    let _ = protocol.encode_frame(&[[64, 32, 128]; 5 * 26]);
+    protocol
+        .parse_response(&table_with(&[record([0x11; 6], 0x00, 3, 28)]))
+        .expect("complete table omits the second cluster");
+    protocol.advance(Duration::from_millis(500));
+    protocol
+        .parse_response(&table_with(&[
+            record([0x11; 6], 0x00, 3, 28),
+            record([0x22; 6], 0x00, 2, 27),
+        ]))
+        .expect("the second cluster returned with its cached tag");
+    let mut commands = Vec::new();
+    protocol.pump_frame_into(&mut commands);
+    let tags = header_tags(&commands);
+    assert_eq!(tags.len(), 1, "only the returning cluster needs a probe");
+    assert_eq!(tags[0].0, [0x22; 6]);
+    assert_eq!(protocol.delivery_stats().resends, 1);
+}
+
+#[test]
+fn truncated_table_does_not_invent_a_receiver_return() {
+    let protocol = discovered_protocol();
+    let _ = protocol.encode_frame(&[[128, 32, 64]; 5 * 26]);
+    let _ = protocol.encode_frame(&[[64, 32, 128]; 5 * 26]);
+    let mut short = table_with(&[record([0x11; 6], 0x00, 3, 28)]);
+    short[1] = 2;
+    short.truncate(4 + RECORD_LEN + 10);
+    protocol.parse_response(&short).expect("partial table");
+    protocol.advance(Duration::from_millis(500));
+    protocol
+        .parse_response(&table_with(&[
+            record([0x11; 6], 0x00, 3, 28),
+            record([0x22; 6], 0x00, 2, 27),
+        ]))
+        .expect("complete table");
+    let mut commands = Vec::new();
+    protocol.pump_frame_into(&mut commands);
+    assert!(
+        header_tags(&commands).is_empty(),
+        "both windows remain full"
+    );
+    assert_eq!(protocol.delivery_stats().resends, 0);
+}
+
+#[test]
+fn invalid_table_records_do_not_invent_receiver_returns() {
+    let protocol = discovered_protocol();
+    let _ = protocol.encode_frame(&[[128, 32, 64]; 5 * 26]);
+    let _ = protocol.encode_frame(&[[64, 32, 128]; 5 * 26]);
+    let first = record([0x11; 6], 0x00, 3, 28);
+    let second = record([0x22; 6], 0x00, 2, 27);
+    let mut invalid = second;
+    invalid[41] = 0;
+    for _ in 0..3 {
+        protocol
+            .parse_response(&table_with(&[first, invalid]))
+            .expect("complete-sized table with an invalid record");
+        protocol.advance(Duration::from_millis(100));
+        protocol
+            .parse_response(&table_with(&[first, second]))
+            .expect("valid table");
+        let mut commands = Vec::new();
+        protocol.pump_frame_into(&mut commands);
+        assert!(header_tags(&commands).is_empty());
+    }
+    assert_eq!(protocol.delivery_stats().resends, 0);
 }
 
 #[test]

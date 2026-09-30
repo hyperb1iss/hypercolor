@@ -218,6 +218,9 @@ pub struct DeviceTable {
     /// Records the RX declared, masters and foreign gear included: what
     /// sizes a poll that must reach every one of them.
     pub declared_records: u8,
+    /// Every declared record has a valid marker and address, so omissions
+    /// are reliable evidence of absence. Valid echoes remain useful otherwise.
+    pub complete_membership: bool,
 }
 
 impl DeviceTable {
@@ -292,6 +295,9 @@ pub fn parse_device_table(
         clusters: parse_table_records(reply, master)?,
         motherboard_pwm,
         declared_records: count,
+        complete_membership: whole_records(reply)
+            .take(usize::from(count))
+            .all(valid_record),
     })
 }
 
@@ -344,14 +350,11 @@ fn whole_records(reply: &[u8]) -> impl ExactSizeIterator<Item = &[u8]> {
 }
 
 fn parse_record(record: &[u8]) -> Option<FanCluster> {
-    if record[41] != RECORD_VALIDATION || record[18] == DEVICE_TYPE_MASTER {
+    if !valid_record(record) || record[18] == DEVICE_TYPE_MASTER {
         return None;
     }
     let mut mac = [0_u8; 6];
     mac.copy_from_slice(&record[0..6]);
-    if mac == [0; 6] {
-        return None;
-    }
     let mut master_mac = [0_u8; 6];
     master_mac.copy_from_slice(&record[6..12]);
 
@@ -399,4 +402,8 @@ fn parse_record(record: &[u8]) -> Option<FanCluster> {
         effect_index,
         clock,
     })
+}
+
+fn valid_record(record: &[u8]) -> bool {
+    record[41] == RECORD_VALIDATION && record[..6] != [0; 6]
 }

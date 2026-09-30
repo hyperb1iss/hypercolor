@@ -199,14 +199,14 @@ impl WirelessControllerTransport {
             half = half.name(),
             stalls = wedge.stalls,
             resets_sent = wedge.resets_sent,
-            "L-Wireless {} stopped delivering: it takes writes but its fans stopped confirming frames; resetting it through the {}",
+            "L-Wireless {} delivery remains unconfirmed after recovery probes; resetting it through the {}",
             half.name(),
             half.partner().name()
         );
         let reset = self.reset_through_partner(half).await;
         TransportError::Disconnected {
             detail: format!(
-                "L-Wireless {} stopped delivering frames its fans confirm; {reset}. \
+                "L-Wireless {} delivery remains unconfirmed after recovery probes; {reset}. \
                  If it does not come back, replug or power-cycle the controller",
                 half.name()
             ),

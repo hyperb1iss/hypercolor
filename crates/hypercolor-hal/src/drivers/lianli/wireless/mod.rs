@@ -150,6 +150,7 @@ impl WirelessState {
     /// open, as telemetry only once it is frozen. Either way its records
     /// are the fans' acknowledgements.
     fn adopt_table(&mut self, mut table: DeviceTable, now: Instant) {
+        let complete_membership = table.complete_membership;
         let master = self.master.map(|master| master.mac);
         self.adoptable = table
             .clusters
@@ -167,6 +168,7 @@ impl WirelessState {
         if self.topology_frozen {
             self.table.motherboard_pwm = table.motherboard_pwm;
             self.table.declared_records = table.declared_records;
+            self.table.complete_membership = complete_membership;
             for cluster in &mut self.table.clusters {
                 if let Some(fresh) = fresh.iter().find(|fresh| fresh.mac == cluster.mac) {
                     cluster.rpm = fresh.rpm;
@@ -190,6 +192,13 @@ impl WirelessState {
         } else {
             table.clusters.clone_from(&fresh);
             self.table = table;
+        }
+        if complete_membership {
+            for (index, cluster) in self.table.clusters.iter().enumerate() {
+                if !fresh.iter().any(|record| record.mac == cluster.mac) {
+                    self.pacer.note_missing(index);
+                }
+            }
         }
         self.observe_echoes(&fresh, now);
     }
@@ -955,7 +964,7 @@ impl Protocol for WirelessControllerProtocol {
                     unconfirmed_ms = u64::try_from(unconfirmed_for.as_millis()).unwrap_or(u64::MAX),
                     resends,
                     resets,
-                    "L-Wireless fans are heard but confirmed no frame across every resend; the TX stopped delivering, resetting it through the RX"
+                    "L-Wireless delivery has not recovered after probing the present fans; resetting TX through the RX"
                 );
                 commands.push(Self::tx_reset_command());
                 return;
