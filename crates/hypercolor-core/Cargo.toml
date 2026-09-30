@@ -25,7 +25,10 @@ servo = [
     "dep:base",
     "dep:servo",
     "dep:dpi",
+    "dep:euclid",
     "dep:gleam",
+    "dep:glow",
+    "dep:surfman",
     "dep:servo-allocator",
     "hypercolor-gpu-frame/servo-context",
     # The Windows CPU path renders through a hidden native window; the crate
@@ -116,6 +119,11 @@ servo = { workspace = true, features = ["baked-in-resources", "js_jit", "webgl"]
 # Pinned to match Servo's `Rc<dyn gleam::gl::Gl>` so the direct
 # glReadPixels path in servo/worker.rs can call into Servo's context.
 gleam = { version = "0.15", optional = true }
+# Servo's RenderingContext trait names surfman, glow, and euclid types in its
+# signatures; the worker's frame-clock context wrapper forwards them.
+euclid = { version = "0.22", optional = true }
+glow = { workspace = true, optional = true }
+surfman = { workspace = true, optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 tempfile = { workspace = true }
 
