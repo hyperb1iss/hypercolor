@@ -9,6 +9,12 @@ Most users should install a prebuilt package; no Rust toolchain required. Source
 
 Not sure which path fits? Read [Choose your install](@/guide/choose-your-install.md) first.
 
+For a Linux server or NAS controlling WLED and other network lights, use the
+[Docker setup](@/guide/docker.md). The image bundles the web UI and HTML
+effects, with persistent storage and optional GPU access. Native installs
+provide the host capture and hardware integration that the supplied container
+setup does not expose.
+
 ## Linux: prebuilt installer
 
 The fastest path on any Linux distribution. The script downloads a release
