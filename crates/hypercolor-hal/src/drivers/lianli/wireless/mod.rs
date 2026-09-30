@@ -58,9 +58,9 @@ use discovery::{
 };
 use frame::{
     DEFAULT_CHANNEL, Mac, RF_BROADCAST_SLOT, RX_LCD_MODE, RX_QUERY_34, RX_QUERY_37, RfEnvelope,
-    TX_RESET, TX_VIDEO_START, USB_CMD_GET_MAC, USB_CMD_SEND_RF, WallClock, clock_payload,
-    clock_sync_envelope, control_packet, effect_index_for, get_dev_poll, get_mac_query,
-    pwm_envelope, reverse_fan_order, rgb_transfer, save_config_envelope, stream_prep_packet,
+    TX_RESET, USB_CMD_GET_MAC, USB_CMD_SEND_RF, WallClock, clock_payload, clock_sync_envelope,
+    control_packet, effect_index_for, get_dev_poll, get_mac_query, pwm_envelope, reverse_fan_order,
+    rgb_transfer, save_config_envelope, stream_prep_packet,
 };
 use pacing::{DeliveryPacer, DeliveryStats, SendKind, StallVerdict, Tag};
 
@@ -511,15 +511,15 @@ impl WirelessControllerProtocol {
             .map_or(DEFAULT_CHANNEL, |cluster| cluster.channel)
     }
 
-    /// The streaming-mode switch plus one prep packet per driven cluster.
+    /// Select the clusters' RF channel, then prepare each driven cluster.
     ///
     /// Sent once per session, ahead of the first frame or the first upkeep
-    /// tick, whichever comes first. Re-sending it every tick made the radio
-    /// restart its stream once a second, which showed as a freeze and a
-    /// snap on the fans; the reference arms video mode once as well.
+    /// tick, whichever comes first. Command 0x11 selects a channel; its
+    /// argument is not a video-mode flag. Selecting channel 1 here leaves
+    /// the master's channel different from the clusters' channel.
     fn streaming_preamble(state: &WirelessState, commands: &mut Vec<ProtocolCommand>) {
         let channel = Self::channel(state);
-        commands.push(Self::tx_command(control_packet(&TX_VIDEO_START), false));
+        commands.push(Self::tx_command(get_mac_query(channel), false));
         let clusters = u8::try_from(state.table.clusters.len().max(1)).unwrap_or(u8::MAX);
         for index in 0..clusters {
             commands.push(Self::tx_command(stream_prep_packet(index, channel), false));

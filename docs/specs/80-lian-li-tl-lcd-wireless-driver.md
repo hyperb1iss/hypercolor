@@ -598,8 +598,8 @@ Host→dongle packet:
 | 3 | 1 | rx_type | 1–13, `0xFF` | radio endpoint slot; `0xFF` broadcast |
 | 4–63 | 60 | RF data | | 60-byte slice of the RF buffer |
 
-Precomposed control frames (zero-padded to 64): `11 08 00 00` TX reset,
-`11 01 00 00` enter video mode, `10 01 04 34` / `10 01 04 37` RX queries,
+Precomposed control frames (zero-padded to 64): `11 08 00 00` select channel 8
+and query the master, `10 01 04 34` / `10 01 04 37` RX queries,
 `10 01 04 30` RX LCD mode.
 
 The "TX reset" is the reference driver's name for these bytes. The
@@ -610,6 +610,14 @@ should work on, and L-Connect sends it every second and reads the reply. So
 reply, and it does not revive a TX that stopped taking commands. The
 vendor's dongle reset is a separate command, `15` padded to 64, written to
 the *partner* dongle (§6.10).
+
+The reference's `11 01` "video start" is also a master query: it selects
+channel 1. Hypercolor selects the discovered fan channel before its per-cluster
+prep packets. Captures from a V1 controller showed the old preamble left the
+master reporting channel 1 while the fans remained on channel 8. Correcting
+that mismatch does not by itself establish the cause of intermittent delivery
+failures. The channel semantics come from the
+[L-Connect-derived encoder](https://github.com/lewisgibson/FanControl.LianLi/blob/90805c2782fcbb0e9740c9511311b4374fe3a0a9/src/FanControl.LianLi/Protocol/WirelessProtocol.cs#L185-L195).
 
 **Master discovery:** write `{0x11, channel}`, read `{0x11, mac[6], ...}`
 (bytes 11–12 = master firmware, u16 BE, when present). Channel scan order:
@@ -817,12 +825,12 @@ occasionally spikes RPM.
 4. sends nothing after disconnect/shutdown — fans revert to firmware
    defaults, which is the same behavior as L-Connect exiting; documented, not
    hidden,
-5. arms the radio's streaming mode (video start plus one prep packet per
-   cluster) once per session, from whichever of the first frame or the
-   first upkeep tick comes first, never per tick. Re-arming it every second
-   restarted the stream: on the bench the rings froze for about a second
-   and snapped to the newest frame each tick. The reference arms video
-   mode once as well.
+5. selects the discovered fan channel and sends one prep packet per cluster
+   once per session, from whichever of the first frame or the first upkeep
+   tick comes first. Repeating the old preamble every second produced visible
+   freezes and jumps on the bench. That preamble selected channel 1 rather
+   than the fans' channel (§6.1), so the observation does not establish that
+   a channel query restarts a video stream.
 
 PWM writes can interrupt direct RGB output and briefly expose the receiver's
 onboard rainbow effect. After writing the PWM batch, upkeep immediately

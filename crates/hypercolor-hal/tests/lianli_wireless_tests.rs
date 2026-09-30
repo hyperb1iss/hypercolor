@@ -13,7 +13,7 @@ use hypercolor_hal::drivers::lianli::wireless::discovery::{
 };
 use hypercolor_hal::drivers::lianli::wireless::frame::{
     CLOCK_PAYLOAD_LEN, RF_BROADCAST_SLOT, RF_ENVELOPE_LEN, RF_SELECT, RGB_CHUNK_LEN,
-    RGB_DATA_OFFSET, RX_LCD_MODE, RX_QUERY_34, RX_QUERY_37, RfSubCommand, TX_RESET, TX_VIDEO_START,
+    RGB_DATA_OFFSET, RX_LCD_MODE, RX_QUERY_34, RX_QUERY_37, RfSubCommand, TX_RESET,
     USB_CMD_GET_MAC, USB_CMD_SEND_RF, USB_PACKET_LEN, WallClock, clock_payload,
     clock_sync_envelope, pwm_envelope, reverse_fan_order, rgb_transfer,
 };
@@ -517,12 +517,45 @@ fn a_discovered_controller_exposes_one_ring_per_fan_in_table_order() {
 }
 
 #[test]
-fn the_first_frame_switches_the_radio_to_streaming_and_later_frames_do_not() {
+fn streaming_selects_the_discovered_channel_on_frame_and_upkeep_start() {
+    for channel in [8, 12, 17] {
+        for upkeep_first in [false, true] {
+            let protocol = WirelessControllerProtocol::new();
+            protocol
+                .parse_response(&captured_master_reply())
+                .expect("master discovered");
+            let mut fan = record([0x33; 6], 0, 1, 27);
+            fan[12] = channel;
+            protocol
+                .parse_response(&table_with(&[fan]))
+                .expect("fan discovered");
+            let commands = if upkeep_first {
+                protocol.keepalive_commands()
+            } else {
+                protocol.encode_frame(&[[12, 34, 56]; 26])
+            };
+            assert_eq!(&commands[0].data[..4], &[USB_CMD_GET_MAC, channel, 0, 0]);
+            assert!(
+                commands
+                    .iter()
+                    .filter(|command| {
+                        command.transfer_type == TransferType::Primary
+                            && command.data[0] == USB_CMD_SEND_RF
+                    })
+                    .all(|command| command.data[2] == channel)
+            );
+            assert_eq!(protocol.capabilities().max_fps, 30);
+        }
+    }
+}
+
+#[test]
+fn the_first_frame_selects_the_fan_channel_and_later_frames_do_not() {
     let protocol = discovered_protocol();
     let colors = vec![[255, 0, 0]; 5 * 26];
 
     let first = protocol.encode_frame(&colors);
-    assert_eq!(&first[0].data[..4], &TX_VIDEO_START);
+    assert_eq!(&first[0].data[..4], &[USB_CMD_GET_MAC, 8, 0, 0]);
     assert_eq!(
         &first[1].data[..4],
         &[USB_CMD_SEND_RF, 0, 8, RF_BROADCAST_SLOT]
@@ -597,8 +630,7 @@ fn a_short_color_slice_pads_the_missing_fans_with_black() {
     assert_eq!(commands.len(), 3 + 2 * 3 * 4);
 }
 
-/// Re-arming video mode restarts the radio's stream; once a frame or a
-/// tick has armed it, upkeep leaves it alone.
+/// Channel selection and cluster preparation happen once per session.
 #[test]
 fn upkeep_does_not_restart_the_stream_once_it_is_armed() {
     let protocol = discovered_protocol();
@@ -608,8 +640,8 @@ fn upkeep_does_not_restart_the_stream_once_it_is_armed() {
     assert!(
         commands
             .iter()
-            .all(|command| command.data[..4] != TX_VIDEO_START),
-        "no video start after the first frame"
+            .all(|command| command.data[0] != USB_CMD_GET_MAC),
+        "no repeated channel selection after the first frame"
     );
     assert_eq!(
         commands.len(),
@@ -887,7 +919,7 @@ fn a_new_session_discards_cached_colors_before_rediscovery() {
         2 + 4 + 4 + 1,
         "no cached RGB in a new session"
     );
-    assert_eq!(&commands[0].data[..4], &TX_VIDEO_START);
+    assert_eq!(&commands[0].data[..4], &[USB_CMD_GET_MAC, 8, 0, 0]);
     assert_eq!(commands[2].data[5], RfSubCommand::Pwm as u8);
     assert_eq!(commands[6].data[5], RfSubCommand::ClockSync as u8);
     assert_eq!(commands[10].transfer_type, TransferType::Companion);
@@ -913,14 +945,14 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
     );
 
     let commands = protocol.keepalive_commands();
-    // The streaming preamble (video start plus one prep packet per
+    // The streaming preamble (channel selection plus one prep packet per
     // cluster) because no frame has armed it yet, then two PWM envelopes
     // and one clock envelope at four packets each, then the table poll.
     let preamble = 1 + 2;
     assert_eq!(commands.len(), preamble + 3 * 4 + 1);
     assert_eq!(
         &commands[0].data[..4],
-        &TX_VIDEO_START,
+        &[USB_CMD_GET_MAC, 8, 0, 0],
         "the first tick arms streaming when no frame has"
     );
 
