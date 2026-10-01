@@ -79,14 +79,32 @@
   ${EndIf}
 !macroend
 
+; Stop the HypercolorSmBus broker and wait until it has exited. The
+; LocalSystem service runs from $INSTDIR\tools and holds its exe and the
+; app-local VC++ runtime beside it open, so files can only be replaced or
+; deleted once the process is gone. `sc.exe stop` returns as soon as the
+; stop is requested, which races the file operations that follow. The
+; wait is bounded and never fails the installer: an absent service is
+; the normal state on a first install.
+!macro HYPERCOLOR_STOP_BROKER
+  DetailPrint "Stopping HypercolorSmBus service"
+  nsExec::ExecToLog `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$$service = Get-Service -Name HypercolorSmBus -ErrorAction SilentlyContinue; if ($$service -and $$service.Status -ne 'Stopped') { Stop-Service -Name HypercolorSmBus -Force -ErrorAction SilentlyContinue; try { $$service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20)) } catch { Write-Output 'HypercolorSmBus did not stop within 20 seconds' } }"`
+  Pop $0
+!macroend
+
+!macro NSIS_HOOK_PREINSTALL
+  ; Upgrades write over a running broker's files. POSTINSTALL re-registers
+  ; and starts the service with -ReinstallService, so stopping it here
+  ; costs nothing on a fresh install and unblocks every upgrade.
+  !insertmacro HYPERCOLOR_STOP_BROKER
+!macroend
+
 !macro NSIS_HOOK_PREUNINSTALL
   ; Stop + delete the HypercolorSmBus broker service. NSIS runs the
   ; uninstaller elevated, so sc.exe inherits the necessary rights.
   ; nsExec::ExecToLog silently swallows missing-service failures — we
   ; never want an absent service to block uninstall on retried runs.
-  DetailPrint "Stopping HypercolorSmBus service"
-  nsExec::ExecToLog 'sc.exe stop HypercolorSmBus'
-  Pop $0
+  !insertmacro HYPERCOLOR_STOP_BROKER
 
   DetailPrint "Removing HypercolorSmBus service registration"
   nsExec::ExecToLog 'sc.exe delete HypercolorSmBus'
