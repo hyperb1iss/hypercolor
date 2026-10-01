@@ -470,7 +470,10 @@ fn tauri_windows_bundle_config_layers_pawnio_resources() {
             "../../target/bundle-stage/dlls/libGLESv2.dll",
             "libGLESv2.dll",
         ),
-        ("../../target/bundle-stage/dlls/msvcp140.dll", "msvcp140.dll"),
+        (
+            "../../target/bundle-stage/dlls/msvcp140.dll",
+            "msvcp140.dll",
+        ),
         (
             "../../target/bundle-stage/dlls/vcruntime140.dll",
             "vcruntime140.dll",
