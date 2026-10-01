@@ -117,6 +117,63 @@ function Copy-AngleRuntime {
     Copy-Item -LiteralPath (Join-Path $eglDll.DirectoryName 'libGLESv2.dll') -Destination (Join-Path $StageDlls 'libGLESv2.dll') -Force
 }
 
+function Copy-VcRuntime {
+    # Only the Tauri shell links the MSVC runtime statically. The daemon,
+    # the CLI, the SMBus broker, the helper, and mozangle's DLLs all import
+    # msvcp140/vcruntime140, and a clean Windows install ships no VC++
+    # redistributable, so without app-local copies the daemon exits with
+    # STATUS_DLL_NOT_FOUND before it binds its port. Microsoft permits
+    # app-local deployment of these files from the toolset's redist folder;
+    # Windows resolves a DLL from the importing binary's directory first, so
+    # the root and tools/ each get a copy. The copies must be at least as
+    # new as the toolset that linked the binaries, so a developer prompt's
+    # own redist folder wins over the newest installed Visual Studio.
+    $arch = switch -Wildcard ($Target) {
+        'x86_64-*' { 'x64' }
+        'aarch64-*' { 'arm64' }
+        default { throw "no VC++ runtime mapping for target $Target" }
+    }
+
+    $redistDirs = @()
+    if ($env:VCToolsRedistDir) {
+        $redistDirs += $env:VCToolsRedistDir
+    } else {
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (-not (Test-Path -LiteralPath $vswhere)) {
+            throw "vswhere.exe not found at $vswhere; install the Visual Studio C++ build tools"
+        }
+        $vsRoot = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+        if (-not $vsRoot) {
+            throw 'no Visual Studio installation with the C++ x64 toolset was found'
+        }
+        $redistDirs += Get-ChildItem -LiteralPath (Join-Path $vsRoot 'VC\Redist\MSVC') -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } |
+            Sort-Object { [version] $_.Name } -Descending |
+            ForEach-Object { $_.FullName }
+    }
+
+    $crtDir = $redistDirs |
+        ForEach-Object {
+            Get-ChildItem -LiteralPath (Join-Path $_ $arch) -Directory -Filter 'Microsoft.VC14*.CRT' -ErrorAction SilentlyContinue
+        } |
+        Select-Object -First 1
+    if ($null -eq $crtDir) {
+        throw "could not locate an $arch Microsoft.VC14*.CRT folder under: $($redistDirs -join ', ')"
+    }
+
+    foreach ($dll in $VcRuntimeDlls) {
+        $source = Join-Path $crtDir.FullName $dll
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw "missing VC++ runtime file: $source"
+        }
+        Copy-Item -LiteralPath $source -Destination (Join-Path $StageDlls $dll) -Force
+        Copy-Item -LiteralPath $source -Destination (Join-Path $StageTools $dll) -Force
+    }
+    Write-Host "staged VC++ runtime from $($crtDir.FullName)"
+}
+
 function Test-WindowsTarget {
     $Target -like '*windows*' -or $Target -like '*-pc-windows-*'
 }
@@ -151,6 +208,7 @@ $StageUi = Join-Path $StageDir 'ui'
 $StageEffects = Join-Path $StageDir 'effects'
 $StageTools = Join-Path $StageDir 'tools'
 $StageDlls = Join-Path $StageDir 'dlls'
+$VcRuntimeDlls = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
 
 $uiDist = Join-Path $RepoRoot 'crates\hypercolor-ui\dist'
 $uiIndex = Join-Path $uiDist 'index.html'
@@ -188,6 +246,7 @@ if (Test-WindowsTarget) {
     Copy-WindowsToolBinary 'hypercolor-windows-helper'
 
     Copy-AngleRuntime
+    Copy-VcRuntime
 
     if (-not $SkipPawnIo) {
         & (Join-Path $RepoRoot 'scripts\fetch-pawnio-assets.ps1') `

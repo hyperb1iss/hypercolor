@@ -1676,10 +1676,33 @@ fn hardware_support_orchestrator_splats_by_hashtable_not_array() {
     }
 }
 
+fn nsis_macro_body<'a>(name: &str) -> &'a str {
+    INSTALLER_HOOKS_NSH
+        .split_once(format!("!macro {name}\n").as_str())
+        .and_then(|(_, rest)| rest.split_once("!macroend"))
+        .map(|(body, _)| body)
+        .unwrap_or_else(|| panic!("installer hooks should define {name}"))
+}
+
+/// The broker runs from `$INSTDIR\tools` and holds its exe and the app-local
+/// VC++ runtime open. `sc.exe stop` returns as soon as the stop is requested,
+/// so the hooks must wait for the process to exit before files change.
+#[test]
+fn installer_hooks_stop_the_broker_before_files_change() {
+    let stop = nsis_macro_body("HYPERCOLOR_STOP_BROKER");
+    assert!(stop.contains("Stop-Service -Name HypercolorSmBus"));
+    assert!(stop.contains("WaitForStatus('Stopped'"));
+    for hook in ["NSIS_HOOK_PREINSTALL", "NSIS_HOOK_PREUNINSTALL"] {
+        assert!(
+            nsis_macro_body(hook).contains("!insertmacro HYPERCOLOR_STOP_BROKER"),
+            "{hook} must stop the broker before files change"
+        );
+    }
+}
+
 #[test]
 fn installer_hook_cleans_up_the_broker_on_uninstall() {
-    assert!(INSTALLER_HOOKS_NSH.contains("sc.exe stop HypercolorSmBus"));
-    assert!(INSTALLER_HOOKS_NSH.contains("sc.exe delete HypercolorSmBus"));
+    assert!(nsis_macro_body("NSIS_HOOK_PREUNINSTALL").contains("sc.exe delete HypercolorSmBus"));
 }
 
 #[test]
