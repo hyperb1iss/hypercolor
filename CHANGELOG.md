@@ -5,6 +5,49 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-10-01
+
+Ship the Windows VC++ runtime alongside every binary that needs it, fixing installs that silently failed on machines without the redistributable. Also adds a headless Docker runtime for server deployments and reworks the Servo worker to run on wakeups and a render-tick clock instead of polling.
+
+### Added
+
+- ✨ Add a persistent headless Docker runtime packaging the Linux release payload with the web UI, CLI, and bundled HTML effects: unprivileged execution, keyed network access, XDG storage in one volume, Mesa surfaceless rendering by default, and an optional host GPU overlay via `packaging/docker/compose.gpu.yaml` (bd82dd4)
+- ✨ Add `just docker-build` and `just docker-test` recipes plus a container smoke test (`scripts/tests/docker-smoke.mjs`) that proves Servo rendering, animated WLED DDP delivery, saved-state resume, and graceful shutdown on an isolated network (bd82dd4)
+- 👷 Build and publish native amd64 and arm64 release images from verified release bundles, gated on the full release checks, with `latest` tag protection across concurrent runs (b4cfd81)
+- 📝 Add `docs/content/guide/docker.md` covering Compose setup, persistence, GPU upgrades, WLED networking, and host integration tradeoffs; link it from the install guides (b4cfd81)
+- ✅ Add an NSIS installer DLL-closure check (`scripts/check-windows-dll-closure.ps1`) that reads import tables only and fails the build when a shipped binary imports a VC++ runtime DLL that is not beside it (c57d347, c0abf91)
+
+### Changed
+
+- ⚡️ Drive the Servo worker from Servo `EventLoopWaker` wakeups and a latched condvar instead of 1ms polling, and start frames from the worker's render tick through a wrapped `RenderingContext`/`RefreshDriver` rather than a free-running 120Hz timer thread (3a7754c)
+  - Debug-build benchmark at 640x480/60Hz over 600 frames: Bubble Garden script eval 2.13ms → 0.13ms and worker frame time 3.7ms → 1.2ms; Digital Rain eval 2.17ms → 0.55ms and worker frame time 3.6ms → 1.4ms. These are debug-build figures and do not carry over to release builds unmeasured.
+  - Render ticks now wait up to 2ms for an animating page that still owes a frame, backing off after three misses and re-arming when a frame arrives
+- 🔄 Copy `msvcp140`, `vcruntime140`, and `vcruntime140_1` from the build toolset redist into the Windows bundle root and `tools/`, preferring `VCToolsRedistDir` when set, and fail staging on an unknown target instead of defaulting to x64 (c57d347, c0abf91)
+- 🔄 Stop the `HypercolorSmBus` broker and wait up to twenty seconds for it to reach Stopped in both the pre-install and pre-uninstall hooks, so silent and `/UPDATE` upgrades no longer overwrite a running service (859bbd6)
+- 🔧 Clear the NSIS output directory before each Windows build so the closure check and upload only ever see the current build's installer (c0abf91)
+- 🔨 Pin the Nix flake to release 0.6.0 (36b6227)
+
+### Fixed
+
+- 🐛 Refuse GL imports across mismatched GPUs: the pooled importer now compares GL device and driver UUIDs against `VkPhysicalDeviceIDProperties` before allocating shared memory, failing with the new non-transient `DeviceUuidMismatch` fallback reason (code 27) so Auto mode backs off to CPU readback instead of importing garbage (d8bdaa3)
+  - Sides that cannot report UUIDs, or report zeroed ones, skip the check; the loader now requires the two `GL_EXT_memory_object` getters the query needs
+- 🐛 Fix the Windows daemon failing its health check and respawning every twenty seconds on machines without the VC++ redistributable, which affected every Windows release to date (c57d347)
+- 🐛 Fix the DLL closure check passing vacuously when `llvm-objdump` failed or extraction found no binaries, and extend the must-ship-beside rule to legacy and debug runtimes such as `msvcr120` and `vcruntime140d` (c0abf91)
+- ✅ Repair the feature-gated raw GL import fixture for the wgpu 30 API changes and serialize the six fixtures behind a process-wide lock so `cargo test` no longer deadlocks without `--test-threads=1` (4212036)
+
+### Upgrade Notes
+
+- Windows upgrades from 0.6.1 onward are the first where the SMBus broker holds files open; the stop-and-wait hooks land in the 0.6.1 uninstaller that those upgrades run
+- Docker deployments should start from `packaging/docker/compose.yaml` and layer `compose.gpu.yaml` only when host render nodes are exposed
+
+### Metrics
+
+- Total Commits: 14 (10 non-merge, 4 merges)
+- Files Changed: 33
+- Insertions: +1,894
+- Deletions: -73
+<!-- -------------------------------------------------------------- -->
+
 ## [0.6.0] - 2026-09-30
 
 Managed Linux release installs land as their own crate with recorded authority, probation and rollback, the daemon gains state history and a persistent audit trail, and the Lian Li L-Wireless and Ableton Push 2 drivers get acknowledgement-paced output. The release also ships a Nix flake, a reworked signed macOS lane, and a large dependency refresh.

@@ -14,7 +14,7 @@
     },
     "packages/core": {
       "name": "hypercolor",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "bin": {
         "hypercolor": "bin/hypercolor.js",
       },
@@ -27,7 +27,7 @@
     },
     "packages/create-effect": {
       "name": "create-hypercolor",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "bin": {
         "create-hypercolor-effect": "bin/create-hypercolor-effect.js",
       },
