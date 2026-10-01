@@ -470,6 +470,27 @@ fn tauri_windows_bundle_config_layers_pawnio_resources() {
             "../../target/bundle-stage/dlls/libGLESv2.dll",
             "libGLESv2.dll",
         ),
+        ("../../target/bundle-stage/dlls/msvcp140.dll", "msvcp140.dll"),
+        (
+            "../../target/bundle-stage/dlls/vcruntime140.dll",
+            "vcruntime140.dll",
+        ),
+        (
+            "../../target/bundle-stage/dlls/vcruntime140_1.dll",
+            "vcruntime140_1.dll",
+        ),
+        (
+            "../../target/bundle-stage/tools/msvcp140.dll",
+            "tools/msvcp140.dll",
+        ),
+        (
+            "../../target/bundle-stage/tools/vcruntime140.dll",
+            "tools/vcruntime140.dll",
+        ),
+        (
+            "../../target/bundle-stage/tools/vcruntime140_1.dll",
+            "tools/vcruntime140_1.dll",
+        ),
     ] {
         assert_eq!(
             resources.get(source).and_then(serde_json::Value::as_str),
