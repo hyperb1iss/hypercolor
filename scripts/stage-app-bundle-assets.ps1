@@ -125,29 +125,42 @@ function Copy-VcRuntime {
     # STATUS_DLL_NOT_FOUND before it binds its port. Microsoft permits
     # app-local deployment of these files from the toolset's redist folder;
     # Windows resolves a DLL from the importing binary's directory first, so
-    # the root and tools/ each get a copy.
-    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-    if (-not (Test-Path -LiteralPath $vswhere)) {
-        throw "vswhere.exe not found at $vswhere; install the Visual Studio C++ build tools"
-    }
-    $vsRoot = & $vswhere -latest -products * `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        -property installationPath
-    if (-not $vsRoot) {
-        throw 'no Visual Studio installation with the C++ x64 toolset was found'
+    # the root and tools/ each get a copy. The copies must be at least as
+    # new as the toolset that linked the binaries, so a developer prompt's
+    # own redist folder wins over the newest installed Visual Studio.
+    $arch = switch -Wildcard ($Target) {
+        'x86_64-*' { 'x64' }
+        'aarch64-*' { 'arm64' }
+        default { throw "no VC++ runtime mapping for target $Target" }
     }
 
-    $arch = if ($Target -like 'aarch64-*') { 'arm64' } else { 'x64' }
-    $redistRoot = Join-Path $vsRoot 'VC\Redist\MSVC'
-    $crtDir = Get-ChildItem -LiteralPath $redistRoot -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } |
-        Sort-Object { [version] $_.Name } -Descending |
+    $redistDirs = @()
+    if ($env:VCToolsRedistDir) {
+        $redistDirs += $env:VCToolsRedistDir
+    } else {
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (-not (Test-Path -LiteralPath $vswhere)) {
+            throw "vswhere.exe not found at $vswhere; install the Visual Studio C++ build tools"
+        }
+        $vsRoot = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+        if (-not $vsRoot) {
+            throw 'no Visual Studio installation with the C++ x64 toolset was found'
+        }
+        $redistDirs += Get-ChildItem -LiteralPath (Join-Path $vsRoot 'VC\Redist\MSVC') -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } |
+            Sort-Object { [version] $_.Name } -Descending |
+            ForEach-Object { $_.FullName }
+    }
+
+    $crtDir = $redistDirs |
         ForEach-Object {
-            Get-ChildItem -LiteralPath (Join-Path $_.FullName $arch) -Directory -Filter 'Microsoft.VC14*.CRT' -ErrorAction SilentlyContinue
+            Get-ChildItem -LiteralPath (Join-Path $_ $arch) -Directory -Filter 'Microsoft.VC14*.CRT' -ErrorAction SilentlyContinue
         } |
         Select-Object -First 1
     if ($null -eq $crtDir) {
-        throw "could not locate an $arch Microsoft.VC14*.CRT folder under $redistRoot"
+        throw "could not locate an $arch Microsoft.VC14*.CRT folder under: $($redistDirs -join ', ')"
     }
 
     foreach ($dll in $VcRuntimeDlls) {
