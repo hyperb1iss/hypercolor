@@ -197,7 +197,9 @@ sccache stores its entries in the Cloudflare R2 bucket named by the
 Fork pull requests receive no secrets and compile with the local disk cache.
 The `Compiler cache:` line in the configure step's log and the
 `Cache location` row of the job summary's statistics show which backend a job
-used.
+used. A read-only run counts every write it skips as a `Cache write errors`
+entry, so in pull requests and tags that row matching `Cache misses` is
+expected, not a fault.
 
 The bucket deletes objects 30 days after upload, so an entry nobody rewrites
 expires and its next use compiles once and writes it again. The token CI uses
