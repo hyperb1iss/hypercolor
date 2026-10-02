@@ -150,31 +150,62 @@ Look for increasing cache hit counts after the first Servo build.
 
 ## CI Cache Topology
 
-The reusable action `.github/actions/rust-build-cache` configures GitHub
-Actions builds with:
+The reusable action `.github/actions/rust-build-cache` gives each Rust job two
+cache layers:
 
-- `Swatinem/rust-cache` for Cargo and extra cache directories
-- `CARGO_INCREMENTAL=0` (set workflow-wide)
-- `.cache/hypercolor/target` for CI-selected Cargo target shards
-- `.cache/hypercolor/mozbuild`
-- `.cache/hypercolor/toolchain`
-- `.cache/hypercolor/ccache`
+- **GitHub Actions cache:** the Cargo registry and git checkouts, the
+  CI-selected Cargo target shard under `.cache/hypercolor/target`, and any
+  extra directories a lane declares (`.cache/hypercolor/mozbuild`, the macOS
+  `ccache` directory). Each lane passes its own `shared-key` and shards its
+  target dir to match (`shared-key: servo` builds into
+  `.cache/hypercolor/target/servo`), so lanes with incompatible feature shapes
+  never share an entry.
+- **sccache:** the action installs the pinned sccache release, starts a server
+  that lives for the whole job, and prints its statistics in the job summary.
+  `CARGO_INCREMENTAL=0` is set workflow-wide because sccache refuses
+  incremental compiles.
 
-Each lane passes its own `shared-key` and shards its target dir to match
-(`shared-key: servo` builds into `.cache/hypercolor/target/servo`), so lanes
-with incompatible feature shapes never share an entry.
+**Only the default branch writes.** The action's `save-if` input defaults to
+`auto`, which resolves to true only for pushes, dispatches, and schedules on
+`refs/heads/main`. Actions cache storage is bounded: GitHub evicts
+least-recently-used entries, and once the repository reaches its configured
+storage budget the cache turns read-only ("Cache reservation failed: You have
+reached your configured budget"), so new keys stop saving at all. PR and tag
+runs that each saved their own copy would push the warm Servo entry out and
+hand the next job a cold native build. PR and tag lanes restore without
+competing; `save-if: "false"` opts a lane out of saving even on main.
 
-**Only the default branch saves.** The action's `save-if` input defaults to
-`auto`, which resolves to true only on `refs/heads/main`. The repo has a 10GB
-Actions cache quota and GitHub evicts least-recently-used entries to stay under
-it, so PR and tag runs that each saved their own copy would push the warm Servo
-entry out and hand the next job a cold native build. PR and tag lanes restore
-without competing; `save-if: "false"` opts a lane out of saving even on main.
+### Shared compiler cache in R2
 
-CI does not run sccache today: hosted runners do not preinstall it and the
-workflows do not set it up. The wrappers honor `HYPERCOLOR_FORCE_SCCACHE=1`
-and a pre-set `CARGO_INCREMENTAL=0`, so a future CI sccache lane only needs
-to install the binary and set the flag.
+sccache stores its entries in the Cloudflare R2 bucket named by the
+`SCCACHE_R2_BUCKET` repository variable, outside the Actions cache quota.
+`ci.yml` and `servo-cache-warm.yml` pass `SCCACHE_R2_ACCESS_KEY_ID`,
+`SCCACHE_R2_SECRET_ACCESS_KEY`, `SCCACHE_R2_BUCKET`, and
+`SCCACHE_R2_ENDPOINT` to the action, which then:
+
+- writes (`SCCACHE_S3_RW_MODE=READ_WRITE`) only where the Actions cache writes,
+  and reads everywhere else, so pull requests and tags reuse what `main`
+  compiled without adding entries;
+- keys entries under `sccache/<os>-<arch>`, so each runner platform keeps its
+  own namespace;
+- sends a signed HEAD request before enabling R2. A refused or unreachable
+  bucket logs a warning and leaves the job on the local disk cache, and so
+  does a server restart whose storage check fails mid-job, because sccache
+  otherwise refuses to start and would fail the build over an optional
+  accelerator.
+
+Fork pull requests receive no secrets and compile with the local disk cache.
+The `Compiler cache:` line in the configure step's log and the
+`Cache location` row of the job summary's statistics show which backend a job
+used.
+
+The bucket deletes objects 30 days after upload, so an entry nobody rewrites
+expires and its next use compiles once and writes it again. The token CI uses
+can read and write that one bucket and nothing else. The proprietary repository
+uses its own bucket and token, so public CI can never write an entry a
+proprietary build consumes. The 1Password items "Cloudflare R2 sccache:
+hypercolor-oss-sccache-ci" and its `-lighting-` counterpart in the Hyperbliss
+vault hold the credentials and the rotation steps.
 
 The manual `.github/workflows/servo-cache-warm.yml` workflow warms the
 `servo` shared cache key when a maintainer deliberately refreshes Servo
@@ -210,11 +241,14 @@ When CI starts compiling Servo from scratch:
    shape as the warmer.
 3. Confirm `Cargo.lock`, `rust-toolchain.toml`, and Servo feature sets did not
    change.
-4. Inspect `Swatinem/rust-cache` restore logs for a key miss.
-5. Check the repo's Actions cache list for eviction. The Servo entry is large
-   and the quota is 10GB, so a burst of other saved entries can push it out
-   even when every key is correct. A key that was fine yesterday and misses
-   today with no input change is the signature.
+4. Inspect the action's `Restore build artifacts and compiler cache` step for a
+   key miss, and the `Compiler cache:` line of its configure step for whether
+   the job reached R2.
+5. Check the repo's Actions cache list for eviction, and the save step's log
+   for "your cache is now read only". The Servo entry is large, so a burst of
+   other saved entries can push it out even when every key is correct, and a
+   cache at its storage budget saves nothing new. A key that was fine
+   yesterday and misses today with no input change is the signature.
 
 If the pinned Servo version and toolchain are unchanged, warm builds should
 avoid repeating the costly native compile.
