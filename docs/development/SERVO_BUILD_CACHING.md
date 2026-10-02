@@ -186,9 +186,11 @@ Each of the thirteen jobs that use the cache action passes the bucket, the
 `SCCACHE_R2_SECRET_ACCESS_KEY` secrets as the action's `r2-*` inputs. Jobs
 that never compile see none of them. The action then:
 
-- writes (`SCCACHE_S3_RW_MODE=READ_WRITE`) only where the Actions cache writes,
-  and reads everywhere else, so pull requests and tags reuse what `main`
-  compiled without adding entries;
+- writes (`SCCACHE_S3_RW_MODE=READ_WRITE`) from every push or dispatch on
+  `main`, including lanes that set `save-if: "false"` (that switch protects
+  the Actions cache budget, which R2 does not share), and reads everywhere
+  else, so pull requests and tags reuse what `main` compiled without adding
+  entries;
 - keys entries under `sccache/<os>-<arch>`, so each runner platform keeps its
   own namespace;
 - sends a signed HEAD request before enabling R2. A refused or unreachable
@@ -201,8 +203,9 @@ Fork pull requests receive no secrets and compile with the local disk cache.
 The `Compiler cache:` line in the configure step's log and the
 `Cache location` row of the job summary's statistics show which backend a job
 used. The statistics are authoritative: a mid-job fallback, or a write check
-that downgrades sccache to read-only, leaves the configure line stale, and the
-first `main` run should show `Cache writes` above zero. A read-only run counts
+that downgrades sccache to read-only, leaves the configure line stale.
+sccache 0.17 has no write counter, so a writing run shows a nonzero
+`Average cache write` with `Cache write errors` at zero. A read-only run counts
 every write it skips as a `Cache write errors` entry, so in pull requests and
 tags that row matching `Cache misses` is expected, not a fault.
 
