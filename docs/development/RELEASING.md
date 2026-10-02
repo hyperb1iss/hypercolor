@@ -208,6 +208,13 @@ step 1.
 
 - Artifact-only rehearsal without a tag: dispatch **CI/CD** with
   `release_artifacts: full` (or `smoke` for the tarball smoke test).
+- Unsigned rehearsal that also warms the release cache: dispatch **CI/CD**
+  from `main` with `release_artifacts: warm`, or **Release Cache Warm**, which
+  does the same every night. Warm builds every platform's release artifacts
+  without signing or the normal CI lanes, and because it runs on `main` it
+  writes those compiles to R2, so the next tag's release builds read them
+  instead of compiling the release profile cold. Dispatch it by hand after a
+  lockfile or toolchain change when a release is due before the next night.
 - Full rehearsal without pushing: dispatch **Release** with dry run
   checked. Everything is prepared and uploaded as an artifact, and nothing
   leaves the runner.
