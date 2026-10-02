@@ -77,14 +77,23 @@ export function probeRemoteCache({ endpoint, bucket, keyId, secret }, run = exec
   }
 }
 
-export function cacheKeys({ shape, variant, runner, compiler, environment, workspaces, revisions, locks }) {
+// A revision-scoped archive is saved by every commit main builds. A
+// dependency-scoped one is saved once per lockfile set: later commits restore
+// it as an exact hit, rebuild only the workspace crates that changed, and read
+// those from the shared compiler cache. A failed run saves under the revision
+// key instead, which the dependency key prefix-matches without an exact hit,
+// so a partial archive seeds the next run but never stands in for the set.
+export function cacheKeys({ shape, variant, runner, compiler, environment, workspaces, revisions, locks, scope = 'revision' }) {
+  if (!['revision', 'dependencies'].includes(scope)) throw new Error(`Invalid archive-key: ${scope}`);
   const owner = [shape, variant].filter(Boolean).join('-');
   if (!/^[a-zA-Z0-9_.-]+$/.test(owner)) throw new Error(`Invalid cache owner: ${owner}`);
   const prefix = `hypercolor-build-v3-${owner}-${runner}-${digest([compiler, environment, workspaces])}-`;
   const registryPrefix = `hypercolor-registry-v3-${runner}-`;
+  const revisionKey = `${prefix}${digest(locks)}-${digest(revisions)}`;
   return {
     prefix,
-    key: `${prefix}${digest(locks)}-${digest(revisions)}`,
+    key: scope === 'revision' ? revisionKey : `${prefix}${digest(locks)}`,
+    revisionKey,
     registryPrefix,
     registryKey: `${registryPrefix}${digest(locks)}`,
   };
@@ -134,7 +143,7 @@ export function configure(env = process.env, compilerVersion, probe = probeRemot
     runner: `${env.RUNNER_OS}-${env.RUNNER_ARCH}`,
     compiler: compilerVersion ?? execFileSync('rustc', ['-vV'], { encoding: 'utf8' }),
     environment: compilerEnvironment({ ...env, ...profile }),
-    workspaces: mappings, revisions, locks,
+    workspaces: mappings, revisions, locks, scope: env.CACHE_ARCHIVE_KEY || 'revision',
   });
   const cargoHome = env.CARGO_HOME || path.join(homedir(), '.cargo');
   const write = cacheWriter(env.CACHE_SAVE_IF || 'auto', env.GITHUB_REF, env.CACHE_DEFAULT_BRANCH, env.GITHUB_EVENT_NAME);
@@ -173,6 +182,7 @@ export function configure(env = process.env, compilerVersion, probe = probeRemot
     HYPERCOLOR_CACHE_SOURCE_ROOTS: JSON.stringify(mappings.map(([root]) => path.resolve(workspace, root))),
     HYPERCOLOR_CACHE_SOURCE_TIMES: sourceTimes,
     HYPERCOLOR_BUILD_CACHE_KEY: keys.key,
+    HYPERCOLOR_BUILD_CACHE_FAILURE_KEY: keys.revisionKey,
     HYPERCOLOR_BUILD_CACHE_PREFIX: keys.prefix,
     HYPERCOLOR_BUILD_CACHE_PATHS: [...buildPaths].join('\n'),
     HYPERCOLOR_REGISTRY_CACHE_KEY: keys.registryKey,

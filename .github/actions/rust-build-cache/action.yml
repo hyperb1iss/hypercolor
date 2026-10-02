@@ -23,6 +23,14 @@ inputs:
   cache-on-failure:
     description: Save completed compilation work even when a later check fails.
     default: "true"
+  archive-key:
+    description: >-
+      revision saves a new target archive for every commit main builds;
+      dependencies saves one per lockfile set from a successful run and lets
+      R2 supply the workspace crates that changed since. A failed run saves
+      under its revision key, which seeds the next run without replacing the
+      lockfile set's entry.
+    default: revision
   r2-access-key-id:
     description: >-
       Shared compiler cache key. Pass secrets.SCCACHE_R2_ACCESS_KEY_ID: the
@@ -69,6 +77,7 @@ runs:
         CACHE_DIRECTORIES: ${{ inputs.cache-directories }}
         CACHE_SAVE_IF: ${{ inputs.save-if }}
         CACHE_ON_FAILURE_INPUT: ${{ inputs.cache-on-failure }}
+        CACHE_ARCHIVE_KEY: ${{ inputs.archive-key }}
         CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         SCCACHE_R2_ACCESS_KEY_ID: ${{ inputs.r2-access-key-id }}
         SCCACHE_R2_SECRET_ACCESS_KEY: ${{ inputs.r2-secret-access-key }}
@@ -172,4 +181,4 @@ runs:
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ env.HYPERCOLOR_BUILD_CACHE_PATHS }}
-        key: ${{ env.HYPERCOLOR_BUILD_CACHE_KEY }}
+        key: ${{ job.status == 'success' && env.HYPERCOLOR_BUILD_CACHE_KEY || env.HYPERCOLOR_BUILD_CACHE_FAILURE_KEY }}

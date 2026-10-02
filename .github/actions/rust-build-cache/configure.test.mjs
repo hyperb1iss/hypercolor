@@ -24,6 +24,21 @@ test('source and lock updates advance immutable entries within compatible restor
   assert.equal(cacheKeys({ ...base, revisions: ['revision-b'] }).registryKey, original.registryKey);
 });
 
+test('a dependency-scoped archive advances only when the lockfiles do', () => {
+  const dependencies = { ...base, scope: 'dependencies' };
+  const original = cacheKeys(dependencies);
+  assert.equal(cacheKeys({ ...dependencies, revisions: ['revision-b'] }).key, original.key);
+  assert.notEqual(cacheKeys({ ...dependencies, locks: ['lock-b'] }).key, original.key);
+  assert.equal(original.prefix, cacheKeys(base).prefix);
+  // actions/cache prefix-matches the primary key, so the first dependency-scoped
+  // restore still finds the revision-scoped entries saved under the same lock.
+  assert.ok(cacheKeys(base).key.startsWith(original.key));
+  // A failed run saves under the revision key: found by prefix, never an exact hit.
+  assert.equal(original.revisionKey, cacheKeys(base).key);
+  assert.notEqual(original.revisionKey, original.key);
+  assert.throws(() => cacheKeys({ ...base, scope: 'weekly' }), /Invalid archive-key/);
+});
+
 test('different compilation shapes cannot restore each other', () => {
   const original = cacheKeys(base);
   for (const change of [
@@ -92,6 +107,14 @@ test('nested workspace configuration exports actual paths and tracks both reposi
     const changed = configure(env, 'rustc test fixture');
     assert.notEqual(changed.HYPERCOLOR_BUILD_CACHE_KEY, first.HYPERCOLOR_BUILD_CACHE_KEY);
     assert.equal(changed.HYPERCOLOR_BUILD_CACHE_PREFIX, first.HYPERCOLOR_BUILD_CACHE_PREFIX);
+    const scoped = { ...env, CACHE_ARCHIVE_KEY: 'dependencies' };
+    const dependencyScoped = configure(scoped, 'rustc test fixture');
+    assert.equal(configure({ ...scoped, GITHUB_SHA: 'outer-c' }, 'rustc test fixture').HYPERCOLOR_BUILD_CACHE_KEY,
+      dependencyScoped.HYPERCOLOR_BUILD_CACHE_KEY);
+    assert.equal(dependencyScoped.HYPERCOLOR_CACHE_SAVE_FAILURE, 'true');
+    assert.ok(dependencyScoped.HYPERCOLOR_BUILD_CACHE_FAILURE_KEY.startsWith(dependencyScoped.HYPERCOLOR_BUILD_CACHE_KEY));
+    assert.notEqual(dependencyScoped.HYPERCOLOR_BUILD_CACHE_FAILURE_KEY, dependencyScoped.HYPERCOLOR_BUILD_CACHE_KEY);
+    assert.equal(changed.HYPERCOLOR_BUILD_CACHE_FAILURE_KEY, changed.HYPERCOLOR_BUILD_CACHE_KEY);
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
@@ -111,6 +134,13 @@ test('each public cache consumer finalizes, and failure saves retain their owner
   }
   const action = readFileSync(new URL('./action.yml', import.meta.url), 'utf8');
   assert.equal((action.match(/env.HYPERCOLOR_CACHE_WRITE == 'true'/g) || []).length, 3);
+  // A successful run saves the configured key; a failed one only its revision key.
+  const saveKey = action.slice(action.indexOf('- name: Save build artifacts and compiler cache'))
+    .match(/\n        key: \$\{\{ (.+) \}\}/)[1];
+  const keyFor = (status) => Function('job', 'env', `return ${saveKey}`)(
+    { status }, { HYPERCOLOR_BUILD_CACHE_KEY: 'set', HYPERCOLOR_BUILD_CACHE_FAILURE_KEY: 'set-revision' });
+  assert.equal(keyFor('success'), 'set');
+  assert.equal(keyFor('failure'), 'set-revision');
   assert.equal((action.match(/job.status == 'success' \|\| env.HYPERCOLOR_CACHE_SAVE_FAILURE == 'true'/g) || []).length, 3);
 });
 
@@ -252,6 +282,8 @@ test('only main jobs can reach the read-write R2 key, and every cache restore pa
     }
   }
   assert.equal(consumers, 13);
+  const windows = readFileSync(new URL('../../workflows/ci.yml', import.meta.url), 'utf8').match(/^  rust-windows:\n([\s\S]*?)(?=^  [a-z][\w-]*:\n)/m)[1];
+  assert.match(windows, /^ {10}archive-key: dependencies$/m, 'the Windows archive is saved per lockfile set');
   const action = readFileSync(new URL('./action.yml', import.meta.url), 'utf8');
   for (const [variable, input] of [['SCCACHE_R2_ACCESS_KEY_ID', 'r2-access-key-id'], ['SCCACHE_R2_SECRET_ACCESS_KEY', 'r2-secret-access-key'],
     ['SCCACHE_R2_BUCKET', 'r2-bucket'], ['SCCACHE_R2_ENDPOINT', 'r2-endpoint']]) {

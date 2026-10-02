@@ -894,6 +894,11 @@ jobs:
           r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           shared-key: rust-windows
           workspaces: . -> .cache/hypercolor/target/rust-windows
+          # This target archive is the largest in the repository. Saving a
+          # copy per main commit took most of a Windows run's cache time and
+          # crowded other lanes out of the Actions budget, so main saves one
+          # per lockfile set and R2 supplies the workspace crates changed since.
+          archive-key: dependencies
           # Saving only on success is self-perpetuating here: no cache makes
           # the job slow enough to fail, and failing is what withholds the
           # cache. Seeding from failed runs is what breaks back out.
