@@ -4,7 +4,9 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { cacheKeys, cacheWriter, compilerEnvironment, configure } from './configure.mjs';
+import {
+  cacheKeys, cacheWriter, compilerEnvironment, configure, probeRemoteCache, remoteCompilerCache,
+} from './configure.mjs';
 
 const base = {
   shape: 'servo', variant: '', runner: 'Linux-X64', compiler: 'rustc 1.95',
@@ -110,4 +112,116 @@ test('each public cache consumer finalizes, and failure saves retain their owner
   const action = readFileSync(new URL('./action.yml', import.meta.url), 'utf8');
   assert.equal((action.match(/env.HYPERCOLOR_CACHE_WRITE == 'true'/g) || []).length, 3);
   assert.equal((action.match(/job.status == 'success' \|\| env.HYPERCOLOR_CACHE_SAVE_FAILURE == 'true'/g) || []).length, 3);
+});
+
+const r2 = {
+  SCCACHE_R2_ACCESS_KEY_ID: 'a'.repeat(32), SCCACHE_R2_SECRET_ACCESS_KEY: 'b'.repeat(64),
+  SCCACHE_R2_BUCKET: 'hypercolor-oss-sccache', SCCACHE_R2_ENDPOINT: 'https://account.r2.cloudflarestorage.com',
+  RUNNER_OS: 'Linux', RUNNER_ARCH: 'X64',
+};
+
+test('only the trusted cache writer writes the shared compiler cache; everyone else reads', () => {
+  const writer = remoteCompilerCache(r2, true).values;
+  assert.equal(writer.SCCACHE_S3_RW_MODE, 'READ_WRITE');
+  assert.equal(remoteCompilerCache(r2, false).values.SCCACHE_S3_RW_MODE, 'READ_ONLY');
+  assert.equal(writer.SCCACHE_BUCKET, 'hypercolor-oss-sccache');
+  assert.equal(writer.SCCACHE_ENDPOINT, 'https://account.r2.cloudflarestorage.com');
+  assert.equal(writer.SCCACHE_REGION, 'auto');
+  assert.equal(writer.SCCACHE_S3_KEY_PREFIX, 'sccache/linux-x64');
+  assert.equal(writer.AWS_ACCESS_KEY_ID, r2.SCCACHE_R2_ACCESS_KEY_ID);
+  assert.equal(writer.AWS_SECRET_ACCESS_KEY, r2.SCCACHE_R2_SECRET_ACCESS_KEY);
+  assert.equal(remoteCompilerCache({ ...r2, SCCACHE_R2_ENDPOINT: 'https://account.r2.cloudflarestorage.com/' }, true)
+    .values.SCCACHE_ENDPOINT, 'https://account.r2.cloudflarestorage.com');
+});
+
+test('a run without usable R2 settings keeps the local disk cache', () => {
+  for (const [change, reason] of [
+    [{ SCCACHE_R2_ACCESS_KEY_ID: '' }, /no R2 credentials/],
+    [{ SCCACHE_R2_SECRET_ACCESS_KEY: '' }, /no R2 credentials/],
+    [{ SCCACHE_R2_BUCKET: '' }, /not configured/],
+    [{ SCCACHE_R2_ENDPOINT: '' }, /not configured/],
+    [{ SCCACHE_R2_ENDPOINT: 'http://account.r2.cloudflarestorage.com' }, /https origin/],
+    [{ SCCACHE_R2_ENDPOINT: 'https://account.r2.cloudflarestorage.com/bucket' }, /https origin/],
+  ]) {
+    const remote = remoteCompilerCache({ ...r2, ...change }, true);
+    assert.equal(remote.values, undefined);
+    assert.match(remote.reason, reason);
+  }
+});
+
+test('the probe sends credentials on stdin and accepts only an authorized answer', () => {
+  const calls = [];
+  const answer = (stdout) => (command, args, options) => { calls.push({ command, args, options }); return stdout; };
+  const settings = { endpoint: 'https://account.r2.cloudflarestorage.com/', bucket: 'cache', keyId: 'key', secret: 'secret' };
+  assert.deepEqual(probeRemoteCache(settings, answer('404')), { ok: true, detail: 'HTTP 404' });
+  assert.deepEqual(probeRemoteCache(settings, answer('200')), { ok: true, detail: 'HTTP 200' });
+  assert.deepEqual(probeRemoteCache(settings, answer('403')), { ok: false, detail: 'HTTP 403' });
+  assert.equal(calls[0].command, 'curl');
+  assert.ok(calls[0].args.includes('https://account.r2.cloudflarestorage.com/cache/.hypercolor-cache-probe'));
+  assert.ok(calls[0].args.includes('--aws-sigv4'));
+  assert.ok(!calls[0].args.join(' ').includes('secret'), 'credentials must not appear on the command line');
+  assert.equal(calls[0].options.input, 'user = "key:secret"\n');
+  const unreachable = () => {
+    const error = new Error('Command failed');
+    Object.assign(error, { stdout: '000', stderr: 'curl: (7) Failed to connect\n' });
+    throw error;
+  };
+  assert.deepEqual(probeRemoteCache(settings, unreachable), { ok: false, detail: 'curl: (7) Failed to connect' });
+});
+
+function gitWorkspace() {
+  const temp = mkdtempSync(path.join(tmpdir(), 'hypercolor-r2-test-'));
+  execFileSync('git', ['init', '-q', temp]);
+  writeFileSync(path.join(temp, 'Cargo.lock'), 'version = 4\n');
+  execFileSync('git', ['add', 'Cargo.lock'], { cwd: temp });
+  execFileSync('git', ['-c', 'user.name=Cache Test', '-c', 'user.email=cache@example.invalid', 'commit', '-qm', 'fixture'], { cwd: temp });
+  return temp;
+}
+
+test('configuration enables R2 only after the probe succeeds and exports nothing remote otherwise', () => {
+  const temp = gitWorkspace();
+  try {
+    const env = {
+      ...r2, GITHUB_WORKSPACE: temp, GITHUB_ENV: path.join(temp, 'env'), GITHUB_SHA: 'sha',
+      GITHUB_REF: 'refs/heads/main', GITHUB_EVENT_NAME: 'push', CACHE_DEFAULT_BRANCH: 'main',
+      CACHE_WORKSPACES: '. -> .cache/target',
+    };
+    const probed = [];
+    const enabled = configure(env, 'rustc test fixture', (settings) => { probed.push(settings); return { ok: true, detail: 'HTTP 404' }; });
+    assert.equal(probed.length, 1);
+    assert.equal(enabled.SCCACHE_BUCKET, 'hypercolor-oss-sccache');
+    assert.equal(enabled.SCCACHE_S3_RW_MODE, 'READ_WRITE');
+    assert.equal(enabled.HYPERCOLOR_COMPILER_CACHE, 'R2 hypercolor-oss-sccache read-write');
+    assert.match(readFileSync(env.GITHUB_ENV, 'utf8'), /SCCACHE_BUCKET<</);
+
+    const pull = configure({ ...env, GITHUB_REF: 'refs/pull/7/merge', GITHUB_EVENT_NAME: 'pull_request', GITHUB_ENV: path.join(temp, 'env-pr') },
+      'rustc test fixture', () => ({ ok: true, detail: 'HTTP 404' }));
+    assert.equal(pull.SCCACHE_S3_RW_MODE, 'READ_ONLY');
+
+    const down = configure({ ...env, GITHUB_ENV: path.join(temp, 'env-down') }, 'rustc test fixture', () => ({ ok: false, detail: 'HTTP 403' }));
+    assert.equal(down.SCCACHE_BUCKET, undefined);
+    assert.equal(down.AWS_SECRET_ACCESS_KEY, undefined);
+    assert.equal(down.HYPERCOLOR_COMPILER_CACHE, 'local disk (R2 unavailable: HTTP 403)');
+    assert.doesNotMatch(readFileSync(path.join(temp, 'env-down'), 'utf8'), /SCCACHE_BUCKET|AWS_/);
+
+    const fork = configure({ ...env, SCCACHE_R2_ACCESS_KEY_ID: '', SCCACHE_R2_SECRET_ACCESS_KEY: '', GITHUB_ENV: path.join(temp, 'env-fork') },
+      'rustc test fixture', () => { throw new Error('a run without credentials must not probe'); });
+    assert.equal(fork.SCCACHE_BUCKET, undefined);
+    assert.match(fork.HYPERCOLOR_COMPILER_CACHE, /^local disk \(no R2 credentials/);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('every workflow that uses the cache action supplies the R2 settings from secrets and variables', () => {
+  for (const filename of ['ci.yml', 'servo-cache-warm.yml']) {
+    const source = readFileSync(new URL(`../../workflows/${filename}`, import.meta.url), 'utf8');
+    const head = source.slice(0, source.indexOf('\njobs:'));
+    assert.match(head, /\n {2}SCCACHE_R2_ACCESS_KEY_ID: \$\{\{ secrets\.SCCACHE_R2_ACCESS_KEY_ID \}\}/, filename);
+    assert.match(head, /\n {2}SCCACHE_R2_SECRET_ACCESS_KEY: \$\{\{ secrets\.SCCACHE_R2_SECRET_ACCESS_KEY \}\}/, filename);
+    assert.match(head, /\n {2}SCCACHE_R2_BUCKET: \$\{\{ vars\.SCCACHE_R2_BUCKET \}\}/, filename);
+    assert.match(head, /\n {2}SCCACHE_R2_ENDPOINT: \$\{\{ vars\.SCCACHE_R2_ENDPOINT \}\}/, filename);
+    // The action decides read or write mode; a workflow never configures sccache's backend directly.
+    assert.doesNotMatch(source, /SCCACHE_(BUCKET|S3_RW_MODE|ENDPOINT):/, filename);
+  }
 });

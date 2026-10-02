@@ -20,6 +20,13 @@ env:
     libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
     libxdo-dev libfontconfig1-dev libegl1 libssl-dev
   HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
+  # Shared compiler cache in Cloudflare R2. The cache action probes the bucket,
+  # writes only from the trusted default branch, and reads everywhere else;
+  # fork pull requests get no secrets and keep the local disk cache.
+  SCCACHE_R2_ACCESS_KEY_ID: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+  SCCACHE_R2_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+  SCCACHE_R2_BUCKET: ${{ vars.SCCACHE_R2_BUCKET }}
+  SCCACHE_R2_ENDPOINT: ${{ vars.SCCACHE_R2_ENDPOINT }}
   MOZBUILD_STATE_PATH: ${{ github.workspace }}/.cache/hypercolor/mozbuild
   CARGO_INCREMENTAL: "0"
 
