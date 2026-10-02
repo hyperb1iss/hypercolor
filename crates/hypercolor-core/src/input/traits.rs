@@ -7,6 +7,7 @@
 use super::status::{SourceKind, SourceStatusError, SourceStatusHandle, SourceStatusReporter};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{PublishedSurface, SurfaceResourceOwner};
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::{PointerScrollUnit, TimedInputEvent, ZoneColors};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::any::Any;
@@ -235,10 +236,10 @@ pub enum InputData {
 
 // ── InteractionData ────────────────────────────────────────────────────────
 
-/// Snapshot of host keyboard and mouse state for one frame.
+/// Snapshot of keyboard, mouse, and device input state for one frame.
 ///
-/// Splits into stable held-state (`keyboard`, `mouse`, versioned by
-/// `generation`) and a transient per-frame event `batch`. Renderer dirty
+/// Splits into stable held-state (`keyboard`, `mouse`, `device`, versioned
+/// by `generation`) and a transient per-frame event `batch`. Renderer dirty
 /// checks compare `generation` and batch emptiness rather than deep
 /// equality, so noisy per-frame values never defeat idle skipping.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -247,9 +248,11 @@ pub struct InteractionData {
     pub keyboard: KeyboardData,
     /// Mouse position and pressed buttons.
     pub mouse: MouseData,
+    /// Touches and buttons held on driver-owned devices.
+    pub device: DeviceInteractionData,
     /// Ordered, timestamped input edges captured since the previous frame.
     pub batch: InteractionBatch,
-    /// Bumps whenever `keyboard` or `mouse` held-state actually changes.
+    /// Bumps whenever `keyboard`, `mouse`, or `device` held-state actually changes.
     pub generation: u64,
 }
 
@@ -292,6 +295,7 @@ impl InteractionData {
             }
         }
         self.mouse.down = self.mouse.down || other.mouse.down;
+        self.device.merge_from_ref(&other.device);
         if take_pointer {
             self.mouse.x = other.mouse.x;
             self.mouse.y = other.mouse.y;
@@ -332,6 +336,7 @@ impl InteractionData {
             }
         }
         self.mouse.down |= other.mouse.down;
+        self.device.merge_from_ref(&other.device);
         if take_pointer {
             self.mouse.x = other.mouse.x;
             self.mouse.y = other.mouse.y;
@@ -405,6 +410,66 @@ impl InteractionDegradation {
             Self::Unavailable(_) => "unavailable",
         }
     }
+}
+
+/// Held input on driver-owned devices for one frame.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeviceInteractionData {
+    /// Contacts currently down, in source order.
+    pub touches: Vec<TouchContact>,
+    /// Device control buttons currently held.
+    pub buttons: Vec<DeviceButtonHold>,
+}
+
+impl DeviceInteractionData {
+    /// Union another source's holds into this one without reallocating
+    /// retained storage. Holds are keyed by device, so sources never alias.
+    pub fn merge_from_ref(&mut self, other: &Self) {
+        for touch in &other.touches {
+            if !self
+                .touches
+                .iter()
+                .any(|held| held.device_id == touch.device_id && held.contact == touch.contact)
+            {
+                self.touches.push(*touch);
+            }
+        }
+        for button in &other.buttons {
+            if !self.buttons.contains(button) {
+                self.buttons.push(button.clone());
+            }
+        }
+    }
+
+    /// Whether no contact or button is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.touches.is_empty() && self.buttons.is_empty()
+    }
+}
+
+/// One contact held on a device touch surface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchContact {
+    /// Device whose surface is being touched.
+    pub device_id: DeviceId,
+    /// Contact identity, stable from touch start to end on that device.
+    pub contact: u32,
+    /// Horizontal device-surface position in `[0, 1]`.
+    pub x: f32,
+    /// Vertical device-surface position in `[0, 1]`.
+    pub y: f32,
+    /// Contact pressure in `[0, 1]`.
+    pub pressure: f32,
+}
+
+/// One control button held on a device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceButtonHold {
+    /// Device that owns the button.
+    pub device_id: DeviceId,
+    /// Button name as the driver reports it, such as `"mode"`.
+    pub button: Arc<str>,
 }
 
 /// Keyboard snapshot for one frame.

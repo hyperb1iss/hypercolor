@@ -756,3 +756,8 @@ fn pair_device_status_serde_uses_snake_case() {
         serde_json::to_value(DeviceAuthState::Configured).expect("state should serialize");
     assert_eq!(auth_state, serde_json::json!("configured"));
 }
+
+#[test]
+fn hosts_offer_no_device_input_by_default() {
+    assert!(NoopDriverHost.device_input().is_none());
+}

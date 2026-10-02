@@ -7,11 +7,13 @@ use std::time::Instant;
 use hypercolor_types::config::InteractionRoutePolicy;
 
 use super::{
-    BrowserInputRegistrySnapshot, InputData, InputEventRead, InputGraphSnapshot, InputSourceSlot,
-    InteractionData, InteractionTransientTotals, SourceKind, SourceStatus,
-    SourceStatusAvailability, SourceStatusHandle,
+    BrowserInputRegistrySnapshot, DeviceButtonHold, DeviceInputRegistrySnapshot, InputData,
+    InputEventRead, InputGraphSnapshot, InputSourceSlot, InteractionData,
+    InteractionTransientTotals, SourceKind, SourceStatus, SourceStatusAvailability,
+    SourceStatusHandle, TouchContact,
 };
-use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::device::DeviceId;
+use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent, TouchPhase};
 
 /// Stable identity for one interaction consumer lifetime.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -28,12 +30,14 @@ impl ConsumerIncarnation {
 enum SourceNamespace {
     Host,
     Browser,
+    Device,
 }
 
 /// Stable identity for one routable source lifetime.
 ///
-/// Host manager slots and browser child publications occupy disjoint identity
-/// namespaces, so equal backend-local counters cannot alias one another.
+/// Host manager slots, browser child publications, and device child
+/// publications occupy disjoint identity namespaces, so equal backend-local
+/// counters cannot alias one another.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SourceIncarnation {
     namespace: SourceNamespace,
@@ -58,16 +62,33 @@ impl SourceIncarnation {
     }
 
     #[must_use]
+    pub const fn device_child(value: u64) -> Self {
+        Self {
+            namespace: SourceNamespace::Device,
+            value,
+        }
+    }
+
+    #[must_use]
     pub const fn is_browser(self) -> bool {
         matches!(self.namespace, SourceNamespace::Browser)
+    }
+
+    #[must_use]
+    pub const fn is_device(self) -> bool {
+        matches!(self.namespace, SourceNamespace::Device)
     }
 }
 
 /// Source category used for exact policy selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InteractionRouteSourceClass {
+    /// Host keyboard and pointer capture.
     Host,
+    /// One interactive browser preview.
     Browser,
+    /// Input from a driver-owned device, selected wherever host input is.
+    Device,
 }
 
 /// Zero-copy interaction snapshot from a graph or specialized slot.
@@ -201,6 +222,7 @@ impl InteractionRouteSource {
                     SourceNamespace::Browser,
                     InteractionRouteSourceClass::Browser
                 )
+                | (SourceNamespace::Device, InteractionRouteSourceClass::Device)
         );
         assert!(
             namespace_matches,
@@ -245,6 +267,7 @@ impl InteractionRouteSource {
 pub struct InteractionRouteCatalog {
     source_graph_generation: Option<u64>,
     browser_registry_generation: Option<u64>,
+    device_registry_generation: Option<u64>,
     sources: Vec<InteractionRouteSource>,
     availability: Vec<CatalogAvailability>,
 }
@@ -264,23 +287,27 @@ struct CatalogAvailability {
 }
 
 impl InteractionRouteCatalog {
-    /// Synchronize the catalog with one coherent graph and browser-registry pair.
+    /// Synchronize the catalog with one coherent graph, browser, and device
+    /// registry snapshot.
     pub fn refresh(
         &mut self,
         graph: &InputGraphSnapshot,
         browser: &BrowserInputRegistrySnapshot,
+        device: &DeviceInputRegistrySnapshot,
         now: Instant,
     ) {
         if self.source_graph_generation != Some(graph.generation())
             || self.browser_registry_generation != Some(browser.generation())
+            || self.device_registry_generation != Some(device.generation())
         {
-            self.rebuild(graph, browser, now);
+            self.rebuild(graph, browser, device, now);
         } else {
             self.refresh_availability(now);
         }
     }
 
-    /// Sources in deterministic manager-graph then browser-registry order.
+    /// Sources in deterministic manager-graph, browser-registry, then
+    /// device-registry order.
     #[must_use]
     pub fn sources(&self) -> &[InteractionRouteSource] {
         &self.sources
@@ -308,6 +335,9 @@ impl InteractionRouteCatalog {
                 browser_registry_generation: self
                     .browser_registry_generation
                     .expect("interaction route catalog must be refreshed before resolution"),
+                device_registry_generation: self
+                    .device_registry_generation
+                    .expect("interaction route catalog must be refreshed before resolution"),
                 now_ms,
             },
             output,
@@ -318,11 +348,16 @@ impl InteractionRouteCatalog {
         &mut self,
         graph: &InputGraphSnapshot,
         browser: &BrowserInputRegistrySnapshot,
+        device: &DeviceInputRegistrySnapshot,
         now: Instant,
     ) {
         let previous = std::mem::take(&mut self.availability);
         self.sources.clear();
-        let source_count = graph.slots().len().saturating_add(browser.children().len());
+        let source_count = graph
+            .slots()
+            .len()
+            .saturating_add(browser.children().len())
+            .saturating_add(device.children().len());
         self.sources.reserve(source_count);
         self.availability.reserve(source_count);
 
@@ -367,8 +402,29 @@ impl InteractionRouteCatalog {
             self.availability.push(availability);
         }
 
+        for child in device.children() {
+            let status = child.status().clone();
+            let snapshot = status.snapshot_at(now);
+            let incarnation = SourceIncarnation::device_child(child.publication_id().get());
+            let availability = catalog_availability(
+                incarnation,
+                status,
+                availability_fingerprint(&snapshot),
+                &previous,
+            );
+            self.sources.push(InteractionRouteSource::new(
+                incarnation,
+                Arc::<str>::from(child.source_id()),
+                InteractionRouteSourceClass::Device,
+                availability.revision,
+                Arc::new(child.clone()),
+            ));
+            self.availability.push(availability);
+        }
+
         self.source_graph_generation = Some(graph.generation());
         self.browser_registry_generation = Some(browser.generation());
+        self.device_registry_generation = Some(device.generation());
     }
 
     fn refresh_availability(&mut self, now: Instant) {
@@ -454,6 +510,7 @@ pub struct InteractionRouteContext {
     pub config_generation: u64,
     pub source_graph_generation: u64,
     pub browser_registry_generation: u64,
+    pub device_registry_generation: u64,
     pub now_ms: u64,
 }
 
@@ -503,6 +560,7 @@ pub struct InteractionRouteDiagnostics {
     pub config_generation: u64,
     pub source_graph_generation: u64,
     pub browser_registry_generation: u64,
+    pub device_registry_generation: u64,
 }
 
 /// Routed snapshot, ordered events, and immutable cache/diagnostic identities.
@@ -533,6 +591,7 @@ impl RoutedInteraction {
                 config_generation: 0,
                 source_graph_generation: 0,
                 browser_registry_generation: 0,
+                device_registry_generation: 0,
             }),
         }
     }
@@ -613,6 +672,22 @@ fn select_sources_into(
             .any(|selected_source| selected_source.incarnation == source.incarnation)
     {
         selected.push(source.clone());
+    }
+    // Physical device input follows host input: selected under Host and
+    // Merge, never under Browser, so previews stay isolated by default.
+    if matches!(
+        request.policy,
+        InteractionRoutePolicy::Host | InteractionRoutePolicy::Merge
+    ) {
+        for source in sources {
+            if source.class == InteractionRouteSourceClass::Device
+                && !selected
+                    .iter()
+                    .any(|selected_source| selected_source.incarnation == source.incarnation)
+            {
+                selected.push(source.clone());
+            }
+        }
     }
 }
 
@@ -1005,6 +1080,19 @@ impl ConsumerRouteState {
                         .insert(InteractionControl::MouseButton(button.clone()));
                 }
             }
+            for touch in &snapshot.device.touches {
+                let control = touch_control(touch);
+                if !state.observed.contains_key(&control) && !state.quarantined.contains(&control) {
+                    changed |= state.quarantined.insert(control);
+                }
+            }
+            for hold in &snapshot.device.buttons {
+                if !contains_device_button_control(state.observed.keys(), hold)
+                    && !contains_device_button_control(state.quarantined.iter(), hold)
+                {
+                    changed |= state.quarantined.insert(device_button_control(hold));
+                }
+            }
             state.last_interaction_generation = Some(snapshot.generation);
         }
         changed
@@ -1018,6 +1106,8 @@ impl ConsumerRouteState {
     ) {
         let mut key_count = 0;
         let mut button_count = 0;
+        let mut touch_count = 0;
+        let mut device_button_count = 0;
         interaction.mouse.x = 0;
         interaction.mouse.y = 0;
         interaction.mouse.norm_x = 0.0;
@@ -1047,6 +1137,22 @@ impl ConsumerRouteState {
                     push_unique_reused(&mut interaction.mouse.buttons, &mut button_count, button);
                 }
             }
+            // Positions come from the latest snapshot; the router only
+            // decides which holds this consumer observed being pressed.
+            for touch in &snapshot.device.touches {
+                if state.observed.contains_key(&touch_control(touch)) {
+                    push_touch_reused(&mut interaction.device.touches, &mut touch_count, *touch);
+                }
+            }
+            for hold in &snapshot.device.buttons {
+                if contains_device_button_control(state.observed.keys(), hold) {
+                    push_device_button_reused(
+                        &mut interaction.device.buttons,
+                        &mut device_button_count,
+                        hold,
+                    );
+                }
+            }
             if snapshot.mouse.mode != super::PointerMode::None
                 && (interaction.mouse.mode == super::PointerMode::None
                     || snapshot.mouse.injected && !interaction.mouse.injected)
@@ -1066,6 +1172,8 @@ impl ConsumerRouteState {
         interaction.keyboard.pressed_keys.truncate(key_count);
         interaction.mouse.buttons.truncate(button_count);
         interaction.mouse.down = button_count > 0;
+        interaction.device.touches.truncate(touch_count);
+        interaction.device.buttons.truncate(device_button_count);
         let mut recent_count = 0;
         for event in &events {
             match &event.event {
@@ -1092,7 +1200,9 @@ impl ConsumerRouteState {
                 | InputEvent::MidiNote { .. }
                 | InputEvent::MidiControlChange { .. }
                 | InputEvent::MidiPitchBend { .. }
-                | InputEvent::MidiRealtime { .. } => {}
+                | InputEvent::MidiRealtime { .. }
+                | InputEvent::Touch { .. }
+                | InputEvent::DeviceButton { .. } => {}
             }
         }
         interaction.keyboard.recent_keys.truncate(recent_count);
@@ -1142,6 +1252,7 @@ impl ConsumerRouteState {
                 && diagnostics.config_generation == context.config_generation
                 && diagnostics.source_graph_generation == context.source_graph_generation
                 && diagnostics.browser_registry_generation == context.browser_registry_generation
+                && diagnostics.device_registry_generation == context.device_registry_generation
                 && diagnostics.selected.len() == selected.len()
                 && diagnostics
                     .selected
@@ -1183,6 +1294,7 @@ impl ConsumerRouteState {
             config_generation: context.config_generation,
             source_graph_generation: context.source_graph_generation,
             browser_registry_generation: context.browser_registry_generation,
+            device_registry_generation: context.device_registry_generation,
         }));
     }
 
@@ -1275,6 +1387,15 @@ impl ConsumerSourceState {
 enum InteractionControl {
     Key(String),
     MouseButton(String),
+    /// Device-scoped so contacts on different surfaces never alias.
+    Touch {
+        device: DeviceId,
+        contact: u32,
+    },
+    DeviceButton {
+        device: DeviceId,
+        button: String,
+    },
 }
 
 fn apply_interaction_transients(
@@ -1311,7 +1432,9 @@ fn replace_quarantine_from_snapshot(state: &mut ConsumerSourceState) {
                     .iter()
                     .cloned()
                     .map(InteractionControl::MouseButton),
-            ),
+            )
+            .chain(snapshot.device.touches.iter().map(touch_control))
+            .chain(snapshot.device.buttons.iter().map(device_button_control)),
     );
 }
 
@@ -1319,7 +1442,45 @@ fn snapshot_holds(snapshot: &InteractionData, control: &InteractionControl) -> b
     match control {
         InteractionControl::Key(key) => snapshot.keyboard.pressed_keys.contains(key),
         InteractionControl::MouseButton(button) => snapshot.mouse.buttons.contains(button),
+        InteractionControl::Touch { device, contact } => snapshot
+            .device
+            .touches
+            .iter()
+            .any(|touch| touch.device_id == *device && touch.contact == *contact),
+        InteractionControl::DeviceButton { device, button } => snapshot
+            .device
+            .buttons
+            .iter()
+            .any(|hold| hold.device_id == *device && *hold.button == **button),
     }
+}
+
+const fn touch_control(touch: &TouchContact) -> InteractionControl {
+    InteractionControl::Touch {
+        device: touch.device_id,
+        contact: touch.contact,
+    }
+}
+
+fn device_button_control(hold: &DeviceButtonHold) -> InteractionControl {
+    InteractionControl::DeviceButton {
+        device: hold.device_id,
+        button: hold.button.to_string(),
+    }
+}
+
+/// Match a held device button without building an owned lookup key.
+fn contains_device_button_control<'a>(
+    mut controls: impl Iterator<Item = &'a InteractionControl>,
+    hold: &DeviceButtonHold,
+) -> bool {
+    controls.any(|control| {
+        matches!(
+            control,
+            InteractionControl::DeviceButton { device, button }
+                if *device == hold.device_id && **button == *hold.button
+        )
+    })
 }
 
 fn contains_key_control<T>(controls: &BTreeMap<InteractionControl, T>, key: &str) -> bool {
@@ -1351,6 +1512,37 @@ fn push_unique_reused(output: &mut Vec<String>, length: &mut usize, value: &str)
         return;
     }
     push_reused(output, length, value);
+}
+
+fn push_touch_reused(output: &mut Vec<TouchContact>, length: &mut usize, touch: TouchContact) {
+    if output[..*length]
+        .iter()
+        .any(|existing| existing.device_id == touch.device_id && existing.contact == touch.contact)
+    {
+        return;
+    }
+    if let Some(slot) = output.get_mut(*length) {
+        *slot = touch;
+    } else {
+        output.push(touch);
+    }
+    *length += 1;
+}
+
+fn push_device_button_reused(
+    output: &mut Vec<DeviceButtonHold>,
+    length: &mut usize,
+    hold: &DeviceButtonHold,
+) {
+    if output[..*length].contains(hold) {
+        return;
+    }
+    if let Some(slot) = output.get_mut(*length) {
+        slot.clone_from(hold);
+    } else {
+        output.push(hold.clone());
+    }
+    *length += 1;
 }
 
 fn push_reused(output: &mut Vec<String>, length: &mut usize, value: &str) {
@@ -1421,7 +1613,39 @@ fn event_control(event: &TimedInputEvent) -> Option<(InteractionControl, InputBu
         InputEvent::MouseButton { button, state, .. } => {
             Some((InteractionControl::MouseButton(button.clone()), *state))
         }
-        _ => None,
+        InputEvent::Touch {
+            device_id,
+            contact,
+            phase,
+            ..
+        } => Some((
+            InteractionControl::Touch {
+                device: *device_id,
+                contact: *contact,
+            },
+            match phase {
+                TouchPhase::Began => InputButtonState::Pressed,
+                TouchPhase::Ended | TouchPhase::Cancelled => InputButtonState::Released,
+            },
+        )),
+        InputEvent::DeviceButton {
+            device_id,
+            button,
+            state,
+            ..
+        } => Some((
+            InteractionControl::DeviceButton {
+                device: *device_id,
+                button: button.clone(),
+            },
+            *state,
+        )),
+        // Held MIDI notes are not tracked yet; they pass through unrouted.
+        InputEvent::PointerScroll { .. }
+        | InputEvent::MidiNote { .. }
+        | InputEvent::MidiControlChange { .. }
+        | InputEvent::MidiPitchBend { .. }
+        | InputEvent::MidiRealtime { .. } => None,
     }
 }
 
@@ -1430,7 +1654,9 @@ fn synthetic_release(press: &TimedInputEvent, now_ms: u64) -> TimedInputEvent {
     match &mut release.event {
         InputEvent::Key { state, .. }
         | InputEvent::MouseButton { state, .. }
-        | InputEvent::MidiNote { state, .. } => *state = InputButtonState::Released,
+        | InputEvent::MidiNote { state, .. }
+        | InputEvent::DeviceButton { state, .. } => *state = InputButtonState::Released,
+        InputEvent::Touch { phase, .. } => *phase = TouchPhase::Cancelled,
         InputEvent::PointerScroll { .. }
         | InputEvent::MidiControlChange { .. }
         | InputEvent::MidiPitchBend { .. }

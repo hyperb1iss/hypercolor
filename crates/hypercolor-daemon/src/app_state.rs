@@ -497,6 +497,7 @@ impl AppState {
             config.input.daemon_route,
             config.input.preview_route,
         );
+        let device_input = interaction_routing.device_input().clone();
         let standalone_input_manager = input_manager.unwrap_or_else(InputManager::new);
         let input_status = standalone_input_manager.source_status_registry();
         let screen_capacity_status = standalone_input_manager.screen_capacity_status_handle();
@@ -625,12 +626,15 @@ impl AppState {
                     pending_scans: Arc::default(),
                     task_spawner: test_constructor_task_spawner(),
                 };
-                Ok(Arc::new(DaemonDriverHost::new(
-                    discovery_runtime,
-                    driver_inventory,
-                    Arc::clone(&driver_registry),
-                    config_manager.clone(),
-                )))
+                Ok(Arc::new(
+                    DaemonDriverHost::new(
+                        discovery_runtime,
+                        driver_inventory,
+                        Arc::clone(&driver_registry),
+                        config_manager.clone(),
+                    )
+                    .with_device_input(Arc::new(device_input.clone())),
+                ))
             },
         )
         .expect("default app state should assemble the domain graph");

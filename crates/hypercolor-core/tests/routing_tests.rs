@@ -12,9 +12,10 @@ use hypercolor_core::input::routing::{
 };
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserPreviewId,
-    InputData, InputEventRead, InputManager, InputSource, InteractionBatch, InteractionData,
-    InteractionSource, InteractionSourceRole, InteractionTransientTotals, KeyboardData,
-    ManagedSourceRole, MotionAggregate, MouseData, ScrollAggregate, SourceRoleBinding,
+    DeviceInputHandle, DeviceInputRegistrySnapshot, InputData, InputEventRead, InputManager,
+    InputSource, InteractionBatch, InteractionData, InteractionSource, InteractionSourceRole,
+    InteractionTransientTotals, KeyboardData, ManagedSourceRole, MotionAggregate, MouseData,
+    ScrollAggregate, SourceRoleBinding,
 };
 use hypercolor_types::config::InteractionRoutePolicy;
 use hypercolor_types::event::{
@@ -242,11 +243,16 @@ fn request(
     }
 }
 
+fn no_devices() -> Arc<DeviceInputRegistrySnapshot> {
+    DeviceInputHandle::new().registry().snapshot()
+}
+
 fn context(now_ms: u64) -> InteractionRouteContext {
     InteractionRouteContext {
         config_generation: 11,
         source_graph_generation: 22,
         browser_registry_generation: 33,
+        device_registry_generation: 44,
         now_ms,
     }
 }
@@ -280,7 +286,7 @@ fn catalog_preserves_source_order_revisions_and_exact_browser_selection() {
     let graph = manager.input_graph_handle().snapshot();
     let browser = browser_registry.snapshot();
     let mut catalog = InteractionRouteCatalog::default();
-    catalog.refresh(&graph, &browser, Instant::now());
+    catalog.refresh(&graph, &browser, &no_devices(), Instant::now());
 
     assert_eq!(
         catalog
@@ -346,7 +352,7 @@ fn catalog_preserves_source_order_revisions_and_exact_browser_selection() {
         source.class != InteractionRouteSourceClass::Browser
             || source.descriptor.as_ref() != "browser_input"
     }));
-    catalog.refresh(&graph, &browser, Instant::now());
+    catalog.refresh(&graph, &browser, &no_devices(), Instant::now());
     assert!(
         catalog
             .sources()
@@ -356,7 +362,7 @@ fn catalog_preserves_source_order_revisions_and_exact_browser_selection() {
     manager
         .set_interaction_capture_active(false)
         .expect("interaction capture demand should update");
-    catalog.refresh(&graph, &browser, Instant::now());
+    catalog.refresh(&graph, &browser, &no_devices(), Instant::now());
     assert_eq!(
         catalog
             .sources()

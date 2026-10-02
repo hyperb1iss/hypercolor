@@ -29,15 +29,17 @@ use hypercolor_core::input::screen::wayland::{
     DoubleBuffer, SpaChunkView, SpaVideoFormat, decode_chunk,
 };
 use hypercolor_core::input::{
-    AudioSource, AudioSourceRole, BrowserInputHandle, BrowserInputRegistrySnapshot, InputData,
-    InputGraphSnapshot, InputManager, InputSource, InteractionBatch, InteractionData,
-    InteractionSource, InteractionSourceRole, ManagedSourceRole, MotionAggregate, ScreenData,
-    ScreenSource, ScreenSourceRole, SourceKind, SourceRoleBinding, SourceSessionWriter,
-    SourceStatusHandle, SourceStatusWriter,
+    AudioSource, AudioSourceRole, BrowserInputHandle, BrowserInputRegistrySnapshot,
+    DeviceInputHandle, DeviceInputRegistrySnapshot, InputData, InputGraphSnapshot, InputManager,
+    InputSource, InteractionBatch, InteractionData, InteractionSource, InteractionSourceRole,
+    ManagedSourceRole, MotionAggregate, ScreenData, ScreenSource, ScreenSourceRole, SourceKind,
+    SourceRoleBinding, SourceSessionWriter, SourceStatusHandle, SourceStatusWriter,
 };
 use hypercolor_types::audio::{AudioData, AudioPipelineConfig};
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::event::TimedInputEvent;
+use hypercolor_types::device::DeviceId;
+use hypercolor_types::device_input::{DeviceInputEdge, TouchPosition};
+use hypercolor_types::event::{InputButtonState, TimedInputEvent};
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -519,6 +521,7 @@ fn router_resolution_round(
     consumer: ConsumerIncarnation,
     graph: &InputGraphSnapshot,
     browser: &BrowserInputRegistrySnapshot,
+    device: &DeviceInputRegistrySnapshot,
     output: &mut RoutedInteraction,
 ) -> Stats {
     let mut region = Region::new(GLOBAL);
@@ -528,6 +531,7 @@ fn router_resolution_round(
         black_box(&mut *catalog).refresh(
             black_box(graph),
             black_box(browser),
+            black_box(device),
             black_box(Instant::now()),
         );
         black_box(&mut *catalog).resolve_into(
@@ -563,15 +567,21 @@ fn steady_router_resolution_control() -> (Stats, Stats) {
     );
     let browser_source = BrowserInputHandle::new();
     let browser_registry = browser_source.registry();
+    // A device holding a touch and a button keeps the router rebuilding
+    // device held output on every measured frame.
+    let device_input = DeviceInputHandle::new();
+    device_input.set_demanded(true);
+    let held_device = device_input.attach(DeviceId::new(), "allocation pad");
     manager
         .start_all()
         .expect("allocation interaction source should start");
     manager.sample_sources(1.0 / 60.0);
     let graph = manager.input_graph_handle().snapshot();
     let browser = browser_registry.snapshot();
+    let device = device_input.registry().snapshot();
     let consumer = ConsumerIncarnation::new(1);
     let mut catalog = InteractionRouteCatalog::default();
-    catalog.refresh(&graph, &browser, Instant::now());
+    catalog.refresh(&graph, &browser, &device, Instant::now());
     let mut router = InteractionRouter::default();
     let mut output = RoutedInteraction::new(consumer);
     catalog.resolve_into(
@@ -582,6 +592,32 @@ fn steady_router_resolution_control() -> (Stats, Stats) {
         0,
         &mut output,
     );
+    held_device
+        .inject(&[
+            DeviceInputEdge::TouchBegan {
+                contact: 0,
+                position: TouchPosition {
+                    x: 0.5,
+                    y: 0.5,
+                    pressure: 0.5,
+                },
+            },
+            DeviceInputEdge::Button {
+                button: Arc::from("mode"),
+                state: InputButtonState::Pressed,
+            },
+        ])
+        .expect("held device accepts input");
+    catalog.resolve_into(
+        &mut router,
+        consumer,
+        InteractionRouteRequest::host(),
+        0,
+        0,
+        &mut output,
+    );
+    assert_eq!(output.interaction.device.touches.len(), 1);
+    assert_eq!(output.interaction.device.buttons.len(), 1);
 
     let first = router_resolution_round(
         &mut manager,
@@ -590,6 +626,7 @@ fn steady_router_resolution_control() -> (Stats, Stats) {
         consumer,
         &graph,
         &browser,
+        &device,
         &mut output,
     );
     assert_eq!(output.interaction.batch.motion.dx, 0.25);
@@ -600,9 +637,13 @@ fn steady_router_resolution_control() -> (Stats, Stats) {
         consumer,
         &graph,
         &browser,
+        &device,
         &mut output,
     );
     assert_eq!(output.interaction.batch.motion.dx, 0.25);
+    assert_eq!(output.interaction.device.touches.len(), 1);
+    assert_eq!(output.interaction.device.buttons.len(), 1);
+    drop(held_device);
     (first, second)
 }
 

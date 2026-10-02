@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result, bail};
 use async_trait::async_trait;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_driver_api::{
-    BackendRebindActions, DeviceControlStore, DiscoveredDevice, DriverConfigView,
+    BackendRebindActions, DeviceControlStore, DeviceInputSink, DiscoveredDevice, DriverConfigView,
     DriverControlHost, DriverControlStore, DriverCredentialStore, DriverDiscoveryState, DriverHost,
     DriverLifecycleActions, DriverRuntimeActions, DriverTrackedDevice,
 };
@@ -28,6 +28,7 @@ pub struct DaemonDriverHost {
     driver_inventory: Arc<DriverInventoryStore>,
     driver_registry: Arc<DriverModuleRegistry>,
     config_manager: Option<Arc<ConfigManager>>,
+    device_input: Option<Arc<dyn DeviceInputSink>>,
 }
 
 impl DaemonDriverHost {
@@ -43,7 +44,15 @@ impl DaemonDriverHost {
             driver_inventory,
             driver_registry,
             config_manager,
+            device_input: None,
         }
+    }
+
+    /// Accept input from driver-owned devices through `sink`.
+    #[must_use]
+    pub fn with_device_input(mut self, sink: Arc<dyn DeviceInputSink>) -> Self {
+        self.device_input = Some(sink);
+        self
     }
 
     #[must_use]
@@ -310,6 +319,10 @@ impl DriverHost for DaemonDriverHost {
 
     fn control_host(&self) -> Option<&dyn DriverControlHost> {
         Some(self)
+    }
+
+    fn device_input(&self) -> Option<Arc<dyn DeviceInputSink>> {
+        self.device_input.clone()
     }
 }
 
