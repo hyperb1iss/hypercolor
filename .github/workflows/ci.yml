@@ -135,6 +135,8 @@ jobs:
               - 'scripts/tests/cargo-target-gc-tests.sh'
               - 'scripts/dist.sh'
               - 'scripts/verify-release-artifact.sh'
+              - 'scripts/get-hypercolor.sh'
+              - 'scripts/install-release.sh'
               - 'scripts/tests/release-artifact-tests.sh'
               - 'scripts/tests/docker-smoke.mjs'
               - 'scripts/tests/docker-workflow.test.mjs'
