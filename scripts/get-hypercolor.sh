@@ -138,10 +138,7 @@ detect_platform() {
 
   case "${os}" in
     Linux)  os="linux" ;;
-    Darwin)
-      require_supported_macos
-      os="macos"
-      ;;
+    Darwin) os="macos" ;;
     *)      die "Unsupported OS: ${os}. Hypercolor supports Linux and macOS." ;;
   esac
 
@@ -151,11 +148,26 @@ detect_platform() {
     *)               die "Unsupported architecture: ${arch}" ;;
   esac
 
+  # macOS releases ship for Apple silicon only. A shell running under
+  # Rosetta reports x86_64 on Apple silicon, where the arm64 build runs
+  # natively, so only a real Intel Mac is refused.
+  if [[ "${os}" == "macos" && "${arch}" == "amd64" ]]; then
+    if [[ "$(PATH="${PATH}:/usr/sbin" sysctl -n hw.optional.arm64 2>/dev/null)" == "1" ]]; then
+      arch="arm64"
+    else
+      die "Intel Macs are not supported; Hypercolor for macOS requires Apple silicon."
+    fi
+  fi
+
+  if [[ "${os}" == "macos" ]]; then
+    require_supported_macos
+  fi
+
   platform="${os}-${arch}"
 
   # Validate supported combinations
   case "${platform}" in
-    linux-amd64|linux-arm64|macos-amd64|macos-arm64) ;;
+    linux-amd64|linux-arm64|macos-arm64) ;;
     *) die "Unsupported platform: ${platform}" ;;
   esac
 

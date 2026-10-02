@@ -368,9 +368,12 @@ fn macos_packaging_and_installers_target_apple_silicon_only() {
         assert!(!CI_WORKFLOW.contains(intel), "CI still builds {intel}");
     }
 
-    for expected in ["macos-arm64", "macos-amd64"] {
-        assert!(GET_INSTALLER.contains(expected));
-        assert!(INSTALL_RELEASE_SH.contains(expected));
+    for installer in [GET_INSTALLER, INSTALL_RELEASE_SH] {
+        assert!(installer.contains("macos-arm64"));
+        assert!(!installer.contains("macos-amd64"));
+        assert!(installer.contains(
+            "Intel Macs are not supported; Hypercolor for macOS requires Apple silicon."
+        ));
     }
 
     assert!(HOMEBREW_FORMULA.contains("macos-arm64"));
