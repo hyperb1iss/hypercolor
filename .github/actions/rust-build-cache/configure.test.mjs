@@ -202,6 +202,9 @@ test('configuration enables R2 only after the probe succeeds and exports nothing
     assert.equal(down.SCCACHE_BUCKET, undefined);
     assert.equal(down.AWS_SECRET_ACCESS_KEY, undefined);
     assert.equal(down.HYPERCOLOR_COMPILER_CACHE, 'local disk (R2 unavailable: HTTP 403)');
+    // actions/cache keys restores by a hash of the path list, so R2 and local-disk
+    // jobs must save identical paths to keep restoring each other's entries.
+    assert.equal(enabled.HYPERCOLOR_BUILD_CACHE_PATHS, down.HYPERCOLOR_BUILD_CACHE_PATHS);
     assert.doesNotMatch(readFileSync(path.join(temp, 'env-down'), 'utf8'), /SCCACHE_BUCKET|AWS_/);
 
     const fork = configure({ ...env, SCCACHE_R2_ACCESS_KEY_ID: '', SCCACHE_R2_SECRET_ACCESS_KEY: '', GITHUB_ENV: path.join(temp, 'env-fork') },

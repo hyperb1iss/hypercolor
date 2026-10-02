@@ -137,11 +137,6 @@ export function configure(env = process.env, compilerVersion, probe = probeRemot
     workspaces: mappings, revisions, locks,
   });
   const cargoHome = env.CARGO_HOME || path.join(homedir(), '.cargo');
-  const buildPaths = new Set([
-    ...mappings.map(([root, target]) => path.resolve(workspace, root, target)), compilerCache, sourceTimes,
-    ...(nativeCache ? [nativeCache] : []),
-    ...lines(env.CACHE_DIRECTORIES).map((directory) => path.resolve(workspace, directory)),
-  ]);
   const write = cacheWriter(env.CACHE_SAVE_IF || 'auto', env.GITHUB_REF, env.CACHE_DEFAULT_BRANCH, env.GITHUB_EVENT_NAME);
   const remote = remoteCompilerCache(env, write);
   let remoteValues = {};
@@ -157,6 +152,15 @@ export function configure(env = process.env, compilerVersion, probe = probeRemot
       console.log(`::warning::Shared compiler cache unavailable (${reachable.detail}); this job compiles with the local disk cache.`);
     }
   }
+  // actions/cache only restores entries whose version, a hash of this path
+  // list, matches. The list must not depend on whether R2 holds the compiler
+  // cache, or R2 jobs, local-disk jobs, and every existing entry would stop
+  // restoring each other's target directories.
+  const buildPaths = new Set([
+    ...mappings.map(([root, target]) => path.resolve(workspace, root, target)), compilerCache, sourceTimes,
+    ...(nativeCache ? [nativeCache] : []),
+    ...lines(env.CACHE_DIRECTORIES).map((directory) => path.resolve(workspace, directory)),
+  ]);
   const values = {
     ...profile,
     CCACHE_COMPRESS: 'true', CCACHE_MAXSIZE: '500M',

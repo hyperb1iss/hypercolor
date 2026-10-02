@@ -491,7 +491,7 @@ refresh_sccache_server_config() {
   local lock_file="$CACHE_ROOT/sccache-config.lock"
   local desired
   local current=""
-  desired="$("$SCCACHE_BIN" --version)|$SCCACHE_CACHE_SIZE|$SCCACHE_BASEDIRS|${SCCACHE_BUCKET:-}|${SCCACHE_S3_RW_MODE:-}"
+  desired="$("$SCCACHE_BIN" --version)|$SCCACHE_CACHE_SIZE|$SCCACHE_BASEDIRS|${SCCACHE_BUCKET:-}|${SCCACHE_ENDPOINT:-}|${SCCACHE_REGION:-}|${SCCACHE_S3_KEY_PREFIX:-}|${SCCACHE_S3_RW_MODE:-}"
   [ ! -f "$state_file" ] || current="$(<"$state_file")"
   [ "$current" = "$desired" ] && return 0
 
