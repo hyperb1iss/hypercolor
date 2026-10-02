@@ -23,8 +23,8 @@ The foundation works on Linux, Windows, and macOS today.
 - Audio pipeline: FFT, beat detection, mel bands, chromagram; cpal on every platform with a native PulseAudio/PipeWire monitor path on Linux
 - REST API + WebSocket (binary preview transport v2) + MCP server (17 tools, 5 resources, 3 prompts) on `:9420`
 - CLI (`hypercolor`) with shell completions
-- Installers everywhere: Linux tarball/`.deb`/AUR/Homebrew formula, per-machine Windows NSIS with PawnIO hardware setup, macOS DMGs (both architectures) + Homebrew cask, all published automatically on tag
-- Per-PR CI lanes for Linux, Windows, and macOS (both Apple Silicon and Intel runners)
+- Installers everywhere: Linux tarball/`.deb`/AUR/Homebrew formula, per-machine Windows NSIS with PawnIO hardware setup, macOS DMGs (Apple silicon) + Homebrew cask, all published automatically on tag
+- Per-PR CI lanes for Linux, Windows, and macOS (Apple silicon runners)
 - Python client on PyPI as `hypercolor` (sdist + wheel, trusted publishing)
 - Virtual display simulator for developing effects and faces without physical hardware
 - Scene engine with Oklab cross-fades and priority stacking

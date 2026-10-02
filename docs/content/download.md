@@ -126,7 +126,8 @@ Choose "More info" and then "Run anyway" to continue.
 
 ## macOS
 
-Download the DMG for Apple Silicon or Intel from the release page, then drag
+Hypercolor for macOS requires Apple silicon and macOS 15.2 or newer; Intel
+Macs are not supported. Download the arm64 DMG from the release page, then drag
 Hypercolor into Applications. You can also install the desktop app with
 Homebrew:
 

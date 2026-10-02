@@ -356,21 +356,30 @@ fn curl_installer_compares_macos_versions_by_numeric_component() {
 }
 
 #[test]
-fn macos_packaging_and_installers_cover_both_architectures() {
+fn macos_packaging_and_installers_target_apple_silicon_only() {
     assert!(CI_WORKFLOW.contains("target: macos-arm64"));
-    assert!(CI_WORKFLOW.contains("target: macos-x64"));
     assert!(CI_WORKFLOW.contains("rust-target: aarch64-apple-darwin"));
-    assert!(CI_WORKFLOW.contains("rust-target: x86_64-apple-darwin"));
-
-    for expected in ["macos-arm64", "macos-amd64"] {
-        assert!(GET_INSTALLER.contains(expected));
-        assert!(INSTALL_RELEASE_SH.contains(expected));
-        assert!(HOMEBREW_FORMULA.contains(expected));
+    assert!(CI_WORKFLOW.contains("os: macos-26\n"));
+    for intel in [
+        "target: macos-x64",
+        "rust-target: x86_64-apple-darwin",
+        "os: macos-26-intel",
+    ] {
+        assert!(!CI_WORKFLOW.contains(intel), "CI still builds {intel}");
     }
 
-    assert!(CI_WORKFLOW.contains("os: macos-26"));
-    assert!(CI_WORKFLOW.contains("os: macos-26-intel"));
-    assert!(HOMEBREW_FORMULA.contains("SHA256_MACOS_AMD64"));
+    for installer in [GET_INSTALLER, INSTALL_RELEASE_SH] {
+        assert!(installer.contains("macos-arm64"));
+        assert!(!installer.contains("macos-amd64"));
+        assert!(installer.contains(
+            "Intel Macs are not supported; Hypercolor for macOS requires Apple silicon."
+        ));
+    }
+
+    assert!(HOMEBREW_FORMULA.contains("macos-arm64"));
+    assert!(HOMEBREW_FORMULA.contains("depends_on arch: :arm64"));
+    assert!(!HOMEBREW_FORMULA.contains("macos-amd64"));
+    assert!(!HOMEBREW_FORMULA.contains("SHA256_MACOS_AMD64"));
     assert!(HOMEBREW_FORMULA.contains("keep_alive successful_exit: false"));
     assert!(HOMEBREW_FORMULA.contains(r#""--macos-owner", "homebrew""#));
 }
@@ -577,44 +586,33 @@ fn macos_release_verifier_pins_every_macho_to_15_2() {
 }
 
 #[test]
-fn ci_qualifies_both_macos_architectures_with_xcode_26() {
-    assert!(CI_WORKFLOW.contains("rust-check-macos:"));
-    assert!(CI_WORKFLOW.contains("os: macos-26"));
-    assert!(CI_WORKFLOW.contains("os: macos-26-intel"));
-    assert!(CI_WORKFLOW.contains("XCODE_VERSION: \"26.5\""));
-    assert!(CI_WORKFLOW.contains("xcodebuild -version"));
-    assert!(CI_WORKFLOW.contains("xcrun --show-sdk-version"));
-    assert!(CI_WORKFLOW.contains("test \"${sdk_version%%.*}\" = \"26\""));
-}
-
-#[test]
-fn ci_installs_nasm_before_intel_macos_compilation() {
+fn ci_qualifies_apple_silicon_macos_with_xcode_26() {
     let (_, macos_job) = CI_WORKFLOW
         .split_once("\n  rust-check-macos:\n")
         .expect("CI should define the macOS check job");
     let (macos_job, _) = macos_job
         .split_once("\n  generated-effects:\n")
         .expect("generated effects should follow the macOS check job");
-    let install = macos_job
-        .find("- name: Install NASM")
-        .expect("Intel macOS checks should install NASM");
-    let (_, install_and_after) = macos_job
-        .split_once("- name: Install NASM\n")
-        .expect("Intel macOS checks should install NASM");
-    let (install_step, _) = install_and_after
-        .split_once("\n\n      - ")
-        .expect("another macOS step should follow NASM installation");
-    let qualification = macos_job
-        .find("- name: Qualify Intel Metal fixture")
-        .expect("Intel macOS checks should qualify native Metal import");
-    let workspace = macos_job
-        .find("- name: Check macOS workspace")
-        .expect("macOS checks should compile the workspace");
-
-    assert!(install_step.contains("if: matrix.expected-arch == 'x86_64'"));
-    assert!(install_step.contains("run: brew install nasm"));
-    assert!(install < qualification);
-    assert!(install < workspace);
+    assert!(macos_job.contains("os: macos-26\n"));
+    assert!(macos_job.contains("expected-arch: arm64"));
+    assert!(macos_job.contains(r#"test "$(uname -m)" = "${{ matrix.expected-arch }}""#));
+    // Apple silicon is the only macOS target, so no Intel runner or
+    // Intel-only step may return to the macOS checks.
+    for intel_only in [
+        "macos-26-intel",
+        "x86_64",
+        "Install NASM",
+        "Qualify Intel Metal fixture",
+    ] {
+        assert!(
+            !macos_job.contains(intel_only),
+            "macOS checks still carry {intel_only}"
+        );
+    }
+    assert!(CI_WORKFLOW.contains("XCODE_VERSION: \"26.5\""));
+    assert!(CI_WORKFLOW.contains("xcodebuild -version"));
+    assert!(CI_WORKFLOW.contains("xcrun --show-sdk-version"));
+    assert!(CI_WORKFLOW.contains("test \"${sdk_version%%.*}\" = \"26\""));
 }
 
 #[test]
@@ -786,21 +784,23 @@ fn macos_daemon_sidecar_alone_declares_automation_access() {
 #[test]
 fn homebrew_cask_template_targets_normalized_macos_dmg_names() {
     assert!(HOMEBREW_CASK.contains(r#"cask "hypercolor-app" do"#));
-    assert!(HOMEBREW_CASK.contains(r#"arch arm: "arm64", intel: "x86_64""#));
     assert!(HOMEBREW_CASK.contains("VERSION_PLACEHOLDER"));
-    assert!(HOMEBREW_CASK.contains("SHA256_MACOS_APP_ARM64"));
-    assert!(HOMEBREW_CASK.contains("SHA256_MACOS_APP_X86_64"));
+    assert!(HOMEBREW_CASK.contains(r#"sha256 "SHA256_MACOS_APP_ARM64""#));
     assert!(
-        HOMEBREW_CASK.contains("Hypercolor-#{version}-#{arch}.dmg"),
-        "cask URL should use the normalized release DMG name"
+        HOMEBREW_CASK.contains("Hypercolor-#{version}-arm64.dmg"),
+        "cask URL should use the normalized Apple silicon DMG name"
     );
+    // Apple silicon is the only macOS target: Homebrew refuses Intel Macs.
+    assert!(HOMEBREW_CASK.contains("depends_on arch: :arm64"));
+    assert!(!HOMEBREW_CASK.contains("SHA256_MACOS_APP_X86_64"));
+    assert!(!HOMEBREW_CASK.contains("intel:"));
     assert!(HOMEBREW_CASK.contains(r#"app "Hypercolor.app""#));
 }
 
 #[test]
 fn release_ci_publishes_signed_macos_apps() {
     assert!(CI_WORKFLOW.contains("cask_arch: arm64"));
-    assert!(CI_WORKFLOW.contains("cask_arch: x86_64"));
+    assert!(!CI_WORKFLOW.contains("cask_arch: x86_64"));
     assert!(CI_WORKFLOW.contains("artifact-kind: dmg"));
     assert!(CI_WORKFLOW.contains("Sign and notarize macOS app"));
     assert!(CI_WORKFLOW.contains("Verify signed macOS app"));
@@ -1540,16 +1540,16 @@ fn release_ci_updates_formula_and_cask_from_the_same_release() {
         job_body.contains("gh api repos/hyperb1iss/homebrew-tap --jq '.permissions.push // false'")
     );
 
-    for required in [
-        "macos-arm64",
-        "macos-amd64",
-        ".dmg",
-        "Casks",
-        "hypercolor-app.rb",
-    ] {
+    for required in ["macos-arm64", ".dmg", "Casks", "hypercolor-app.rb"] {
         assert!(
             job_body.contains(required),
             "update-homebrew must update every artifact: missing {required}"
+        );
+    }
+    for intel in ["macos-amd64", "x86_64"] {
+        assert!(
+            !job_body.contains(intel),
+            "update-homebrew must not expect an Intel macOS artifact: {intel}"
         );
     }
     assert!(!HOMEBREW_FORMULA.contains("MACOS_VERSION_PLACEHOLDER"));

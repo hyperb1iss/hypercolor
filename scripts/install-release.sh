@@ -149,16 +149,30 @@ detect_platform() {
         *)       fatal "Unsupported architecture: ${ARCH}" ;;
     esac
 
+    # macOS releases ship for Apple silicon only. A shell running under
+    # Rosetta reports x86_64 on Apple silicon, where the arm64 build runs
+    # natively, so only a real Intel Mac is left without a release artifact.
+    if [[ "$OS" == Darwin && "$ARCH" == x86_64 ]] \
+        && [[ "$(PATH="${PATH}:/usr/sbin" sysctl -n hw.optional.arm64 2>/dev/null)" == 1 ]]; then
+        ARCH="aarch64"
+    fi
+
     # Build artifact suffix
     case "${OS}-${ARCH}" in
         Linux-x86_64)   ARTIFACT_SUFFIX="linux-amd64" ;;
         Linux-aarch64)  ARTIFACT_SUFFIX="linux-arm64" ;;
-        Darwin-x86_64)  ARTIFACT_SUFFIX="macos-amd64" ;;
         Darwin-aarch64) ARTIFACT_SUFFIX="macos-arm64" ;;
+        # Uninstall still needs the OS on an Intel Mac; install refuses it.
+        Darwin-x86_64)  ARTIFACT_SUFFIX="" ;;
         *)              fatal "Unsupported platform: ${OS} ${ARCH}" ;;
     esac
 
-    info "Detected platform: ${OS} ${ARCH} (${ARTIFACT_SUFFIX})"
+    info "Detected platform: ${OS} ${ARCH}${ARTIFACT_SUFFIX:+ (${ARTIFACT_SUFFIX})}"
+}
+
+require_release_artifact() {
+    [[ -n "$ARTIFACT_SUFFIX" ]] \
+        || fatal "Intel Macs are not supported; Hypercolor for macOS requires Apple silicon."
 }
 
 validate_install_topology() {
@@ -327,6 +341,7 @@ check_path() {
 do_install() {
     banner
     detect_platform
+    require_release_artifact
     validate_install_topology
     check_dependencies
     setup_tmpdir

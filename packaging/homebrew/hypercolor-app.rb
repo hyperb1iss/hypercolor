@@ -4,18 +4,17 @@
 # Updated by CI from signed and notarized release artifacts.
 
 cask "hypercolor-app" do
-  arch arm: "arm64", intel: "x86_64"
-
   version "VERSION_PLACEHOLDER"
-  sha256 arm:   "SHA256_MACOS_APP_ARM64",
-         intel: "SHA256_MACOS_APP_X86_64"
+  sha256 "SHA256_MACOS_APP_ARM64"
 
-  url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/Hypercolor-#{version}-#{arch}.dmg",
+  url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/Hypercolor-#{version}-arm64.dmg",
       verified: "github.com/hyperb1iss/hypercolor/"
   name "Hypercolor"
   desc "Open-source RGB lighting orchestration"
   homepage "https://github.com/hyperb1iss/hypercolor"
 
+  # Apple silicon only; Homebrew refuses the cask on Intel Macs.
+  depends_on arch: :arm64
   depends_on macos: ">= :sequoia"
 
   app "Hypercolor.app"

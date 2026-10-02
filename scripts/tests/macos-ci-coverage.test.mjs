@@ -13,14 +13,13 @@ function condition(name) {
   return steps.get(name).match(/^        if: (.+)$/m)?.[1];
 }
 
-test('each macOS architecture has independent workspace and capability capacity', () => {
+test('Apple silicon has independent workspace and capability capacity', () => {
   const entries = [...job.matchAll(/          - label: (.+)\n            os: (.+)\n            expected-arch: (.+)\n            lane: (.+)/g)]
     .map(([, label, os, arch, lane]) => ({ label, os, arch, lane }));
-  assert.equal(entries.length, 4);
-  for (const [label, os, arch] of [['Apple Silicon', 'macos-26', 'arm64'], ['Intel', 'macos-26-intel', 'x86_64']]) {
-    assert.deepEqual(entries.filter((entry) => entry.arch === arch),
-      ['workspace', 'capabilities'].map((lane) => ({ label, os, arch, lane })));
-  }
+  // Apple silicon is the only macOS target; Intel lanes must not return.
+  assert.deepEqual(entries, ['workspace', 'capabilities']
+    .map((lane) => ({ label: 'Apple Silicon', os: 'macos-26', arch: 'arm64', lane })));
+  assert.doesNotMatch(job, /intel|x86_64|nasm/i);
   assert.match(job, /^    needs: changes$/m);
   assert.match(job, /^      fail-fast: false$/m);
   assert.match(job, /^    timeout-minutes: 120$/m);
@@ -38,11 +37,8 @@ test('workspace artifacts and capability fixtures run in separate lanes', () => 
     'Run macOS capture fixtures', 'Run macOS host input and ownership fixtures',
     'Run macOS status API fixtures',
   ]) assert.equal(condition(name), "matrix.lane == 'capabilities'");
-  assert.equal(condition('Qualify Intel Metal fixture'),
-    "matrix.lane == 'capabilities' && matrix.expected-arch == 'x86_64'");
   assert.equal(condition('Qualify macOS runner and SDK'), undefined);
   assert.equal(condition('Verify macOS signing secret transport'), undefined);
-  assert.equal(condition('Install NASM'), "matrix.expected-arch == 'x86_64'");
 });
 
 test('cache ownership and restored target directories agree across lanes', () => {
@@ -83,8 +79,8 @@ test('publication retains every validation gate while compilation overlaps it', 
 test('only Homebrew waits for macOS; every other channel follows create-release', () => {
   const job = id => workflow.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'))?.[1];
   const needs = id => job(id)?.match(/^    needs: (.+)$/m)?.[1];
-  // The formula and cask need all four macOS checksums, so Homebrew moves
-  // with the macOS assets; nothing else may depend on Apple.
+  // The formula and cask need the macOS checksums, so Homebrew moves with
+  // the macOS assets; nothing else may depend on Apple.
   assert.equal(needs('update-homebrew'), 'attach-macos');
   assert.equal(needs('update-aur'), 'create-release');
   assert.equal(needs('update-nix'), 'create-release');

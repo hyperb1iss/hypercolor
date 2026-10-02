@@ -52,7 +52,7 @@ the AUR, and PyPI update on stable tags only.
 
 | Channel | What ships there |
 |---|---|
-| [GitHub Releases](https://github.com/hyperb1iss/hypercolor/releases) | Linux tarballs and `.deb` packages, Windows NSIS installer, signed and notarized macOS DMGs and tarballs (Apple Silicon and Intel), and checksums |
+| [GitHub Releases](https://github.com/hyperb1iss/hypercolor/releases) | Linux tarballs and `.deb` packages, Windows NSIS installer, signed and notarized macOS DMGs and tarballs (Apple silicon), and checksums |
 | Homebrew | `hypercolor` formula (CLI and daemon, with `brew services`) and `hypercolor-app` cask (desktop app), updated on every stable tag |
 | AUR | `hypercolor-bin` prebuilt package |
 | npm | [`hypercolor`](https://www.npmjs.com/package/hypercolor) effect SDK and [`create-hypercolor`](https://www.npmjs.com/package/create-hypercolor) scaffolder |

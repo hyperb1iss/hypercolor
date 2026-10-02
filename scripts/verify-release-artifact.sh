@@ -573,13 +573,26 @@ case "${platform}" in
     ;;
 esac
 
-case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64) host_platform="linux-amd64" ;;
-  Linux-aarch64) host_platform="linux-arm64" ;;
-  Darwin-arm64) host_platform="macos-arm64" ;;
-  Darwin-x86_64) host_platform="macos-amd64" ;;
-  *) host_platform="" ;;
-esac
+# The release platform this host runs natively. A shell running under
+# Rosetta reports x86_64 on Apple silicon, where the arm64 release runs
+# natively, so the hardware answers there instead of uname.
+host_release_platform() {
+  local machine
+  machine="$(uname -m)"
+  if [[ "$(uname -s)" == Darwin && "${machine}" == x86_64 ]] \
+    && [[ "$(PATH="${PATH}:/usr/sbin" sysctl -n hw.optional.arm64 2>/dev/null)" == 1 ]]; then
+    machine=arm64
+  fi
+  case "$(uname -s)-${machine}" in
+    Linux-x86_64) echo linux-amd64 ;;
+    Linux-aarch64) echo linux-arm64 ;;
+    Darwin-arm64) echo macos-arm64 ;;
+    Darwin-x86_64) echo macos-amd64 ;;
+    *) echo "" ;;
+  esac
+}
+
+host_platform="$(host_release_platform)"
 
 if [[ "${install_candidate}" == true ]]; then
   [[ "${host_platform}" == "${platform}" ]] || {
