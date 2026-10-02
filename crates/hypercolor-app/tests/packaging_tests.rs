@@ -577,44 +577,33 @@ fn macos_release_verifier_pins_every_macho_to_15_2() {
 }
 
 #[test]
-fn ci_qualifies_both_macos_architectures_with_xcode_26() {
-    assert!(CI_WORKFLOW.contains("rust-check-macos:"));
-    assert!(CI_WORKFLOW.contains("os: macos-26"));
-    assert!(CI_WORKFLOW.contains("os: macos-26-intel"));
-    assert!(CI_WORKFLOW.contains("XCODE_VERSION: \"26.5\""));
-    assert!(CI_WORKFLOW.contains("xcodebuild -version"));
-    assert!(CI_WORKFLOW.contains("xcrun --show-sdk-version"));
-    assert!(CI_WORKFLOW.contains("test \"${sdk_version%%.*}\" = \"26\""));
-}
-
-#[test]
-fn ci_installs_nasm_before_intel_macos_compilation() {
+fn ci_qualifies_apple_silicon_macos_with_xcode_26() {
     let (_, macos_job) = CI_WORKFLOW
         .split_once("\n  rust-check-macos:\n")
         .expect("CI should define the macOS check job");
     let (macos_job, _) = macos_job
         .split_once("\n  generated-effects:\n")
         .expect("generated effects should follow the macOS check job");
-    let install = macos_job
-        .find("- name: Install NASM")
-        .expect("Intel macOS checks should install NASM");
-    let (_, install_and_after) = macos_job
-        .split_once("- name: Install NASM\n")
-        .expect("Intel macOS checks should install NASM");
-    let (install_step, _) = install_and_after
-        .split_once("\n\n      - ")
-        .expect("another macOS step should follow NASM installation");
-    let qualification = macos_job
-        .find("- name: Qualify Intel Metal fixture")
-        .expect("Intel macOS checks should qualify native Metal import");
-    let workspace = macos_job
-        .find("- name: Check macOS workspace")
-        .expect("macOS checks should compile the workspace");
-
-    assert!(install_step.contains("if: matrix.expected-arch == 'x86_64'"));
-    assert!(install_step.contains("run: brew install nasm"));
-    assert!(install < qualification);
-    assert!(install < workspace);
+    assert!(macos_job.contains("os: macos-26\n"));
+    assert!(macos_job.contains("expected-arch: arm64"));
+    assert!(macos_job.contains(r#"test "$(uname -m)" = "${{ matrix.expected-arch }}""#));
+    // Apple silicon is the only macOS target, so no Intel runner or
+    // Intel-only step may return to the macOS checks.
+    for intel_only in [
+        "macos-26-intel",
+        "x86_64",
+        "Install NASM",
+        "Qualify Intel Metal fixture",
+    ] {
+        assert!(
+            !macos_job.contains(intel_only),
+            "macOS checks still carry {intel_only}"
+        );
+    }
+    assert!(CI_WORKFLOW.contains("XCODE_VERSION: \"26.5\""));
+    assert!(CI_WORKFLOW.contains("xcodebuild -version"));
+    assert!(CI_WORKFLOW.contains("xcrun --show-sdk-version"));
+    assert!(CI_WORKFLOW.contains("test \"${sdk_version%%.*}\" = \"26\""));
 }
 
 #[test]
