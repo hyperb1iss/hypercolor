@@ -47,8 +47,12 @@ export function captureSourceTimes(roots, destination) {
   return sources.reduce((total, files) => total + files.length, 0);
 }
 
+// A whole millisecond above the current timestamp: a one-microsecond step
+// sits inside the rounding noise of a millisecond double at epoch scale and
+// of the seconds-to-timespec conversion in utimes, so a file could come back
+// with the timestamp it already had.
 function refreshedTimestamp(current, wallClockMs) {
-  return Math.max(wallClockMs, current.mtimeMs + 0.001) / 1000;
+  return Math.max(wallClockMs, current.mtimeMs + 1) / 1000;
 }
 
 function refreshSourceTimes(roots, wallClockMs) {
@@ -78,9 +82,11 @@ function validSnapshot(snapshot, rootCount) {
 
 export function restoreSourceTimes(roots, source) {
   // Date.now() can precede a freshly written file on filesystems retaining
-  // submillisecond timestamps. Use the high-resolution epoch clock and advance
-  // by one microsecond only when the input is already newer.
-  const wallClockMs = performance.timeOrigin + performance.now();
+  // submillisecond timestamps, and the high-resolution clock can trail
+  // Date.now() after the system clock is slewed, since its origin is fixed
+  // at process start. Take the later of the two and advance by a millisecond
+  // only when the input is already newer.
+  const wallClockMs = Math.max(Date.now(), performance.timeOrigin + performance.now());
   if (!existsSync(source)) {
     refreshSourceTimes(roots, wallClockMs);
     return 0;
