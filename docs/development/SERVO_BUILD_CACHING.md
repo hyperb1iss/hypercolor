@@ -186,9 +186,11 @@ Each of the thirteen jobs that use the cache action passes the bucket, the
 `SCCACHE_R2_SECRET_ACCESS_KEY` secrets as the action's `r2-*` inputs. Jobs
 that never compile see none of them. The action then:
 
-- writes (`SCCACHE_S3_RW_MODE=READ_WRITE`) only where the Actions cache writes,
-  and reads everywhere else, so pull requests and tags reuse what `main`
-  compiled without adding entries;
+- writes (`SCCACHE_S3_RW_MODE=READ_WRITE`) from every push or dispatch on
+  `main`, including lanes that set `save-if: "false"` (that switch protects
+  the Actions cache budget, which R2 does not share), and reads everywhere
+  else, so pull requests and tags reuse what `main` compiled without adding
+  entries;
 - keys entries under `sccache/<os>-<arch>`, so each runner platform keeps its
   own namespace;
 - sends a signed HEAD request before enabling R2. A refused or unreachable

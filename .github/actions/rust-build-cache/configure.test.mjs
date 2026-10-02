@@ -198,6 +198,16 @@ test('configuration enables R2 only after the probe succeeds and exports nothing
       'rustc test fixture', () => ({ ok: true, detail: 'HTTP 404' }));
     assert.equal(pull.SCCACHE_S3_RW_MODE, 'READ_ONLY');
 
+    // An Actions-cache opt-out lane on main still writes the shared compiler cache.
+    const optedOut = configure({ ...env, CACHE_SAVE_IF: 'false', GITHUB_ENV: path.join(temp, 'env-opt-out') },
+      'rustc test fixture', () => ({ ok: true, detail: 'HTTP 404' }));
+    assert.equal(optedOut.HYPERCOLOR_CACHE_WRITE, 'false');
+    assert.equal(optedOut.SCCACHE_S3_RW_MODE, 'READ_WRITE');
+    const optedOutPull = configure({ ...env, CACHE_SAVE_IF: 'false', GITHUB_REF: 'refs/pull/7/merge',
+      GITHUB_EVENT_NAME: 'pull_request', GITHUB_ENV: path.join(temp, 'env-opt-out-pr') },
+    'rustc test fixture', () => ({ ok: true, detail: 'HTTP 404' }));
+    assert.equal(optedOutPull.SCCACHE_S3_RW_MODE, 'READ_ONLY');
+
     const down = configure({ ...env, GITHUB_ENV: path.join(temp, 'env-down') }, 'rustc test fixture', () => ({ ok: false, detail: 'HTTP 403' }));
     assert.equal(down.SCCACHE_BUCKET, undefined);
     assert.equal(down.AWS_SECRET_ACCESS_KEY, undefined);

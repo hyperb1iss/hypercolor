@@ -138,7 +138,10 @@ export function configure(env = process.env, compilerVersion, probe = probeRemot
   });
   const cargoHome = env.CARGO_HOME || path.join(homedir(), '.cargo');
   const write = cacheWriter(env.CACHE_SAVE_IF || 'auto', env.GITHUB_REF, env.CACHE_DEFAULT_BRANCH, env.GITHUB_EVENT_NAME);
-  const remote = remoteCompilerCache(env, write);
+  // save-if opts a lane out of the Actions cache budget; R2 has no such budget,
+  // so every trusted default-branch run writes the shared compiler cache.
+  const trusted = cacheWriter('auto', env.GITHUB_REF, env.CACHE_DEFAULT_BRANCH, env.GITHUB_EVENT_NAME);
+  const remote = remoteCompilerCache(env, trusted);
   let remoteValues = {};
   let compilerCacheLocation = `local disk (${remote.reason})`;
   if (remote.values) {
