@@ -1607,10 +1607,6 @@ jobs:
             os: macos-26
             rust-target: aarch64-apple-darwin
             bundles: app
-          - target: macos-x64
-            os: macos-26-intel
-            rust-target: x86_64-apple-darwin
-            bundles: app
     runs-on: ${{ matrix.os }}
     env:
       # Absolute on purpose. Cargo resolves a relative CARGO_TARGET_DIR
@@ -1705,10 +1701,6 @@ jobs:
           $config = Get-Content -Raw $configPath | ConvertFrom-Json
           $config.version = "${{ steps.version.outputs.version }}"
           $config | ConvertTo-Json -Depth 100 | Set-Content -NoNewline $configPath
-
-      - name: Install nasm
-        if: matrix.target == 'macos-x64'
-        run: brew install nasm
 
       - name: Build native sidecar binaries
         shell: pwsh
@@ -1809,8 +1801,9 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          # One tar per architecture: the artifact store keeps plain files,
-          # and the signing job needs the bundle's modes and layout intact.
+          # One tar for the Apple silicon payload: the artifact store keeps
+          # plain files, and the signing job needs the bundle's modes and
+          # layout intact.
           # The sidecars use the host profile; Tauri builds the app with an
           # explicit target. Ship those exact binaries for dist.sh.
           payload="${RUNNER_TEMP}/unsigned-macos"
@@ -1855,9 +1848,10 @@ jobs:
   # ── Sign macOS Release Artifacts ──────────────────────────────
   # Runs on a fresh runner from build-native-app's unsigned payload, so the
   # three notarizations get their own job budget and a failed or slow
-  # notarization reruns without rebuilding for four hours. Each leg runs on
-  # its own architecture: dist.sh only generates shell completions when the
-  # host matches the target, so the x64 leg must stay on an Intel runner.
+  # notarization reruns without rebuilding the app. Apple silicon is the
+  # only macOS target, and the leg runs on an Apple silicon runner because
+  # dist.sh only generates shell completions when the host matches the
+  # target.
   sign-macos:
     name: Sign macOS (${{ matrix.target }})
     if: >-
@@ -1875,11 +1869,6 @@ jobs:
             rust-target: aarch64-apple-darwin
             artifact-kind: dmg
             cask_arch: arm64
-          - target: macos-x64
-            os: macos-26-intel
-            rust-target: x86_64-apple-darwin
-            artifact-kind: dmg
-            cask_arch: x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -1984,9 +1973,7 @@ jobs:
           bash scripts/with-macos-signing.sh scripts/dist.sh --ci --skip-docs \
             --web-assets web-assets --target '${{ matrix.rust-target }}' \
             --bin-dir '${{ steps.payload.outputs.bin-dir }}' --version "${version}"
-          platform="macos-arm64"
-          if [[ '${{ matrix.cask_arch }}' == 'x86_64' ]]; then platform="macos-amd64"; fi
-          dist_name="hypercolor-${version}-${platform}"
+          dist_name="hypercolor-${version}-macos-arm64"
           ./scripts/sign-macos-artifacts.sh verify-standalone \
             --directory "dist/${dist_name}" \
             --target '${{ matrix.rust-target }}' --team-id "$APPLE_TEAM_ID"
@@ -2545,14 +2532,24 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # Apple silicon is the only macOS target: one tarball, its
+          # checksum, one DMG, and the DMG's notarization receipt.
+          expected=(
+            "hypercolor-${version}-macos-arm64.tar.gz"
+            "hypercolor-${version}-macos-arm64.tar.gz.sha256"
+            "Hypercolor-${version}-arm64.dmg"
+            "Hypercolor-${version}-arm64.dmg.notarization.json"
+          )
           mapfile -t files < <(find macos-artifacts -type f \
             \( -name 'hypercolor-*-macos-*.tar.gz' \
                -o -name 'hypercolor-*-macos-*.tar.gz.sha256' \
                -o -name '*.dmg' -o -name '*.dmg.notarization.json' \) | sort)
-          # Two architectures, each with a tarball, its checksum, a DMG,
-          # and the DMG's notarization receipt.
-          if [ "${#files[@]}" -ne 8 ]; then
-            echo "expected 8 signed macOS artifacts, found ${#files[@]}" >&2
+          found="$(for file in "${files[@]}"; do basename "${file}"; done | sort)"
+          if [[ "${found}" != "$(printf '%s\n' "${expected[@]}" | sort)" ]]; then
+            echo "expected exactly the signed Apple silicon macOS artifacts:" >&2
+            printf '  %s\n' "${expected[@]}" >&2
+            echo "found ${#files[@]}:" >&2
             printf '  %s\n' "${files[@]}" >&2
             exit 1
           fi
@@ -2782,7 +2779,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-artifacts
-          for platform in linux-amd64 linux-arm64 macos-amd64 macos-arm64; do
+          # macOS ships for Apple silicon only.
+          for platform in linux-amd64 linux-arm64 macos-arm64; do
             tarball="hypercolor-${VERSION}-${platform}.tar.gz"
             gh release download "v${VERSION}" \
               --repo "${{ github.repository }}" \
@@ -2792,13 +2790,11 @@ jobs:
             echo "sha256_${platform//-/_}=${sha}" >> "$GITHUB_OUTPUT"
             echo "  ${platform}: ${sha}"
           done
-          for arch in arm64 x86_64; do
-            dmg="Hypercolor-${VERSION}-${arch}.dmg"
-            gh release download "v${VERSION}" \
-              --repo "${{ github.repository }}" --pattern "$dmg" --dir release-artifacts
-            sha=$(sha256sum "release-artifacts/${dmg}" | cut -d' ' -f1)
-            echo "sha256_dmg_${arch}=${sha}" >> "$GITHUB_OUTPUT"
-          done
+          dmg="Hypercolor-${VERSION}-arm64.dmg"
+          gh release download "v${VERSION}" \
+            --repo "${{ github.repository }}" --pattern "$dmg" --dir release-artifacts
+          sha=$(sha256sum "release-artifacts/${dmg}" | cut -d' ' -f1)
+          echo "sha256_dmg_arm64=${sha}" >> "$GITHUB_OUTPUT"
 
       - name: Verify Homebrew tap token
         env:
@@ -2831,10 +2827,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           SHA256_LINUX_AMD64: ${{ steps.checksums.outputs.sha256_linux_amd64 }}
           SHA256_LINUX_ARM64: ${{ steps.checksums.outputs.sha256_linux_arm64 }}
-          SHA256_MACOS_AMD64: ${{ steps.checksums.outputs.sha256_macos_amd64 }}
           SHA256_MACOS_ARM64: ${{ steps.checksums.outputs.sha256_macos_arm64 }}
           SHA256_DMG_ARM64: ${{ steps.checksums.outputs.sha256_dmg_arm64 }}
-          SHA256_DMG_X86_64: ${{ steps.checksums.outputs.sha256_dmg_x86_64 }}
         run: |
           set -euo pipefail
           mkdir -p homebrew-tap/Formula homebrew-tap/Casks
@@ -2842,10 +2836,8 @@ jobs:
             --version "$VERSION" \
             --linux-amd64 "$SHA256_LINUX_AMD64" \
             --linux-arm64 "$SHA256_LINUX_ARM64" \
-            --macos-amd64 "$SHA256_MACOS_AMD64" \
             --macos-arm64 "$SHA256_MACOS_ARM64" \
             --dmg-arm64 "$SHA256_DMG_ARM64" \
-            --dmg-x86_64 "$SHA256_DMG_X86_64" \
             --template packaging/homebrew/hypercolor.rb \
             --cask-template packaging/homebrew/hypercolor-app.rb \
             --output homebrew-tap/Formula/hypercolor.rb \

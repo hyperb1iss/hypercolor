@@ -79,8 +79,8 @@ test('publication retains every validation gate while compilation overlaps it', 
 test('only Homebrew waits for macOS; every other channel follows create-release', () => {
   const job = id => workflow.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'))?.[1];
   const needs = id => job(id)?.match(/^    needs: (.+)$/m)?.[1];
-  // The formula and cask need all four macOS checksums, so Homebrew moves
-  // with the macOS assets; nothing else may depend on Apple.
+  // The formula and cask need the macOS checksums, so Homebrew moves with
+  // the macOS assets; nothing else may depend on Apple.
   assert.equal(needs('update-homebrew'), 'attach-macos');
   assert.equal(needs('update-aur'), 'create-release');
   assert.equal(needs('update-nix'), 'create-release');

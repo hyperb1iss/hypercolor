@@ -73,13 +73,13 @@ test('macOS signing runs in its own job from an unsigned build payload', () => {
   const toGlob = pattern => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`);
   for (const id of ['create-release', 'attach-macos']) {
     const glob = toGlob(body(id).match(/pattern: (\S+)/)[1]);
-    assert.ok(!glob.test('unsigned-macos-arm64') && !glob.test('unsigned-macos-x64'), `${id} must not download unsigned payloads`);
+    assert.ok(!glob.test('unsigned-macos-arm64'), `${id} must not download unsigned payloads`);
   }
   // The signed macOS artifacts attach-macos downloads are exactly the ones
   // sign-macos uploads, and create-release never publishes macOS assets.
   const attachGlob = toGlob(body('attach-macos').match(/pattern: (\S+)/)[1]);
   assert.ok(attachGlob.test('hypercolor-tarball-0.6.0-macos-arm64'));
-  assert.ok(attachGlob.test('hypercolor-app-0.6.0-macos-x64-dmg'));
+  assert.ok(attachGlob.test('hypercolor-app-0.6.0-macos-arm64-dmg'));
   assert.ok(!attachGlob.test('hypercolor-app-0.6.0-windows-x64-nsis'));
   const releaseFilter = body('create-release');
   assert.match(releaseFilter, /! -name '\*-macos-\*'/);
@@ -87,6 +87,14 @@ test('macOS signing runs in its own job from an unsigned build payload', () => {
   // Signing runs exactly when the build it signs runs.
   const condition = job => job.match(/^    if: >-\n((?:      .*\n)+)/m)[1];
   assert.equal(condition(sign), condition(build));
+  // Apple silicon is the only macOS target in both stages, and no Intel
+  // runner or target may return to the release pipeline.
+  const targets = job => [...job.matchAll(/^          - target: (\S+)$/gm)].map(match => match[1]);
+  assert.deepEqual(targets(build), ['windows-x64', 'macos-arm64']);
+  assert.deepEqual(targets(sign), ['macos-arm64']);
+  for (const job of [build, sign, body('attach-macos')]) {
+    assert.doesNotMatch(job, /macos-x64|macos-amd64|macos-26-intel|rust-target: x86_64-apple-darwin|cask_arch: x86_64/);
+  }
 });
 
 test('native app version validation accepts an exact stamped prerelease', () => {
@@ -134,10 +142,8 @@ test('Homebrew checksum step supplies every value consumed by its renderer', () 
     const expectedAssets = {
       sha256_linux_amd64: 'hypercolor-0.5.2-linux-amd64.tar.gz',
       sha256_linux_arm64: 'hypercolor-0.5.2-linux-arm64.tar.gz',
-      sha256_macos_amd64: 'hypercolor-0.5.2-macos-amd64.tar.gz',
       sha256_macos_arm64: 'hypercolor-0.5.2-macos-arm64.tar.gz',
       sha256_dmg_arm64: 'Hypercolor-0.5.2-arm64.dmg',
-      sha256_dmg_x86_64: 'Hypercolor-0.5.2-x86_64.dmg',
     };
     assert.deepEqual(Object.keys(values).sort(), Object.keys(expectedAssets).sort());
     for (const [key, asset] of Object.entries(expectedAssets)) {
@@ -158,6 +164,8 @@ test('Homebrew checksum step supplies every value consumed by its renderer', () 
       assert.match(content, /version "0\.5\.2"/);
       assert.doesNotMatch(content, /PLACEHOLDER|SHA256_/);
     }
+    // Homebrew never asks the release for an Intel macOS artifact.
+    assert.doesNotMatch(job, /macos-amd64|x86_64|MACOS_AMD64/i);
     const aur = workflow.match(/^  update-aur:\n([\s\S]*?)(?=^  [a-z][\w-]*:)/m)[1];
     assert.doesNotMatch(aur, /macos-|\.dmg/);
   } finally {
@@ -183,7 +191,6 @@ test('the unsigned payload carries the build job binaries through signing into t
   assert.match(sign, /dist\/hypercolor-\*\.tar.gz\n/);
   for (const [arch, target, matrixTarget, platform] of [
     ['arm64', 'aarch64-apple-darwin', 'macos-arm64', 'macos-arm64'],
-    ['x86_64', 'x86_64-apple-darwin', 'macos-x64', 'macos-amd64'],
   ]) {
     const buildRunner = mkdtempSync(path.join(tmpdir(), 'macos-build-runner-'));
     const signRunner = mkdtempSync(path.join(tmpdir(), 'macos-sign-runner-'));
@@ -284,9 +291,7 @@ test('attach-macos adds only the signed macOS assets the release lacks', () => {
   const shell = run.replace(/^          /gm, '');
   const assets = [
     'hypercolor-0.6.0-macos-arm64.tar.gz', 'hypercolor-0.6.0-macos-arm64.tar.gz.sha256',
-    'hypercolor-0.6.0-macos-amd64.tar.gz', 'hypercolor-0.6.0-macos-amd64.tar.gz.sha256',
     'Hypercolor-0.6.0-arm64.dmg', 'Hypercolor-0.6.0-arm64.dmg.notarization.json',
-    'Hypercolor-0.6.0-x86_64.dmg', 'Hypercolor-0.6.0-x86_64.dmg.notarization.json',
   ];
   // Substitute only the release transport: `view` lists the published
   // asset names, and `upload` records what it would publish.
@@ -330,12 +335,24 @@ test('attach-macos adds only the signed macOS assets the release lacks', () => {
   assert.deepEqual(rerun.uploads, []);
   assert.match(rerun.stdout, /already carries every macOS artifact/);
 
-  const partial = run_attach(assets.slice(0, 3));
+  const partial = run_attach(assets.slice(0, 2));
   assert.equal(partial.status, 0, partial.stderr);
-  assert.deepEqual(partial.uploads, assets.slice(3).sort());
+  assert.deepEqual(partial.uploads, assets.slice(2).sort());
 
-  const incomplete = run_attach([], assets.slice(0, 7));
+  const incomplete = run_attach([], assets.slice(0, 3));
   assert.equal(incomplete.status, 1);
-  assert.match(incomplete.stderr, /expected 8 signed macOS artifacts, found 7/);
+  assert.match(incomplete.stderr, /expected exactly the signed Apple silicon macOS artifacts/);
+  assert.match(incomplete.stderr, /found 3:/);
   assert.deepEqual(incomplete.uploads, []);
+
+  // An Intel artifact is never published, even beside a complete arm64 set.
+  const intel = run_attach([], [...assets, 'Hypercolor-0.6.0-x86_64.dmg']);
+  assert.equal(intel.status, 1);
+  assert.match(intel.stderr, /Hypercolor-0\.6\.0-x86_64\.dmg/);
+  assert.deepEqual(intel.uploads, []);
+
+  // Assets from another version never stand in for this tag's.
+  const stale = run_attach([], assets.map(name => name.replace('0.6.0', '0.5.9')));
+  assert.equal(stale.status, 1);
+  assert.deepEqual(stale.uploads, []);
 });

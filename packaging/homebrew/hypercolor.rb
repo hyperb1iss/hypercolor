@@ -24,17 +24,15 @@ class Hypercolor < Formula
   version "VERSION_PLACEHOLDER"
   license "Apache-2.0"
 
+  # macOS releases ship for Apple silicon only, so Homebrew refuses Intel
+  # Macs up front instead of fetching an archive that does not exist.
   on_macos do
+    depends_on arch: :arm64
     depends_on macos: :sequoia
     depends_on MacosVersionRequirement
 
-    if Hardware::CPU.arm?
-      url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/hypercolor-#{version}-macos-arm64.tar.gz"
-      sha256 "SHA256_MACOS_ARM64"
-    elsif Hardware::CPU.intel?
-      url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/hypercolor-#{version}-macos-amd64.tar.gz"
-      sha256 "SHA256_MACOS_AMD64"
-    end
+    url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/hypercolor-#{version}-macos-arm64.tar.gz"
+    sha256 "SHA256_MACOS_ARM64"
   end
 
   on_linux do

@@ -3,13 +3,13 @@
 //
 // Formula and cask metadata come from the same published release. Every
 // platform checksum is required so a partial release cannot advance the tap.
+// macOS ships for Apple silicon only, so there is no Intel macOS input.
 //
 //   node scripts/homebrew-formula.mjs \
 //     --version 0.5.0 \
 //     --linux-amd64 <sha256> --linux-arm64 <sha256> \
 //     --template packaging/homebrew/hypercolor.rb \
-//     --macos-amd64 <sha256> --macos-arm64 <sha256> \
-//     --dmg-arm64 <sha256> --dmg-x86_64 <sha256> \
+//     --macos-arm64 <sha256> --dmg-arm64 <sha256> \
 //     --cask-template packaging/homebrew/hypercolor-app.rb \
 //     --output hypercolor.rb --cask-output hypercolor-app.rb
 
@@ -18,8 +18,11 @@ import { fileURLToPath } from 'node:url';
 
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-const MACOS_SHAS = { amd64: 'SHA256_MACOS_AMD64', arm64: 'SHA256_MACOS_ARM64' };
+const MACOS_SHAS = { arm64: 'SHA256_MACOS_ARM64' };
 const LINUX_SHAS = { amd64: 'SHA256_LINUX_AMD64', arm64: 'SHA256_LINUX_ARM64' };
+const CLI_OPTIONS = ['version', 'linux-amd64', 'linux-arm64', 'macos-arm64', 'dmg-arm64',
+  'template', 'output', 'cask-template', 'cask-output'];
+const LEFTOVER_PATTERN = /[A-Z0-9_]*PLACEHOLDER|SHA256_[A-Z0-9_]+/;
 
 class FormulaError extends Error {}
 
@@ -57,7 +60,7 @@ export function renderFormula({ template, version, linux, macos }) {
       formula = formula.replace(placeholder, requireSha(checksums?.[arch], `${platform} ${arch} sha256`));
     }
   }
-  const leftover = formula.match(/[A-Z0-9_]*PLACEHOLDER|SHA256_[A-Z0-9_]+/);
+  const leftover = formula.match(LEFTOVER_PATTERN);
   if (leftover) throw new FormulaError(`${leftover[0]} survived rendering`);
   return formula;
 }
@@ -67,6 +70,7 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (!flag.startsWith('--')) throw new FormulaError(`unexpected argument ${flag}`);
+    if (!CLI_OPTIONS.includes(flag.slice(2))) throw new FormulaError(`unknown option ${flag}`);
     const value = argv[index + 1];
     if (value === undefined || value.startsWith('--')) throw new FormulaError(`${flag} needs a value`);
     args[flag.slice(2)] = value;
@@ -77,37 +81,33 @@ function parseArgs(argv) {
 
 export function main(argv) {
   const args = parseArgs(argv);
-  for (const required of ['version', 'linux-amd64', 'linux-arm64', 'macos-amd64', 'macos-arm64',
-    'dmg-arm64', 'dmg-x86_64', 'template', 'output', 'cask-template', 'cask-output']) {
+  for (const required of CLI_OPTIONS) {
     if (args[required] === undefined) throw new FormulaError(`--${required} is required`);
   }
   const template = readFileSync(args.template, 'utf8');
-  const macos = {
-    amd64: requireSha(args['macos-amd64'], 'macOS amd64 sha256'),
-    arm64: requireSha(args['macos-arm64'], 'macOS arm64 sha256'),
-  };
   const formula = renderFormula({
     template,
     version: args.version,
     linux: { amd64: args['linux-amd64'], arm64: args['linux-arm64'] },
-    macos,
+    macos: { arm64: args['macos-arm64'] },
   });
   const cask = renderCask({ template: readFileSync(args['cask-template'], 'utf8'),
-    version: args.version, arm64: args['dmg-arm64'], x86_64: args['dmg-x86_64'] });
+    version: args.version, arm64: args['dmg-arm64'] });
   writeFileSync(args.output, formula);
   writeFileSync(args['cask-output'], cask);
   console.log(`wrote formula and cask for ${args.version}`);
 }
 
-export function renderCask({ template, version, arm64, x86_64 }) {
+export function renderCask({ template, version, arm64 }) {
   requireVersion(version, 'version');
   const values = { VERSION_PLACEHOLDER: version,
-    SHA256_MACOS_APP_ARM64: requireSha(arm64, 'DMG arm64 sha256'),
-    SHA256_MACOS_APP_X86_64: requireSha(x86_64, 'DMG x86_64 sha256') };
+    SHA256_MACOS_APP_ARM64: requireSha(arm64, 'DMG arm64 sha256') };
   for (const [placeholder, value] of Object.entries(values)) {
     requirePlaceholder(template, placeholder);
     template = template.replace(placeholder, value);
   }
+  const leftover = template.match(LEFTOVER_PATTERN);
+  if (leftover) throw new FormulaError(`${leftover[0]} survived rendering`);
   return template;
 }
 
