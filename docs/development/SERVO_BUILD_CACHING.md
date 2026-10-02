@@ -159,7 +159,8 @@ cache layers:
   `ccache` directory). Each lane passes its own `shared-key` and shards its
   target dir to match (`shared-key: servo` builds into
   `.cache/hypercolor/target/servo`), so lanes with incompatible feature shapes
-  never share an entry.
+  never share an entry. A lane can key its archive by dependencies instead of
+  by commit (see `archive-key` below).
 - **sccache:** the action installs the pinned sccache release, starts a server
   for the job, and prints its statistics in the job summary. On Linux and
   macOS the bash build wrapper restarts that server once, on the first build
@@ -212,6 +213,27 @@ tags that row matching `Cache misses` is expected, not a fault.
 The bucket deletes objects 30 days after upload. After an entry expires, the
 next `main` build that needs it compiles once and writes it again; pull request
 and tag runs recompile without writing.
+
+The action's `archive-key` input decides how often `main` saves a lane's
+target archive. The default, `revision`, saves a new entry for every commit.
+`dependencies` drops the commit from the key, so a successful run saves an
+entry only when the lockfiles change (the compiler and build shape already
+live in the prefix). Later commits restore it as an exact hit and skip the
+save; they rebuild the workspace crates that changed since, and R2 serves each
+of those compiles that an earlier `main` run already performed. Work these
+lanes never send through sccache (test binaries, build scripts, proc-macro
+crates, and clippy's dependency checks) still comes from the archive, but only
+as fresh as the commit that saved it, so every crate a later commit changes
+reruns that work for its dependents.
+
+A failed run that saves on failure uses the commit's revision key instead. The
+dependency key prefix-matches that entry without an exact hit, so the next
+successful run restores the partial archive, finishes it, and saves the
+lockfile set's entry; a partial archive never becomes the exact hit that later
+runs stop saving over. Rust Windows uses `dependencies`: its archive is the
+largest in the repository (about 19.5 GB), and saving one per commit cost
+about 21 minutes per `main` run and kept two copies in the Actions budget at
+once.
 
 Two keys keep untrusted code out of the cache that release builds trust:
 
