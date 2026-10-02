@@ -158,6 +158,12 @@ impl LayoutContext {
         }
         self.publish_layout_changed(None, id);
         drop(guard);
+        self.wait_test_hook(
+            LayoutMutationTestPoint::AfterWorkflow,
+            LayoutMutationTestOperation::Create,
+            &mutation_reference,
+        )
+        .await;
         Ok(summary)
     }
 
@@ -265,8 +271,14 @@ impl LayoutContext {
                 .reconcile_layout(&layout_id, &previous_zones, &updated_zones)
                 .await;
         }
-        self.publish_layout_changed(None, layout_id);
+        self.publish_layout_changed(None, layout_id.clone());
         drop(guard);
+        self.wait_test_hook(
+            LayoutMutationTestPoint::AfterWorkflow,
+            LayoutMutationTestOperation::Update,
+            &layout_id,
+        )
+        .await;
         Ok(summary)
     }
 
@@ -302,6 +314,12 @@ impl LayoutContext {
         self.publish_layout_changed(Some(previous_active_id), layout.id.clone());
         drop(guard);
         let persistence = self.converge_persisted_update(runtime).await;
+        self.wait_test_hook(
+            LayoutMutationTestPoint::AfterWorkflow,
+            LayoutMutationTestOperation::Apply,
+            &layout.id,
+        )
+        .await;
         Ok(LayoutMutationResult {
             data: ApplyLayoutResponse {
                 layout,
@@ -472,6 +490,12 @@ impl LayoutContext {
         } else {
             LayoutPersistenceStatus::Synchronized
         };
+        self.wait_test_hook(
+            LayoutMutationTestPoint::AfterWorkflow,
+            LayoutMutationTestOperation::Delete,
+            &key,
+        )
+        .await;
         Ok(LayoutMutationResult {
             data: DeleteLayoutResponse {
                 id: key,
