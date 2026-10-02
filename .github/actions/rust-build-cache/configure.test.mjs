@@ -213,15 +213,35 @@ test('configuration enables R2 only after the probe succeeds and exports nothing
   }
 });
 
-test('every workflow that uses the cache action supplies the R2 settings from secrets and variables', () => {
+test('only main jobs can reach the read-write R2 key, and every cache restore passes the R2 inputs', () => {
+  const environment = "    environment:\n      # Only main may hold the read-write R2 key; every other run reads.\n" +
+    "      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}\n      deployment: false\n";
+  const inputs = '          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}\n' +
+    '          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}\n' +
+    '          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}\n          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}\n';
+  let consumers = 0;
   for (const filename of ['ci.yml', 'servo-cache-warm.yml']) {
     const source = readFileSync(new URL(`../../workflows/${filename}`, import.meta.url), 'utf8');
-    const head = source.slice(0, source.indexOf('\njobs:'));
-    assert.match(head, /\n {2}SCCACHE_R2_ACCESS_KEY_ID: \$\{\{ secrets\.SCCACHE_R2_ACCESS_KEY_ID \}\}/, filename);
-    assert.match(head, /\n {2}SCCACHE_R2_SECRET_ACCESS_KEY: \$\{\{ secrets\.SCCACHE_R2_SECRET_ACCESS_KEY \}\}/, filename);
-    assert.match(head, /\n {2}SCCACHE_R2_BUCKET: \$\{\{ vars\.SCCACHE_R2_BUCKET \}\}/, filename);
-    assert.match(head, /\n {2}SCCACHE_R2_ENDPOINT: \$\{\{ vars\.SCCACHE_R2_ENDPOINT \}\}/, filename);
+    // Workflow-level env would hand the key to jobs that never compile.
+    assert.doesNotMatch(source.slice(0, source.indexOf('\njobs:')), /SCCACHE_R2_/, filename);
     // The action decides read or write mode; a workflow never configures sccache's backend directly.
     assert.doesNotMatch(source, /SCCACHE_(BUCKET|S3_RW_MODE|ENDPOINT):/, filename);
+    const jobs = source.slice(source.indexOf('\njobs:')).split(/\n  [a-zA-Z0-9_-]+:\n/).slice(1);
+    for (const job of jobs) {
+      if (!job.includes('uses: ./.github/actions/rust-build-cache')) {
+        assert.doesNotMatch(job, /SCCACHE_R2_|sccache-writer/, `${filename}: only cache consumers see R2 settings`);
+        continue;
+      }
+      consumers += 1;
+      assert.ok(job.includes(environment), `${filename}: cache consumer must gate the writer environment`);
+      assert.equal(job.split(inputs).length - 1, 1, `${filename}: exactly the restore call passes the R2 inputs`);
+      assert.match(job, /uses: \.\/\.github\/actions\/rust-build-cache\n {8}with:\n {10}r2-access-key-id:/);
+    }
+  }
+  assert.equal(consumers, 13);
+  const action = readFileSync(new URL('./action.yml', import.meta.url), 'utf8');
+  for (const [variable, input] of [['SCCACHE_R2_ACCESS_KEY_ID', 'r2-access-key-id'], ['SCCACHE_R2_SECRET_ACCESS_KEY', 'r2-secret-access-key'],
+    ['SCCACHE_R2_BUCKET', 'r2-bucket'], ['SCCACHE_R2_ENDPOINT', 'r2-endpoint']]) {
+    assert.ok(action.includes(`        ${variable}: \${{ inputs.${input} }}\n`), variable);
   }
 });

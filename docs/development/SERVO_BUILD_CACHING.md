@@ -161,7 +161,9 @@ cache layers:
   `.cache/hypercolor/target/servo`), so lanes with incompatible feature shapes
   never share an entry.
 - **sccache:** the action installs the pinned sccache release, starts a server
-  that lives for the whole job, and prints its statistics in the job summary.
+  for the job, and prints its statistics in the job summary. On Linux and
+  macOS the bash build wrapper restarts that server once, on the first build
+  or test, to apply checkout path normalization.
   `CARGO_INCREMENTAL=0` is set workflow-wide because sccache refuses
   incremental compiles.
 
@@ -178,10 +180,11 @@ competing; `save-if: "false"` opts a lane out of saving even on main.
 ### Shared compiler cache in R2
 
 sccache stores its entries in the Cloudflare R2 bucket named by the
-`SCCACHE_R2_BUCKET` repository variable, outside the Actions cache quota.
-`ci.yml` and `servo-cache-warm.yml` pass `SCCACHE_R2_ACCESS_KEY_ID`,
-`SCCACHE_R2_SECRET_ACCESS_KEY`, `SCCACHE_R2_BUCKET`, and
-`SCCACHE_R2_ENDPOINT` to the action, which then:
+`SCCACHE_R2_BUCKET` repository variable, outside the Actions cache budget.
+Each of the thirteen jobs that use the cache action passes the bucket, the
+`SCCACHE_R2_ENDPOINT` variable, and the `SCCACHE_R2_ACCESS_KEY_ID` and
+`SCCACHE_R2_SECRET_ACCESS_KEY` secrets as the action's `r2-*` inputs. Jobs
+that never compile see none of them. The action then:
 
 - writes (`SCCACHE_S3_RW_MODE=READ_WRITE`) only where the Actions cache writes,
   and reads everywhere else, so pull requests and tags reuse what `main`
@@ -197,15 +200,31 @@ sccache stores its entries in the Cloudflare R2 bucket named by the
 Fork pull requests receive no secrets and compile with the local disk cache.
 The `Compiler cache:` line in the configure step's log and the
 `Cache location` row of the job summary's statistics show which backend a job
-used. A read-only run counts every write it skips as a `Cache write errors`
-entry, so in pull requests and tags that row matching `Cache misses` is
-expected, not a fault.
+used. The statistics are authoritative: a mid-job fallback, or a write check
+that downgrades sccache to read-only, leaves the configure line stale, and the
+first `main` run should show `Cache writes` above zero. A read-only run counts
+every write it skips as a `Cache write errors` entry, so in pull requests and
+tags that row matching `Cache misses` is expected, not a fault.
 
-The bucket deletes objects 30 days after upload, so an entry nobody rewrites
-expires and its next use compiles once and writes it again. The token CI uses
-can read and write that one bucket and nothing else. The proprietary repository
-uses its own bucket and token, so public CI can never write an entry a
-proprietary build consumes. The 1Password items "Cloudflare R2 sccache:
+The bucket deletes objects 30 days after upload. After an entry expires, the
+next `main` build that needs it compiles once and writes it again; pull request
+and tag runs recompile without writing.
+
+Two keys keep untrusted code out of the cache that release builds trust:
+
+- The repository secrets hold a key with **object read only** on the bucket.
+  Every job that compiles gets it, including pull requests, so code running
+  in an unmerged branch (a dependency's build script, a test) can read the
+  cache but never write to it.
+- The `sccache-writer` environment holds the **read-write** key under the same
+  secret names. Each cache job names that environment only when it runs on
+  `refs/heads/main` (`deployment: false`, so no deployment records), and the
+  environment's branch policy allows only `main`, so a branch that edits the
+  workflow to name it is refused before the job starts.
+
+Both keys reach only that one bucket. The proprietary repository uses its own
+bucket and keys, so public CI can never write an entry a proprietary build
+consumes. The 1Password items "Cloudflare R2 sccache:
 hypercolor-oss-sccache-ci" and its `-lighting-` counterpart in the Hyperbliss
 vault hold the credentials and the rotation steps.
 
