@@ -201,8 +201,9 @@ Fork pull requests receive no secrets and compile with the local disk cache.
 The `Compiler cache:` line in the configure step's log and the
 `Cache location` row of the job summary's statistics show which backend a job
 used. The statistics are authoritative: a mid-job fallback, or a write check
-that downgrades sccache to read-only, leaves the configure line stale, and the
-first `main` run should show `Cache writes` above zero. A read-only run counts
+that downgrades sccache to read-only, leaves the configure line stale.
+sccache 0.17 has no write counter, so a writing run shows a nonzero
+`Average cache write` with `Cache write errors` at zero. A read-only run counts
 every write it skips as a `Cache write errors` entry, so in pull requests and
 tags that row matching `Cache misses` is expected, not a fault.
 
