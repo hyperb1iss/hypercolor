@@ -278,6 +278,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     timeout-minutes: 45
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-shared
@@ -305,6 +309,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           shared-key: rust-check-shared
           workspaces: . -> .cache/hypercolor/target/rust-check-shared
           cache-on-failure: "false"
@@ -345,6 +353,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -383,6 +395,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           shared-key: rust-check-macos-${{ matrix.expected-arch }}-${{ matrix.lane }}
           workspaces: . -> .cache/hypercolor/target/rust-check-macos-${{ matrix.lane }}
           cache-on-failure: "false"
@@ -561,6 +577,10 @@ jobs:
     needs: [changes, generated-effects]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -604,6 +624,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           shared-key: ${{ matrix.shared_key }}
           workspaces: . -> ${{ matrix.target_dir }}
           cache-on-failure: "false"
@@ -708,6 +732,10 @@ jobs:
     needs: [changes, generated-effects]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     timeout-minutes: 75
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/servo
@@ -735,6 +763,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           shared-key: servo
           workspaces: . -> .cache/hypercolor/target/servo
           cache-directories: |
@@ -828,6 +860,10 @@ jobs:
     needs: [changes, generated-effects]
     if: needs.changes.outputs.rust == 'true'
     runs-on: windows-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     # Sized for a cold run. The steps below sweep five feature sets, so
     # almost all of the wall time is rustc, not tests, and a cache miss puts
     # the whole sweep well past an hour. Warm runs sit at 55 to 90 minutes.
@@ -852,6 +888,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           shared-key: rust-windows
           workspaces: . -> .cache/hypercolor/target/rust-windows
           # Saving only on success is self-perpetuating here: no cache makes
@@ -1044,6 +1084,10 @@ jobs:
       (needs.rust-check-shared.result == 'success' ||
       needs.rust-check-shared.result == 'skipped')
     runs-on: ubuntu-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     defaults:
       run:
         working-directory: python
@@ -1082,6 +1126,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           shared-key: rust-test-daemon
           workspaces: . -> .cache/hypercolor/target/rust-test-daemon
           save-if: "false"
@@ -1177,6 +1225,10 @@ jobs:
       needs.changes.outputs.rust == 'true' ||
       needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     defaults:
       run:
         working-directory: crates/hypercolor-ui
@@ -1191,6 +1243,10 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           key: ui
       - run: bun install --frozen-lockfile
       - run: ../../scripts/cargo-cache-build.sh cargo test --locked
@@ -1220,6 +1276,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     timeout-minutes: 75
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-test-daemon
@@ -1246,6 +1306,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           shared-key: rust-test-daemon
           workspaces: . -> .cache/hypercolor/target/rust-test-daemon
           save-if: "false"
@@ -1512,6 +1576,10 @@ jobs:
       (github.event_name == 'workflow_dispatch' &&
       inputs.release_artifacts != 'none')
     runs-on: ubuntu-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/bun-cache
@@ -1523,6 +1591,10 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           key: web-assets
 
       - name: Install Trunk
@@ -1610,6 +1682,10 @@ jobs:
             rust-target: aarch64-apple-darwin
             bundles: app
     runs-on: ${{ matrix.os }}
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     env:
       # Absolute on purpose. Cargo resolves a relative CARGO_TARGET_DIR
       # against the current directory, and the Tauri bundle step runs from
@@ -1639,6 +1715,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           key: native-app-${{ matrix.target }}
           workspaces: . -> target
 
@@ -2006,6 +2086,10 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke'
     needs: web-assets
     runs-on: ubuntu-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     steps:
       - uses: actions/checkout@v7
 
@@ -2029,6 +2113,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           key: release-smoke-linux-amd64
 
       - name: Download web assets
@@ -2166,6 +2254,10 @@ jobs:
     # shapes. Tags restore that trusted cache; they never publish cache state.
     timeout-minutes: 120
     runs-on: ${{ matrix.os }}
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     steps:
       - uses: actions/checkout@v7
 
@@ -2224,6 +2316,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           key: release-${{ matrix.target }}
 
       - name: Download web assets

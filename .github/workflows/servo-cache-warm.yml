@@ -30,6 +30,10 @@ jobs:
   warm-servo:
     name: Servo Cache
     runs-on: ubuntu-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/servo
     steps:
@@ -56,6 +60,10 @@ jobs:
 
       - uses: ./.github/actions/rust-build-cache
         with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           shared-key: servo
           workspaces: . -> .cache/hypercolor/target/servo
           cache-directories: |

@@ -491,7 +491,7 @@ refresh_sccache_server_config() {
   local lock_file="$CACHE_ROOT/sccache-config.lock"
   local desired
   local current=""
-  desired="$("$SCCACHE_BIN" --version)|$SCCACHE_CACHE_SIZE|$SCCACHE_BASEDIRS"
+  desired="$("$SCCACHE_BIN" --version)|$SCCACHE_CACHE_SIZE|$SCCACHE_BASEDIRS|${SCCACHE_BUCKET:-}|${SCCACHE_ENDPOINT:-}|${SCCACHE_REGION:-}|${SCCACHE_S3_KEY_PREFIX:-}|${SCCACHE_S3_RW_MODE:-}"
   [ ! -f "$state_file" ] || current="$(<"$state_file")"
   [ "$current" = "$desired" ] && return 0
 
@@ -510,8 +510,16 @@ refresh_sccache_server_config() {
 
   "$SCCACHE_BIN" --stop-server >/dev/null 2>&1 || true
   if ! "$SCCACHE_BIN" --start-server 4>&- 5>&- 6>&- 8>&- 9>&- >/dev/null; then
-    release_sccache_config_lock
-    return 1
+    # sccache refuses to start when its remote storage check fails. The
+    # shared cache only accelerates the build, so fall back to local disk.
+    # The state file still records the remote config, so later invocations
+    # in this job keep the local server instead of retrying the remote.
+    if [ -z "${SCCACHE_BUCKET:-}" ] \
+      || ! SCCACHE_BUCKET="" "$SCCACHE_BIN" --start-server 4>&- 5>&- 6>&- 8>&- 9>&- >/dev/null; then
+      release_sccache_config_lock
+      return 1
+    fi
+    echo "[cargo-cache] shared compiler cache failed its startup check; using the local disk cache" >&2
   fi
   printf '%s\n' "$desired" >"$state_file.tmp.$$"
   mv "$state_file.tmp.$$" "$state_file"

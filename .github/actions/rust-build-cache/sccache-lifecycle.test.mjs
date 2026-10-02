@@ -11,7 +11,10 @@ const available = spawnSync(binary, ['--version']).status === 0;
 const realServer = { skip: !available || process.platform === 'win32' };
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'hc-cache-lifecycle-'));
-  const env = { ...process.env, SCCACHE_PATH: binary, SCCACHE_DIR: path.join(root, 'cache'),
+  // Fixtures exercise the local disk backend even when the calling job has the shared cache.
+  const inherited = Object.fromEntries(Object.entries(process.env)
+    .filter(([key]) => !/^(SCCACHE_(BUCKET|ENDPOINT|REGION|S3_\w+)|AWS_\w+)$/.test(key)));
+  const env = { ...inherited, SCCACHE_PATH: binary, SCCACHE_DIR: path.join(root, 'cache'),
     SCCACHE_SERVER_UDS: path.join(root, 'server.sock'), SCCACHE_IDLE_TIMEOUT: '0',
     GITHUB_ENV: path.join(root, 'env'), GITHUB_STEP_SUMMARY: path.join(root, 'summary'),
     HYPERCOLOR_SCCACHE_STARTED: '', SCCACHE_CONF: path.join(root, 'config') };
@@ -77,6 +80,32 @@ test('startup failure never publishes server ownership', realServer, () => {
   try {
     writeFileSync(f.env.SCCACHE_CONF, 'invalid = [');
     assert.throws(() => startCompilerCache(f.env));
+    assert.equal(existsSync(f.env.GITHUB_ENV), false);
+  } finally { f.close(); }
+});
+
+test('an unreachable shared cache falls back to the local disk instead of failing the job', realServer, () => {
+  const f = fixture();
+  try {
+    // Port 1 refuses connections, so sccache's startup storage check fails.
+    const remote = { ...f.env, SCCACHE_BUCKET: 'hypercolor-test-cache', SCCACHE_ENDPOINT: 'https://127.0.0.1:1',
+      SCCACHE_REGION: 'auto', AWS_ACCESS_KEY_ID: 'test', AWS_SECRET_ACCESS_KEY: 'test' };
+    startCompilerCache(remote);
+    const published = readFileSync(f.env.GITHUB_ENV, 'utf8');
+    assert.match(published, /^SCCACHE_BUCKET=\n/m);
+    assert.match(published, /HYPERCOLOR_COMPILER_CACHE=local disk/);
+    assert.match(published, /HYPERCOLOR_SCCACHE_STARTED=true/);
+    const stats = execFileSync(binary, ['--show-stats'], { env: f.env, encoding: 'utf8' });
+    assert.match(stats, /Cache location\s+Local disk/);
+    stopCompilerCache({ ...f.env, HYPERCOLOR_SCCACHE_STARTED: 'true' });
+  } finally { f.close(); }
+});
+
+test('a broken local configuration still fails even when a shared cache is configured', realServer, () => {
+  const f = fixture();
+  try {
+    writeFileSync(f.env.SCCACHE_CONF, 'invalid = [');
+    assert.throws(() => startCompilerCache({ ...f.env, SCCACHE_BUCKET: 'hypercolor-test-cache' }));
     assert.equal(existsSync(f.env.GITHUB_ENV), false);
   } finally { f.close(); }
 });

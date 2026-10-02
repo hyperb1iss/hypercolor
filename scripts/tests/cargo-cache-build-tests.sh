@@ -28,6 +28,10 @@ cleanup() {
 }
 trap 'cleanup' EXIT
 unset CARGO_TARGET_DIR
+# CI runs this suite after the cache action may have enabled the shared R2
+# compiler cache; the fake server must start from a local-only configuration.
+unset SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_KEY_PREFIX \
+  SCCACHE_S3_RW_MODE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 
 mkdir -p "$SANDBOX/bin" "$SANDBOX/caller"
 cat >"$SANDBOX/bin/cargo" <<'EOF'
@@ -110,7 +114,12 @@ case "${1:-}" in
     fi
     ;;
   --start-server)
-    printf 'start\n' >>"$FAKE_SCCACHE_LOG"
+    if [ -n "${SCCACHE_BUCKET:-}" ]; then
+      printf 'start remote\n' >>"$FAKE_SCCACHE_LOG"
+      [ "${FAKE_SCCACHE_FAIL_REMOTE:-0}" -eq 0 ] || exit 11
+    else
+      printf 'start\n' >>"$FAKE_SCCACHE_LOG"
+    fi
     if [ -e "/proc/$$/fd/4" ] || [ -e "/proc/$$/fd/5" ] \
       || [ -e "/proc/$$/fd/7" ] || [ -e "/proc/$$/fd/9" ]; then
       echo "sccache inherited the configuration lock" >&2
@@ -399,6 +408,40 @@ refresh_failure_status=$?
 set -e
 test "$refresh_failure_status" -ne 0
 test ! -e "$SANDBOX/refresh-failure/sccache-server-config"
+
+# A shared cache that fails sccache's startup storage check leaves the build
+# on the local disk cache instead of failing it.
+SCCACHE_BUCKET=hypercolor-test-cache SCCACHE_S3_RW_MODE=READ_ONLY FAKE_SCCACHE_FAIL_REMOTE=1 \
+  run_refresh_wrapper refresh-remote-down refresh-remote-down-cargo cargo build \
+  2>"$SANDBOX/refresh-remote-down.stderr"
+printf 'stop\nstart remote\nstart\n' >"$SANDBOX/refresh-remote-down.expected"
+diff -u "$SANDBOX/refresh-remote-down.expected" "$SANDBOX/refresh-remote-down.sccache.log"
+grep -q 'using the local disk cache' "$SANDBOX/refresh-remote-down.stderr"
+test -s "$SANDBOX/refresh-remote-down/sccache-server-config"
+# The recorded configuration keeps later builds in the job on the local
+# server instead of retrying the failed remote before every compile.
+SCCACHE_BUCKET=hypercolor-test-cache SCCACHE_S3_RW_MODE=READ_ONLY FAKE_SCCACHE_FAIL_REMOTE=1 \
+  run_refresh_wrapper refresh-remote-down refresh-remote-down-cargo cargo build
+diff -u "$SANDBOX/refresh-remote-down.expected" "$SANDBOX/refresh-remote-down.sccache.log"
+
+set +e
+SCCACHE_BUCKET=hypercolor-test-cache FAKE_SCCACHE_FAIL_REMOTE=1 FAKE_SCCACHE_FAIL_START=1 \
+  run_refresh_wrapper refresh-all-down refresh-all-down-cargo cargo build \
+  >"$SANDBOX/refresh-all-down.stdout" 2>"$SANDBOX/refresh-all-down.stderr"
+refresh_all_down_status=$?
+set -e
+test "$refresh_all_down_status" -ne 0
+test ! -e "$SANDBOX/refresh-all-down/sccache-server-config"
+
+# Changing the shared cache mode restarts the server with the new backend.
+SCCACHE_BUCKET=hypercolor-test-cache SCCACHE_S3_RW_MODE=READ_ONLY \
+  run_refresh_wrapper refresh-remote-mode refresh-remote-mode-cargo cargo build
+SCCACHE_BUCKET=hypercolor-test-cache SCCACHE_S3_RW_MODE=READ_ONLY \
+  run_refresh_wrapper refresh-remote-mode refresh-remote-mode-cargo cargo build
+SCCACHE_BUCKET=hypercolor-test-cache SCCACHE_S3_RW_MODE=READ_WRITE \
+  run_refresh_wrapper refresh-remote-mode refresh-remote-mode-cargo cargo build
+printf 'stop\nstart remote\nstop\nstart remote\n' >"$SANDBOX/refresh-remote-mode.expected"
+diff -u "$SANDBOX/refresh-remote-mode.expected" "$SANDBOX/refresh-remote-mode.sccache.log"
 
 ready="$SANDBOX/refresh-lock.ready"
 HYPERCOLOR_FORCE_PORTABLE_LOCK=1 FAKE_SCCACHE_STOP_READY="$ready" \
