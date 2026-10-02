@@ -32,9 +32,9 @@ The proprietary release pipeline produces the signed and notarized DMGs.
 | Exact seven-key daemon hardened-runtime entitlement profile | `packaging/macos/daemon.entitlements.plist` | Live |
 | App-sidecar entitlement profile with media Automation access | `packaging/macos/daemon-sidecar.entitlements.plist` | Live |
 | Sidecar staging (daemon + CLI under `target/bundle-stage/binaries/`) | `scripts/stage-app-bundle-assets.sh` | Live |
-| Per-arch CI build matrix (`macos-arm64`, `macos-x64`) | `.github/workflows/ci.yml` § `build-native-app` | Live; uploads short-lived unsigned `.app` fixtures only |
+| Apple silicon CI build (`macos-arm64`; Intel Macs are not a release target) | `.github/workflows/ci.yml` § `build-native-app` | Live; uploads short-lived unsigned `.app` fixtures only |
 | Manifest-driven Developer ID signing and notarization actor | `scripts/sign-macos-artifacts.sh` | Live; invoked only by local or proprietary builds |
-| Homebrew Cask template with per-arch SHA placeholders | `packaging/homebrew/hypercolor-app.rb` | Live |
+| Homebrew Cask template with the arm64 SHA placeholder and `depends_on arch: :arm64` | `packaging/homebrew/hypercolor-app.rb` | Live |
 | Signed DMG and Homebrew Cask promotion | Proprietary release pipeline | Private; never receives credentials from OSS CI |
 
 ### 1.2 Local build script

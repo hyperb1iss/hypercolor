@@ -355,11 +355,10 @@ Duplication and is enabled by default.
 
 ### Install on macOS
 
-Download
-`Hypercolor-<version>-arm64.dmg` for Apple Silicon or the `-x86_64.dmg` build for
-Intel from the
+Download `Hypercolor-<version>-arm64.dmg` from the
 [GitHub releases page](https://github.com/hyperb1iss/hypercolor/releases). Drag
-the app into `/Applications` and launch. Minimum macOS 15.2 (Sequoia).
+the app into `/Applications` and launch. Hypercolor for macOS requires Apple
+silicon and macOS 15.2 (Sequoia) or newer; Intel Macs are not supported.
 
 Or via Homebrew Cask:
 

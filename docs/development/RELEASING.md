@@ -49,15 +49,22 @@ the AUR metadata (stable only).
 
 The tag lane also updates the Homebrew tap: `update-homebrew` renders
 `packaging/homebrew/hypercolor.rb` and `packaging/homebrew/hypercolor-app.rb`
-with `scripts/homebrew-formula.mjs`, filling every Linux and macOS stanza and
-both cask architectures from the tarballs and DMGs the release just published.
-It runs after the macOS artifacts are attached, because the formula and cask
-need all four macOS checksums.
+with `scripts/homebrew-formula.mjs`, filling the Linux amd64 and arm64
+stanzas, the Apple silicon macOS stanza, and the Apple silicon cask from the
+tarballs and DMG the release just published. It runs after the macOS
+artifacts are attached, because the formula and cask need the macOS
+checksums.
+
+macOS releases target Apple silicon only. macOS 26 Tahoe is the last release
+that runs on Intel Macs, so the release builds, signs, and publishes no
+x86_64 macOS artifacts. The Homebrew formula and cask declare
+`depends_on arch: :arm64`, and both curl installers refuse Intel Macs with a
+clear message before downloading anything.
 
 macOS artifacts are Developer ID signed and notarized on the GitHub macOS
 runners in two stages. `build-native-app` compiles the sidecars and the
-unsigned Tauri app bundle, then uploads them per architecture as an
-`unsigned-macos-*` payload; it never holds Apple credentials. `sign-macos`
+unsigned Tauri app bundle on an Apple silicon runner, then uploads them as an
+`unsigned-macos-arm64` payload; it never holds Apple credentials. `sign-macos`
 picks that payload up on a fresh runner, imports the certificate into an
 ephemeral keychain, signs every binary with the hardened runtime, notarizes
 and staples the app and DMG through an App Store Connect API key, assembles
@@ -67,14 +74,15 @@ carries `APPLE_TEAM_ID` before uploading the release artifacts.
 Apple can hold a notarization for hours, so macOS never gates the rest of
 the release. `create-release` publishes the Linux and Windows artifacts
 without waiting for `sign-macos`, and npm, PyPI, the AUR, and Nix follow it.
-`attach-macos` then adds the signed tarballs and DMGs to the same release
-once both `sign-macos` legs succeed, uploading only assets the release does
-not already carry, and `update-homebrew` runs after it. If a `sign-macos`
-leg times out waiting on Apple, check **Actions → macOS Notary Status → Run
-workflow**, which lists the team's submissions and their status. Once Apple
-has cleared the queue, use "Re-run failed jobs" on the tag's CI/CD run: the
-signing legs pick up the same unsigned payloads (kept for seven days)
-without rebuilding, and `attach-macos` and `update-homebrew` follow. The
+`attach-macos` then adds the signed arm64 tarball, its checksum, the DMG,
+and the DMG's notarization receipt to the same release once `sign-macos`
+succeeds, uploading only assets the release does not already carry, and
+`update-homebrew` runs after it. If `sign-macos` times out waiting on Apple,
+check **Actions → macOS Notary Status → Run workflow**, which lists the
+team's submissions and their status. Once Apple has cleared the queue, use
+"Re-run failed jobs" on the tag's CI/CD run: the signing job picks up the
+same unsigned payload (kept for seven days) without rebuilding, and
+`attach-macos` and `update-homebrew` follow. The
 rerun still waits for a macOS runner and submits new notarizations. The
 `release-credentials` job checks all seven
 Apple secrets before any artifact job starts, and the Release workflow
@@ -102,9 +110,7 @@ Apple Silicon Mac:
   daemon; and
 - `hypercolor --version` from the macOS tarball runs after a browser download.
 
-If any row fails, stop after the dry run. Intel builds get CI verification
-only (signature, notarization, team ID, architecture, and deployment target)
-and no hardware row, because the project has no Intel test machine.
+If any row fails, stop after the dry run.
 
 The full Spec 76 physical matrix (signed TCC owner topology, SDR and HDR rows,
 the Section 19 latency and cadence contracts, the four-hour soak, and Metal 4

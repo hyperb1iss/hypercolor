@@ -44,8 +44,8 @@ curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/
 No Rust toolchain required. The script is idempotent, so it is safe to re-run to upgrade.
 
 **Supported platforms:** Linux x86_64 and aarch64. The installer also supports
-macOS when the selected release includes a standalone tarball for that
-architecture. Use the [desktop app](#macos-dmg) for the macOS setup flow.
+macOS on Apple silicon and refuses Intel Macs. Use the
+[desktop app](#macos-dmg) for the macOS setup flow.
 
 ### Installer options
 
@@ -111,10 +111,10 @@ PawnIO setup was skipped or failed, re-run it from Settings → Device Discovery
 
 ### DMG
 
-Download
-`Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel) from
-the [download page](@/download.md), drag the app into `/Applications`, and
-launch. Minimum macOS 15.2 (Sequoia).
+Download `Hypercolor-<version>-arm64.dmg` from the
+[download page](@/download.md), drag the app into `/Applications`, and launch.
+Hypercolor for macOS requires Apple silicon and macOS 15.2 (Sequoia) or newer;
+Intel Macs are not supported.
 
 Hypercolor requests Screen Recording permission when you enable screen capture.
 For system audio, follow [Audio setup](@/guide/audio-setup.md).
@@ -133,7 +133,8 @@ brew install hyperb1iss/tap/hypercolor
 ```
 
 The formula covers macOS arm64 plus Linux amd64 and arm64. The cask is the full
-desktop app for either Mac architecture.
+desktop app for Apple silicon. On Intel Macs, Homebrew refuses both the formula
+and the cask.
 
 The formula selects the Homebrew service topology when managed with
 `brew services`. Install the cask when protected macOS permissions or the

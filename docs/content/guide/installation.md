@@ -137,7 +137,8 @@ later from Settings → Device Discovery → Hardware Support.
 
 ## macOS
 
-Download the signed DMG from
+Hypercolor for macOS requires Apple silicon and macOS 15.2 or newer; Intel
+Macs are not supported. Download the signed DMG from
 the [download page](@/download.md). Open the DMG, drag Hypercolor to
 Applications, and launch it. The app registers a LaunchAgent for autostart and
 supervises the daemon; no terminal setup is required.

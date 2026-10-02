@@ -5,7 +5,7 @@
 **Date:** 2026-08-10
 **Platform floor:** macOS 15.2 Sequoia
 **Build SDK:** macOS 26 Tahoe or newer
-**Architectures:** Apple Silicon and Intel
+**Architectures:** Apple Silicon. Intel macOS was dropped on 2026-10-02: macOS 26 is the last release for Intel Macs, so releases, CI lanes, and installers now target Apple silicon only (see `docs/development/RELEASING.md`). Sections below that describe Intel lanes and `macos-amd64` artifacts are historical.
 **New crates:** `hypercolor-macos-input`, `hypercolor-macos-capture`
 **Changed crates:** `hypercolor-core`, `hypercolor-daemon`,
 `hypercolor-macos-gpu-interop`, `hypercolor-app`, `hypercolor-types`,
