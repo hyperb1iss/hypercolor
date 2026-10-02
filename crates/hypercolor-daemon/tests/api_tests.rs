@@ -44,7 +44,9 @@ use hypercolor_daemon::api;
 use hypercolor_daemon::api::local::TrustedLocalApi;
 use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
 #[cfg(feature = "persistence-test-hooks")]
-use hypercolor_daemon::domain::layout::{LayoutMutationTestOperation, LayoutMutationTestPoint};
+use hypercolor_daemon::domain::layout::{
+    LayoutMutationTestBarrier, LayoutMutationTestOperation, LayoutMutationTestPoint,
+};
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::JsonLibraryStore;
 #[cfg(feature = "persistence-test-hooks")]
@@ -1221,7 +1223,7 @@ async fn run_two_layout_publications_with_gates(
     release_first_publication: Arc<Semaphore>,
     release_second_admission: Arc<Semaphore>,
 ) {
-    tokio::time::timeout(Duration::from_secs(5), async move {
+    tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, async move {
         let executor = state.layout_publication_test_executor();
         let mut publication_index = 0;
         while publication_index < 2 {
@@ -1237,7 +1239,7 @@ async fn run_two_layout_publications_with_gates(
                     if index == 0 {
                         entered.notify_one();
                         let _permit =
-                            tokio::time::timeout(Duration::from_secs(2), release.acquire_owned())
+                            tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, release.acquire_owned())
                                 .await
                                 .expect("first publication release should arrive")
                                 .expect("first publication gate should remain open");
@@ -1249,7 +1251,7 @@ async fn run_two_layout_publications_with_gates(
             publication_index += 1;
             if publication_index == 1 {
                 let _permit = tokio::time::timeout(
-                    Duration::from_secs(2),
+                    LAYOUT_EVENT_HANG_GUARD,
                     Arc::clone(&release_second_admission).acquire_owned(),
                 )
                 .await
@@ -1268,7 +1270,7 @@ async fn run_one_layout_publication_with_gate(
     publication_entered: Arc<Notify>,
     release_publication: Arc<Semaphore>,
 ) {
-    tokio::time::timeout(Duration::from_secs(5), async move {
+    tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, async move {
         let executor = state.layout_publication_test_executor();
         loop {
             if executor.pending_layout_publications() > 0 {
@@ -1278,7 +1280,7 @@ async fn run_one_layout_publication_with_gate(
                     .execute_next_layout_publication_with_hook(move || async move {
                         entered.notify_one();
                         let _permit =
-                            tokio::time::timeout(Duration::from_secs(2), release.acquire_owned())
+                            tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, release.acquire_owned())
                                 .await
                                 .expect("publication release should arrive")
                                 .expect("publication gate should remain open");
@@ -1363,22 +1365,24 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
     layout_device_id
 }
 
+/// Upper bound on any wait for a layout workflow or publication event in
+/// the cancellation tests. Every such wait is driven by the event itself;
+/// this bound only turns a hang into a failure, so it is deliberately far
+/// above any real duration, including fsync on a loaded CI runner.
 #[cfg(feature = "persistence-test-hooks")]
-async fn wait_for_async_condition<F, Fut>(mut condition: F)
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = bool>,
-{
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if condition().await {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("condition should become true");
+const LAYOUT_EVENT_HANG_GUARD: Duration = Duration::from_mins(1);
+
+/// Let a layout workflow run to its end and wait until it gets there.
+/// Each workflow reaches its `AfterWorkflow` hook only after every durable
+/// write, so a test can check persisted state once instead of polling the
+/// very files the workflow is still writing. The timeout only guards
+/// against a hang; correctness never depends on it.
+#[cfg(feature = "persistence-test-hooks")]
+async fn finish_layout_workflow(barrier: &LayoutMutationTestBarrier) {
+    tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, barrier.wait_until_entered())
+        .await
+        .expect("layout workflow should reach its completion hook");
+    barrier.release();
 }
 
 #[cfg(feature = "persistence-test-hooks")]
@@ -8534,7 +8538,7 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
             .await
             .expect("failed to execute apply request")
     });
-    tokio::time::timeout(Duration::from_secs(2), first_entered.notified())
+    tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, first_entered.notified())
         .await
         .expect("first publication should reach its gate");
     let delete_id = candidate.id.clone();
@@ -8556,7 +8560,7 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
     });
 
     tokio::time::timeout(
-        Duration::from_secs(2),
+        LAYOUT_EVENT_HANG_GUARD,
         before_delete_guard.wait_until_entered(),
     )
     .await
@@ -8574,17 +8578,17 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
     before_delete_guard.release();
     release_first.add_permits(1);
     release_second.add_permits(1);
-    let apply_response = tokio::time::timeout(Duration::from_secs(5), apply)
+    let apply_response = tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, apply)
         .await
         .expect("apply should converge after both renderer gates open")
         .expect("apply task should not panic");
     assert_eq!(apply_response.status(), StatusCode::OK);
-    let delete_response = tokio::time::timeout(Duration::from_secs(5), delete)
+    let delete_response = tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, delete)
         .await
         .expect("delete should converge after both renderer gates open")
         .expect("delete task should not panic");
     assert_eq!(delete_response.status(), StatusCode::OK);
-    tokio::time::timeout(Duration::from_secs(5), renderer)
+    tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, renderer)
         .await
         .expect("layout publication worker should finish")
         .expect("layout publication worker should not panic");
@@ -8825,7 +8829,7 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
             .await
             .expect("failed to execute active delete request")
     });
-    tokio::time::timeout(Duration::from_secs(2), first_entered.notified())
+    tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, first_entered.notified())
         .await
         .expect("first publication should reach its gate");
     let fallback_id = fallback.id.clone();
@@ -8847,7 +8851,7 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
     });
 
     tokio::time::timeout(
-        Duration::from_secs(2),
+        LAYOUT_EVENT_HANG_GUARD,
         before_fallback_guard.wait_until_entered(),
     )
     .await
@@ -8865,17 +8869,17 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
     before_fallback_guard.release();
     release_first.add_permits(1);
     release_second.add_permits(1);
-    let first_response = tokio::time::timeout(Duration::from_secs(5), first_delete)
+    let first_response = tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, first_delete)
         .await
         .expect("active delete should converge after both renderer gates open")
         .expect("active delete task should not panic");
     assert_eq!(first_response.status(), StatusCode::OK);
-    let fallback_response = tokio::time::timeout(Duration::from_secs(5), fallback_delete)
+    let fallback_response = tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, fallback_delete)
         .await
         .expect("fallback delete should converge after both renderer gates open")
         .expect("fallback delete task should not panic");
     assert_eq!(fallback_response.status(), StatusCode::OK);
-    tokio::time::timeout(Duration::from_secs(5), renderer)
+    tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, renderer)
         .await
         .expect("layout publication worker should finish")
         .expect("layout publication worker should not panic");
@@ -9148,6 +9152,11 @@ async fn layout_mutation_cancellation_finishes_create() {
         LayoutMutationTestOperation::Create,
         "Cancellation Create",
     );
+    let finished = state.domains.layout.test_fixture().hooks().install(
+        LayoutMutationTestPoint::AfterWorkflow,
+        LayoutMutationTestOperation::Create,
+        "Cancellation Create",
+    );
     let app = test_app_with_state(Arc::clone(&state));
     let request = tokio::spawn(async move {
         app.oneshot(
@@ -9183,22 +9192,11 @@ async fn layout_mutation_cancellation_finishes_create() {
             .is_cancelled()
     );
     barrier.release();
-    let layouts_path = state
-        .domains
-        .layout
-        .test_fixture()
-        .catalog_path()
-        .to_path_buf();
-    let durable_id = created_id.clone();
-    wait_for_async_condition(move || {
-        let layouts_path = layouts_path.clone();
-        let durable_id = durable_id.clone();
-        async move {
-            hypercolor_daemon::layout_store::load(&layouts_path)
-                .is_ok_and(|layouts| layouts.contains_key(&durable_id))
-        }
-    })
-    .await;
+    finish_layout_workflow(&finished).await;
+    let layouts =
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
+            .expect("persisted layouts should load once the workflow finished");
+    assert!(layouts.contains_key(&created_id));
 
     assert!(
         state
@@ -9235,6 +9233,11 @@ async fn layout_mutation_cancellation_finishes_update() {
         LayoutMutationTestOperation::Update,
         &stored.id,
     );
+    let finished = state.domains.layout.test_fixture().hooks().install(
+        LayoutMutationTestPoint::AfterWorkflow,
+        LayoutMutationTestOperation::Update,
+        &stored.id,
+    );
     let app = test_app_with_state(Arc::clone(&state));
     let update_id = stored.id.clone();
     let request = tokio::spawn(async move {
@@ -9259,25 +9262,11 @@ async fn layout_mutation_cancellation_finishes_update() {
             .is_cancelled()
     );
     barrier.release();
-    let layouts_path = state
-        .domains
-        .layout
-        .test_fixture()
-        .catalog_path()
-        .to_path_buf();
-    let durable_id = stored.id.clone();
-    wait_for_async_condition(move || {
-        let layouts_path = layouts_path.clone();
-        let durable_id = durable_id.clone();
-        async move {
-            hypercolor_daemon::layout_store::load(&layouts_path).is_ok_and(|layouts| {
-                layouts
-                    .get(&durable_id)
-                    .is_some_and(|layout| layout.name == "After Cancellation Update")
-            })
-        }
-    })
-    .await;
+    finish_layout_workflow(&finished).await;
+    let layouts =
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
+            .expect("persisted layouts should load once the workflow finished");
+    assert_eq!(layouts[&stored.id].name, "After Cancellation Update");
 
     assert_eq!(
         state.domains.layout.test_fixture().catalog().read().await[&stored.id].name,
@@ -9302,6 +9291,11 @@ async fn layout_mutation_cancellation_finishes_apply_convergence() {
         .write()
         .await
         .insert(candidate.id.clone(), candidate.clone());
+    let finished = state.domains.layout.test_fixture().hooks().install(
+        LayoutMutationTestPoint::AfterWorkflow,
+        LayoutMutationTestOperation::Apply,
+        &candidate.id,
+    );
     let app = test_app_with_state(Arc::clone(&state));
     let publication_entered = Arc::new(Notify::new());
     let release_publication = Arc::new(Semaphore::new(0));
@@ -9322,7 +9316,9 @@ async fn layout_mutation_cancellation_finishes_apply_convergence() {
         .await
         .expect("failed to execute request")
     });
-    publication_entered.notified().await;
+    tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, publication_entered.notified())
+        .await
+        .expect("layout publication should reach its gate");
 
     request.abort();
     assert!(
@@ -9335,24 +9331,15 @@ async fn layout_mutation_cancellation_finishes_apply_convergence() {
     renderer
         .await
         .expect("layout publication worker should not panic");
-    let durable_state = Arc::clone(&state);
-    let durable_id = candidate.id.clone();
-    wait_for_async_condition(move || {
-        let state = Arc::clone(&durable_state);
-        let durable_id = durable_id.clone();
-        async move {
-            if state.spatial_engine.snapshot().layout().id != durable_id {
-                return false;
-            }
-            runtime_state::load(&state.runtime_state_path)
-                .ok()
-                .flatten()
-                .and_then(|snapshot| snapshot.active_layout_id)
-                .as_deref()
-                == Some(durable_id.as_str())
-        }
-    })
-    .await;
+    finish_layout_workflow(&finished).await;
+    assert_eq!(state.spatial_engine.snapshot().layout().id, candidate.id);
+    assert_eq!(
+        runtime_state::load(&state.runtime_state_path)
+            .expect("runtime state should load once the workflow finished")
+            .and_then(|snapshot| snapshot.active_layout_id)
+            .as_deref(),
+        Some(candidate.id.as_str())
+    );
 }
 
 #[cfg(feature = "persistence-test-hooks")]
@@ -9371,6 +9358,11 @@ async fn layout_mutation_cancellation_finishes_delete() {
         layouts.insert(fallback.id.clone(), fallback.clone());
     }
     persist_current_layouts_for_test(&state).await;
+    let finished = state.domains.layout.test_fixture().hooks().install(
+        LayoutMutationTestPoint::AfterWorkflow,
+        LayoutMutationTestOperation::Delete,
+        &active.id,
+    );
     let app = test_app_with_state(Arc::clone(&state));
     let publication_entered = Arc::new(Notify::new());
     let release_publication = Arc::new(Semaphore::new(0));
@@ -9391,7 +9383,9 @@ async fn layout_mutation_cancellation_finishes_delete() {
         .await
         .expect("failed to execute request")
     });
-    publication_entered.notified().await;
+    tokio::time::timeout(LAYOUT_EVENT_HANG_GUARD, publication_entered.notified())
+        .await
+        .expect("layout publication should reach its gate");
 
     request.abort();
     assert!(
@@ -9404,42 +9398,30 @@ async fn layout_mutation_cancellation_finishes_delete() {
     renderer
         .await
         .expect("layout publication worker should not panic");
-    let durable_state = Arc::clone(&state);
-    let removed_id = active.id.clone();
-    let durable_id = fallback.id.clone();
-    wait_for_async_condition(move || {
-        let state = Arc::clone(&durable_state);
-        let removed_id = removed_id.clone();
-        let durable_id = durable_id.clone();
-        async move {
-            if state
-                .domains
-                .layout
-                .test_fixture()
-                .catalog()
-                .read()
-                .await
-                .contains_key(&removed_id)
-                || state.spatial_engine.snapshot().layout().id != durable_id
-            {
-                return false;
-            }
-            let layouts_are_durable = hypercolor_daemon::layout_store::load(
-                state.domains.layout.test_fixture().catalog_path(),
-            )
-            .is_ok_and(|layouts| {
-                !layouts.contains_key(&removed_id) && layouts.contains_key(&durable_id)
-            });
-            let runtime_is_durable = runtime_state::load(&state.runtime_state_path)
-                .ok()
-                .flatten()
-                .and_then(|snapshot| snapshot.active_layout_id)
-                .as_deref()
-                == Some(durable_id.as_str());
-            layouts_are_durable && runtime_is_durable
-        }
-    })
-    .await;
+    finish_layout_workflow(&finished).await;
+    assert!(
+        !state
+            .domains
+            .layout
+            .test_fixture()
+            .catalog()
+            .read()
+            .await
+            .contains_key(&active.id)
+    );
+    assert_eq!(state.spatial_engine.snapshot().layout().id, fallback.id);
+    let layouts =
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
+            .expect("persisted layouts should load once the workflow finished");
+    assert!(!layouts.contains_key(&active.id));
+    assert!(layouts.contains_key(&fallback.id));
+    assert_eq!(
+        runtime_state::load(&state.runtime_state_path)
+            .expect("runtime state should load once the workflow finished")
+            .and_then(|snapshot| snapshot.active_layout_id)
+            .as_deref(),
+        Some(fallback.id.as_str())
+    );
 }
 
 #[cfg(feature = "persistence-test-hooks")]
