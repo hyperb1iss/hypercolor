@@ -81,11 +81,14 @@ test('only Homebrew waits for macOS; every other channel follows create-release'
   const needs = id => job(id)?.match(/^    needs: (.+)$/m)?.[1];
   // Homebrew waits for attach-macos to finish but never for it to succeed:
   // Linux advances on create-release alone and macOS joins once notarized.
-  // always() must stay fenced by create-release so failed validation never
-  // publishes. Nothing else may depend on Apple.
+  // !cancelled() must stay fenced by create-release so failed validation
+  // never publishes, and prereleases never reach the tap. Nothing else may
+  // depend on Apple.
   assert.equal(needs('update-homebrew'), '[create-release, attach-macos]');
   const homebrewCondition = job('update-homebrew').split('    needs:')[0];
-  assert.match(homebrewCondition, /always\(\) &&\n\s+needs\.create-release\.result == 'success'/);
+  assert.match(homebrewCondition, /!cancelled\(\) &&\n\s+needs\.create-release\.result == 'success'/);
+  assert.doesNotMatch(homebrewCondition, /always\(\)/);
+  assert.match(homebrewCondition, /!contains\(github\.ref_name, '-'\)/);
   assert.equal(needs('update-aur'), 'create-release');
   assert.equal(needs('update-nix'), 'create-release');
   assert.equal(needs('publish-npm'), '[sdk, create-release]');

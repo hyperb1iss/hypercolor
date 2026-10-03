@@ -51,9 +51,10 @@ The tag lane also updates the Homebrew tap: `update-homebrew` renders
 `packaging/homebrew/hypercolor.rb` and `packaging/homebrew/hypercolor-app.rb`
 with `scripts/homebrew-formula.mjs`, filling the Linux amd64 and arm64
 stanzas, the Apple silicon macOS stanza, and the Apple silicon cask from the
-tarballs and DMG the release just published. It runs after the macOS
-artifacts are attached, because the formula and cask need the macOS
-checksums.
+tarballs and DMG the release just published. It waits for `attach-macos`
+so a notarized release updates every platform at once, but it does not need
+macOS to succeed: without a notarized build, Linux still advances and macOS
+carries forward, as the signing section below describes.
 
 macOS releases target Apple silicon only. macOS 26 Tahoe is the last release
 that runs on Intel Macs, so the release builds, signs, and publishes no

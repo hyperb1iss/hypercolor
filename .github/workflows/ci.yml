@@ -2861,7 +2861,7 @@ jobs:
     # published macOS stanza forward and leaves the cask alone, so a stalled
     # notarization never holds the Linux formula back.
     if: >-
-      always() &&
+      !cancelled() &&
       needs.create-release.result == 'success' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/') &&
@@ -2911,8 +2911,12 @@ jobs:
             exit 1
           fi
           if [[ "$has_tarball" == true ]]; then
-            echo "sha256_macos_arm64=$(fetch "$macos_tarball")" >> "$GITHUB_OUTPUT"
-            echo "sha256_dmg_arm64=$(fetch "$dmg")" >> "$GITHUB_OUTPUT"
+            # Assign before echoing so a failed download stops the job
+            # instead of falling through to carry mode.
+            macos_sha=$(fetch "$macos_tarball")
+            dmg_sha=$(fetch "$dmg")
+            echo "sha256_macos_arm64=${macos_sha}" >> "$GITHUB_OUTPUT"
+            echo "sha256_dmg_arm64=${dmg_sha}" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::v${VERSION} has no signed macOS build; macOS stays on the published formula."
           fi
@@ -2978,6 +2982,9 @@ jobs:
             homebrew-tap/Formula/hypercolor.rb
             homebrew-tap/Casks/hypercolor-app.rb
           if-no-files-found: error
+          # Re-running sign-macos re-runs this job in the same run, where a
+          # carry-mode attempt already uploaded this name.
+          overwrite: true
 
       - name: Push to homebrew-tap
         working-directory: homebrew-tap

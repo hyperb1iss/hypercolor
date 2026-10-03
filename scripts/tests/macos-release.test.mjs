@@ -122,12 +122,12 @@ function homebrewJob() {
 
 // Run the job's checksum and render steps against a release that carries
 // `assets`, with `published` standing in for the tap's current formula.
-function runHomebrewJob({ assets, published }) {
+function runHomebrewJob({ assets, published, failDownloads = [] }) {
   const { repo, steps, shell } = homebrewJob();
   const dir = mkdtempSync(path.join(tmpdir(), 'homebrew-workflow-'));
   const output = path.join(dir, 'outputs');
   const env = { ...process.env, VERSION: '0.5.2', GITHUB_OUTPUT: output, RUNNER_TEMP: dir,
-    FIXTURE_ASSETS: assets.join('\n') };
+    FIXTURE_ASSETS: assets.join('\n'), FIXTURE_FAILING: failDownloads.join('\n') };
   // Substitute only the release transport; execute the workflow shell itself.
   const gh = `gh() {
     if [[ "$1 $2" == "release view" ]]; then
@@ -144,6 +144,7 @@ function runHomebrewJob({ assets, published }) {
     done
     test -n "$artifact" && test -n "$directory" || return 99
     grep -qxF "$artifact" <<<"$FIXTURE_ASSETS" || return 98
+    if [[ -n "$FIXTURE_FAILING" ]] && grep -qxF "$artifact" <<<"$FIXTURE_FAILING"; then return 1; fi
     printf 'fixture:%s' "$artifact" > "$directory/$artifact"
   }
   `;
@@ -167,7 +168,21 @@ function runHomebrewJob({ assets, published }) {
     writeFileSync(path.join(dir, 'homebrew-tap/Casks/hypercolor-app.rb'), published.cask);
     rendered = spawnSync('bash', ['-c', shell(renderStep)], { cwd: dir, env, encoding: 'utf8' });
   }
-  return { dir, checksums, values, rendered,
+  // Run the push step with git stubbed so the commit it would write is visible.
+  const push = () => {
+    const git = `git() {
+      case "$1" in
+        diff) return 1 ;;
+        commit) shift; printf 'COMMIT'; printf ' [%s]' "$@"; printf '\\n' ;;
+      esac
+      return 0
+    }
+    `;
+    const pushEnv = { ...env, SHA256_MACOS_ARM64: values.sha256_macos_arm64 ?? '' };
+    return spawnSync('bash', ['-c', git + shell(steps.get('Push to homebrew-tap'))],
+      { cwd: dir, env: pushEnv, encoding: 'utf8' });
+  };
+  return { dir, checksums, values, rendered, push,
     read: file => readFileSync(path.join(dir, 'homebrew-tap', file), 'utf8') };
 }
 
@@ -208,6 +223,9 @@ test('Homebrew checksum step supplies every value consumed by its renderer', () 
       assert.match(content, /version "0\.5\.2"/);
       assert.doesNotMatch(content, /version "0\.3\.2"|PLACEHOLDER|SHA256_/);
     }
+    const pushed = run.push();
+    assert.equal(pushed.status, 0, pushed.stderr);
+    assert.match(pushed.stdout, /COMMIT \[-m\] \[hypercolor: update to 0\.5\.2\] \[-m\] \[Update formula and cask/);
     // Homebrew never asks the release for an Intel macOS artifact.
     const { job, workflow } = homebrewJob();
     assert.doesNotMatch(job, /macos-amd64|x86_64|MACOS_AMD64/i);
@@ -232,8 +250,24 @@ test('a release without a notarized macOS build advances Linux and carries macOS
     assert.match(macDownload, new RegExp(`sha256 "${'9'.repeat(64)}"`));
     assert.match(formula, new RegExp(`sha256 "${fixtureSha(linuxAssets[0])}"`));
     assert.equal(run.read('Casks/hypercolor-app.rb'), publishedTap.cask);
+    const pushed = run.push();
+    assert.equal(pushed.status, 0, pushed.stderr);
+    assert.match(pushed.stdout, /\[Linux moves to 0\.5\.2; macOS and the cask stay on the last notarized build\.\]/);
   } finally {
     rmSync(run.dir, { recursive: true, force: true });
+  }
+});
+
+test('a failed macOS download stops the job instead of carrying macOS forward', () => {
+  for (const failing of macosAssets) {
+    const run = runHomebrewJob({ assets: [...linuxAssets, ...macosAssets], published: publishedTap,
+      failDownloads: [failing] });
+    try {
+      assert.notEqual(run.checksums.status, 0, `${failing} download failure must stop the step`);
+      assert.equal(run.rendered, undefined);
+    } finally {
+      rmSync(run.dir, { recursive: true, force: true });
+    }
   }
 });
 
