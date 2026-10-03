@@ -258,8 +258,20 @@ The manual `.github/workflows/servo-cache-warm.yml` workflow warms the
 caches; the main CI workflow reuses that key in its Servo check, test, and
 E2E build lanes. Pull requests keep the separate Servo check/test
 lanes out of the default path and rely on the normal Servo E2E stack for HTML
-renderer coverage. Pushes to `main`, tags, and manual CI dispatches still run
-the full Servo check/test gates.
+renderer coverage. Pushes to `main`, tags, and manual CI dispatches other than
+`smoke` and `warm` still run the full Servo check/test gates.
+
+Release builds (web assets, the Native App, and the Linux release lanes) run
+only on tags and release dispatches. Tags read R2 without writing it, so
+before anything warmed them each release compiled the release profile cold.
+`.github/workflows/release-cache-warm.yml` dispatches CI/CD with
+`release_artifacts: warm` on `main` every night: the same release jobs,
+unsigned and without the normal lanes, writing their compiles to R2 for the
+next tag. Warm refuses to run from any ref but `main`, because the signing job
+runs for every tag ref. Those lanes set `save-if: "false"`, so warming never
+adds a release target directory to the Actions budget, and warm uploads expire
+after a day. The Tauri bundle steps run cargo themselves rather than through
+the cache wrappers, so they name `RUSTC_WRAPPER: sccache` directly.
 
 Shared non-Servo Rust lanes deliberately keep Servo out of their dependency
 graph so routine crates do not rebuild `servo-script`.
