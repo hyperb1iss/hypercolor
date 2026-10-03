@@ -244,7 +244,7 @@ else
     ${DAEMON_FEATURE_FLAG[@]+"${DAEMON_FEATURE_FLAG[@]}"} \
     ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
   ./scripts/cargo-cache-build.sh cargo build --release --locked \
-    -p hypercolor-cli --bin hypercolor \
+    -p hypercolor --bin hypercolor \
     -p hypercolor-app --bin hypercolor-app \
     ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
 fi

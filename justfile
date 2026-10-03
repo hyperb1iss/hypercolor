@@ -435,11 +435,11 @@ daemon-wgpu *args='':
 # Run the CLI
 [unix]
 cli *args='':
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-cli --bin hypercolor -- {{ args }}
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor --bin hypercolor -- {{ args }}
 
 [windows]
 cli *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-cli --bin hypercolor -- {{ args }}
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor --bin hypercolor -- {{ args }}
 
 # Build UI + effects so tauri.conf.json's workspace-relative resource paths exist.
 # Both targets are incremental, so no-op rebuilds are cheap and we never bundle stale artifacts.
@@ -469,11 +469,11 @@ app-build *args='': app-assets
 # Build the native sidecars consumed by the Tauri bundle stage.
 [unix]
 app-bundle-binaries:
-    ./scripts/cargo-cache-build.sh cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor-cli --bin hypercolor
+    ./scripts/cargo-cache-build.sh cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor --bin hypercolor
 
 [windows]
 app-bundle-binaries:
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor-cli --bin hypercolor -p hypercolor-windows-pawnio --bin hypercolor-smbus-service -p hypercolor-windows-helper --bin hypercolor-windows-helper
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor --bin hypercolor -p hypercolor-windows-pawnio --bin hypercolor-smbus-service -p hypercolor-windows-helper --bin hypercolor-windows-helper
 
 # Stage triple-suffixed sidecars (and Windows-only PawnIO/SMBus payloads) under target/bundle-stage/
 [unix]
@@ -651,7 +651,7 @@ tui *args='':
         fi
     fi
 
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-cli --bin hypercolor -- tui {{ args }}
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor --bin hypercolor -- tui {{ args }}
 
 # Run daemon + TUI together
 tui-dev *args='':
@@ -660,7 +660,7 @@ tui-dev *args='':
     trap 'kill 0' EXIT
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features servo -- --log-level debug --bind '{{ daemon_bind }}' &
     sleep 2
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-cli --bin hypercolor -- tui {{ args }} &
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor --bin hypercolor -- tui {{ args }} &
     wait
 
 # ─── UI ──────────────────────────────────────────────────
@@ -782,13 +782,13 @@ e2e-browsers:
 # Build the normal Servo daemon, CLI, generated effects, and production web UI for e2e
 [unix]
 e2e-build:
-    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon -p hypercolor-cli
+    ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon -p hypercolor
     just effects-build
     just ui-build
 
 [windows]
 e2e-build:
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon -p hypercolor-cli
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon -p hypercolor
     just effects-build
     just ui-build
 
@@ -800,14 +800,14 @@ e2e-build:
 [unix]
 e2e-build-cpu:
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target/cpu-smoke}" ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target/cpu-smoke}" ./scripts/cargo-cache-build.sh cargo build -p hypercolor-cli
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target/cpu-smoke}" ./scripts/cargo-cache-build.sh cargo build -p hypercolor
     just effects-build
     just ui-build
 
 [windows]
 e2e-build-cpu:
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/cpu-smoke}" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
-    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/cpu-smoke}" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-cli
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/cpu-smoke}" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor
     just effects-build
     just ui-build
 

@@ -4365,6 +4365,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor"
+version = "0.6.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "clap_complete",
+ "futures-util",
+ "hex",
+ "hypercolor-color",
+ "hypercolor-core",
+ "hypercolor-daemon",
+ "hypercolor-install",
+ "hypercolor-macos-owner",
+ "hypercolor-openrgb-host",
+ "hypercolor-platform-fs",
+ "hypercolor-tui",
+ "hypercolor-types",
+ "opaline",
+ "owo-colors",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-width",
+]
+
+[[package]]
 name = "hypercolor-app"
 version = "0.6.1"
 dependencies = [
@@ -4400,40 +4434,6 @@ dependencies = [
  "url",
  "win32job",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "hypercolor-cli"
-version = "0.6.1"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "clap_complete",
- "futures-util",
- "hex",
- "hypercolor-color",
- "hypercolor-core",
- "hypercolor-daemon",
- "hypercolor-install",
- "hypercolor-macos-owner",
- "hypercolor-openrgb-host",
- "hypercolor-platform-fs",
- "hypercolor-tui",
- "hypercolor-types",
- "opaline",
- "owo-colors",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "tokio",
- "tokio-tungstenite 0.30.0",
- "toml 1.1.6+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "unicode-width",
 ]
 
 [[package]]

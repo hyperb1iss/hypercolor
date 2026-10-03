@@ -711,7 +711,7 @@ fn ci_builds_pr_docs_without_widening_deployment_permissions() {
 fn public_ci_audits_pr_and_unsigned_app_macho_deployment_targets() {
     assert!(CI_WORKFLOW.contains("cargo check --workspace --locked"));
     assert!(CI_WORKFLOW.contains("cargo nextest run --locked -p hypercolor-macos-gpu-interop"));
-    assert!(CI_WORKFLOW.contains("cargo build --locked -p hypercolor-cli --bin hypercolor"));
+    assert!(CI_WORKFLOW.contains("cargo build --locked -p hypercolor --bin hypercolor"));
     assert_eq!(
         CI_WORKFLOW
             .matches("./scripts/verify-macos-deployment-target.sh")
@@ -1781,7 +1781,7 @@ fn ui_cargo_builds_use_the_shared_cache_policy() {
     assert!(JUSTFILE.contains("scripts/ui-windows.ps1 -Mode Serve"));
     assert!(JUSTFILE.contains("scripts/ui-windows.ps1 -Mode Build"));
     assert!(JUSTFILE.contains(
-        "scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon -p hypercolor-cli"
+        "scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon -p hypercolor\n"
     ));
     assert!(JUSTFILE.contains(
         "scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon --no-default-features"
@@ -1840,7 +1840,7 @@ fn windows_installer_target_builds_all_bundle_inputs() {
         "Build production UI",
         "Build bundled effects",
         "hypercolor-daemon",
-        "hypercolor-cli",
+        "@(\"-p\", \"hypercolor\")",
         "hypercolor-windows-pawnio",
         "hypercolor-smbus-service",
         "stage-app-bundle-assets.ps1",

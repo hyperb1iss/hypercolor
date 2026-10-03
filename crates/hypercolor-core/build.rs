@@ -5,14 +5,24 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
-    let builtin_root = manifest_dir.join("../../data/attachments/builtin");
+    let builtin_root = manifest_dir.join("attachments");
     let out_path =
         PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("embedded_attachments.rs");
 
+    // A missing template folder would compile an empty catalog without
+    // complaint, so its absence is a build error.
+    assert!(
+        builtin_root.is_dir(),
+        "built-in attachment templates missing at {}",
+        builtin_root.display()
+    );
     let mut files = Vec::new();
-    if builtin_root.exists() {
-        collect_toml_files(&builtin_root, &mut files);
-    }
+    collect_toml_files(&builtin_root, &mut files);
+    assert!(
+        !files.is_empty(),
+        "no built-in attachment templates under {}",
+        builtin_root.display()
+    );
     files.sort();
 
     let mut generated =

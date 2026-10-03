@@ -617,7 +617,7 @@ TL supports **per-fan** speed control (ENE only supports per-group).
 
 ### 6.7 TL Fan LED Layout
 
-Each TL fan has **26 LEDs** arranged across two sides (the TL's dual-sided transparent design). This matches the Hypercolor attachment model (`data/attachments/builtin/lian-li/lian-li-tl-fan.toml`, `count = 26`).
+Each TL fan has **26 LEDs** arranged across two sides (the TL's dual-sided transparent design). This matches the Hypercolor attachment model (`crates/hypercolor-core/attachments/lian-li/lian-li-tl-fan.toml`, `count = 26`).
 
 Group setup uses two groups per port (top/bottom sides):
 

@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-/// Return the bundled built-in attachment template root in the repository.
+/// Return the bundled built-in attachment template root inside this crate.
 #[must_use]
 pub fn bundled_attachments_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/attachments/builtin")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("attachments")
 }
 
 /// Resolve a bundled attachment-relative path to an existing file on disk.
@@ -52,13 +52,13 @@ mod tests {
     use super::{bundled_attachments_root, resolve_attachment_path};
 
     #[test]
-    fn bundled_attachments_root_ends_with_builtin() {
+    fn bundled_attachments_root_is_the_crate_attachment_folder() {
+        let root = bundled_attachments_root();
         assert_eq!(
-            bundled_attachments_root()
-                .file_name()
-                .and_then(|value| value.to_str()),
-            Some("builtin")
+            root.file_name().and_then(|value| value.to_str()),
+            Some("attachments")
         );
+        assert!(root.is_dir(), "{} should exist", root.display());
     }
 
     #[test]

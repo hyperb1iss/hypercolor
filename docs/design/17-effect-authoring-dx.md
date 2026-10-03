@@ -1929,7 +1929,7 @@ This integrates through the existing MCP protocol -- any AI assistant with MCP s
 
 ```
 Minute 0-2: Install and Setup
-  $ cargo install hypercolor-cli  # or download binary
+  $ cargo install hypercolor  # or download binary
   $ hypercolor daemon &           # start the daemon
   # WLED strip auto-discovered via mDNS
 

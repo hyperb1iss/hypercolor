@@ -1,6 +1,9 @@
 [package]
 name = "hypercolor-windows-helper"
 description = "Signed elevated helper for Hypercolor Windows privileged operations"
+# Only the signed build from the Windows installer may run elevated, so an
+# unsigned crates.io copy has no legitimate use.
+publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

@@ -118,7 +118,7 @@ build() {
         -e CARGO_HOME=/work/cargo-home -e "RUSTUP_TOOLCHAIN=$(toolchain)" \
         -e CARGO_TERM_COLOR=never -w /src "$(builder_image)" bash -c '
             set -euo pipefail
-            cargo build --locked -p hypercolor-cli --bin hypercolor \
+            cargo build --locked -p hypercolor --bin hypercolor \
                 --target-dir /work/cargo-target
             install -m 0755 /work/cargo-target/debug/hypercolor /work/bin/hypercolor
             strip /work/bin/hypercolor

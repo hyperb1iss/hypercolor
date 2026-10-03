@@ -139,39 +139,39 @@ webrtc-util = "0.11.0"
 windows-native-keyring-store = "1.1.0"
 
 # Workspace crates
-hypercolor-color = { path = "crates/hypercolor-color" }
-hypercolor-types = { path = "crates/hypercolor-types" }
-hypercolor-hal = { path = "crates/hypercolor-hal" }
-hypercolor-core = { path = "crates/hypercolor-core" }
-hypercolor-persistence = { path = "crates/hypercolor-persistence" }
-hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs" }
-hypercolor-install = { path = "crates/hypercolor-install" }
-hypercolor-worker-retention = { path = "crates/hypercolor-worker-retention" }
-hypercolor-gpu-frame = { path = "crates/hypercolor-gpu-frame" }
-hypercolor-linux-input = { path = "crates/hypercolor-linux-input" }
-hypercolor-pipewire-interop = { path = "crates/hypercolor-pipewire-interop" }
-hypercolor-linux-session = { path = "crates/hypercolor-linux-session" }
-hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop" }
-hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop" }
-hypercolor-macos-capture = { path = "crates/hypercolor-macos-capture" }
-hypercolor-macos-input = { path = "crates/hypercolor-macos-input" }
-hypercolor-macos-owner = { path = "crates/hypercolor-macos-owner" }
-hypercolor-windows-session = { path = "crates/hypercolor-windows-session" }
-hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture" }
-hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop" }
-hypercolor-windows-telemetry = { path = "crates/hypercolor-windows-telemetry" }
-hypercolor-driver-api = { path = "crates/hypercolor-driver-api" }
-hypercolor-driver-support = { path = "crates/hypercolor-driver-support" }
-hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", default-features = false }
-hypercolor-driver-hue = { path = "crates/hypercolor-driver-hue" }
-hypercolor-driver-nanoleaf = { path = "crates/hypercolor-driver-nanoleaf" }
-hypercolor-driver-openrgb = { path = "crates/hypercolor-driver-openrgb" }
-hypercolor-driver-wled = { path = "crates/hypercolor-driver-wled" }
-hypercolor-driver-govee = { path = "crates/hypercolor-driver-govee" }
-hypercolor-network = { path = "crates/hypercolor-network" }
-hypercolor-openrgb-sdk = { path = "crates/hypercolor-openrgb-sdk" }
-hypercolor-openrgb-host = { path = "crates/hypercolor-openrgb-host" }
-hypercolor-tui = { path = "crates/hypercolor-tui" }
+hypercolor-color = { path = "crates/hypercolor-color", version = "0.6.1" }
+hypercolor-types = { path = "crates/hypercolor-types", version = "0.6.1" }
+hypercolor-hal = { path = "crates/hypercolor-hal", version = "0.6.1" }
+hypercolor-core = { path = "crates/hypercolor-core", version = "0.6.1" }
+hypercolor-persistence = { path = "crates/hypercolor-persistence", version = "0.6.1" }
+hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs", version = "0.6.1" }
+hypercolor-install = { path = "crates/hypercolor-install", version = "0.6.1" }
+hypercolor-worker-retention = { path = "crates/hypercolor-worker-retention", version = "0.6.1" }
+hypercolor-gpu-frame = { path = "crates/hypercolor-gpu-frame", version = "0.6.1" }
+hypercolor-linux-input = { path = "crates/hypercolor-linux-input", version = "0.6.1" }
+hypercolor-pipewire-interop = { path = "crates/hypercolor-pipewire-interop", version = "0.6.1" }
+hypercolor-linux-session = { path = "crates/hypercolor-linux-session", version = "0.6.1" }
+hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop", version = "0.6.1" }
+hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop", version = "0.6.1" }
+hypercolor-macos-capture = { path = "crates/hypercolor-macos-capture", version = "0.6.1" }
+hypercolor-macos-input = { path = "crates/hypercolor-macos-input", version = "0.6.1" }
+hypercolor-macos-owner = { path = "crates/hypercolor-macos-owner", version = "0.6.1" }
+hypercolor-windows-session = { path = "crates/hypercolor-windows-session", version = "0.6.1" }
+hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture", version = "0.6.1" }
+hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop", version = "0.6.1" }
+hypercolor-windows-telemetry = { path = "crates/hypercolor-windows-telemetry", version = "0.6.1" }
+hypercolor-driver-api = { path = "crates/hypercolor-driver-api", version = "0.6.1" }
+hypercolor-driver-support = { path = "crates/hypercolor-driver-support", version = "0.6.1" }
+hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", version = "0.6.1", default-features = false }
+hypercolor-driver-hue = { path = "crates/hypercolor-driver-hue", version = "0.6.1" }
+hypercolor-driver-nanoleaf = { path = "crates/hypercolor-driver-nanoleaf", version = "0.6.1" }
+hypercolor-driver-openrgb = { path = "crates/hypercolor-driver-openrgb", version = "0.6.1" }
+hypercolor-driver-wled = { path = "crates/hypercolor-driver-wled", version = "0.6.1" }
+hypercolor-driver-govee = { path = "crates/hypercolor-driver-govee", version = "0.6.1" }
+hypercolor-network = { path = "crates/hypercolor-network", version = "0.6.1" }
+hypercolor-openrgb-sdk = { path = "crates/hypercolor-openrgb-sdk", version = "0.6.1" }
+hypercolor-openrgb-host = { path = "crates/hypercolor-openrgb-host", version = "0.6.1" }
+hypercolor-tui = { path = "crates/hypercolor-tui", version = "0.6.1" }
 
 # Audio + input capture
 realfft = "3.5"

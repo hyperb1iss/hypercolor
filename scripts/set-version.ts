@@ -9,6 +9,8 @@
  *
  * Stamped files:
  *   - Cargo.toml                      [workspace.package] version (all crates inherit)
+ *   - every crate manifest            version requirement on internal hypercolor
+ *                                     path dependencies (crates.io resolves them)
  *   - crates/hypercolor-app/tauri.conf.json
  *   - python/pyproject.toml           (semver prerelease translated to PEP 440)
  *   - packaging/aur/PKGBUILD          (stable releases only; AUR forbids hyphens)
@@ -19,7 +21,7 @@
  * (cargo update --workspace, bun install, uv lock) after stamping.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const REPO_ROOT = resolve(import.meta.dirname, '..')
@@ -51,6 +53,8 @@ function pep440(version: string): string {
 
 interface Target {
     path: string
+    /** Display name when one file carries more than one target. */
+    label?: string
     /** Replace the version in the file content; return null when no match. */
     stamp: (content: string, version: string) => string | null
     /** Extract the currently stamped version for --verify. */
@@ -67,6 +71,36 @@ function lineReplace(pattern: RegExp, render: (version: string) => string) {
         return content.replace(pattern, render(version))
     }
 }
+
+// crates.io resolves internal path dependencies by version, so each one
+// carries an explicit requirement that must move with the workspace version.
+const INTERNAL_DEP_VERSION = /^(hypercolor(?:-[\w-]+)? = \{[^}\n]*\bversion = ")([^"]+)(")/gm
+
+function internalDependencyTarget(path: string): Target {
+    return {
+        path,
+        label: `${path} (internal dependencies)`,
+        stamp: (content, version) => {
+            if (content.search(INTERNAL_DEP_VERSION) === -1) return null
+            return content.replace(INTERNAL_DEP_VERSION, (_match, head, _old, tail) => `${head}${version}${tail}`)
+        },
+        current: (content) => {
+            const versions = [...new Set([...content.matchAll(INTERNAL_DEP_VERSION)].map((match) => match[2]))]
+            return versions.length === 0 ? null : versions.join(' / ')
+        },
+        expected: (v) => v,
+    }
+}
+
+const MANIFESTS_WITH_INTERNAL_DEPS = [
+    'Cargo.toml',
+    ...readdirSync(resolve(REPO_ROOT, 'crates'))
+        .sort()
+        .map((name) => `crates/${name}/Cargo.toml`),
+].filter((path) => {
+    const absolute = resolve(REPO_ROOT, path)
+    return existsSync(absolute) && readFileSync(absolute, 'utf8').search(INTERNAL_DEP_VERSION) !== -1
+})
 
 const TARGETS: Target[] = [
     {
@@ -122,6 +156,7 @@ const TARGETS: Target[] = [
         current: (c) => /^__version__ = "([^"]+)"$/m.exec(c)?.[1] ?? null,
         expected: (v) => pep440(v),
     },
+    ...MANIFESTS_WITH_INTERNAL_DEPS.map(internalDependencyTarget),
 ]
 
 function main(): void {
@@ -134,9 +169,10 @@ function main(): void {
     let failures = 0
     for (const target of TARGETS) {
         const path = resolve(REPO_ROOT, target.path)
+        const name = target.label ?? target.path
         const skipReason = target.skip?.(version)
         if (skipReason) {
-            console.log(`- ${target.path}: skipped (${skipReason})`)
+            console.log(`- ${name}: skipped (${skipReason})`)
             continue
         }
 
@@ -146,9 +182,9 @@ function main(): void {
         if (verify) {
             const current = target.current(content)
             if (current === expected) {
-                console.log(`✓ ${target.path}: ${current}`)
+                console.log(`✓ ${name}: ${current}`)
             } else {
-                console.error(`✗ ${target.path}: expected ${expected}, found ${current ?? 'nothing'}`)
+                console.error(`✗ ${name}: expected ${expected}, found ${current ?? 'nothing'}`)
                 failures += 1
             }
             continue
@@ -156,12 +192,12 @@ function main(): void {
 
         const stamped = target.stamp(content, version)
         if (stamped === null) {
-            console.error(`✗ ${target.path}: version pattern not found`)
+            console.error(`✗ ${name}: version pattern not found`)
             failures += 1
             continue
         }
         writeFileSync(path, stamped)
-        console.log(`✓ ${target.path} → ${expected}`)
+        console.log(`✓ ${name} → ${expected}`)
     }
 
     if (failures > 0) fail(`${failures} file(s) failed`)

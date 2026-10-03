@@ -26,7 +26,7 @@ pub const DETECTORS_SECTION: &str = "Detectors";
 /// The detector map key inside the `Detectors` object.
 pub const DETECTORS_MAP: &str = "detectors";
 
-const EMBEDDED_DETECTORS_TOML: &str = include_str!("../../../data/openrgb/detectors.toml");
+const EMBEDDED_DETECTORS_TOML: &str = include_str!("../data/detectors.toml");
 
 /// One native Hypercolor driver family and the OpenRGB detectors it owns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,10 +57,10 @@ pub struct DetectorPartition {
 
 static DETECTOR_FAMILIES: LazyLock<Vec<DetectorFamily>> = LazyLock::new(|| {
     parse_detector_table(EMBEDDED_DETECTORS_TOML)
-        .expect("embedded data/openrgb/detectors.toml must parse; run the crate tests")
+        .expect("embedded data/detectors.toml must parse; run the crate tests")
 });
 
-/// Parse a detector table in the `data/openrgb/detectors.toml` schema.
+/// Parse a detector table in the `data/detectors.toml` schema.
 pub fn parse_detector_table(text: &str) -> Result<Vec<DetectorFamily>> {
     let table: DetectorTable =
         toml::from_str(text).map_err(|error| HostError::DetectorTable(error.to_string()))?;

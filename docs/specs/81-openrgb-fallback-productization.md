@@ -240,7 +240,7 @@ crate only.
 - `managed_config_dir()` under Hypercolor's data dir, and
   `write_detector_partition(dir, disabled_detectors)` producing an
   `OpenRGB.json` whose `Detectors.detectors` map disables the given names.
-  The detector-name map lives in `data/openrgb/detectors.toml`: for each
+  The detector-name map lives in `crates/hypercolor-openrgb-host/data/detectors.toml`: for each
   native driver family, the OpenRGB detector name prefixes it owns
   (`Razer `, `Lian Li `, `Corsair `, `Dygma `, `Nollie `, `ASUS Aura`,
   `ENE SMBus DRAM`). The partition disables prefixes for every native driver

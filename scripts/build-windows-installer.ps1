@@ -149,7 +149,7 @@ if (-not $SkipEffects) {
 }
 
 Invoke-CargoBuild "Build daemon sidecar" @("-p", "hypercolor-daemon", "--features", "servo")
-Invoke-CargoBuild "Build CLI sidecar" @("-p", "hypercolor-cli")
+Invoke-CargoBuild "Build CLI sidecar" @("-p", "hypercolor")
 Invoke-CargoBuild "Build Windows SMBus broker" @("-p", "hypercolor-windows-pawnio", "--bin", "hypercolor-smbus-service")
 Invoke-CargoBuild "Build Windows privileged helper" @("-p", "hypercolor-windows-helper", "--bin", "hypercolor-windows-helper")
 Invoke-StageAssets

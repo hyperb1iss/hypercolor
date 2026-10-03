@@ -224,7 +224,7 @@ if [[ "${TCC_CANARY}" -eq 1 ]]; then
 fi
 build_cargo "Build daemon sidecar (with servo)" \
   -p hypercolor-daemon --features "${daemon_features}"
-build_cargo "Build CLI sidecar" -p hypercolor-cli
+build_cargo "Build CLI sidecar" -p hypercolor
 
 stage_assets
 if [[ "${NOTARIZE}" -eq 1 ]]; then

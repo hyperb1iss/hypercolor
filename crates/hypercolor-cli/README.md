@@ -1,9 +1,10 @@
-# hypercolor-cli
+# hypercolor
 
 *The primary user-facing command line for Hypercolor.*
 
-This crate builds the `hypercolor` binary — the main interface for controlling Hypercolor from
-a terminal. It communicates with a running daemon over HTTP REST (port 9420 by default) and
+This crate (package `hypercolor`, in `crates/hypercolor-cli`) builds the `hypercolor` binary, the
+main interface for controlling Hypercolor from a terminal. It does not include the daemon; it
+communicates with a running one over HTTP REST (port 9420 by default) and
 renders output as styled tables, plain text, or JSON via the `opaline` theming layer. When built
 with the `tui` feature (on by default), `hypercolor tui` hands off to hypercolor-tui for the
 full-screen terminal UI rather than routing through the REST client.

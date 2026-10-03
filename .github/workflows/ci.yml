@@ -74,7 +74,7 @@ env:
     --workspace
     --exclude hypercolor-daemon
     --exclude hypercolor-app
-    --exclude hypercolor-cli
+    --exclude hypercolor
   HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
   # Tests resolve bundled effects next to the running executable unless this is
   # set, and CI invokes cargo directly instead of through the justfile that
@@ -517,7 +517,7 @@ jobs:
         if: matrix.lane == 'workspace'
         run: |
           ./scripts/cargo-cache-build.sh \
-            cargo build --locked -p hypercolor-cli --bin hypercolor
+            cargo build --locked -p hypercolor --bin hypercolor
           ./scripts/cargo-cache-build.sh \
             cargo build --locked -p hypercolor-daemon --no-default-features \
             --features wgpu,screen-capture --bin hypercolor-daemon
@@ -784,7 +784,7 @@ jobs:
       - name: Build Servo e2e binaries
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo build --locked -p hypercolor-daemon -p hypercolor-cli
+          cargo build --locked -p hypercolor-daemon -p hypercolor
 
       - name: Clippy core with Servo
         run: >-
@@ -1322,7 +1322,7 @@ jobs:
       - name: Build CPU e2e binaries
         run: |
           ./scripts/cargo-cache-build.sh cargo build --locked -p hypercolor-daemon --no-default-features --features builtin-drivers
-          ./scripts/cargo-cache-build.sh cargo build --locked -p hypercolor-cli
+          ./scripts/cargo-cache-build.sh cargo build --locked -p hypercolor
 
       - name: Stage CPU e2e binaries
         run: |
@@ -1804,10 +1804,10 @@ jobs:
 
           if ($env:RUNNER_OS -eq "Windows") {
             Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-daemon --features servo
-            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-cli
+            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor
           } else {
             Invoke-Checked bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor-daemon --features servo
-            Invoke-Checked bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor-cli
+            Invoke-Checked bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor
           }
           if ($env:RUNNER_OS -eq "Windows") {
             Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-windows-pawnio --bin hypercolor-smbus-service
