@@ -35,7 +35,7 @@ the SDK client. Filesystem inspection and the pure builders are synchronous.
 | `permission_checks() -> Vec<PermissionCheck>` | Linux only: udev rules present, `i2c-dev` loaded, `/dev/i2c-*` writable, and `/dev/hidraw*` writable for the VID:PID pairs the installed rules file covers (other HID nodes are informational). Each failure carries the remedy command. `linux_permission_checks_at(root)` runs against an injectable root. |
 | `managed_config_dir(base_data_dir) -> ManagedConfigDir` | `<data>/openrgb`, the directory passed to OpenRGB's `--config`. |
 | `write_detector_partition(dir, disabled_prefixes, re_enable_prefixes, known_detectors) -> Result<DetectorPartition>` | Rewrites `Detectors.detectors` in `OpenRGB.json`, preserving every other key, with a durable replace. |
-| `detector_prefixes_for_drivers(driver_ids) -> Vec<String>` | Prefix lookup backed by the embedded `data/openrgb/detectors.toml`. |
+| `detector_prefixes_for_drivers(driver_ids) -> Vec<String>` | Prefix lookup backed by the embedded `crates/hypercolor-openrgb-host/data/detectors.toml`. |
 | `server_command(binary, dir, port) -> Result<ProcessSpec>` | `--server --server-host 127.0.0.1 --server-port <port> --noautoconnect --config <dir> --loglevel 4`; Flatpak wraps it in `flatpak run --filesystem=<dir> org.openrgb.OpenRGB`. Errors on non-UTF-8 paths and, for Flatpak, on paths containing `:`. |
 
 ### Types
@@ -81,7 +81,7 @@ directory that does not exist yet, and the path may not contain `:` because
 
 ## Data
 
-`data/openrgb/detectors.toml` maps each native driver id to the OpenRGB
+`crates/hypercolor-openrgb-host/data/detectors.toml` maps each native driver id to the OpenRGB
 detector prefixes it owns plus a seed list of detector names verified against
 the map OpenRGB 1.0rc3 writes. It is embedded with `include_str!`, so shipping
 binaries carry no data file. Add a `[[family]]` entry when a native driver

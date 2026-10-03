@@ -1183,7 +1183,7 @@ every L-Connect install and multiple public repos.
   (TL V2 / TL V2 LCD / TL V3).
 - **Wired TL hub:** unchanged (spec 19 §6): per-fan ring segments; the LCD
   adds nothing to the hub device. The 20-vs-26 LED question is §11.1.
-- **Attachment templates:** new `data/attachments/builtin/lian-li/` entries
+- **Attachment templates:** new `crates/hypercolor-core/attachments/lian-li/` entries
   for the TL LCD fan (26-LED ring + centered display) alongside the existing
   `lian-li-tl-fan.toml` ring mapping.
 

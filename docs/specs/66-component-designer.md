@@ -43,7 +43,7 @@
 Hypercolor maps rendered effect canvases onto physical LEDs through
 **attachment templates** — reusable shaped components like fan rings,
 AIO halos, Strimer cables, and matrix panels. Sixty-two builtin
-templates ship in `data/attachments/builtin/`, and the system is
+templates ship in `crates/hypercolor-core/attachments/`, and the system is
 deeper than it looks from the UI:
 
 - `AttachmentTemplate` (`hypercolor-types/src/attachment.rs:187`)

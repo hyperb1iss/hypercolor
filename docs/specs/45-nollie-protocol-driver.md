@@ -709,8 +709,8 @@ buffer lengths (`65`, `64`, `513`, or `1024`) from the encoder.
 There are no static Nollie32 controller fixture files. The only Nollie built-in
 component templates are:
 
-- `data/attachments/builtin/nollie/nollie-fan-gc120.toml`
-- `data/attachments/builtin/nollie/nollie-fan-gc140.toml`
+- `crates/hypercolor-core/attachments/nollie/nollie-fan-gc120.toml`
+- `crates/hypercolor-core/attachments/nollie/nollie-fan-gc140.toml`
 
 Controller slots come from device zones plus HAL augmentation. `attachment_profile.rs`
 adds generic fan/AIO/heatsink/ring categories to Nollie channel slots and appends
