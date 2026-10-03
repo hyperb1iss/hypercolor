@@ -1,6 +1,9 @@
 [package]
 name = "hypercolor-app"
 description = "Unified desktop app for the Hypercolor lighting engine"
+# Ships through the platform installers: the Tauri manifest bundles the web UI
+# and installer scripts from outside this crate.
+publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

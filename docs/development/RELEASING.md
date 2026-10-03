@@ -21,6 +21,9 @@ What the Release workflow does, in order:
 2. **Stamps** every version-bearing file via `scripts/set-version.ts`
    (`just set-version <v>` locally):
    - `Cargo.toml` `[workspace.package]`: every workspace crate inherits it
+   - the `version` requirement on every internal `hypercolor` path
+     dependency, in the root `[workspace.dependencies]` and in each crate
+     manifest, so published crates ask for their siblings at this release
    - `crates/hypercolor-ui/Cargo.toml`: workspace-excluded (standalone WASM
      build), so it carries its own stamped version
    - `crates/hypercolor-app/tauri.conf.json`

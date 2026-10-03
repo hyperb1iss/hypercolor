@@ -22,7 +22,7 @@ openrgb = ["dep:hypercolor-driver-openrgb"]
 wled = ["dep:hypercolor-driver-wled"]
 
 [dependencies]
-hypercolor-core = { path = "../hypercolor-core", default-features = false }
+hypercolor-core = { path = "../hypercolor-core", version = "0.6.1", default-features = false }
 hypercolor-driver-api = { workspace = true }
 hypercolor-driver-support = { workspace = true }
 hypercolor-driver-govee = { workspace = true, optional = true }
