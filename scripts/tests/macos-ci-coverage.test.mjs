@@ -79,9 +79,16 @@ test('publication retains every validation gate while compilation overlaps it', 
 test('only Homebrew waits for macOS; every other channel follows create-release', () => {
   const job = id => workflow.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:|$(?![\\s\\S]))`, 'm'))?.[1];
   const needs = id => job(id)?.match(/^    needs: (.+)$/m)?.[1];
-  // The formula and cask need the macOS checksums, so Homebrew moves with
-  // the macOS assets; nothing else may depend on Apple.
-  assert.equal(needs('update-homebrew'), 'attach-macos');
+  // Homebrew waits for attach-macos to finish but never for it to succeed:
+  // Linux advances on create-release alone and macOS joins once notarized.
+  // !cancelled() must stay fenced by create-release so failed validation
+  // never publishes, and prereleases never reach the tap. Nothing else may
+  // depend on Apple.
+  assert.equal(needs('update-homebrew'), '[create-release, attach-macos]');
+  const homebrewCondition = job('update-homebrew').split('    needs:')[0];
+  assert.match(homebrewCondition, /!cancelled\(\) &&\n\s+needs\.create-release\.result == 'success'/);
+  assert.doesNotMatch(homebrewCondition, /always\(\)/);
+  assert.match(homebrewCondition, /!contains\(github\.ref_name, '-'\)/);
   assert.equal(needs('update-aur'), 'create-release');
   assert.equal(needs('update-nix'), 'create-release');
   assert.equal(needs('publish-npm'), '[sdk, create-release]');

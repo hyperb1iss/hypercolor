@@ -51,9 +51,10 @@ The tag lane also updates the Homebrew tap: `update-homebrew` renders
 `packaging/homebrew/hypercolor.rb` and `packaging/homebrew/hypercolor-app.rb`
 with `scripts/homebrew-formula.mjs`, filling the Linux amd64 and arm64
 stanzas, the Apple silicon macOS stanza, and the Apple silicon cask from the
-tarballs and DMG the release just published. It runs after the macOS
-artifacts are attached, because the formula and cask need the macOS
-checksums.
+tarballs and DMG the release just published. It waits for `attach-macos`
+so a notarized release updates every platform at once, but it does not need
+macOS to succeed: without a notarized build, Linux still advances and macOS
+carries forward, as the signing section below describes.
 
 macOS releases target Apple silicon only. macOS 26 Tahoe is the last release
 that runs on Intel Macs, so the release builds, signs, and publishes no
@@ -76,8 +77,12 @@ the release. `create-release` publishes the Linux and Windows artifacts
 without waiting for `sign-macos`, and npm, PyPI, the AUR, and Nix follow it.
 `attach-macos` then adds the signed arm64 tarball, its checksum, the DMG,
 and the DMG's notarization receipt to the same release once `sign-macos`
-succeeds, uploading only assets the release does not already carry, and
-`update-homebrew` runs after it. If `sign-macos` times out waiting on Apple,
+succeeds, uploading only assets the release does not already carry.
+`update-homebrew` waits for `attach-macos` to finish but not to succeed: the
+Linux formula advances on every stable tag, and without a notarized macOS
+build the renderer carries the published macOS stanza forward and leaves the
+cask alone. A release carrying only part of its macOS assets stops the job
+instead. If `sign-macos` times out waiting on Apple,
 check **Actions → macOS Notary Status → Run workflow**, which lists the
 team's submissions and their status. Once Apple has cleared the queue, use
 "Re-run failed jobs" on the tag's CI/CD run: the signing job picks up the

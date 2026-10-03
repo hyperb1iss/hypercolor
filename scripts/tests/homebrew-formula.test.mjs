@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { renderFormula, renderCask } from '../homebrew-formula.mjs';
+import { readPublishedMacos, renderFormula, renderCask } from '../homebrew-formula.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const script = path.join(repo, 'scripts/homebrew-formula.mjs');
@@ -111,6 +111,91 @@ test('CLI validates both packages before writing either output', () => {
     assert.equal(valid.status, 0, valid.stderr);
     assert.equal(readFileSync(formulaOutput, 'utf8'), renderFormula({ template, version: '0.5.2', linux, macos }));
     assert.equal(readFileSync(caskOutput, 'utf8'), renderCask({ template: caskTemplate, version: '0.5.2', arm64: sha('e') }));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The tap formula as the 0.5.x carry-forward renderer published it: Linux on
+// the release version, macOS pinned to an older signed build.
+const legacyPublished = `class Hypercolor < Formula
+  version "0.5.1"
+
+  on_macos do
+    version "0.3.2"
+    depends_on macos: :sequoia
+
+    if Hardware::CPU.arm?
+      url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/hypercolor-#{version}-macos-arm64.tar.gz"
+      sha256 "${sha('9')}"
+    end
+  end
+end
+`;
+
+test('carry-forward advances Linux and pins macOS to the published build', () => {
+  const carried = readPublishedMacos(legacyPublished);
+  assert.deepEqual(carried, { version: '0.3.2', arm64: sha('9') });
+  const formula = renderFormula({ template, version: '0.6.1', linux, macos: { carried } });
+  assert.match(formula, /^  version "0\.6\.1"$/m);
+  const macDownload = formula.match(/^  on_macos do\n([\s\S]*?)^  end\n/m)[1];
+  assert.match(macDownload, /^    version "0\.3\.2"\n    depends_on arch: :arm64$/m);
+  assert.match(macDownload, new RegExp(`-macos-arm64\\.tar\\.gz"\\n +sha256 "${sha('9')}"`));
+  const linuxDownload = formula.match(/^  on_linux do\n([\s\S]*?)^  end\n/m)[1];
+  assert.doesNotMatch(linuxDownload, /version "/);
+  assert.match(linuxDownload, new RegExp(`sha256 "${linux.amd64}"`));
+  // The service block's on_macos stays untouched.
+  assert.equal([...formula.matchAll(/^    version "/gm)].length, 1);
+  assert.doesNotMatch(formula, /PLACEHOLDER|SHA256_/);
+});
+
+test('carry-forward is stable across consecutive releases', () => {
+  const full = renderFormula({ template, version: '0.6.0', linux, macos });
+  assert.deepEqual(readPublishedMacos(full), { version: '0.6.0', arm64: macos.arm64 });
+  const once = renderFormula({ template, version: '0.6.1', linux, macos: { carried: readPublishedMacos(full) } });
+  const twice = renderFormula({ template, version: '0.6.2', linux, macos: { carried: readPublishedMacos(once) } });
+  assert.deepEqual(readPublishedMacos(twice), { version: '0.6.0', arm64: macos.arm64 });
+  assert.equal([...twice.matchAll(/^    version "/gm)].length, 1);
+});
+
+test('carry-forward refuses a published formula it cannot read', () => {
+  assert.throws(() => readPublishedMacos('class Hypercolor < Formula\nend\n'), /no on_macos download block/);
+  const twoShas = legacyPublished.replace(/(sha256 "9+")/, `$1\n      sha256 "${sha('8')}"`);
+  assert.throws(() => readPublishedMacos(twoShas), /exactly one sha256, found 2/);
+  assert.throws(() => readPublishedMacos(legacyPublished.replace(sha('9'), 'invalid')), /published macOS arm64 sha256/);
+  assert.throws(() => renderFormula({ template, version: '0.6.1', linux,
+    macos: { carried: { version: '0.3.2-rc.1', arm64: sha('9') } } }), /carried macOS version/);
+});
+
+test('CLI carry mode writes only the formula and refuses mixed or partial macOS inputs', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'homebrew-formula-carry-'));
+  try {
+    const published = path.join(dir, 'published.rb');
+    writeFileSync(published, legacyPublished);
+    const formulaOutput = path.join(dir, 'hypercolor.rb');
+    const caskOutput = path.join(dir, 'hypercolor-app.rb');
+    const base = [script, '--version', '0.6.1', '--template', templatePath,
+      '--linux-amd64', linux.amd64, '--linux-arm64', linux.arm64, '--output', formulaOutput];
+    const run = argv => spawnSync(process.execPath, argv, { encoding: 'utf8' });
+
+    const mixed = run([...base, '--carry-macos-from', published, '--macos-arm64', macos.arm64]);
+    assert.equal(mixed.status, 1);
+    assert.match(mixed.stderr, /cannot be combined with --macos-arm64/);
+    const partial = run([...base, '--macos-arm64', macos.arm64, '--cask-template', caskPath,
+      '--cask-output', caskOutput]);
+    assert.equal(partial.status, 1);
+    assert.match(partial.stderr, /--dmg-arm64 is required unless --carry-macos-from/);
+    const neither = run(base);
+    assert.equal(neither.status, 1);
+    assert.match(neither.stderr, /--macos-arm64 is required unless --carry-macos-from/);
+    assert.equal(existsSync(formulaOutput), false);
+
+    const carried = run([...base, '--carry-macos-from', published]);
+    assert.equal(carried.status, 0, carried.stderr);
+    assert.match(carried.stdout, /macOS stays on 0\.3\.2 and the cask is unchanged/);
+    assert.equal(readFileSync(formulaOutput, 'utf8'), renderFormula({ template, version: '0.6.1', linux,
+      macos: { carried: readPublishedMacos(legacyPublished) } }));
+    assert.equal(existsSync(caskOutput), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

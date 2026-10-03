@@ -2856,11 +2856,17 @@ jobs:
           git push
 
   update-homebrew:
+    # Linux advances the tap on every stable release. macOS joins when the
+    # signed lane attached its assets; otherwise the renderer carries the
+    # published macOS stanza forward and leaves the cask alone, so a stalled
+    # notarization never holds the Linux formula back.
     if: >-
+      !cancelled() &&
+      needs.create-release.result == 'success' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/') &&
       !contains(github.ref_name, '-')
-    needs: attach-macos
+    needs: [create-release, attach-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -2882,22 +2888,38 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-artifacts
-          # macOS ships for Apple silicon only.
-          for platform in linux-amd64 linux-arm64 macos-arm64; do
-            tarball="hypercolor-${VERSION}-${platform}.tar.gz"
+          fetch() {
             gh release download "v${VERSION}" \
-              --repo "${{ github.repository }}" \
-              --pattern "${tarball}" \
-              --dir release-artifacts
-            sha=$(sha256sum "release-artifacts/${tarball}" | cut -d' ' -f1)
+              --repo "${{ github.repository }}" --pattern "$1" --dir release-artifacts
+            sha256sum "release-artifacts/$1" | cut -d' ' -f1
+          }
+          for platform in linux-amd64 linux-arm64; do
+            sha=$(fetch "hypercolor-${VERSION}-${platform}.tar.gz")
             echo "sha256_${platform//-/_}=${sha}" >> "$GITHUB_OUTPUT"
             echo "  ${platform}: ${sha}"
           done
+          # macOS ships for Apple silicon only, and only once notarized.
+          macos_tarball="hypercolor-${VERSION}-macos-arm64.tar.gz"
           dmg="Hypercolor-${VERSION}-arm64.dmg"
-          gh release download "v${VERSION}" \
-            --repo "${{ github.repository }}" --pattern "$dmg" --dir release-artifacts
-          sha=$(sha256sum "release-artifacts/${dmg}" | cut -d' ' -f1)
-          echo "sha256_dmg_arm64=${sha}" >> "$GITHUB_OUTPUT"
+          assets=$(gh release view "v${VERSION}" --repo "${{ github.repository }}" \
+            --json assets --jq '.assets[].name')
+          has_tarball=false has_dmg=false
+          grep -qxF "$macos_tarball" <<<"$assets" && has_tarball=true
+          grep -qxF "$dmg" <<<"$assets" && has_dmg=true
+          if [[ "$has_tarball" != "$has_dmg" ]]; then
+            echo "::error::v${VERSION} carries only part of its macOS assets; the tap was not updated."
+            exit 1
+          fi
+          if [[ "$has_tarball" == true ]]; then
+            # Assign before echoing so a failed download stops the job
+            # instead of falling through to carry mode.
+            macos_sha=$(fetch "$macos_tarball")
+            dmg_sha=$(fetch "$dmg")
+            echo "sha256_macos_arm64=${macos_sha}" >> "$GITHUB_OUTPUT"
+            echo "sha256_dmg_arm64=${dmg_sha}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::v${VERSION} has no signed macOS build; macOS stays on the published formula."
+          fi
 
       - name: Verify Homebrew tap token
         env:
@@ -2935,16 +2957,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p homebrew-tap/Formula homebrew-tap/Casks
-          node scripts/homebrew-formula.mjs \
-            --version "$VERSION" \
-            --linux-amd64 "$SHA256_LINUX_AMD64" \
-            --linux-arm64 "$SHA256_LINUX_ARM64" \
-            --macos-arm64 "$SHA256_MACOS_ARM64" \
-            --dmg-arm64 "$SHA256_DMG_ARM64" \
-            --template packaging/homebrew/hypercolor.rb \
-            --cask-template packaging/homebrew/hypercolor-app.rb \
-            --output homebrew-tap/Formula/hypercolor.rb \
-            --cask-output homebrew-tap/Casks/hypercolor-app.rb
+          args=(--version "$VERSION"
+            --linux-amd64 "$SHA256_LINUX_AMD64" --linux-arm64 "$SHA256_LINUX_ARM64"
+            --template packaging/homebrew/hypercolor.rb
+            --output homebrew-tap/Formula/hypercolor.rb)
+          if [[ -n "$SHA256_MACOS_ARM64" ]]; then
+            args+=(--macos-arm64 "$SHA256_MACOS_ARM64" --dmg-arm64 "$SHA256_DMG_ARM64"
+              --cask-template packaging/homebrew/hypercolor-app.rb
+              --cask-output homebrew-tap/Casks/hypercolor-app.rb)
+          else
+            # Read the published formula before the renderer overwrites it.
+            cp homebrew-tap/Formula/hypercolor.rb "${RUNNER_TEMP}/published-hypercolor.rb"
+            args+=(--carry-macos-from "${RUNNER_TEMP}/published-hypercolor.rb")
+          fi
+          node scripts/homebrew-formula.mjs "${args[@]}"
           echo "Rendered formula:"
           cat homebrew-tap/Formula/hypercolor.rb
 
@@ -2956,11 +2982,15 @@ jobs:
             homebrew-tap/Formula/hypercolor.rb
             homebrew-tap/Casks/hypercolor-app.rb
           if-no-files-found: error
+          # Re-running sign-macos re-runs this job in the same run, where a
+          # carry-mode attempt already uploaded this name.
+          overwrite: true
 
       - name: Push to homebrew-tap
         working-directory: homebrew-tap
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          SHA256_MACOS_ARM64: ${{ steps.checksums.outputs.sha256_macos_arm64 }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -2970,9 +3000,11 @@ jobs:
             echo "Homebrew packages already match v${VERSION}"
             exit 0
           fi
-          git commit \
-            -m "hypercolor: update to ${VERSION}" \
-            -m "Update formula and cask from the published release checksums."
+          body="Update formula and cask from the published release checksums."
+          if [[ -z "$SHA256_MACOS_ARM64" ]]; then
+            body="Linux moves to ${VERSION}; macOS and the cask stay on the last notarized build."
+          fi
+          git commit -m "hypercolor: update to ${VERSION}" -m "$body"
           git push
 
   # ── Update Nix Release Pin ───────────────────────────────────────
