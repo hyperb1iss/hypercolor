@@ -1117,8 +1117,15 @@ fn should_publish_preview_frame(
     let Some(target_fps) = target_fps else {
         return true;
     };
-    let interval_ms = 1000_u64.div_ceil(u64::from(target_fps.max(1)));
-    last_publish_ms.is_none_or(|last_sent| elapsed_ms.saturating_sub(last_sent) >= interval_ms)
+    // Publish once per 1/fps slot of the uptime clock rather than once per
+    // whole-millisecond interval. A 30 fps target rounded up to a 34 ms
+    // interval refused every other frame of a 33 ms render cadence, so the
+    // preview ran at half rate; slots deliver the target rate on average and
+    // absorb render jitter in either direction. A fixed-point slot index
+    // keeps the comparison exact past u32 milliseconds of uptime.
+    let target_fps = u128::from(target_fps.max(1));
+    let slot = |at_ms: u64| u128::from(at_ms) * target_fps / 1000;
+    last_publish_ms.is_none_or(|last_sent| slot(elapsed_ms) > slot(last_sent))
 }
 
 fn preview_publication_due(
@@ -3265,7 +3272,9 @@ mod tests {
 
     #[test]
     fn preview_cadence_remains_live_after_u32_millisecond_uptime() {
-        let last_publish_ms = u64::from(u32::MAX) + 1_000;
+        // A slot boundary sits at every multiple of 1000/60 ms; start the
+        // clock on one so the two assertions straddle exactly one slot.
+        let last_publish_ms = (u64::from(u32::MAX) + 1_000) / 50 * 50;
 
         assert!(!should_publish_preview_frame(
             last_publish_ms + 15,
@@ -3277,6 +3286,42 @@ mod tests {
             Some(last_publish_ms),
             Some(60),
         ));
+    }
+
+    #[test]
+    fn preview_cadence_keeps_a_30_fps_render_loop_at_30_fps() {
+        // Frames land every 33 ms, as a 30 fps render loop measured in whole
+        // milliseconds does. The old 34 ms interval gate refused every other
+        // one; slots publish all but the occasional frame that shares a slot
+        // with its predecessor.
+        let mut last = None;
+        let mut published = 0;
+        for frame in 0..300_u64 {
+            let elapsed = frame * 33;
+            if should_publish_preview_frame(elapsed, last, Some(30)) {
+                published += 1;
+                last = Some(elapsed);
+            }
+        }
+        assert!(
+            (290..=300).contains(&published),
+            "published {published} of 300"
+        );
+    }
+
+    #[test]
+    fn preview_cadence_caps_a_fast_render_loop_at_the_target() {
+        // A 60 fps loop against a 2 fps target publishes twice a second.
+        let mut last = None;
+        let mut published = 0;
+        for frame in 0..600_u64 {
+            let elapsed = frame * 1000 / 60;
+            if should_publish_preview_frame(elapsed, last, Some(2)) {
+                published += 1;
+                last = Some(elapsed);
+            }
+        }
+        assert_eq!(published, 20);
     }
 
     #[test]
