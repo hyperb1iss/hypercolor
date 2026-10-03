@@ -75,7 +75,7 @@ jobs:
       - name: Warm Servo e2e binaries
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo build --locked -p hypercolor-daemon -p hypercolor-cli
+          cargo build --locked -p hypercolor-daemon -p hypercolor
 
       - name: Warm core Servo test artifacts
         run: |

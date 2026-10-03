@@ -105,7 +105,7 @@ exit 0
         }
         if ($value.Contains('./scripts/cargo-cache-build.ps1')) {
             $commands += $value.Replace('${{ env.RUST_WINDOWS_WORKSPACE_ARGS }}',
-                '--workspace --exclude hypercolor-daemon --exclude hypercolor-app --exclude hypercolor-cli')
+                '--workspace --exclude hypercolor-daemon --exclude hypercolor-app --exclude hypercolor')
         }
     }
     $previousLocation = Get-Location

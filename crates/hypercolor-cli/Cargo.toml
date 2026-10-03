@@ -1,12 +1,20 @@
 [package]
-name = "hypercolor-cli"
+name = "hypercolor"
 description = "Command-line interface for the Hypercolor RGB lighting engine"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+keywords = ["rgb", "led", "lighting", "openrgb", "cli"]
+categories = ["command-line-utilities", "hardware-support"]
+
+# The package carries the product name so `cargo install hypercolor` works;
+# the library keeps its original name, which downstream extension crates import.
+[lib]
+name = "hypercolor_cli"
 
 [[bin]]
 name = "hypercolor"

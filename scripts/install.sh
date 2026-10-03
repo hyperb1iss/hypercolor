@@ -181,7 +181,7 @@ build_binaries() {
 
   info "building hypercolor CLI"
   "${ROOT_DIR}/scripts/cargo-cache-build.sh" \
-    cargo build -p hypercolor-cli --bin hypercolor "${cargo_profile_flag[@]}"
+    cargo build -p hypercolor --bin hypercolor "${cargo_profile_flag[@]}"
 
   info "building hypercolor app"
   "${ROOT_DIR}/scripts/cargo-cache-build.sh" \

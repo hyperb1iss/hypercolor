@@ -84,7 +84,7 @@ crates/
   hypercolor-openrgb-host/         # OpenRGB host integration: binary detection, server probe, install hints, permissions, managed config dir, headless server launch
   hypercolor-network/              # Network driver registry and orchestration
   hypercolor-daemon/               # Daemon binary: render-loop host + REST/WebSocket/MCP server on :9420
-  hypercolor-cli/                  # The `hypercolor` CLI binary
+  hypercolor-cli/                  # Package `hypercolor`: the CLI binary plus the `hypercolor_cli` extension library
   hypercolor-tui/                  # Ratatui terminal UI library, launched via `hypercolor tui`
   hypercolor-app/                  # Unified desktop app shell: supervises the daemon, owns the tray, handles autostart and single-instance
   hypercolor-leptos-ext/           # Leptos 0.8 extension helpers for the web UI
