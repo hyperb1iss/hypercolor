@@ -76,8 +76,12 @@ the release. `create-release` publishes the Linux and Windows artifacts
 without waiting for `sign-macos`, and npm, PyPI, the AUR, and Nix follow it.
 `attach-macos` then adds the signed arm64 tarball, its checksum, the DMG,
 and the DMG's notarization receipt to the same release once `sign-macos`
-succeeds, uploading only assets the release does not already carry, and
-`update-homebrew` runs after it. If `sign-macos` times out waiting on Apple,
+succeeds, uploading only assets the release does not already carry.
+`update-homebrew` waits for `attach-macos` to finish but not to succeed: the
+Linux formula advances on every stable tag, and without a notarized macOS
+build the renderer carries the published macOS stanza forward and leaves the
+cask alone. A release carrying only part of its macOS assets stops the job
+instead. If `sign-macos` times out waiting on Apple,
 check **Actions → macOS Notary Status → Run workflow**, which lists the
 team's submissions and their status. Once Apple has cleared the queue, use
 "Re-run failed jobs" on the tag's CI/CD run: the signing job picks up the

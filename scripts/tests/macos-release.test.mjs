@@ -104,7 +104,7 @@ test('native app version validation accepts an exact stamped prerelease', () => 
   assert.match(step, /if \(\$version -ne \$cargoVersion -and \$baseVersion -ne \$cargoVersion\)/);
 });
 
-test('Homebrew checksum step supplies every value consumed by its renderer', () => {
+function homebrewJob() {
   const repo = fileURLToPath(new URL('../../', import.meta.url));
   const workflow = readFileSync(path.join(repo, '.github/workflows/ci.yml'), 'utf8');
   const job = workflow.match(/^  update-homebrew:\n([\s\S]*?)(?=^  [a-z][\w-]*:|$(?![\s\S]))/m)?.[1];
@@ -117,59 +117,136 @@ test('Homebrew checksum step supplies every value consumed by its renderer', () 
     assert.ok(run, 'step has a shell body');
     return run.replace(/^          /gm, '').replaceAll('${{ github.repository }}', 'hyperb1iss/hypercolor');
   };
+  return { repo, workflow, job, steps, shell };
+}
+
+// Run the job's checksum and render steps against a release that carries
+// `assets`, with `published` standing in for the tap's current formula.
+function runHomebrewJob({ assets, published }) {
+  const { repo, steps, shell } = homebrewJob();
   const dir = mkdtempSync(path.join(tmpdir(), 'homebrew-workflow-'));
-  try {
-    const output = path.join(dir, 'outputs');
-    const env = { ...process.env, VERSION: '0.5.2', GITHUB_OUTPUT: output };
-    // Substitute only the download transport; execute the workflow shell itself.
-    const gh = `gh() {
-      local artifact='' directory=''
-      while (( $# )); do
-        case "$1" in
-          --pattern) artifact="$2"; shift ;;
-          --dir) directory="$2"; shift ;;
-        esac
-        shift
-      done
-      test -n "$artifact" && test -n "$directory" || return 99
-      printf 'fixture:%s' "$artifact" > "$directory/$artifact"
-    }
-    `;
-    const checksums = spawnSync('bash', ['-c', gh + shell(steps.get('Download release tarballs and compute checksums'))],
-      { cwd: dir, env, encoding: 'utf8' });
-    assert.equal(checksums.status, 0, checksums.stderr);
-    const values = Object.fromEntries(readFileSync(output, 'utf8').trim().split('\n').map(line => line.split('=')));
-    const expectedAssets = {
-      sha256_linux_amd64: 'hypercolor-0.5.2-linux-amd64.tar.gz',
-      sha256_linux_arm64: 'hypercolor-0.5.2-linux-arm64.tar.gz',
-      sha256_macos_arm64: 'hypercolor-0.5.2-macos-arm64.tar.gz',
-      sha256_dmg_arm64: 'Hypercolor-0.5.2-arm64.dmg',
-    };
-    assert.deepEqual(Object.keys(values).sort(), Object.keys(expectedAssets).sort());
-    for (const [key, asset] of Object.entries(expectedAssets)) {
-      assert.equal(values[key], createHash('sha256').update(`fixture:${asset}`).digest('hex'));
-    }
+  const output = path.join(dir, 'outputs');
+  const env = { ...process.env, VERSION: '0.5.2', GITHUB_OUTPUT: output, RUNNER_TEMP: dir,
+    FIXTURE_ASSETS: assets.join('\n') };
+  // Substitute only the release transport; execute the workflow shell itself.
+  const gh = `gh() {
+    if [[ "$1 $2" == "release view" ]]; then
+      printf '%s\\n' "$FIXTURE_ASSETS"
+      return 0
+    fi
+    local artifact='' directory=''
+    while (( $# )); do
+      case "$1" in
+        --pattern) artifact="$2"; shift ;;
+        --dir) directory="$2"; shift ;;
+      esac
+      shift
+    done
+    test -n "$artifact" && test -n "$directory" || return 99
+    grep -qxF "$artifact" <<<"$FIXTURE_ASSETS" || return 98
+    printf 'fixture:%s' "$artifact" > "$directory/$artifact"
+  }
+  `;
+  const checksums = spawnSync('bash', ['-c', gh + shell(steps.get('Download release tarballs and compute checksums'))],
+    { cwd: dir, env, encoding: 'utf8' });
+  const values = checksums.status === 0
+    ? Object.fromEntries(readFileSync(output, 'utf8').trim().split('\n').map(line => line.split('=')))
+    : {};
+  let rendered;
+  if (checksums.status === 0) {
     const renderStep = steps.get('Render formula and cask');
     for (const [, name, key] of renderStep.matchAll(/^          (SHA256_\w+): \$\{\{ steps.checksums.outputs.(\w+) \}\}/gm)) {
-      assert.ok(values[key], `renderer input ${name} has an upstream value`);
-      env[name] = values[key];
+      env[name] = values[key] ?? '';
     }
     mkdirSync(path.join(dir, 'scripts'));
     copyFileSync(path.join(repo, 'scripts/homebrew-formula.mjs'), path.join(dir, 'scripts/homebrew-formula.mjs'));
     symlinkSync(path.join(repo, 'packaging'), path.join(dir, 'packaging'));
-    const rendered = spawnSync('bash', ['-c', shell(renderStep)], { cwd: dir, env, encoding: 'utf8' });
-    assert.equal(rendered.status, 0, rendered.stderr);
+    mkdirSync(path.join(dir, 'homebrew-tap/Formula'), { recursive: true });
+    mkdirSync(path.join(dir, 'homebrew-tap/Casks'), { recursive: true });
+    writeFileSync(path.join(dir, 'homebrew-tap/Formula/hypercolor.rb'), published.formula);
+    writeFileSync(path.join(dir, 'homebrew-tap/Casks/hypercolor-app.rb'), published.cask);
+    rendered = spawnSync('bash', ['-c', shell(renderStep)], { cwd: dir, env, encoding: 'utf8' });
+  }
+  return { dir, checksums, values, rendered,
+    read: file => readFileSync(path.join(dir, 'homebrew-tap', file), 'utf8') };
+}
+
+const linuxAssets = ['hypercolor-0.5.2-linux-amd64.tar.gz', 'hypercolor-0.5.2-linux-arm64.tar.gz'];
+const macosAssets = ['hypercolor-0.5.2-macos-arm64.tar.gz', 'Hypercolor-0.5.2-arm64.dmg'];
+const fixtureSha = asset => createHash('sha256').update(`fixture:${asset}`).digest('hex');
+const publishedTap = {
+  formula: `class Hypercolor < Formula
+  version "0.5.1"
+
+  on_macos do
+    version "0.3.2"
+    url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/hypercolor-#{version}-macos-arm64.tar.gz"
+    sha256 "${'9'.repeat(64)}"
+  end
+end
+`,
+  cask: 'cask "hypercolor-app" do\n  version "0.3.2"\nend\n',
+};
+
+test('Homebrew checksum step supplies every value consumed by its renderer', () => {
+  const run = runHomebrewJob({ assets: [...linuxAssets, ...macosAssets], published: publishedTap });
+  try {
+    assert.equal(run.checksums.status, 0, run.checksums.stderr);
+    const expectedAssets = {
+      sha256_linux_amd64: linuxAssets[0],
+      sha256_linux_arm64: linuxAssets[1],
+      sha256_macos_arm64: macosAssets[0],
+      sha256_dmg_arm64: macosAssets[1],
+    };
+    assert.deepEqual(Object.keys(run.values).sort(), Object.keys(expectedAssets).sort());
+    for (const [key, asset] of Object.entries(expectedAssets)) {
+      assert.equal(run.values[key], fixtureSha(asset));
+    }
+    assert.equal(run.rendered.status, 0, run.rendered.stderr);
     for (const file of ['Formula/hypercolor.rb', 'Casks/hypercolor-app.rb']) {
-      const content = readFileSync(path.join(dir, 'homebrew-tap', file), 'utf8');
+      const content = run.read(file);
       assert.match(content, /version "0\.5\.2"/);
-      assert.doesNotMatch(content, /PLACEHOLDER|SHA256_/);
+      assert.doesNotMatch(content, /version "0\.3\.2"|PLACEHOLDER|SHA256_/);
     }
     // Homebrew never asks the release for an Intel macOS artifact.
+    const { job, workflow } = homebrewJob();
     assert.doesNotMatch(job, /macos-amd64|x86_64|MACOS_AMD64/i);
     const aur = workflow.match(/^  update-aur:\n([\s\S]*?)(?=^  [a-z][\w-]*:)/m)[1];
     assert.doesNotMatch(aur, /macos-|\.dmg/);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(run.dir, { recursive: true, force: true });
+  }
+});
+
+test('a release without a notarized macOS build advances Linux and carries macOS forward', () => {
+  const run = runHomebrewJob({ assets: linuxAssets, published: publishedTap });
+  try {
+    assert.equal(run.checksums.status, 0, run.checksums.stderr);
+    assert.match(run.checksums.stdout, /no signed macOS build; macOS stays on the published formula/);
+    assert.deepEqual(Object.keys(run.values).sort(), ['sha256_linux_amd64', 'sha256_linux_arm64']);
+    assert.equal(run.rendered.status, 0, run.rendered.stderr);
+    const formula = run.read('Formula/hypercolor.rb');
+    assert.match(formula, /^  version "0\.5\.2"$/m);
+    const macDownload = formula.match(/^  on_macos do\n([\s\S]*?)^  end\n/m)[1];
+    assert.match(macDownload, /^    version "0\.3\.2"$/m);
+    assert.match(macDownload, new RegExp(`sha256 "${'9'.repeat(64)}"`));
+    assert.match(formula, new RegExp(`sha256 "${fixtureSha(linuxAssets[0])}"`));
+    assert.equal(run.read('Casks/hypercolor-app.rb'), publishedTap.cask);
+  } finally {
+    rmSync(run.dir, { recursive: true, force: true });
+  }
+});
+
+test('a release with only part of its macOS assets never reaches the renderer', () => {
+  for (const partial of macosAssets) {
+    const run = runHomebrewJob({ assets: [...linuxAssets, partial], published: publishedTap });
+    try {
+      assert.equal(run.checksums.status, 1);
+      assert.match(run.checksums.stdout, /carries only part of its macOS assets/);
+      assert.equal(run.rendered, undefined);
+    } finally {
+      rmSync(run.dir, { recursive: true, force: true });
+    }
   }
 });
 
