@@ -86,10 +86,11 @@ Linux formula advances on every stable tag, and without a notarized macOS
 build the renderer carries the published macOS stanza forward and leaves the
 cask alone. A release carrying only part of its macOS assets stops the job
 instead. The tap's macOS stanza can also be withdrawn (`homebrew-formula.mjs
---withdraw-macos`, with `disable!` on the cask): macOS installs and upgrades
-then fail with a reason instead of offering an older build, carry mode keeps
-it withdrawn, and the next release with a notarized build restores macOS and
-the cask. If `sign-macos` times out waiting on Apple,
+--withdraw-macos`, with `disable!` on the cask). A macOS install or upgrade
+of the formula then fails with a reason instead of offering an older build,
+the cask refuses installs and skips upgrades with a warning, carry mode keeps
+the formula withdrawn, and the next release with a notarized build restores
+macOS and the cask. If `sign-macos` times out waiting on Apple,
 check **Actions → macOS Notary Status → Run workflow**, which lists the
 team's submissions and their status. Once Apple has cleared the queue, use
 "Re-run failed jobs" on the tag's CI/CD run: the signing job picks up the

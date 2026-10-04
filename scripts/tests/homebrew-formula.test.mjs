@@ -208,7 +208,7 @@ test('a withdrawn macOS stanza refuses macOS and keeps Linux on the release', ()
   // Homebrew needs a URL to load the formula on macOS; it names a real asset.
   assert.match(macDownload, new RegExp(`-linux-amd64\\.tar\\.gz"\\n +sha256 "${linux.amd64}"`));
   assert.doesNotMatch(macDownload, /macos-arm64|MacosVersionRequirement|depends_on arch|version "/);
-  assert.doesNotMatch(formula, /Intel Macs up front/);
+  assert.doesNotMatch(formula, /Macs up front/);
   assert.match(formula, /^  class NotarizedMacosBuildRequirement < Requirement$/m);
   assert.match(formula, /^  version "0\.6\.1"$/m);
   // The service block's on_macos stays as rendered for a full release.
@@ -263,4 +263,12 @@ test('CLI withdraw mode writes only the formula and refuses other macOS inputs',
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('withdraw mode refuses a template whose first on_macos block is not the download', () => {
+  const serviceFirst = template.replace('  license "Apache-2.0"\n',
+    '  license "Apache-2.0"\n\n  on_macos do\n    service do\n    end\n  end\n');
+  assert.notEqual(serviceFirst, template);
+  assert.throws(() => renderFormula({ template: serviceFirst, version: '0.6.1', linux, macos: { withdrawn: true } }),
+    /no on_macos download block to withdraw/);
 });

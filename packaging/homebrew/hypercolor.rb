@@ -33,8 +33,8 @@ class Hypercolor < Formula
 
     def message
       "Hypercolor's macOS build is waiting on Apple notarization, so this release " \
-        "installs on Linux only. Notarized builds appear at " \
-        "https://github.com/hyperb1iss/hypercolor/releases"
+        "installs on Linux only. If an older build is installed, remove it with " \
+        "`brew uninstall hypercolor`."
     end
   end
 

@@ -137,6 +137,10 @@ later from Settings → Device Discovery → Hardware Support.
 
 ## macOS
 
+{% <callout type="warning"> %}
+Hypercolor for macOS is on hold while Apple notarizes a current build. Until it ships, Homebrew refuses both the cask and the formula on macOS, and the older macOS builds on the release page should not be installed. If you already run 0.3.2 or earlier, remove it with `brew uninstall --cask hypercolor-app` (or `brew uninstall hypercolor`), or delete Hypercolor from Applications.
+{% </callout> %}
+
 Hypercolor for macOS requires Apple silicon and macOS 15.2 or newer; Intel
 Macs are not supported. Download the signed DMG from
 the [download page](@/download.md). Open the DMG, drag Hypercolor to

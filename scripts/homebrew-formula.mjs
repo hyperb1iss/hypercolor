@@ -78,7 +78,7 @@ function requirePlaceholder(template, placeholder) {
 function withdrawnMacosSection(linuxAmd64) {
   return `  # No notarized macOS build is published, so macOS installs fail with a
   # reason instead of falling back to an older build. Homebrew needs a URL to
-  # load the formula on macOS; the requirement is what stops the install.
+  # load the formula on macOS; the requirement refuses installs and upgrades.
   on_macos do
     ${WITHDRAWN_MARKER}
 
