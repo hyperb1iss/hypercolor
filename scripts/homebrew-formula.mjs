@@ -9,6 +9,10 @@
 // assets never renders. macOS ships for Apple silicon only, so there is no
 // Intel macOS input.
 //
+// macOS can also be withdrawn: the stanza then refuses macOS installs with a
+// reason instead of offering any build. Carry mode keeps a withdrawn stanza
+// withdrawn, and the next release with a notarized build restores macOS.
+//
 //   node scripts/homebrew-formula.mjs \
 //     --version 0.5.0 \
 //     --linux-amd64 <sha256> --linux-arm64 <sha256> \
@@ -23,6 +27,12 @@
 //     --template packaging/homebrew/hypercolor.rb \
 //     --carry-macos-from homebrew-tap/Formula/hypercolor.rb \
 //     --output hypercolor.rb
+//
+//   node scripts/homebrew-formula.mjs \
+//     --version 0.5.1 \
+//     --linux-amd64 <sha256> --linux-arm64 <sha256> \
+//     --template packaging/homebrew/hypercolor.rb \
+//     --withdraw-macos --output hypercolor.rb
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -34,8 +44,13 @@ const LINUX_SHAS = { amd64: 'SHA256_LINUX_AMD64', arm64: 'SHA256_LINUX_ARM64' };
 const REQUIRED_OPTIONS = ['version', 'linux-amd64', 'linux-arm64', 'template', 'output'];
 const MACOS_RELEASE_OPTIONS = ['macos-arm64', 'dmg-arm64', 'cask-template', 'cask-output'];
 const CARRY_OPTION = 'carry-macos-from';
+const WITHDRAW_FLAG = 'withdraw-macos';
 const CLI_OPTIONS = [...REQUIRED_OPTIONS, ...MACOS_RELEASE_OPTIONS, CARRY_OPTION];
+const CLI_FLAGS = [WITHDRAW_FLAG];
 const MACOS_BLOCK_PATTERN = /^  on_macos do\n([\s\S]*?)^  end\n/m;
+// The download block together with the comment lines directly above it.
+const MACOS_SECTION_PATTERN = /(?:^  #.*\n)*^  on_macos do\n[\s\S]*?^  end\n/m;
+const WITHDRAWN_MARKER = 'depends_on NotarizedMacosBuildRequirement';
 const LEFTOVER_PATTERN = /[A-Z0-9_]*PLACEHOLDER|SHA256_[A-Z0-9_]+/;
 
 class FormulaError extends Error {}
@@ -60,9 +75,23 @@ function requirePlaceholder(template, placeholder) {
   }
 }
 
+function withdrawnMacosSection(linuxAmd64) {
+  return `  # No notarized macOS build is published, so macOS installs fail with a
+  # reason instead of falling back to an older build. Homebrew needs a URL to
+  # load the formula on macOS; the requirement is what stops the install.
+  on_macos do
+    ${WITHDRAWN_MARKER}
+
+    url "https://github.com/hyperb1iss/hypercolor/releases/download/v#{version}/hypercolor-#{version}-linux-amd64.tar.gz"
+    sha256 "${requireSha(linuxAmd64, 'linux amd64 sha256')}"
+  end
+`;
+}
+
 /**
- * Render every architecture. `macos` holds this release's checksums, or a
- * `carried` stanza read from the published formula by `readPublishedMacos`.
+ * Render every architecture. `macos` holds this release's checksums, a
+ * `carried` stanza read from the published formula by `readPublishedMacos`,
+ * or `{ withdrawn: true }` to refuse macOS.
  */
 export function renderFormula({ template, version, linux, macos }) {
   requireVersion(version, 'version');
@@ -70,7 +99,14 @@ export function renderFormula({ template, version, linux, macos }) {
     requirePlaceholder(template, placeholder);
   }
   let formula = template.replace('VERSION_PLACEHOLDER', version);
-  if (macos?.carried) {
+  if (macos?.withdrawn || macos?.carried?.withdrawn) {
+    const section = formula.match(MACOS_SECTION_PATTERN);
+    if (!section || !section[0].includes(MACOS_SHAS.arm64)) {
+      throw new FormulaError('template has no on_macos download block to withdraw');
+    }
+    formula = formula.replace(section[0], withdrawnMacosSection(linux?.amd64));
+    macos = null;
+  } else if (macos?.carried) {
     const carried = macos.carried;
     requireVersion(carried.version, 'carried macOS version');
     const block = formula.match(MACOS_BLOCK_PATTERN);
@@ -83,7 +119,7 @@ export function renderFormula({ template, version, linux, macos }) {
     macos = { arm64: carried.arm64 };
   }
   for (const [platform, checksums, placeholders] of [
-    ['linux', linux, LINUX_SHAS], ['macos', macos, MACOS_SHAS],
+    ['linux', linux, LINUX_SHAS], ...(macos ? [['macos', macos, MACOS_SHAS]] : []),
   ]) {
     for (const [arch, placeholder] of Object.entries(placeholders)) {
       formula = formula.replace(placeholder, requireSha(checksums?.[arch], `${platform} ${arch} sha256`));
@@ -94,10 +130,14 @@ export function renderFormula({ template, version, linux, macos }) {
   return formula;
 }
 
-/** Read the macOS version and checksum the published formula installs. */
+/**
+ * Read the macOS version and checksum the published formula installs, or
+ * `{ withdrawn: true }` when its macOS stanza refuses installs.
+ */
 export function readPublishedMacos(formula) {
   const block = formula.match(MACOS_BLOCK_PATTERN)?.[1];
   if (block === undefined) throw new FormulaError('published formula has no on_macos download block');
+  if (block.includes(WITHDRAWN_MARKER)) return { withdrawn: true };
   const version = block.match(/^    version "([^"]+)"$/m)?.[1] ?? formula.match(/^  version "([^"]+)"$/m)?.[1];
   const checksums = [...block.matchAll(/sha256 "([^"]+)"/g)].map(match => match[1]);
   if (checksums.length !== 1) {
@@ -114,6 +154,10 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     if (!flag.startsWith('--')) throw new FormulaError(`unexpected argument ${flag}`);
+    if (CLI_FLAGS.includes(flag.slice(2))) {
+      args[flag.slice(2)] = true;
+      continue;
+    }
     if (!CLI_OPTIONS.includes(flag.slice(2))) throw new FormulaError(`unknown option ${flag}`);
     const value = argv[index + 1];
     if (value === undefined || value.startsWith('--')) throw new FormulaError(`${flag} needs a value`);
@@ -130,6 +174,15 @@ export function main(argv) {
   }
   const macosGiven = MACOS_RELEASE_OPTIONS.filter(option => args[option] !== undefined);
   const carry = args[CARRY_OPTION];
+  if (args[WITHDRAW_FLAG]) {
+    const conflict = [...macosGiven, ...(carry === undefined ? [] : [CARRY_OPTION])][0];
+    if (conflict) throw new FormulaError(`--${WITHDRAW_FLAG} cannot be combined with --${conflict}`);
+    const formula = renderFormula({ template: readFileSync(args.template, 'utf8'), version: args.version,
+      linux: { amd64: args['linux-amd64'], arm64: args['linux-arm64'] }, macos: { withdrawn: true } });
+    writeFileSync(args.output, formula);
+    console.log(`wrote formula for ${args.version}; macOS is withdrawn and the cask is unchanged`);
+    return;
+  }
   if (carry !== undefined && macosGiven.length > 0) {
     throw new FormulaError(`--${CARRY_OPTION} cannot be combined with --${macosGiven[0]}`);
   }
@@ -143,7 +196,8 @@ export function main(argv) {
     const carried = readPublishedMacos(readFileSync(carry, 'utf8'));
     const formula = renderFormula({ template, version: args.version, linux, macos: { carried } });
     writeFileSync(args.output, formula);
-    console.log(`wrote formula for ${args.version}; macOS stays on ${carried.version} and the cask is unchanged`);
+    const macosState = carried.withdrawn ? 'stays withdrawn' : `stays on ${carried.version}`;
+    console.log(`wrote formula for ${args.version}; macOS ${macosState} and the cask is unchanged`);
     return;
   }
   const formula = renderFormula({ template, version: args.version, linux, macos: { arm64: args['macos-arm64'] } });

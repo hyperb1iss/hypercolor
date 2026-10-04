@@ -3002,7 +3002,7 @@ jobs:
           fi
           body="Update formula and cask from the published release checksums."
           if [[ -z "$SHA256_MACOS_ARM64" ]]; then
-            body="Linux moves to ${VERSION}; macOS and the cask stay on the last notarized build."
+            body="Linux moves to ${VERSION}; macOS and the cask stay as published until a notarized build ships."
           fi
           git commit -m "hypercolor: update to ${VERSION}" -m "$body"
           git push
