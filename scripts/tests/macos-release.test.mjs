@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { renderFormula } from '../homebrew-formula.mjs';
 
 const wrapper = fileURLToPath(new URL('../with-macos-signing.sh', import.meta.url));
 const secretNames = ['APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_SIGNING_IDENTITY',
@@ -252,7 +253,27 @@ test('a release without a notarized macOS build advances Linux and carries macOS
     assert.equal(run.read('Casks/hypercolor-app.rb'), publishedTap.cask);
     const pushed = run.push();
     assert.equal(pushed.status, 0, pushed.stderr);
-    assert.match(pushed.stdout, /\[Linux moves to 0\.5\.2; macOS and the cask stay on the last notarized build\.\]/);
+    assert.match(pushed.stdout, /\[Linux moves to 0\.5\.2; macOS and the cask stay as published until a notarized build ships\.\]/);
+  } finally {
+    rmSync(run.dir, { recursive: true, force: true });
+  }
+});
+
+test('a withdrawn macOS stanza stays withdrawn while Linux advances', () => {
+  const template = readFileSync(new URL('../../packaging/homebrew/hypercolor.rb', import.meta.url), 'utf8');
+  const withdrawn = renderFormula({ template, version: '0.5.1',
+    linux: { amd64: '1'.repeat(64), arm64: '2'.repeat(64) }, macos: { withdrawn: true } });
+  const run = runHomebrewJob({ assets: linuxAssets, published: { formula: withdrawn, cask: publishedTap.cask } });
+  try {
+    assert.equal(run.checksums.status, 0, run.checksums.stderr);
+    assert.equal(run.rendered.status, 0, run.rendered.stderr);
+    assert.match(run.rendered.stdout, /macOS stays withdrawn and the cask is unchanged/);
+    const formula = run.read('Formula/hypercolor.rb');
+    assert.match(formula, /^  version "0\.5\.2"$/m);
+    const macDownload = formula.match(/^  on_macos do\n([\s\S]*?)^  end\n/m)[1];
+    assert.match(macDownload, /depends_on NotarizedMacosBuildRequirement/);
+    assert.match(macDownload, new RegExp(`sha256 "${fixtureSha(linuxAssets[0])}"`));
+    assert.equal(run.read('Casks/hypercolor-app.rb'), publishedTap.cask);
   } finally {
     rmSync(run.dir, { recursive: true, force: true });
   }

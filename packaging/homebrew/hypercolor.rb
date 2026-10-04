@@ -5,7 +5,8 @@
 #
 # scripts/homebrew-formula.mjs renders Linux from every stable release. macOS
 # comes from the same release when its notarized build shipped; otherwise the
-# macOS stanza is carried forward from the formula already in the tap.
+# macOS stanza is carried forward from the formula already in the tap, which
+# may be a withdrawn stanza that refuses macOS until a notarized build ships.
 
 class Hypercolor < Formula
   # Sequoia's symbolic version cannot distinguish 15.0 from the 15.2 floor.
@@ -18,6 +19,22 @@ class Hypercolor < Formula
 
     def message
       "Hypercolor requires macOS 15.2 or newer."
+    end
+  end
+
+  # Only a withdrawn macOS stanza depends on this, so a macOS install fails
+  # with a reason instead of resolving an older build.
+  class NotarizedMacosBuildRequirement < Requirement
+    fatal true
+
+    satisfy(build_env: false) do
+      !OS.mac?
+    end
+
+    def message
+      "Hypercolor's macOS build is waiting on Apple notarization, so this release " \
+        "installs on Linux only. If an older build is installed, remove it with " \
+        "`brew uninstall hypercolor`."
     end
   end
 
