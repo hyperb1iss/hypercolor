@@ -85,10 +85,12 @@ impl GpuRenderDevice {
             for_resource_creation: Some(GPU_RESOURCE_CREATION_BUDGET_PERCENT),
             for_device_loss: Some(GPU_DEVICE_LOSS_BUDGET_PERCENT),
         };
+        #[cfg(test)]
+        pin_shipped_shader_compilation(&mut instance_descriptor);
         let instance = wgpu::Instance::new(instance_descriptor);
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
+            force_fallback_adapter: test_fallback_adapter_requested(),
             compatible_surface: None,
             ..Default::default()
         }))
@@ -253,6 +255,41 @@ impl GpuRenderDevice {
             texture_format_name(format)
         );
     }
+}
+
+/// Make test devices compile shaders the way shipped builds do on users'
+/// machines.
+///
+/// wgpu's default DX12 compiler uses `dxcompiler.dll` whenever it is on
+/// `PATH`, and the Visual Studio developer shell used for builds and CI puts
+/// the Windows SDK copy there, while installed builds only have FXC. Pinning
+/// FXC keeps GPU tests honest about both compile time and shader output.
+/// `InstanceFlags::DEBUG` is cleared too because on DX12 it switches FXC's
+/// optimizer off. Dependencies already build without debug assertions in
+/// this workspace, so that only guards against the profile changing.
+#[cfg(test)]
+fn pin_shipped_shader_compilation(instance_descriptor: &mut wgpu::InstanceDescriptor) {
+    instance_descriptor.flags.remove(wgpu::InstanceFlags::DEBUG);
+    instance_descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+}
+
+/// Environment switch that puts GPU tests on the software fallback adapter
+/// (WARP on DX12, llvmpipe or lavapipe elsewhere).
+///
+/// Hosted CI runners have no GPU, but shader compilation still runs through
+/// the real backend compiler there, so the switch lets CI exercise the
+/// production pipelines deterministically. Only test builds read it.
+#[cfg(test)]
+const GPU_TEST_FALLBACK_ADAPTER_ENV: &str = "HYPERCOLOR_GPU_TEST_FALLBACK_ADAPTER";
+
+#[cfg(test)]
+fn test_fallback_adapter_requested() -> bool {
+    std::env::var_os(GPU_TEST_FALLBACK_ADAPTER_ENV).is_some()
+}
+
+#[cfg(not(test))]
+const fn test_fallback_adapter_requested() -> bool {
+    false
 }
 
 #[cfg(target_os = "windows")]
