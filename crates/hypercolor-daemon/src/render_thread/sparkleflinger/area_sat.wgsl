@@ -64,6 +64,9 @@ fn decode_source_pixel(x: u32, y: u32) -> WideRgb {
   );
 }
 
+// Every lane stores its own slot before the first barrier and only reads
+// slots already written, so the pipelines skip workgroup zero-init. Keep
+// that true: a read before the first store would see garbage.
 fn scan_workgroup(lane: u32, value: WideRgb) -> WideRgb {
   scan_values[lane] = value;
   workgroupBarrier();
