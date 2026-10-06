@@ -1327,7 +1327,9 @@ fn read_texture_rgba8(
         .recv()
         .expect("managed native color callback arrives")
         .expect("managed native color buffer maps");
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("managed native color range should be mapped after the map callback");
     let mut result = Vec::with_capacity((row_bytes * height) as usize);
     for row in mapped.chunks_exact(padded as usize) {
         result.extend_from_slice(&row[..row_bytes as usize]);
