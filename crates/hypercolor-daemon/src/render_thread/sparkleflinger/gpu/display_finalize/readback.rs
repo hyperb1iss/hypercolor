@@ -6,8 +6,13 @@ use hypercolor_core::bus::DisplayYuv420Frame;
 
 use super::PendingGpuDisplayFinalize;
 
+/// How long the test-only blocking finalizers wait for a readback.
+///
+/// Production never blocks here: `poll_display_finalize_readback_ready`
+/// polls with a zero timeout. The wait only has to outlast the slowest
+/// adapter the tests run on, which in CI is the WARP software rasterizer.
 #[cfg(test)]
-const GPU_READBACK_WAIT_TIMEOUT: Duration = Duration::from_millis(8);
+const GPU_READBACK_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) fn begin_display_finalize_readback(
     mut pending: PendingGpuDisplayFinalize,
