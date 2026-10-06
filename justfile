@@ -488,9 +488,11 @@ app-bundle-assets *args='': app-bundle-binaries
 # bundle signs with APPLE_SIGNING_IDENTITY, falling back to the local
 # "Hypercolor Dev" certificate so TCC grants survive rebuilds (ad-hoc
 # signatures change identity every build); see docs/development/DEV_SETUP.md.
+# macOS builds only the .app: postsign re-signs the daemon after Tauri
+# bundles, so a DMG built here would carry the unpatched app.
 [unix]
 app-bundle *args='': app-assets app-bundle-assets
-    cd crates/hypercolor-app && APPLE_SIGNING_IDENTITY="$(../../scripts/macos-dev-signing-identity.sh)" HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ args }}
+    cd crates/hypercolor-app && APPLE_SIGNING_IDENTITY="$(../../scripts/macos-dev-signing-identity.sh)" HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ if os() == "macos" { "--bundles app" } else { "" } }} {{ args }}
     ./scripts/macos-dev-postsign.sh
 
 [windows]
