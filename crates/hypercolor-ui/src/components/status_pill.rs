@@ -12,7 +12,7 @@ use crate::components::section_label::{LabelSize, LabelTone, label_class};
 #[component]
 pub fn StatusPill(
     label: &'static str,
-    #[prop(into)] value: String,
+    #[prop(into)] value: Signal<String>,
     color: &'static str,
     pulsing: bool,
 ) -> impl IntoView {

@@ -9,21 +9,26 @@ use crate::icons::*;
 use crate::preview_telemetry::PreviewPresenterTelemetry;
 use crate::ws::PerformanceMetrics;
 
-use super::fps_display::stabilize_fps_for_display;
+use super::fps_display::{ema_step, stabilize_fps_for_display};
 
 const EMA_ALPHA: f64 = 0.3;
 
-fn use_ema(
+/// Smooths `source` with an exponential moving average that steps once per
+/// metrics message.
+///
+/// The step follows `metrics_tick`, not changes in `source`. A source that
+/// settles on a constant, such as an fps locked to its target, never
+/// notifies again, so an average stepped on change would stall short of it.
+fn use_sampled_ema(
+    metrics_tick: Signal<u64>,
     source: impl Fn() -> Option<f64> + Copy + Send + Sync + 'static,
     alpha: f64,
 ) -> Signal<f64> {
     let state = RwSignal::new(None::<f64>);
     Effect::new(move |_| {
-        if let Some(raw) = source() {
-            state.set(Some(match state.get_untracked() {
-                None => raw,
-                Some(prev) => prev + alpha * (raw - prev),
-            }));
+        metrics_tick.track();
+        if let Some(sample) = untrack(source) {
+            state.set(Some(ema_step(state.get_untracked(), sample, alpha)));
         }
     });
     Signal::derive(move || state.get().unwrap_or(0.0))
@@ -34,6 +39,7 @@ fn use_ema(
 #[component]
 pub(super) fn HeroGauges(
     #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
+    #[prop(into)] metrics_tick: Signal<u64>,
     #[prop(into)] preview_fps: Signal<f32>,
     #[prop(into)] preview_target_fps: Signal<u32>,
     #[prop(into)] preview_present: Signal<PreviewPresenterTelemetry>,
@@ -48,7 +54,7 @@ pub(super) fn HeroGauges(
                 .map(|m| stabilize_fps_for_display(m.fps.delivered, m.fps.target))
         })
     });
-    let engine_value = use_ema(move || engine_raw.get(), EMA_ALPHA);
+    let engine_value = use_sampled_ema(metrics_tick, move || engine_raw.get(), EMA_ALPHA);
     let engine_max = Memo::new(move |_| {
         metrics.with(|m| {
             m.as_ref()
@@ -72,7 +78,7 @@ pub(super) fn HeroGauges(
 
     // Frame time gauge — inverted: lower is better. EMA-smoothed.
     let frame_raw = Memo::new(move |_| metrics.with(|m| m.as_ref().map(|m| m.frame_time.avg_ms)));
-    let frame_value = use_ema(move || frame_raw.get(), EMA_ALPHA);
+    let frame_value = use_sampled_ema(metrics_tick, move || frame_raw.get(), EMA_ALPHA);
     let frame_budget = Memo::new(move |_| {
         metrics.with(|m| {
             m.as_ref().map_or(33.33, |m| {
@@ -120,7 +126,7 @@ pub(super) fn HeroGauges(
         let fps = stabilize_fps_for_display(fps, preview_target_fps.get());
         if fps > 0.0 { Some(fps) } else { None }
     });
-    let preview_value = use_ema(move || preview_raw.get(), EMA_ALPHA);
+    let preview_value = use_sampled_ema(metrics_tick, move || preview_raw.get(), EMA_ALPHA);
     let preview_primary = Memo::new(move |_| format!("{:.1}", preview_value.get()));
     let preview_secondary = Memo::new(move |_| {
         let target = preview_target_fps.get();

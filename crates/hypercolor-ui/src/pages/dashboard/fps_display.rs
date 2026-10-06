@@ -25,3 +25,12 @@ pub fn stabilize_fps_for_display_f32(raw_fps: f32, target_fps: u32) -> f32 {
         stabilize_fps_for_display(f64::from(raw_fps), target_fps) as f32
     }
 }
+
+/// Advances an exponential moving average by one sample. The first sample
+/// seeds the average.
+pub fn ema_step(average: Option<f64>, sample: f64, alpha: f64) -> f64 {
+    match average {
+        None => sample,
+        Some(average) => average + alpha * (sample - average),
+    }
+}

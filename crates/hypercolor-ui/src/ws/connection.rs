@@ -197,6 +197,9 @@ pub struct WsManager {
     pub interactive_preview_available: ReadSignal<bool>,
     pub preview_fps: ReadSignal<f32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
+    /// Bumps on every `metrics` message, including one identical to the
+    /// last. `metrics` itself only notifies when the payload changes.
+    pub metrics_tick: ReadSignal<u64>,
     pub sensors: ReadSignal<Option<SystemSnapshot>>,
     /// Latest per-device output telemetry snapshot. `None` until the devices
     /// page (or any other consumer) subscribes via
@@ -324,7 +327,7 @@ impl WsManager {
         let (page_visible, set_page_visible) = signal(document_is_visible());
         let (app_window_visible, set_app_window_visible) = signal(tauri_window_is_visible());
         let (last_backpressure_at_ms, set_last_backpressure_at_ms) = signal(None::<f64>);
-        let (backpressure_probe_epoch, set_backpressure_probe_epoch) = signal(0_u64);
+        let (metrics_tick, set_metrics_tick) = signal(0_u64);
 
         // Track authoritative canvas cadence from backend frame metadata.
         let last_frame_number = StoredValue::new(None::<u32>);
@@ -665,7 +668,7 @@ impl WsManager {
                             &set_preview_target_fps,
                             &set_preview_backpressure_cap,
                             &set_last_backpressure_at_ms,
-                            &set_backpressure_probe_epoch,
+                            &set_metrics_tick,
                         );
                     }
                 }
@@ -860,7 +863,7 @@ impl WsManager {
         });
 
         Effect::new(move |_| {
-            let _probe = backpressure_probe_epoch.get();
+            let _probe = metrics_tick.get();
             let Some(last_backpressure_at_ms) = last_backpressure_at_ms.get() else {
                 return;
             };
@@ -1042,6 +1045,7 @@ impl WsManager {
             interactive_preview_available,
             preview_fps,
             metrics,
+            metrics_tick,
             sensors,
             device_metrics,
             set_device_metrics_consumers,
