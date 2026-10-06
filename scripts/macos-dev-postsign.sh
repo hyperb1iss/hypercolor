@@ -10,9 +10,9 @@
 # identifiers up after the Tauri build the same way
 # (scripts/sign-macos-artifacts.sh); this is the minimal dev-bundle
 # equivalent. Re-signing the daemon breaks the outer bundle seal, so
-# the app is resealed afterward. The DMG Tauri produced before this
-# pass keeps the unpatched app; dev iteration launches the .app
-# directly.
+# the app is resealed afterward. just app-bundle builds only the .app
+# on macOS, since any DMG packed before this pass would hold the
+# unpatched app; dev iteration launches the .app directly.
 #
 # No-op on non-macOS hosts and for ad-hoc builds, whose bare cdhash
 # requirement takes the launcher authority's structural fallback
