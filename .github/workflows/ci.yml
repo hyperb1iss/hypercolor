@@ -416,11 +416,13 @@ jobs:
           printf '<!doctype html><title>Hypercolor test fixture</title>' \
             > crates/hypercolor-ui/dist/index.html
 
+      # All targets, so macOS-only tests, benches, and examples compile here;
+      # no other lane builds them.
       - name: Check macOS workspace
         if: matrix.lane == 'workspace'
         run: >-
           ./scripts/cargo-cache-build.sh
-          cargo check --workspace --locked
+          cargo check --workspace --all-targets --locked
 
       - name: Clippy macOS interop
         if: matrix.lane == 'capabilities'
