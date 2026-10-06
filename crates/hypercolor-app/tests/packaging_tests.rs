@@ -709,7 +709,7 @@ fn ci_builds_pr_docs_without_widening_deployment_permissions() {
 
 #[test]
 fn public_ci_audits_pr_and_unsigned_app_macho_deployment_targets() {
-    assert!(CI_WORKFLOW.contains("cargo check --workspace --locked"));
+    assert!(CI_WORKFLOW.contains("cargo check --workspace --all-targets --locked"));
     assert!(CI_WORKFLOW.contains("cargo nextest run --locked -p hypercolor-macos-gpu-interop"));
     assert!(CI_WORKFLOW.contains("cargo build --locked -p hypercolor --bin hypercolor"));
     assert_eq!(
