@@ -4,10 +4,12 @@
 //! module so both the dashboard and the effects page render the same
 //! cinematic cabinet.
 
+use hypercolor_leptos_ext::prelude::now_ms;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api::SystemStatus;
+use crate::app::WsContext;
 use crate::components::scene_switcher::{
     SceneSwitcherMenu, active_scene_label, active_scene_locked,
 };
@@ -22,7 +24,20 @@ use crate::zones::ScenesContext;
 #[component]
 pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
     let running = status.running;
-    let uptime = format_uptime(status.uptime_seconds);
+    let fetched_uptime_seconds = status.uptime_seconds;
+    let fetched_at_ms = now_ms();
+    let metrics = expect_context::<WsContext>().metrics;
+    // The status snapshot is fetched once per connection, so the uptime it
+    // carries is advanced locally. Metrics samples arrive a few times a
+    // second, which makes the stream the clock for that advance.
+    let uptime = Signal::derive(move || {
+        metrics.track();
+        format_uptime(advanced_uptime_seconds(
+            fetched_uptime_seconds,
+            fetched_at_ms,
+            now_ms(),
+        ))
+    });
     let device_count = status.device_count;
     let effect_count = status.effect_count;
     let active_scene = status.active_scene;
@@ -50,7 +65,7 @@ pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
                 <div class="w-px h-5 bg-edge-subtle/30" />
                 <StatusPill
                     label="Uptime"
-                    value=uptime.as_str()
+                    value=uptime
                     color="var(--color-cyan)"
                     pulsing=false
                 />
@@ -75,7 +90,7 @@ pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
                     class=("animate-pulse", running)
                     style=format!("background: {status_color}; box-shadow: 0 0 8px {status_color}")
                 />
-                <span class="tabular-nums shrink-0">{uptime.clone()}</span>
+                <span class="tabular-nums shrink-0">{move || uptime.get()}</span>
                 <span class="text-fg-tertiary/40">"·"</span>
                 <span class="tabular-nums shrink-0">{format!("{device_count} dev")}</span>
                 <span class="text-fg-tertiary/40">"·"</span>
@@ -194,6 +209,16 @@ pub(super) fn StatusSkeleton() -> impl IntoView {
             }).collect_view()}
         </div>
     }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "elapsed milliseconds are clamped non-negative and floored to whole seconds"
+)]
+fn advanced_uptime_seconds(fetched_uptime_seconds: u64, fetched_at_ms: f64, now_ms: f64) -> u64 {
+    let elapsed_seconds = ((now_ms - fetched_at_ms).max(0.0) / 1000.0).floor() as u64;
+    fetched_uptime_seconds.saturating_add(elapsed_seconds)
 }
 
 fn format_uptime(seconds: u64) -> String {
