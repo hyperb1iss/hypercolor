@@ -58,7 +58,7 @@ test('publication retains every validation gate while compilation overlaps it', 
   }
   const validation = [
     'release-credentials', 'rust-check-shared', 'rust-check-macos', 'rust-test',
-    'rust-test-servo', 'rust-windows', 'rust-deny', 'sdk', 'ui', 'e2e',
+    'rust-test-servo', 'rust-windows', 'rust-windows-gpu', 'rust-deny', 'sdk', 'ui', 'e2e',
     'web-assets', 'python', 'python-generated',
   ];
   assert.deepEqual(needs('sign-macos'), ['build-native-app', 'release-credentials', 'web-assets']);

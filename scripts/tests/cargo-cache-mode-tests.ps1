@@ -120,8 +120,8 @@ exit 0
 
     $invocations = @(Get-Content $env:HYPERCOLOR_TEST_ARGUMENT_CAPTURE |
         ForEach-Object { ,(ConvertFrom-Json $_) })
-    if ($invocations.Count -ne 12) {
-        throw "Expected 12 Windows Cargo invocations, captured $($invocations.Count)"
+    if ($invocations.Count -ne 14) {
+        throw "Expected 14 Windows Cargo invocations, captured $($invocations.Count)"
     }
     foreach ($invocation in $invocations) {
         if ($invocation[0] -ne 'cargo') { throw 'Lost the Cargo executable argument' }
