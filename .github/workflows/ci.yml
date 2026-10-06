@@ -974,6 +974,79 @@ jobs:
         with:
           phase: save
 
+  # SparkleFlinger's GPU tests skip themselves when no compatible adapter
+  # exists, and no other lane has one, so none of them ran in CI. Hosted
+  # Windows runners have no GPU either, but DX12 still compiles every
+  # shader through FXC on the CPU for the WARP software adapter. That
+  # compile is where 0.6.1 lost a minute of startup and every Windows
+  # install timed out. Forcing the fallback adapter and requiring GPU tests
+  # turns that path from a skip into a gate.
+  rust-windows-gpu:
+    name: Rust Windows GPU (DX12 WARP)
+    needs: [changes, generated-effects]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    environment:
+      # Only main may hold the read-write R2 key; every other run reads.
+      name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
+      deployment: false
+    # Sized like rust-windows for a cold run after a lockfile refresh, even
+    # though this lane builds one feature set and no Servo.
+    timeout-minutes: 180
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-windows-gpu
+      HYPERCOLOR_REQUIRE_GPU_TESTS: "1"
+      HYPERCOLOR_GPU_TEST_FALLBACK_ADAPTER: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: ./.github/actions/rust-build-cache
+        with:
+          r2-access-key-id: ${{ secrets.SCCACHE_R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.SCCACHE_R2_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
+          r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
+          shared-key: rust-windows-gpu
+          workspaces: . -> .cache/hypercolor/target/rust-windows-gpu
+          archive-key: dependencies
+          cache-on-failure: "true"
+
+      - name: Download generated effects
+        uses: actions/download-artifact@v8
+        with:
+          name: generated-effects
+          path: effects/hypercolor
+
+      - name: Install nextest
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-nextest
+
+      # Alone in its own step so no other test's shader compiles compete
+      # with the measurement for CPU.
+      - name: Check SparkleFlinger pipeline warmup budget
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked --no-tests=fail
+          -p hypercolor-daemon --no-default-features --features wgpu --lib
+          -E 'test(gpu_pipeline_warmup_fits_daemon_startup_budget)' --no-capture
+
+      - name: Run SparkleFlinger GPU tests on WARP
+        run: >-
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked --no-tests=fail --no-fail-fast
+          -p hypercolor-daemon --no-default-features --features wgpu --lib
+          -E 'test(sparkleflinger::gpu::)
+          and not test(gpu_pipeline_warmup_fits_daemon_startup_budget)'
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
+
   # ── Cargo Deny ─────────────────────────────────────────────────
   rust-deny:
     name: Cargo Deny
@@ -2488,7 +2561,7 @@ jobs:
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       startsWith(github.ref, 'refs/tags/')
-    needs: [build-release, build-native-app, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
+    needs: [build-release, build-native-app, release-credentials, rust-check-shared, rust-check-macos, rust-test, rust-test-servo, rust-windows, rust-windows-gpu, rust-deny, sdk, ui, e2e, web-assets, python, python-generated]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -281,9 +281,12 @@ test('only main jobs can reach the read-write R2 key, and every cache restore pa
       assert.match(job, /uses: \.\/\.github\/actions\/rust-build-cache\n {8}with:\n {10}r2-access-key-id:/);
     }
   }
-  assert.equal(consumers, 13);
-  const windows = readFileSync(new URL('../../workflows/ci.yml', import.meta.url), 'utf8').match(/^  rust-windows:\n([\s\S]*?)(?=^  [a-z][\w-]*:\n)/m)[1];
-  assert.match(windows, /^ {10}archive-key: dependencies$/m, 'the Windows archive is saved per lockfile set');
+  assert.equal(consumers, 14);
+  const ci = readFileSync(new URL('../../workflows/ci.yml', import.meta.url), 'utf8');
+  for (const id of ['rust-windows', 'rust-windows-gpu']) {
+    const windows = ci.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:\\n)`, 'm'))[1];
+    assert.match(windows, /^ {10}archive-key: dependencies$/m, `${id}: the Windows archive is saved per lockfile set`);
+  }
   const action = readFileSync(new URL('./action.yml', import.meta.url), 'utf8');
   for (const [variable, input] of [['SCCACHE_R2_ACCESS_KEY_ID', 'r2-access-key-id'], ['SCCACHE_R2_SECRET_ACCESS_KEY', 'r2-secret-access-key'],
     ['SCCACHE_R2_BUCKET', 'r2-bucket'], ['SCCACHE_R2_ENDPOINT', 'r2-endpoint']]) {
