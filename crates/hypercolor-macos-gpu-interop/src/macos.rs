@@ -530,6 +530,7 @@ pub(crate) struct MacosCaptureCacheOwner {
 }
 
 impl MacosCaptureCacheOwner {
+    #[cfg(any(test, feature = "screen-capture"))]
     pub(crate) fn new<T>(owner: Arc<T>) -> Self
     where
         T: Send + Sync + 'static,

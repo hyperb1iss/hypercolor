@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", feature = "servo"))]
+#![cfg(all(any(target_os = "linux", target_os = "macos"), feature = "servo"))]
 //! Servo CSS coverage probes for the face SDK layout system (spec 69 W0.5).
 //!
 //! Each fixture under `tests/fixtures/css-probes/` paints known colors into
@@ -7,7 +7,7 @@
 //! pixels. The asserted matrix below gates which CSS the SDK layout module
 //! may rely on — JS layout over the display descriptor stays the baseline.
 //!
-//! ## Support matrix (Servo 0.6, software GL, verified by this test)
+//! ## Support matrix (Servo 0.6, software GL, verified by this test on Linux and macOS)
 //!
 //! | Probe                | 480x480 | 960x160 |
 //! |----------------------|---------|---------|
