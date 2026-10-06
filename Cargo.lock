@@ -4992,6 +4992,7 @@ dependencies = [
  "hypercolor-core",
  "hypercolor-types",
  "hypercolor-worker-retention",
+ "mach2 0.7.0",
  "objc2",
  "objc2-app-kit",
  "objc2-core-foundation",
