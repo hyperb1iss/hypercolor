@@ -16,15 +16,7 @@ pub fn process_resident_memory_mb() -> Option<f64> {
         let size = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?;
         let mut counters = PROCESS_MEMORY_COUNTERS {
             cb: size,
-            PageFaultCount: 0,
-            PeakWorkingSetSize: 0,
-            WorkingSetSize: 0,
-            QuotaPeakPagedPoolUsage: 0,
-            QuotaPagedPoolUsage: 0,
-            QuotaPeakNonPagedPoolUsage: 0,
-            QuotaNonPagedPoolUsage: 0,
-            PagefileUsage: 0,
-            PeakPagefileUsage: 0,
+            ..Default::default()
         };
         // SAFETY: GetCurrentProcess returns a pseudo-handle that needs no
         // closing, and K32GetProcessMemoryInfo writes at most `size` bytes

@@ -456,6 +456,10 @@ jobs:
             -- -D warnings
           ./scripts/cargo-cache-build.sh \
             cargo clippy --locked \
+            -p hypercolor-macos-session --all-targets \
+            -- -D warnings
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
             -p hypercolor-daemon --no-default-features \
             --bin hypercolor-daemon --test macos_owner_tests \
             -- -D warnings
@@ -491,6 +495,10 @@ jobs:
             cargo nextest run --locked \
             -p hypercolor-macos-owner \
             --test coordinator_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-macos-session \
+            --test process_memory_tests
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
             -p hypercolor-core --features macos-native-fixtures \

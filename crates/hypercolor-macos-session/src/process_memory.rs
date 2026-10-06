@@ -18,15 +18,17 @@ pub fn process_resident_memory_mb() -> Option<f64> {
 
         let mut info = mach_task_basic_info::default();
         let mut count = MACH_TASK_BASIC_INFO_COUNT;
-        // SAFETY: task_info writes at most MACH_TASK_BASIC_INFO_COUNT natural_t
-        // values into a mach_task_basic_info owned by this call and stores the
-        // number written in count; both outlive the call.
+        // SAFETY: mach_task_self reads the cached task port without taking a
+        // new right, so nothing needs deallocating. task_info writes at most
+        // MACH_TASK_BASIC_INFO_COUNT natural_t values into a
+        // mach_task_basic_info owned by this call and stores the number
+        // written in count; both outlive the call.
         let result = unsafe {
             task_info(
                 mach_task_self(),
                 MACH_TASK_BASIC_INFO,
                 std::ptr::from_mut(&mut info).cast::<integer_t>(),
-                &mut count,
+                &raw mut count,
             )
         };
         if result != KERN_SUCCESS || count != MACH_TASK_BASIC_INFO_COUNT {
