@@ -101,7 +101,7 @@ impl GpuAreaPipeline {
                 layout: Some(&pipeline_layout),
                 module: &shader,
                 entry_point: Some(entry_point),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: scan_compilation_options(),
                 cache: None,
             })
         };
@@ -115,7 +115,7 @@ impl GpuAreaPipeline {
                 layout: Some(&hierarchy_pipeline_layout),
                 module: &hierarchy_shader,
                 entry_point: Some(entry_point),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: scan_compilation_options(),
                 cache: None,
             })
         };
@@ -538,6 +538,21 @@ fn checked_entry_bytes(entry_count: u64, name: &str) -> Result<u64> {
     entry_count
         .checked_mul(SAT_VALUE_BYTES)
         .with_context(|| format!("GPU area {name} byte size overflowed"))
+}
+
+/// Compilation options for the area SAT and hierarchy kernels.
+///
+/// Workgroup zero-init is skipped because every lane stores its own
+/// `scan_values` slot before the first barrier, so the fill is dead work.
+/// It is also ruinous on Windows: FXC, the default DX12 compiler, expands
+/// the zero fill of the 256-entry `WideRgb` array into per-element stores
+/// and spends roughly 17 seconds per scan kernel grouping them, enough to
+/// hold daemon startup for close to a minute.
+fn scan_compilation_options() -> wgpu::PipelineCompilationOptions<'static> {
+    wgpu::PipelineCompilationOptions {
+        zero_initialize_workgroup_memory: false,
+        ..wgpu::PipelineCompilationOptions::default()
+    }
 }
 
 fn storage_buffer(device: &wgpu::Device, label: &'static str, size: u64) -> wgpu::Buffer {
