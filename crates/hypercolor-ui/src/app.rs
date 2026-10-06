@@ -84,6 +84,9 @@ pub struct WsContext {
     pub set_screen_zones_consumers: WriteSignal<u32>,
     pub set_web_viewport_preview_consumers: WriteSignal<u32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
+    /// Bumps on every `metrics` message, including one identical to the
+    /// last. `metrics` itself only notifies when the payload changes.
+    pub metrics_tick: ReadSignal<u64>,
     pub sensors: ReadSignal<Option<SystemSnapshot>>,
     /// Latest per-device output telemetry snapshot. Populated only while a
     /// view has bumped `set_device_metrics_consumers`.
@@ -563,6 +566,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         set_screen_zones_consumers: ws.set_screen_zones_consumers,
         set_web_viewport_preview_consumers: ws.set_web_viewport_preview_consumers,
         metrics: ws.metrics,
+        metrics_tick: ws.metrics_tick,
         sensors: ws.sensors,
         device_metrics: ws.device_metrics,
         set_device_metrics_consumers: ws.set_device_metrics_consumers,

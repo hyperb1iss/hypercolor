@@ -526,6 +526,7 @@ pub fn DashboardPage() -> impl IntoView {
                                             PanelId::HeroGauges => view! {
                                                 <HeroGauges
                                                     metrics=ws.metrics
+                                                    metrics_tick=ws.metrics_tick
                                                     preview_fps=ws.preview_fps
                                                     preview_target_fps=ws.preview_target_fps
                                                     preview_present=preview_telemetry.presenter

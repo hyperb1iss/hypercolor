@@ -26,12 +26,12 @@ pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
     let running = status.running;
     let fetched_uptime_seconds = status.uptime_seconds;
     let fetched_at_ms = now_ms();
-    let metrics = expect_context::<WsContext>().metrics;
+    let metrics_tick = expect_context::<WsContext>().metrics_tick;
     // The status snapshot is fetched once per connection, so the uptime it
-    // carries is advanced locally. Metrics samples arrive a few times a
-    // second, which makes the stream the clock for that advance.
+    // carries is advanced locally. Metrics messages arrive a few times a
+    // second, which makes their tick the clock for that advance.
     let uptime = Signal::derive(move || {
-        metrics.track();
+        metrics_tick.track();
         format_uptime(advanced_uptime_seconds(
             fetched_uptime_seconds,
             fetched_at_ms,
