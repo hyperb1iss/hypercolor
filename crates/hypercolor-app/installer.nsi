@@ -880,6 +880,12 @@ Section Install
 
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
+  ; Hypercolor: a hook that runs once the app has been closed and before any
+  ; file is copied, which NSIS_HOOK_PREINSTALL (run before the check) is not.
+  !ifmacrodef HYPERCOLOR_HOOK_BEFORE_FILES
+    !insertmacro HYPERCOLOR_HOOK_BEFORE_FILES
+  !endif
+
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
 

@@ -61,6 +61,7 @@ const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bund
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
 const INSTALLER_HOOKS_NSH: &str = include_str!("../installer-hooks.nsh");
 const INSTALLER_NSI: &str = include_str!("../installer.nsi");
+const DAEMON_SERVICES_PS1: &str = include_str!("../installer-daemon-services.ps1");
 const TAURI_WINDOWS_BUNDLE_CONFIG: &str = include_str!("../tauri.windows.bundle.conf.json");
 const SETUP_SH: &str = include_str!("../../../scripts/setup.sh");
 const SETUP_PS1: &str = include_str!("../../../scripts/setup.ps1");
@@ -1707,6 +1708,147 @@ fn installer_hooks_stop_the_broker_before_files_change() {
 #[test]
 fn installer_hook_cleans_up_the_broker_on_uninstall() {
     assert!(nsis_macro_body("NSIS_HOOK_PREUNINSTALL").contains("sc.exe delete HypercolorSmBus"));
+}
+
+/// Upgrades only overwrite files, and the UI and bundled effects change file
+/// names between releases, so both folders are cleared first. That has to
+/// wait until the app is closed and happen before any file is copied.
+#[test]
+fn installer_clears_rebuilt_folders_once_the_app_is_closed() {
+    let hook = nsis_macro_body("HYPERCOLOR_HOOK_BEFORE_FILES");
+    for guard in [
+        "${If} ${FileExists} \"$INSTDIR\\${MAINBINARYNAME}.exe\"",
+        "${AndIf} ${FileExists} \"$INSTDIR\\uninstall.exe\"",
+    ] {
+        assert!(hook.contains(guard), "clearing must be guarded by {guard}");
+    }
+    assert!(hook.contains("RMDir /r \"$INSTDIR\\ui\""));
+    assert!(hook.contains("RMDir /r \"$INSTDIR\\effects\\bundled\""));
+
+    let (_, install) = INSTALLER_NSI
+        .split_once("Section Install\n")
+        .expect("installer.nsi has an Install section");
+    let position = |needle: &str| {
+        install
+            .find(needle)
+            .unwrap_or_else(|| panic!("Install section is missing {needle}"))
+    };
+    let app_closed = position("!insertmacro CheckIfAppIsRunning");
+    let cleared = position("!insertmacro HYPERCOLOR_HOOK_BEFORE_FILES");
+    let first_copy = position("File \"${MAINBINARYSRCPATH}\"");
+    assert!(app_closed < cleared && cleared < first_copy);
+}
+
+/// A daemon still running from the install directory (exiting with the app,
+/// orphaned, or registered as a Windows service) holds hypercolor-daemon.exe
+/// open, so upgrades stop it before the copy, with every wait bounded, and
+/// start exactly the daemon services they stopped once the files are in.
+/// The logic ships as a script the installer embeds, with paths passed as
+/// double-quoted arguments that no apostrophe can break.
+#[test]
+fn installer_stops_and_restarts_daemons_around_the_copy() {
+    let before_files = nsis_macro_body("HYPERCOLOR_HOOK_BEFORE_FILES");
+    let stopped = before_files
+        .find("!insertmacro HYPERCOLOR_STOP_DAEMON")
+        .expect("the daemon must be stopped before the copy");
+    let cleared = before_files
+        .find("RMDir /r")
+        .expect("the hook clears rebuilt folders");
+    assert!(stopped < cleared);
+
+    let stop = nsis_macro_body("HYPERCOLOR_STOP_DAEMON");
+    assert!(stop.contains(
+        "File \"/oname=$PLUGINSDIR\\hypercolor-daemon-services.ps1\" \"${HYPERCOLOR_HOOKS_DIR}\\installer-daemon-services.ps1\""
+    ));
+    assert!(stop.contains("-Action Stop ${HYPERCOLOR_DAEMON_SERVICES_ARGS}"));
+    let restore = nsis_macro_body("HYPERCOLOR_RESTORE_DAEMON_SERVICES");
+    assert!(
+        restore.contains("${If} ${FileExists} \"$PLUGINSDIR\\hypercolor-daemon-services.txt\"")
+    );
+    assert!(restore.contains("-Action Restore ${HYPERCOLOR_DAEMON_SERVICES_ARGS}"));
+    assert!(
+        nsis_macro_body("NSIS_HOOK_POSTINSTALL")
+            .contains("!insertmacro HYPERCOLOR_RESTORE_DAEMON_SERVICES")
+    );
+    assert!(INSTALLER_HOOKS_NSH.contains(
+        "!define HYPERCOLOR_DAEMON_SERVICES_ARGS `-InstallDir \"$INSTDIR\" -StateFile \"$PLUGINSDIR\\hypercolor-daemon-services.txt\"`"
+    ));
+
+    for step in [
+        "if ($svc.State -ne \"Stop Pending\") {",
+        "$stopped += $svc.Name",
+        "$service.WaitForStatus(\"Stopped\", [TimeSpan]::FromSeconds(20))",
+        "Set-Content -LiteralPath $StateFile -Value $stopped",
+        "Get-CimInstance Win32_Process -Filter \"Name = 'hypercolor-daemon.exe'\"",
+        "Wait-Process -Id $daemonIds -Timeout 10",
+        "Stop-Process -Id $id -Force",
+        "Start-Service -Name $_ -ErrorAction SilentlyContinue",
+    ] {
+        assert!(
+            DAEMON_SERVICES_PS1.contains(step),
+            "daemon services script is missing {step}"
+        );
+    }
+    // The script runs in the installer's 32-bit PowerShell, where Get-Process
+    // cannot see a 64-bit process's path, and Stop-Service waits unbounded.
+    let code: Vec<&str> = DAEMON_SERVICES_PS1
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    for avoided in ["Get-Process", "Stop-Service"] {
+        assert!(
+            !code.iter().any(|line| line.contains(avoided)),
+            "daemon services script must not use {avoided}"
+        );
+    }
+}
+
+/// NSIS caps every string at 1024 characters (NSIS_MAX_STRLEN in the build
+/// Tauri ships) and silently truncates longer ones, so every command line
+/// the hooks run has to fit even with long install and temp paths.
+#[test]
+fn installer_hook_commands_fit_the_nsis_string_limit() {
+    const NSIS_MAX_STRLEN: usize = 1024;
+    let long_instdir = format!("C:\\{}", "i".repeat(150));
+    let long_pluginsdir = format!("C:\\{}", "p".repeat(150));
+    let daemon_services_args = INSTALLER_HOOKS_NSH
+        .lines()
+        .find_map(|line| line.strip_prefix("!define HYPERCOLOR_DAEMON_SERVICES_ARGS "))
+        .expect("hooks define the daemon services arguments")
+        .trim_matches('`');
+
+    let mut commands = 0;
+    for line in INSTALLER_HOOKS_NSH.lines() {
+        let Some((_, quoted)) = line.split_once("nsExec::ExecToLog ") else {
+            continue;
+        };
+        let quoted = quoted.trim();
+        let command = quoted[1..quoted.len() - 1]
+            .replace("${HYPERCOLOR_DAEMON_SERVICES_ARGS}", daemon_services_args)
+            .replace("$$", "$")
+            .replace("$INSTDIR", &long_instdir)
+            .replace("$PLUGINSDIR", &long_pluginsdir);
+        let length = command.chars().count();
+        assert!(
+            length < NSIS_MAX_STRLEN,
+            "a {length}-character hook command would be truncated: {command}"
+        );
+        commands += 1;
+    }
+    assert!(
+        commands >= 10,
+        "expected every hook command, found {commands}"
+    );
+}
+
+/// A silent install (`/S`, the way an automated updater runs the installer)
+/// must never wait on a dialog or reboot the machine, and reports a needed
+/// restart with exit code 3010 instead.
+#[test]
+fn installer_reboot_prompt_answers_no_when_silent() {
+    let postinstall = nsis_macro_body("NSIS_HOOK_POSTINSTALL");
+    assert!(postinstall.contains("/SD IDNO IDNO no_reboot_now"));
+    assert!(postinstall.contains("no_reboot_now:\n    SetErrorLevel 3010"));
 }
 
 fn nsis_function_body<'a>(name: &str) -> &'a str {
