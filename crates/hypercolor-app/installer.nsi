@@ -173,6 +173,14 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
   !define MUI_UNICON "${UNINSTALLERICON}"
 !endif
 
+; Hypercolor: the header and sidebar bitmaps are masters at 3x their 100%
+; size. MUI scales bitmaps to their controls with nearest-neighbour sampling,
+; which shreds the art at every display scale but 300%, so the GUI init and
+; welcome/finish SHOW callbacks replace each image with a copy resampled to
+; the control's real pixel size (HypercolorFitBitmap).
+!define MUI_CUSTOMFUNCTION_GUIINIT HypercolorGuiInit
+!define MUI_CUSTOMFUNCTION_UNGUIINIT un.HypercolorGuiInit
+
 ; Define registry key to store installer language
 !define MUI_LANGDLL_REGISTRY_ROOT "HKCU"
 !define MUI_LANGDLL_REGISTRY_KEY "${MANUPRODUCTKEY}"
@@ -181,6 +189,8 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; Installer pages, must be ordered as they appear
 ; 1. Welcome Page
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+; Hypercolor: sharpen the sidebar art before the page shows.
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW HypercolorWelcomeShow
 !insertmacro MUI_PAGE_WELCOME
 
 ; 2. License Page (if defined)
@@ -428,10 +438,151 @@ Var AppStartMenuFolder
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+; Hypercolor: sharpen the sidebar art before the page shows.
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW HypercolorFinishShow
 !insertmacro MUI_PAGE_FINISH
 
 Function RunMainBinary
   nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
+FunctionEnd
+
+; Hypercolor: DPI-exact wizard art.
+;
+; HypercolorFitBitmap loads the bitmap file in $1 at its native size and
+; returns in $2 a copy scaled to the client size of the static control $0,
+; drawn with HALFTONE (area-averaging) filtering. $2 is 0 when any step
+; fails, and the caller then leaves the control showing MUI's own image.
+!macro HYPERCOLOR_FIT_BITMAP_FUNCTION UN
+Function ${UN}HypercolorFitBitmap
+  Push $3
+  Push $4
+  Push $5
+  Push $6
+  Push $7
+  Push $8
+  Push $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  StrCpy $2 0
+
+  ; Control size in physical pixels: $3 x $4.
+  System::Call "*(i 0, i 0, i 0, i 0) p .r8"
+  System::Call "user32::GetClientRect(p r0, p r8) i .r5"
+  System::Call "*$8(i, i, i .r3, i .r4)"
+  System::Free $8
+  ${If} $5 = 0
+  ${OrIf} $3 < 1
+  ${OrIf} $4 < 1
+    Goto fit_done
+  ${EndIf}
+
+  ; Source bitmap $5, $6 x $7. 0x2010 is LR_LOADFROMFILE | LR_CREATEDIBSECTION.
+  System::Call "user32::LoadImageW(p 0, w r1, i ${IMAGE_BITMAP}, i 0, i 0, i 0x2010) p .r5"
+  ${If} $5 = 0
+    Goto fit_done
+  ${EndIf}
+  ; A 64-byte buffer is smaller than DIBSECTION, so GetObject returns the
+  ; BITMAP header, whose width and height sit at offsets 4 and 8.
+  System::Alloc 64
+  Pop $8
+  System::Call "gdi32::GetObjectW(p r5, i 64, p r8) i .R0"
+  System::Call "*$8(i, i .r6, i .r7)"
+  System::Free $8
+  ${IfThen} $7 < 0 ${|} IntOp $7 0 - $7 ${|}
+  ${If} $R0 = 0
+  ${OrIf} $6 < 1
+  ${OrIf} $7 < 1
+    System::Call "gdi32::DeleteObject(p r5)"
+    Goto fit_done
+  ${EndIf}
+
+  System::Call "user32::GetDC(p 0) p .R0"
+  System::Call "gdi32::CreateCompatibleDC(p R0) p .R1"
+  System::Call "gdi32::CreateCompatibleDC(p R0) p .R2"
+  System::Call "gdi32::CreateCompatibleBitmap(p R0, i r3, i r4) p .r2"
+  ${If} $2 <> 0
+    System::Call "gdi32::SelectObject(p R1, p r5) p .R3"
+    System::Call "gdi32::SelectObject(p R2, p r2) p .R4"
+    ; 4 is HALFTONE, which needs the brush origin reset after it is set.
+    System::Call "gdi32::SetStretchBltMode(p R2, i 4)"
+    System::Call "gdi32::SetBrushOrgEx(p R2, i 0, i 0, p 0)"
+    ; 0x00CC0020 is SRCCOPY.
+    System::Call "gdi32::StretchBlt(p R2, i 0, i 0, i r3, i r4, p R1, i 0, i 0, i r6, i r7, i 0x00CC0020) i .r8"
+    System::Call "gdi32::SelectObject(p R1, p R3)"
+    System::Call "gdi32::SelectObject(p R2, p R4)"
+    ${If} $8 = 0
+      System::Call "gdi32::DeleteObject(p r2)"
+      StrCpy $2 0
+    ${EndIf}
+  ${EndIf}
+  System::Call "gdi32::DeleteDC(p R1)"
+  System::Call "gdi32::DeleteDC(p R2)"
+  System::Call "user32::ReleaseDC(p 0, p R0)"
+  System::Call "gdi32::DeleteObject(p r5)"
+
+  fit_done:
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+  Pop $8
+  Pop $7
+  Pop $6
+  Pop $5
+  Pop $4
+  Pop $3
+FunctionEnd
+
+; The page header lives on the outer dialog, where MUI's GUI init has just
+; loaded it from $PLUGINSDIR. NSIS keeps no handle to that image, so the
+; one STM_SETIMAGE hands back is freed here.
+Function ${UN}HypercolorGuiInit
+  Push $0
+  Push $1
+  Push $2
+  GetDlgItem $0 $HWNDPARENT 1046
+  StrCpy $1 "$PLUGINSDIR\modern-header.bmp"
+  Call ${UN}HypercolorFitBitmap
+  ${If} $2 <> 0
+    SendMessage $0 ${STM_SETIMAGE} ${IMAGE_BITMAP} $2 $1
+    ${IfThen} $1 <> 0 ${|} System::Call "gdi32::DeleteObject(p r1)" ${|}
+  ${EndIf}
+  Pop $2
+  Pop $1
+  Pop $0
+FunctionEnd
+!macroend
+!insertmacro HYPERCOLOR_FIT_BITMAP_FUNCTION ""
+!insertmacro HYPERCOLOR_FIT_BITMAP_FUNCTION "un."
+
+; MUI frees the handle in its page's Image.Bitmap variable when the page
+; closes, so each callback frees MUI's original and hands MUI the sharp copy.
+!macro HYPERCOLOR_SHARPEN_SIDEBAR IMAGE BITMAP
+  Push $0
+  Push $1
+  Push $2
+  StrCpy $0 ${IMAGE}
+  StrCpy $1 "$PLUGINSDIR\modern-wizard.bmp"
+  Call HypercolorFitBitmap
+  ${If} $2 <> 0
+    SendMessage $0 ${STM_SETIMAGE} ${IMAGE_BITMAP} $2 $1
+    System::Call "gdi32::DeleteObject(p ${BITMAP})"
+    StrCpy ${BITMAP} $2
+  ${EndIf}
+  Pop $2
+  Pop $1
+  Pop $0
+!macroend
+
+Function HypercolorWelcomeShow
+  !insertmacro HYPERCOLOR_SHARPEN_SIDEBAR $mui.WelcomePage.Image $mui.WelcomePage.Image.Bitmap
+FunctionEnd
+
+Function HypercolorFinishShow
+  !insertmacro HYPERCOLOR_SHARPEN_SIDEBAR $mui.FinishPage.Image $mui.FinishPage.Image.Bitmap
 FunctionEnd
 
 ; Uninstaller Pages

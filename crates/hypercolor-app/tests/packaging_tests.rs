@@ -1709,6 +1709,29 @@ fn installer_hook_cleans_up_the_broker_on_uninstall() {
     assert!(nsis_macro_body("NSIS_HOOK_PREUNINSTALL").contains("sc.exe delete HypercolorSmBus"));
 }
 
+/// MUI scales wizard bitmaps to their controls with nearest-neighbour
+/// sampling, so the fork resamples the 3x art masters to each control's real
+/// pixel size, header and sidebar alike, in the installer and uninstaller.
+#[test]
+fn nsis_template_resamples_wizard_art_for_the_display_scale() {
+    for wiring in [
+        "!define MUI_CUSTOMFUNCTION_GUIINIT HypercolorGuiInit",
+        "!define MUI_CUSTOMFUNCTION_UNGUIINIT un.HypercolorGuiInit",
+        "!define MUI_PAGE_CUSTOMFUNCTION_SHOW HypercolorWelcomeShow",
+        "!define MUI_PAGE_CUSTOMFUNCTION_SHOW HypercolorFinishShow",
+        "!insertmacro HYPERCOLOR_FIT_BITMAP_FUNCTION \"un.\"",
+    ] {
+        assert!(
+            INSTALLER_NSI.contains(wiring),
+            "installer.nsi is missing {wiring}"
+        );
+    }
+    assert!(
+        INSTALLER_NSI.contains("gdi32::SetStretchBltMode(p R2, i 4)"),
+        "wizard art must be resampled with HALFTONE filtering"
+    );
+}
+
 /// `installer.nsi` forks the NSIS template of one tauri-bundler release, and
 /// the bundler fills it with its own Handlebars data. Installers must build
 /// with the tauri-cli that pins that bundler, so the fork's header, CI, every
