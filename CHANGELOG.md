@@ -5,6 +5,61 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-10-07
+
+This release fixes the Windows startup stall that made 0.6.1 unusable on fresh installs, drops Intel Mac support in favor of Apple silicon, and prepares the workspace for publication on crates.io. The dashboard's live gauges and the remote preview stream also now run at their intended cadence.
+
+### Added
+
+- ✨ Add `--withdraw-macos` mode to the Homebrew formula renderer so a release can ship Linux-only while Apple notarization is pending, with a fatal `NotarizedMacosBuildRequirement` dependency and a disabled cask instead of pointing users at stale builds (2ab7d5d, 439078e)
+- ✅ Add a Windows DX12 WARP GPU lane that requires (rather than skips) SparkleFlinger GPU tests, including a dedicated pipeline warmup test that compiles shaders through the shipped FXC compiler (fd078b9, cd7ead0)
+- 👷 Add a shared sccache layer backed by Cloudflare R2 so release and main builds start warm instead of exhausting the Actions cache budget, with read-write credentials scoped to main only (cd42479, a6cd41b, e01cafd)
+
+### Changed
+
+- ♻️ Publish the CLI package as **`hypercolor`** instead of `hypercolor-cli`; install it with `cargo install hypercolor`. The directory stays `crates/hypercolor-cli/` and the lib target remains `hypercolor_cli` (0c1872f)
+- 🔨 Make the workspace publishable on crates.io: internal path dependencies now carry explicit versions, and `hypercolor-daemon`, `hypercolor-app`, and `hypercolor-windows-helper` are marked `publish = false` (61661fe)
+- 🔨 Move bundled data inside the crates that ship it: builtin attachments to `crates/hypercolor-core/attachments/`, OpenRGB detectors to `crates/hypercolor-openrgb-host/data/detectors.toml`. `build.rs` now fails loudly when the attachment set is missing (32432ef)
+- 👷 Key the Windows target archive by dependency set instead of per-commit, cutting repeated ~19.5 GB cache saves on every main run (a0d256f)
+- 🔧 Let the Homebrew formula advance on Linux without waiting for a notarized macOS build, and keep the catch-up path idempotent on re-run (3f5f5c5, 5318a1c)
+- 🔧 Check all targets in the macOS CI lane and run Rust tests when the release installer scripts change, closing two coverage gaps (1380d87, 9aef0b9)
+- 👷 Build only the `.app` in the macOS dev bundle, removing `hdiutil` from the signing path (b3bd7b2)
+
+### Fixed
+
+- 🐛 Fix the Windows startup stall: skip workgroup zero-init in the area SAT scans, which FXC expanded into per-element stores and added roughly 17 seconds per kernel. Fresh 0.6.1 installs exceeded the health check timeout and reported "Hypercolor connection is unavailable" (302de9f)
+- 🐛 Publish preview frames per fps slot rather than per rounded-up millisecond; a 30 fps request was delivering 15-19 fps on VP8 tracks (a3ac27c)
+- 🐛 Step dashboard gauge averages once per metrics sample so a source locked to its target stops freezing mid-convergence (for example, an engine gauge stuck at 53.3 fps instead of settling at 60) (1abe8ef)
+- 🐛 Clock dashboard smoothing off every metrics message instead of gating on payload equality, which stalled gauges when the daemon sent identical frames (10bc236)
+- 🐛 Keep the dashboard uptime pill advancing between status fetches rather than freezing at the value captured on connect (1216879)
+- 🐛 Refuse Intel Macs in `get-hypercolor.sh` and `install-release.sh` before downloading, while still resolving Rosetta shells to the native arm64 build (98dce8e)
+- 🐛 Refresh changed source timestamps after cache restore, invalidate artifacts with missing or malformed source metadata, and keep refreshed times strictly newer on hosted runners with skewed clocks (7f6501d, 0d3ff16, 42f905a, 45ff093)
+- 🐛 Keep compiling when the sccache remote storage check fails, falling back to local disk instead of failing the job (e36eaa1)
+- 🐛 Fix the macOS test build broken since the wgpu 30 bump by unwrapping the mapped range in the screen capture test, and gate the unused capture cache owner constructor behind its feature (1569cc7, fc3e5e4)
+- ✅ Wait for layout workflows to finish instead of racing a deadline in the daemon cancellation test, and give display readbacks room on slow adapters (8487ab5, c679cc4)
+
+### Removed
+
+- 🔥 Remove macOS x86_64 (Intel) builds. Release artifacts ship arm64 only, the Homebrew formula and cask declare `depends_on arch: :arm64`, and the Intel CI check lanes are gone. macOS 26 Tahoe is the last release supporting Intel hardware (91997c5, aad3e36)
+
+### Breaking Changes
+
+- **Intel Macs are no longer supported.** Hypercolor for macOS requires Apple silicon on macOS 15.2 or later.
+  - Homebrew refuses the install at pre-flight; curl installers error out before downloading.
+  - Existing Intel installs should be removed with `brew uninstall --cask hypercolor-app` or `brew uninstall hypercolor`, or by deleting the app from `/Applications`. Do not reinstall 0.3.2 or older builds from the releases page.
+- **CLI crate renamed from `hypercolor-cli` to `hypercolor`.**
+  - Use `cargo install hypercolor`.
+  - Downstream crates depending on the library should set `hypercolor-cli = { package = "hypercolor", version = "0.6.2" }`; `use hypercolor_cli::` paths are unchanged.
+- **Bundled data paths moved** out of the top-level `data/` directory into `crates/hypercolor-core/attachments/` and `crates/hypercolor-openrgb-host/data/`. Build tooling that referenced the old paths needs updating.
+
+### Metrics
+
+- Total Commits: 61
+- Files Changed: 199
+- Insertions: +5,327
+- Deletions: -3,500
+<!-- -------------------------------------------------------------- -->
+
 ## [0.6.1] - 2026-10-01
 
 Ship the Windows VC++ runtime alongside every binary that needs it, fixing installs that silently failed on machines without the redistributable. Also adds a headless Docker runtime for server deployments and reworks the Servo worker to run on wakeups and a render-tick clock instead of polling.
