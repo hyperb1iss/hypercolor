@@ -63,6 +63,8 @@ const INSTALLER_HOOKS_NSH: &str = include_str!("../installer-hooks.nsh");
 const INSTALLER_NSI: &str = include_str!("../installer.nsi");
 const DAEMON_SERVICES_PS1: &str = include_str!("../installer-daemon-services.ps1");
 const TAURI_WINDOWS_BUNDLE_CONFIG: &str = include_str!("../tauri.windows.bundle.conf.json");
+const WINDOWS_UPGRADE_TEST_PS1: &str =
+    include_str!("../../../scripts/test-windows-installer-upgrade.ps1");
 const SETUP_SH: &str = include_str!("../../../scripts/setup.sh");
 const SETUP_PS1: &str = include_str!("../../../scripts/setup.ps1");
 const INSTALL_WINDOWS_HARDWARE_SUPPORT_PS1: &str =
@@ -1849,6 +1851,51 @@ fn installer_reboot_prompt_answers_no_when_silent() {
     let postinstall = nsis_macro_body("NSIS_HOOK_POSTINSTALL");
     assert!(postinstall.contains("/SD IDNO IDNO no_reboot_now"));
     assert!(postinstall.contains("no_reboot_now:\n    SetErrorLevel 3010"));
+}
+
+/// The release lane upgrades the highest older published release on a real
+/// Windows runner, clicking through the wizard and with a bare `/S`, before
+/// the new installer ships, and fails on any break in the upgrade contract.
+/// It may only skip when there really is no older release, never because a
+/// lookup failed.
+#[test]
+fn release_lane_proves_windows_upgrades_in_place() {
+    for step in [
+        "- name: Verify in-place upgrade from the previous release",
+        "if ($LASTEXITCODE -ne 0) { throw \"gh release list failed",
+        "throw \"no published release tag parses as a version",
+        "if ([semver]::TryParse($_.TrimStart('v'), [ref]$parsed))",
+        "Where-Object { $_.Version -lt $version }",
+        "if ($LASTEXITCODE -ne 0) { throw \"gh release download",
+    ] {
+        assert!(CI_WORKFLOW.contains(step), "upgrade step is missing {step}");
+    }
+    assert!(CI_WORKFLOW.contains("foreach ($mode in \"Interactive\", \"Silent\")"));
+    assert!(CI_WORKFLOW.contains(
+        "./scripts/test-windows-installer-upgrade.ps1 -PreviousInstaller $previous.FullName -CandidateInstaller $candidate.FullName -Mode $mode"
+    ));
+    for driver in [
+        "$candidate = Start-Process -FilePath $CandidateInstaller -PassThru",
+        "Wait-Installer -Process $candidate -Description \"the candidate installer\" -ClickThrough",
+        "Start-Process -FilePath $CandidateInstaller -ArgumentList \"/S\" -PassThru",
+        "$SuccessCodes = @(0, 3010)",
+    ] {
+        assert!(
+            WINDOWS_UPGRADE_TEST_PS1.contains(driver),
+            "upgrade test is missing {driver}"
+        );
+    }
+    for check in [
+        "the installed version stayed at",
+        "the autostart Run value did not survive the upgrade",
+        "the upgrade recreated the desktop shortcut the user had removed",
+        "a previous release's file survived the upgrade",
+    ] {
+        assert!(
+            WINDOWS_UPGRADE_TEST_PS1.contains(check),
+            "upgrade check is missing: {check}"
+        );
+    }
 }
 
 fn nsis_function_body<'a>(name: &str) -> &'a str {
