@@ -1709,6 +1709,61 @@ fn installer_hook_cleans_up_the_broker_on_uninstall() {
     assert!(nsis_macro_body("NSIS_HOOK_PREUNINSTALL").contains("sc.exe delete HypercolorSmBus"));
 }
 
+fn nsis_function_body<'a>(name: &str) -> &'a str {
+    INSTALLER_NSI
+        .split_once(format!("Function {name}\n").as_str())
+        .and_then(|(_, rest)| rest.split_once("FunctionEnd"))
+        .map(|(body, _)| body)
+        .unwrap_or_else(|| panic!("installer.nsi should define {name}"))
+}
+
+/// Upstream's template treats an upgrade as "uninstall, then install" unless
+/// `/UPDATE` is passed, and that uninstall deletes the autostart entry and
+/// shortcuts. The fork upgrades in place, the `/UPDATE` way, whenever an
+/// older Hypercolor is installed, so a downloaded installer and a silent
+/// automated update take the same path.
+#[test]
+fn nsis_template_upgrades_older_installs_in_place() {
+    assert!(nsis_function_body(".onInit").contains("Call HypercolorDetectUpgrade"));
+    let detect = nsis_function_body("HypercolorDetectUpgrade");
+    assert!(detect.contains("nsis_tauri_utils::SemverCompare \"${VERSION}\" $0"));
+    assert!(detect.contains("StrCpy $UpdateMode 1"));
+
+    let reinstall = nsis_function_body("PageReinstall");
+    let skip = reinstall
+        .find("${If} $UpdateMode = 1\n    Abort")
+        .expect("update mode should skip the reinstall page");
+    let compare = reinstall
+        .find("compare_version:")
+        .expect("reinstall page compares versions");
+    assert!(
+        skip < compare,
+        "the page must be skipped before it is populated"
+    );
+
+    // Same-version repairs and downgrades keep upstream's uninstall; the fork
+    // only changes which installs reach that page.
+    assert!(
+        nsis_function_body("PageLeaveReinstall")
+            .contains("${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 \"$R1 /UPDATE\" ${|}")
+    );
+
+    // An upgrade the installer detected itself still repairs a missing
+    // WebView2 runtime; only an explicit /UPDATE skips that, as upstream.
+    assert!(detect.contains("StrCpy $HypercolorImpliedUpdate 1"));
+    assert!(
+        INSTALLER_NSI.contains("${If} $UpdateMode <> 1\n    ${OrIf} $HypercolorImpliedUpdate = 1")
+    );
+
+    assert!(INSTALLER_NSI.contains(
+        "!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrUpdate\n!insertmacro MUI_PAGE_DIRECTORY"
+    ));
+    assert!(
+        nsis_function_body("HypercolorFinishShow")
+            .contains("ShowWindow $mui.FinishPage.ShowReadme ${SW_HIDE}")
+    );
+}
+
 /// MUI scales wizard bitmaps to their controls with nearest-neighbour
 /// sampling, so the fork resamples the 3x art masters to each control's real
 /// pixel size, header and sidebar alike, in the installer and uninstaller.

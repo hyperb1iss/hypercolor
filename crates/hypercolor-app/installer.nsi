@@ -89,6 +89,13 @@ Var UpdateMode
 Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
+; Hypercolor: the installed version an in-place upgrade replaces, whether
+; that upgrade turned update mode on itself (rather than an /UPDATE flag),
+; and the welcome page wording chosen from them.
+Var HypercolorUpgradeFrom
+Var HypercolorImpliedUpdate
+Var HypercolorWelcomeTitle
+Var HypercolorWelcomeText
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -188,8 +195,11 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 
 ; Installer pages, must be ordered as they appear
 ; 1. Welcome Page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-; Hypercolor: sharpen the sidebar art before the page shows.
+; Hypercolor: say "upgrade" when one is about to happen, and sharpen the
+; sidebar art before the page shows.
+!define MUI_WELCOMEPAGE_TITLE "$HypercolorWelcomeTitle"
+!define MUI_WELCOMEPAGE_TEXT "$HypercolorWelcomeText"
+!define MUI_PAGE_CUSTOMFUNCTION_PRE HypercolorWelcomePre
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW HypercolorWelcomeShow
 !insertmacro MUI_PAGE_WELCOME
 
@@ -237,6 +247,14 @@ Function PageReinstall
     StrCpy $R6 "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$1"
     Goto compare_version
   wix_loop_done:
+
+  ; Hypercolor: an upgrade installs in place, the same way /UPDATE does, so
+  ; this page has nothing to ask. Upstream showed it with "Uninstall before
+  ; installing" preselected, and that ran the old uninstaller without
+  ; /UPDATE, which also deleted the user's autostart entry and shortcuts.
+  ${If} $UpdateMode = 1
+    Abort
+  ${EndIf}
 
   ; Check if there is an existing installation, if not, abort the reinstall page
   ReadRegStr $R0 SHCTX "${UNINSTKEY}" ""
@@ -409,7 +427,9 @@ Function PageLeaveReinstall
 FunctionEnd
 
 ; 5. Choose install directory page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
+; Hypercolor: an in-place upgrade installs where the old version lives;
+; choosing another folder here would leave that install behind.
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrUpdate
 !insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
@@ -583,6 +603,23 @@ FunctionEnd
 
 Function HypercolorFinishShow
   !insertmacro HYPERCOLOR_SHARPEN_SIDEBAR $mui.FinishPage.Image $mui.FinishPage.Image.Bitmap
+  ; Hypercolor: update mode leaves shortcuts as the user arranged them and
+  ; CreateOrUpdateDesktopShortcut ignores this box there, so don't offer it.
+  ${If} $UpdateMode = 1
+    SendMessage $mui.FinishPage.ShowReadme ${BM_SETCHECK} ${BST_UNCHECKED} 0
+    ShowWindow $mui.FinishPage.ShowReadme ${SW_HIDE}
+  ${EndIf}
+FunctionEnd
+
+Function HypercolorWelcomePre
+  ${IfThen} $PassiveMode = 1 ${|} Abort ${|}
+  ${If} $HypercolorUpgradeFrom != ""
+    StrCpy $HypercolorWelcomeTitle "$(hypercolorUpgradeTitle)"
+    StrCpy $HypercolorWelcomeText "$(hypercolorUpgradeText)"
+  ${Else}
+    StrCpy $HypercolorWelcomeTitle "$(MUI_TEXT_WELCOME_INFO_TITLE)"
+    StrCpy $HypercolorWelcomeText "$(MUI_TEXT_WELCOME_INFO_TEXT)"
+  ${EndIf}
 FunctionEnd
 
 ; Uninstaller Pages
@@ -639,6 +676,11 @@ FunctionEnd
   !include "{{this}}"
 {{/each}}
 
+; Hypercolor: welcome page wording for an in-place upgrade. Other languages
+; fall back to English until they gain their own strings.
+LangString hypercolorUpgradeTitle ${LANG_ENGLISH} "Upgrade ${PRODUCTNAME} to ${VERSION}"
+LangString hypercolorUpgradeText ${LANG_ENGLISH} "Setup will upgrade ${PRODUCTNAME} $HypercolorUpgradeFrom to ${VERSION} in place. Your settings, startup preference, shortcuts, and hardware support carry over.$\r$\n$\r$\nIf ${PRODUCTNAME} is running, Setup will ask to close it first.$\r$\n$\r$\nClick Next to continue."
+
 Function .onInit
   ${GetOptions} $CMDLINE "/P" $PassiveMode
   ${IfNot} ${Errors}
@@ -686,6 +728,30 @@ Function .onInit
   !if "${INSTALLMODE}" == "both"
     !insertmacro MULTIUSER_INIT
   !endif
+
+  ; Hypercolor: an older Hypercolor upgrades in place, exactly as if /UPDATE
+  ; had been passed, so a downloaded installer and an automated silent
+  ; update share one path: no uninstall, shortcuts and the autostart entry
+  ; kept, and the install directory unchanged.
+  Call HypercolorDetectUpgrade
+FunctionEnd
+
+Function HypercolorDetectUpgrade
+  ReadRegStr $0 SHCTX "${UNINSTKEY}" "DisplayVersion"
+  ReadRegStr $1 SHCTX "${UNINSTKEY}" "UninstallString"
+  ${If} $0 == ""
+  ${OrIf} $1 == ""
+    Return
+  ${EndIf}
+  nsis_tauri_utils::SemverCompare "${VERSION}" $0
+  Pop $1
+  ${If} $1 = 1
+    StrCpy $HypercolorUpgradeFrom $0
+    ${If} $UpdateMode <> 1
+      StrCpy $UpdateMode 1
+      StrCpy $HypercolorImpliedUpdate 1
+    ${EndIf}
+  ${EndIf}
 FunctionEnd
 
 
@@ -723,7 +789,12 @@ Section WebView2
     ; Webview2 installation
     ;
     ; Skip if updating
+    ;
+    ; Hypercolor: only when /UPDATE was passed. An upgrade this installer
+    ; detected on its own still repairs a missing runtime, as every manual
+    ; re-run did before upgrades ran in update mode.
     ${If} $UpdateMode <> 1
+    ${OrIf} $HypercolorImpliedUpdate = 1
       !if "${INSTALLWEBVIEW2MODE}" == "downloadBootstrapper"
         Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
         DetailPrint "$(webview2Downloading)"
@@ -1071,6 +1142,11 @@ FunctionEnd
 
 Function SkipIfPassive
   ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
+FunctionEnd
+; Hypercolor: used by pages that an in-place upgrade has no use for.
+Function SkipIfPassiveOrUpdate
+  ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
+  ${IfThen} $UpdateMode = 1  ${|} Abort ${|}
 FunctionEnd
 Function un.SkipIfPassive
   ${IfThen} $PassiveMode = 1  ${|} Abort ${|}
