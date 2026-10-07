@@ -36,7 +36,7 @@ wgpu = { workspace = true }
 cgl = { version = "0.3.2", optional = true }
 dpi = { workspace = true, optional = true }
 euclid = { version = "0.22", optional = true }
-gleam = { version = "0.15", optional = true }
+gleam = { version = "0.16", optional = true }
 glow = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 libc = { workspace = true }

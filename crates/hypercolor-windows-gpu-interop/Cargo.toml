@@ -67,7 +67,7 @@ windows = { version = "0.62", default-features = false, features = [
 ] }
 dpi = { workspace = true, optional = true }
 euclid = { version = "0.22", optional = true }
-gleam = { version = "0.15", optional = true }
+gleam = { version = "0.16", optional = true }
 glow = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 raw-window-handle = { version = "0.6", optional = true }

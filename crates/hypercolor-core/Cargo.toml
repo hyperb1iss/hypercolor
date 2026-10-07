@@ -118,7 +118,7 @@ nvml-wrapper = { workspace = true }
 servo = { workspace = true, features = ["baked-in-resources", "js_jit", "webgl"], optional = true }
 # Pinned to match Servo's `Rc<dyn gleam::gl::Gl>` so the direct
 # glReadPixels path in servo/worker.rs can call into Servo's context.
-gleam = { version = "0.15", optional = true }
+gleam = { version = "0.16", optional = true }
 # Servo's RenderingContext trait names surfman, glow, and euclid types in its
 # signatures; the worker's frame-clock context wrapper forwards them.
 euclid = { version = "0.22", optional = true }
