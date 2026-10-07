@@ -109,10 +109,6 @@ PawnIO setup was skipped or failed, re-run it from Settings → Device Discovery
 
 ## macOS {% raw %}{#macos-dmg}{% endraw %}
 
-{% <callout type="warning"> %}
-Hypercolor for macOS is on hold while Apple notarizes a current build. Until it ships, Homebrew refuses both the cask and the formula on macOS, and the older macOS builds on the release page should not be installed. If you already run 0.3.2 or earlier, remove it with `brew uninstall --cask hypercolor-app` (or `brew uninstall hypercolor`), or delete Hypercolor from Applications.
-{% </callout> %}
-
 ### DMG
 
 Download `Hypercolor-<version>-arm64.dmg` from the
