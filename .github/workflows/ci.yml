@@ -1815,7 +1815,11 @@ jobs:
         # fallback happily grabs the x86_64 cargo-tauri, and Tauri then
         # derives sidecar names for the wrong architecture ("resource path
         # hypercolor-daemon-x86_64-apple-darwin doesn't exist").
-        run: cargo binstall -y --targets "${{ matrix.rust-target }}" "tauri-cli@^2.0.0" || cargo install tauri-cli --version "^2.0.0" --locked
+        #
+        # The version is exact because crates/hypercolor-app/installer.nsi
+        # forks the NSIS template of the tauri-bundler this CLI pins; keep it
+        # in step with that file's header and build-windows-installer.ps1.
+        run: cargo binstall -y --targets "${{ matrix.rust-target }}" "tauri-cli@=2.12.1" || cargo install tauri-cli --version "=2.12.1" --locked
 
       - name: Download web assets
         uses: actions/download-artifact@v8

@@ -60,6 +60,10 @@ const MACOS_LAUNCHD_PLIST: &str =
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
 const INSTALLER_HOOKS_NSH: &str = include_str!("../installer-hooks.nsh");
+const INSTALLER_NSI: &str = include_str!("../installer.nsi");
+const TAURI_WINDOWS_BUNDLE_CONFIG: &str = include_str!("../tauri.windows.bundle.conf.json");
+const SETUP_SH: &str = include_str!("../../../scripts/setup.sh");
+const SETUP_PS1: &str = include_str!("../../../scripts/setup.ps1");
 const INSTALL_WINDOWS_HARDWARE_SUPPORT_PS1: &str =
     include_str!("../../../scripts/install-windows-hardware-support.ps1");
 
@@ -1703,6 +1707,44 @@ fn installer_hooks_stop_the_broker_before_files_change() {
 #[test]
 fn installer_hook_cleans_up_the_broker_on_uninstall() {
     assert!(nsis_macro_body("NSIS_HOOK_PREUNINSTALL").contains("sc.exe delete HypercolorSmBus"));
+}
+
+/// `installer.nsi` forks the NSIS template of one tauri-bundler release, and
+/// the bundler fills it with its own Handlebars data. Installers must build
+/// with the tauri-cli that pins that bundler, so the fork's header, CI, every
+/// local build path, and the setup scripts name the same version.
+#[test]
+fn nsis_template_fork_builds_with_its_pinned_tauri_cli() {
+    const PINNED_TAURI_CLI: &str = "2.12.1";
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_WINDOWS_BUNDLE_CONFIG).expect("windows bundle config parses");
+    assert_eq!(
+        config.pointer("/bundle/windows/nsis/template"),
+        Some(&serde_json::json!("./installer.nsi"))
+    );
+    assert!(INSTALLER_NSI.contains(&format!(
+        "Forked from tauri-bundler 2.10.1, the bundler that tauri-cli {PINNED_TAURI_CLI} pins"
+    )));
+    assert!(CI_WORKFLOW.contains(&format!("\"tauri-cli@={PINNED_TAURI_CLI}\"")));
+    assert!(CI_WORKFLOW.contains(&format!(
+        "cargo install tauri-cli --version \"={PINNED_TAURI_CLI}\" --locked"
+    )));
+    assert!(
+        !CI_WORKFLOW.contains("tauri-cli@^"),
+        "CI must not float tauri-cli"
+    );
+    assert!(
+        WINDOWS_INSTALLER_SCRIPT.contains(&format!("$PinnedTauriCli = \"{PINNED_TAURI_CLI}\""))
+    );
+    assert!(JUSTFILE.contains(&format!(
+        "if ((cargo tauri --version) -ne 'tauri-cli {PINNED_TAURI_CLI}')"
+    )));
+    assert!(SETUP_SH.contains(&format!("TAURI_CLI_VERSION=\"{PINNED_TAURI_CLI}\"")));
+    assert!(SETUP_PS1.contains(&format!("$TauriCliVersion = '{PINNED_TAURI_CLI}'")));
+    assert!(
+        !SETUP_SH.contains("cargo_get tauri-cli") && !SETUP_PS1.contains("Cargo-Get tauri-cli"),
+        "setup must install the pinned tauri-cli, not the latest"
+    );
 }
 
 #[test]
