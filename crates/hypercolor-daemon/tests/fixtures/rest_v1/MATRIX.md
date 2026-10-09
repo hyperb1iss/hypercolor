@@ -291,13 +291,16 @@ check still yields `healthy`; only a `degraded` check downgrades the whole probe
 Before startup finishes, the bound listener serves a startup surface instead
 of the router above. `GET /health` from a loopback peer answers `503` with
 `status: "starting"`, every check `starting`, the daemon build's `version`,
-and `startup: { phase, sequence }`, where `phase` is one of `initializing`,
-`probing_gpu`, `scanning_effects`, `loading_stores`, `registering_backends`,
-`starting_inputs`, `starting_render_thread`, `starting_services`, or
-`preparing_api`, and `sequence` advances on every phase change. Every other
-path, and every path from a remote peer, answers `503 service_unavailable`
-(loopback peers get `details: { phase, sequence }`). The `startup` field is
-absent once the daemon is ready.
+and `startup: { phase, sequence, detail? }`, where `phase` is one of
+`initializing`, `probing_gpu`, `scanning_effects`, `loading_stores`,
+`registering_backends`, `starting_inputs`, `starting_render_thread`,
+`starting_services`, or `preparing_api`; `sequence` advances on every phase
+change and every completed step inside a phase (each render runtime piece and
+each compositor pipeline compile in `starting_render_thread`); and `detail`,
+present only while a step runs, names that step. Every other path, and every
+path from a remote peer, answers `503 service_unavailable` (loopback peers get
+`details: { phase, sequence, detail? }`). The `startup` field is absent once
+the daemon is ready.
 
 ---
 

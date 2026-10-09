@@ -157,7 +157,7 @@ impl DaemonState {
             face_fps_cap: config.display.effective_face_fps_cap(),
         };
         self.render_thread = Some(
-            RenderThread::try_spawn(rt_state)
+            RenderThread::try_spawn_reporting(rt_state, self.startup_progress.clone())
                 .context("failed to spawn render thread with resolved compositor mode")?,
         );
         self.startup_progress

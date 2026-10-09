@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from typing_extensions import Self
 
 from ..models.daemon_startup_phase import DaemonStartupPhase
+from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="DaemonStartupProgress")
 
@@ -19,19 +20,30 @@ class DaemonStartupProgress:
 
         Attributes:
             phase (DaemonStartupPhase): Coarse daemon startup phases, in the order the daemon enters them.
-            sequence (int): Monotonic counter that advances every time startup makes progress.
-                A client compares successive values to tell a slow startup from a
-                stuck one.
+            sequence (int): Monotonic counter that advances every time startup completes a unit
+                of work: entering a phase, or finishing a step inside one (such as
+                compiling one compositor pipeline). A client compares successive
+                values to tell a slow startup from a stuck one.
+            detail (None | str | Unset): The step inside the phase that is running right now, when startup
+                reports one. It names the work that has not finished yet, so a
+                startup that stops advancing points at the step it is stuck in.
     """
 
     phase: DaemonStartupPhase
     sequence: int
+    detail: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         phase = self.phase.value
 
         sequence = self.sequence
+
+        detail: None | str | Unset
+        if isinstance(self.detail, Unset):
+            detail = UNSET
+        else:
+            detail = self.detail
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -41,6 +53,8 @@ class DaemonStartupProgress:
                 "sequence": sequence,
             }
         )
+        if detail is not UNSET:
+            field_dict["detail"] = detail
 
         return field_dict
 
@@ -51,9 +65,19 @@ class DaemonStartupProgress:
 
         sequence = d.pop("sequence")
 
+        def _parse_detail(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        detail = _parse_detail(d.pop("detail", UNSET))
+
         daemon_startup_progress = cls(
             phase=phase,
             sequence=sequence,
+            detail=detail,
         )
 
         daemon_startup_progress.additional_properties = d

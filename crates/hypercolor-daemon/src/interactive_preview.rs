@@ -1574,7 +1574,7 @@ fn create_preview_compositor(
     #[cfg(feature = "wgpu")]
     if let Some(device) = acceleration.render_device.clone()
         && let Ok(compositor) =
-            SparkleFlinger::new_with_gpu_device(RenderAccelerationMode::Gpu, Some(device))
+            SparkleFlinger::new_with_gpu_device(RenderAccelerationMode::Gpu, Some(device), None)
     {
         return (compositor, InteractivePreviewBackend::Gpu);
     }

@@ -32,7 +32,7 @@ pub const DAEMON_STARTUP_CEILING: Duration = Duration::from_mins(2);
 pub const MAX_HEALTH_BODY_BYTES: usize = 16 * 1024;
 
 /// One `/health` probe, classified for the startup wait.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupProbe {
     /// `/health` answered `2xx`: the daemon is fully ready.
     Ready,
@@ -40,6 +40,8 @@ pub enum StartupProbe {
     Starting {
         phase: DaemonStartupPhase,
         sequence: u64,
+        /// The step running inside the phase, when the daemon names one.
+        detail: Option<String>,
     },
     /// No usable answer: refused, timed out, or any other status or body.
     Silent,
@@ -49,10 +51,11 @@ impl StartupProbe {
     /// Classify a `503` health body.
     #[must_use]
     pub fn from_unavailable_health(health: &HealthResponse) -> Self {
-        match health.startup {
+        match &health.startup {
             Some(progress) if health.status == HEALTH_STATUS_STARTING => Self::Starting {
                 phase: progress.phase,
                 sequence: progress.sequence,
+                detail: progress.detail.clone(),
             },
             _ => Self::Silent,
         }
@@ -83,6 +86,16 @@ pub enum StartupStall {
     Ceiling { phase: DaemonStartupPhase },
 }
 
+/// A startup wait that ended without a ready daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupGaveUp {
+    /// Why the wait gave up.
+    pub stall: StartupStall,
+    /// The step the daemon last reported running, which for a stall is
+    /// the step it is stuck in.
+    pub detail: Option<String>,
+}
+
 impl StartupStall {
     /// The last phase the daemon reported, if it reported one.
     #[must_use]
@@ -108,6 +121,7 @@ impl StartupStall {
 #[derive(Debug, Default, Clone)]
 pub struct StartupWatch {
     last_report: Option<(DaemonStartupPhase, u64)>,
+    last_detail: Option<String>,
     last_progress_at: Duration,
 }
 
@@ -116,11 +130,17 @@ impl StartupWatch {
     pub fn observe(&mut self, elapsed: Duration, probe: StartupProbe) -> StartupVerdict {
         match probe {
             StartupProbe::Ready => return StartupVerdict::Ready,
-            StartupProbe::Starting { phase, sequence } => {
-                // Any change counts, including a drop: a service manager
-                // that restarts the daemon mid-wait starts the count over,
-                // and that new startup is progress. The ceiling still
-                // bounds a pair of daemons trading answers.
+            StartupProbe::Starting {
+                phase,
+                sequence,
+                detail,
+            } => {
+                // Only the sequence measures progress. Any change counts,
+                // including a drop: a service manager that restarts the
+                // daemon mid-wait starts the count over, and that new
+                // startup is progress. The ceiling still bounds a pair of
+                // daemons trading answers. A new step name alone is not
+                // progress; it is work that has started, not finished.
                 let advanced = self
                     .last_report
                     .is_none_or(|(_, last_sequence)| sequence != last_sequence);
@@ -128,6 +148,7 @@ impl StartupWatch {
                     self.last_report = Some((phase, sequence));
                     self.last_progress_at = elapsed;
                 }
+                self.last_detail = detail;
             }
             StartupProbe::Silent => {}
         }
@@ -152,5 +173,20 @@ impl StartupWatch {
     #[must_use]
     pub fn last_phase(&self) -> Option<DaemonStartupPhase> {
         self.last_report.map(|(phase, _)| phase)
+    }
+
+    /// The step the daemon last reported running inside its phase.
+    #[must_use]
+    pub fn last_detail(&self) -> Option<&str> {
+        self.last_detail.as_deref()
+    }
+
+    /// Describe a give-up `stall` with the step the daemon was last in.
+    #[must_use]
+    pub fn gave_up(&self, stall: StartupStall) -> StartupGaveUp {
+        StartupGaveUp {
+            stall,
+            detail: self.last_detail.clone(),
+        }
     }
 }

@@ -100,7 +100,11 @@ fn starting_health_carries_the_phase_and_sequence() {
             "device_backends": "starting",
             "event_bus": "starting",
         },
-        "startup": { "phase": "starting_render_thread", "sequence": 7 },
+        "startup": {
+            "phase": "starting_render_thread",
+            "sequence": 7,
+            "detail": "SparkleFlinger GPU compose pipeline",
+        },
     });
 
     let decoded: HealthResponse = serde_json::from_value(wire.clone()).expect("health decodes");
@@ -109,9 +113,25 @@ fn starting_health_carries_the_phase_and_sequence() {
         Some(DaemonStartupProgress {
             phase: DaemonStartupPhase::StartingRenderThread,
             sequence: 7,
+            detail: Some("SparkleFlinger GPU compose pipeline".to_owned()),
         })
     );
     assert_eq!(serde_json::to_value(&decoded).expect("re-encodes"), wire);
+}
+
+#[test]
+fn a_startup_report_without_a_running_step_omits_the_detail() {
+    let progress = DaemonStartupProgress {
+        phase: DaemonStartupPhase::LoadingStores,
+        sequence: 3,
+        detail: None,
+    };
+    let wire = serde_json::to_value(&progress).expect("progress encodes");
+    assert!(wire.get("detail").is_none());
+    assert_eq!(
+        serde_json::from_value::<DaemonStartupProgress>(wire).expect("progress decodes"),
+        progress
+    );
 }
 
 #[test]

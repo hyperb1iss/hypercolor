@@ -43,7 +43,7 @@ pub use plan::{
 };
 pub use startup_watch::{
     DAEMON_STARTUP_CEILING, DAEMON_STARTUP_STALL_WINDOW, DAEMON_STARTUP_TIMEOUT,
-    MAX_HEALTH_BODY_BYTES, StartupProbe, StartupStall, StartupVerdict, StartupWatch,
+    MAX_HEALTH_BODY_BYTES, StartupGaveUp, StartupProbe, StartupStall, StartupVerdict, StartupWatch,
 };
 
 /// Default daemon bind address used by the app-spawned daemon.
@@ -1398,7 +1398,7 @@ pub async fn wait_until_healthy(
     client: &reqwest::Client,
     base: &Url,
     poll_interval: Duration,
-) -> Result<(), StartupStall> {
+) -> Result<(), StartupGaveUp> {
     let started = Instant::now();
     let mut watch = StartupWatch::default();
     loop {
@@ -1406,7 +1406,7 @@ pub async fn wait_until_healthy(
         match watch.observe(started.elapsed(), probe) {
             StartupVerdict::Ready => return Ok(()),
             StartupVerdict::Wait => tokio::time::sleep(poll_interval).await,
-            StartupVerdict::GiveUp(stall) => return Err(stall),
+            StartupVerdict::GiveUp(stall) => return Err(watch.gave_up(stall)),
         }
     }
 }
@@ -1764,10 +1764,11 @@ async fn execute_launcher_plan<R: Runtime>(plan: LauncherPlan, context: Launcher
                             &endpoint,
                         )));
                     }
-                    Err(stall) => tracing::warn!(
+                    Err(gave_up) => tracing::warn!(
                         launcher = %identity,
-                        reason = stall.reason(),
-                        phase = stall.phase().map(DaemonStartupPhase::as_str),
+                        reason = gave_up.stall.reason(),
+                        phase = gave_up.stall.phase().map(DaemonStartupPhase::as_str),
+                        step = gave_up.detail.as_deref(),
                         "registered launcher is active but the daemon did not become healthy"
                     ),
                 }
@@ -1809,10 +1810,11 @@ async fn execute_launcher_plan<R: Runtime>(plan: LauncherPlan, context: Launcher
                             &daemon_url,
                         )));
                     }
-                    Err(stall) => tracing::warn!(
+                    Err(gave_up) => tracing::warn!(
                         launcher = %identity,
-                        reason = stall.reason(),
-                        phase = stall.phase().map(DaemonStartupPhase::as_str),
+                        reason = gave_up.stall.reason(),
+                        phase = gave_up.stall.phase().map(DaemonStartupPhase::as_str),
+                        step = gave_up.detail.as_deref(),
                         "started registered launcher but the daemon did not become healthy"
                     ),
                 }
@@ -1980,8 +1982,9 @@ enum DaemonStartupOutcome {
     Exited {
         status: std::process::ExitStatus,
         phase: Option<DaemonStartupPhase>,
+        step: Option<String>,
     },
-    GaveUp(StartupStall),
+    GaveUp(StartupGaveUp),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2024,6 +2027,7 @@ async fn wait_for_daemon_startup(
             return Ok(DaemonStartupOutcome::Exited {
                 status,
                 phase: watch.last_phase(),
+                step: watch.last_detail().map(str::to_owned),
             });
         }
         let probe = probe_startup(client, base, HEALTH_PROBE_TIMEOUT).await;
@@ -2035,6 +2039,7 @@ async fn wait_for_daemon_startup(
                 return Ok(DaemonStartupOutcome::Exited {
                     status,
                     phase: watch.last_phase(),
+                    step: watch.last_detail().map(str::to_owned),
                 });
             }
             Some(DaemonStartupObservation::Healthy) => {
@@ -2045,7 +2050,9 @@ async fn wait_for_daemon_startup(
         match watch.observe(started.elapsed(), probe) {
             StartupVerdict::Ready => return Ok(DaemonStartupOutcome::Healthy),
             StartupVerdict::Wait => tokio::time::sleep(poll_interval).await,
-            StartupVerdict::GiveUp(stall) => return Ok(DaemonStartupOutcome::GaveUp(stall)),
+            StartupVerdict::GiveUp(stall) => {
+                return Ok(DaemonStartupOutcome::GaveUp(watch.gave_up(stall)));
+            }
         }
     }
 }
@@ -2178,21 +2185,27 @@ async fn run_watchdog_loop(
                 }
                 return;
             }
-            Ok(DaemonStartupOutcome::Exited { status, phase }) => {
+            Ok(DaemonStartupOutcome::Exited {
+                status,
+                phase,
+                step,
+            }) => {
                 tracing::warn!(
                     pid,
                     ?status,
                     startup_phase = phase.map(DaemonStartupPhase::as_str),
+                    startup_step = step.as_deref(),
                     "daemon exited before becoming healthy; supervisor will restart"
                 );
                 last_startup_phase = phase;
                 true
             }
-            Ok(DaemonStartupOutcome::GaveUp(stall)) => {
+            Ok(DaemonStartupOutcome::GaveUp(StartupGaveUp { stall, detail })) => {
                 tracing::warn!(
                     pid,
                     reason = stall.reason(),
                     startup_phase = stall.phase().map(DaemonStartupPhase::as_str),
+                    startup_step = detail.as_deref(),
                     no_answer_timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
                     stall_window_ms = DAEMON_STARTUP_STALL_WINDOW.as_millis(),
                     ceiling_ms = DAEMON_STARTUP_CEILING.as_millis(),

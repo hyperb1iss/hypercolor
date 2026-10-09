@@ -140,6 +140,63 @@ async fn health_reports_starting_phases_then_ready_on_the_same_listener() {
     served.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_running_step_is_named_and_advances_the_sequence_only_when_done() {
+    const STEP: &str = "SparkleFlinger GPU area horizontal tile scan";
+    let progress = StartupProgress::default();
+    let handoff = ApiHandoff::starting(progress.clone(), "9.9.9-test");
+    let served = ServedHandoff::spawn(&handoff);
+    let client = reqwest::Client::new();
+    progress.enter(DaemonStartupPhase::StartingRenderThread);
+    let entered = progress.snapshot().sequence;
+
+    let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let stepper = {
+        let progress = progress.clone();
+        std::thread::spawn(move || {
+            progress.step(STEP, || {
+                started_tx.send(()).expect("step start signals");
+                release_rx.recv().expect("step release arrives");
+            });
+        })
+    };
+    tokio::task::spawn_blocking(move || started_rx.recv())
+        .await
+        .expect("start wait joins")
+        .expect("step starts");
+
+    // In flight: named, but not progress yet.
+    let running = starting_health(&client, &served.url("/health"))
+        .await
+        .startup
+        .expect("starting body carries progress");
+    assert_eq!(running.phase, DaemonStartupPhase::StartingRenderThread);
+    assert_eq!(running.sequence, entered);
+    assert_eq!(running.detail.as_deref(), Some(STEP));
+    let other: Value = client
+        .get(served.url("/api/v1/effects"))
+        .send()
+        .await
+        .expect("every route answers while starting")
+        .json()
+        .await
+        .expect("error envelope decodes");
+    assert_eq!(other["error"]["details"]["detail"], STEP);
+
+    release_tx.send(()).expect("step releases");
+    stepper.join().expect("step thread joins");
+
+    let done = starting_health(&client, &served.url("/health"))
+        .await
+        .startup
+        .expect("starting body carries progress");
+    assert_eq!(done.sequence, entered + 1);
+    assert_eq!(done.detail, None);
+
+    served.stop().await;
+}
+
 #[tokio::test]
 async fn a_connection_accepted_while_starting_is_served_by_the_full_router() {
     let handoff = ApiHandoff::starting(StartupProgress::default(), "9.9.9-test");
@@ -302,10 +359,15 @@ async fn running_daemon_answers_starting_until_its_router_is_installed() {
         assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
         let progress = health.startup.expect("starting body carries progress");
         assert_eq!(progress.phase, DaemonStartupPhase::StartingServices);
+        // Seven phase entries, then the render thread's own steps: the
+        // runtime, input publication, and the compositor canvases and
+        // sampling plan (the CPU compositor compiles no pipelines).
         assert!(
-            progress.sequence >= 7,
-            "every earlier phase advanced the sequence"
+            progress.sequence >= 12,
+            "every earlier phase and render-thread step advanced the sequence, got {}",
+            progress.sequence
         );
+        assert_eq!(progress.detail, None);
 
         let status = client
             .get(format!("{base}/api/v1/system"))

@@ -80,6 +80,7 @@ pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };
 pub use progress::StartupProgress;
+pub(crate) use progress::startup_step;
 pub use signals::{
     ParentLifetime, SUPERVISED_PARENT_PID_ENV, install_signal_handlers,
     install_signal_handlers_with_parent_claim,

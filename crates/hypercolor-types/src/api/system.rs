@@ -560,15 +560,21 @@ pub struct HealthResponse {
 
 /// How far a starting daemon has come, reported by `/health` before the
 /// full API is served.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DaemonStartupProgress {
     /// The phase startup is currently in.
     pub phase: DaemonStartupPhase,
-    /// Monotonic counter that advances every time startup makes progress.
-    /// A client compares successive values to tell a slow startup from a
-    /// stuck one.
+    /// Monotonic counter that advances every time startup completes a unit
+    /// of work: entering a phase, or finishing a step inside one (such as
+    /// compiling one compositor pipeline). A client compares successive
+    /// values to tell a slow startup from a stuck one.
     pub sequence: u64,
+    /// The step inside the phase that is running right now, when startup
+    /// reports one. It names the work that has not finished yet, so a
+    /// startup that stops advancing points at the step it is stuck in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Coarse daemon startup phases, in the order the daemon enters them.

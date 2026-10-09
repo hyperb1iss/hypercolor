@@ -179,13 +179,9 @@ fn startup_response(surface: &StartupSurface, request: &Request<Body>) -> Respon
         )
             .into_response();
     }
-    let progress = surface.progress.snapshot();
     DomainError::service_unavailable_details(
         STARTING_MESSAGE,
-        serde_json::json!({
-            "phase": progress.phase,
-            "sequence": progress.sequence,
-        }),
+        serde_json::json!(surface.progress.snapshot()),
     )
     .into_response()
 }

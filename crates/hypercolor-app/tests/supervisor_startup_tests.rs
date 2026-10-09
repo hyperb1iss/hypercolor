@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use hypercolor_app::supervisor::{
     DAEMON_STARTUP_CEILING, DAEMON_STARTUP_STALL_WINDOW, DAEMON_STARTUP_TIMEOUT,
-    HEALTH_PROBE_TIMEOUT, MAX_HEALTH_BODY_BYTES, StartupProbe, StartupStall, StartupVerdict,
-    StartupWatch, SupervisorFailure, SupervisorState, WATCHDOG_FAILURE_WINDOW,
+    HEALTH_PROBE_TIMEOUT, MAX_HEALTH_BODY_BYTES, StartupGaveUp, StartupProbe, StartupStall,
+    StartupVerdict, StartupWatch, SupervisorFailure, SupervisorState, WATCHDOG_FAILURE_WINDOW,
     WATCHDOG_MAX_RAPID_RESTARTS, probe_startup, restart_budget_exhausted, watchdog_gives_up,
 };
 use hypercolor_types::api::system::{
@@ -22,7 +22,19 @@ const fn secs(value: u64) -> Duration {
 }
 
 const fn starting(phase: DaemonStartupPhase, sequence: u64) -> StartupProbe {
-    StartupProbe::Starting { phase, sequence }
+    StartupProbe::Starting {
+        phase,
+        sequence,
+        detail: None,
+    }
+}
+
+fn compiling(sequence: u64, pipeline: &str) -> StartupProbe {
+    StartupProbe::Starting {
+        phase: DaemonStartupPhase::StartingRenderThread,
+        sequence,
+        detail: Some(pipeline.to_owned()),
+    }
 }
 
 // ── Startup deadline ────────────────────────────────────────────────────
@@ -145,6 +157,84 @@ fn a_daemon_restarted_mid_wait_counts_as_progress() {
 }
 
 #[test]
+fn a_slow_compile_that_keeps_finishing_pipelines_is_not_killed() {
+    // One phase far longer than the stall window: a cold shader compile
+    // where every pipeline takes most of the window, but each completes.
+    let mut watch = StartupWatch::default();
+    let per_pipeline = DAEMON_STARTUP_STALL_WINDOW - secs(2);
+    let mut elapsed = secs(2);
+    let mut sequence = 6;
+    assert_eq!(
+        watch.observe(
+            elapsed,
+            starting(DaemonStartupPhase::StartingRenderThread, sequence)
+        ),
+        StartupVerdict::Wait
+    );
+    for pipeline in [
+        "SparkleFlinger GPU compose pipeline",
+        "SparkleFlinger GPU source copy pipeline",
+        "SparkleFlinger GPU area horizontal tile scan",
+    ] {
+        elapsed += per_pipeline;
+        sequence += 1;
+        assert_eq!(
+            watch.observe(elapsed, compiling(sequence, pipeline)),
+            StartupVerdict::Wait,
+            "{pipeline} completed at {elapsed:?}"
+        );
+    }
+    assert!(elapsed > DAEMON_STARTUP_STALL_WINDOW * 2);
+    assert_eq!(
+        watch.last_phase(),
+        Some(DaemonStartupPhase::StartingRenderThread)
+    );
+}
+
+#[test]
+fn a_hung_compile_inside_the_phase_still_trips_the_window_and_is_named() {
+    let mut watch = StartupWatch::default();
+    let last_completed_at = secs(30);
+    watch.observe(
+        secs(10),
+        starting(DaemonStartupPhase::StartingRenderThread, 6),
+    );
+    watch.observe(
+        last_completed_at,
+        compiling(7, "SparkleFlinger GPU area horizontal tile scan"),
+    );
+
+    // The next compile starts and never finishes: a new step name with
+    // the same sequence is work in flight, not progress.
+    let hung = "SparkleFlinger GPU area vertical tile scan";
+    let inside = last_completed_at + DAEMON_STARTUP_STALL_WINDOW - Duration::from_millis(1);
+    assert_eq!(
+        watch.observe(inside, compiling(7, hung)),
+        StartupVerdict::Wait
+    );
+    let verdict = watch.observe(
+        last_completed_at + DAEMON_STARTUP_STALL_WINDOW,
+        compiling(7, hung),
+    );
+    let StartupVerdict::GiveUp(stall) = verdict else {
+        panic!("a compile that stops finishing must trip the stall window, got {verdict:?}");
+    };
+    assert_eq!(
+        stall,
+        StartupStall::Stalled {
+            phase: DaemonStartupPhase::StartingRenderThread,
+        }
+    );
+    assert_eq!(
+        watch.gave_up(stall),
+        StartupGaveUp {
+            stall,
+            detail: Some(hung.to_owned()),
+        }
+    );
+}
+
+#[test]
 fn the_hard_ceiling_ends_a_startup_that_keeps_progressing() {
     let mut watch = StartupWatch::default();
     let step = secs(5);
@@ -215,6 +305,7 @@ fn only_a_starting_report_counts_as_startup_progress() {
     let report = DaemonStartupProgress {
         phase: DaemonStartupPhase::ProbingGpu,
         sequence: 1,
+        detail: None,
     };
     assert_eq!(
         StartupProbe::from_unavailable_health(&health(HEALTH_STATUS_STARTING, Some(report))),
@@ -263,6 +354,7 @@ async fn probe_reads_the_startup_report_from_a_503() {
         Some(DaemonStartupProgress {
             phase: DaemonStartupPhase::StartingRenderThread,
             sequence: 6,
+            detail: Some("SparkleFlinger GPU compose pipeline".to_owned()),
         }),
     ))
     .expect("health encodes");
@@ -270,7 +362,7 @@ async fn probe_reads_the_startup_report_from_a_503() {
 
     assert_eq!(
         probe_startup(&reqwest::Client::new(), &base, HEALTH_PROBE_TIMEOUT).await,
-        starting(DaemonStartupPhase::StartingRenderThread, 6)
+        compiling(6, "SparkleFlinger GPU compose pipeline")
     );
 }
 
