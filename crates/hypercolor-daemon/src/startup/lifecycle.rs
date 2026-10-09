@@ -243,9 +243,15 @@ impl DaemonState {
 
         for extension in self.lifecycle_extensions.clone() {
             info!(extension = extension.name(), "Starting daemon extension");
-            extension.start(self).await.with_context(|| {
-                format!("failed to start daemon extension {}", extension.name())
-            })?;
+            self.startup_progress
+                .step_async(
+                    &format!("daemon extension {}", extension.name()),
+                    extension.start(self),
+                )
+                .await
+                .with_context(|| {
+                    format!("failed to start daemon extension {}", extension.name())
+                })?;
         }
 
         info!("Daemon is running");

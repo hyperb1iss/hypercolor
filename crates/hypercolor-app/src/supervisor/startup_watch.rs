@@ -3,20 +3,25 @@
 //! A starting daemon answers `/health` with `503` and a startup report whose
 //! sequence advances as it works. The supervisor keeps waiting while that
 //! sequence moves and gives up only when it stalls, or when the whole
-//! startup outlives a hard ceiling. A daemon that never answers at all
-//! (one that predates the startup report, or one hung before binding its
-//! port) keeps the original fixed deadline.
+//! startup outlives a hard ceiling. Before the port answers, a child whose
+//! output the supervisor owns shows a sign of life by writing to it, and
+//! that output opens the same stall window. A daemon that neither answers
+//! nor writes (one hung before its first log line, or a service manager's
+//! daemon whose output the app never sees) keeps the original fixed
+//! deadline.
 
 use std::time::Duration;
 
 use hypercolor_types::api::system::{DaemonStartupPhase, HEALTH_STATUS_STARTING, HealthResponse};
 
 /// How long a daemon may go without answering `/health` with a startup
-/// report before the supervisor gives up on it.
+/// report, and without writing any output, before the supervisor gives up
+/// on it.
 pub const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// How long a daemon that reports startup progress may go without that
-/// progress advancing before the supervisor treats it as stuck.
+/// How long a daemon that reports startup progress, or that has written
+/// output but not answered yet, may go without a further sign of progress
+/// before the supervisor treats it as stuck.
 pub const DAEMON_STARTUP_STALL_WINDOW: Duration = Duration::from_secs(20);
 
 /// Ceiling on one whole startup, however steadily it reports progress.
@@ -76,9 +81,13 @@ pub enum StartupVerdict {
 /// Why a startup wait gave up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupStall {
-    /// The daemon never answered with a startup report within
-    /// [`DAEMON_STARTUP_TIMEOUT`].
+    /// The daemon never answered with a startup report, and wrote no
+    /// output, within [`DAEMON_STARTUP_TIMEOUT`].
     NoAnswer,
+    /// The daemon wrote output but never answered with a startup report:
+    /// it went [`DAEMON_STARTUP_STALL_WINDOW`] past its last output, or
+    /// reached [`DAEMON_STARTUP_CEILING`].
+    NoAnswerAfterOutput,
     /// The daemon reported progress, then none for
     /// [`DAEMON_STARTUP_STALL_WINDOW`].
     Stalled { phase: DaemonStartupPhase },
@@ -101,7 +110,7 @@ impl StartupStall {
     #[must_use]
     pub const fn phase(self) -> Option<DaemonStartupPhase> {
         match self {
-            Self::NoAnswer => None,
+            Self::NoAnswer | Self::NoAnswerAfterOutput => None,
             Self::Stalled { phase } | Self::Ceiling { phase } => Some(phase),
         }
     }
@@ -111,6 +120,7 @@ impl StartupStall {
     pub const fn reason(self) -> &'static str {
         match self {
             Self::NoAnswer => "no_answer",
+            Self::NoAnswerAfterOutput => "no_answer_after_output",
             Self::Stalled { .. } => "stalled",
             Self::Ceiling { .. } => "ceiling",
         }
@@ -123,6 +133,7 @@ pub struct StartupWatch {
     last_report: Option<(DaemonStartupPhase, u64)>,
     last_detail: Option<String>,
     last_progress_at: Duration,
+    last_output_at: Option<Duration>,
 }
 
 impl StartupWatch {
@@ -154,10 +165,18 @@ impl StartupWatch {
         }
 
         let Some((phase, _)) = self.last_report else {
-            return if elapsed >= DAEMON_STARTUP_TIMEOUT {
-                StartupVerdict::GiveUp(StartupStall::NoAnswer)
-            } else {
-                StartupVerdict::Wait
+            return match self.last_output_at {
+                None if elapsed >= DAEMON_STARTUP_TIMEOUT => {
+                    StartupVerdict::GiveUp(StartupStall::NoAnswer)
+                }
+                Some(last_output_at)
+                    if elapsed >= DAEMON_STARTUP_CEILING
+                        || elapsed.saturating_sub(last_output_at)
+                            >= DAEMON_STARTUP_STALL_WINDOW =>
+                {
+                    StartupVerdict::GiveUp(StartupStall::NoAnswerAfterOutput)
+                }
+                None | Some(_) => StartupVerdict::Wait,
             };
         };
         if elapsed >= DAEMON_STARTUP_CEILING {
@@ -166,6 +185,21 @@ impl StartupWatch {
             StartupVerdict::GiveUp(StartupStall::Stalled { phase })
         } else {
             StartupVerdict::Wait
+        }
+    }
+
+    /// Fold new output from the daemon, seen `elapsed` after it was
+    /// started.
+    ///
+    /// Before the daemon answers with a startup report, output is the only
+    /// sign that it is running at all (process launch, an antivirus scan of
+    /// a fresh binary, configuration loading), so each new output opens the
+    /// stall window afresh in place of the fixed no-answer deadline. Once a
+    /// report arrives, its sequence is the only measure of progress and
+    /// output is ignored, so log noise cannot hide a stuck startup.
+    pub fn observe_output(&mut self, elapsed: Duration) {
+        if self.last_report.is_none() {
+            self.last_output_at = Some(elapsed);
         }
     }
 
@@ -188,5 +222,40 @@ impl StartupWatch {
             stall,
             detail: self.last_detail.clone(),
         }
+    }
+}
+
+/// The supervised daemon's log, watched for the child's own output.
+///
+/// The supervisor hands the child this file as its stdout and stderr, so
+/// growth after the probe opens is output from the child. The size is read
+/// through the open handle, which stays exact on Windows, where a path
+/// query can report a stale size for a file another process is writing.
+#[derive(Debug)]
+pub struct ChildOutputProbe {
+    file: std::fs::File,
+    seen_len: u64,
+}
+
+impl ChildOutputProbe {
+    /// Watch `file` for growth past its current length.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file's metadata cannot be read.
+    pub fn new(file: std::fs::File) -> std::io::Result<Self> {
+        let seen_len = file.metadata()?.len();
+        Ok(Self { file, seen_len })
+    }
+
+    /// Whether the file grew since the last check. A shrink (truncation)
+    /// is not output; it only moves the baseline.
+    pub fn has_new_output(&mut self) -> bool {
+        let Ok(metadata) = self.file.metadata() else {
+            return false;
+        };
+        let grew = metadata.len() > self.seen_len;
+        self.seen_len = metadata.len();
+        grew
     }
 }

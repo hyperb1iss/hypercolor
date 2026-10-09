@@ -139,6 +139,8 @@ fn startup_phase_wire_names_match_display() {
     for phase in [
         DaemonStartupPhase::Initializing,
         DaemonStartupPhase::ProbingGpu,
+        DaemonStartupPhase::ResolvingIdentity,
+        DaemonStartupPhase::OpeningAssetLibrary,
         DaemonStartupPhase::ScanningEffects,
         DaemonStartupPhase::LoadingStores,
         DaemonStartupPhase::RegisteringBackends,

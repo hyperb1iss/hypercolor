@@ -67,9 +67,27 @@ impl StartupProgress {
     /// once it returns, whatever it returns. A step that never returns
     /// leaves the sequence where it was and its name in the report.
     pub fn step<T>(&self, detail: &str, work: impl FnOnce() -> T) -> T {
-        self.current().detail = Some(detail.to_owned());
-        let started = Instant::now();
+        let started = self.begin_step(detail);
         let output = work();
+        self.finish_step(detail, started);
+        output
+    }
+
+    /// Await one unit of work inside the current phase, with the same
+    /// naming and completion rule as [`step`](Self::step).
+    pub async fn step_async<T>(&self, detail: &str, work: impl Future<Output = T>) -> T {
+        let started = self.begin_step(detail);
+        let output = work.await;
+        self.finish_step(detail, started);
+        output
+    }
+
+    fn begin_step(&self, detail: &str) -> Instant {
+        self.current().detail = Some(detail.to_owned());
+        Instant::now()
+    }
+
+    fn finish_step(&self, detail: &str, started: Instant) {
         let step_time = started.elapsed();
         let (phase, sequence) = {
             let mut current = self.current();
@@ -82,7 +100,6 @@ impl StartupProgress {
         } else {
             debug!(%phase, sequence, step = detail, step_ms = millis(step_time), "Startup step");
         }
-        output
     }
 
     /// The phase, sequence, and running step startup has reached.

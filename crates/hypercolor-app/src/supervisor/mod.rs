@@ -42,7 +42,7 @@ pub use plan::{
     OwnerPreference, launcher_plan, openrgb_plan,
 };
 pub use startup_watch::{
-    DAEMON_STARTUP_CEILING, DAEMON_STARTUP_STALL_WINDOW, DAEMON_STARTUP_TIMEOUT,
+    ChildOutputProbe, DAEMON_STARTUP_CEILING, DAEMON_STARTUP_STALL_WINDOW, DAEMON_STARTUP_TIMEOUT,
     MAX_HEALTH_BODY_BYTES, StartupGaveUp, StartupProbe, StartupStall, StartupVerdict, StartupWatch,
 };
 
@@ -1389,7 +1389,10 @@ pub async fn probe_startup(
 /// Wait until a daemon this app does not own reports healthy.
 ///
 /// Uses the same progress-aware deadline as an app-spawned daemon, but
-/// only stops waiting: the daemon belongs to its service manager.
+/// only stops waiting: the daemon belongs to its service manager. Its
+/// output goes to the service manager (the journal, or nowhere for a
+/// Windows service), not to the app, so there is no output sign of life
+/// and a daemon that has not answered yet keeps [`DAEMON_STARTUP_TIMEOUT`].
 ///
 /// # Errors
 ///
@@ -2016,6 +2019,7 @@ async fn wait_for_daemon_startup(
     client: &reqwest::Client,
     base: &Url,
     daemon: &mut ManagedDaemon,
+    mut output: Option<ChildOutputProbe>,
     poll_interval: Duration,
 ) -> Result<DaemonStartupOutcome> {
     let started = Instant::now();
@@ -2047,6 +2051,12 @@ async fn wait_for_daemon_startup(
             }
             None => {}
         }
+        if output
+            .as_mut()
+            .is_some_and(ChildOutputProbe::has_new_output)
+        {
+            watch.observe_output(started.elapsed());
+        }
         match watch.observe(started.elapsed(), probe) {
             StartupVerdict::Ready => return Ok(DaemonStartupOutcome::Healthy),
             StartupVerdict::Wait => tokio::time::sleep(poll_interval).await,
@@ -2064,9 +2074,11 @@ async fn wait_for_daemon_startup(
 /// Per-attempt flow:
 /// 1. Spawn the daemon as a child process.
 /// 2. Wait for `/health` to answer `200`. A daemon that reports startup
-///    progress gets up to [`DAEMON_STARTUP_STALL_WINDOW`] without progress
-///    and [`DAEMON_STARTUP_CEILING`] in total; one that never answers gets
-///    [`DAEMON_STARTUP_TIMEOUT`]. Then it is killed and retried.
+///    progress, or that has written to its log but not answered yet, gets
+///    up to [`DAEMON_STARTUP_STALL_WINDOW`] without a further sign of
+///    progress and [`DAEMON_STARTUP_CEILING`] in total; one that neither
+///    answers nor writes gets [`DAEMON_STARTUP_TIMEOUT`]. Then it is killed
+///    and retried.
 /// 3. If healthy, block on the child until it exits.
 /// 4. On exit, log the status and decide whether to keep restarting
 ///    (under the rapid-restart cap) or give up (cap exhausted, or
@@ -2130,6 +2142,15 @@ async fn run_watchdog_loop(
                 config.effects_dir.as_deref(),
             )
         });
+        // Opened before the spawn, so the baseline predates the child's
+        // first byte. The child is the only writer while it runs.
+        let output = match daemon_log_file().and_then(ChildOutputProbe::new) {
+            Ok(output) => Some(output),
+            Err(error) => {
+                tracing::debug!(%error, "daemon output is not observable; using the no-answer deadline");
+                None
+            }
+        };
         let mut daemon = match spawn_daemon(&command) {
             Ok(daemon) => daemon,
             Err(error) => {
@@ -2153,6 +2174,7 @@ async fn run_watchdog_loop(
             &client,
             &daemon_url,
             &mut daemon,
+            output,
             DAEMON_STARTUP_POLL_INTERVAL,
         )
         .await;

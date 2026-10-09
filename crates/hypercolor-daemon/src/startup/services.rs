@@ -26,7 +26,9 @@ use hypercolor_core::device::{
     UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
-use hypercolor_core::effect::{EffectRegistry, default_effect_search_paths, register_html_effects};
+use hypercolor_core::effect::{
+    EffectRegistry, default_effect_search_paths, register_html_effects_stepped,
+};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::EvdevHostInput;
@@ -296,6 +298,7 @@ impl DaemonState {
             );
         }
 
+        progress.enter(DaemonStartupPhase::ResolvingIdentity);
         let server_identity =
             resolve_server_identity(config).context("failed to resolve server identity")?;
         let api_extensions = Vec::new();
@@ -334,6 +337,7 @@ impl DaemonState {
         let zone_layout_previews = Arc::new(ZoneLayoutPreviewStore::default());
         info!("Event bus created");
 
+        progress.enter(DaemonStartupPhase::OpeningAssetLibrary);
         let asset_library_path = ConfigManager::config_dir().join("assets");
         let stream_url_policy = StreamUrlPolicy::from_private_network_allowlist(
             &config.media.stream_private_network_allowlist,
@@ -364,7 +368,15 @@ impl DaemonState {
         let mut effect_registry = EffectRegistry::new(effect_search_paths.clone());
         register_builtin_effects(&mut effect_registry);
         let builtin_count = effect_registry.len();
-        let html_report = register_html_effects(&mut effect_registry, &effect_search_paths);
+        // One step per directory listing and per effect file: the
+        // bookkeeping is two uncontended lock round trips, negligible next
+        // to reading and parsing an HTML file, and a library on a slow or
+        // scanned disk keeps advancing file by file.
+        let html_report = register_html_effects_stepped(
+            &mut effect_registry,
+            &effect_search_paths,
+            |path, work| progress.step(&format!("HTML effect {}", path.display()), work),
+        );
         let effect_registry = Arc::new(RwLock::new(effect_registry));
         info!(
             builtins = builtin_count,

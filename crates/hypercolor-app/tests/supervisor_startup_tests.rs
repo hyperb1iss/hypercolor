@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use hypercolor_app::supervisor::{
-    DAEMON_STARTUP_CEILING, DAEMON_STARTUP_STALL_WINDOW, DAEMON_STARTUP_TIMEOUT,
+    ChildOutputProbe, DAEMON_STARTUP_CEILING, DAEMON_STARTUP_STALL_WINDOW, DAEMON_STARTUP_TIMEOUT,
     HEALTH_PROBE_TIMEOUT, MAX_HEALTH_BODY_BYTES, StartupGaveUp, StartupProbe, StartupStall,
     StartupVerdict, StartupWatch, SupervisorFailure, SupervisorState, WATCHDOG_FAILURE_WINDOW,
     WATCHDOG_MAX_RAPID_RESTARTS, probe_startup, restart_budget_exhausted, watchdog_gives_up,
@@ -53,6 +53,117 @@ fn a_daemon_that_never_answers_keeps_the_fixed_deadline() {
         StartupVerdict::GiveUp(StartupStall::NoAnswer)
     );
     assert_eq!(watch.last_phase(), None);
+}
+
+#[test]
+fn first_output_opens_the_stall_window_before_the_port_answers() {
+    // Launch and an antivirus scan of a fresh binary ate 15 s before the
+    // first log line; the daemon then gets a full window from that line.
+    let mut watch = StartupWatch::default();
+    let first_output = secs(15);
+    assert_eq!(
+        watch.observe(first_output, StartupProbe::Silent),
+        StartupVerdict::Wait
+    );
+    watch.observe_output(first_output);
+
+    let past_fixed_deadline = DAEMON_STARTUP_TIMEOUT + secs(5);
+    assert_eq!(
+        watch.observe(past_fixed_deadline, StartupProbe::Silent),
+        StartupVerdict::Wait,
+        "a daemon that has written output is not held to the no-answer deadline"
+    );
+    assert_eq!(
+        watch.observe(
+            first_output + DAEMON_STARTUP_STALL_WINDOW - Duration::from_millis(1),
+            StartupProbe::Silent
+        ),
+        StartupVerdict::Wait
+    );
+    assert_eq!(
+        watch.observe(
+            first_output + DAEMON_STARTUP_STALL_WINDOW,
+            StartupProbe::Silent
+        ),
+        StartupVerdict::GiveUp(StartupStall::NoAnswerAfterOutput)
+    );
+    assert_eq!(StartupStall::NoAnswerAfterOutput.phase(), None);
+    assert_eq!(
+        StartupStall::NoAnswerAfterOutput.reason(),
+        "no_answer_after_output"
+    );
+}
+
+#[test]
+fn each_new_output_extends_the_window_until_the_ceiling() {
+    let mut watch = StartupWatch::default();
+    let mut elapsed = Duration::ZERO;
+    while elapsed + secs(10) < DAEMON_STARTUP_CEILING {
+        elapsed += secs(10);
+        watch.observe_output(elapsed);
+        assert_eq!(
+            watch.observe(elapsed, StartupProbe::Silent),
+            StartupVerdict::Wait
+        );
+    }
+    watch.observe_output(DAEMON_STARTUP_CEILING);
+    assert_eq!(
+        watch.observe(DAEMON_STARTUP_CEILING, StartupProbe::Silent),
+        StartupVerdict::GiveUp(StartupStall::NoAnswerAfterOutput)
+    );
+}
+
+#[test]
+fn output_after_a_startup_report_is_not_progress() {
+    let mut watch = StartupWatch::default();
+    let reported_at = secs(5);
+    watch.observe(reported_at, starting(DaemonStartupPhase::LoadingStores, 3));
+
+    // Log lines keep coming, but only the sequence measures progress once
+    // the daemon answers, so log noise cannot hide a stuck startup.
+    watch.observe_output(secs(20));
+    assert_eq!(
+        watch.observe(
+            reported_at + DAEMON_STARTUP_STALL_WINDOW,
+            StartupProbe::Silent
+        ),
+        StartupVerdict::GiveUp(StartupStall::Stalled {
+            phase: DaemonStartupPhase::LoadingStores,
+        })
+    );
+}
+
+#[test]
+fn the_child_output_probe_sees_only_new_bytes() {
+    use std::io::Write;
+
+    let directory = tempfile::tempdir().expect("temporary directory builds");
+    let path = directory.path().join("daemon-supervised.log");
+    std::fs::write(&path, b"previous run\n").expect("earlier log writes");
+    let open_log = || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("log opens")
+    };
+
+    let mut probe = ChildOutputProbe::new(open_log()).expect("probe opens");
+    assert!(
+        !probe.has_new_output(),
+        "earlier runs are not this child's output"
+    );
+
+    let mut child_stdout = open_log();
+    child_stdout
+        .write_all(b"Hypercolor daemon starting\n")
+        .expect("child writes");
+    child_stdout.flush().expect("child flushes");
+    assert!(probe.has_new_output());
+    assert!(!probe.has_new_output(), "the same bytes count once");
+
+    std::fs::File::create(&path).expect("log truncates");
+    assert!(!probe.has_new_output(), "a truncation is not output");
 }
 
 #[test]

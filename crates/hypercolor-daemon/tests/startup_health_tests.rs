@@ -359,15 +359,20 @@ async fn running_daemon_answers_starting_until_its_router_is_installed() {
         assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
         let progress = health.startup.expect("starting body carries progress");
         assert_eq!(progress.phase, DaemonStartupPhase::StartingServices);
-        // Seven phase entries, then the render thread's own steps: the
-        // runtime, input publication, and the compositor canvases and
-        // sampling plan (the CPU compositor compiles no pipelines).
+        // Nine phase entries, any effect scan steps, and the
+        // render thread's own steps: the runtime, input publication, and
+        // the compositor canvases and sampling plan (the CPU compositor
+        // compiles no pipelines).
         assert!(
-            progress.sequence >= 12,
-            "every earlier phase and render-thread step advanced the sequence, got {}",
+            progress.sequence >= 14,
+            "every earlier phase and step advanced the sequence, got {}",
             progress.sequence
         );
-        assert_eq!(progress.detail, None);
+        // The gated extension start hook is the step running right now.
+        assert_eq!(
+            progress.detail.as_deref(),
+            Some("daemon extension startup-gate")
+        );
 
         let status = client
             .get(format!("{base}/api/v1/system"))
