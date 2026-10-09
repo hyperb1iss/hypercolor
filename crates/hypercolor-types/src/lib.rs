@@ -13,6 +13,7 @@ pub mod config_registry;
 pub mod control;
 pub mod controls;
 pub mod device;
+pub mod device_input;
 pub mod display;
 pub mod effect;
 pub mod event;

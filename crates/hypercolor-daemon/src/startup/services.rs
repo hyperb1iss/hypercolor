@@ -537,6 +537,7 @@ impl DaemonState {
             config.input.daemon_route,
             config.input.preview_route,
         );
+        let device_input = interaction_routing.device_input().clone();
         let input_status = built_input_manager.source_status_registry();
         let screen_capacity_status = built_input_manager.screen_capacity_status_handle();
         let input_manager = built_input_manager;
@@ -836,12 +837,15 @@ impl DaemonState {
                     pending_scans: Arc::default(),
                     task_spawner: tokio::runtime::Handle::current(),
                 };
-                Ok(Arc::new(DaemonDriverHost::new(
-                    discovery_runtime,
-                    driver_inventory,
-                    Arc::clone(&driver_registry),
-                    Some(Arc::clone(&config_manager)),
-                )))
+                Ok(Arc::new(
+                    DaemonDriverHost::new(
+                        discovery_runtime,
+                        driver_inventory,
+                        Arc::clone(&driver_registry),
+                        Some(Arc::clone(&config_manager)),
+                    )
+                    .with_device_input(Arc::new(device_input.clone())),
+                ))
             },
         )?;
         info!(

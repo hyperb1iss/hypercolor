@@ -2,16 +2,17 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{PoisonError, RwLock as StdRwLock};
+use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 
 use anyhow::Result;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveredDevice};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceInputSink, DiscoveredDevice};
 use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId, DeviceInfo};
 
 use super::connection::{self, BlocksConnection};
+use super::input::BlocksInput;
 use super::types::BlocksSurface;
 
 /// Device backend that bridges to blocksd for ROLI Blocks hardware.
@@ -21,6 +22,8 @@ pub struct BlocksBackend {
     pending: StdRwLock<HashMap<DeviceId, PendingBlocksDevice>>,
     /// Active connection (None if disconnected).
     state: Mutex<BlocksBackendState>,
+    /// Touch and button input, when the host accepts device input.
+    input: Option<BlocksInput>,
 }
 
 #[derive(Clone)]
@@ -34,8 +37,6 @@ struct BlocksBackendState {
     connection: Option<BlocksConnection>,
     /// Known devices reported by blocksd.
     devices: HashMap<DeviceId, BlocksDevice>,
-    /// UID-to-`DeviceId` mapping for event routing.
-    uid_map: HashMap<u64, DeviceId>,
     /// Per-device brightness (applied by blocksd).
     brightness: HashMap<DeviceId, u8>,
 }
@@ -58,10 +59,17 @@ impl BlocksBackend {
             state: Mutex::new(BlocksBackendState {
                 connection: None,
                 devices: HashMap::new(),
-                uid_map: HashMap::new(),
                 brightness: HashMap::new(),
             }),
+            input: None,
         }
+    }
+
+    /// Publish touch and button input from connected devices to `sink`.
+    #[must_use]
+    pub fn with_device_input(mut self, sink: Arc<dyn DeviceInputSink>) -> Self {
+        self.input = Some(BlocksInput::new(self.socket_path.clone(), sink));
+        self
     }
 
     /// Default socket path from environment.
@@ -179,21 +187,27 @@ impl DeviceBackend for BlocksBackend {
             .ensure_connected(&self.socket_path)
             .await
             .map_err(|error| DeviceError::connection(id, error))?;
-        state.uid_map.insert(pending.uid, *id);
         let device = state.devices.entry(*id).or_insert_with(|| BlocksDevice {
             uid: pending.uid,
             surface: pending.surface,
-            info: pending.info,
+            info: pending.info.clone(),
             connected: false,
             frames_sent: 0,
         });
         device.connected = true;
+        drop(state);
+        if let Some(input) = &self.input {
+            input.connect(pending.uid, *id, &pending.info.name);
+        }
         Ok(())
     }
 
     async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if let Some(device) = self.state.lock().await.devices.get_mut(id) {
             device.connected = false;
+        }
+        if let Some(input) = &self.input {
+            input.disconnect(*id);
         }
         Ok(())
     }

@@ -432,6 +432,7 @@ impl RenderThread {
                         runtime.block_on(InputPublicationPump::start(
                             state.input_manager.clone(),
                             pump_demands,
+                            Some(state.interaction_routing.device_input().clone()),
                         ))
                     },
                 ) {

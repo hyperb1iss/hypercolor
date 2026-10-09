@@ -251,7 +251,8 @@ fn format_input_diagnostic_detail(
 }
 
 fn is_host_interaction_source(source: &SourceStatus) -> bool {
-    source.kind == SourceKind::Interaction && source.backend.as_ref() != "browser"
+    source.kind == SourceKind::Interaction
+        && !matches!(source.backend.as_ref(), "browser" | "device")
 }
 
 const fn source_kind_name(kind: SourceKind) -> &'static str {

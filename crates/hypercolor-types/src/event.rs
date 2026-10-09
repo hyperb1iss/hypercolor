@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::asset::AssetId;
 use crate::control::ControlValue;
 use crate::controls::ControlSurfaceEvent;
-use crate::device::DeviceOrigin;
+use crate::device::{DeviceId, DeviceOrigin};
 use crate::layer::SceneLayerId;
 use crate::scene::{SceneId, SceneKind, SceneMutationMode, ZoneId, ZoneRole};
 use crate::session::SessionEvent;
@@ -247,7 +247,19 @@ pub enum MidiRealtimeMessage {
     Stop,
 }
 
-/// An ordered host input edge from keyboard, pointer, or MIDI sources.
+/// Lifecycle edge of one contact on a device touch surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchPhase {
+    /// A contact landed.
+    Began,
+    /// A contact lifted.
+    Ended,
+    /// The contact's source or hold was lost before a lift was observed.
+    Cancelled,
+}
+
+/// An ordered input edge from host keyboard, pointer, MIDI, or device sources.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InputEvent {
@@ -304,6 +316,29 @@ pub enum InputEvent {
         source_id: String,
         message: MidiRealtimeMessage,
     },
+
+    /// A contact began or ended on a device's touch surface.
+    ///
+    /// Position and pressure are normalized to `[0, 1]` in Q16.16, so
+    /// `1 << 16` is the far edge. Movement between these edges is held
+    /// interaction state, not an event.
+    Touch {
+        source_id: String,
+        device_id: DeviceId,
+        contact: u32,
+        phase: TouchPhase,
+        x_q16_16: i64,
+        y_q16_16: i64,
+        pressure_q16_16: i64,
+    },
+
+    /// A control button on a device changed state.
+    DeviceButton {
+        source_id: String,
+        device_id: DeviceId,
+        button: String,
+        state: InputButtonState,
+    },
 }
 
 impl InputEvent {
@@ -317,7 +352,26 @@ impl InputEvent {
             | Self::MidiNote { source_id, .. }
             | Self::MidiControlChange { source_id, .. }
             | Self::MidiPitchBend { source_id, .. }
-            | Self::MidiRealtime { source_id, .. } => source_id,
+            | Self::MidiRealtime { source_id, .. }
+            | Self::Touch { source_id, .. }
+            | Self::DeviceButton { source_id, .. } => source_id,
+        }
+    }
+
+    /// The device that produced this event, for device-attributed input.
+    #[must_use]
+    pub const fn device_id(&self) -> Option<DeviceId> {
+        match self {
+            Self::Touch { device_id, .. } | Self::DeviceButton { device_id, .. } => {
+                Some(*device_id)
+            }
+            Self::Key { .. }
+            | Self::MouseButton { .. }
+            | Self::PointerScroll { .. }
+            | Self::MidiNote { .. }
+            | Self::MidiControlChange { .. }
+            | Self::MidiPitchBend { .. }
+            | Self::MidiRealtime { .. } => None,
         }
     }
 }

@@ -7,8 +7,13 @@ use hypercolor_core::input::browser::{
     BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle, BrowserInputPublicationId,
     BrowserInputRegistryHandle, BrowserInputRegistrySnapshot,
 };
-use hypercolor_core::input::routing::{InteractionRouteRequest, SourceIncarnation};
-use hypercolor_core::input::{SourceFreshness, SourceKind, SourceState, SourceStatusHandle};
+use hypercolor_core::input::routing::{
+    InteractionRouteDiagnosticSource, InteractionRouteRequest, SourceIncarnation,
+};
+use hypercolor_core::input::{
+    DeviceInputHandle, DeviceInputRegistrySnapshot, SourceFreshness, SourceKind, SourceState,
+    SourceStatusHandle,
+};
 use hypercolor_types::config::InteractionRoutePolicy;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +72,7 @@ pub enum AuthoritativeClaimError {
 #[derive(Clone)]
 pub struct InteractionRoutingControl {
     browser_registry: BrowserInputRegistryHandle,
+    device_input: DeviceInputHandle,
     snapshot: Arc<ArcSwap<InteractionRoutingSnapshot>>,
     writer: Arc<Mutex<()>>,
 }
@@ -93,6 +99,7 @@ impl InteractionRoutingControl {
     ) -> Self {
         Self {
             browser_registry,
+            device_input: DeviceInputHandle::new(),
             snapshot: Arc::new(ArcSwap::from_pointee(InteractionRoutingSnapshot {
                 generation: 1,
                 config_generation,
@@ -109,8 +116,25 @@ impl InteractionRoutingControl {
         self.snapshot.load_full()
     }
 
+    /// Route input from this registry of driver-owned devices.
+    #[must_use]
+    pub fn with_device_input(mut self, device_input: DeviceInputHandle) -> Self {
+        self.device_input = device_input;
+        self
+    }
+
     pub(crate) fn browser_registry_snapshot(&self) -> Arc<BrowserInputRegistrySnapshot> {
         self.browser_registry.snapshot()
+    }
+
+    pub(crate) fn device_registry_snapshot(&self) -> Arc<DeviceInputRegistrySnapshot> {
+        self.device_input.registry().snapshot()
+    }
+
+    /// Driver-owned device input routed alongside host input.
+    #[must_use]
+    pub fn device_input(&self) -> &DeviceInputHandle {
+        &self.device_input
     }
 
     pub fn publish_policies(
@@ -238,6 +262,20 @@ impl InteractionRoutingControl {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+/// Status handles of the selected sources that report host input health.
+///
+/// Device input is routed beside host input but does not stand in for it:
+/// an attached Lightpad must not make a keyboard effect report input as
+/// available when host capture is off.
+pub(crate) fn selected_host_statuses(
+    selected: &[InteractionRouteDiagnosticSource],
+) -> impl Iterator<Item = &SourceStatusHandle> {
+    selected
+        .iter()
+        .filter(|source| !source.incarnation.is_device())
+        .filter_map(|source| source.status.as_ref())
 }
 
 pub(crate) fn selected_input_availability<'a>(

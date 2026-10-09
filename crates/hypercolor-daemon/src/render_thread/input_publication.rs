@@ -20,7 +20,7 @@ use hypercolor_core::input::screen::planner::{
     ScreenSourceSelector, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{
-    InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
+    DeviceInputHandle, InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
     TryInputManagerIntent,
 };
 use tokio::sync::{oneshot, watch};
@@ -29,7 +29,9 @@ use tokio::time::{Instant as TokioInstant, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use super::capture_demand::{CaptureDemand, CaptureDemandReconcile, CaptureDemandState};
+use super::capture_demand::{
+    CaptureDemand, CaptureDemandReconcile, CaptureDemandState, CaptureDomain,
+};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const LIFECYCLE_PROBE_INTERVAL: Duration = Duration::from_millis(250);
@@ -1090,9 +1092,11 @@ pub(crate) struct InputPublicationPump {
 }
 
 impl InputPublicationPump {
+    /// Start the pump, mirroring interaction demand into `device_input`.
     pub(crate) async fn start(
         manager: InputManager,
         demands: InputPublicationDemandHandle,
+        device_input: Option<DeviceInputHandle>,
     ) -> Result<Self> {
         let reader = InputPublicationReader::new(
             manager.input_graph_handle(),
@@ -1110,6 +1114,7 @@ impl InputPublicationPump {
                 manager,
                 worker_reader,
                 demands,
+                device_input,
                 worker_cancel,
                 worker_status,
                 ready_tx,
@@ -1392,14 +1397,42 @@ async fn run_exact_screen_transition(
         .map(|committed| ExactScreenTransitionOutcome::Completed(Some(committed)))
 }
 
+/// Mirrors interaction demand into device input for as long as the pump runs.
+///
+/// Dropping it withdraws the demand, so a pump that panics or is aborted
+/// past its shutdown deadline still stops device input like a clean exit.
+struct DeviceInputDemand {
+    device_input: Option<DeviceInputHandle>,
+}
+
+impl DeviceInputDemand {
+    const fn new(device_input: Option<DeviceInputHandle>) -> Self {
+        Self { device_input }
+    }
+
+    fn mirror(&self, demanded: bool) {
+        if let Some(device_input) = &self.device_input {
+            device_input.set_demanded(demanded);
+        }
+    }
+}
+
+impl Drop for DeviceInputDemand {
+    fn drop(&mut self) {
+        self.mirror(false);
+    }
+}
+
 async fn run_pump(
     manager: InputManager,
     reader: InputPublicationReader,
     demands: InputPublicationDemandHandle,
+    device_input: Option<DeviceInputHandle>,
     cancel: CancellationToken,
     status: watch::Sender<InputPublicationStatus>,
     ready: oneshot::Sender<()>,
 ) {
+    let device_demand = DeviceInputDemand::new(device_input);
     status.send_replace(InputPublicationStatus::Ready);
     let _ = ready.send(());
 
@@ -1417,6 +1450,15 @@ async fn run_pump(
     let mut graph_changes = reader.graph.subscribe_generation();
     let mut demand_changes = demands.subscribe_revision();
     loop {
+        // Device input ignores the host capture consent and every manager
+        // reconcile below, including the Busy and Stale retries; it only
+        // follows whether anything wants interaction.
+        device_demand.mirror(
+            demands
+                .snapshot()
+                .capture_demand()
+                .is_active(CaptureDomain::Interaction),
+        );
         reap_screen_publication_retirements(&mut publication_retirements);
         while let Some(result) = worker_retirement_tasks.try_join_next() {
             if let Err(error) = result {
@@ -1727,6 +1769,7 @@ async fn run_pump(
         }
     }
 
+    drop(device_demand);
     let inactive_capture = CaptureDemand::new(false, ScreenCaptureDemand::Inactive, false);
     match capture_demand.reconcile(&manager, inactive_capture, || true) {
         CaptureDemandReconcile::Applied => {}
