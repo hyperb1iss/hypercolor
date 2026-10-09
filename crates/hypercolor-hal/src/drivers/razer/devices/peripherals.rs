@@ -9,9 +9,10 @@
 use crate::registry::DeviceDescriptor;
 
 use super::{
-    HID_REPORT_ID_ALT_0X07, HID_REPORT_ID_DEFAULT, PID_SEIREN_EMOTE, PID_SEIREN_V3_CHROMA,
-    PID_TARTARUS_CHROMA, RAZER_CONSUMER_USAGE, RAZER_CONSUMER_USAGE_PAGE, RAZER_VENDOR_USAGE,
-    RAZER_VENDOR_USAGE_PAGE, build_matrix_extended_extended_1x12_backlight_protocol,
+    HID_REPORT_ID_ALT_0X07, HID_REPORT_ID_DEFAULT, PID_KRAKEN_ULTIMATE, PID_SEIREN_EMOTE,
+    PID_SEIREN_V3_CHROMA, PID_TARTARUS_CHROMA, RAZER_CONSUMER_USAGE, RAZER_CONSUMER_USAGE_PAGE,
+    RAZER_VENDOR_USAGE, RAZER_VENDOR_USAGE_PAGE, build_kraken_ultimate_protocol,
+    build_matrix_extended_extended_1x12_backlight_protocol,
     build_matrix_extended_extended_1x15_zero_protocol,
     build_matrix_extended_extended_1x17_backlight_protocol,
     build_matrix_extended_extended_2x8_backlight_protocol,
@@ -27,7 +28,8 @@ use super::{
     build_matrix_extended_modern_4x16_zero_protocol,
     build_matrix_linear_extended_1x15_backlight_device_mode_protocol,
     build_matrix_standard_extended_1x9_backlight_protocol, build_seiren_emote_protocol,
-    build_seiren_v3_protocol, build_tartarus_chroma_protocol, hidapi_descriptor, push_hidapi_group,
+    build_seiren_v3_protocol, build_tartarus_chroma_protocol, hidapi_descriptor, kraken_descriptor,
+    push_hidapi_group,
 };
 
 #[expect(
@@ -64,6 +66,12 @@ pub(super) fn push_all(descriptors: &mut Vec<DeviceDescriptor>) {
         Some(RAZER_VENDOR_USAGE_PAGE),
         Some(RAZER_VENDOR_USAGE),
         build_seiren_v3_protocol,
+    ));
+    descriptors.push(kraken_descriptor(
+        PID_KRAKEN_ULTIMATE,
+        "Razer Kraken Ultimate",
+        "razer/kraken-ultimate",
+        build_kraken_ultimate_protocol,
     ));
 
     push_hidapi_group(

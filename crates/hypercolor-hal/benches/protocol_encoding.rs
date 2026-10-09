@@ -7,6 +7,7 @@ use criterion::{
 };
 use hypercolor_hal::drivers::nollie::{NollieModel, NollieProtocol, ProtocolVersion};
 use hypercolor_hal::drivers::qmk::{ProtocolRevision, QmkKeyboardConfig, QmkProtocol};
+use hypercolor_hal::drivers::razer::{KrakenModel, KrakenProtocol};
 use hypercolor_hal::protocol::Protocol;
 
 fn benchmark_config() -> Criterion {
@@ -60,12 +61,14 @@ fn bench_protocol_encoding(c: &mut Criterion) {
     let nollie32 = NollieProtocol::new(NollieModel::Nollie32 {
         protocol_version: ProtocolVersion::V2,
     });
+    let kraken_ultimate = KrakenProtocol::new(KrakenModel::Ultimate);
 
     bench_protocol_case(&mut group, "qmk_revd_87", 87, &qmk_revd_87);
     bench_protocol_case(&mut group, "qmk_revd_104", 104, &qmk_revd_104);
     bench_protocol_case(&mut group, "prism8_1008", 1_008, &prism8);
     bench_protocol_case(&mut group, "nollie16v3_4096", 4_096, &nollie16v3);
     bench_protocol_case(&mut group, "nollie32_5120", 5_120, &nollie32);
+    bench_protocol_case(&mut group, "razer_kraken_ultimate_1", 1, &kraken_ultimate);
 
     group.finish();
 }
