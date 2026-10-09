@@ -286,7 +286,7 @@ fn is_terminator_line(line: &[u8]) -> bool {
         return false;
     };
 
-    stripped[start..=end] == [b'.']
+    stripped[start..=end] == *b"."
 }
 
 #[cfg(test)]

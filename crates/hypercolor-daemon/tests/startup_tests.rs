@@ -2314,7 +2314,9 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
     assert!(
         scene_canvas
             .rgba_bytes()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|pixel| { pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255 })
     );
 

@@ -2065,7 +2065,7 @@ fn write_prepared_row(
     row: &mut [u8],
     mut sample: impl FnMut(u32) -> Result<[u8; 4], CpuReductionError>,
 ) -> Result<(), CpuReductionError> {
-    for (target_x, target) in row.chunks_exact_mut(4).enumerate() {
+    for (target_x, target) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let target_x = first_target_x
             .checked_add(target_x)
             .and_then(|target_x| u32::try_from(target_x).ok())
@@ -2521,7 +2521,7 @@ fn reduce_row(
     target_y: u32,
     row: &mut [u8],
 ) -> Result<(), CpuReductionError> {
-    for (target_x, target) in row.chunks_exact_mut(4).enumerate() {
+    for (target_x, target) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let target_x = u32::try_from(target_x)
             .map_err(|_| CpuReductionError::GeometryOverflow { resource: "target" })?;
         let sample = match request.filter {

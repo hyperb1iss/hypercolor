@@ -711,7 +711,7 @@ fn systemd_show_parser_is_strict_and_rejects_third_states() {
     let missing = valid
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.starts_with(b"ExecStart="))
-        .flat_map(|line| line.iter().copied().chain([b'\n']))
+        .flat_map(|line| line.iter().copied().chain(*b"\n"))
         .collect::<Vec<_>>();
     let ambiguous = String::from_utf8(valid.to_vec())
         .expect("UTF-8")

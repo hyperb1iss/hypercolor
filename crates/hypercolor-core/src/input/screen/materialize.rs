@@ -204,12 +204,12 @@ fn materialize_surface_pixels(
 ) -> Result<(), CpuSurfaceMaterializationError> {
     match fill {
         ScreenLetterboxFill::Transparent => {
-            for pixel in output.chunks_exact_mut(BYTES_PER_PIXEL) {
+            for pixel in output.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
                 pixel.copy_from_slice(&[0, 0, 0, 0]);
             }
         }
         ScreenLetterboxFill::Solid(color) => {
-            for pixel in output.chunks_exact_mut(BYTES_PER_PIXEL) {
+            for pixel in output.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
                 pixel.copy_from_slice(&color);
             }
         }
@@ -333,7 +333,7 @@ fn apply_surface_tuning(
     if tuning.is_neutral() {
         return;
     }
-    for pixel in pixels.chunks_exact_mut(BYTES_PER_PIXEL) {
+    for pixel in pixels.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
         let mut linear = read_surface_rgb(pixel, pixel_format).map(|channel| match transfer {
             CaptureTransferFunction::Srgb => srgb_u8_to_linear(channel),
             CaptureTransferFunction::Linear => f32::from(channel) / 255.0,
@@ -573,7 +573,9 @@ impl PreparedCpuSurfaceMaterializer {
                 luminance_threshold,
             } => {
                 for (pixel, color) in physical_pixels
-                    .chunks_exact(BYTES_PER_PIXEL)
+                    .as_chunks::<BYTES_PER_PIXEL>()
+                    .0
+                    .iter()
                     .zip(self.detection_pixels.iter_mut())
                 {
                     *color = read_surface_rgb(pixel, self.pixel_format);
@@ -606,7 +608,9 @@ impl PreparedCpuSurfaceMaterializer {
         )?;
         if let Some(smoother) = &mut self.smoother {
             for (pixel, color) in output
-                .chunks_exact(BYTES_PER_PIXEL)
+                .as_chunks::<BYTES_PER_PIXEL>()
+                .0
+                .iter()
                 .zip(self.smoothing_pixels.iter_mut())
             {
                 *color = read_surface_rgb(pixel, self.pixel_format);
@@ -626,7 +630,9 @@ impl PreparedCpuSurfaceMaterializer {
                 suppress_scene_cut_bypass,
             )?;
             for (pixel, color) in output
-                .chunks_exact_mut(BYTES_PER_PIXEL)
+                .as_chunks_mut::<BYTES_PER_PIXEL>()
+                .0
+                .iter_mut()
                 .zip(self.smoothing_pixels.iter().copied())
             {
                 write_surface_rgb(pixel, self.pixel_format, color);

@@ -340,11 +340,7 @@ impl AmbientSampler {
             .get_image_data(0.0, 0.0, f64::from(SAMPLE_WIDTH), f64::from(SAMPLE_HEIGHT))
             .ok()?
             .data();
-        analyze_rgba_samples(
-            pixels
-                .chunks_exact(4)
-                .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]]),
-        )
+        analyze_rgba_samples(pixels.as_chunks::<4>().0.iter().copied())
     }
 }
 

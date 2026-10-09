@@ -577,7 +577,7 @@ screen capture via PipeWire, ScreenCaptureKit, and Desktop Duplication, host inp
 macOS and Windows, session and power monitors on all three platforms, macOS now-playing
 media, the PawnIO SMBus broker, the signed Windows helper, and platform filesystem glue)
 plus the desktop app shell; each opts out explicitly and denies undocumented unsafe
-blocks. Edition 2024. Rust 1.94+.
+blocks. Edition 2024. Rust 1.95+.
 
 ## 📡 Status
 

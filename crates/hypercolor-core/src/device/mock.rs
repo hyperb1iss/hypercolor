@@ -507,7 +507,12 @@ fn render_rainbow(canvas: &mut Canvas, input: &FrameInput) {
 
     let pixels = canvas.as_rgba_bytes_mut();
     let (first_row, remaining_rows) = pixels.split_at_mut(row_len);
-    for (x, pixel) in first_row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
+    for (x, pixel) in first_row
+        .as_chunks_mut::<BYTES_PER_PIXEL>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
         let hue = ((x as f32 / w.max(1) as f32) * 360.0 + time_offset).rem_euclid(360.0);
         let rgb = Hsv::new(hue, 1.0, 1.0).to_rgb();
         pixel[0] = rgb.r;

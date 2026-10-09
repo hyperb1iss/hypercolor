@@ -875,7 +875,7 @@ fn try_write_stage_aware(
     #[cfg(any(test, feature = "persistence-test-hooks"))]
     if destination
         .injected_replace_failures
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
             remaining.checked_sub(1)
         })
         .is_ok()
@@ -901,7 +901,7 @@ fn try_write_stage_aware(
         #[cfg(any(test, feature = "persistence-test-hooks"))]
         if destination
             .injected_directory_sync_failures
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok()

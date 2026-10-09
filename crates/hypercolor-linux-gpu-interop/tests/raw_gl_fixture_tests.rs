@@ -68,8 +68,8 @@ fn raw_gl_solid_color_import_matches_wgpu_readback() {
 
             let pixels =
                 read_texture_pixels(&wgpu.device, &wgpu.queue, &frame.texture, WIDTH, HEIGHT);
-            for pixel in pixels.chunks_exact(4) {
-                assert_eq!(pixel, EXPECTED_PIXEL);
+            for pixel in pixels.as_chunks::<4>().0 {
+                assert_eq!(*pixel, EXPECTED_PIXEL);
             }
         }
         let _ = wgpu.device.poll(wgpu::PollType::Poll);
@@ -145,8 +145,8 @@ fn raw_gl_pooled_importer_reuses_slots_and_matches_wgpu_readback() {
             )
             .expect("pooled raw GL fixture should import into wgpu");
         let pixels = read_texture_pixels(&wgpu.device, &wgpu.queue, &frame.texture, WIDTH, HEIGHT);
-        for pixel in pixels.chunks_exact(4) {
-            assert_eq!(pixel, expected);
+        for pixel in pixels.as_chunks::<4>().0 {
+            assert_eq!(*pixel, expected);
         }
     }
 
@@ -241,8 +241,8 @@ fn raw_gl_pipelined_importer_reuses_latest_completed_frame_when_slots_are_held()
         .expect("first pipelined import should block until a completed frame exists");
     let first_pixels =
         read_texture_pixels(&wgpu.device, &wgpu.queue, &first.texture, WIDTH, HEIGHT);
-    for pixel in first_pixels.chunks_exact(4) {
-        assert_eq!(pixel, first_color);
+    for pixel in first_pixels.as_chunks::<4>().0 {
+        assert_eq!(*pixel, first_color);
     }
 
     raw_gl.clear([0, 255, 128, 255]);
@@ -256,8 +256,8 @@ fn raw_gl_pipelined_importer_reuses_latest_completed_frame_when_slots_are_held()
     assert_eq!(reused.content_generation, first.content_generation);
     let reused_pixels =
         read_texture_pixels(&wgpu.device, &wgpu.queue, &reused.texture, WIDTH, HEIGHT);
-    for pixel in reused_pixels.chunks_exact(4) {
-        assert_eq!(pixel, first_color);
+    for pixel in reused_pixels.as_chunks::<4>().0 {
+        assert_eq!(*pixel, first_color);
     }
 
     drop(first);
@@ -313,8 +313,8 @@ fn raw_gl_pipelined_importer_replaces_completed_identity_when_slot_is_reused() {
     assert_eq!(second.allocation_id, first_allocation_id);
     assert_ne!(second.content_generation, first_content_generation);
     let pixels = read_texture_pixels(&wgpu.device, &wgpu.queue, &second.texture, WIDTH, HEIGHT);
-    for pixel in pixels.chunks_exact(4) {
-        assert_eq!(pixel, second_color);
+    for pixel in pixels.as_chunks::<4>().0 {
+        assert_eq!(*pixel, second_color);
     }
 
     drop(second);

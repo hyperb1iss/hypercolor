@@ -89,8 +89,10 @@ impl SpectrumFrame {
         }
 
         let bins = input[SPECTRUM_FRAME_HEADER_LEN..bins_end]
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("chunk has 4 bytes")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
             .collect();
 
         Ok(Self {

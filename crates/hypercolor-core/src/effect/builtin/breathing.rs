@@ -59,7 +59,7 @@ impl EffectRenderer for BreathingRenderer {
 
         // Sine wave mapped from [-1, 1] to [min_brightness, max_brightness]
         #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let sine_01 = ((phase.sin() + 1.0) * 0.5) as f32;
+        let sine_01 = f64::midpoint(phase.sin(), 1.0) as f32;
         let brightness =
             self.min_brightness + (self.max_brightness - self.min_brightness) * sine_01;
 

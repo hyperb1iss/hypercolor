@@ -402,7 +402,7 @@ impl NativeLifecycle {
     fn next_retirement_id(&self) -> u64 {
         self.inner
             .next_retirement_id
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
             .expect("macOS native retirement identity must remain monotonic")
     }
 

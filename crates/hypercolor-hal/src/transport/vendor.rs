@@ -298,7 +298,7 @@ impl UsbVendorTransport {
     }
 
     #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "macos")))]
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn execute_operations(&self, _data: &[u8]) -> Result<Option<Vec<u8>>, TransportError> {
         Err(TransportError::IoError {
             detail: "USB vendor transport is not supported on this platform".to_owned(),

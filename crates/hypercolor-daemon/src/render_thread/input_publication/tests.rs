@@ -407,7 +407,7 @@ impl ScreenSource for ScreenDemandSource {
                 }
                 if preparation_failures.as_ref().is_some_and(|failures| {
                     failures
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                        .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                             remaining.checked_sub(1)
                         })
                         .is_ok()

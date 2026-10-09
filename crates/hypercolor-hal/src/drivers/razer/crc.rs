@@ -46,18 +46,11 @@ pub struct RazerReport {
 pub fn razer_crc(report: &RazerReport) -> u8 {
     let slice = &report.as_bytes()[2..88]; // 86 bytes
 
-    let chunks = slice.chunks_exact(8);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = slice.as_chunks::<8>();
 
     let mut acc: u64 = 0;
     for chunk in chunks {
-        // chunks_exact guarantees 8 bytes — infallible conversion
-        let val = u64::from_ne_bytes(
-            chunk
-                .try_into()
-                .expect("chunks_exact(8) guarantees 8-byte slices"),
-        );
-        acc ^= val;
+        acc ^= u64::from_ne_bytes(*chunk);
     }
 
     // Horizontal XOR: fold all 8 bytes of the accumulator into one

@@ -132,7 +132,7 @@ fn native_frame_without_new_publish_returns_same_generation() -> Result<(), Stri
 }
 
 fn assert_uniform_rgba(pixels: &[u8], expected: [u8; 4]) {
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         assert!(
             pixel
                 .iter()
@@ -158,7 +158,7 @@ fn assert_iosurface_uniform_bgra(
         // by the surface dimensions verified by the caller.
         let row_bytes =
             unsafe { std::slice::from_raw_parts(base_address.add(row * bytes_per_row), row_len) };
-        for pixel in row_bytes.chunks_exact(4) {
+        for pixel in row_bytes.as_chunks::<4>().0 {
             assert!(
                 pixel
                     .iter()

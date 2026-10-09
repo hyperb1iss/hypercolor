@@ -200,7 +200,7 @@ impl ScreenByteAdmissionInner {
         }
         let released =
             self.reserved_bytes
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |reserved| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |reserved| {
                     reserved.checked_sub(bytes)
                 });
         debug_assert!(released.is_ok(), "screen byte admission underflow");

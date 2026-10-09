@@ -704,7 +704,7 @@ impl InputPublicationDemandHandle {
         let id = self
             .registry
             .next_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next_id| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next_id| {
                 next_id.checked_add(1)
             })
             .expect("input publication demand registration identity exhausted");

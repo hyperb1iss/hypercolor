@@ -266,7 +266,7 @@ fn finish_interrupted_removal(
     lib: &Path,
     legacy_root: &Path,
 ) -> Result<LinuxUninstallRun, LinuxInstallCommandError> {
-    let leftover = std::fs::read_dir(lib).ok().is_some_and(|entries| {
+    let leftover = std::fs::read_dir(lib).is_ok_and(|entries| {
         entries.flatten().any(|entry| {
             entry
                 .file_name()

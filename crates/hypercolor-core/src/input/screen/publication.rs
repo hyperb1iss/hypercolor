@@ -25,7 +25,7 @@ static NEXT_SCREEN_CONSUMER_BRANCH_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_screen_consumer_branch_id() -> ScreenConsumerBranchId {
     let identity = NEXT_SCREEN_CONSUMER_BRANCH_ID
-        .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
+        .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
             current.checked_add(1)
         })
         .expect("screen consumer branch identity space exhausted");

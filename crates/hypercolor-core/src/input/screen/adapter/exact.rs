@@ -391,7 +391,7 @@ where
 
     pub(in crate::input::screen) fn advance_resolution_revision(&self) {
         self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
                 revision.checked_add(1)
             })
             .expect("screen publication resolution revision exhausted");

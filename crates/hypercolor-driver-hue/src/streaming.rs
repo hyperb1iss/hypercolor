@@ -280,7 +280,7 @@ fn decode_hex(raw: &str) -> Result<Vec<u8>> {
     }
 
     let mut bytes = Vec::with_capacity(trimmed.len() / 2);
-    for pair in trimmed.as_bytes().chunks_exact(2) {
+    for pair in trimmed.as_bytes().as_chunks::<2>().0 {
         let pair = std::str::from_utf8(pair)?;
         bytes.push(u8::from_str_radix(pair, 16)?);
     }

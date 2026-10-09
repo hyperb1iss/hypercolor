@@ -9,7 +9,7 @@ edition = "2024"
 authors = ["Stefanie Jane <stef@hyperbliss.tech>"]
 license = "Apache-2.0"
 repository = "https://github.com/hyperb1iss/hypercolor"
-rust-version = "1.94"
+rust-version = "1.95"
 
 # ── Leptos CSR ───────────────────────────────────────────────────────────
 

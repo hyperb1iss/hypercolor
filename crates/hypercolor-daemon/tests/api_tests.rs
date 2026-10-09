@@ -150,7 +150,7 @@ fn assert_canvas_frame_black(frame: &CanvasFrame) {
 
 fn assert_canvas_frame_color(frame: &CanvasFrame, color: [u8; 3]) {
     assert!(
-        frame.rgba_bytes().chunks_exact(4).all(|pixel| {
+        frame.rgba_bytes().as_chunks::<4>().0.iter().all(|pixel| {
             pixel[0] == color[0] && pixel[1] == color[1] && pixel[2] == color[2] && pixel[3] == 255
         }),
         "canvas frame should be opaque rgb({}, {}, {})",

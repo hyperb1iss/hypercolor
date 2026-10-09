@@ -151,16 +151,13 @@ pub fn blend_rgba_pixels_in_place(
         | PixelBlendMode::SoftLight
         | PixelBlendMode::ColorDodge => {
             for (dst_px, src_px) in target_pixels
-                .chunks_exact_mut(4)
-                .zip(source_pixels.chunks_exact(4))
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(source_pixels.as_chunks::<4>().0)
             {
-                let blended = blend_rgba_pixel(
-                    [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
-                    [src_px[0], src_px[1], src_px[2], src_px[3]],
-                    mode,
-                    opacity,
-                );
-                dst_px.copy_from_slice(&blended);
+                let blended = blend_rgba_pixel(*dst_px, *src_px, mode, opacity);
+                *dst_px = blended;
             }
         }
         PixelBlendMode::Difference => {
@@ -181,8 +178,10 @@ fn blend_screen_rgba_pixels_in_place(target_pixels: &mut [u8], source_pixels: &[
     }
 
     for (dst_px, src_px) in target_pixels
-        .chunks_exact_mut(4)
-        .zip(source_pixels.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(source_pixels.as_chunks::<4>().0)
     {
         if src_px[3] == 0 {
             continue;
@@ -195,13 +194,8 @@ fn blend_screen_rgba_pixels_in_place(target_pixels: &mut [u8], source_pixels: &[
             continue;
         }
 
-        let blended = blend_rgba_pixel(
-            [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
-            [src_px[0], src_px[1], src_px[2], src_px[3]],
-            PixelBlendMode::Screen,
-            opacity,
-        );
-        dst_px.copy_from_slice(&blended);
+        let blended = blend_rgba_pixel(*dst_px, *src_px, PixelBlendMode::Screen, opacity);
+        *dst_px = blended;
     }
 }
 
@@ -221,8 +215,10 @@ fn blend_difference_rgba_pixels_in_place(
     }
 
     for (dst_px, src_px) in target_pixels
-        .chunks_exact_mut(4)
-        .zip(source_pixels.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(source_pixels.as_chunks::<4>().0)
     {
         if src_px[3] == 0 {
             continue;
@@ -235,13 +231,8 @@ fn blend_difference_rgba_pixels_in_place(
             continue;
         }
 
-        let blended = blend_rgba_pixel(
-            [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
-            [src_px[0], src_px[1], src_px[2], src_px[3]],
-            PixelBlendMode::Difference,
-            opacity,
-        );
-        dst_px.copy_from_slice(&blended);
+        let blended = blend_rgba_pixel(*dst_px, *src_px, PixelBlendMode::Difference, opacity);
+        *dst_px = blended;
     }
 }
 
@@ -252,16 +243,13 @@ fn blend_rgba_pixels_with_reference(
     opacity: f32,
 ) {
     for (dst_px, src_px) in target_pixels
-        .chunks_exact_mut(4)
-        .zip(source_pixels.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(source_pixels.as_chunks::<4>().0)
     {
-        let blended = blend_rgba_pixel(
-            [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
-            [src_px[0], src_px[1], src_px[2], src_px[3]],
-            mode,
-            opacity,
-        );
-        dst_px.copy_from_slice(&blended);
+        let blended = blend_rgba_pixel(*dst_px, *src_px, mode, opacity);
+        *dst_px = blended;
     }
 }
 
@@ -319,7 +307,7 @@ pub fn apply_layer_adjust_rgba_pixels_in_place(pixels: &mut [u8], adjust: &Layer
     let hue_shift = adjust.hue_shift / std::f32::consts::TAU;
     let tint_strength = (adjust.tint_strength * adjust.tint[3].clamp(0.0, 1.0)).clamp(0.0, 1.0);
     let contrast_factor = 1.0 + adjust.contrast;
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         if pixel[3] == 0 {
             continue;
         }
@@ -492,7 +480,7 @@ fn apply_contrast(channel: f32, factor: f32) -> f32 {
 fn rgb_to_hsl(red: f32, green: f32, blue: f32) -> (f32, f32, f32) {
     let max = red.max(green).max(blue);
     let min = red.min(green).min(blue);
-    let lightness = (max + min) * 0.5;
+    let lightness = f32::midpoint(max, min);
     let delta = max - min;
     if delta <= f32::EPSILON {
         return (0.0, 0.0, lightness);

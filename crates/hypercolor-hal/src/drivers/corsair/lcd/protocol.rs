@@ -267,7 +267,7 @@ impl Protocol for CorsairLcdProtocol {
 
     fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         if self.ring_led_count == 0 {
-            commands.truncate(0);
+            commands.clear();
             return;
         }
 

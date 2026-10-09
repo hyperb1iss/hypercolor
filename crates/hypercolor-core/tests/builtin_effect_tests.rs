@@ -1254,8 +1254,10 @@ fn screen_analysis_consumers_share_letterbox_smoothing_and_tuning_policy() {
     assert!(
         surface
             .rgba_bytes()
-            .chunks_exact(4)
-            .all(|pixel| pixel == [first.r, first.g, first.b, 255]),
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [first.r, first.g, first.b, 255]),
         "letterbox bars should be absent and frozen tuned content should fill the policy surface"
     );
 

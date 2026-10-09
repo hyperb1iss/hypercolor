@@ -660,7 +660,6 @@ fn spectral_flux_increases_detected() {
 // ── Ring Buffer Tests ────────────────────────────────────────────────────
 
 #[test]
-#[expect(clippy::float_cmp)]
 fn ring_buffer_wraps_correctly() {
     let mut rb = RingBuffer::new(4);
     rb.push_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -671,7 +670,6 @@ fn ring_buffer_wraps_correctly() {
 }
 
 #[test]
-#[expect(clippy::float_cmp)]
 fn ring_buffer_partial_read() {
     let mut rb = RingBuffer::new(8);
     rb.push_slice(&[10.0, 20.0]);

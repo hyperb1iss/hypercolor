@@ -650,7 +650,12 @@ fn rgb_delta_metrics(
     let mut absolute_sum = 0_u64;
     let mut square_sum = 0_u64;
     let mut maximum = 0_u8;
-    for (reference, actual) in reference.chunks_exact(4).zip(actual.chunks_exact(4)) {
+    for (reference, actual) in reference
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(actual.as_chunks::<4>().0)
+    {
         let rgb = [reference[0], reference[1], reference[2]];
         if !include(rgb) {
             continue;
@@ -725,7 +730,12 @@ fn highlight_rolloff_metrics(
     let mut signed_delta_sum = 0.0;
     let mut absolute_delta_sum = 0.0;
     let mut maximum_delta = 0.0_f64;
-    for (standard, high) in standard.chunks_exact(4).zip(high.chunks_exact(4)) {
+    for (standard, high) in standard
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(high.as_chunks::<4>().0)
+    {
         if standard[..3]
             .iter()
             .chain(&high[..3])

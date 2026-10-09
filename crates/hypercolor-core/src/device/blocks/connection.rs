@@ -103,7 +103,9 @@ impl BlocksConnection {
         for (chunk, color) in self
             .frame_buf
             .pixels
-            .chunks_exact_mut(3)
+            .as_chunks_mut::<3>()
+            .0
+            .iter_mut()
             .zip(colors.iter().take(pixel_count))
         {
             chunk.copy_from_slice(color);

@@ -669,7 +669,7 @@ fn macos_fixture_surface(
         MacosPixelRect, MacosPointRect, MacosScale, MacosTransferFunction,
     };
     let mut bgra = rgba.to_vec();
-    for pixel in bgra.chunks_exact_mut(4) {
+    for pixel in bgra.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     let extent = MacosPixelExtent::new(EXACT_SCREEN_WIDTH, EXACT_SCREEN_HEIGHT)?;
@@ -5234,7 +5234,9 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
             let canvas = canvas_rx.borrow_and_update();
             let lit = canvas
                 .rgba_bytes()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)
                 .count();
             (lit == 0, canvas.frame_number, lit)
@@ -5271,7 +5273,9 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
     assert!(
         cleared_canvas
             .rgba_bytes()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0),
         "release sleep should publish a blank canvas instead of the stale preview"
     );

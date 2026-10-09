@@ -328,7 +328,7 @@ impl ServoWorkerClientSharedState {
 
     fn try_reserve_command(self: &Arc<Self>, render: bool) -> Option<ServoCommandReservation> {
         self.queued_commands
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
                 (queued < SERVO_COMMAND_QUEUE_CAPACITY).then_some(queued + 1)
             })
             .ok()?;
@@ -336,7 +336,7 @@ impl ServoWorkerClientSharedState {
         if render
             && self
                 .queued_render_commands
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
                     (queued < SERVO_RENDER_COMMAND_CAPACITY).then_some(queued + 1)
                 })
                 .is_err()

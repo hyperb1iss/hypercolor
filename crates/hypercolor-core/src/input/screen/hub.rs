@@ -30,7 +30,7 @@ static NEXT_SCREEN_BRANCH_DESCRIPTOR_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_screen_branch_descriptor_identity() -> Result<NonZeroU64, ScreenPlanError> {
     let identity = NEXT_SCREEN_BRANCH_DESCRIPTOR_ID
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
             current.checked_add(1)
         })
         .map_err(|_| ScreenPlanError::GenerationExhausted)?;
@@ -171,7 +171,12 @@ impl<'a> ScreenSurfacePayload<'a> {
         match self.pixel_format {
             CapturePixelFormat::Rgba8 => target.copy_from_slice(self.pixels),
             CapturePixelFormat::Bgra8 => {
-                for (dst, src) in target.chunks_exact_mut(4).zip(self.pixels.chunks_exact(4)) {
+                for (dst, src) in target
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(self.pixels.as_chunks::<4>().0)
+                {
                     dst[0] = src[2];
                     dst[1] = src[1];
                     dst[2] = src[0];
@@ -894,7 +899,7 @@ impl Drop for ScreenRetirementCharge {
         }
         let result =
             self.pending_bytes
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
                     pending.checked_sub(self.bytes)
                 });
         debug_assert!(result.is_ok(), "retirement accounting cannot underflow");
@@ -1201,7 +1206,7 @@ impl ScreenBranchEntry {
 
     fn record_pressure(&self) {
         self.pressure_events
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |events| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |events| {
                 Some(events.saturating_add(1))
             })
             .expect("saturating pressure diagnostics never reject an update");
@@ -2254,7 +2259,7 @@ impl ScreenPublicationHub {
         }
         let epoch = self
             .next_invalidation_epoch
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                 epoch.checked_add(1)
             })
             .map_err(|_| ScreenPublicationHubError::InvalidationEpochExhausted)?;
@@ -2317,7 +2322,7 @@ impl ScreenPublicationHub {
         }
         if self
             .pending_retired_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
                 pending.checked_add(activation.retired_bytes)
             })
             .is_err()

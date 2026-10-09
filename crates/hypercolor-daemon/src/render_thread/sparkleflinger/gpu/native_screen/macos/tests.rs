@@ -392,8 +392,10 @@ fn metal_compositor_registers_and_composes_native_capture() {
     assert!(
         preview
             .rgba_bytes()
-            .chunks_exact(4)
-            .all(|pixel| pixel == [91, 43, 17, 255])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [91, 43, 17, 255])
     );
 }
 

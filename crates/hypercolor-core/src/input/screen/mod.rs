@@ -2046,7 +2046,9 @@ fn downscale_frame(
     policy_pixels.clear();
     policy_pixels.extend(
         bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| [pixel[0], pixel[1], pixel[2]]),
     );
     if !smoother.stage_for_elapsed_grid(
@@ -2061,7 +2063,12 @@ fn downscale_frame(
         return Ok(None);
     }
     tuning.apply(policy_pixels);
-    for (pixel, color) in bytes.chunks_exact_mut(4).zip(policy_pixels.iter()) {
+    for (pixel, color) in bytes
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(policy_pixels.iter())
+    {
         pixel[..3].copy_from_slice(color);
         pixel[3] = 255;
     }

@@ -156,7 +156,12 @@ impl EffectRenderer for SolidColorRenderer {
             .enumerate()
         {
             let ny = (y as f32 + 0.5) / height;
-            for (x, pixel_bytes) in row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
+            for (x, pixel_bytes) in row
+                .as_chunks_mut::<BYTES_PER_PIXEL>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
                 let nx = (x as f32 + 0.5) / width;
                 let mix = self.pattern_mix(nx, ny, width, height);
                 let mut pixel = primary.lerp(secondary, mix);

@@ -279,12 +279,12 @@ impl MacosCaptureFrame {
                         required: destination_end,
                         actual: destination_length,
                     })?;
-                for (x, pixel) in row.chunks_exact_mut(16).enumerate() {
+                for (x, pixel) in row.as_chunks_mut::<16>().0.iter_mut().enumerate() {
                     let rgba = source.sample_rgba32f(
                         u32::try_from(x).map_err(|_| MacosCaptureError::ArithmeticOverflow)?,
                         u32::try_from(y).map_err(|_| MacosCaptureError::ArithmeticOverflow)?,
                     )?;
-                    for (channel, bytes) in rgba.into_iter().zip(pixel.chunks_exact_mut(4)) {
+                    for (channel, bytes) in rgba.into_iter().zip(pixel.as_chunks_mut::<4>().0) {
                         bytes.copy_from_slice(&channel.to_le_bytes());
                     }
                 }
