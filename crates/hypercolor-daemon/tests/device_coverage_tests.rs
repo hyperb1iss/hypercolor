@@ -599,6 +599,7 @@ async fn coverage_and_unclaimed_routes_answer_complete_lists() {
             product: Some("Widget".to_owned()),
             serial: Some("W-1".to_owned()),
             bus_path: Some("1-1.9".to_owned()),
+            device_class: 0,
             interface_classes: vec![3],
             descriptor_driver_id: None,
         }]);

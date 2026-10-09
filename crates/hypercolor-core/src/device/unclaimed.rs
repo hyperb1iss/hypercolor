@@ -8,6 +8,8 @@
 //! event. The store decides what counts as unclaimed from the set of
 //! enabled driver ids the daemon hands it, so a device whose descriptor
 //! exists but whose driver is disabled shows up with `claimable_by` set.
+//! Hubs and audio-only functions with no descriptor stay out of the view
+//! (see [`UsbObservation::cannot_be_lighting`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
@@ -36,11 +38,38 @@ pub struct UsbObservation {
     pub product: Option<String>,
     pub serial: Option<String>,
     pub bus_path: Option<String>,
+    /// `bDeviceClass` from the device descriptor.
+    pub device_class: u8,
     pub interface_classes: Vec<u8>,
     pub descriptor_driver_id: Option<String>,
 }
 
+/// USB class code for audio functions.
+const USB_CLASS_AUDIO: u8 = 0x01;
+/// USB class code for hubs.
+const USB_CLASS_HUB: u8 = 0x09;
+
 impl UsbObservation {
+    /// Whether the descriptors alone rule out lighting hardware: a hub, or
+    /// a function whose every interface is USB audio.
+    ///
+    /// Lighting controllers speak HID, vendor-specific, or serial
+    /// interfaces. A hub has none of those, and neither does a function
+    /// that is nothing but audio streaming and control (on Windows the
+    /// audio driver owns the whole function, so there is nothing to open).
+    /// RGB headsets stay visible: they expose HID beside their audio
+    /// interfaces, and that HID interface is where their lighting lives.
+    /// An empty interface list proves nothing, so only the device class
+    /// can rule a device out when the host reports no interfaces.
+    #[must_use]
+    pub fn cannot_be_lighting(&self) -> bool {
+        let only = |class: u8| {
+            !self.interface_classes.is_empty()
+                && self.interface_classes.iter().all(|&found| found == class)
+        };
+        self.device_class == USB_CLASS_HUB || only(USB_CLASS_HUB) || only(USB_CLASS_AUDIO)
+    }
+
     /// Stable key for patching one observation in and out of the snapshot.
     ///
     /// Bus path first because two identical units on different ports must
@@ -80,9 +109,9 @@ impl UsbObservation {
 
 #[derive(Debug, Default)]
 struct UnclaimedInner {
-    /// Every observation keyed by [`UsbObservation::key`], claimed or not,
-    /// so a later change to the enabled driver set can re-derive the
-    /// unclaimed view without another scan.
+    /// Every observation keyed by [`UsbObservation::key`], claimed or not
+    /// and lighting-capable or not, so a later change to the enabled
+    /// driver set can re-derive the unclaimed view without another scan.
     observations: BTreeMap<String, UsbObservation>,
     /// Driver ids the daemon currently runs; `None` treats every
     /// descriptor-backed device as claimed.
@@ -121,6 +150,9 @@ impl UnclaimedInner {
             .values()
             .filter_map(|observation| match self.ownership(observation) {
                 Ownership::Claimed => None,
+                // A matching descriptor outranks class heuristics; without
+                // one, hubs and audio-only functions are just noise.
+                Ownership::Unclaimed(None) if observation.cannot_be_lighting() => None,
                 Ownership::Unclaimed(claimable_by) => {
                     Some(observation.clone().into_unclaimed(claimable_by))
                 }

@@ -269,6 +269,7 @@ pub(crate) fn usb_observation(
             .filter(|serial| !serial.is_empty())
             .map(ToOwned::to_owned),
         bus_path: (!path.is_empty()).then_some(path),
+        device_class: usb.class(),
         interface_classes: usb.interfaces().map(nusb::InterfaceInfo::class).collect(),
         descriptor_driver_id: descriptor.map(|descriptor| descriptor.driver_id().into_owned()),
     }

@@ -432,7 +432,9 @@ pub type UnclaimedDeviceListResponse = ListResponse<UnclaimedDevice>;
 ///
 /// `claimable_by` names the native driver whose protocol database matches
 /// the device when that driver is disabled by config; `None` means no
-/// native protocol exists for the vendor/product pair at all.
+/// native protocol exists for the vendor/product pair at all. Hubs and
+/// audio-only functions without a matching protocol are left out, since
+/// nothing on them can carry lighting.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct UnclaimedDevice {
