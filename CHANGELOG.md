@@ -5,6 +5,59 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-10-09
+
+This release opens a **device input** path so driver-owned hardware can feed touch and button events back into effects, adds two new hardware drivers, and reports daemon startup progress to the desktop app. Windows installs now upgrade in place instead of reinstalling.
+
+### Added
+
+- ✨ Add **device input** end to end: a device-attributed touch and button vocabulary (`hypercolor-types/src/device_input.rs`), a demand-gated publisher registry (`hypercolor-core/src/input/device.rs`), routing alongside host input, and daemon-side offers that follow driver demand (4d81d32, 9dc4123, be17e63, 6e5aa79, spec 82)
+- ✨ Publish ROLI touch and button input from `blocksd` on a subscribe-only connection, with normalized coordinates, pressure, and SDK button names (9951f6b)
+- ✨ Drive the **Razer Kraken Ultimate** over its memory-access protocol (87e4c7b, spec 83)
+- ✨ Drive the **Lian Li Universal Screen 8.8" LCD**, including a WinUSB transport path (5bb1daf, spec 84)
+- ✨ Answer `/health` with startup progress while the daemon is still starting, advanced per compiled compositor pipeline and through effect scan and extension hooks (35e96d7, 719af0b, 7146e3e)
+- ✨ Sample resident memory on macOS and Windows for the Settings system panel (02c4e3a)
+- ✨ Map OpenRGB detectors to the USB ids they claim, generated into `detector_usb_ids.toml` (cf82a9e)
+- ✨ Report transient write failures and their streak length from the output queue (e425271)
+- 👷 Warm the release profile cache in R2 from `main` every night (c1e9e6a)
+
+### Changed
+
+- 🔄 Withhold only the devices a native driver can actually claim from OpenRGB, treating vendor-wide native protocols as vendor claims (e5c912c, 304625b)
+- 🔄 Fork the NSIS installer template and pin `tauri-cli` for reproducible Windows bundles (6c8b44e)
+- 👷 Pin the Rust toolchain to 1.99.0 and raise MSRV to 1.95 for atomic `try_update` (effd212, 00ca1a4)
+- 👷 Bump Tauri to 2.12.1 without moving the `windows-rs` edges that split `wmi` (b9c7745, ce58000)
+- ♻️ Sweep clippy findings from the 1.99 toolchain across the workspace (5e8557b, a8619ce)
+- 🔧 Lint and test the macOS session crate in CI (df767a0)
+- 📝 Drop the macOS notarization hold notices now that macOS shipped (fdce748, f55aebd)
+
+### Fixed
+
+- 🐛 Upgrade Windows installs in place instead of reinstalling, replacing every file and never blocking `/S` (3fedae9, b3a5b48, 7676dfe)
+- 🐛 Accept padded hidapi output writes on Windows, where a short write can hide behind a leading zero (29d1e66, 4ae1479)
+- 🐛 Wait on daemon startup progress in the app and allow retrying a failed start, treating first output as a sign of life (ea1307d, 7fa6ac6, 9b07880)
+- 🐛 Keep reconnect backoff growing across flaps and keep driver-requested reconnects out of flap tracking (57f840e, f5a0a6a, 895a342)
+- 🐛 Reconnect on transient write streaks, surface flapping, and claim the most severe write failure per device (4f7b4d0, eb1369b)
+- 🐛 Release host capture and device input demand on every pump exit (4b9997e, 14907e6)
+- 🐛 Cap `blocksd` event and reply lines at 64 KiB so an unterminated peer cannot grow the reader (274af46, f91e77b)
+- 🐛 Keep an aborted Blocks input stream from publishing into its replacement's leases (f38b445)
+- 🐛 Name unclaimed USB vendors from a curated VID table and keep hubs and audio-only functions out of the unclaimed view (0610e25, a4ba01d)
+- 🐛 Keep the Settings uptime advancing with a shared live helper (da441a4)
+- 🐛 Keep the Windows installer art sharp at every display scale (c9fa2f3)
+- 🐛 Stop doubling the vendor in rig-setup support titles and stop a missing service from muddying the restore log (28364d3, 5c32a60)
+
+### Security
+
+- 🔒 Allow `If-Match` through CORS so native app writes are not blocked by preflight (6c8e747)
+
+### Metrics
+
+- Total Commits: 93
+- Files Changed: 311
+- Insertions: +18,846
+- Deletions: -1,491
+<!-- -------------------------------------------------------------- -->
+
 ## [0.6.2] - 2026-10-07
 
 This release fixes the Windows startup stall that made 0.6.1 unusable on fresh installs, drops Intel Mac support in favor of Apple silicon, and prepares the workspace for publication on crates.io. The dashboard's live gauges and the remote preview stream also now run at their intended cadence.

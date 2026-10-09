@@ -53,10 +53,10 @@ hypercolor-gpu-frame = { workspace = true }
 hypercolor-types = { workspace = true }
 # Unconditional: the shared event vocabulary and the decoding arithmetic
 # compile everywhere, which is what lets Linux CI test the Windows key tables.
-hypercolor-windows-input = { path = "../hypercolor-windows-input", version = "0.6.2" }
+hypercolor-windows-input = { path = "../hypercolor-windows-input", version = "0.6.3" }
 # Unconditional: monitor selector parsing and persistence are platform-neutral;
 # the capture crate supplies stubs when DXGI is unavailable.
-hypercolor-windows-capture = { path = "../hypercolor-windows-capture", version = "0.6.2" }
+hypercolor-windows-capture = { path = "../hypercolor-windows-capture", version = "0.6.3" }
 hypercolor-macos-input = { workspace = true }
 # Unconditional: every capture backend compiles on every target so the shared
 # ScreenCaptureAdapter is verifiable anywhere; the interop crate supplies
@@ -137,7 +137,7 @@ libpulse-binding = { workspace = true }
 zbus = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-hypercolor-macos-media = { path = "../hypercolor-macos-media", version = "0.6.2" }
+hypercolor-macos-media = { path = "../hypercolor-macos-media", version = "0.6.3" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", default-features = false, features = [

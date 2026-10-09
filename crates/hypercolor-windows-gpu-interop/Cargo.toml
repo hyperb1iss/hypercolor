@@ -40,7 +40,7 @@ servo-context = [
 [dependencies]
 anyhow = { workspace = true, optional = true }
 hypercolor-gpu-frame = { workspace = true }
-hypercolor-windows-capture = { path = "../hypercolor-windows-capture", version = "0.6.2", optional = true }
+hypercolor-windows-capture = { path = "../hypercolor-windows-capture", version = "0.6.3", optional = true }
 pollster = { workspace = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }

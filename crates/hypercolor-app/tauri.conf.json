@@ -1,6 +1,6 @@
 {
   "productName": "Hypercolor",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "identifier": "tech.hyperbliss.hypercolor",
   "build": {
     "frontendDist": "../hypercolor-ui/dist"
