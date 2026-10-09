@@ -232,10 +232,15 @@ topic sees further device traffic.
   such as a surface-less Loop Block, are ignored, and their uid is never
   re-minted into an id.
 - The stream task runs while any device is connected; the last disconnect
-  closes the event connection. blocksd `start`,
-  `move`, and `end` become `TouchBegan`, `TouchMoved`, and `TouchEnded` with
-  `index` as the contact. Buttons use blocksd's SDK function name (`mode`,
-  `up`, `down`), then `button{id}` from the protocol index.
+  closes the event connection. Each stream carries a generation that every
+  start and abort bumps under the input state lock. An abort lands only at
+  the stream's next `.await`, so a stream aborted by a fast disconnect and
+  reconnect may still hold a decoded event; it checks its generation under
+  the lock and drops that event instead of publishing into the new lease.
+- blocksd `start`, `move`, and `end` become `TouchBegan`, `TouchMoved`, and
+  `TouchEnded` with `index` as the contact. Buttons use blocksd's SDK
+  function name (`mode`, `up`, `down`), then `button{id}` from the protocol
+  index.
 - Every event that could hide a lift supersedes leases so held input
   cancels: `device_removed` for that device, and an undecodable line or a
   lost connection for all devices. After an undecodable line the stream keeps
@@ -274,6 +279,8 @@ topic sees further device traffic.
   buttons with and without SDK names, unadopted uids, unknown event types,
   `device_removed`, an undecodable line, connection loss and resubscription,
   device disconnect, and the absence of an event connection without a sink.
+  A unit test holds an aborted stream across a disconnect and reconnect and
+  checks it publishes nothing into the new lease.
 - Hardware: touch a Lightpad and LUMI with an interactive effect active and
   watch `input_events` on the WebSocket.
 

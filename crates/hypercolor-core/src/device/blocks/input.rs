@@ -45,6 +45,12 @@ struct InputState {
     /// Whether a stream task owns the event connection. Changed only under
     /// this lock, so a connect racing the stream's exit always restarts it.
     streaming: bool,
+    /// Incarnation of the stream task that owns the event connection, bumped
+    /// whenever a stream starts or is aborted. An abort lands only at the
+    /// stream's next `.await`, so an aborted stream can still hold a decoded
+    /// event; it checks this under the lock and drops the event rather than
+    /// publish into the leases of a device that reconnected meanwhile.
+    stream_generation: u64,
 }
 
 struct InputDevice {
@@ -61,6 +67,7 @@ impl BlocksInput {
             state: Arc::new(Mutex::new(InputState {
                 devices: HashMap::new(),
                 streaming: false,
+                stream_generation: 0,
             })),
             stream: Mutex::new(None),
         }
@@ -91,11 +98,13 @@ impl BlocksInput {
         }
         if !state.streaming {
             state.streaming = true;
-            *lock(&self.stream) = Some(tokio::spawn(run_stream(
-                self.socket_path.clone(),
-                Arc::clone(&self.sink),
-                Arc::clone(&self.state),
-            )));
+            state.stream_generation = state.stream_generation.wrapping_add(1);
+            let stream = EventStream {
+                sink: Arc::clone(&self.sink),
+                state: Arc::clone(&self.state),
+                generation: state.stream_generation,
+            };
+            *lock(&self.stream) = Some(tokio::spawn(run_stream(self.socket_path.clone(), stream)));
         }
     }
 
@@ -108,6 +117,7 @@ impl BlocksInput {
             .retain(|_, device| device.device_id != device_id);
         if state.devices.is_empty() && state.streaming {
             state.streaming = false;
+            state.stream_generation = state.stream_generation.wrapping_add(1);
             if let Some(task) = lock(&self.stream).take() {
                 task.abort();
             }
@@ -117,22 +127,96 @@ impl BlocksInput {
 
 impl Drop for BlocksInput {
     fn drop(&mut self) {
+        // Retire the stream's generation too, so a stream mid-poll cannot
+        // supersede a lease that a replacement backend attached for the
+        // same device.
+        let mut state = lock(&self.state);
+        state.streaming = false;
+        state.stream_generation = state.stream_generation.wrapping_add(1);
         if let Some(task) = lock(&self.stream).take() {
             task.abort();
         }
     }
 }
 
-/// Follow blocksd events until no device remains connected.
-async fn run_stream(
-    socket_path: PathBuf,
+/// One incarnation of the event stream.
+///
+/// Every state access goes through [`EventStream::lock_current`], so once a
+/// newer stream (or an abort) has bumped the generation this one touches
+/// nothing and exits at its next check.
+struct EventStream {
     sink: Arc<dyn DeviceInputSink>,
     state: Arc<Mutex<InputState>>,
-) {
+    generation: u64,
+}
+
+impl EventStream {
+    /// Lock the shared state if this stream still owns the event connection.
+    fn lock_current(&self) -> Option<MutexGuard<'_, InputState>> {
+        let state = lock(&self.state);
+        (state.stream_generation == self.generation).then_some(state)
+    }
+
+    /// Route one event. Returns `false` once this stream is superseded.
+    fn handle_event(&self, event: BlocksEvent) -> bool {
+        match event {
+            BlocksEvent::Touch(touch) => self.publish(touch.uid, &touch_edge(&touch)),
+            BlocksEvent::Button(button) => self.publish(button.uid, &button_edge(&button)),
+            // A block that left the topology will never report its lifts.
+            BlocksEvent::DeviceRemoved { uid } => {
+                let Some(mut state) = self.lock_current() else {
+                    return false;
+                };
+                if let Some(device) = state.devices.get_mut(&uid) {
+                    reattach(&self.sink, device);
+                }
+                true
+            }
+            BlocksEvent::Error { message } => {
+                warn!(%message, "blocksd closed the input stream");
+                true
+            }
+            BlocksEvent::Subscribed { .. }
+            | BlocksEvent::DeviceAdded { .. }
+            | BlocksEvent::Other => true,
+        }
+    }
+
+    /// Publish one edge for `uid`. Returns `false` once this stream is
+    /// superseded.
+    fn publish(&self, uid: u64, edge: &DeviceInputEdge) -> bool {
+        let Some(state) = self.lock_current() else {
+            return false;
+        };
+        // Blocks that were never adopted, or have disconnected, are ignored.
+        if let Some(device) = state.devices.get(&uid) {
+            device.publisher.publish(std::slice::from_ref(edge));
+        }
+        true
+    }
+
+    /// Supersede every lease so the host cancels whatever it held. Returns
+    /// `false` once this stream is superseded.
+    fn reattach_all(&self) -> bool {
+        let Some(mut state) = self.lock_current() else {
+            return false;
+        };
+        for device in state.devices.values_mut() {
+            reattach(&self.sink, device);
+        }
+        true
+    }
+}
+
+/// Follow blocksd events until no device remains connected, or until a newer
+/// stream supersedes this one.
+async fn run_stream(socket_path: PathBuf, stream: EventStream) {
     let mut backoff = RECONNECT_INITIAL;
     loop {
         {
-            let mut state = lock(&state);
+            let Some(mut state) = stream.lock_current() else {
+                return;
+            };
             if state.devices.is_empty() {
                 state.streaming = false;
                 return;
@@ -146,21 +230,24 @@ async fn run_stream(
                 delivered = true;
                 let mut warned = false;
                 loop {
-                    match connection.next_item().await {
-                        Ok(Some(StreamItem::Event(event))) => handle_event(&sink, &state, event),
+                    let current = match connection.next_item().await {
+                        Ok(Some(StreamItem::Event(event))) => stream.handle_event(event),
                         Ok(Some(StreamItem::Undecodable(error))) => {
                             if !warned {
                                 warn!(%error, "blocksd sent an undecodable input event");
                                 warned = true;
                             }
                             // The skipped line could have been a touch end.
-                            reattach_all(&sink, &state);
+                            stream.reattach_all()
                         }
                         Ok(None) => break,
                         Err(error) => {
                             debug!(%error, "blocksd input stream read failed");
                             break;
                         }
+                    };
+                    if !current {
+                        return;
                     }
                 }
             }
@@ -168,33 +255,11 @@ async fn run_stream(
         }
         // Touch ends may have been lost with the connection. A connection
         // that never opened delivered nothing, so there is nothing to cancel.
-        if delivered {
-            reattach_all(&sink, &state);
+        if delivered && !stream.reattach_all() {
+            return;
         }
         sleep(backoff).await;
         backoff = (backoff * 2).min(RECONNECT_MAX);
-    }
-}
-
-fn handle_event(sink: &Arc<dyn DeviceInputSink>, state: &Mutex<InputState>, event: BlocksEvent) {
-    match event {
-        BlocksEvent::Touch(touch) => publish(state, touch.uid, touch_edge(&touch)),
-        BlocksEvent::Button(button) => publish(state, button.uid, button_edge(&button)),
-        // A block that left the topology will never report its lifts.
-        BlocksEvent::DeviceRemoved { uid } => {
-            if let Some(device) = lock(state).devices.get_mut(&uid) {
-                reattach(sink, device);
-            }
-        }
-        BlocksEvent::Error { message } => warn!(%message, "blocksd closed the input stream"),
-        BlocksEvent::Subscribed { .. } | BlocksEvent::DeviceAdded { .. } | BlocksEvent::Other => {}
-    }
-}
-
-fn publish(state: &Mutex<InputState>, uid: u64, edge: DeviceInputEdge) {
-    // Blocks that were never adopted, or have disconnected, are ignored.
-    if let Some(device) = lock(state).devices.get(&uid) {
-        device.publisher.publish(std::slice::from_ref(&edge));
     }
 }
 
@@ -226,12 +291,6 @@ fn button_edge(button: &BlocksButton) -> DeviceInputEdge {
             BlocksButtonAction::Press => InputButtonState::Pressed,
             BlocksButtonAction::Release => InputButtonState::Released,
         },
-    }
-}
-
-fn reattach_all(sink: &Arc<dyn DeviceInputSink>, state: &Mutex<InputState>) {
-    for device in lock(state).devices.values_mut() {
-        reattach(sink, device);
     }
 }
 
@@ -286,3 +345,6 @@ impl BlocksEventConnection {
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+#[cfg(test)]
+mod tests;
