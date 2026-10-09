@@ -63,6 +63,16 @@ driver = "razer"
 transport = "usb_hid"
 
 [[devices]]
+pid = 0x0527
+name = "Kraken Ultimate"
+type = "headset"
+status = "supported"
+driver = "razer"
+transport = "usb_hid"
+leds = 1
+notes = "Kraken memory-access protocol, one zone for both earcups"
+
+[[devices]]
 pid = 0x0270
 name = "Blade 14 (2021)"
 type = "keyboard"
@@ -704,11 +714,11 @@ type = "headset"
 status = "researched"
 
 [[devices]]
-pid = 0x0527
+pid = 0x0533
 name = "Kraken Headset"
 type = "headset"
 status = "researched"
-notes = "Multiple PIDs: 0x0527, 0x0533, 0x0537, 0x0549, 0x0560"
+notes = "Multiple PIDs: 0x0533, 0x0537, 0x0549, 0x0560"
 
 [[devices]]
 pid = 0x051C

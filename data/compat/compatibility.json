@@ -3,9 +3,9 @@
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
     "vendors": 32,
-    "devices": 418,
+    "devices": 419,
     "byStatus": {
-      "supported": 183,
+      "supported": 184,
       "in_progress": 0,
       "planned": 0,
       "researched": 95,
@@ -5099,6 +5099,19 @@
           "notes": null
         },
         {
+          "pid": 1319,
+          "pidHex": "0x0527",
+          "vid": null,
+          "vidHex": null,
+          "name": "Kraken Ultimate",
+          "type": "headset",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Kraken memory-access protocol, one zone for both earcups"
+        },
+        {
           "pid": 3853,
           "pidHex": "0x0F0D",
           "vid": null,
@@ -5593,8 +5606,8 @@
           "notes": null
         },
         {
-          "pid": 1319,
-          "pidHex": "0x0527",
+          "pid": 1331,
+          "pidHex": "0x0533",
           "vid": null,
           "vidHex": null,
           "name": "Kraken Headset",
@@ -5603,7 +5616,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Multiple PIDs: 0x0527, 0x0533, 0x0537, 0x0549, 0x0560"
+          "notes": "Multiple PIDs: 0x0533, 0x0537, 0x0549, 0x0560"
         },
         {
           "pid": 527,
@@ -5841,14 +5854,14 @@
         }
       ],
       "counts": {
-        "supported": 70,
+        "supported": 71,
         "in_progress": 0,
         "planned": 0,
         "researched": 38,
         "known": 0,
         "blocked": 0
       },
-      "totalDevices": 108,
+      "totalDevices": 109,
       "drivers": [
         "razer"
       ],
