@@ -59,6 +59,7 @@ use crate::render_thread::sparkleflinger::gpu::{
     GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame, GpuZoneSamplingDispatch,
     PendingGpuDisplayFinalize, PendingGpuZoneSampling,
 };
+use crate::startup::StartupProgress;
 
 use super::producer_queue::ProducerFrame;
 
@@ -858,6 +859,7 @@ impl SparkleFlinger {
             mode,
             #[cfg(feature = "wgpu")]
             None,
+            None,
         )
     }
 
@@ -866,13 +868,18 @@ impl SparkleFlinger {
     pub(crate) fn new_required_gpu_for_test() -> Result<Self> {
         let render_device =
             GpuRenderDevice::new_required_for_test("SparkleFlinger required GPU test compositor")?;
-        Self::new_with_gpu_device(RenderAccelerationMode::Gpu, Some(render_device))
+        Self::new_with_gpu_device(RenderAccelerationMode::Gpu, Some(render_device), None)
     }
 
+    /// Build a compositor for `mode`, reporting each GPU device and
+    /// pipeline build step to `progress` when startup is being reported.
     pub(crate) fn new_with_gpu_device(
         mode: RenderAccelerationMode,
         #[cfg(feature = "wgpu")] render_device: Option<GpuRenderDevice>,
+        progress: Option<&StartupProgress>,
     ) -> Result<Self> {
+        #[cfg(not(feature = "wgpu"))]
+        let _ = progress;
         let backend = match mode {
             RenderAccelerationMode::Cpu => {
                 SparkleFlingerBackend::Cpu(cpu::CpuSparkleFlinger::new())
@@ -883,6 +890,8 @@ impl SparkleFlinger {
             RenderAccelerationMode::Gpu => new_gpu_backend(
                 #[cfg(feature = "wgpu")]
                 render_device,
+                #[cfg(feature = "wgpu")]
+                progress,
             )?,
         };
         Ok(Self {
@@ -1746,9 +1755,12 @@ fn gpu_frame_without_cpu_fallback(
 }
 
 #[cfg(feature = "wgpu")]
-fn new_gpu_backend(render_device: Option<GpuRenderDevice>) -> Result<SparkleFlingerBackend> {
+fn new_gpu_backend(
+    render_device: Option<GpuRenderDevice>,
+    progress: Option<&StartupProgress>,
+) -> Result<SparkleFlingerBackend> {
     let gpu = if let Some(render_device) = render_device {
-        gpu::GpuSparkleFlinger::with_render_device(render_device)?
+        gpu::GpuSparkleFlinger::with_render_device_reporting(render_device, progress)?
     } else {
         gpu::GpuSparkleFlinger::new()?
     };
@@ -1756,6 +1768,22 @@ fn new_gpu_backend(render_device: Option<GpuRenderDevice>) -> Result<SparkleFlin
         gpu,
         cpu_fallback: cpu::CpuSparkleFlinger::new(),
     })
+}
+
+/// Compile one compute pipeline as a reported startup step named by its
+/// label, so a slow shader compile still advances startup progress when it
+/// completes, and a hung one is named in the startup report.
+#[cfg(feature = "wgpu")]
+fn compile_compute_pipeline(
+    device: &wgpu::Device,
+    progress: Option<&StartupProgress>,
+    descriptor: &wgpu::ComputePipelineDescriptor<'_>,
+) -> wgpu::ComputePipeline {
+    crate::startup::startup_step(
+        progress,
+        descriptor.label.unwrap_or("SparkleFlinger GPU pipeline"),
+        || device.create_compute_pipeline(descriptor),
+    )
 }
 
 #[cfg(not(feature = "wgpu"))]
