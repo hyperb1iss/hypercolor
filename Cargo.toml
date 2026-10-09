@@ -75,7 +75,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # jsonschema 0.58 enables serde_json/float_roundtrip globally.
 # That feature changes f32 REST decoding before domain validation.
-jsonschema = { version = "=0.58.5", default-features = false }
+jsonschema = { version = "=0.58.6", default-features = false }
 toml = "1.1"
 base64 = "0.23"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "serde", "clock"] }
@@ -109,7 +109,7 @@ strum = { version = "0.28", features = ["derive"] }
 # Config
 dirs = "7.0"
 notify = "8.2"
-sysinfo = "0.38.4"
+sysinfo = "0.39.6"
 nvml-wrapper = "0.13.0"
 # Pinned exactly: wmi 0.18.2+ declares open ranges (windows/windows-core
 # ">=0.59, <0.63"), and with tao/wry holding windows-core at 0.61 the resolver
@@ -125,7 +125,7 @@ servo = { version = "0.6.0", default-features = false }
 # servo-allocator 0.6 made jemalloc opt-in (use-jemalloc). Core's servo
 # feature enables it on non-Windows targets so the daemon keeps jemalloc
 # as its global allocator; the exact pin matches Servo's own pins.
-servo-allocator = "=0.6.0"
+servo-allocator = "=0.7.0"
 surfman = "0.13"
 
 # Crypto / auth
