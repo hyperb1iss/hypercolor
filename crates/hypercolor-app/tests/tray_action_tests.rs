@@ -53,6 +53,14 @@ fn user_effects_dir_matches_core_layout() {
 }
 
 #[test]
+fn retry_resolves_to_the_supervisor_not_the_daemon_client() {
+    assert_eq!(
+        actions::target_for_action(&MenuAction::RetryDaemon),
+        ActionTarget::RetryDaemon
+    );
+}
+
+#[test]
 fn daemon_actions_resolve_to_daemon_client_commands() {
     assert_eq!(
         actions::target_for_action(&MenuAction::ApplyEffect("aurora".to_owned())),

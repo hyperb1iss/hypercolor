@@ -33,11 +33,17 @@ use url::Url;
 mod child;
 pub mod openrgb;
 mod plan;
+mod startup_watch;
 
 pub(crate) use child::PlatformGuard;
+use hypercolor_types::api::system::{DaemonStartupPhase, HealthResponse};
 pub use plan::{
     HoldReason, LauncherPlan, LauncherProbe, OpenRgbHoldReason, OpenRgbPlan, OpenRgbPlanInputs,
     OwnerPreference, launcher_plan, openrgb_plan,
+};
+pub use startup_watch::{
+    DAEMON_STARTUP_CEILING, DAEMON_STARTUP_STALL_WINDOW, DAEMON_STARTUP_TIMEOUT,
+    MAX_HEALTH_BODY_BYTES, StartupProbe, StartupStall, StartupVerdict, StartupWatch,
 };
 
 /// Default daemon bind address used by the app-spawned daemon.
@@ -70,14 +76,32 @@ pub struct VerifiedDaemonConnectionSnapshot {
 type VerifiedConnectionEmitter =
     Arc<dyn Fn(VerifiedDaemonConnectionSnapshot) + Send + Sync + 'static>;
 
+type SupervisorStatusListener = Arc<dyn Fn() + Send + Sync + 'static>;
+
+/// Why the watchdog stopped restarting the daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupervisorFailure {
+    /// Rapid restarts that tripped the circuit breaker.
+    pub restarts: u32,
+    /// The startup phase the daemon last reported before the failure that
+    /// tripped the breaker, when it reported one.
+    pub startup_phase: Option<DaemonStartupPhase>,
+}
+
+/// A cleared permanent failure, handed back to restart supervision.
+#[derive(Debug, Clone)]
+pub struct SupervisorRetry {
+    /// Endpoint the supervisor was started against.
+    pub daemon_url: Url,
+    /// The failure the retry cleared, restored if the retry cannot start.
+    pub failure: SupervisorFailure,
+}
+
 /// Linux systemd user service name for the daemon.
 pub const SYSTEMD_USER_SERVICE: &str = "hypercolor.service";
 
 /// Timeout for one lightweight health probe.
 pub const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
-
-/// Maximum time to wait for an app-spawned daemon to become healthy.
-pub const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Delay between daemon startup health probes.
 pub const DAEMON_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -166,8 +190,12 @@ pub struct SupervisorState {
     /// Latched true when the watchdog circuit-breaker fires —
     /// `WATCHDOG_MAX_RAPID_RESTARTS` failures within `WATCHDOG_FAILURE_WINDOW`.
     /// The tray reads this to surface the red `IconState::Error` so users
-    /// know the supervisor has given up trying to restart the daemon.
+    /// know the supervisor has given up trying to restart the daemon, and
+    /// clears it through [`SupervisorState::begin_retry`].
     permanent_failure: Arc<std::sync::atomic::AtomicBool>,
+    failure: Arc<Mutex<Option<SupervisorFailure>>>,
+    daemon_url: Arc<Mutex<Option<Url>>>,
+    status_listener: Arc<Mutex<Option<SupervisorStatusListener>>>,
     owner_handover_stop: Arc<std::sync::atomic::AtomicBool>,
     macos_external_owner: Arc<Mutex<Option<MacosExternalOwnerMode>>>,
     macos_owner_offline: Arc<Mutex<Option<MacosDaemonOwnerOfflineStatus>>>,
@@ -196,6 +224,102 @@ impl SupervisorState {
     pub fn permanent_failure(&self) -> bool {
         self.permanent_failure
             .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Why the watchdog gave up, while it stays given up.
+    #[must_use]
+    pub fn supervisor_failure(&self) -> Option<SupervisorFailure> {
+        if !self.permanent_failure() {
+            return None;
+        }
+        self.failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Latch a permanent failure: the watchdog stops restarting the daemon
+    /// until [`begin_retry`](Self::begin_retry) clears it.
+    pub fn record_permanent_failure(&self, failure: SupervisorFailure) {
+        *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(failure);
+        self.permanent_failure
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.notify_status_changed();
+    }
+
+    /// Remember the endpoint supervision was started against, so a retry
+    /// can start it again.
+    pub fn remember_daemon_url(&self, daemon_url: Url) {
+        *self
+            .daemon_url
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(daemon_url);
+    }
+
+    /// Clear a permanent failure so supervision can start again.
+    ///
+    /// Returns `None` when there is nothing to retry: no failure is
+    /// latched, or another retry already claimed it. Exactly one caller
+    /// wins a given failure, so a double click cannot start two watchdogs.
+    pub fn begin_retry(&self) -> Option<SupervisorRetry> {
+        let daemon_url = self
+            .daemon_url
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()?;
+        self.permanent_failure
+            .compare_exchange(
+                true,
+                false,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .ok()?;
+        let failure = self
+            .failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .unwrap_or(SupervisorFailure {
+                restarts: 0,
+                startup_phase: None,
+            });
+        self.notify_status_changed();
+        Some(SupervisorRetry {
+            daemon_url,
+            failure,
+        })
+    }
+
+    /// Drop a latched permanent failure because supervision is starting
+    /// again by another route.
+    pub fn clear_permanent_failure(&self) {
+        let was_failed = self
+            .permanent_failure
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        if was_failed {
+            *self.failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            self.notify_status_changed();
+        }
+    }
+
+    /// Run `listener` whenever the permanent-failure state changes.
+    pub fn install_status_listener(&self, listener: impl Fn() + Send + Sync + 'static) {
+        *self
+            .status_listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(listener));
+    }
+
+    fn notify_status_changed(&self) {
+        let listener = self
+            .status_listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(listener) = listener {
+            listener();
+        }
     }
 
     /// Return the persisted external owner selected before watchdog startup.
@@ -474,11 +598,6 @@ impl SupervisorState {
             daemon.child = None;
             tracing::info!(pid, "managed daemon force-killed on app exit");
         }
-    }
-
-    fn mark_permanent_failure(&self) {
-        self.permanent_failure
-            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     fn child_guard(&self) -> MutexGuard<'_, Option<u32>> {
@@ -1234,30 +1353,61 @@ pub async fn probe_health(client: &reqwest::Client, base: &Url, timeout: Duratio
     response.is_ok_and(|response| response.status().is_success())
 }
 
-/// Wait until a daemon reports healthy or the startup timeout expires.
-pub async fn wait_until_healthy(
+/// Probe `/health` and classify the answer for a startup wait.
+///
+/// A `503` body is read, capped at [`MAX_HEALTH_BODY_BYTES`], only to find
+/// the startup report a starting daemon attaches.
+pub async fn probe_startup(
     client: &reqwest::Client,
     base: &Url,
     timeout: Duration,
-    poll_interval: Duration,
-) -> bool {
-    let started = Instant::now();
-
+) -> StartupProbe {
+    let Ok(mut response) = client.get(health_url(base)).timeout(timeout).send().await else {
+        return StartupProbe::Silent;
+    };
+    if response.status().is_success() {
+        return StartupProbe::Ready;
+    }
+    if response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
+        return StartupProbe::Silent;
+    }
+    let mut body = Vec::new();
     loop {
-        if probe_health(client, base, HEALTH_PROBE_TIMEOUT).await {
-            return true;
+        match response.chunk().await {
+            Ok(Some(chunk)) if body.len() + chunk.len() <= MAX_HEALTH_BODY_BYTES => {
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Ok(Some(_)) | Err(_) => return StartupProbe::Silent,
         }
+    }
+    serde_json::from_slice::<HealthResponse>(&body).map_or(StartupProbe::Silent, |health| {
+        StartupProbe::from_unavailable_health(&health)
+    })
+}
 
-        let elapsed = started.elapsed();
-        let Some(remaining) = timeout.checked_sub(elapsed) else {
-            return false;
-        };
-
-        let Some(delay) = startup_retry_delay(remaining, poll_interval) else {
-            return false;
-        };
-
-        tokio::time::sleep(delay).await;
+/// Wait until a daemon this app does not own reports healthy.
+///
+/// Uses the same progress-aware deadline as an app-spawned daemon, but
+/// only stops waiting: the daemon belongs to its service manager.
+///
+/// # Errors
+///
+/// Returns why the wait gave up when the daemon never became ready.
+pub async fn wait_until_healthy(
+    client: &reqwest::Client,
+    base: &Url,
+    poll_interval: Duration,
+) -> Result<(), StartupStall> {
+    let started = Instant::now();
+    let mut watch = StartupWatch::default();
+    loop {
+        let probe = probe_startup(client, base, HEALTH_PROBE_TIMEOUT).await;
+        match watch.observe(started.elapsed(), probe) {
+            StartupVerdict::Ready => return Ok(()),
+            StartupVerdict::Wait => tokio::time::sleep(poll_interval).await,
+            StartupVerdict::GiveUp(stall) => return Err(stall),
+        }
     }
 }
 
@@ -1301,6 +1451,8 @@ fn first_systemctl_output_line(output: &str) -> &str {
 ///
 /// Returns an error if the app executable path or daemon URL cannot be resolved.
 pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
+    app.state::<SupervisorState>()
+        .remember_daemon_url(daemon_url.clone());
     #[cfg(target_os = "macos")]
     {
         let store = MacosOwnerStore::new(data_dir());
@@ -1341,6 +1493,33 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
     {
         start_with_plan_inputs(app, daemon_url, StartupLauncherInputs::probe(None))
     }
+}
+
+/// Restart supervision after the watchdog gave up.
+///
+/// Clears the permanent failure and runs the startup plan again against the
+/// endpoint [`start`] was given. Returns `false` when there was no failure
+/// to retry, including when a concurrent retry already claimed it.
+///
+/// # Errors
+///
+/// Returns an error when supervision cannot be started again; the cleared
+/// failure is restored so the tray keeps offering the retry.
+pub fn retry<R: Runtime>(app: &AppHandle<R>) -> Result<bool> {
+    let state = app.state::<SupervisorState>().inner().clone();
+    let Some(retry) = state.begin_retry() else {
+        return Ok(false);
+    };
+    tracing::info!(
+        restarts = retry.failure.restarts,
+        startup_phase = retry.failure.startup_phase.map(DaemonStartupPhase::as_str),
+        "retrying daemon supervision after the watchdog gave up"
+    );
+    if let Err(error) = start(app, retry.daemon_url) {
+        state.record_permanent_failure(retry.failure);
+        return Err(error);
+    }
+    Ok(true)
 }
 
 /// How the supervisor should derive its launcher plan at startup.
@@ -1418,6 +1597,10 @@ fn start_with_plan_inputs<R: Runtime>(
         .find(|path| path.is_dir());
     let bind = bind_from_daemon_url(&daemon_url).unwrap_or_else(|| DEFAULT_DAEMON_BIND.to_owned());
     let state = app.state::<SupervisorState>().inner().clone();
+    // Every supervision start, including an owner handover, supersedes an
+    // earlier give-up; leaving it latched would offer a Retry that starts
+    // a second watchdog beside this one.
+    state.clear_permanent_failure();
     state.set_macos_external_owner(external_owner);
     let event_app = app.clone();
     state.install_verified_connection_emitter(Arc::new(move |connection| {
@@ -1575,23 +1758,18 @@ async fn execute_launcher_plan<R: Runtime>(plan: LauncherPlan, context: Launcher
                 "daemon already running; reusing existing instance"
             );
             if state.verified_daemon_connection().connection.is_none() {
-                if wait_until_healthy(
-                    &client,
-                    &endpoint,
-                    DAEMON_STARTUP_TIMEOUT,
-                    DAEMON_STARTUP_POLL_INTERVAL,
-                )
-                .await
-                {
-                    state.replace_verified_connection(Some(health_verified_daemon_connection(
-                        &endpoint,
-                    )));
-                } else {
-                    tracing::warn!(
+                match wait_until_healthy(&client, &endpoint, DAEMON_STARTUP_POLL_INTERVAL).await {
+                    Ok(()) => {
+                        state.replace_verified_connection(Some(health_verified_daemon_connection(
+                            &endpoint,
+                        )));
+                    }
+                    Err(stall) => tracing::warn!(
                         launcher = %identity,
-                        timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
+                        reason = stall.reason(),
+                        phase = stall.phase().map(DaemonStartupPhase::as_str),
                         "registered launcher is active but the daemon did not become healthy"
-                    );
+                    ),
                 }
             }
             #[cfg(target_os = "macos")]
@@ -1624,24 +1802,19 @@ async fn execute_launcher_plan<R: Runtime>(plan: LauncherPlan, context: Launcher
         LauncherPlan::Start { identity, unit } => {
             tracing::info!(launcher = %identity, unit, "starting registered launcher");
             if start_registered_launcher(&unit) {
-                if wait_until_healthy(
-                    &client,
-                    &daemon_url,
-                    DAEMON_STARTUP_TIMEOUT,
-                    DAEMON_STARTUP_POLL_INTERVAL,
-                )
-                .await
-                {
-                    tracing::info!(launcher = %identity, "registered launcher reported healthy");
-                    state.replace_verified_connection(Some(health_verified_daemon_connection(
-                        &daemon_url,
-                    )));
-                } else {
-                    tracing::warn!(
+                match wait_until_healthy(&client, &daemon_url, DAEMON_STARTUP_POLL_INTERVAL).await {
+                    Ok(()) => {
+                        tracing::info!(launcher = %identity, "registered launcher reported healthy");
+                        state.replace_verified_connection(Some(health_verified_daemon_connection(
+                            &daemon_url,
+                        )));
+                    }
+                    Err(stall) => tracing::warn!(
                         launcher = %identity,
-                        timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
+                        reason = stall.reason(),
+                        phase = stall.phase().map(DaemonStartupPhase::as_str),
                         "started registered launcher but the daemon did not become healthy"
-                    );
+                    ),
                 }
                 return;
             }
@@ -1754,6 +1927,49 @@ pub const fn restart_backoff(attempt: u32) -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Whether the watchdog circuit breaker trips with `restarts` recorded in
+/// a failure window that opened `window_age` ago.
+///
+/// A window older than [`WATCHDOG_FAILURE_WINDOW`] has expired and is
+/// reset rather than tripped.
+#[must_use]
+pub fn restart_budget_exhausted(restarts: u32, window_age: Option<Duration>) -> bool {
+    restarts >= WATCHDOG_MAX_RAPID_RESTARTS
+        && window_age.is_none_or(|age| age <= WATCHDOG_FAILURE_WINDOW)
+}
+
+/// Whether the watchdog gives up on the daemon.
+///
+/// It gives up when the rapid-restart window fills, or after
+/// `consecutive_failures` failed runs in a row, however long each took. A
+/// failed run is a startup that never became healthy, or a daemon that
+/// exited before [`WATCHDOG_STABLE_UPTIME`]. A startup may run for up to
+/// [`DAEMON_STARTUP_CEILING`], so slow attempts can outlast the failure
+/// window; the consecutive count keeps a daemon that never stays up from
+/// being restarted forever.
+#[must_use]
+pub fn watchdog_gives_up(
+    restarts: u32,
+    window_age: Option<Duration>,
+    consecutive_failures: u32,
+) -> bool {
+    consecutive_failures >= WATCHDOG_MAX_RAPID_RESTARTS
+        || restart_budget_exhausted(restarts, window_age)
+}
+
+/// Sleep out the restart backoff, unless the watchdog is about to give
+/// up: giving up never waits out a final backoff first.
+async fn backoff_before_restart(
+    restart_count: u32,
+    window_anchor: Option<Instant>,
+    consecutive_failures: u32,
+) {
+    let window_age = window_anchor.map(|anchor| anchor.elapsed());
+    if !watchdog_gives_up(restart_count, window_age, consecutive_failures) {
+        tokio::time::sleep(restart_backoff(restart_count)).await;
+    }
+}
+
 #[must_use]
 pub fn is_terminal_daemon_exit_code(code: Option<i32>) -> bool {
     cfg!(target_os = "macos") && code == Some(MACOS_DAEMON_OWNER_CONFLICT_EXIT_CODE)
@@ -1761,8 +1977,11 @@ pub fn is_terminal_daemon_exit_code(code: Option<i32>) -> bool {
 
 enum DaemonStartupOutcome {
     Healthy,
-    Exited(std::process::ExitStatus),
-    TimedOut,
+    Exited {
+        status: std::process::ExitStatus,
+        phase: Option<DaemonStartupPhase>,
+    },
+    GaveUp(StartupStall),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1794,30 +2013,40 @@ async fn wait_for_daemon_startup(
     client: &reqwest::Client,
     base: &Url,
     daemon: &mut ManagedDaemon,
-    timeout: Duration,
     poll_interval: Duration,
 ) -> Result<DaemonStartupOutcome> {
     let started = Instant::now();
+    let mut watch = StartupWatch::default();
     loop {
         if let Some(DaemonStartupObservation::Exited(status)) =
             select_daemon_startup_observation(poll_daemon_exit(daemon)?, false)
         {
-            return Ok(DaemonStartupOutcome::Exited(status));
+            return Ok(DaemonStartupOutcome::Exited {
+                status,
+                phase: watch.last_phase(),
+            });
         }
-        let healthy = probe_health(client, base, HEALTH_PROBE_TIMEOUT).await;
-        match select_daemon_startup_observation(poll_daemon_exit(daemon)?, healthy) {
+        let probe = probe_startup(client, base, HEALTH_PROBE_TIMEOUT).await;
+        match select_daemon_startup_observation(
+            poll_daemon_exit(daemon)?,
+            probe == StartupProbe::Ready,
+        ) {
             Some(DaemonStartupObservation::Exited(status)) => {
-                return Ok(DaemonStartupOutcome::Exited(status));
+                return Ok(DaemonStartupOutcome::Exited {
+                    status,
+                    phase: watch.last_phase(),
+                });
             }
             Some(DaemonStartupObservation::Healthy) => {
                 return Ok(DaemonStartupOutcome::Healthy);
             }
             None => {}
         }
-        let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
-            return Ok(DaemonStartupOutcome::TimedOut);
-        };
-        tokio::time::sleep(poll_interval.min(remaining)).await;
+        match watch.observe(started.elapsed(), probe) {
+            StartupVerdict::Ready => return Ok(DaemonStartupOutcome::Healthy),
+            StartupVerdict::Wait => tokio::time::sleep(poll_interval).await,
+            StartupVerdict::GiveUp(stall) => return Ok(DaemonStartupOutcome::GaveUp(stall)),
+        }
     }
 }
 
@@ -1827,10 +2056,15 @@ async fn wait_for_daemon_startup(
 ///
 /// Per-attempt flow:
 /// 1. Spawn the daemon as a child process.
-/// 2. Wait up to [`DAEMON_STARTUP_TIMEOUT`] for `/health` to respond.
+/// 2. Wait for `/health` to answer `200`. A daemon that reports startup
+///    progress gets up to [`DAEMON_STARTUP_STALL_WINDOW`] without progress
+///    and [`DAEMON_STARTUP_CEILING`] in total; one that never answers gets
+///    [`DAEMON_STARTUP_TIMEOUT`]. Then it is killed and retried.
 /// 3. If healthy, block on the child until it exits.
 /// 4. On exit, log the status and decide whether to keep restarting
-///    (under the rapid-restart cap) or give up (cap exhausted).
+///    (under the rapid-restart cap) or give up (cap exhausted, or
+///    [`WATCHDOG_MAX_RAPID_RESTARTS`] failed runs in a row). Giving up
+///    latches a [`SupervisorFailure`] that the tray's Retry clears.
 ///
 /// "Rapid" here is gated by [`WATCHDOG_STABLE_UPTIME`]: a daemon that
 /// stays healthy for at least that long resets the counter on its
@@ -1845,6 +2079,8 @@ async fn run_watchdog_loop(
 ) {
     let mut restart_count: u32 = 0;
     let mut window_anchor: Option<Instant> = None;
+    let mut consecutive_failures: u32 = 0;
+    let mut last_startup_phase: Option<DaemonStartupPhase> = None;
 
     loop {
         if state.owner_handover_stop() {
@@ -1859,14 +2095,23 @@ async fn run_watchdog_loop(
             window_anchor = None;
         }
 
-        if restart_count >= WATCHDOG_MAX_RAPID_RESTARTS {
+        if watchdog_gives_up(
+            restart_count,
+            window_anchor.map(|anchor| anchor.elapsed()),
+            consecutive_failures,
+        ) {
             tracing::error!(
                 restarts = restart_count,
+                consecutive_failures,
                 window_secs = WATCHDOG_FAILURE_WINDOW.as_secs(),
+                startup_phase = last_startup_phase.map(DaemonStartupPhase::as_str),
                 "daemon failed to stay alive too many times in window; supervisor giving up"
             );
             state.clear_child();
-            state.mark_permanent_failure();
+            state.record_permanent_failure(SupervisorFailure {
+                restarts: restart_count.max(consecutive_failures),
+                startup_phase: last_startup_phase,
+            });
             return;
         }
 
@@ -1882,8 +2127,10 @@ async fn run_watchdog_loop(
             Ok(daemon) => daemon,
             Err(error) => {
                 tracing::warn!(%error, attempt = restart_count + 1, "failed to spawn daemon");
+                last_startup_phase = None;
+                consecutive_failures = consecutive_failures.saturating_add(1);
                 record_failure(&mut restart_count, &mut window_anchor);
-                tokio::time::sleep(restart_backoff(restart_count)).await;
+                backoff_before_restart(restart_count, window_anchor, consecutive_failures).await;
                 continue;
             }
         };
@@ -1899,13 +2146,12 @@ async fn run_watchdog_loop(
             &client,
             &daemon_url,
             &mut daemon,
-            DAEMON_STARTUP_TIMEOUT,
             DAEMON_STARTUP_POLL_INTERVAL,
         )
         .await;
         let retry = match startup {
             Ok(DaemonStartupOutcome::Healthy) => false,
-            Ok(DaemonStartupOutcome::Exited(status))
+            Ok(DaemonStartupOutcome::Exited { status, .. })
                 if is_terminal_daemon_exit_code(status.code()) =>
             {
                 tracing::info!(
@@ -1932,20 +2178,27 @@ async fn run_watchdog_loop(
                 }
                 return;
             }
-            Ok(DaemonStartupOutcome::Exited(status)) => {
+            Ok(DaemonStartupOutcome::Exited { status, phase }) => {
                 tracing::warn!(
                     pid,
                     ?status,
+                    startup_phase = phase.map(DaemonStartupPhase::as_str),
                     "daemon exited before becoming healthy; supervisor will restart"
                 );
+                last_startup_phase = phase;
                 true
             }
-            Ok(DaemonStartupOutcome::TimedOut) => {
+            Ok(DaemonStartupOutcome::GaveUp(stall)) => {
                 tracing::warn!(
                     pid,
-                    timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
-                    "daemon did not become healthy before timeout; killing and retrying"
+                    reason = stall.reason(),
+                    startup_phase = stall.phase().map(DaemonStartupPhase::as_str),
+                    no_answer_timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
+                    stall_window_ms = DAEMON_STARTUP_STALL_WINDOW.as_millis(),
+                    ceiling_ms = DAEMON_STARTUP_CEILING.as_millis(),
+                    "daemon did not become healthy; killing and retrying"
                 );
+                last_startup_phase = stall.phase();
                 true
             }
             Err(error) => {
@@ -1954,6 +2207,7 @@ async fn run_watchdog_loop(
                     %error,
                     "daemon startup observation failed; supervisor will restart"
                 );
+                last_startup_phase = None;
                 true
             }
         };
@@ -1964,12 +2218,14 @@ async fn run_watchdog_loop(
                 tracing::info!(pid, "daemon stopped for owner handover during startup");
                 return;
             }
+            consecutive_failures = consecutive_failures.saturating_add(1);
             record_failure(&mut restart_count, &mut window_anchor);
-            tokio::time::sleep(restart_backoff(restart_count)).await;
+            backoff_before_restart(restart_count, window_anchor, consecutive_failures).await;
             continue;
         }
 
         tracing::info!(pid, "supervisor: daemon healthy");
+        last_startup_phase = None;
         let spawned_at = Instant::now();
         let daemon = Arc::new(Mutex::new(daemon));
         #[cfg(target_os = "macos")]
@@ -1983,10 +2239,11 @@ async fn run_watchdog_loop(
             // the backoff but still charges the restart budget, so a
             // pathological reclaim loop trips the circuit breaker.
             record_failure(&mut restart_count, &mut window_anchor);
+            consecutive_failures = consecutive_failures.saturating_add(1);
             if reclaim_stale_app_sidecar(pid).await {
                 continue;
             }
-            tokio::time::sleep(restart_backoff(restart_count)).await;
+            backoff_before_restart(restart_count, window_anchor, consecutive_failures).await;
             continue;
         }
         #[cfg(target_os = "macos")]
@@ -2005,10 +2262,11 @@ async fn run_watchdog_loop(
                 state.clear_child();
                 drop(daemon);
                 record_failure(&mut restart_count, &mut window_anchor);
+                consecutive_failures = consecutive_failures.saturating_add(1);
                 if reclaim_stale_app_sidecar(pid).await {
                     continue;
                 }
-                tokio::time::sleep(restart_backoff(restart_count)).await;
+                backoff_before_restart(restart_count, window_anchor, consecutive_failures).await;
                 continue;
             };
             state.replace_verified_connection(Some(verified));
@@ -2057,10 +2315,12 @@ async fn run_watchdog_loop(
             // Stable run — reset the budget so the next failure starts fresh.
             restart_count = 0;
             window_anchor = None;
+            consecutive_failures = 0;
         } else {
             record_failure(&mut restart_count, &mut window_anchor);
+            consecutive_failures = consecutive_failures.saturating_add(1);
         }
-        tokio::time::sleep(restart_backoff(restart_count)).await;
+        backoff_before_restart(restart_count, window_anchor, consecutive_failures).await;
     }
 }
 
