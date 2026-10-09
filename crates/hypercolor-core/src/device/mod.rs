@@ -35,8 +35,8 @@ pub use registry::{DeviceRegistry, PortableKeyCollision, PortableRebindError};
 pub use smbus_backend::SmBusBackend;
 pub use smbus_scanner::SmBusScanner;
 pub use state_machine::{
-    DeviceStateMachine, DeviceStateMachineDebugSnapshot, ReconnectPolicy, ReconnectStatus,
-    StateTransitionRecord,
+    DeviceStateMachine, DeviceStateMachineDebugSnapshot, FLAP_ESCALATION_THRESHOLD, FlapEscalation,
+    RECONNECT_STABLE_AFTER, ReconnectPolicy, ReconnectStatus, StateTransitionRecord,
 };
 pub use unclaimed::{UnclaimedDeviceStore, UsbObservation};
 pub use usb_backend::{

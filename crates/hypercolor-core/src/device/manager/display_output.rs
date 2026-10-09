@@ -256,7 +256,8 @@ impl DisplayDeliveryCompletion {
                 lane.transport_failed.fetch_add(1, Ordering::Relaxed);
                 lane.evict_display_sink();
             }
-            self.failure_tracker.record_failure(self.delivery_id, error);
+            self.failure_tracker
+                .record_failure(self.delivery_id, error, false);
             return;
         }
 
@@ -280,7 +281,8 @@ impl DisplayDeliveryCompletion {
                     lane.transport_failed.fetch_add(1, Ordering::Relaxed);
                     lane.evict_display_sink();
                 }
-                self.failure_tracker.record_failure(self.delivery_id, error);
+                self.failure_tracker
+                    .record_failure(self.delivery_id, error, ack.transient);
             }
             DeviceDeliveryStatus::SuppressedDuplicate | DeviceDeliveryStatus::SuppressedCadence => {
                 let error = DeviceError::protocol(
@@ -291,7 +293,8 @@ impl DisplayDeliveryCompletion {
                     lane.transport_failed.fetch_add(1, Ordering::Relaxed);
                     lane.evict_display_sink();
                 }
-                self.failure_tracker.record_failure(self.delivery_id, error);
+                self.failure_tracker
+                    .record_failure(self.delivery_id, error, false);
             }
         }
     }
