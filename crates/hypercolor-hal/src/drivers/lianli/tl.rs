@@ -276,7 +276,7 @@ impl Protocol for TlFanProtocol {
         match command {
             0xA1 => {
                 let mut counts = [0_u8; TL_MAX_PORTS];
-                for chunk in payload.chunks_exact(3) {
+                for chunk in payload.as_chunks::<3>().0 {
                     let descriptor = chunk[0];
                     if descriptor & 0x80 == 0 {
                         continue;

@@ -274,7 +274,7 @@ This section is for contributors and platform porters. Ordinary users do not nee
 
 ### Prerequisites
 
-- **Rust 1.94+** (Edition 2024). Install via [rustup](https://rustup.rs/).
+- **Rust 1.95+** (Edition 2024). Install via [rustup](https://rustup.rs/).
 - **`just`**, the task runner. `cargo install just` or your distro's package manager.
 - **Bun**, required for the web UI and TypeScript SDK. `curl -fsSL https://bun.sh/install | bash`.
 - **Platform libraries**: see the distribution-specific lists below.

@@ -38,8 +38,10 @@ fn static_layer_surfaces_reuse_final_srgba_storage() {
     assert!(
         static_surface(&first)
             .rgba_bytes()
-            .chunks_exact(4)
-            .all(|pixel| pixel == [expected.r, expected.g, expected.b, expected.a])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [expected.r, expected.g, expected.b, expected.a])
     );
     assert_eq!(cache.entry_count(), 1);
 }
@@ -54,8 +56,10 @@ fn transparent_static_layer_surface_preserves_zero_alpha() {
     assert!(
         static_surface(&frame)
             .rgba_bytes()
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 0, 0, 0])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [0, 0, 0, 0])
     );
 }
 

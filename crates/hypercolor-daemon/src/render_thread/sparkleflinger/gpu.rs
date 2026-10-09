@@ -404,7 +404,7 @@ impl GpuCompositorSurfaceSet {
         height: u32,
     ) -> Result<Self> {
         let generation = NEXT_GPU_SURFACE_SET_GENERATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .map_err(|_| anyhow::anyhow!("GPU compositor surface identity space is exhausted"))?;

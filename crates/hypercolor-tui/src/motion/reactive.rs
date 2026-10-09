@@ -248,7 +248,7 @@ pub fn sample_canvas_border(width: u32, height: u32, pixels: &[u8]) -> Option<(u
     // Top + bottom rows
     for y in [0_usize, h - 1] {
         let row = &pixels[y * stride..y * stride + stride];
-        for px in row.chunks_exact(3) {
+        for px in row.as_chunks::<3>().0 {
             sum_r += u64::from(px[0]);
             sum_g += u64::from(px[1]);
             sum_b += u64::from(px[2]);

@@ -795,7 +795,9 @@ fn stale_native_frame_never_enters_the_legacy_cpu_publication() {
     );
     assert!(
         canvas_bytes(&screen)
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|pixel| pixel[1] > pixel[0])
     );
     let recovered = status.snapshot();
@@ -857,7 +859,9 @@ fn reconfiguration_fences_the_previous_worker_generation() {
         |source| {
             wait_for_grid_width(source, 1, |data| {
                 canvas_bytes(data)
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .all(|pixel| pixel[1] > pixel[0] && pixel[1] > pixel[2])
             })
         },

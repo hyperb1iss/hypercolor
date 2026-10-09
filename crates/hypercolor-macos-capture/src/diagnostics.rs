@@ -214,7 +214,7 @@ impl TimingCounters {
         self.buckets[bucket].fetch_add(1, Ordering::Relaxed);
         let _ = self
             .total_ns
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
                 Some(total.saturating_add(nanos))
             });
         self.max_ns.fetch_max(nanos, Ordering::Relaxed);

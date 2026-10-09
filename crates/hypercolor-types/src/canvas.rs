@@ -172,7 +172,7 @@ impl Canvas {
                 byte_len: len,
             })?;
         pixels.resize(len, 0);
-        for chunk in pixels.chunks_exact_mut(BYTES_PER_PIXEL) {
+        for chunk in pixels.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
             chunk[3] = 255;
         }
         Ok(Self {
@@ -374,15 +374,13 @@ impl Canvas {
     /// View pixel data as `[u8; 4]` RGBA tuples.
     ///
     /// Returns a slice of length `width * height`.
-    #[must_use]
     pub fn pixels(&self) -> impl ExactSizeIterator<Item = [u8; 4]> + '_ {
         self.pixels
             .as_slice()
-            .chunks_exact(BYTES_PER_PIXEL)
-            .map(|chunk| {
-                // chunks_exact guarantees exactly BYTES_PER_PIXEL elements
-                [chunk[0], chunk[1], chunk[2], chunk[3]]
-            })
+            .as_chunks::<BYTES_PER_PIXEL>()
+            .0
+            .iter()
+            .copied()
     }
 
     /// Read a single pixel. Returns opaque black for out-of-bounds coordinates.
@@ -417,7 +415,7 @@ impl Canvas {
 
     /// Fill the entire canvas with a single color.
     pub fn fill(&mut self, color: Rgba) {
-        for chunk in self.pixels_mut().chunks_exact_mut(BYTES_PER_PIXEL) {
+        for chunk in self.pixels_mut().as_chunks_mut::<BYTES_PER_PIXEL>().0 {
             chunk[0] = color.r;
             chunk[1] = color.g;
             chunk[2] = color.b;

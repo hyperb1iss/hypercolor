@@ -90,7 +90,7 @@ Run the narrowest gate that covers what you changed. Do not skip the gate for "s
 
 ### Rust
 
-- **Edition 2024**, Rust 1.94 or later.
+- **Edition 2024**, Rust 1.95 or later.
 - **Clippy pedantic** enforced at deny level. See `Cargo.toml` for the explicit allow-list.
 - **`unsafe` is forbidden** workspace-wide. The audited exceptions are the platform-interop crates that make OS, GPU, or driver calls: `hypercolor-app`, `hypercolor-platform-fs`, `hypercolor-pipewire-interop`, `hypercolor-linux-gpu-interop`, `hypercolor-linux-session`, the five `hypercolor-macos-*` crates (capture, gpu-interop, input, media, session), and the six `hypercolor-windows-*` crates (capture, gpu-interop, helper, input, pawnio, session). Each of those also denies `clippy::undocumented_unsafe_blocks`, so every `unsafe` block carries a safety comment. Run `rg -l 'unsafe_code' crates/*/Cargo.toml` for the live set; nothing outside it may opt out.
 - **`unwrap()` is forbidden.** Use `?`, `.ok()`, `expect("clear reason")`, or handle the error explicitly.

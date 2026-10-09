@@ -64,7 +64,7 @@ impl DeadlineScheduler {
         let id = self
             .inner
             .next_id
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
             .map_err(|_| io::Error::other("macOS native deadline identity exhausted"))?;
         let mut queue = lock(&self.inner.queue);
         queue.deadline_by_id.insert(id, deadline);

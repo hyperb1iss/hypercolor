@@ -711,7 +711,9 @@ fn exact_gpu_surfaces_normalize_every_display_rotation() {
         let rgba = super::gpu_surface::fixture::readback_and_release(&fixture.plan, publication)
             .expect("rotated Surface reads back after release");
         let observed_red = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| pixel[0])
             .collect::<Vec<_>>();
         assert_eq!(observed_red, expected_red);

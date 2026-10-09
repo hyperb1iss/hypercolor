@@ -1487,7 +1487,7 @@ fn rebuild_zone_colors_from_mapped_bytes(
             .saturating_add(zone_plan.len)
             .saturating_mul(4);
         let packed_zone = &packed_bytes[start..end];
-        for (color, packed_rgb) in zone.colors.iter_mut().zip(packed_zone.chunks_exact(4)) {
+        for (color, packed_rgb) in zone.colors.iter_mut().zip(packed_zone.as_chunks::<4>().0) {
             *color = [packed_rgb[0], packed_rgb[1], packed_rgb[2]];
         }
     }

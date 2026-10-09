@@ -287,7 +287,7 @@ pub(super) fn create_screen_target(
 
 fn next_screen_target_id() -> Result<ScreenNativeExecutionTargetId> {
     let target_id = NEXT_SCREEN_TARGET_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .map_err(|_| anyhow::anyhow!("screen target identity space is exhausted"))?;

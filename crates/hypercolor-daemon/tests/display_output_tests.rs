@@ -156,7 +156,7 @@ impl RecordingDisplayBackend {
         }
         if self
             .transient_display_failures
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok()
@@ -256,7 +256,7 @@ impl DeviceDisplaySink for RecordingDisplaySink {
                     actor_release.wait();
                 }
                 let ack = if failures_remaining
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                         remaining.checked_sub(1)
                     })
                     .is_ok()

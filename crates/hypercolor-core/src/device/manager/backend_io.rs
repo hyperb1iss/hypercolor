@@ -108,11 +108,7 @@ impl BackendIo {
     }
 
     /// Whether this backend can briefly connect an idle device for direct control.
-    #[allow(
-        clippy::unused_async,
-        reason = "control capability lookups share the asynchronous backend I/O facade"
-    )]
-    pub async fn supports_temporary_direct_control(&self, info: &DeviceInfo) -> bool {
+    pub fn supports_temporary_direct_control(&self, info: &DeviceInfo) -> bool {
         self.backend.supports_temporary_direct_control(info)
     }
 

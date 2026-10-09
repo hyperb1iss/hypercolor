@@ -141,7 +141,7 @@ fn legacy_face_overlay_rgba(
         }
     }
 
-    for pixel in target_rgba.chunks_exact_mut(4) {
+    for pixel in target_rgba.as_chunks_mut::<4>().0 {
         pixel[3] = u8::MAX;
     }
     target_rgba
@@ -150,8 +150,10 @@ fn legacy_face_overlay_rgba(
 fn legacy_replace_face_rgba_in_place(target_rgba: &mut [u8], source_rgba: &[u8], opacity: f32) {
     let opacity = opacity.clamp(0.0, 1.0);
     for (target_pixel, source_pixel) in target_rgba
-        .chunks_exact_mut(4)
-        .zip(source_rgba.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(source_rgba.as_chunks::<4>().0)
     {
         let source_alpha = (f32::from(source_pixel[3]) / 255.0) * opacity;
         target_pixel[0] = encode_srgb_channel(decode_srgb_channel(source_pixel[0]) * source_alpha);
@@ -168,8 +170,10 @@ fn legacy_blend_face_material_tint_rgba(target_rgba: &mut [u8], source_rgba: &[u
     }
 
     for (dst_px, src_px) in target_rgba
-        .chunks_exact_mut(4)
-        .zip(source_rgba.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(source_rgba.as_chunks::<4>().0)
     {
         let alpha = (f32::from(src_px[3]) / 255.0) * opacity;
         if alpha <= 0.0 {
@@ -201,8 +205,10 @@ fn legacy_blend_face_luma_reveal_rgba(target_rgba: &mut [u8], source_rgba: &[u8]
     }
 
     for (dst_px, src_px) in target_rgba
-        .chunks_exact_mut(4)
-        .zip(source_rgba.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(source_rgba.as_chunks::<4>().0)
     {
         let alpha = (f32::from(src_px[3]) / 255.0) * opacity;
         if alpha <= 0.0 {
@@ -324,8 +330,10 @@ fn sparkleflinger_composes_face_modes_as_general_layers() {
     ] {
         let mut expected = legacy_face_overlay_rgba(&scene, &face, face_mode, 0.6);
         for (expected_pixel, scene_pixel) in expected
-            .chunks_exact_mut(4)
-            .zip(scene.rgba_bytes().chunks_exact(4))
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(scene.rgba_bytes().as_chunks::<4>().0)
         {
             expected_pixel[3] = scene_pixel[3];
         }

@@ -836,7 +836,7 @@ fn next_browser_connection_incarnation() -> BrowserConnectionIncarnation {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     let value = COUNTER
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .expect("browser connection incarnation exhausted");

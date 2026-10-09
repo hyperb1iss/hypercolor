@@ -26,7 +26,7 @@ static NEXT_QUEUE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(super) fn next_queue_generation() -> u64 {
     NEXT_QUEUE_GENERATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
             (generation != 0).then(|| generation.checked_add(1).unwrap_or(0))
         })
         .expect("device output queue generation space exhausted")

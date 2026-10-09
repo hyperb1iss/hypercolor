@@ -478,15 +478,31 @@ fn surface_letterbox_fill_modes_preserve_content_and_alpha() {
             .expect("Surface output stays writable");
         assert!(
             pixels[..20]
-                .chunks_exact(4)
-                .all(|pixel| pixel == expected_top)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == expected_top)
         );
-        assert!(pixels[20..40].chunks_exact(4).all(|pixel| pixel == red));
-        assert!(pixels[40..60].chunks_exact(4).all(|pixel| pixel == blue));
+        assert!(
+            pixels[20..40]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == red)
+        );
+        assert!(
+            pixels[40..60]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == blue)
+        );
         assert!(
             pixels[60..]
-                .chunks_exact(4)
-                .all(|pixel| pixel == expected_bottom)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == expected_bottom)
         );
         materializer
             .discard_staged(fixture.generation)
@@ -571,13 +587,17 @@ fn surface_fill_is_exact_after_tuning_for_rgba_and_bgra() {
                 .expect("processed Surface remains writable");
             assert!(
                 pixels[..20]
-                    .chunks_exact(4)
-                    .all(|pixel| pixel == expected_top)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|pixel| *pixel == expected_top)
             );
             assert!(
                 pixels[60..]
-                    .chunks_exact(4)
-                    .all(|pixel| pixel == expected_bottom)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|pixel| *pixel == expected_bottom)
             );
         }
     }
@@ -733,28 +753,38 @@ fn detected_bars_reflow_without_stretching_content_aspect() {
         .expect("dynamic output stays writable");
     assert!(
         pixels[..28]
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 0, 0, 0])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [0, 0, 0, 0])
     );
     assert!(
         pixels[28..56]
-            .chunks_exact(4)
-            .all(|pixel| pixel == [255, 0, 0, 255])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [255, 0, 0, 255])
     );
     assert!(
         pixels[56..84]
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 255, 0, 255])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [0, 255, 0, 255])
     );
     assert!(
         pixels[84..112]
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 0, 255, 255])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [0, 0, 255, 255])
     );
     assert!(
         pixels[112..]
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 0, 0, 0])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [0, 0, 0, 0])
     );
     materializer
         .discard_staged(fixture.generation)

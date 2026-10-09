@@ -42,7 +42,7 @@ pub async fn local_directory(http: &reqwest::Client, base_url: &str) -> Result<P
 }
 
 fn is_local_daemon(base_url: &str) -> bool {
-    url::Url::parse(base_url).ok().is_some_and(|url| {
+    url::Url::parse(base_url).is_ok_and(|url| {
         matches!(url.host(), Some(url::Host::Domain("localhost")))
             || matches!(url.host(), Some(url::Host::Ipv4(address)) if address.is_loopback())
             || matches!(url.host(), Some(url::Host::Ipv6(address)) if address.is_loopback())

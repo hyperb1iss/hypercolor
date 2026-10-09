@@ -618,7 +618,7 @@ impl Clone for BrowserInputAttachment {
     fn clone(&self) -> Self {
         self.lease
             .owners
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owners| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |owners| {
                 Some(
                     owners
                         .checked_add(1)

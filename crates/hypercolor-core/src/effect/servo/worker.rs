@@ -233,14 +233,18 @@ fn can_reuse_cached_gpu_frame(
 fn canvas_has_visible_alpha(canvas: &Canvas) -> bool {
     canvas
         .as_rgba_bytes()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|pixel| pixel[3] != 0)
 }
 
 fn canvas_is_fully_transparent(canvas: &Canvas) -> bool {
     canvas
         .as_rgba_bytes()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .all(|pixel| pixel[3] == 0)
 }
 

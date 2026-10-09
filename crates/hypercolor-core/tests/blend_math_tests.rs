@@ -74,15 +74,12 @@ fn difference_slice_blend_matches_single_pixel_reference() {
         90, 80, 70, 255, 1, 2, 3, 128, 220, 180, 140, 255, 200, 100, 50, 0,
     ];
     let expected: Vec<u8> = dst
-        .chunks_exact(4)
-        .zip(src.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(src.as_chunks::<4>().0)
         .flat_map(|(dst_px, src_px)| {
-            blend_rgba_pixel(
-                [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
-                [src_px[0], src_px[1], src_px[2], src_px[3]],
-                PixelBlendMode::Difference,
-                1.0,
-            )
+            blend_rgba_pixel(*dst_px, *src_px, PixelBlendMode::Difference, 1.0)
         })
         .collect();
 
@@ -100,15 +97,12 @@ fn screen_slice_blend_matches_single_pixel_reference() {
         90, 80, 70, 255, 1, 2, 3, 128, 220, 180, 140, 255, 200, 100, 50, 0,
     ];
     let expected: Vec<u8> = dst
-        .chunks_exact(4)
-        .zip(src.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(src.as_chunks::<4>().0)
         .flat_map(|(dst_px, src_px)| {
-            blend_rgba_pixel(
-                [dst_px[0], dst_px[1], dst_px[2], dst_px[3]],
-                [src_px[0], src_px[1], src_px[2], src_px[3]],
-                PixelBlendMode::Screen,
-                1.0,
-            )
+            blend_rgba_pixel(*dst_px, *src_px, PixelBlendMode::Screen, 1.0)
         })
         .collect();
 

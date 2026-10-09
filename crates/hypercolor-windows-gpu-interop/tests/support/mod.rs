@@ -173,7 +173,7 @@ pub fn read_texture_pixels(
 
 #[allow(dead_code)]
 pub fn assert_uniform_bgra(pixels: &[u8], expected: [u8; 4]) {
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in pixels.as_chunks::<4>().0 {
         assert!(
             pixel
                 .iter()

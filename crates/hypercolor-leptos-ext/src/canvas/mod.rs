@@ -62,9 +62,7 @@ pub fn supports_global(name: &str) -> bool {
 }
 
 pub fn supports_bitmap_worker_canvas() -> bool {
-    create_canvas()
-        .ok()
-        .is_some_and(|canvas| bitmap_renderer_context(&canvas).is_some())
+    create_canvas().is_ok_and(|canvas| bitmap_renderer_context(&canvas).is_some())
         && supports_global("createImageBitmap")
         && supports_global("Worker")
 }

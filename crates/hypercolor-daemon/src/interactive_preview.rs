@@ -432,7 +432,7 @@ impl InteractivePreviewExecutor {
         let resources = self.inner.resources.try_reserve(resource_ledger)?;
 
         let consumer_value = NEXT_CONSUMER_INCARNATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .expect("interactive preview consumer incarnation exhausted");

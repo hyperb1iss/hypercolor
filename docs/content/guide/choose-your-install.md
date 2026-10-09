@@ -159,7 +159,7 @@ The AUR package installs the prebuilt binaries, sets up the systemd user service
 Building from source is the right path for contributors, packagers, and people who need a custom build (e.g., with Servo HTML effect rendering enabled). It is not necessary for end users.
 
 You need:
-- Rust 1.94+ (Edition 2024), installed via `rustup`
+- Rust 1.95+ (Edition 2024), installed via `rustup`
 - `just`, the task runner
 - System libraries for your OS (USB, audio, GTK, WebKit)
 

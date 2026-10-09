@@ -773,7 +773,6 @@ impl PreparedGpuSurfacePlan {
     }
 
     /// Exact descriptors in stable publication order.
-    #[must_use]
     pub fn descriptors(&self) -> impl ExactSizeIterator<Item = &GpuSurfaceDescriptor> {
         self.routes.iter().map(|route| route.descriptor.as_ref())
     }
@@ -1871,7 +1870,7 @@ fn create_surface_slot(
 
 fn next_shared_surface_handle_id() -> CaptureResult<NonZeroU64> {
     let value = NEXT_SHARED_SURFACE_HANDLE_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .map_err(|_| CaptureError::GpuSurfaceSynchronizationExhausted)?;

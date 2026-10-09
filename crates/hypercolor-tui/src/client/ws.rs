@@ -342,7 +342,7 @@ fn rgba_to_rgb(pixel_data: &[u8]) -> Option<Vec<u8>> {
     let rgb_len = (pixel_data.len() / 4).checked_mul(3)?;
     let mut rgb = Vec::new();
     rgb.try_reserve_exact(rgb_len).ok()?;
-    for chunk in pixel_data.chunks_exact(4) {
+    for chunk in pixel_data.as_chunks::<4>().0 {
         rgb.extend_from_slice(&chunk[..3]);
     }
     Some(rgb)

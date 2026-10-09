@@ -649,7 +649,7 @@ fn repack_writes_packed_pixels_filler_and_xor_mask() {
         .expect("black frame should repack");
 
     assert_eq!(out.len(), 24, "two lines of twelve bytes");
-    for line in out.chunks_exact(12) {
+    for line in out.as_chunks::<12>().0 {
         // Black packs to 0x0000, so every output byte is the mask itself, and
         // the four filler bytes continue the same mask phase.
         for (index, byte) in line.iter().enumerate() {

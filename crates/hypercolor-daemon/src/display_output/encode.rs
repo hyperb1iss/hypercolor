@@ -351,7 +351,7 @@ pub(super) fn encode_prepared_rgba_frame(
 }
 
 fn apply_display_brightness_rgba(rgba_buffer: &mut [u8], brightness_lut: &[u8; 256]) {
-    for pixel in rgba_buffer.chunks_exact_mut(4) {
+    for pixel in rgba_buffer.as_chunks_mut::<4>().0 {
         pixel[0] = brightness_lut[usize::from(pixel[0])];
         pixel[1] = brightness_lut[usize::from(pixel[1])];
         pixel[2] = brightness_lut[usize::from(pixel[2])];
@@ -429,8 +429,10 @@ fn copy_rgba_to_rgb(
     encode_state.rgb_buffer.resize(required_len, 0);
     for (rgb, rgba) in encode_state
         .rgb_buffer
-        .chunks_exact_mut(3)
-        .zip(encode_state.rgba_buffer.chunks_exact(4))
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(encode_state.rgba_buffer.as_chunks::<4>().0)
     {
         rgb.copy_from_slice(&rgba[..3]);
     }
@@ -705,8 +707,10 @@ fn promote_rgb_to_rgba(rgb_buffer: &[u8], rgba_buffer: &mut Vec<u8>, width: u32,
     }
 
     for (rgba, rgb) in rgba_buffer
-        .chunks_exact_mut(4)
-        .zip(rgb_buffer.chunks_exact(3))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(rgb_buffer.as_chunks::<3>().0)
     {
         rgba[0] = rgb[0];
         rgba[1] = rgb[1];
@@ -724,7 +728,7 @@ fn prepare_black_rgba_frame(geometry: &DisplayGeometry, rgba_buffer: &mut Vec<u8
         rgba_buffer.resize(render_len, 0);
     }
 
-    for pixel in rgba_buffer.chunks_exact_mut(4) {
+    for pixel in rgba_buffer.as_chunks_mut::<4>().0 {
         pixel[0] = 0;
         pixel[1] = 0;
         pixel[2] = 0;

@@ -778,7 +778,7 @@ impl D3d11On12ScreenBridge {
         let content_generation = self
             .inner
             .next_content_generation
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
                 generation.checked_add(1)
             })
             .map_err(|_| D3d11On12ScreenInteropError::IdentityExhausted)?;

@@ -484,7 +484,7 @@ impl Protocol for AuraSmBusProtocol {
 
     fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let Some(variant) = self.firmware_variant() else {
-            commands.truncate(0);
+            commands.clear();
             return;
         };
 

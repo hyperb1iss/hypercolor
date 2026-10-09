@@ -122,8 +122,10 @@ impl LineRepack<'_> {
             let line = &mut out[row * self.line_len..(row + 1) * self.line_len];
 
             for (pixel, packed) in source_row
-                .chunks_exact(3)
-                .zip(line[..packed_line_bytes].chunks_exact_mut(2))
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(line[..packed_line_bytes].as_chunks_mut::<2>().0)
             {
                 packed
                     .copy_from_slice(&self.format.pack(pixel[0], pixel[1], pixel[2]).to_le_bytes());

@@ -73,7 +73,9 @@ async fn main() -> anyhow::Result<()> {
             renderer.render_into(&input, canvas)?;
             let colors: Vec<[u8; 3]> = canvas
                 .as_rgba_bytes()
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|pixel| [pixel[0], pixel[1], pixel[2]])
                 .collect();
             backend.write_colors(id, &colors).await?;

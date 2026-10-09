@@ -80,7 +80,7 @@ pub(super) fn blend_face_overlay_rgba(
         }
     }
 
-    for pixel in scene_rgba.chunks_exact_mut(4) {
+    for pixel in scene_rgba.as_chunks_mut::<4>().0 {
         pixel[3] = u8::MAX;
     }
 }
@@ -88,8 +88,10 @@ pub(super) fn blend_face_overlay_rgba(
 fn replace_face_rgba_in_place(target_rgba: &mut [u8], source_rgba: &[u8], opacity: f32) {
     let opacity = opacity.clamp(0.0, 1.0);
     for (target_pixel, source_pixel) in target_rgba
-        .chunks_exact_mut(4)
-        .zip(source_rgba.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(source_rgba.as_chunks::<4>().0)
     {
         let source_alpha = (f32::from(source_pixel[3]) / 255.0) * opacity;
         target_pixel[0] = encode_srgb_channel(decode_srgb_channel(source_pixel[0]) * source_alpha);
@@ -106,8 +108,10 @@ pub(super) fn blend_material_tint_rgba(target_rgba: &mut [u8], source_rgba: &[u8
     }
 
     for (dst_px, src_px) in target_rgba
-        .chunks_exact_mut(4)
-        .zip(source_rgba.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(source_rgba.as_chunks::<4>().0)
     {
         let alpha = (f32::from(src_px[3]) / 255.0) * opacity;
         if alpha <= 0.0 {
@@ -139,8 +143,10 @@ pub(super) fn blend_luma_reveal_rgba(target_rgba: &mut [u8], source_rgba: &[u8],
     }
 
     for (dst_px, src_px) in target_rgba
-        .chunks_exact_mut(4)
-        .zip(source_rgba.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(source_rgba.as_chunks::<4>().0)
     {
         let alpha = (f32::from(src_px[3]) / 255.0) * opacity;
         if alpha <= 0.0 {

@@ -77,7 +77,9 @@ fn render_media_player_with_controls(
 fn canvas_has_content(canvas: &Canvas) -> bool {
     canvas
         .as_rgba_bytes()
-        .chunks_exact(BYTES_PER_PIXEL)
+        .as_chunks::<BYTES_PER_PIXEL>()
+        .0
+        .iter()
         .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)
 }
 

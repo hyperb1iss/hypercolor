@@ -52,7 +52,7 @@ impl CaptureSessionAuthoritySequencer {
         let generation = self
             .state
             .next
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
                 generation.checked_add(1)
             })
             .map_err(|_| CaptureSessionAuthorityExhausted)?
@@ -90,7 +90,7 @@ impl CaptureSessionAuthoritySequencer {
         }
         self.state
             .current
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < authority.generation()).then_some(authority.generation())
             })
             .map_err(|_| StaleCaptureSessionReservation)?;

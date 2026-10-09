@@ -342,7 +342,7 @@ impl LegacyUniHubProtocol {
         colors: &[[u8; 3]],
     ) {
         let mut payload = [0_u8; LEGACY_MAX_FANS_PER_GROUP * ORIGINAL_LEDS_PER_FAN * 3];
-        for (index, chunk) in payload.chunks_exact_mut(3).enumerate() {
+        for (index, chunk) in payload.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let color = colors.get(index).copied().unwrap_or([0, 0, 0]);
             encode_legacy_color(chunk, color, self.model);
         }

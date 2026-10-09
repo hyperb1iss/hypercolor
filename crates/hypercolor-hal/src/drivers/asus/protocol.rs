@@ -358,7 +358,7 @@ impl Protocol for AuraUsbProtocol {
     fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let normalized = self.normalize_frame_colors(colors);
         if normalized.is_empty() {
-            commands.truncate(0);
+            commands.clear();
             return;
         }
 
