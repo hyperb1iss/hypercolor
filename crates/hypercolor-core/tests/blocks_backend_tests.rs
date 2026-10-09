@@ -388,3 +388,44 @@ async fn blocks_backend_rejects_malformed_key_acks_and_reconnects() -> TestResul
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn blocks_backend_fails_an_oversized_reply_and_reconnects() -> TestResult {
+    let tempdir = tempdir()?;
+    let socket_path = tempdir.path().join("blocksd.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let task = tokio::spawn(async move {
+        serve_discovery(&listener, &[lumi_device()]).await?;
+        let mut reader = serve_ping(&listener).await?;
+        assert_key_request(&mut reader).await?;
+        // A valid acknowledgement, padded to twice the 1 MiB reply cap.
+        let mut ack: serde_json::Value = serde_json::from_str(&key_ack(true))?;
+        ack["pad"] = "x".repeat(2 * 1024 * 1024).into();
+        reader
+            .get_mut()
+            .write_all((ack.to_string() + "\n").as_bytes())
+            .await?;
+        drop(reader);
+        let mut reader = serve_ping(&listener).await?;
+        assert_key_request(&mut reader).await?;
+        reader.get_mut().write_all(key_ack(true).as_bytes()).await?;
+        TestResult::Ok(())
+    });
+    let discovered = BlocksScanner::new(socket_path.clone()).scan().await?;
+    let backend = BlocksBackend::new(socket_path);
+    let device = &discovered[0];
+    backend.adopt_device(device)?;
+    backend.connect(&device.info.id).await?;
+    let error = backend
+        .write_colors(&device.info.id, &key_colors())
+        .await
+        .expect_err("an oversized acknowledgement fails the frame");
+    assert!(
+        error.to_string().contains("exceeded"),
+        "the error names the cap: {error}"
+    );
+    backend.connect(&device.info.id).await?;
+    backend.write_colors(&device.info.id, &key_colors()).await?;
+    task.await??;
+    Ok(())
+}

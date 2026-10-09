@@ -9,12 +9,13 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 use zerocopy::byteorder::{LittleEndian, U64};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
+use super::framing::{LineRead, read_line_capped};
 use super::types::{DiscoverResponse, PongResponse};
 
 /// Binary frame constants matching blocksd's protocol.
@@ -27,6 +28,17 @@ const PIXEL_DATA_SIZE: usize = 675;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Longest reply line a request reads, excluding its newline.
+///
+/// The largest reply is `discover_response`, which lists every block blocksd
+/// manages at about 230 bytes each. The protocol counts a topology's blocks
+/// in seven bits, so a full topology runs about 28 KiB, and about 215 KiB
+/// even with every name and version string at its 127-character limit and
+/// fully escaped. 1 MiB covers several such topologies, since losing a
+/// discover reply hides every block, while still bounding what a peer that
+/// never sends a newline can make a request hold within its timeout.
+const MAX_REPLY_LINE: usize = 1024 * 1024;
 
 const _: () = assert!(
     std::mem::size_of::<BinaryFramePacket>() == BINARY_FRAME_SIZE,
@@ -46,7 +58,7 @@ struct BinaryFramePacket {
 pub struct BlocksConnection {
     reader: BufReader<tokio::io::ReadHalf<UnixStream>>,
     writer: tokio::io::WriteHalf<UnixStream>,
-    read_buf: String,
+    read_buf: Vec<u8>,
     frame_buf: BinaryFramePacket,
 }
 
@@ -63,7 +75,7 @@ impl BlocksConnection {
         Ok(Self {
             reader: BufReader::new(read_half),
             writer: write_half,
-            read_buf: String::with_capacity(4096),
+            read_buf: Vec::with_capacity(4096),
             frame_buf: BinaryFramePacket::new_zeroed(),
         })
     }
@@ -72,7 +84,7 @@ impl BlocksConnection {
     pub async fn ping(&mut self) -> Result<PongResponse> {
         let response = self.json_request(r#"{"type":"ping","id":"hc"}"#).await?;
 
-        serde_json::from_str(&response).context("failed to parse pong response")
+        serde_json::from_str(response).context("failed to parse pong response")
     }
 
     /// Discover all connected ROLI devices.
@@ -81,7 +93,7 @@ impl BlocksConnection {
             .json_request(r#"{"type":"discover","id":"hc"}"#)
             .await?;
 
-        serde_json::from_str(&response).context("failed to parse discover response")
+        serde_json::from_str(response).context("failed to parse discover response")
     }
 
     /// Set brightness for a device.
@@ -138,7 +150,7 @@ impl BlocksConnection {
             "pixels": STANDARD.encode(colors.as_flattened()),
         });
         let response = self.json_request(&request.to_string()).await?;
-        let ack: KeyFrameAck = serde_json::from_str(&response)
+        let ack: KeyFrameAck = serde_json::from_str(response)
             .context("failed to parse blocksd key frame acknowledgement")?;
         if ack.message_type != "key_frame_ack" || ack.uid != uid {
             bail!("unexpected blocksd key frame acknowledgement: {response}");
@@ -148,8 +160,14 @@ impl BlocksConnection {
 
     // ── Internal ────────────────────────────────────────────────────────
 
-    /// Send a JSON request and read the response line.
-    async fn json_request(&mut self, request: &str) -> Result<String> {
+    /// Send a JSON request and read its reply line.
+    ///
+    /// A reply longer than [`MAX_REPLY_LINE`] fails the request. It is
+    /// discarded through its newline, so the connection stays framed and the
+    /// next request still reads its own reply. A request that times out
+    /// leaves the reader mid-reply instead, so its connection must be
+    /// dropped, as the backend does after any failed request.
+    async fn json_request(&mut self, request: &str) -> Result<&str> {
         // Write request + newline
         self.writer
             .write_all(request.as_bytes())
@@ -161,18 +179,22 @@ impl BlocksConnection {
             .context("blocksd write newline failed")?;
         self.writer.flush().await?;
 
-        // Read response line
-        self.read_buf.clear();
-        timeout(REQUEST_TIMEOUT, self.reader.read_line(&mut self.read_buf))
-            .await
-            .context("blocksd response timeout")?
-            .context("blocksd response read failed")?;
-
-        if self.read_buf.is_empty() {
-            bail!("blocksd connection closed during request");
+        let read = timeout(
+            REQUEST_TIMEOUT,
+            read_line_capped(&mut self.reader, &mut self.read_buf, MAX_REPLY_LINE),
+        )
+        .await
+        .context("blocksd response timeout")?
+        .context("blocksd response read failed")?;
+        match read {
+            LineRead::Line => {}
+            LineRead::Oversized => {
+                bail!("blocksd reply exceeded {MAX_REPLY_LINE} bytes and was discarded")
+            }
+            LineRead::Closed => bail!("blocksd connection closed during request"),
         }
 
-        Ok(self.read_buf.clone())
+        std::str::from_utf8(&self.read_buf).context("blocksd reply is not valid UTF-8")
     }
 }
 
@@ -197,3 +219,6 @@ struct KeyFrameAck {
     uid: u64,
     accepted: bool,
 }
+
+#[cfg(test)]
+mod tests;
