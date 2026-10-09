@@ -34,7 +34,7 @@ setup the script deliberately leaves alone.
 
 - **Rust** via [rustup](https://rustup.rs). `rust-toolchain.toml` pins the
   toolchain (currently 1.99.0); rustup installs it automatically on first
-  build. Edition 2024, minimum supported Rust 1.94.
+  build. Edition 2024, minimum supported Rust 1.95.
 - **[just](https://github.com/casey/just)**, the command runner every
   workflow goes through.
 - **[Bun](https://bun.sh)** for the TypeScript effect SDK and bundled

@@ -317,7 +317,7 @@ without the runtime cliffs of unoptimized Servo.
 
 ## Conventions
 
-- **Edition 2024**, Rust 1.94+
+- **Edition 2024**, Rust 1.95+
 - **Tests:** integration and public-API coverage lives in `tests/` directories, named `{feature}_tests.rs`. Small private-internals unit tests may use `#[cfg(test)]` modules; avoid large inline test bodies.
 - **`unsafe_code` is forbidden** workspace-wide by default. The sixteen audited opt-outs are `linux-gpu-interop`, `linux-session`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `macos-media`, `macos-session`, `pipewire-interop`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-session`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
 - **Clippy pedantic** at deny level; see `Cargo.toml` for allowed exceptions
