@@ -359,12 +359,13 @@ async fn running_daemon_answers_starting_until_its_router_is_installed() {
         assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
         let progress = health.startup.expect("starting body carries progress");
         assert_eq!(progress.phase, DaemonStartupPhase::StartingServices);
-        // Nine phase entries, any effect scan steps, and the
-        // render thread's own steps: the runtime, input publication, and
-        // the compositor canvases and sampling plan (the CPU compositor
-        // compiles no pipelines).
+        // Nine phase entries plus the render thread's four steps: the
+        // runtime, input publication, the compositor canvases, and the
+        // sampling plan (the CPU compositor compiles no pipelines). An
+        // effect scan that finds directories or files adds a step for each
+        // on top, so this is a floor, not an exact count.
         assert!(
-            progress.sequence >= 14,
+            progress.sequence >= 13,
             "every earlier phase and step advanced the sequence, got {}",
             progress.sequence
         );
