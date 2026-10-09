@@ -543,7 +543,8 @@ fn send_output_report_locked(
 /// completes, so a 1024-byte packet on a 1025-byte collection reports 1025.
 /// When `WriteFile` completes synchronously it reports 0. Neither loses
 /// bytes. A nonzero count below the packet length does: the backend
-/// truncates packets longer than the report.
+/// truncates packets longer than the report. A truncated packet whose write
+/// completes synchronously still reports 0, so that case is invisible here.
 fn check_output_write(written: usize, packet_len: usize) -> Result<(), TransportError> {
     if written == 0 || written >= packet_len {
         Ok(())
