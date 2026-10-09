@@ -1,5 +1,7 @@
 use hypercolor_types::api::devices::*;
-use hypercolor_ui::components::unclaimed_hardware::{matching_bridge, support_issue_url};
+use hypercolor_ui::components::unclaimed_hardware::{
+    matching_bridge, support_issue_url, vendor_and_model,
+};
 
 fn hardware() -> UnclaimedDevice {
     UnclaimedDevice {
@@ -145,4 +147,56 @@ fn inventory_and_config_events_reach_the_device_hint_channel() {
     assert!(refresh_status_for_event("device_discovery_completed"));
     assert!(refresh_status_for_event("device_state_changed"));
     assert!(refresh_status_for_event("device_disconnected"));
+}
+
+#[test]
+fn support_request_names_the_vid_owner_when_the_host_reports_no_manufacturer() {
+    let kraken = UnclaimedDevice {
+        vendor_id: 0x1532,
+        product_id: 0x0527,
+        product: Some("Razer Kraken Ultimate".to_owned()),
+        ..Default::default()
+    };
+    let url = support_issue_url(&kraken, "windows", false);
+    assert!(url.contains("title=%5Bdevice%5D%20Razer%20Kraken%20Ultimate&"));
+    assert!(url.contains("vendor=Razer&"));
+
+    let screen = UnclaimedDevice {
+        vendor_id: 0x1CBE,
+        product_id: 0xA088,
+        product: Some("Universal Screen".to_owned()),
+        ..Default::default()
+    };
+    let url = support_issue_url(&screen, "windows", false);
+    assert!(
+        url.contains("vendor=VID%201CBE&"),
+        "a shared VID shows the raw id, not a guessed brand"
+    );
+    assert!(!url.contains("Unknown"));
+    assert!(url.contains("title=%5Bdevice%5D%20VID%201CBE%20Universal%20Screen&"));
+}
+
+#[test]
+fn a_title_does_not_repeat_a_vendor_the_product_string_leads_with() {
+    assert_eq!(
+        vendor_and_model("Razer", "Razer Kraken Ultimate"),
+        "Razer Kraken Ultimate"
+    );
+    assert_eq!(
+        vendor_and_model("razer", "RAZER Base Station"),
+        "RAZER Base Station"
+    );
+    assert_eq!(vendor_and_model("Razer", "Razer"), "Razer");
+    assert_eq!(
+        vendor_and_model("Razer", "Razerblade Dock"),
+        "Razer Razerblade Dock"
+    );
+    assert_eq!(
+        vendor_and_model("Corsair", "iCUE LINK Hub"),
+        "Corsair iCUE LINK Hub"
+    );
+    assert_eq!(
+        vendor_and_model("VID 1CBE", "8.8\" Screen"),
+        "VID 1CBE 8.8\" Screen"
+    );
 }

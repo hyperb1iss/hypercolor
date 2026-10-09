@@ -29,7 +29,7 @@ pub use factory::{
 pub use lightscript::{LightScriptFrameUpdateOptions, LightscriptRuntime, normalized_level_to_db};
 pub use loader::{
     HtmlDiscoveryError, HtmlDiscoveryReport, default_effect_search_paths, load_html_effect_file,
-    register_html_effects,
+    register_html_effects, register_html_effects_stepped,
 };
 pub use meta_parser::{
     HtmlControlKind, HtmlControlMetadata, ParsedHtmlEffectMetadata, parse_html_effect_metadata,

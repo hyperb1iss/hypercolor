@@ -39,7 +39,7 @@ use super::{
     InputPublicationDemand, InputPublicationDemandHandle, InputPublicationPump,
     InputPublicationReader, InputPublicationSchedule, InputPublicationStatus,
     InputScreenBranchDemand, LIFECYCLE_PROBE_INTERVAL, cadence_interval,
-    exact_screen_failure_retry_at, run_exact_screen_transition,
+    exact_screen_failure_retry_at, run_exact_screen_transition, run_pump,
     screen_executor_matches_render_target,
 };
 use crate::render_thread::capture_demand::CaptureDomain;
@@ -135,7 +135,7 @@ async fn renderer_observation_prefers_native_over_same_extent_cpu_fallback() {
         .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
     let demands = InputPublicationDemandHandle::new(ScreenNativeExecutionPolicy::Preferred);
-    let mut pump = InputPublicationPump::start(manager, demands.clone())
+    let mut pump = InputPublicationPump::start(manager, demands.clone(), None)
         .await
         .expect("publication pump starts");
     let reader = pump.reader();
@@ -1055,7 +1055,7 @@ async fn pump_waits_for_live_demand_then_samples_without_render_frames() {
         InputPublicationConsumer::Authoritative,
         InputPublicationDemand::all_sources(60, extent(640, 480)),
     );
-    let mut pump = InputPublicationPump::start(manager.clone(), demands)
+    let mut pump = InputPublicationPump::start(manager.clone(), demands, None)
         .await
         .expect("publication pump should start");
 
@@ -1094,7 +1094,7 @@ async fn dropping_the_pump_aborts_its_worker() {
         InputPublicationConsumer::Authoritative,
         InputPublicationDemand::all_sources(120, extent(640, 480)),
     );
-    let pump = InputPublicationPump::start(manager, demands)
+    let pump = InputPublicationPump::start(manager, demands, None)
         .await
         .expect("publication pump should start");
     tokio::time::timeout(Duration::from_millis(500), async {
@@ -1122,9 +1122,10 @@ async fn pump_sleeps_with_zero_typed_demand() {
         )))
         .expect("counting source should register");
     manager.start_all().expect("counting source should start");
-    let mut pump = InputPublicationPump::start(manager, InputPublicationDemandHandle::default())
-        .await
-        .expect("publication pump should start");
+    let mut pump =
+        InputPublicationPump::start(manager, InputPublicationDemandHandle::default(), None)
+            .await
+            .expect("publication pump should start");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(samples.load(Ordering::Relaxed), 0);
@@ -1136,10 +1137,13 @@ async fn pump_sleeps_with_zero_typed_demand() {
 #[tokio::test]
 async fn zero_demand_graph_change_shuts_down_new_source() {
     let manager = InputManager::new();
-    let mut pump =
-        InputPublicationPump::start(manager.clone(), InputPublicationDemandHandle::default())
-            .await
-            .expect("publication pump should start");
+    let mut pump = InputPublicationPump::start(
+        manager.clone(),
+        InputPublicationDemandHandle::default(),
+        None,
+    )
+    .await
+    .expect("publication pump should start");
     tokio::time::sleep(Duration::from_millis(25)).await;
     let capture_active = Arc::new(AtomicBool::new(true));
     let mut source = CountingSource::with_capture_active(
@@ -1177,7 +1181,7 @@ async fn aggregate_demand_owns_interaction_lifecycle_and_cadence() {
     let graph = manager.input_graph_handle();
     let manager = manager;
     let demands = InputPublicationDemandHandle::default();
-    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone(), None)
         .await
         .expect("publication pump should start");
 
@@ -1208,6 +1212,229 @@ async fn aggregate_demand_owns_interaction_lifecycle_and_cadence() {
 }
 
 #[tokio::test]
+async fn device_input_follows_interaction_demand_without_host_capture() {
+    // No host interaction source is registered, as when `[input]` is off.
+    let manager = InputManager::new();
+    let devices = hypercolor_core::input::DeviceInputHandle::new();
+    let demands = InputPublicationDemandHandle::default();
+    let mut pump = InputPublicationPump::start(manager, demands.clone(), Some(devices.clone()))
+        .await
+        .expect("publication pump should start");
+    wait_for_device_demand(&devices, false).await;
+
+    let lease = demands.register(
+        InputPublicationConsumer::PassiveStream,
+        InputPublicationDemand::default().with_source(SourceKind::Interaction, 120),
+    );
+    wait_for_device_demand(&devices, true).await;
+
+    drop(lease);
+    wait_for_device_demand(&devices, false).await;
+
+    let _lease = demands.register(
+        InputPublicationConsumer::PassiveStream,
+        InputPublicationDemand::default().with_source(SourceKind::Interaction, 120),
+    );
+    wait_for_device_demand(&devices, true).await;
+    pump.shutdown()
+        .await
+        .expect("publication pump should stop cleanly");
+    assert!(
+        !devices.is_demanded(),
+        "a stopped pump leaves no device input demanded"
+    );
+}
+
+#[tokio::test]
+async fn aborted_pump_worker_withdraws_device_input_demand() {
+    // An abort, as when shutdown passes its deadline, skips the worker's
+    // normal exit; the demand must still clear when the worker is dropped.
+    let manager = InputManager::new();
+    let devices = hypercolor_core::input::DeviceInputHandle::new();
+    let demands = InputPublicationDemandHandle::default();
+    let _lease = demands.register(
+        InputPublicationConsumer::PassiveStream,
+        InputPublicationDemand::default().with_source(SourceKind::Interaction, 120),
+    );
+    let reader = InputPublicationReader::new(
+        manager.input_graph_handle(),
+        manager.screen_publication_hub(),
+        demands.native_execution_policy(),
+    );
+    let (status, _status_rx) = tokio::sync::watch::channel(InputPublicationStatus::Starting);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let worker = tokio::spawn(run_pump(
+        manager,
+        reader,
+        demands,
+        Some(devices.clone()),
+        tokio_util::sync::CancellationToken::new(),
+        status,
+        ready_tx,
+    ));
+    ready_rx.await.expect("pump worker reports readiness");
+    wait_for_device_demand(&devices, true).await;
+
+    worker.abort();
+    let joined = worker.await;
+    assert!(
+        joined.is_err_and(|error| error.is_cancelled()),
+        "the worker was aborted rather than exiting on its own"
+    );
+    assert!(
+        !devices.is_demanded(),
+        "an aborted pump leaves no device input demanded"
+    );
+}
+
+/// Interaction source that records, at each host capture change, whether
+/// device input was still demanded.
+struct DeviceDemandProbeSource {
+    devices: hypercolor_core::input::DeviceInputHandle,
+    changes: Arc<StdMutex<Vec<(bool, bool)>>>,
+    running: bool,
+}
+
+impl InputSource for DeviceDemandProbeSource {
+    fn name(&self) -> &'static str {
+        "device_demand_probe"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for DeviceDemandProbeSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for DeviceDemandProbeSource {
+    fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.changes
+            .lock()
+            .expect("probe change log")
+            .push((active, self.devices.is_demanded()));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn aborted_pump_worker_releases_host_capture_demand() {
+    // An abort, as when shutdown passes its deadline, skips the worker's
+    // normal exit; host capture must still be released when the worker is
+    // dropped, after device input demand is withdrawn.
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let interaction_changes = Arc::new(StdMutex::new(Vec::new()));
+    let devices = hypercolor_core::input::DeviceInputHandle::new();
+    let manager = InputManager::new();
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(
+            ScreenDemandSource::new(Arc::clone(&transitions)),
+        )))
+        .expect("screen demand source should register");
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            DeviceDemandProbeSource {
+                devices: devices.clone(),
+                changes: Arc::clone(&interaction_changes),
+                running: false,
+            },
+        )))
+        .expect("probe source should register");
+    manager.start_all().expect("input sources should start");
+    let demands = InputPublicationDemandHandle::default();
+    let _registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default()
+            .with_fixture_screen(60, extent(1_280, 720))
+            .with_source(SourceKind::Interaction, 120),
+    );
+    let reader = InputPublicationReader::new(
+        manager.input_graph_handle(),
+        manager.screen_publication_hub(),
+        demands.native_execution_policy(),
+    );
+    let (status, _status_rx) = tokio::sync::watch::channel(InputPublicationStatus::Starting);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let worker = tokio::spawn(run_pump(
+        manager,
+        reader,
+        demands,
+        Some(devices.clone()),
+        tokio_util::sync::CancellationToken::new(),
+        status,
+        ready_tx,
+    ));
+    ready_rx.await.expect("pump worker reports readiness");
+    wait_for_screen_demand(&transitions, ScreenCaptureDemand::active()).await;
+    wait_for_device_demand(&devices, true).await;
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while interaction_changes
+            .lock()
+            .expect("probe change log")
+            .last()
+            .is_none_or(|&(active, _)| !active)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("interaction capture should become active");
+
+    worker.abort();
+    let joined = worker.await;
+    assert!(
+        joined.is_err_and(|error| error.is_cancelled()),
+        "the worker was aborted rather than exiting on its own"
+    );
+    assert_eq!(
+        transitions
+            .lock()
+            .expect("screen demand transition lock")
+            .last()
+            .copied(),
+        Some(ScreenCaptureDemand::Inactive),
+        "an aborted pump releases host screen capture"
+    );
+    assert_eq!(
+        interaction_changes
+            .lock()
+            .expect("probe change log")
+            .last()
+            .copied(),
+        Some((false, false)),
+        "an aborted pump releases host interaction capture after withdrawing device input"
+    );
+}
+
+async fn wait_for_device_demand(
+    devices: &hypercolor_core::input::DeviceInputHandle,
+    expected: bool,
+) {
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while devices.is_demanded() != expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("device input demand should follow aggregate interaction demand");
+}
+
+#[tokio::test]
 async fn pump_replans_exact_extent_changes_without_a_new_capture_transition() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     let manager = InputManager::new();
@@ -1219,7 +1446,7 @@ async fn pump_replans_exact_extent_changes_without_a_new_capture_transition() {
     manager.start_all().expect("screen source starts");
     let manager = manager;
     let demands = InputPublicationDemandHandle::default();
-    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone(), None)
         .await
         .expect("publication pump starts");
     let publications = pump.reader().screen_publications();
@@ -1261,7 +1488,7 @@ async fn pump_propagates_exact_branches_with_revision_and_graph_fences() {
     manager.start_all().expect("screen source starts");
     let manager = manager;
     let demands = InputPublicationDemandHandle::default();
-    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone(), None)
         .await
         .expect("publication pump starts");
     let publications = pump.reader().screen_publications();
@@ -1320,7 +1547,7 @@ async fn source_extent_and_transform_revisions_replan_without_demand_change() {
         .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
     let demands = InputPublicationDemandHandle::default();
-    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone(), None)
         .await
         .expect("publication pump starts");
     let publications = pump.reader().screen_publications();
@@ -1405,7 +1632,7 @@ async fn passive_cpu_surface_observation(
     manager.start_all().expect("screen source starts");
     let manager = manager;
     let demands = InputPublicationDemandHandle::new(policy);
-    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone(), None)
         .await
         .expect("publication pump starts");
     let reader = pump.reader();
@@ -1473,7 +1700,7 @@ async fn missing_native_authority_reaches_source_alongside_passive_cpu_preview()
         .expect("screen demand source should register");
     manager.start_all().expect("screen source starts");
     let demands = InputPublicationDemandHandle::default();
-    let mut pump = InputPublicationPump::start(manager, demands.clone())
+    let mut pump = InputPublicationPump::start(manager, demands.clone(), None)
         .await
         .expect("publication pump starts");
     let output_extent = extent(16, 9);
@@ -1532,7 +1759,7 @@ async fn failed_exact_replacement_preserves_retirement_barrier_across_demand_cha
     manager.start_all().expect("screen source starts");
     let manager = manager;
     let demands = InputPublicationDemandHandle::default();
-    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone(), None)
         .await
         .expect("publication pump starts");
     let publications = pump.reader().screen_publications();
@@ -1592,7 +1819,7 @@ async fn persistent_exact_failure_uses_bounded_retry_cadence_after_retirement() 
     manager.start_all().expect("screen source starts");
     let manager = manager;
     let demands = InputPublicationDemandHandle::default();
-    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone(), None)
         .await
         .expect("publication pump starts");
     let _registration = demands.register(
@@ -1635,7 +1862,7 @@ async fn pump_samples_unrelated_sources_while_exact_workers_prepare() {
     manager.start_all().expect("input sources start");
     let manager = manager;
     let demands = InputPublicationDemandHandle::default();
-    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone(), None)
         .await
         .expect("publication pump starts");
     let publications = pump.reader().screen_publications();
@@ -1702,7 +1929,7 @@ async fn exact_screen_busy_commit_retains_one_preparation_until_lifecycle_releas
     manager.start_all().expect("input sources start");
     let demands = InputPublicationDemandHandle::default();
     let commit_pause = demands.pause_next_exact_screen_commit();
-    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone(), None)
         .await
         .expect("publication pump starts");
     let publications = pump.reader().screen_publications();
@@ -1829,7 +2056,7 @@ async fn pump_rejects_a_superseded_demand_while_lifecycle_is_busy() {
         .recv_timeout(Duration::from_secs(1))
         .expect("startup should own lifecycle state");
     let demands = InputPublicationDemandHandle::default();
-    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone())
+    let mut pump = InputPublicationPump::start(manager.clone(), demands.clone(), None)
         .await
         .expect("publication pump starts");
     let stale_extent = extent(7_680, 4_320);
@@ -1902,7 +2129,7 @@ async fn pump_cancellation_while_lifecycle_is_busy_prevents_late_mutation() {
         InputPublicationConsumer::Authoritative,
         InputPublicationDemand::default().with_fixture_screen(60, extent(1_280, 720)),
     );
-    let mut pump = InputPublicationPump::start(manager, demands)
+    let mut pump = InputPublicationPump::start(manager, demands, None)
         .await
         .expect("publication pump should start without lifecycle ownership");
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1953,7 +2180,7 @@ async fn pump_shutdown_releases_active_capture_demand() {
             .with_fixture_screen(60, extent(1_280, 720))
             .with_source(SourceKind::Interaction, 120),
     );
-    let mut pump = InputPublicationPump::start(manager, demands)
+    let mut pump = InputPublicationPump::start(manager, demands, None)
         .await
         .expect("publication pump should start");
 

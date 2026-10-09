@@ -4,17 +4,16 @@
 //! module so both the dashboard and the effects page render the same
 //! cinematic cabinet.
 
-use hypercolor_leptos_ext::prelude::now_ms;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use crate::api::SystemStatus;
-use crate::app::WsContext;
 use crate::components::scene_switcher::{
     SceneSwitcherMenu, active_scene_label, active_scene_locked,
 };
 use crate::components::status_pill::StatusPill;
 use crate::icons::*;
+use crate::live_uptime::{format_uptime, use_live_uptime};
 use crate::zones::ScenesContext;
 
 // ── Status strip ─────────────────────────────────────────────────────
@@ -24,20 +23,8 @@ use crate::zones::ScenesContext;
 #[component]
 pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
     let running = status.running;
-    let fetched_uptime_seconds = status.uptime_seconds;
-    let fetched_at_ms = now_ms();
-    let metrics_tick = expect_context::<WsContext>().metrics_tick;
-    // The status snapshot is fetched once per connection, so the uptime it
-    // carries is advanced locally. Metrics messages arrive a few times a
-    // second, which makes their tick the clock for that advance.
-    let uptime = Signal::derive(move || {
-        metrics_tick.track();
-        format_uptime(advanced_uptime_seconds(
-            fetched_uptime_seconds,
-            fetched_at_ms,
-            now_ms(),
-        ))
-    });
+    let live_uptime = use_live_uptime(status.uptime_seconds);
+    let uptime = Signal::derive(move || format_uptime(live_uptime.get()));
     let device_count = status.device_count;
     let effect_count = status.effect_count;
     let active_scene = status.active_scene;
@@ -208,25 +195,5 @@ pub(super) fn StatusSkeleton() -> impl IntoView {
                 </div>
             }).collect_view()}
         </div>
-    }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "elapsed milliseconds are clamped non-negative and floored to whole seconds"
-)]
-fn advanced_uptime_seconds(fetched_uptime_seconds: u64, fetched_at_ms: f64, now_ms: f64) -> u64 {
-    let elapsed_seconds = ((now_ms - fetched_at_ms).max(0.0) / 1000.0).floor() as u64;
-    fetched_uptime_seconds.saturating_add(elapsed_seconds)
-}
-
-fn format_uptime(seconds: u64) -> String {
-    if seconds < 60 {
-        format!("{seconds}s")
-    } else if seconds < 3600 {
-        format!("{}m", seconds / 60)
-    } else {
-        format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60)
     }
 }

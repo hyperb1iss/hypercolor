@@ -14,6 +14,9 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $CargoCacheBuild = Join-Path $RepoRoot "scripts\cargo-cache-build.ps1"
 $StageAssets = Join-Path $RepoRoot "scripts\stage-app-bundle-assets.ps1"
+# crates/hypercolor-app/installer.nsi forks the NSIS template of the
+# tauri-bundler this CLI version pins, so installers build with exactly it.
+$PinnedTauriCli = "2.12.1"
 
 function Write-Step {
     param([string] $Message)
@@ -86,11 +89,15 @@ function Assert-Prerequisites {
     Require-Command "bun" "Install Bun from https://bun.sh/."
     Require-Command "trunk" "Install with: cargo install trunk --locked"
 
+    $installHint = "cargo install tauri-cli --version '=$PinnedTauriCli' --locked"
     $tauriVersion = & cargo tauri --version 2>$null
     if ($LASTEXITCODE -ne 0) {
-        throw "Missing cargo-tauri. Install with: cargo install tauri-cli --version '^2.0.0' --locked"
+        throw "Missing cargo-tauri. Install with: $installHint"
     }
     Write-Host "cargo-tauri: $tauriVersion"
+    if ($Bundles -match "(^|,)nsis(,|$)" -and "$tauriVersion".Trim() -ne "tauri-cli $PinnedTauriCli") {
+        throw "NSIS installers need tauri-cli $PinnedTauriCli, the version installer.nsi was forked from; found '$tauriVersion'. Install with: $installHint"
+    }
 
     if ($Bundles -match "(^|,)nsis(,|$)" -and -not (Get-Command "makensis" -ErrorAction SilentlyContinue)) {
         Write-Warning "makensis was not found on PATH. Tauri may provide NSIS itself; install NSIS if the bundle step fails."

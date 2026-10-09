@@ -50,6 +50,14 @@ notarized them, publishes `hypercolor` +
 dist-tag), publishes the Python client to PyPI (stable only), and updates
 the AUR metadata (stable only).
 
+Before it uploads the Windows installer, the tag lane installs the highest
+published release older than the build on the runner and upgrades it with
+the new installer twice, once clicking through the wizard and once with
+`/S`. The build fails if either upgrade loses the user's autostart
+setting, recreates a removed shortcut, or leaves the previous release's
+files behind. [Windows Installer](WINDOWS_INSTALLER.md) describes that
+upgrade contract and the pinned NSIS template behind it.
+
 The tag lane also updates the Homebrew tap: `update-homebrew` renders
 `packaging/homebrew/hypercolor.rb` and `packaging/homebrew/hypercolor-app.rb`
 with `scripts/homebrew-formula.mjs`, filling the Linux amd64 and arm64
@@ -208,6 +216,13 @@ step 1.
 
 - Artifact-only rehearsal without a tag: dispatch **CI/CD** with
   `release_artifacts: full` (or `smoke` for the tarball smoke test).
+- Unsigned rehearsal that also warms the release cache: dispatch **CI/CD**
+  from `main` with `release_artifacts: warm`, or **Release Cache Warm**, which
+  does the same every night. Warm builds every platform's release artifacts
+  without signing or the normal CI lanes, and because it runs on `main` it
+  writes those compiles to R2, so the next tag's release builds read them
+  instead of compiling the release profile cold. Dispatch it by hand after a
+  lockfile or toolchain change when a release is due before the next night.
 - Full rehearsal without pushing: dispatch **Release** with dry run
   checked. Everything is prepared and uploaded as an artifact, and nothing
   leaves the runner.

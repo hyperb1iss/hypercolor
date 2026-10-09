@@ -27,6 +27,7 @@ tracing = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
+mach2 = { workspace = true }
 objc2 = { workspace = true, features = ["std"] }
 objc2-app-kit = { workspace = true, features = ["std", "NSWorkspace"] }
 objc2-core-foundation = { workspace = true, features = ["std", "CFRunLoop"] }

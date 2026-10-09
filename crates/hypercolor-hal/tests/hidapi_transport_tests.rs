@@ -1,8 +1,32 @@
 use hypercolor_hal::registry::HidRawReportMode;
+use hypercolor_hal::transport::TransportError;
 use hypercolor_hal::transport::hidapi::{
-    decode_feature_report_packet_for_testing, encode_feature_report_request_buffer_for_testing,
-    encode_hidapi_packet_for_testing,
+    check_output_write_for_testing, decode_feature_report_packet_for_testing,
+    encode_feature_report_request_buffer_for_testing, encode_hidapi_packet_for_testing,
 };
+
+#[test]
+fn hidapi_output_write_accepts_windows_padded_length() {
+    // Nollie 16 v3 on Windows: a 1024-byte packet on a collection whose
+    // longest output report is 1025 bytes including the report ID.
+    assert!(check_output_write_for_testing(1025, 1024).is_ok());
+    assert!(check_output_write_for_testing(1024, 1024).is_ok());
+}
+
+#[test]
+fn hidapi_output_write_accepts_synchronous_completion() {
+    assert!(check_output_write_for_testing(0, 1024).is_ok());
+}
+
+#[test]
+fn hidapi_output_write_rejects_truncated_packets() {
+    let error = check_output_write_for_testing(513, 1024).expect_err("truncated write");
+
+    assert!(matches!(
+        error,
+        TransportError::IoError { ref detail } if detail == "short hidapi output write: wrote 513 of 1024 bytes"
+    ));
+}
 
 #[test]
 fn hidapi_prepends_report_id_for_payload_only_modes() {

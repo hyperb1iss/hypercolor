@@ -387,6 +387,16 @@ impl DomainError {
         }
     }
 
+    /// A daemon capability that is absent in the current runtime, with no
+    /// structured context.
+    #[must_use]
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self::ServiceUnavailable {
+            message: message.into(),
+            details: None,
+        }
+    }
+
     /// A daemon capability that is absent in the current runtime.
     #[must_use]
     pub fn service_unavailable_details(

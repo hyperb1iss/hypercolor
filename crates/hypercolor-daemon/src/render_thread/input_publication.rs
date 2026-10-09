@@ -20,7 +20,7 @@ use hypercolor_core::input::screen::planner::{
     ScreenSourceSelector, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{
-    InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
+    DeviceInputHandle, InputGraphHandle, InputGraphSnapshot, InputManager, SourceKind, SourceState,
     TryInputManagerIntent,
 };
 use tokio::sync::{oneshot, watch};
@@ -29,7 +29,9 @@ use tokio::time::{Instant as TokioInstant, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-use super::capture_demand::{CaptureDemand, CaptureDemandReconcile, CaptureDemandState};
+use super::capture_demand::{
+    CaptureDemand, CaptureDemandReconcile, CaptureDemandState, CaptureDomain,
+};
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const LIFECYCLE_PROBE_INTERVAL: Duration = Duration::from_millis(250);
@@ -1090,9 +1092,11 @@ pub(crate) struct InputPublicationPump {
 }
 
 impl InputPublicationPump {
+    /// Start the pump, mirroring interaction demand into `device_input`.
     pub(crate) async fn start(
         manager: InputManager,
         demands: InputPublicationDemandHandle,
+        device_input: Option<DeviceInputHandle>,
     ) -> Result<Self> {
         let reader = InputPublicationReader::new(
             manager.input_graph_handle(),
@@ -1110,6 +1114,7 @@ impl InputPublicationPump {
                 manager,
                 worker_reader,
                 demands,
+                device_input,
                 worker_cancel,
                 worker_status,
                 ready_tx,
@@ -1392,19 +1397,100 @@ async fn run_exact_screen_transition(
         .map(|committed| ExactScreenTransitionOutcome::Completed(Some(committed)))
 }
 
+/// Mirrors interaction demand into device input for as long as the pump runs.
+///
+/// Dropping it withdraws the demand, so a pump that panics or is aborted
+/// past its shutdown deadline still stops device input like a clean exit.
+struct DeviceInputDemand {
+    device_input: Option<DeviceInputHandle>,
+}
+
+impl DeviceInputDemand {
+    const fn new(device_input: Option<DeviceInputHandle>) -> Self {
+        Self { device_input }
+    }
+
+    fn mirror(&self, demanded: bool) {
+        if let Some(device_input) = &self.device_input {
+            device_input.set_demanded(demanded);
+        }
+    }
+}
+
+impl Drop for DeviceInputDemand {
+    fn drop(&mut self) {
+        self.mirror(false);
+    }
+}
+
+/// Owns the host capture demand the pump applies to the input manager.
+///
+/// Dropping it releases every capture domain, so a pump that panics or is
+/// aborted past its shutdown deadline still closes screen, audio, and
+/// interaction capture like a clean exit. An abort is asynchronous, though:
+/// it lands at the worker's next `.await`, and the release runs only when
+/// the runtime drops the cancelled task, which can be after `shutdown` has
+/// already returned its deadline error. A worker blocked inside a
+/// synchronous call releases nothing until that call returns.
+struct HostCaptureDemand {
+    manager: InputManager,
+    state: CaptureDemandState,
+}
+
+impl HostCaptureDemand {
+    fn new(manager: InputManager) -> Self {
+        Self {
+            manager,
+            state: CaptureDemandState::default(),
+        }
+    }
+
+    fn is_current(&self, graph_generation: u64, demand: CaptureDemand) -> bool {
+        self.state.is_current(graph_generation, demand)
+    }
+
+    fn reconcile(
+        &mut self,
+        demand: CaptureDemand,
+        is_current: impl FnOnce() -> bool,
+    ) -> CaptureDemandReconcile {
+        self.state.reconcile(&self.manager, demand, is_current)
+    }
+}
+
+impl Drop for HostCaptureDemand {
+    fn drop(&mut self) {
+        let inactive = CaptureDemand::new(false, ScreenCaptureDemand::Inactive, false);
+        match self.reconcile(inactive, || true) {
+            CaptureDemandReconcile::Applied => {}
+            CaptureDemandReconcile::Busy => {
+                debug!("input publication shutdown deferred capture release to source retirement");
+            }
+            CaptureDemandReconcile::Stale => {
+                debug!("input publication shutdown rejected an unexpectedly stale capture release");
+            }
+        }
+    }
+}
+
 async fn run_pump(
     manager: InputManager,
     reader: InputPublicationReader,
     demands: InputPublicationDemandHandle,
+    device_input: Option<DeviceInputHandle>,
     cancel: CancellationToken,
     status: watch::Sender<InputPublicationStatus>,
     ready: oneshot::Sender<()>,
 ) {
+    // Declared before the device guard, so a panic or abort drops the device
+    // guard first and withdraws device input before host capture is
+    // released, the same order as the clean exit below.
+    let mut capture_demand = HostCaptureDemand::new(manager.clone());
+    let device_demand = DeviceInputDemand::new(device_input);
     status.send_replace(InputPublicationStatus::Ready);
     let _ = ready.send(());
 
     let mut schedule = InputPublicationSchedule::default();
-    let mut capture_demand = CaptureDemandState::default();
     let mut applied_exact_screen = None;
     let mut exact_screen_retry = None;
     let mut exact_screen_recovery = None;
@@ -1417,6 +1503,15 @@ async fn run_pump(
     let mut graph_changes = reader.graph.subscribe_generation();
     let mut demand_changes = demands.subscribe_revision();
     loop {
+        // Device input ignores the host capture consent and every manager
+        // reconcile below, including the Busy and Stale retries; it only
+        // follows whether anything wants interaction.
+        device_demand.mirror(
+            demands
+                .snapshot()
+                .capture_demand()
+                .is_active(CaptureDomain::Interaction),
+        );
         reap_screen_publication_retirements(&mut publication_retirements);
         while let Some(result) = worker_retirement_tasks.try_join_next() {
             if let Err(error) = result {
@@ -1549,7 +1644,7 @@ async fn run_pump(
         let desired_capture = demand.capture_demand();
         let mut graph = reader.graph_snapshot();
         if !capture_demand.is_current(graph.generation(), desired_capture) {
-            let reconcile = capture_demand.reconcile(&manager, desired_capture, || {
+            let reconcile = capture_demand.reconcile(desired_capture, || {
                 demands.snapshot().revision() == demand.revision()
             });
             match reconcile {
@@ -1727,16 +1822,8 @@ async fn run_pump(
         }
     }
 
-    let inactive_capture = CaptureDemand::new(false, ScreenCaptureDemand::Inactive, false);
-    match capture_demand.reconcile(&manager, inactive_capture, || true) {
-        CaptureDemandReconcile::Applied => {}
-        CaptureDemandReconcile::Busy => {
-            debug!("input publication shutdown deferred capture release to source retirement");
-        }
-        CaptureDemandReconcile::Stale => {
-            debug!("input publication shutdown rejected an unexpectedly stale capture release");
-        }
-    }
+    drop(device_demand);
+    drop(capture_demand);
     debug!("input publication worker exited");
 }
 

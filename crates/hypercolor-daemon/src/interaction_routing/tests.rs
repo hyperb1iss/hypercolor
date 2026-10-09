@@ -1,10 +1,20 @@
 use hypercolor_core::input::browser::{
     BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserPreviewId,
 };
-use hypercolor_core::input::routing::SourceIncarnation;
-use hypercolor_types::config::InteractionRoutePolicy;
+use std::time::Instant;
 
-use super::{AuthoritativeClaimError, AuthoritativeClaimOutcome, InteractionRoutingControl};
+use hypercolor_core::input::routing::{
+    ConsumerIncarnation, InteractionRouteCatalog, InteractionRouter, RoutedInteraction,
+    SourceIncarnation,
+};
+use hypercolor_core::input::{DeviceInputHandle, InputManager};
+use hypercolor_types::config::InteractionRoutePolicy;
+use hypercolor_types::device::DeviceId;
+
+use super::{
+    AuthoritativeClaimError, AuthoritativeClaimOutcome, InteractionRoutingControl,
+    selected_host_statuses, selected_input_availability,
+};
 
 fn key(connection: u64, preview: &str) -> BrowserInputChildKey {
     BrowserInputChildKey::new(
@@ -111,4 +121,52 @@ fn policy_publication_is_coherent_and_avoids_noop_generation_churn() {
     assert_eq!(changed.config_generation, 4);
     assert_eq!(changed.daemon_policy, InteractionRoutePolicy::Merge);
     assert_eq!(changed.preview_policy, InteractionRoutePolicy::Host);
+}
+
+#[test]
+fn routed_devices_do_not_report_host_input_availability() {
+    let devices = DeviceInputHandle::new();
+    devices.set_demanded(true);
+    let _pad = devices.attach(DeviceId::new(), "pad");
+    let browser = BrowserInputHandle::new();
+    let control = InteractionRoutingControl::new(
+        browser.registry(),
+        1,
+        InteractionRoutePolicy::Host,
+        InteractionRoutePolicy::Browser,
+    )
+    .with_device_input(devices);
+
+    let mut catalog = InteractionRouteCatalog::default();
+    catalog.refresh(
+        &InputManager::new().input_graph_handle().snapshot(),
+        &control.browser_registry_snapshot(),
+        &control.device_registry_snapshot(),
+        Instant::now(),
+    );
+    let consumer = ConsumerIncarnation::new(1);
+    let mut routed = RoutedInteraction::new(consumer);
+    catalog.resolve_into(
+        &mut InteractionRouter::default(),
+        consumer,
+        control.snapshot().daemon_request(),
+        1,
+        0,
+        &mut routed,
+    );
+
+    let selected = &routed.diagnostics.selected;
+    assert_eq!(selected.len(), 1, "the device routes under the host policy");
+    assert!(
+        selected_input_availability(
+            selected.iter().filter_map(|source| source.status.as_ref()),
+            Instant::now()
+        )
+        .routed,
+        "a live device status would otherwise count as routed input"
+    );
+    assert!(
+        !selected_input_availability(selected_host_statuses(selected), Instant::now()).routed,
+        "host input availability ignores device sources"
+    );
 }

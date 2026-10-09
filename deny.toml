@@ -2,10 +2,7 @@
 # vulnerability field removed in cargo-deny 0.18+ (all vulns are errors now)
 unmaintained = "workspace"
 yanked = "warn"
-ignore = [
-    # gtk3-rs unmaintained — transitive dep from tray-icon/tauri, no upgrade path
-    "RUSTSEC-2024-0415",
-]
+ignore = []
 
 [licenses]
 unused-allowed-license = "allow"

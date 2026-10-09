@@ -3077,7 +3077,7 @@ pub(super) async fn build_metrics_message(
         .saturating_mul(WS_CANVAS_BYTES_PER_PIXEL_RGBA);
     let canvas_buffer_kb = u32::try_from(canvas_buffer_bytes / 1024).unwrap_or(u32::MAX);
 
-    let daemon_rss_mb = hypercolor_linux_session::process_resident_memory_mb().unwrap_or(0.0);
+    let daemon_rss_mb = crate::session::process_resident_memory_mb().unwrap_or(0.0);
     let client_count = WS_CLIENT_COUNT.load(Ordering::Relaxed);
     let preview_runtime = state.preview_runtime.snapshot();
     let canvas_preview = preview_runtime.preview(PreviewKind::Canvas);

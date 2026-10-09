@@ -6,6 +6,8 @@
 
 mod backend;
 mod connection;
+mod framing;
+mod input;
 mod scanner;
 mod types;
 

@@ -2872,5 +2872,6 @@ mod media_upload;
 mod preview;
 mod sampler;
 mod shaders;
+mod startup_progress;
 mod surface;
 mod warmup;

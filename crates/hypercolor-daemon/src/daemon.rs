@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use axum::Router;
 use hypercolor_core::config::{BootConfig, ConfigManager, LoadedConfig};
 use hypercolor_core::session::SessionMonitor;
+use hypercolor_types::api::system::DaemonStartupPhase;
 use hypercolor_types::config::{
     HypercolorConfig, LogLevel, NetworkAccessMode, RenderAccelerationMode, ServoGpuImportMode,
 };
@@ -24,7 +25,7 @@ use crate::api;
 use crate::app_state::AppState;
 use crate::macos_owner::{MacosDaemonOwner, MacosDaemonSessionAttestation, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
-use crate::startup::{DaemonState, config_sources};
+use crate::startup::{DaemonState, StartupProgress, config_sources};
 
 const MAIN_RUNTIME_WORKERS: usize = 4;
 const MAIN_RUNTIME_MAX_BLOCKING_THREADS: usize = 8;
@@ -132,20 +133,38 @@ impl PreparedDaemon {
         let macos_daemon_session_attestation =
             self.options.macos_daemon_session_attestation.clone();
         let listeners = std::mem::take(&mut self.listeners);
+
+        // Answer `/health` from the first moment of startup, so a
+        // supervisor sees a starting daemon make progress instead of a
+        // socket that never responds. The full router replaces this
+        // surface on the same listeners once startup finishes.
+        let progress = StartupProgress::default();
+        let handoff =
+            api::startup::ApiHandoff::starting(progress.clone(), env!("CARGO_PKG_VERSION"));
+        let server = ApiServerTask::spawn(serve_api_handoff_with_shutdown_timeout(
+            listeners,
+            handoff.clone(),
+            shutdown_rx,
+            API_GRACEFUL_SHUTDOWN_TIMEOUT,
+        ));
+        info!(binds = %self.listen_addr, "API listeners answering startup probes");
+
         // Boot values are frozen into the subsystems that need them by this
         // call, which consumes the config; anything read past this point
         // reads live (Spec 76 §3.2).
-        let mut daemon_state = DaemonState::initialize_with_launcher(
+        let mut daemon_state = DaemonState::initialize_with_progress(
             self.config,
             self.config_manager,
             self.options.macos_owner_snapshot,
             self.options.service_status.take(),
+            progress.clone(),
         )?;
         let ui_dir = resolve_ui_dir(self.options.ui_dir.clone());
         daemon_state.session_monitors = self.options.session_monitors.take();
         install_extensions(&mut daemon_state, ui_dir.clone(), extension_installers)?;
         Box::pin(daemon_state.start()).await?;
 
+        progress.enter(DaemonStartupPhase::PreparingApi);
         let app_state = Arc::new(api::build_state(
             &daemon_state,
             macos_daemon_session_attestation.as_ref(),
@@ -156,13 +175,16 @@ impl PreparedDaemon {
             .display
             .sync_preference_overlays()
             .await;
-        if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state).await {
+        if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state, &progress).await
+        {
             if let Err(shutdown_error) = daemon_state.shutdown().await {
                 warn!(%shutdown_error, "Failed to roll back daemon after API-ready hook failure");
             }
             return Err(error);
         }
-        let router = api::build_router(app_state, ui_dir.as_deref());
+        // Serve the full API before advertising it, so a LAN client that
+        // reacts to the mDNS announcement never lands on the startup surface.
+        handoff.install(api::build_router(app_state, ui_dir.as_deref()));
 
         let mdns_publish = daemon_state.config_manager.live().network.mdns_publish;
         let mdns_publisher = MdnsPublisher::new(
@@ -175,12 +197,16 @@ impl PreparedDaemon {
         if ui_dir.is_some() {
             info!(url = %format!("http://{}/", self.advertised_bind), "Web UI available");
         }
-        info!(binds = %self.listen_addr, "API server listening");
+        info!(
+            binds = %self.listen_addr,
+            startup_ms = u64::try_from(progress.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "API server listening"
+        );
 
         hypercolor_linux_session::notify_ready();
         hypercolor_linux_session::spawn_watchdog();
 
-        serve_api_listeners(listeners, router, shutdown_rx).await?;
+        server.join().await?;
 
         if let Some(publisher) = mdns_publisher {
             publisher.shutdown().await;
@@ -352,14 +378,21 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
     })
 }
 
-async fn notify_api_ready_extensions(daemon: &DaemonState, state: &Arc<AppState>) -> Result<()> {
+async fn notify_api_ready_extensions(
+    daemon: &DaemonState,
+    state: &Arc<AppState>,
+    progress: &StartupProgress,
+) -> Result<()> {
     for extension in daemon.lifecycle_extensions.clone() {
         info!(
             extension = extension.name(),
             "Starting API-ready daemon extension hook"
         );
-        extension
-            .api_ready(daemon, Arc::clone(state))
+        progress
+            .step_async(
+                &format!("daemon extension {} API hook", extension.name()),
+                extension.api_ready(daemon, Arc::clone(state)),
+            )
             .await
             .with_context(|| {
                 format!(
@@ -537,18 +570,31 @@ fn bind_api_listener_with_lease(bind: SocketAddr) -> Result<(TcpListener, std::n
     Ok((listener, lease))
 }
 
-async fn serve_api_listeners(
-    listeners: Vec<TcpListener>,
-    router: Router,
-    shutdown_rx: watch::Receiver<bool>,
-) -> Result<()> {
-    serve_api_listeners_with_shutdown_timeout(
-        listeners,
-        router,
-        shutdown_rx,
-        API_GRACEFUL_SHUTDOWN_TIMEOUT,
-    )
-    .await
+/// The API serving task spawned at the start of startup.
+///
+/// Aborted when dropped, so a startup failure that returns early stops the
+/// listeners instead of leaving them answering "starting" forever.
+struct ApiServerTask(Option<tokio::task::JoinHandle<Result<()>>>);
+
+impl ApiServerTask {
+    fn spawn(serve: impl Future<Output = Result<()>> + Send + 'static) -> Self {
+        Self(Some(tokio::spawn(serve)))
+    }
+
+    async fn join(mut self) -> Result<()> {
+        let Some(handle) = self.0.take() else {
+            return Ok(());
+        };
+        handle.await.context("API server task failed")?
+    }
+}
+
+impl Drop for ApiServerTask {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+        }
+    }
 }
 
 /// Serve pre-bound API listeners with a configurable shutdown drain timeout.
@@ -563,23 +609,44 @@ pub async fn serve_api_listeners_with_shutdown_timeout(
     shutdown_rx: watch::Receiver<bool>,
     shutdown_timeout: Duration,
 ) -> Result<()> {
+    serve_api_handoff_with_shutdown_timeout(
+        listeners,
+        api::startup::ApiHandoff::ready(router),
+        shutdown_rx,
+        shutdown_timeout,
+    )
+    .await
+}
+
+/// Serve pre-bound API listeners through a startup-to-ready handoff.
+///
+/// The listeners answer from the startup surface until the full router is
+/// installed on `handoff`, then from the full router, without rebinding.
+///
+/// # Errors
+///
+/// Returns an error if any listener task fails before shutdown completes.
+#[doc(hidden)]
+pub async fn serve_api_handoff_with_shutdown_timeout(
+    listeners: Vec<TcpListener>,
+    handoff: api::startup::ApiHandoff,
+    shutdown_rx: watch::Receiver<bool>,
+    shutdown_timeout: Duration,
+) -> Result<()> {
     let mut servers = JoinSet::new();
 
     for listener in listeners {
         let bind = listener
             .local_addr()
             .context("failed to read API listener address")?;
-        let router = router.clone();
+        let make_service = handoff.make_service();
         let shutdown_wait_rx = shutdown_rx.clone();
         let shutdown_deadline_rx = shutdown_rx.clone();
 
         servers.spawn(async move {
-            let server = axum::serve(
-                listener,
-                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(wait_for_api_shutdown_signal(bind, shutdown_wait_rx))
-            .into_future();
+            let server = axum::serve(listener, make_service)
+                .with_graceful_shutdown(wait_for_api_shutdown_signal(bind, shutdown_wait_rx))
+                .into_future();
 
             tokio::pin!(server);
             tokio::select! {
@@ -1041,9 +1108,16 @@ mod tests {
             }));
         }
 
-        notify_api_ready_extensions(&daemon, &state)
+        let progress = crate::startup::StartupProgress::default();
+        let before = progress.snapshot().sequence;
+        notify_api_ready_extensions(&daemon, &state, &progress)
             .await
             .expect("API-ready hooks should succeed");
+        assert_eq!(
+            progress.snapshot().sequence - before,
+            2,
+            "each completed API-ready hook is one startup step"
+        );
 
         assert_eq!(
             calls
