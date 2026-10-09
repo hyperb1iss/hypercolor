@@ -178,10 +178,22 @@ hypercolor openrgb start
 hypercolor openrgb status
 ```
 
-The managed directory holds an `OpenRGB.json` whose `Detectors.detectors` map disables
-every OpenRGB detector owned by an enabled native driver with at least one enabled device
-(`Razer`, `Lian Li`, `Corsair`, `Dygma`, `Nollie`, `ASUS Aura`, `ENE SMBus DRAM`, and so
-on). The server is launched as:
+The managed directory holds an `OpenRGB.json` whose `Detectors.detectors` map keeps
+OpenRGB away from hardware a native driver can drive. A native driver counts once it is
+enabled and owns at least one enabled device, and then it withholds per device:
+
+- An OpenRGB detector that claims any USB device in that driver's protocol catalog is
+  disabled, connected or not and whatever its name, so a second supported device plugged
+  in later never races OpenRGB for it.
+- Other detectors from the same brand stay enabled. With a native Razer base station, the
+  `Razer Kraken Ultimate` detector still reaches OpenRGB when Hypercolor has no protocol
+  for that headset.
+- Detectors with no USB id to match stay disabled for the whole brand prefix (`Corsair`,
+  `ENE SMBus DRAM`, `ASUS Aura`, and so on): SMBus RAM and motherboard controllers, and
+  detector names from a different OpenRGB release than the one Hypercolor's detector map
+  was built from.
+
+The server is launched as:
 
 ```bash
 openrgb --server --server-host 127.0.0.1 --server-port 6742 --noautoconnect \
@@ -270,8 +282,11 @@ you need, for example), disable it natively first:
 - **REST**: `PUT /api/v1/devices/{id}` with `{"enabled": false}`.
 - **Whole driver**: `hypercolor config set drivers.<driver_id>.enabled false`.
 
-Disabling releases the HID or SMBus handle. Restart the managed server with the
-new detector partition, then discover its controllers:
+Disabling releases the HID or SMBus handle. The partition withholds every device a
+driver supports for as long as that driver owns any enabled device, so disabling one
+device frees its OpenRGB detector only when it was the driver's last enabled device;
+otherwise disable the whole driver. Restart the managed server with the new detector
+partition, then discover its controllers:
 
 ```bash
 hypercolor openrgb stop

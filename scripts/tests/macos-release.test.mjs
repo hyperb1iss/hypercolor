@@ -85,9 +85,11 @@ test('macOS signing runs in its own job from an unsigned build payload', () => {
   const releaseFilter = body('create-release');
   assert.match(releaseFilter, /! -name '\*-macos-\*'/);
   assert.doesNotMatch(releaseFilter, /-name '\*\.dmg'/);
-  // Signing runs exactly when the build it signs runs.
+  // Signing runs exactly when the build it signs runs, except a warm dispatch,
+  // which builds unsigned only to seed the release compiler cache.
   const condition = job => job.match(/^    if: >-\n((?:      .*\n)+)/m)[1];
-  assert.equal(condition(sign), condition(build));
+  assert.equal(condition(sign), condition(build).replace(
+    `contains(fromJSON('["full","warm"]'), inputs.release_artifacts))`, "inputs.release_artifacts == 'full')"));
   // Apple silicon is the only macOS target in both stages, and no Intel
   // runner or target may return to the release pipeline.
   const targets = job => [...job.matchAll(/^          - target: (\S+)$/gm)].map(match => match[1]);

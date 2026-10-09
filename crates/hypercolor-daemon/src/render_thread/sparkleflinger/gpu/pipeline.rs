@@ -1,5 +1,8 @@
 use wgpu::util::DeviceExt;
 
+use crate::render_thread::sparkleflinger::compile_compute_pipeline;
+use crate::startup::StartupProgress;
+
 use super::{
     COMPOSE_PARAM_BYTES, COMPOSITOR_TEXTURE_FORMAT, DISPLAY_FINALIZE_PARAM_BYTES,
     PREVIEW_SCALE_PARAM_BYTES, PendingUploadBuffers, SOURCE_COPY_PARAM_BYTES,
@@ -181,7 +184,7 @@ pub(super) struct GpuCompositorPipeline {
 }
 
 impl GpuCompositorPipeline {
-    pub(super) fn new(device: &wgpu::Device) -> Self {
+    pub(super) fn new(device: &wgpu::Device, progress: Option<&StartupProgress>) -> Self {
         let compose_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("SparkleFlinger GPU compose bind group layout"),
@@ -240,14 +243,18 @@ impl GpuCompositorPipeline {
             label: Some("SparkleFlinger GPU compose shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../blend.wgsl").into()),
         });
-        let compose_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("SparkleFlinger GPU compose pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("compose"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let compose_pipeline = compile_compute_pipeline(
+            device,
+            progress,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("SparkleFlinger GPU compose pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("compose"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            },
+        );
         let compose_params = UniformParamsRing::new(
             device,
             "SparkleFlinger GPU compose params",
@@ -303,15 +310,18 @@ impl GpuCompositorPipeline {
             label: Some("SparkleFlinger GPU source copy shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../source_copy.wgsl").into()),
         });
-        let source_copy_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let source_copy_pipeline = compile_compute_pipeline(
+            device,
+            progress,
+            &wgpu::ComputePipelineDescriptor {
                 label: Some("SparkleFlinger GPU source copy pipeline"),
                 layout: Some(&source_copy_pipeline_layout),
                 module: &source_copy_shader,
                 entry_point: Some("copy_source"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
-            });
+            },
+        );
         let source_copy_params = UniformParamsRing::new(
             device,
             "SparkleFlinger GPU source copy params",
@@ -388,24 +398,30 @@ impl GpuCompositorPipeline {
             label: Some("SparkleFlinger GPU display finalize shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../display_finalize.wgsl").into()),
         });
-        let display_finalize_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let display_finalize_pipeline = compile_compute_pipeline(
+            device,
+            progress,
+            &wgpu::ComputePipelineDescriptor {
                 label: Some("SparkleFlinger GPU display finalize pipeline"),
                 layout: Some(&display_finalize_pipeline_layout),
                 module: &display_finalize_shader,
                 entry_point: Some("finalize_display"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
-            });
-        let display_finalize_yuv_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            },
+        );
+        let display_finalize_yuv_pipeline = compile_compute_pipeline(
+            device,
+            progress,
+            &wgpu::ComputePipelineDescriptor {
                 label: Some("SparkleFlinger GPU display finalize YUV pipeline"),
                 layout: Some(&display_finalize_pipeline_layout),
                 module: &display_finalize_shader,
                 entry_point: Some("finalize_display_yuv420"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
-            });
+            },
+        );
         let display_finalize_params = UniformParamsRing::new(
             device,
             "SparkleFlinger GPU display finalize params",
@@ -461,15 +477,18 @@ impl GpuCompositorPipeline {
             label: Some("SparkleFlinger GPU preview scale shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../preview_scale.wgsl").into()),
         });
-        let preview_scale_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let preview_scale_pipeline = compile_compute_pipeline(
+            device,
+            progress,
+            &wgpu::ComputePipelineDescriptor {
                 label: Some("SparkleFlinger GPU preview scale pipeline"),
                 layout: Some(&preview_scale_pipeline_layout),
                 module: &preview_scale_shader,
                 entry_point: Some("scale_preview"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
-            });
+            },
+        );
         let preview_scale_params = UniformParamsRing::new(
             device,
             "SparkleFlinger GPU preview scale params",

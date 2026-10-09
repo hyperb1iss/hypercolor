@@ -292,12 +292,14 @@ impl LightScriptInputEventPayload {
                 payload.phase = Some(pointer_scroll_phase_name(*phase));
                 payload.momentum_phase = Some(pointer_scroll_phase_name(*momentum_phase));
             }
-            // MIDI edges stay on the event bus; they are not part of the
-            // effect-facing interaction contract yet.
+            // MIDI and device edges stay on the event bus; they are not part
+            // of the effect-facing interaction contract yet.
             InputEvent::MidiNote { .. }
             | InputEvent::MidiControlChange { .. }
             | InputEvent::MidiPitchBend { .. }
-            | InputEvent::MidiRealtime { .. } => return None,
+            | InputEvent::MidiRealtime { .. }
+            | InputEvent::Touch { .. }
+            | InputEvent::DeviceButton { .. } => return None,
         }
 
         Some(payload)

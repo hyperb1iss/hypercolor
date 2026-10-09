@@ -22,6 +22,7 @@ pub mod ids {
     pub const RESUME_OUTPUT: &str = "resume_output";
     pub const REFRESH_SERVERS: &str = "refresh_servers";
     pub const STOP_EFFECT: &str = "stop_effect";
+    pub const RETRY_DAEMON: &str = "retry_daemon";
     pub const QUIT: &str = "quit";
 
     /// Prefix for dynamically generated effect menu items.
@@ -53,6 +54,7 @@ pub enum MenuAction {
     SetPaused(bool),
     RefreshServers,
     StopEffect,
+    RetryDaemon,
     Quit,
     ApplyEffect(String),
     ActivateScene(String),
@@ -113,6 +115,16 @@ impl SubmenuModel {
 /// Build the platform-neutral menu model for the current application state.
 #[must_use]
 pub fn menu_model(state: &AppState) -> Vec<MenuEntry> {
+    menu_model_with_supervisor(state, false)
+}
+
+/// Build the menu model with supervisor visibility.
+///
+/// `supervisor_failed` is sourced from
+/// `SupervisorState::permanent_failure()`; when true the menu offers a
+/// Retry Daemon action that restarts supervision.
+#[must_use]
+pub fn menu_model_with_supervisor(state: &AppState, supervisor_failed: bool) -> Vec<MenuEntry> {
     let mut entries = Vec::new();
 
     let header_text = if state.connected {
@@ -122,6 +134,11 @@ pub fn menu_model(state: &AppState) -> Vec<MenuEntry> {
     };
     entries.push(item("header", header_text, false));
     entries.push(MenuEntry::Separator);
+
+    if supervisor_failed {
+        entries.push(item(ids::RETRY_DAEMON, "Retry Daemon", true));
+        entries.push(MenuEntry::Separator);
+    }
 
     if state.connected {
         build_connected_entries(&mut entries, state);
@@ -140,14 +157,18 @@ pub fn menu_model(state: &AppState) -> Vec<MenuEntry> {
 /// # Errors
 ///
 /// Returns a Tauri error if native menu construction fails.
-pub fn build_menu<R, M>(manager: &M, state: &AppState) -> tauri::Result<Menu<R>>
+pub fn build_menu<R, M>(
+    manager: &M,
+    state: &AppState,
+    supervisor_failed: bool,
+) -> tauri::Result<Menu<R>>
 where
     R: Runtime,
     M: Manager<R>,
 {
     let menu = Menu::new(manager)?;
 
-    for entry in menu_model(state) {
+    for entry in menu_model_with_supervisor(state, supervisor_failed) {
         append_entry(manager, &menu, &entry)?;
     }
 
@@ -168,6 +189,7 @@ pub fn action_for_menu_id(id: &str) -> Option<MenuAction> {
         ids::RESUME_OUTPUT => Some(MenuAction::SetPaused(false)),
         ids::REFRESH_SERVERS => Some(MenuAction::RefreshServers),
         ids::STOP_EFFECT => Some(MenuAction::StopEffect),
+        ids::RETRY_DAEMON => Some(MenuAction::RetryDaemon),
         ids::QUIT => Some(MenuAction::Quit),
         other => dynamic_action_for_menu_id(other),
     }

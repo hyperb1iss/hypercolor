@@ -4,13 +4,13 @@ use std::collections::HashMap;
 
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::device::{ConnectionType, DeviceOrigin};
+use hypercolor_types::device::{ConnectionType, DeviceId, DeviceOrigin};
 use hypercolor_types::event::{
     AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
     EffectRef, EffectStopReason, EventCategory, EventPriority, FrameData, FrameTiming,
     HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
     PointerScrollPhase, PointerScrollUnit, SceneChangeReason, Severity, TimedInputEvent,
-    TransitionRef, ZoneChangeKind, ZoneColors, ZoneRef,
+    TouchPhase, TransitionRef, ZoneChangeKind, ZoneColors, ZoneRef,
 };
 use hypercolor_types::layer::SceneLayerId;
 use hypercolor_types::scene::{SceneId, SceneKind, SceneMutationMode, ZoneId, ZoneRole};
@@ -1298,6 +1298,75 @@ fn pointer_scroll_round_trips_exact_q16_16_metadata() {
     let restored: InputEvent = serde_json::from_value(json).expect("deserialize pointer scroll");
     assert_eq!(restored, scroll);
     assert_eq!(restored.source_id(), "host:trackpad");
+}
+
+#[test]
+fn device_touch_round_trips_with_device_attribution() {
+    let device_id = DeviceId::new();
+    let touch = InputEvent::Touch {
+        source_id: format!("device:{device_id}"),
+        device_id,
+        contact: 3,
+        phase: TouchPhase::Began,
+        x_q16_16: 32_768,
+        y_q16_16: 65_536,
+        pressure_q16_16: 16_384,
+    };
+
+    let json = serde_json::to_value(&touch).expect("serialize touch");
+    assert_eq!(json["kind"], "touch");
+    assert_eq!(json["device_id"], device_id.to_string());
+    assert_eq!(json["contact"], 3);
+    assert_eq!(json["phase"], "began");
+    assert_eq!(json["x_q16_16"], 32_768);
+    assert_eq!(json["y_q16_16"], 65_536);
+    assert_eq!(json["pressure_q16_16"], 16_384);
+
+    let restored: InputEvent = serde_json::from_value(json).expect("deserialize touch");
+    assert_eq!(restored, touch);
+    assert_eq!(restored.device_id(), Some(device_id));
+    assert_eq!(restored.source_id(), format!("device:{device_id}"));
+}
+
+#[test]
+fn device_button_round_trips_with_device_attribution() {
+    let device_id = DeviceId::new();
+    let button = InputEvent::DeviceButton {
+        source_id: format!("device:{device_id}"),
+        device_id,
+        button: "mode".into(),
+        state: InputButtonState::Released,
+    };
+
+    let json = serde_json::to_value(&button).expect("serialize device button");
+    assert_eq!(json["kind"], "device_button");
+    assert_eq!(json["button"], "mode");
+    assert_eq!(json["state"], "released");
+
+    let restored: InputEvent = serde_json::from_value(json).expect("deserialize device button");
+    assert_eq!(restored, button);
+    assert_eq!(restored.device_id(), Some(device_id));
+}
+
+#[test]
+fn touch_phases_use_snake_case_names() {
+    for (phase, name) in [
+        (TouchPhase::Began, "began"),
+        (TouchPhase::Ended, "ended"),
+        (TouchPhase::Cancelled, "cancelled"),
+    ] {
+        assert_eq!(serde_json::to_value(phase).expect("serialize phase"), name);
+    }
+}
+
+#[test]
+fn host_input_events_have_no_device_attribution() {
+    let key = InputEvent::Key {
+        source_id: "host:/dev/input/event4".into(),
+        key: "a".into(),
+        state: InputButtonState::Pressed,
+    };
+    assert_eq!(key.device_id(), None);
 }
 
 #[test]

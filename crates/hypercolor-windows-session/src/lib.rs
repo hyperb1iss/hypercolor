@@ -5,6 +5,7 @@
 //! into the same neutral [`SessionEvent`] vocabulary before core sees them.
 
 mod decode;
+mod process_memory;
 mod scm;
 
 #[cfg(target_os = "windows")]
@@ -19,6 +20,7 @@ pub use self::decode::{
     WM_POWERBROADCAST_MESSAGE, WM_WTSSESSION_CHANGE_MESSAGE, WTS_SESSION_LOCK_NOTIFICATION,
     WTS_SESSION_UNLOCK_NOTIFICATION, decode_scm_notification, decode_window_message,
 };
+pub use self::process_memory::process_resident_memory_mb;
 pub use self::scm::{ScmSessionEventAdapter, ScmSessionMonitor, scm_session_monitor};
 
 #[cfg(target_os = "windows")]

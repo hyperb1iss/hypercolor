@@ -92,6 +92,23 @@ pub fn register_html_effects(
     registry: &mut EffectRegistry,
     search_paths: &[PathBuf],
 ) -> HtmlDiscoveryReport {
+    register_html_effects_stepped(registry, search_paths, |_, work| work())
+}
+
+/// Scan and register like [`register_html_effects`], running each unit of
+/// work through `step`.
+///
+/// `step` receives the path being worked on (an effect root while it is
+/// listed, then each effect file while it is read and registered) and must
+/// call the work exactly once. A caller that reports startup progress
+/// wraps the call, so a large library on a slow disk advances one file at
+/// a time.
+#[must_use]
+pub fn register_html_effects_stepped(
+    registry: &mut EffectRegistry,
+    search_paths: &[PathBuf],
+    mut step: impl FnMut(&Path, &mut dyn FnMut()),
+) -> HtmlDiscoveryReport {
     let mut report = HtmlDiscoveryReport::default();
     let mut visited_files = HashSet::new();
 
@@ -101,53 +118,24 @@ pub fn register_html_effects(
             continue;
         }
 
-        let files = match collect_html_files(root) {
-            Ok(files) => files,
-            Err(error) => {
+        let mut listing = None;
+        step(root, &mut || listing = Some(collect_html_files(root)));
+        let files = match listing {
+            Some(Ok(files)) => files,
+            Some(Err(error)) => {
                 report.errors.push(HtmlDiscoveryError {
                     path: root.clone(),
                     message: format!("failed to scan directory: {error}"),
                 });
                 continue;
             }
+            None => continue,
         };
 
         for file in files {
-            report.scanned_files += 1;
-
-            let normalized = normalize_path(&file);
-            if !visited_files.insert(normalized) {
-                report.skipped_files += 1;
-                continue;
-            }
-
-            let loaded = match inspect_html_effect_file(&file) {
-                Ok(loaded) => loaded,
-                Err(error) => {
-                    report.errors.push(error);
-                    continue;
-                }
-            };
-
-            let Some(entry) = loaded.entry else {
-                report
-                    .legacy_effect_ids
-                    .extend(registered_migrations(registry, loaded.legacy_effect_ids));
-                report.skipped_files += 1;
-                continue;
-            };
-
-            let canonical_id = entry.metadata.id;
-            for (legacy_id, migration_target) in loaded.legacy_effect_ids {
-                debug_assert_eq!(migration_target, canonical_id);
-                report.legacy_effect_ids.insert(legacy_id, migration_target);
-            }
-
-            if registry.register(entry).is_some() {
-                report.replaced_effects += 1;
-            } else {
-                report.loaded_effects += 1;
-            }
+            step(&file, &mut || {
+                register_html_effect_file(registry, &mut report, &mut visited_files, &file);
+            });
         }
     }
 
@@ -162,6 +150,49 @@ pub fn register_html_effects(
     }
 
     report
+}
+
+fn register_html_effect_file(
+    registry: &mut EffectRegistry,
+    report: &mut HtmlDiscoveryReport,
+    visited_files: &mut HashSet<PathBuf>,
+    file: &Path,
+) {
+    report.scanned_files += 1;
+
+    let normalized = normalize_path(file);
+    if !visited_files.insert(normalized) {
+        report.skipped_files += 1;
+        return;
+    }
+
+    let loaded = match inspect_html_effect_file(file) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            report.errors.push(error);
+            return;
+        }
+    };
+
+    let Some(entry) = loaded.entry else {
+        report
+            .legacy_effect_ids
+            .extend(registered_migrations(registry, loaded.legacy_effect_ids));
+        report.skipped_files += 1;
+        return;
+    };
+
+    let canonical_id = entry.metadata.id;
+    for (legacy_id, migration_target) in loaded.legacy_effect_ids {
+        debug_assert_eq!(migration_target, canonical_id);
+        report.legacy_effect_ids.insert(legacy_id, migration_target);
+    }
+
+    if registry.register(entry).is_some() {
+        report.replaced_effects += 1;
+    } else {
+        report.loaded_effects += 1;
+    }
 }
 
 pub(super) fn registered_migrations(

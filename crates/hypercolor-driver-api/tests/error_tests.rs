@@ -78,3 +78,37 @@ fn delivery_ack_preserves_typed_device_error() {
 
     assert_eq!(ack.error, Some(error));
 }
+
+#[test]
+fn delivery_ack_marks_only_transient_failures_transient() {
+    let id = DeviceDeliveryId {
+        queue_generation: 4,
+        sequence: 10,
+    };
+    let error = DeviceError::write("fixture", "hid write reported a short count");
+
+    let transient =
+        DeviceDeliveryAck::failed_transient(id, true, Duration::from_millis(2), error.clone());
+    assert!(transient.transient);
+    assert_eq!(transient.error, Some(error.clone()));
+    assert_eq!(
+        transient,
+        DeviceDeliveryAck {
+            transient: true,
+            ..DeviceDeliveryAck::failed(id, true, Duration::from_millis(2), error.clone())
+        }
+    );
+
+    assert!(!DeviceDeliveryAck::failed(id, true, Duration::ZERO, error.clone()).transient);
+    assert!(!DeviceDeliveryAck::rejected(id, error.clone()).transient);
+    assert!(!DeviceDeliveryAck::completed(id, 3, Duration::ZERO).transient);
+    assert!(
+        !DeviceDeliveryAck::from_write_result(
+            id,
+            3,
+            Duration::ZERO,
+            Err::<DeviceWriteOutcome, _>(error)
+        )
+        .transient
+    );
+}

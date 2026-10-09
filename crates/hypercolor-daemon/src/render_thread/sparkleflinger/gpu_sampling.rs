@@ -9,7 +9,9 @@ use hypercolor_core::spatial::{PreparedZonePlan, PreparedZoneSamples};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::SamplingMode;
 
+use super::compile_compute_pipeline;
 use super::gpu_area_sat::{GpuAreaPipeline, GpuAreaResources, SAT_VALUE_BYTES};
+use crate::startup::StartupProgress;
 
 const SAMPLE_WORKGROUP_SIZE: u32 = 64;
 const SAMPLE_PARAM_BYTES: usize = 16;
@@ -506,7 +508,7 @@ pub(super) struct GpuSpatialSampler {
 }
 
 impl GpuSpatialSampler {
-    pub(super) fn new(device: &wgpu::Device) -> Self {
+    pub(super) fn new(device: &wgpu::Device, progress: Option<&StartupProgress>) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SparkleFlinger GPU sample bind group layout"),
             entries: &[
@@ -574,14 +576,18 @@ impl GpuSpatialSampler {
             label: Some("SparkleFlinger GPU sample shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("sample.wgsl").into()),
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("SparkleFlinger GPU sample pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("sample_pixels"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
+        let pipeline = compile_compute_pipeline(
+            device,
+            progress,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("SparkleFlinger GPU sample pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("sample_pixels"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            },
+        );
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SparkleFlinger GPU sample params"),
             size: SAMPLE_PARAM_BYTES as u64,
@@ -598,7 +604,7 @@ impl GpuSpatialSampler {
         Self {
             bind_group_layout,
             pipeline,
-            area_pipeline: GpuAreaPipeline::new(device),
+            area_pipeline: GpuAreaPipeline::new(device, progress),
             area_resources: None,
             area_generation: 0,
             admitted_plan: None,

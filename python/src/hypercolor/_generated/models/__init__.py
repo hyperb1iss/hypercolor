@@ -252,6 +252,8 @@ from .create_simulated_display_request import CreateSimulatedDisplayRequest
 from .create_simulated_display_response_201 import CreateSimulatedDisplayResponse201
 from .create_template_response_201 import CreateTemplateResponse201
 from .create_zone_request import CreateZoneRequest
+from .daemon_startup_phase import DaemonStartupPhase
+from .daemon_startup_progress import DaemonStartupProgress
 from .deactivate_playlist_response import DeactivatePlaylistResponse
 from .deactivate_playlist_response_200 import DeactivatePlaylistResponse200
 from .deactivate_scene_response_200 import DeactivateSceneResponse200
@@ -872,6 +874,8 @@ __all__ = (
     "CreateSimulatedDisplayResponse201",
     "CreateTemplateResponse201",
     "CreateZoneRequest",
+    "DaemonStartupPhase",
+    "DaemonStartupProgress",
     "DeactivatePlaylistResponse",
     "DeactivatePlaylistResponse200",
     "DeactivateSceneResponse200",

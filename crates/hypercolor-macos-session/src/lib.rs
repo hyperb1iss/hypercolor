@@ -4,6 +4,7 @@
 //! [`SessionEvent`] vocabulary before they cross into core.
 
 mod decode;
+mod process_memory;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -16,6 +17,7 @@ pub use hypercolor_types::session::SessionEvent;
 pub use self::decode::{MacosSessionNotification, decode_session_notification};
 #[cfg(target_os = "macos")]
 pub use self::macos::MacosSessionMonitor;
+pub use self::process_memory::process_resident_memory_mb;
 
 /// Build the macOS session monitor for daemon composition.
 #[must_use]

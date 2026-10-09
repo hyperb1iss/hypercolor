@@ -32,7 +32,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::domain::scene::SceneService;
-use crate::interaction_routing::{InteractionRoutingControl, selected_input_availability};
+use crate::interaction_routing::{
+    InteractionRoutingControl, selected_host_statuses, selected_input_availability,
+};
 use crate::preview_runtime::PreviewPixelFormat;
 #[cfg(feature = "wgpu")]
 use crate::render_thread::gpu_device::GpuRenderDevice;
@@ -1232,8 +1234,9 @@ impl PreviewLaneInput {
     fn read(&mut self, screen_extent: PixelExtent) {
         let graph = self.graph.snapshot();
         let browser = self.routing.browser_registry_snapshot();
+        let devices = self.routing.device_registry_snapshot();
         self.interaction_catalog
-            .refresh(&graph, &browser, Instant::now());
+            .refresh(&graph, &browser, &devices, Instant::now());
         self.read_typed(&graph);
         self.read_screen(screen_extent);
         let routing = self.routing.snapshot();
@@ -1336,11 +1339,7 @@ impl PreviewLaneInput {
 
     fn interaction_availability(&self) -> InputSourceAvailability {
         selected_input_availability(
-            self.routed
-                .diagnostics
-                .selected
-                .iter()
-                .filter_map(|source| source.status.as_ref()),
+            selected_host_statuses(&self.routed.diagnostics.selected),
             Instant::now(),
         )
     }
@@ -1574,7 +1573,7 @@ fn create_preview_compositor(
     #[cfg(feature = "wgpu")]
     if let Some(device) = acceleration.render_device.clone()
         && let Ok(compositor) =
-            SparkleFlinger::new_with_gpu_device(RenderAccelerationMode::Gpu, Some(device))
+            SparkleFlinger::new_with_gpu_device(RenderAccelerationMode::Gpu, Some(device), None)
     {
         return (compositor, InteractivePreviewBackend::Gpu);
     }

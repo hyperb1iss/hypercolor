@@ -248,6 +248,10 @@ compat *args='':
 compat-check:
     bun scripts/gen-compat.ts --check
 
+# Regenerate the OpenRGB detector USB id map from `openrgb --print-udev-rules` output
+openrgb-detector-ids rules:
+    bun scripts/gen-openrgb-detector-ids.ts {{ rules }}
+
 # Stamp a release version across every version-bearing file (see RELEASING.md)
 set-version version:
     bun scripts/set-version.ts {{ version }}
@@ -495,9 +499,10 @@ app-bundle *args='': app-assets app-bundle-assets
     cd crates/hypercolor-app && APPLE_SIGNING_IDENTITY="$(../../scripts/macos-dev-signing-identity.sh)" HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ if os() == "macos" { "--bundles app" } else { "" } }} {{ args }}
     ./scripts/macos-dev-postsign.sh
 
+# Build native Tauri bundles; installer.nsi needs exactly tauri-cli 2.12.1
 [windows]
 app-bundle *args='': app-assets app-bundle-assets
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Set-Location crates/hypercolor-app; cargo tauri build --config tauri.bundle.conf.json --config tauri.windows.bundle.conf.json {{ args }}"
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "if ((cargo tauri --version) -ne 'tauri-cli 2.12.1') { throw 'Windows bundles need tauri-cli 2.12.1; install it with: cargo install tauri-cli --version =2.12.1 --locked' }; Set-Location crates/hypercolor-app; cargo tauri build --config tauri.bundle.conf.json --config tauri.windows.bundle.conf.json {{ args }}"
 
 # Build the full unsigned Windows NSIS installer package
 [windows]

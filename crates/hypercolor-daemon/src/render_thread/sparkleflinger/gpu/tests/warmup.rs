@@ -6,9 +6,9 @@ use crate::render_thread::gpu_device::GpuRenderDevice;
 /// The longest SparkleFlinger may spend compiling its pipelines.
 ///
 /// Render warmup compiles every compositor, sampling, and area SAT pipeline
-/// before the daemon answers its first request, and the desktop app
-/// supervisor gives the whole startup 20 seconds to answer `/health` before
-/// killing the daemon. The budget is sized for hosted CI runners, which
+/// before the daemon is ready, all inside one startup phase, and the desktop
+/// app supervisor kills a daemon whose startup reports no progress for 20
+/// seconds. The budget is sized for hosted CI runners, which
 /// compile far slower than a desktop and vary between runs: the same
 /// pipelines took 3.3 s on one windows-latest run and 9.4 s on the next,
 /// against 1.6 s on a desktop. A real compiler stall, like the one that

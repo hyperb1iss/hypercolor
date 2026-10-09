@@ -109,10 +109,8 @@ pub async fn execute(args: &OpenRgbArgs, client: &DaemonClient, ctx: &OutputCont
                     .collect::<Vec<_>>(),
                 &host::known_detector_driver_ids(),
             );
-            let disabled = host::detector_prefixes_for_drivers(&plan.disabled_driver_ids);
-            let released = host::detector_prefixes_for_drivers(&plan.re_enable_driver_ids);
             let dir = host::managed_config_dir(&data_dir);
-            let report = host::write_detector_partition(&dir, &disabled, &released, None)?;
+            let report = host::write_detector_partition(&dir, &plan.detector_rules(), None)?;
             if ctx.format == OutputFormat::Json {
                 ctx.print_json(&report)?;
             } else {

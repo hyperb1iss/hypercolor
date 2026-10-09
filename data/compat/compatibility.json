@@ -3,10 +3,10 @@
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
     "vendors": 32,
-    "devices": 418,
+    "devices": 420,
     "byStatus": {
-      "supported": 183,
-      "in_progress": 0,
+      "supported": 184,
+      "in_progress": 1,
       "planned": 0,
       "researched": 95,
       "known": 138,
@@ -3080,6 +3080,19 @@
           "notes": "Legacy USB vendor protocol"
         },
         {
+          "pid": 41096,
+          "pidHex": "0xA088",
+          "vid": 7358,
+          "vidHex": "0x1CBE",
+          "name": "Universal Screen 8.8\"",
+          "type": "lcd",
+          "status": "in_progress",
+          "driver": "lianli",
+          "transport": "usb_bulk",
+          "leds": null,
+          "notes": "1920x480 bar panel in LCD mode; the firmware only decodes 480x1920 portrait JPEGs. WinUSB-variant DES header (500-byte plaintext, A1 1A trailer) plus one variable-length JPEG write. Awaiting hardware confirmation. The LED ring is a separate device (0x0416:0x8050)."
+        },
+        {
           "pid": 29589,
           "pidHex": "0x7395",
           "vid": null,
@@ -3108,13 +3121,13 @@
       ],
       "counts": {
         "supported": 13,
-        "in_progress": 0,
+        "in_progress": 1,
         "planned": 0,
         "researched": 2,
         "known": 0,
         "blocked": 0
       },
-      "totalDevices": 15,
+      "totalDevices": 16,
       "drivers": [
         "lianli"
       ],
@@ -5099,6 +5112,19 @@
           "notes": null
         },
         {
+          "pid": 1319,
+          "pidHex": "0x0527",
+          "vid": null,
+          "vidHex": null,
+          "name": "Kraken Ultimate",
+          "type": "headset",
+          "status": "supported",
+          "driver": "razer",
+          "transport": "usb_hid",
+          "leds": 1,
+          "notes": "Kraken memory-access protocol, one zone for both earcups"
+        },
+        {
           "pid": 3853,
           "pidHex": "0x0F0D",
           "vid": null,
@@ -5593,8 +5619,8 @@
           "notes": null
         },
         {
-          "pid": 1319,
-          "pidHex": "0x0527",
+          "pid": 1331,
+          "pidHex": "0x0533",
           "vid": null,
           "vidHex": null,
           "name": "Kraken Headset",
@@ -5603,7 +5629,7 @@
           "driver": null,
           "transport": null,
           "leds": null,
-          "notes": "Multiple PIDs: 0x0527, 0x0533, 0x0537, 0x0549, 0x0560"
+          "notes": "Multiple PIDs: 0x0533, 0x0537, 0x0549, 0x0560"
         },
         {
           "pid": 527,
@@ -5841,14 +5867,14 @@
         }
       ],
       "counts": {
-        "supported": 70,
+        "supported": 71,
         "in_progress": 0,
         "planned": 0,
         "researched": 38,
         "known": 0,
         "blocked": 0
       },
-      "totalDevices": 108,
+      "totalDevices": 109,
       "drivers": [
         "razer"
       ],

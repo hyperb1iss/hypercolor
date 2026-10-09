@@ -64,4 +64,9 @@ pub enum HostError {
     /// The embedded detector table did not parse. This is a build defect.
     #[error("embedded OpenRGB detector table is malformed: {0}")]
     DetectorTable(String),
+
+    /// The detector USB id map did not parse. For the embedded map this is
+    /// a build defect.
+    #[error("OpenRGB detector USB id map is malformed: {0}")]
+    DetectorUsbIds(String),
 }

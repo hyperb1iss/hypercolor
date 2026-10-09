@@ -13,6 +13,7 @@ mod discovery;
 mod driver_discovery;
 mod error;
 mod host;
+mod input;
 mod module;
 mod pairing;
 
@@ -34,6 +35,7 @@ pub use host::{
     DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverRuntimeActions,
     DriverTrackedDevice, TrackedDeviceCtx,
 };
+pub use input::{DeviceInputPublisher, DeviceInputSink};
 pub use module::{
     DeviceBackendFactory, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
     DriverRuntimeCacheProvider, OutputBinding,

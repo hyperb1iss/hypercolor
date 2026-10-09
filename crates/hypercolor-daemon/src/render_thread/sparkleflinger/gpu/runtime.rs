@@ -9,6 +9,7 @@ use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::producer_queue::SubmissionRetirementQueue;
 use crate::render_thread::sparkleflinger::CompositionPlan;
 use crate::render_thread::sparkleflinger::gpu_sampling::GpuSpatialSampler;
+use crate::startup::{StartupProgress, startup_step};
 
 use super::canvas::{GpuCanvasAdmission, gpu_canvas_admission};
 use super::pipeline::GpuCompositorPipeline;
@@ -64,7 +65,19 @@ impl GpuSparkleFlinger {
     }
 
     pub(crate) fn with_render_device(render_device: GpuRenderDevice) -> Result<Self> {
-        let probe = probe_render_device(&render_device)?;
+        Self::with_render_device_reporting(render_device, None)
+    }
+
+    /// Build the compositor on `render_device`, reporting the device probe,
+    /// every pipeline compile, and the native screen bridge to `progress`
+    /// as each one completes.
+    pub(crate) fn with_render_device_reporting(
+        render_device: GpuRenderDevice,
+        progress: Option<&StartupProgress>,
+    ) -> Result<Self> {
+        let probe = startup_step(progress, "compositor device probe", || {
+            probe_render_device(&render_device)
+        })?;
         #[cfg(all(
             any(target_os = "linux", target_os = "macos", target_os = "windows"),
             feature = "servo-gpu-import"
@@ -97,10 +110,11 @@ impl GpuSparkleFlinger {
         let max_buffer_size = device.limits().max_buffer_size;
         let max_storage_buffer_binding_size = device.limits().max_storage_buffer_binding_size;
 
-        let pipeline = GpuCompositorPipeline::new(&device);
-        let spatial_sampler = GpuSpatialSampler::new(&device);
-        let native_screen =
-            super::native_screen::install(&device, &queue, probe.max_texture_dimension_2d)?;
+        let pipeline = GpuCompositorPipeline::new(&device, progress);
+        let spatial_sampler = GpuSpatialSampler::new(&device, progress);
+        let native_screen = startup_step(progress, "native screen bridge", || {
+            super::native_screen::install(&device, &queue, probe.max_texture_dimension_2d)
+        })?;
 
         Ok(Self {
             _render_device: render_device,

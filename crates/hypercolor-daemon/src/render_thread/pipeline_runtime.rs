@@ -73,8 +73,11 @@ use super::sparkleflinger::{
     SparkleFlingerSamplingPreparation,
 };
 use super::{RenderThreadState, micros_u32};
-use crate::interaction_routing::{InteractionRoutingControl, selected_input_availability};
+use crate::interaction_routing::{
+    InteractionRoutingControl, selected_host_statuses, selected_input_availability,
+};
 use crate::scene_transactions::{LayoutActivationControl, LayoutTransactionRejection};
+use crate::startup::{StartupProgress, startup_step};
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 100;
 const BACKGROUND_INPUT_HZ: u32 = 1;
@@ -267,8 +270,13 @@ impl InputRouteCache {
             self.rebuild_routes(&graph);
         }
         let browser_registry = self.interaction_routing.browser_registry_snapshot();
-        self.interaction_catalog
-            .refresh(&graph, &browser_registry, Instant::now());
+        let device_registry = self.interaction_routing.device_registry_snapshot();
+        self.interaction_catalog.refresh(
+            &graph,
+            &browser_registry,
+            &device_registry,
+            Instant::now(),
+        );
 
         inputs.prepare_for_sample(None);
         self.route_latest_into(&graph, inputs);
@@ -375,11 +383,7 @@ impl InputRouteCache {
             &mut self.routed_interaction.interaction,
         );
         inputs.input_availability = selected_input_availability(
-            self.routed_interaction
-                .diagnostics
-                .selected
-                .iter()
-                .filter_map(|source| source.status.as_ref()),
+            selected_host_statuses(&self.routed_interaction.diagnostics.selected),
             Instant::now(),
         );
         for event in &mut inputs.interaction.batch.events {
@@ -396,18 +400,16 @@ impl InputRouteCache {
             self.rebuild_routes(&graph);
         }
         let browser = self.interaction_routing.browser_registry_snapshot();
+        let device = self.interaction_routing.device_registry_snapshot();
         let now = Instant::now();
-        self.interaction_catalog.refresh(&graph, &browser, now);
+        self.interaction_catalog
+            .refresh(&graph, &browser, &device, now);
         self.interaction_availability(now)
     }
 
     fn interaction_availability(&self, now: Instant) -> InputSourceAvailability {
         selected_input_availability(
-            self.routed_interaction
-                .diagnostics
-                .selected
-                .iter()
-                .filter_map(|source| source.status.as_ref()),
+            selected_host_statuses(&self.routed_interaction.diagnostics.selected),
             now,
         )
     }
@@ -2047,6 +2049,7 @@ impl PipelineRuntime {
         input_reader: InputPublicationReader,
         input_demands: InputPublicationDemandHandle,
         #[cfg(feature = "wgpu")] screen_parity_mailbox: ScreenParityDiagnosticMailbox,
+        progress: Option<&StartupProgress>,
     ) -> Result<Self> {
         let initial_spatial_engine = state.spatial_engine.snapshot().as_ref().clone();
         let pipeline = Self::new_with_gpu_device(
@@ -2064,6 +2067,7 @@ impl PipelineRuntime {
             input_reader,
             input_demands,
             state.interaction_routing.clone(),
+            progress,
         )?;
         for (feature, available) in pipeline
             .render
@@ -2083,6 +2087,7 @@ impl PipelineRuntime {
         input_reader: InputPublicationReader,
         input_demands: InputPublicationDemandHandle,
         #[cfg(feature = "wgpu")] screen_parity_mailbox: ScreenParityDiagnosticMailbox,
+        progress: Option<&StartupProgress>,
     ) -> Result<Self> {
         let initial_spatial_engine = state.spatial_engine.snapshot().as_ref().clone();
         Self::new_with_gpu_device(
@@ -2100,6 +2105,7 @@ impl PipelineRuntime {
             input_reader,
             input_demands,
             state.interaction_routing.clone(),
+            progress,
         )
     }
 
@@ -2131,6 +2137,7 @@ impl PipelineRuntime {
             InputPublicationReader::empty(),
             input_demands,
             InteractionRoutingControl::default(),
+            None,
         )
     }
 
@@ -2147,26 +2154,37 @@ impl PipelineRuntime {
         input_reader: InputPublicationReader,
         input_demands: InputPublicationDemandHandle,
         interaction_routing: InteractionRoutingControl,
+        progress: Option<&StartupProgress>,
     ) -> Result<Self> {
         let mut sparkleflinger = SparkleFlinger::new_with_gpu_device(
             render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             render_gpu_device.clone(),
+            progress,
         )?;
         #[cfg(feature = "wgpu")]
-        let mut display_sparkleflinger =
-            SparkleFlinger::new_with_gpu_device(render_acceleration_mode, render_gpu_device)?;
+        let mut display_sparkleflinger = SparkleFlinger::new_with_gpu_device(
+            render_acceleration_mode,
+            render_gpu_device,
+            progress,
+        )?;
         #[cfg_attr(not(feature = "wgpu"), allow(unused_mut))]
         let mut sparkleflinger_preparation =
-            sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)?;
-        let sampling_preparation = sparkleflinger.prepare_zone_sampling_plan(
-            canvas_width,
-            canvas_height,
-            initial_spatial_engine.sampling_plan().as_ref(),
-        );
+            startup_step(progress, "scene compositor canvas", || {
+                sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)
+            })?;
+        let sampling_preparation = startup_step(progress, "zone sampling plan", || {
+            sparkleflinger.prepare_zone_sampling_plan(
+                canvas_width,
+                canvas_height,
+                initial_spatial_engine.sampling_plan().as_ref(),
+            )
+        });
         #[cfg(feature = "wgpu")]
         let mut display_sparkleflinger_preparation =
-            display_sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)?;
+            startup_step(progress, "display compositor canvas", || {
+                display_sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)
+            })?;
         #[cfg(feature = "wgpu")]
         if !sparkleflinger_preparation.is_admitted()
             || !display_sparkleflinger_preparation.is_admitted()
@@ -2569,9 +2587,10 @@ mod tests {
             routes.rebuild_routes(graph);
         }
         let registry = routes.interaction_routing.browser_registry_snapshot();
+        let devices = routes.interaction_routing.device_registry_snapshot();
         routes
             .interaction_catalog
-            .refresh(graph, &registry, Instant::now());
+            .refresh(graph, &registry, &devices, Instant::now());
         inputs.prepare_for_sample(None);
         routes.route_latest_into(graph, inputs);
         routes.route_interaction_into(event_bus, inputs);

@@ -12,9 +12,9 @@ use serde_json::{Value, json};
 
 use crate::{
     DeviceFacts, DriverFacts, OpenRgbHoldReason, OpenRgbPlan, OpenRgbPlanInputs, ProcessSpec,
-    ServerProbe, bridge_enabled, detect_binary, detector_prefixes_for_drivers, install_hints,
-    known_detector_driver_ids, managed_config_dir, openrgb_plan, partition_driver_ids,
-    permission_checks, probe_server, server_command_at, write_detector_partition,
+    ServerProbe, bridge_enabled, detect_binary, install_hints, known_detector_driver_ids,
+    managed_config_dir, openrgb_plan, partition_driver_ids, permission_checks, probe_server,
+    server_command_at, write_detector_partition,
 };
 
 /// Fresh daemon facts supplied over an authenticated local control connection.
@@ -158,13 +158,8 @@ impl OpenRgbOwner {
                     &facts.devices,
                     &known_detector_driver_ids(),
                 );
-                write_detector_partition(
-                    &config,
-                    &detector_prefixes_for_drivers(&partition.disabled_driver_ids),
-                    &detector_prefixes_for_drivers(&partition.re_enable_driver_ids),
-                    None,
-                )
-                .map_err(io::Error::other)?;
+                write_detector_partition(&config, &partition.detector_rules(), None)
+                    .map_err(io::Error::other)?;
                 apply_offscreen(&mut spec);
                 self.spawn(&spec)?;
                 self.endpoint = Some(facts.endpoint);
