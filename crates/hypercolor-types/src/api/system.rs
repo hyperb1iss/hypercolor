@@ -586,7 +586,13 @@ pub enum DaemonStartupPhase {
     Initializing,
     /// Resolving compositor acceleration, including GPU device creation.
     ProbingGpu,
-    /// Registering builtin effects and scanning HTML effect directories.
+    /// Resolving the server and launcher identity, creating the event bus,
+    /// and starting the daemon ownership watch.
+    ResolvingIdentity,
+    /// Opening the user asset library.
+    OpeningAssetLibrary,
+    /// Registering builtin effects and scanning HTML effect directories,
+    /// one step per directory listing and per effect file.
     ScanningEffects,
     /// Loading persisted stores and running their migrations.
     LoadingStores,
@@ -596,7 +602,8 @@ pub enum DaemonStartupPhase {
     StartingInputs,
     /// Spawning the render thread, which builds the compositor pipelines.
     StartingRenderThread,
-    /// Starting previews, display output, background workers, and extensions.
+    /// Starting previews, display output, background workers, and extensions,
+    /// one step per extension start hook.
     StartingServices,
     /// Assembling the API router and running API-ready extension hooks.
     PreparingApi,
@@ -612,6 +619,8 @@ impl DaemonStartupPhase {
         match self {
             Self::Initializing => "initializing",
             Self::ProbingGpu => "probing_gpu",
+            Self::ResolvingIdentity => "resolving_identity",
+            Self::OpeningAssetLibrary => "opening_asset_library",
             Self::ScanningEffects => "scanning_effects",
             Self::LoadingStores => "loading_stores",
             Self::RegisteringBackends => "registering_backends",

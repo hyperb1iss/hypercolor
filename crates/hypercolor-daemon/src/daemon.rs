@@ -175,7 +175,8 @@ impl PreparedDaemon {
             .display
             .sync_preference_overlays()
             .await;
-        if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state).await {
+        if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state, &progress).await
+        {
             if let Err(shutdown_error) = daemon_state.shutdown().await {
                 warn!(%shutdown_error, "Failed to roll back daemon after API-ready hook failure");
             }
@@ -377,14 +378,21 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
     })
 }
 
-async fn notify_api_ready_extensions(daemon: &DaemonState, state: &Arc<AppState>) -> Result<()> {
+async fn notify_api_ready_extensions(
+    daemon: &DaemonState,
+    state: &Arc<AppState>,
+    progress: &StartupProgress,
+) -> Result<()> {
     for extension in daemon.lifecycle_extensions.clone() {
         info!(
             extension = extension.name(),
             "Starting API-ready daemon extension hook"
         );
-        extension
-            .api_ready(daemon, Arc::clone(state))
+        progress
+            .step_async(
+                &format!("daemon extension {} API hook", extension.name()),
+                extension.api_ready(daemon, Arc::clone(state)),
+            )
             .await
             .with_context(|| {
                 format!(
@@ -1100,9 +1108,16 @@ mod tests {
             }));
         }
 
-        notify_api_ready_extensions(&daemon, &state)
+        let progress = crate::startup::StartupProgress::default();
+        let before = progress.snapshot().sequence;
+        notify_api_ready_extensions(&daemon, &state, &progress)
             .await
             .expect("API-ready hooks should succeed");
+        assert_eq!(
+            progress.snapshot().sequence - before,
+            2,
+            "each completed API-ready hook is one startup step"
+        );
 
         assert_eq!(
             calls

@@ -166,8 +166,8 @@ The daemon answers as soon as its port is bound, before startup finishes. While
 it is still starting, `/health` returns `503` with `"status": "starting"` and a
 `startup` block naming the current `phase`, a `sequence` counter that advances
 each time startup completes a unit of work (a phase, or a step inside one such
-as compiling a compositor pipeline), and, while a step is running, a `detail`
-naming it. Every other route returns `503 service_unavailable`. Only `200`
+as loading one effect file or compiling one compositor pipeline), and, while a
+step is running, a `detail` naming it. Every other route returns `503 service_unavailable`. Only `200`
 means the daemon is ready.
 
 ```json
@@ -178,7 +178,7 @@ means the daemon is ready.
   "checks": { "render_loop": "starting", "device_backends": "starting", "event_bus": "starting" },
   "startup": {
     "phase": "starting_render_thread",
-    "sequence": 15,
+    "sequence": 17,
     "detail": "SparkleFlinger GPU area horizontal tile scan"
   }
 }
