@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use hypercolor_openrgb_host::{
-    DetectorUsbClaim, HostError, UsbDeviceId, detector_families, detector_usb_claim,
-    detector_usb_ids, parse_detector_usb_ids,
+    HostError, UsbClaim, UsbDeviceId, detector_families, detector_usb_claim, detector_usb_ids,
+    parse_detector_usb_ids,
 };
 
 /// Seed detectors that drive SMBus hardware: OpenRGB generates no udev rule
@@ -14,6 +14,13 @@ const SMBUS_SEEDS: [&str; 5] = [
     "Corsair Vengeance RGB DRAM",
     "ENE SMBus DRAM",
 ];
+
+fn devices(list: &[(u16, u16)]) -> UsbClaim {
+    UsbClaim {
+        devices: ids(list),
+        vendors: BTreeSet::new(),
+    }
+}
 
 fn ids(list: &[(u16, u16)]) -> BTreeSet<UsbDeviceId> {
     list.iter()
@@ -71,19 +78,47 @@ fn vendor_wildcards_claim_every_product_from_the_vendor() {
         .expect("the vendor-wide Keychron detector is mapped");
     assert!(keychron.devices.is_empty());
     assert_eq!(keychron.vendors, BTreeSet::from([0x3434]));
-    assert!(keychron.overlaps(&ids(&[(0x3434, 0x0123)])));
-    assert!(!keychron.overlaps(&ids(&[(0x1532, 0x3434)])));
+    assert!(keychron.overlaps(&devices(&[(0x3434, 0x0123)])));
+    assert!(!keychron.overlaps(&devices(&[(0x1532, 0x3434)])));
 }
 
 #[test]
 fn overlap_needs_a_shared_device_or_vendor() {
-    let claim = DetectorUsbClaim {
-        devices: ids(&[(0x1532, 0x0527)]),
-        vendors: BTreeSet::new(),
+    let claim = devices(&[(0x1532, 0x0527)]);
+    assert!(claim.overlaps(&devices(&[(0x1532, 0x0f20), (0x1532, 0x0527)])));
+    assert!(!claim.overlaps(&devices(&[(0x1532, 0x0f20)])));
+    assert!(!claim.overlaps(&UsbClaim::default()));
+
+    let razer_wide = UsbClaim {
+        devices: BTreeSet::new(),
+        vendors: BTreeSet::from([0x1532]),
     };
-    assert!(claim.overlaps(&ids(&[(0x1532, 0x0f20), (0x1532, 0x0527)])));
-    assert!(!claim.overlaps(&ids(&[(0x1532, 0x0f20)])));
-    assert!(!claim.overlaps(&BTreeSet::new()));
+    assert!(
+        claim.overlaps(&razer_wide),
+        "a vendor claim covers its devices"
+    );
+    assert!(razer_wide.overlaps(&claim), "overlap is symmetric");
+    assert!(razer_wide.overlaps(&razer_wide));
+    assert!(!razer_wide.overlaps(&devices(&[(0x1b1c, 0x1532)])));
+}
+
+#[test]
+fn claims_merge_and_report_emptiness() {
+    let mut merged = UsbClaim::default();
+    assert!(merged.is_empty());
+    merged.merge(&devices(&[(0x1532, 0x0527)]));
+    merged.merge(&UsbClaim {
+        devices: BTreeSet::new(),
+        vendors: BTreeSet::from([0x3434]),
+    });
+    assert!(!merged.is_empty());
+    assert_eq!(merged.devices, ids(&[(0x1532, 0x0527)]));
+    assert_eq!(merged.vendors, BTreeSet::from([0x3434]));
+
+    let collected: UsbClaim = [devices(&[(0x1532, 0x0527)]), merged.clone()]
+        .iter()
+        .collect();
+    assert_eq!(collected, merged);
 }
 
 #[test]

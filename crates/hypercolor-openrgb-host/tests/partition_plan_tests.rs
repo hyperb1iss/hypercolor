@@ -1,8 +1,6 @@
-use std::collections::BTreeSet;
-
 use hypercolor_openrgb_host::{
-    DetectorPartitionPlan, DeviceFacts, DriverFacts, bridge_enabled, detector_prefixes_for_drivers,
-    known_detector_driver_ids, partition_driver_ids,
+    DetectorPartitionPlan, DeviceFacts, DriverFacts, UsbClaim, bridge_enabled,
+    detector_prefixes_for_drivers, known_detector_driver_ids, partition_driver_ids,
 };
 use hypercolor_types::device::DriverModuleKind;
 const OPENRGB_BRIDGE_DRIVER_ID: &str = "openrgb";
@@ -12,7 +10,7 @@ fn facts(id: &str, module_kind: DriverModuleKind, enabled: bool) -> DriverFacts 
         id: id.to_owned(),
         module_kind,
         enabled,
-        usb_ids: BTreeSet::new(),
+        usb: UsbClaim::default(),
     }
 }
 

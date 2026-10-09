@@ -38,7 +38,7 @@ the SDK client. Filesystem inspection and the pure builders are synchronous.
 | `DetectorPartitionPlan::detector_rules() -> DetectorRules` | Translates the plan into per-detector rules: id-gated prefixes for drivers that published a USB catalog, whole-prefix rules for the rest. |
 | `write_detector_partition(dir, rules, known_detectors) -> Result<DetectorPartition>` | Rewrites `Detectors.detectors` in `OpenRGB.json` by `rules`, preserving every other key, with a durable replace. |
 | `detector_prefixes_for_drivers(driver_ids) -> Vec<String>` | Prefix lookup backed by the embedded `crates/hypercolor-openrgb-host/data/detectors.toml`. |
-| `detector_usb_claim(name) -> Option<&DetectorUsbClaim>` | The USB devices (and vendor wildcards) an OpenRGB detector claims, from the embedded `crates/hypercolor-openrgb-host/data/detector_usb_ids.toml`. |
+| `detector_usb_claim(name) -> Option<&UsbClaim>` | The USB devices (and vendor wildcards) an OpenRGB detector claims, from the embedded `crates/hypercolor-openrgb-host/data/detector_usb_ids.toml`. |
 | `server_command(binary, dir, port) -> Result<ProcessSpec>` | `--server --server-host 127.0.0.1 --server-port <port> --noautoconnect --config <dir> --loglevel 4`; Flatpak wraps it in `flatpak run --filesystem=<dir> org.openrgb.OpenRGB`. Errors on non-UTF-8 paths and, for Flatpak, on paths containing `:`. |
 
 ### Types
@@ -57,23 +57,25 @@ the SDK client. Filesystem inspection and the pure builders are synchronous.
 - `DetectorFamily { driver_id, prefixes, detectors }` and
   `DetectorPartition { disabled, enabled }`.
 - `DetectorRules { disabled_prefixes, id_gated_prefixes, re_enable_prefixes,
-  claimed_usb_ids, native_usb_ids }`; `DetectorRules::by_prefix` builds the
+  claimed_usb, native_usb }`; `DetectorRules::by_prefix` builds the
   conservative prefix-only form.
 - `UsbDeviceId { vendor_id, product_id }`, serialized as `"vvvv:pppp"`, and
-  `DetectorUsbClaim { devices, vendors }`.
+  `UsbClaim { devices, vendors }` for both detector entries and native
+  catalogs (`DriverFacts::usb`).
 
 ## Detector partition semantics
 
 A native driver is withheld when it is enabled and owns at least one enabled
 device. Its USB catalog (the `vendor_id`/`product_id` pairs of its published
-protocols) becomes `claimed_usb_ids`; every native driver's catalog, withheld
-or not, becomes `native_usb_ids`.
+protocols, with a vendor id alone claiming the whole vendor) becomes
+`claimed_usb`; every native driver's catalog, withheld or not, becomes
+`native_usb`.
 
 The universe of detector names is the union of the existing file's map, the
 caller's `known_detectors`, the embedded family seed lists, and every mapped
 detector that claims a withheld device. For each name, in order:
 
-1. a detector the id map ties to a device in `claimed_usb_ids` writes
+1. a detector the id map ties to hardware in `claimed_usb` writes
    `false`, whatever its name;
 2. a match on a whole-prefix family (a withheld driver that published no USB
    catalog) writes `false`;
@@ -83,7 +85,7 @@ detector that claims a withheld device. For each name, in order:
    names from another OpenRGB release);
 4. a match on a re-enable prefix writes `true`, which is how a caller hands a
    family back to OpenRGB once Hypercolor stops claiming it;
-5. a detector the id map ties to a device in `native_usb_ids` writes `true`,
+5. a detector the id map ties to hardware in `native_usb` writes `true`,
    releasing a detector step 1 disabled outside every family prefix;
 6. otherwise the existing value is preserved, defaulting to `true` for names
    the file has never seen.
@@ -95,8 +97,10 @@ Base Station V2, `Razer Base Station V2 Chroma` is disabled while
 unknown `Razer ...` name stays disabled.
 
 Nothing flips an existing `false` to `true` unless one of those rules hands
-the name back, so a user's own toggles for unrelated detectors (Gigabyte,
-MSI, ASRock) survive every rewrite. Invalid JSON or a non-object `Detectors`
+the name back, so a user's own toggles survive every rewrite for detectors
+outside the native families and catalogs (Gigabyte, MSI, ASRock). A toggle
+on a detector a native catalog touches is Hypercolor's to manage: rule 5
+writes it `true` again whenever that driver is not withheld. Invalid JSON or a non-object `Detectors`
 section is an error, never clobbered.
 
 ## Launching the server

@@ -37,7 +37,7 @@ pub use detect::{
     parse_flatpak_info_version, parse_version_output, read_version,
 };
 pub use detector_ids::{
-    DetectorUsbClaim, UsbDeviceId, detector_usb_claim, detector_usb_ids, parse_detector_usb_ids,
+    UsbClaim, UsbDeviceId, detector_usb_claim, detector_usb_ids, parse_detector_usb_ids,
 };
 pub use error::{HostError, Result};
 pub use hints::{RELEASES_URL, detect_package_managers, install_hints, install_hints_for};

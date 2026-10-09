@@ -1,11 +1,11 @@
 //! Shared native-first detector partition policy.
 
-use std::collections::BTreeSet;
-
-use crate::{DetectorRules, UsbDeviceId, detector_families, detector_prefixes_for_drivers};
+use crate::{
+    DetectorRules, UsbClaim, UsbDeviceId, detector_families, detector_prefixes_for_drivers,
+};
 use hypercolor_types::api::devices::DeviceSummary;
 use hypercolor_types::api::drivers::DriverSummary;
-use hypercolor_types::device::DriverModuleKind;
+use hypercolor_types::device::{DriverModuleKind, DriverProtocolDescriptor};
 
 /// The slice of a daemon driver summary the partition decision needs.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -16,12 +16,12 @@ pub struct DriverFacts {
     pub module_kind: DriverModuleKind,
     /// Whether the user has the driver enabled.
     pub enabled: bool,
-    /// USB devices the driver's protocol catalog can claim, whether or not
-    /// any is connected. Empty when the daemon published none (or the facts
-    /// predate the field), which keeps the driver's detector family on the
-    /// conservative name-prefix rule.
+    /// USB hardware the driver's protocol catalog can claim, whether or not
+    /// any of it is connected. Empty when the daemon published none (or the
+    /// facts predate the field), which keeps the driver's detector family on
+    /// the conservative name-prefix rule.
     #[serde(default)]
-    pub usb_ids: BTreeSet<UsbDeviceId>,
+    pub usb: UsbClaim,
 }
 
 impl From<&DriverSummary> for DriverFacts {
@@ -30,15 +30,30 @@ impl From<&DriverSummary> for DriverFacts {
             id: summary.descriptor.id.clone(),
             module_kind: summary.descriptor.module_kind,
             enabled: summary.enabled,
-            usb_ids: summary
-                .protocols
-                .iter()
-                .filter_map(|protocol| {
-                    Some(UsbDeviceId::new(protocol.vendor_id?, protocol.product_id?))
-                })
-                .collect(),
+            usb: usb_claim(&summary.protocols),
         }
     }
+}
+
+/// The USB hardware a protocol catalog claims. A protocol with a vendor id
+/// but no product id claims the whole vendor; one with neither (SMBus,
+/// network) claims no USB hardware.
+fn usb_claim(protocols: &[DriverProtocolDescriptor]) -> UsbClaim {
+    let mut claim = UsbClaim::default();
+    for protocol in protocols {
+        match (protocol.vendor_id, protocol.product_id) {
+            (Some(vendor_id), Some(product_id)) => {
+                claim
+                    .devices
+                    .insert(UsbDeviceId::new(vendor_id, product_id));
+            }
+            (Some(vendor_id), None) => {
+                claim.vendors.insert(vendor_id);
+            }
+            (None, _) => {}
+        }
+    }
+    claim
 }
 
 /// The slice of a daemon device summary the partition decision needs.
@@ -73,11 +88,11 @@ pub struct DetectorPartitionPlan {
     /// Their families are withheld per device; the rest stay withheld by
     /// name prefix alone.
     pub id_gated_driver_ids: Vec<String>,
-    /// USB devices any withheld native driver can claim, including drivers
+    /// USB hardware any withheld native driver can claim, including drivers
     /// the detector table has no family for (QMK, PrismRGB, Push 2).
-    pub claimed_usb_ids: BTreeSet<UsbDeviceId>,
-    /// USB devices any registered native driver can claim, withheld or not.
-    pub native_usb_ids: BTreeSet<UsbDeviceId>,
+    pub claimed_usb: UsbClaim,
+    /// USB hardware any registered native driver can claim, withheld or not.
+    pub native_usb: UsbClaim,
 }
 
 impl DetectorPartitionPlan {
@@ -96,8 +111,8 @@ impl DetectorPartitionPlan {
             disabled_prefixes: detector_prefixes_for_drivers(wholesale),
             id_gated_prefixes: detector_prefixes_for_drivers(gated),
             re_enable_prefixes: detector_prefixes_for_drivers(&self.re_enable_driver_ids),
-            claimed_usb_ids: self.claimed_usb_ids.clone(),
-            native_usb_ids: self.native_usb_ids.clone(),
+            claimed_usb: self.claimed_usb.clone(),
+            native_usb: self.native_usb.clone(),
         }
     }
 }
@@ -158,7 +173,7 @@ pub fn partition_driver_ids<S: AsRef<str>>(
     disabled.dedup();
     let mut id_gated: Vec<String> = withheld
         .iter()
-        .filter(|driver| known(&driver.id) && !driver.usb_ids.is_empty())
+        .filter(|driver| known(&driver.id) && !driver.usb.is_empty())
         .map(|driver| driver.id.clone())
         .collect();
     id_gated.sort();
@@ -175,13 +190,8 @@ pub fn partition_driver_ids<S: AsRef<str>>(
         disabled_driver_ids: disabled,
         re_enable_driver_ids: re_enable,
         id_gated_driver_ids: id_gated,
-        claimed_usb_ids: withheld
-            .iter()
-            .flat_map(|driver| driver.usb_ids.iter().copied())
-            .collect(),
-        native_usb_ids: native()
-            .flat_map(|driver| driver.usb_ids.iter().copied())
-            .collect(),
+        claimed_usb: withheld.iter().map(|driver| &driver.usb).collect(),
+        native_usb: native().map(|driver| &driver.usb).collect(),
     }
 }
 

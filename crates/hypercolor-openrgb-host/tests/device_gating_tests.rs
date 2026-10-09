@@ -9,9 +9,9 @@
 use std::collections::BTreeSet;
 
 use hypercolor_openrgb_host::{
-    DETECTORS_MAP, DETECTORS_SECTION, DetectorPartitionPlan, DeviceFacts, DriverFacts, UsbDeviceId,
-    detector_usb_claim, known_detector_driver_ids, managed_config_dir, partition_detectors,
-    partition_driver_ids, write_detector_partition,
+    DETECTORS_MAP, DETECTORS_SECTION, DetectorPartitionPlan, DeviceFacts, DriverFacts, UsbClaim,
+    UsbDeviceId, detector_usb_claim, known_detector_driver_ids, managed_config_dir,
+    partition_detectors, partition_driver_ids, write_detector_partition,
 };
 use hypercolor_types::api::drivers::DriverSummary;
 use hypercolor_types::device::{
@@ -35,7 +35,10 @@ fn driver(id: &str, enabled: bool, usb_ids: &[UsbDeviceId]) -> DriverFacts {
             DriverModuleKind::Hal
         },
         enabled,
-        usb_ids: usb_ids.iter().copied().collect(),
+        usb: UsbClaim {
+            devices: usb_ids.iter().copied().collect(),
+            vendors: BTreeSet::new(),
+        },
     }
 }
 
@@ -251,7 +254,7 @@ fn released_native_devices_are_handed_back() {
         &[],
         &known_detector_driver_ids(),
     );
-    assert!(plan.claimed_usb_ids.is_empty());
+    assert!(plan.claimed_usb.is_empty());
     let map = partition_detectors(&existing, &plan.detector_rules(), None);
 
     assert_eq!(map["Keychron RGB QMK/ZMK Keyboard"], true);
@@ -271,9 +274,9 @@ fn plans_collect_catalogs_from_withheld_and_registered_drivers() {
         &known_detector_driver_ids(),
     );
 
-    assert_eq!(plan.claimed_usb_ids, BTreeSet::from([BASE_STATION_V2]));
+    assert_eq!(plan.claimed_usb.devices, BTreeSet::from([BASE_STATION_V2]));
     assert_eq!(
-        plan.native_usb_ids,
+        plan.native_usb.devices,
         BTreeSet::from([
             BASE_STATION_V2,
             ICUE_LINK_HUB,
@@ -286,7 +289,7 @@ fn plans_collect_catalogs_from_withheld_and_registered_drivers() {
 }
 
 #[test]
-fn driver_facts_take_usb_ids_from_the_published_protocol_catalog() {
+fn driver_facts_take_usb_claims_from_the_published_protocol_catalog() {
     let protocol = |vendor_id: Option<u16>, product_id: Option<u16>| DriverProtocolDescriptor {
         driver_id: "razer".to_owned(),
         protocol_id: "razer/test".to_owned(),
@@ -332,16 +335,69 @@ fn driver_facts_take_usb_ids_from_the_published_protocol_catalog() {
     };
 
     let facts = DriverFacts::from(&summary);
-    assert_eq!(facts.usb_ids, BTreeSet::from([BASE_STATION_V2]));
+    assert_eq!(facts.usb.devices, BTreeSet::from([BASE_STATION_V2]));
+    assert_eq!(
+        facts.usb.vendors,
+        BTreeSet::from([0x1532]),
+        "a vendor id without a product id claims the whole vendor"
+    );
 }
 
 #[test]
-fn driver_facts_from_older_peers_deserialize_without_usb_ids() {
+fn driver_facts_from_older_peers_deserialize_without_usb_claims() {
     let facts: DriverFacts =
         serde_json::from_value(json!({"id": "razer", "module_kind": "hal", "enabled": true}))
-            .expect("facts without usb_ids");
-    assert!(facts.usb_ids.is_empty());
+            .expect("facts without usb");
+    assert!(facts.usb.is_empty());
 
     let wire = serde_json::to_value(driver("razer", true, &[BASE_STATION_V2])).expect("serialize");
-    assert_eq!(wire["usb_ids"], json!(["1532:0f20"]));
+    assert_eq!(
+        wire["usb"],
+        json!({"devices": ["1532:0f20"], "vendors": []})
+    );
+}
+
+#[test]
+fn vendor_wide_native_protocols_withhold_every_device_of_that_vendor() {
+    let plan = partition_driver_ids(
+        &[DriverFacts {
+            id: "razer".to_owned(),
+            module_kind: DriverModuleKind::Hal,
+            enabled: true,
+            usb: UsbClaim {
+                devices: BTreeSet::new(),
+                vendors: BTreeSet::from([0x1532]),
+            },
+        }],
+        &[device("razer")],
+        &known_detector_driver_ids(),
+    );
+    assert_eq!(plan.id_gated_driver_ids, vec!["razer".to_owned()]);
+    let rules = plan.detector_rules();
+
+    assert!(!rules.detector_enabled("Razer Kraken Ultimate", Some(true)));
+    assert!(!rules.detector_enabled("Razer Base Station V2 Chroma", None));
+    assert!(
+        !rules.detector_enabled("Lian Li O11 Dynamic - Razer Edition", Some(true)),
+        "the vendor claim reaches Razer silicon under another brand's name"
+    );
+    assert!(rules.detector_enabled("Lian Li Uni Hub", Some(false)));
+}
+
+#[test]
+fn detector_rules_match_driver_ids_without_regard_to_case() {
+    let plan = partition_driver_ids(
+        &[
+            driver("Razer", true, &[BASE_STATION_V2]),
+            driver("CORSAIR", true, &[]),
+        ],
+        &[device("razer"), device("corsair")],
+        &known_detector_driver_ids(),
+    );
+    let rules = plan.detector_rules();
+
+    assert_eq!(rules.id_gated_prefixes, vec!["Razer ".to_owned()]);
+    assert_eq!(rules.disabled_prefixes, vec!["Corsair ".to_owned()]);
+    assert!(rules.detector_enabled("Razer Kraken Ultimate", Some(false)));
+    assert!(!rules.detector_enabled("Corsair K70 RGB MK.2", Some(true)));
 }

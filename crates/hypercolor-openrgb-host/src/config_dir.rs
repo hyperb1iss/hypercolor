@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tracing::{debug, info};
 
-use crate::detector_ids::{UsbDeviceId, detector_usb_claim, detector_usb_ids};
+use crate::detector_ids::{UsbClaim, detector_usb_claim, detector_usb_ids};
 use crate::error::{HostError, Result};
 use crate::types::ManagedConfigDir;
 
@@ -128,20 +128,22 @@ pub struct DetectorRules {
     /// catalog, so nothing finer is known.
     pub disabled_prefixes: Vec<String>,
     /// Name prefixes of withheld families whose driver published its USB
-    /// catalog. A detector under one is disabled when it claims a device in
-    /// `claimed_usb_ids`, or when the id map does not know it at all; a
-    /// mapped detector that claims none of them is handed back to OpenRGB.
+    /// catalog. A detector under one is disabled when it overlaps
+    /// `claimed_usb`, or when the id map does not know it at all; a mapped
+    /// detector that overlaps nothing withheld is handed back to OpenRGB.
     pub id_gated_prefixes: Vec<String>,
     /// Name prefixes handed back to OpenRGB (written `true`).
     pub re_enable_prefixes: Vec<String>,
-    /// USB devices the withheld native drivers can claim. A mapped detector
-    /// that claims one is disabled whatever its name.
-    pub claimed_usb_ids: BTreeSet<UsbDeviceId>,
-    /// Every USB device a registered native driver can claim, withheld or
-    /// not. A mapped detector that claims one but none of `claimed_usb_ids`
-    /// is handed back, so a detector disabled by id outside every family
-    /// prefix is released once its native driver lets go.
-    pub native_usb_ids: BTreeSet<UsbDeviceId>,
+    /// USB hardware the withheld native drivers can claim. A mapped
+    /// detector that overlaps it is disabled whatever its name.
+    pub claimed_usb: UsbClaim,
+    /// USB hardware any registered native driver can claim, withheld or
+    /// not. A mapped detector that overlaps it but not `claimed_usb` is
+    /// handed back, so a detector disabled by id outside every family
+    /// prefix is released once its native driver lets go. This overrides a
+    /// user's own `false` for such a detector: Hypercolor manages every
+    /// detector a native catalog touches.
+    pub native_usb: UsbClaim,
 }
 
 impl DetectorRules {
@@ -163,27 +165,25 @@ impl DetectorRules {
     ///
     /// In order:
     ///
-    /// 1. a mapped detector that claims a device in `claimed_usb_ids` is
-    ///    disabled;
+    /// 1. a mapped detector that overlaps `claimed_usb` is disabled;
     /// 2. a name under `disabled_prefixes` is disabled;
     /// 3. a name under `id_gated_prefixes` is enabled when the id map knows
     ///    it (step 1 already proved it claims nothing withheld) and disabled
     ///    when it does not;
     /// 4. a name under `re_enable_prefixes` is enabled;
-    /// 5. a mapped detector that claims a device in `native_usb_ids` is
-    ///    enabled;
+    /// 5. a mapped detector that overlaps `native_usb` is enabled;
     /// 6. anything else keeps `current`, defaulting to enabled.
     #[must_use]
     pub fn detector_enabled(&self, name: &str, current: Option<bool>) -> bool {
         let claim = detector_usb_claim(name);
-        if claim.is_some_and(|claim| claim.overlaps(&self.claimed_usb_ids))
+        if claim.is_some_and(|claim| claim.overlaps(&self.claimed_usb))
             || matches_prefix(name, &self.disabled_prefixes)
         {
             false
         } else if matches_prefix(name, &self.id_gated_prefixes) {
             claim.is_some()
         } else if matches_prefix(name, &self.re_enable_prefixes)
-            || claim.is_some_and(|claim| claim.overlaps(&self.native_usb_ids))
+            || claim.is_some_and(|claim| claim.overlaps(&self.native_usb))
         {
             true
         } else {
@@ -200,14 +200,15 @@ fn owned<S: AsRef<str>>(items: &[S]) -> Vec<String> {
 ///
 /// The universe of names is the union of `existing` keys, `seed_names`,
 /// every detector listed in the embedded families, and every mapped
-/// detector that claims a device in `rules.claimed_usb_ids` (so a fresh
-/// config disables it before OpenRGB ever writes the file). Each name is
-/// decided by [`DetectorRules::detector_enabled`].
+/// detector that overlaps `rules.claimed_usb` (so a fresh config disables it
+/// before OpenRGB ever writes the file). Each name is decided by
+/// [`DetectorRules::detector_enabled`].
 ///
 /// Nothing flips an existing `false` to `true` unless a rule hands the name
 /// back (a re-enable prefix, an id-gated prefix that proves the device is
-/// not natively claimable, or a native catalog id that is no longer
-/// withheld), so a user's own toggles for unrelated detectors survive.
+/// not natively claimable, or a native catalog that is no longer withheld),
+/// so a user's own toggles survive for every detector outside the native
+/// families and catalogs.
 #[must_use]
 pub fn partition_detectors(
     existing: &Map<String, Value>,
@@ -221,11 +222,11 @@ pub fn partition_detectors(
             .iter()
             .flat_map(|family| family.detectors.iter().map(String::as_str)),
     );
-    if !rules.claimed_usb_ids.is_empty() {
+    if !rules.claimed_usb.is_empty() {
         universe.extend(
             detector_usb_ids()
                 .iter()
-                .filter(|(_, claim)| claim.overlaps(&rules.claimed_usb_ids))
+                .filter(|(_, claim)| claim.overlaps(&rules.claimed_usb))
                 .map(|(name, _)| name.as_str()),
         );
     }

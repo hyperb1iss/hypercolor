@@ -27,8 +27,9 @@
 # push2 have no OpenRGB support; wled, hue, nanoleaf, and govee are
 # configured through OpenRGB settings, not detectors; and QMK keyboards are
 # config-driven in OpenRGB, so no "QMK" prefix exists. Their USB overlap is
-# still covered by the id map (OpenRGB 1.0's vendor-wide Keychron QMK/ZMK
-# detector is withheld while the native QMK driver claims a Keychron board).
+# still covered by the id map: OpenRGB 1.0's vendor-wide Keychron QMK/ZMK
+# detector is withheld whenever the native QMK driver owns any enabled
+# device, because QMK's catalog lists Keychron boards.
 #
 # This file is embedded into hypercolor-openrgb-host with include_str!, so
 # the binaries need no data file at runtime.

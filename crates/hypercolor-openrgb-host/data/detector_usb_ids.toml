@@ -21,7 +21,8 @@
 [source]
 openrgb_version = "1.0"
 git_commit = ""
-artifact = "openrgb --print-udev-rules (60-openrgb.rules)"
+artifact = "OpenRGB-generated udev rules (openrgb --print-udev-rules, or a package's 60-openrgb.rules)"
+input = "/usr/lib/udev/rules.d/60-openrgb.rules"
 sha256 = "5426c92db5640ad1b342a34aeb10d052a9bf3a4519b584ec501055b7e445a0bb"
 detector_count = 1100
 vendor_wildcard_detectors = ["Keychron RGB QMK/ZMK Keyboard", "Logitech HID++ 2.0"]

@@ -77,24 +77,55 @@ impl From<UsbDeviceId> for String {
     }
 }
 
-/// The USB hardware one OpenRGB detector may claim.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DetectorUsbClaim {
-    /// Exact devices the detector matches.
+/// USB hardware an OpenRGB detector or a native driver can claim: exact
+/// devices plus vendors claimed whole.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsbClaim {
+    /// Exact devices.
+    #[serde(default)]
     pub devices: BTreeSet<UsbDeviceId>,
-    /// Vendors whose every product the detector probes (OpenRGB matches
-    /// these by HID usage rather than product id).
+    /// Vendors whose every product is claimed. OpenRGB probes these by HID
+    /// usage rather than product id; a native protocol with a vendor id but
+    /// no product id lands here too.
+    #[serde(default)]
     pub vendors: BTreeSet<u16>,
 }
 
-impl DetectorUsbClaim {
-    /// Whether the detector could claim any device in `ids`.
+impl UsbClaim {
+    /// Whether nothing is claimed.
     #[must_use]
-    pub fn overlaps(&self, ids: &BTreeSet<UsbDeviceId>) -> bool {
-        !self.devices.is_disjoint(ids)
-            || (!self.vendors.is_empty()
-                && ids.iter().any(|id| self.vendors.contains(&id.vendor_id)))
+    pub fn is_empty(&self) -> bool {
+        self.devices.is_empty() && self.vendors.is_empty()
     }
+
+    /// Whether the two claims could reach the same physical device.
+    #[must_use]
+    pub fn overlaps(&self, other: &Self) -> bool {
+        !self.devices.is_disjoint(&other.devices)
+            || !self.vendors.is_disjoint(&other.vendors)
+            || claims_vendor_of(&self.vendors, &other.devices)
+            || claims_vendor_of(&other.vendors, &self.devices)
+    }
+
+    /// Add everything `other` claims.
+    pub fn merge(&mut self, other: &Self) {
+        self.devices.extend(other.devices.iter().copied());
+        self.vendors.extend(other.vendors.iter().copied());
+    }
+}
+
+impl<'a> FromIterator<&'a UsbClaim> for UsbClaim {
+    fn from_iter<I: IntoIterator<Item = &'a UsbClaim>>(claims: I) -> Self {
+        let mut merged = Self::default();
+        for claim in claims {
+            merged.merge(claim);
+        }
+        merged
+    }
+}
+
+fn claims_vendor_of(vendors: &BTreeSet<u16>, devices: &BTreeSet<UsbDeviceId>) -> bool {
+    !vendors.is_empty() && devices.iter().any(|id| vendors.contains(&id.vendor_id))
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,7 +134,7 @@ struct DetectorUsbIdTable {
     detectors: BTreeMap<String, Vec<String>>,
 }
 
-static DETECTOR_USB_IDS: LazyLock<BTreeMap<String, DetectorUsbClaim>> = LazyLock::new(|| {
+static DETECTOR_USB_IDS: LazyLock<BTreeMap<String, UsbClaim>> = LazyLock::new(|| {
     parse_detector_usb_ids(EMBEDDED_DETECTOR_USB_IDS_TOML)
         .expect("embedded data/detector_usb_ids.toml must parse; run the crate tests")
 });
@@ -116,7 +147,7 @@ static DETECTOR_USB_IDS: LazyLock<BTreeMap<String, DetectorUsbClaim>> = LazyLock
 ///
 /// Returns [`HostError::DetectorUsbIds`] when the TOML is malformed, an id is
 /// not four-digit hex, or a detector lists no id at all.
-pub fn parse_detector_usb_ids(text: &str) -> Result<BTreeMap<String, DetectorUsbClaim>> {
+pub fn parse_detector_usb_ids(text: &str) -> Result<BTreeMap<String, UsbClaim>> {
     let table: DetectorUsbIdTable =
         toml::from_str(text).map_err(|error| HostError::DetectorUsbIds(error.to_string()))?;
     table
@@ -128,7 +159,7 @@ pub fn parse_detector_usb_ids(text: &str) -> Result<BTreeMap<String, DetectorUsb
                     "detector {name:?} lists no USB id"
                 )));
             }
-            let mut claim = DetectorUsbClaim::default();
+            let mut claim = UsbClaim::default();
             for pattern in &patterns {
                 match pattern.split_once(':') {
                     Some((vendor, "*")) => {
@@ -146,14 +177,14 @@ pub fn parse_detector_usb_ids(text: &str) -> Result<BTreeMap<String, DetectorUsb
 
 /// The embedded detector USB id map, keyed by exact OpenRGB detector name.
 #[must_use]
-pub fn detector_usb_ids() -> &'static BTreeMap<String, DetectorUsbClaim> {
+pub fn detector_usb_ids() -> &'static BTreeMap<String, UsbClaim> {
     &DETECTOR_USB_IDS
 }
 
 /// The USB hardware the named detector claims, when the embedded map knows
 /// the name. Lookup is exact: OpenRGB keys its detector map by exact name.
 #[must_use]
-pub fn detector_usb_claim(name: &str) -> Option<&'static DetectorUsbClaim> {
+pub fn detector_usb_claim(name: &str) -> Option<&'static UsbClaim> {
     DETECTOR_USB_IDS.get(name)
 }
 

@@ -89,7 +89,7 @@ function sortIds(ids: Set<string>): string[] {
         .sort()
 }
 
-function render(parsed: ParsedRules, sha256: string): string {
+function render(parsed: ParsedRules, input: string, sha256: string): string {
     const names = [...parsed.detectors.keys()].sort()
     const wildcards = names.filter((name) => sortIds(parsed.detectors.get(name)!).some((id) => id.endsWith(':*')))
     const lines = [
@@ -116,7 +116,8 @@ function render(parsed: ParsedRules, sha256: string): string {
         '[source]',
         `openrgb_version = ${JSON.stringify(parsed.version)}`,
         `git_commit = ${JSON.stringify(parsed.commit)}`,
-        'artifact = "openrgb --print-udev-rules (60-openrgb.rules)"',
+        'artifact = "OpenRGB-generated udev rules (openrgb --print-udev-rules, or a package\'s 60-openrgb.rules)"',
+        `input = ${JSON.stringify(input)}`,
         `sha256 = ${JSON.stringify(sha256)}`,
         `detector_count = ${names.length}`,
         `vendor_wildcard_detectors = [${wildcards.map((name) => JSON.stringify(name)).join(', ')}]`,
@@ -139,7 +140,7 @@ function main(): void {
     const bytes = readFileSync(input)
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     const parsed = parseRules(bytes.toString('utf8'))
-    writeFileSync(OUTPUT, render(parsed, sha256))
+    writeFileSync(OUTPUT, render(parsed, input, sha256))
     let idCount = 0
     for (const ids of parsed.detectors.values()) idCount += ids.size
     console.log(
