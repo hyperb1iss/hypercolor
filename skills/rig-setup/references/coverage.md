@@ -81,7 +81,9 @@ Each rung has a check. Do not climb past a failing check.
    is involved, `/dev/i2c-*`.
 4. **Partition.** `hypercolor openrgb partition` writes an OpenRGB config directory under
    Hypercolor's data dir (`~/.local/share/hypercolor/openrgb` on Linux) that disables the
-   OpenRGB detectors for every native driver that is enabled and has an enabled device.
+   OpenRGB detectors for every USB device a native driver can drive, once that driver is
+   enabled and has an enabled device. Same-brand hardware the driver has no protocol for
+   stays with OpenRGB; SMBus RAM and motherboard detectors stay off brand-wide.
    The owner's own `~/.config/OpenRGB` is never edited. Check: the directory holds an
    `OpenRGB.json`.
 5. **Enable the bridge.** `hypercolor config set drivers.openrgb.enabled true`, then the

@@ -16,6 +16,7 @@
 
 mod config_dir;
 mod detect;
+mod detector_ids;
 mod error;
 mod hints;
 mod partition_plan;
@@ -25,15 +26,18 @@ mod process;
 mod types;
 
 pub use config_dir::{
-    DETECTORS_MAP, DETECTORS_SECTION, DetectorFamily, DetectorPartition, MANAGED_DIR_NAME,
-    detector_families, detector_prefixes_for_drivers, managed_config_dir, matches_prefix,
-    parse_detector_table, partition_detectors, write_detector_partition,
+    DETECTORS_MAP, DETECTORS_SECTION, DetectorFamily, DetectorPartition, DetectorRules,
+    MANAGED_DIR_NAME, detector_families, detector_prefixes_for_drivers, managed_config_dir,
+    matches_prefix, parse_detector_table, partition_detectors, write_detector_partition,
 };
 pub use detect::{
     FLATPAK_APP_ID, SUBPROCESS_TIMEOUT, appimage_search_dirs, appimage_version_key,
     classify_binary, detect_binary, executable_names, find_appimage_in, find_in_path,
     find_native_binary, flatpak_app_version, is_executable_file, known_locations,
     parse_flatpak_info_version, parse_version_output, read_version,
+};
+pub use detector_ids::{
+    UsbClaim, UsbDeviceId, detector_usb_claim, detector_usb_ids, parse_detector_usb_ids,
 };
 pub use error::{HostError, Result};
 pub use hints::{RELEASES_URL, detect_package_managers, install_hints, install_hints_for};
