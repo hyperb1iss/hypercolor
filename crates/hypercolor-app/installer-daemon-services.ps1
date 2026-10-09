@@ -30,7 +30,7 @@ if ($Action -eq "Restore") {
     if (Test-Path -LiteralPath $StateFile) {
         foreach ($name in @(Get-Content -LiteralPath $StateFile | Where-Object { $_ })) {
             try {
-                $service = Get-Service -Name $name
+                $service = Get-Service -Name $name -ErrorAction Stop
                 $service.Start()
                 $service.WaitForStatus("Running", [TimeSpan]::FromSeconds(20))
             } catch {
