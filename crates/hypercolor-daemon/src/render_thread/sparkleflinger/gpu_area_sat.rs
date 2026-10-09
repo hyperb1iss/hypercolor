@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 
+use super::compile_compute_pipeline;
 use super::gpu_sampling::{GpuSampleSource, GpuSamplingPreparationFailure};
+use crate::startup::StartupProgress;
 
 const SAT_WORKGROUP_SIZE: u32 = 256;
 pub(super) const SAT_VALUE_BYTES: u64 = 24;
@@ -43,7 +45,7 @@ struct GpuAreaHierarchyLevel {
 }
 
 impl GpuAreaPipeline {
-    pub(super) fn new(device: &wgpu::Device) -> Self {
+    pub(super) fn new(device: &wgpu::Device, progress: Option<&StartupProgress>) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SparkleFlinger GPU area SAT bind group layout"),
             entries: &[
@@ -96,28 +98,36 @@ impl GpuAreaPipeline {
             source: wgpu::ShaderSource::Wgsl(include_str!("area_sat.wgsl").into()),
         });
         let create_pipeline = |label, entry_point| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pipeline_layout),
-                module: &shader,
-                entry_point: Some(entry_point),
-                compilation_options: scan_compilation_options(),
-                cache: None,
-            })
+            compile_compute_pipeline(
+                device,
+                progress,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&pipeline_layout),
+                    module: &shader,
+                    entry_point: Some(entry_point),
+                    compilation_options: scan_compilation_options(),
+                    cache: None,
+                },
+            )
         };
         let hierarchy_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("SparkleFlinger GPU area hierarchy shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("area_hierarchy.wgsl").into()),
         });
         let create_hierarchy_pipeline = |label, entry_point| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(label),
-                layout: Some(&hierarchy_pipeline_layout),
-                module: &hierarchy_shader,
-                entry_point: Some(entry_point),
-                compilation_options: scan_compilation_options(),
-                cache: None,
-            })
+            compile_compute_pipeline(
+                device,
+                progress,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&hierarchy_pipeline_layout),
+                    module: &hierarchy_shader,
+                    entry_point: Some(entry_point),
+                    compilation_options: scan_compilation_options(),
+                    cache: None,
+                },
+            )
         };
 
         Self {

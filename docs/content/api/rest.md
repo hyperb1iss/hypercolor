@@ -161,6 +161,28 @@ write returns `404 layer_not_found` rather than landing on the replacement.
 {% <api_endpoint method="GET" path="/health"> %}
 Liveness check. Returns `200 OK` when the daemon is running. No authentication,
 no envelope. Use this in your reconnect loop and readiness probes.
+
+The daemon answers as soon as its port is bound, before startup finishes. While
+it is still starting, `/health` returns `503` with `"status": "starting"` and a
+`startup` block naming the current `phase`, a `sequence` counter that advances
+each time startup completes a unit of work (a phase, or a step inside one such
+as compiling a compositor pipeline), and, while a step is running, a `detail`
+naming it. Every other route returns `503 service_unavailable`. Only `200`
+means the daemon is ready.
+
+```json
+{
+  "status": "starting",
+  "version": "0.6.2",
+  "uptime_seconds": 4,
+  "checks": { "render_loop": "starting", "device_backends": "starting", "event_bus": "starting" },
+  "startup": {
+    "phase": "starting_render_thread",
+    "sequence": 15,
+    "detail": "SparkleFlinger GPU area horizontal tile scan"
+  }
+}
+```
 {% </api_endpoint> %}
 
 {% <api_endpoint method="GET" path="/api/v1/system"> %}

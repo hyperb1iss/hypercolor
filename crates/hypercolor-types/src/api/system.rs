@@ -540,6 +540,12 @@ pub struct PreviewDemandStatus {
     pub any_jpeg: bool,
 }
 
+/// `/health` status reported while the daemon is still starting.
+///
+/// A starting daemon answers `503` with this status and a
+/// [`DaemonStartupProgress`]; `200` is reserved for a fully ready daemon.
+pub const HEALTH_STATUS_STARTING: &str = "starting";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct HealthResponse {
@@ -547,6 +553,81 @@ pub struct HealthResponse {
     pub version: String,
     pub uptime_seconds: u64,
     pub checks: HealthChecks,
+    /// Startup progress, present only while `status` is `starting`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup: Option<DaemonStartupProgress>,
+}
+
+/// How far a starting daemon has come, reported by `/health` before the
+/// full API is served.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct DaemonStartupProgress {
+    /// The phase startup is currently in.
+    pub phase: DaemonStartupPhase,
+    /// Monotonic counter that advances every time startup completes a unit
+    /// of work: entering a phase, or finishing a step inside one (such as
+    /// compiling one compositor pipeline). A client compares successive
+    /// values to tell a slow startup from a stuck one.
+    pub sequence: u64,
+    /// The step inside the phase that is running right now, when startup
+    /// reports one. It names the work that has not finished yet, so a
+    /// startup that stops advancing points at the step it is stuck in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Coarse daemon startup phases, in the order the daemon enters them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonStartupPhase {
+    /// Validating configuration and opening state history and the audit log.
+    Initializing,
+    /// Resolving compositor acceleration, including GPU device creation.
+    ProbingGpu,
+    /// Registering builtin effects and scanning HTML effect directories.
+    ScanningEffects,
+    /// Loading persisted stores and running their migrations.
+    LoadingStores,
+    /// Registering the enabled device backends.
+    RegisteringBackends,
+    /// Starting input sources and restoring the runtime session.
+    StartingInputs,
+    /// Spawning the render thread, which builds the compositor pipelines.
+    StartingRenderThread,
+    /// Starting previews, display output, background workers, and extensions.
+    StartingServices,
+    /// Assembling the API router and running API-ready extension hooks.
+    PreparingApi,
+    /// A phase reported by a newer daemon that this client does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl DaemonStartupPhase {
+    /// Stable wire name of the phase.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Initializing => "initializing",
+            Self::ProbingGpu => "probing_gpu",
+            Self::ScanningEffects => "scanning_effects",
+            Self::LoadingStores => "loading_stores",
+            Self::RegisteringBackends => "registering_backends",
+            Self::StartingInputs => "starting_inputs",
+            Self::StartingRenderThread => "starting_render_thread",
+            Self::StartingServices => "starting_services",
+            Self::PreparingApi => "preparing_api",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for DaemonStartupPhase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

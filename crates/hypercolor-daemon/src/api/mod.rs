@@ -27,6 +27,7 @@ pub mod scene;
 pub mod scenes;
 pub mod security;
 pub mod simulators;
+pub mod startup;
 pub mod system;
 pub mod ws;
 

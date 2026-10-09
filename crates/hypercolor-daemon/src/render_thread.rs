@@ -90,6 +90,7 @@ use crate::output_power::OutputPowerState;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_transactions::SceneTransactionQueue;
+use crate::startup::{StartupProgress, startup_step};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::HypercolorBus;
@@ -359,10 +360,39 @@ impl RenderThread {
         Self::try_spawn_with_runtime_builder(state, build_render_runtime)
     }
 
+    /// Spawn the render thread while reporting each completed startup step
+    /// (the render runtime, input publication, every compositor pipeline
+    /// compile) to `progress`.
+    ///
+    /// The render thread drops its handle once the pipeline is built, so
+    /// nothing on the frame path touches startup progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the thread cannot be spawned or the render
+    /// pipeline fails to build.
+    pub fn try_spawn_reporting(
+        state: RenderThreadState,
+        progress: StartupProgress,
+    ) -> Result<Self> {
+        Self::spawn_inner(state, build_render_runtime, Some(progress))
+    }
+
     #[doc(hidden)]
     pub fn try_spawn_with_runtime_builder<F>(
         state: RenderThreadState,
         build_runtime: F,
+    ) -> Result<Self>
+    where
+        F: FnOnce() -> Result<tokio::runtime::Runtime> + Send + 'static,
+    {
+        Self::spawn_inner(state, build_runtime, None)
+    }
+
+    fn spawn_inner<F>(
+        state: RenderThreadState,
+        build_runtime: F,
+        progress: Option<StartupProgress>,
     ) -> Result<Self>
     where
         F: FnOnce() -> Result<tokio::runtime::Runtime> + Send + 'static,
@@ -387,17 +417,24 @@ impl RenderThread {
             .spawn(move || -> Result<()> {
                 let _scene_transaction_consumer = state.scene_transactions.consumer();
                 crate::process::configure_render_thread_priority();
-                let runtime = match build_runtime() {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        let _ = ready_tx.send(Err(error));
-                        return Ok(());
-                    }
-                };
-                let mut input_pump = match runtime.block_on(InputPublicationPump::start(
-                    state.input_manager.clone(),
-                    pump_demands,
-                )) {
+                let runtime =
+                    match startup_step(progress.as_ref(), "render runtime", build_runtime) {
+                        Ok(runtime) => runtime,
+                        Err(error) => {
+                            let _ = ready_tx.send(Err(error));
+                            return Ok(());
+                        }
+                    };
+                let mut input_pump = match startup_step(
+                    progress.as_ref(),
+                    "input publication pump",
+                    || {
+                        runtime.block_on(InputPublicationPump::start(
+                            state.input_manager.clone(),
+                            pump_demands,
+                        ))
+                    },
+                ) {
                     Ok(pump) => pump,
                     Err(error) => {
                         let _ = ready_tx.send(Err(error));
@@ -415,6 +452,7 @@ impl RenderThread {
                     pipeline_demands,
                     #[cfg(feature = "wgpu")]
                     screen_parity_mailbox,
+                    progress.as_ref(),
                 );
                 #[cfg(not(all(
                     target_os = "macos",
@@ -427,7 +465,10 @@ impl RenderThread {
                     pipeline_demands,
                     #[cfg(feature = "wgpu")]
                     screen_parity_mailbox,
+                    progress.as_ref(),
                 );
+                // Startup reporting ends with the pipeline build.
+                drop(progress);
                 match pipeline {
                     Ok(runtime_state) => {
                         let monitor = input_pump.monitor();

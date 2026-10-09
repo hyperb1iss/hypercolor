@@ -75,6 +75,7 @@ use super::sparkleflinger::{
 use super::{RenderThreadState, micros_u32};
 use crate::interaction_routing::{InteractionRoutingControl, selected_input_availability};
 use crate::scene_transactions::{LayoutActivationControl, LayoutTransactionRejection};
+use crate::startup::{StartupProgress, startup_step};
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 100;
 const BACKGROUND_INPUT_HZ: u32 = 1;
@@ -2047,6 +2048,7 @@ impl PipelineRuntime {
         input_reader: InputPublicationReader,
         input_demands: InputPublicationDemandHandle,
         #[cfg(feature = "wgpu")] screen_parity_mailbox: ScreenParityDiagnosticMailbox,
+        progress: Option<&StartupProgress>,
     ) -> Result<Self> {
         let initial_spatial_engine = state.spatial_engine.snapshot().as_ref().clone();
         let pipeline = Self::new_with_gpu_device(
@@ -2064,6 +2066,7 @@ impl PipelineRuntime {
             input_reader,
             input_demands,
             state.interaction_routing.clone(),
+            progress,
         )?;
         for (feature, available) in pipeline
             .render
@@ -2083,6 +2086,7 @@ impl PipelineRuntime {
         input_reader: InputPublicationReader,
         input_demands: InputPublicationDemandHandle,
         #[cfg(feature = "wgpu")] screen_parity_mailbox: ScreenParityDiagnosticMailbox,
+        progress: Option<&StartupProgress>,
     ) -> Result<Self> {
         let initial_spatial_engine = state.spatial_engine.snapshot().as_ref().clone();
         Self::new_with_gpu_device(
@@ -2100,6 +2104,7 @@ impl PipelineRuntime {
             input_reader,
             input_demands,
             state.interaction_routing.clone(),
+            progress,
         )
     }
 
@@ -2131,6 +2136,7 @@ impl PipelineRuntime {
             InputPublicationReader::empty(),
             input_demands,
             InteractionRoutingControl::default(),
+            None,
         )
     }
 
@@ -2147,26 +2153,37 @@ impl PipelineRuntime {
         input_reader: InputPublicationReader,
         input_demands: InputPublicationDemandHandle,
         interaction_routing: InteractionRoutingControl,
+        progress: Option<&StartupProgress>,
     ) -> Result<Self> {
         let mut sparkleflinger = SparkleFlinger::new_with_gpu_device(
             render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             render_gpu_device.clone(),
+            progress,
         )?;
         #[cfg(feature = "wgpu")]
-        let mut display_sparkleflinger =
-            SparkleFlinger::new_with_gpu_device(render_acceleration_mode, render_gpu_device)?;
+        let mut display_sparkleflinger = SparkleFlinger::new_with_gpu_device(
+            render_acceleration_mode,
+            render_gpu_device,
+            progress,
+        )?;
         #[cfg_attr(not(feature = "wgpu"), allow(unused_mut))]
         let mut sparkleflinger_preparation =
-            sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)?;
-        let sampling_preparation = sparkleflinger.prepare_zone_sampling_plan(
-            canvas_width,
-            canvas_height,
-            initial_spatial_engine.sampling_plan().as_ref(),
-        );
+            startup_step(progress, "scene compositor canvas", || {
+                sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)
+            })?;
+        let sampling_preparation = startup_step(progress, "zone sampling plan", || {
+            sparkleflinger.prepare_zone_sampling_plan(
+                canvas_width,
+                canvas_height,
+                initial_spatial_engine.sampling_plan().as_ref(),
+            )
+        });
         #[cfg(feature = "wgpu")]
         let mut display_sparkleflinger_preparation =
-            display_sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)?;
+            startup_step(progress, "display compositor canvas", || {
+                display_sparkleflinger.prepare_canvas_resize(canvas_width, canvas_height)
+            })?;
         #[cfg(feature = "wgpu")]
         if !sparkleflinger_preparation.is_admitted()
             || !display_sparkleflinger_preparation.is_admitted()

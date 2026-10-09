@@ -66,6 +66,7 @@ pub(crate) mod input_status_events;
 mod lifecycle;
 pub mod logging;
 mod macos_owner_watch;
+mod progress;
 pub(crate) mod services;
 mod signals;
 
@@ -78,6 +79,8 @@ pub use config::{config_sources, default_config, parse_config_toml};
 pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };
+pub use progress::StartupProgress;
+pub(crate) use progress::startup_step;
 pub use signals::{
     ParentLifetime, SUPERVISED_PARENT_PID_ENV, install_signal_handlers,
     install_signal_handlers_with_parent_claim,
@@ -293,6 +296,10 @@ pub struct DaemonState {
 
     /// Wall-clock reference for daemon uptime reporting.
     pub start_time: Instant,
+
+    /// Startup progress reported by the API listener until the full router
+    /// is served.
+    pub(super) startup_progress: StartupProgress,
 
     /// Stable network identity exposed by discovery and API responses.
     pub server_identity: ServerIdentity,

@@ -14,6 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     daemon_client::DaemonClient,
     state::{AppState, DaemonMessage, TrayCommand},
+    supervisor::{SupervisorFailure, SupervisorState},
     window,
 };
 
@@ -27,9 +28,26 @@ const TRAY_ID: &str = "main";
 #[derive(Clone, Default)]
 pub struct TrayRuntime {
     command_tx: Arc<Mutex<Option<UnboundedSender<TrayCommand>>>>,
+    last_state: Arc<Mutex<AppState>>,
 }
 
 impl TrayRuntime {
+    fn remember_state(&self, state: &AppState) {
+        state.clone_into(
+            &mut self
+                .last_state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
+
+    fn last_state(&self) -> AppState {
+        self.last_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     /// Attach the daemon command sender used by native menu events.
     pub fn set_command_sender(&self, command_tx: UnboundedSender<TrayCommand>) {
         *self.command_guard() = Some(command_tx);
@@ -64,15 +82,15 @@ impl TrayRuntime {
 /// Returns a Tauri error if native tray or menu construction fails.
 pub fn register<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
     let state = AppState::disconnected();
-    let supervisor_failed = supervisor_failed(app);
-    let tray_menu = menu::build_menu(app, &state)?;
+    let failure = supervisor_failure(app);
+    let tray_menu = menu::build_menu(app, &state, failure.is_some())?;
     let icon = icons::build_icon(icons::icon_state_for_with_supervisor(
         &state,
-        supervisor_failed,
+        failure.is_some(),
     ));
 
     let tray = TrayIconBuilder::with_id(TRAY_ID)
-        .tooltip(tooltip_for(&state))
+        .tooltip(tooltip_text(&state, failure.as_ref()))
         .icon(icon)
         .menu(&tray_menu)
         .show_menu_on_left_click(cfg!(target_os = "macos"))
@@ -80,6 +98,12 @@ pub fn register<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
         .on_tray_icon_event(handle_tray_event)
         .build(app)?;
 
+    if let Some(supervisor) = app.try_state::<SupervisorState>() {
+        let refresh_app = app.clone();
+        supervisor
+            .inner()
+            .install_status_listener(move || schedule_refresh(&refresh_app));
+    }
     start_daemon_client(app);
 
     Ok(tray)
@@ -124,6 +148,11 @@ fn run_menu_action<R: Runtime>(app: &AppHandle<R>, action: menu::MenuAction) -> 
             }
         },
         actions::ActionTarget::ShowSettings => window::show_settings(app)?,
+        actions::ActionTarget::RetryDaemon => {
+            if !crate::supervisor::retry(app)? {
+                tracing::info!("daemon retry requested with no supervisor failure to clear");
+            }
+        }
         actions::ActionTarget::Quit => app.exit(0),
         actions::ActionTarget::DaemonCommand(command) => {
             app.state::<TrayRuntime>()
@@ -156,6 +185,7 @@ fn start_message_pump<R: Runtime>(app: AppHandle<R>, message_rx: mpsc::Receiver<
             let mut state = AppState::disconnected();
             for message in message_rx {
                 state.apply_daemon_message(message);
+                app.state::<TrayRuntime>().inner().remember_state(&state);
                 let snapshot = state.clone();
                 let app_handle = app.clone();
                 if let Err(error) = app.run_on_main_thread(move || {
@@ -178,32 +208,56 @@ fn refresh_tray<R: Runtime>(app: &AppHandle<R>, state: &AppState) -> tauri::Resu
         return Ok(());
     };
 
-    let supervisor_failed = supervisor_failed(app);
-    let tray_menu = menu::build_menu(app, state)?;
+    let failure = supervisor_failure(app);
+    let tray_menu = menu::build_menu(app, state, failure.is_some())?;
     let icon = icons::build_icon(icons::icon_state_for_with_supervisor(
         state,
-        supervisor_failed,
+        failure.is_some(),
     ));
     tray.set_menu(Some(tray_menu))?;
     tray.set_icon(Some(icon))?;
-    tray.set_tooltip(Some(tooltip_for_with_supervisor(state, supervisor_failed)))?;
+    tray.set_tooltip(Some(tooltip_text(state, failure.as_ref())))?;
     Ok(())
 }
 
-/// Read the supervisor's permanent-failure latch through the Tauri-
-/// managed `SupervisorState`. Returns `false` if the state isn't yet
-/// registered (early startup before `setup` finishes).
-fn supervisor_failed<R: Runtime>(app: &AppHandle<R>) -> bool {
-    app.try_state::<crate::supervisor::SupervisorState>()
-        .map(|state| state.inner().permanent_failure())
-        .unwrap_or(false)
+/// Refresh the tray from the last daemon state when the supervisor's
+/// failure latch changes, instead of waiting for the next daemon message.
+fn schedule_refresh<R: Runtime>(app: &AppHandle<R>) {
+    let refresh_app = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        let state = refresh_app.state::<TrayRuntime>().inner().last_state();
+        if let Err(error) = refresh_tray(&refresh_app, &state) {
+            tracing::warn!(%error, "failed to refresh tray after supervisor change");
+        }
+    }) {
+        tracing::warn!(%error, "failed to schedule tray refresh after supervisor change");
+    }
 }
 
-fn tooltip_for_with_supervisor(state: &AppState, supervisor_failed: bool) -> String {
-    if supervisor_failed {
-        "Hypercolor - Supervisor stopped trying to restart the daemon".to_owned()
-    } else {
-        tooltip_for(state)
+/// Read why the supervisor gave up through the Tauri-managed
+/// `SupervisorState`. Returns `None` while it is still supervising, or if
+/// the state isn't yet registered (early startup before `setup` finishes).
+fn supervisor_failure<R: Runtime>(app: &AppHandle<R>) -> Option<SupervisorFailure> {
+    app.try_state::<SupervisorState>()
+        .and_then(|state| state.inner().supervisor_failure())
+}
+
+/// Tray tooltip for the current daemon state and supervisor failure.
+///
+/// A supervisor failure wins, and names the startup phase the daemon was
+/// last in so a bug report points at the slow step.
+#[must_use]
+pub fn tooltip_text(state: &AppState, failure: Option<&SupervisorFailure>) -> String {
+    match failure {
+        Some(SupervisorFailure {
+            startup_phase: Some(phase),
+            ..
+        }) => format!(
+            "Hypercolor - Daemon failed to start (last phase: {}). Choose Retry Daemon to try again.",
+            phase.as_str().replace('_', " ")
+        ),
+        Some(_) => "Hypercolor - Supervisor stopped restarting the daemon. Choose Retry Daemon to try again.".to_owned(),
+        None => tooltip_for(state),
     }
 }
 

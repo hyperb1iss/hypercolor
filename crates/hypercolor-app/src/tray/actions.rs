@@ -16,6 +16,7 @@ pub enum ActionTarget {
     OpenDirectory(PathBuf),
     ExportDiagnostics,
     ShowSettings,
+    RetryDaemon,
     Quit,
     DaemonCommand(TrayCommand),
 }
@@ -30,6 +31,7 @@ pub fn target_for_action(action: &MenuAction) -> ActionTarget {
         MenuAction::OpenUserEffectsFolder => ActionTarget::OpenDirectory(user_effects_dir()),
         MenuAction::ExportDiagnostics => ActionTarget::ExportDiagnostics,
         MenuAction::Settings => ActionTarget::ShowSettings,
+        MenuAction::RetryDaemon => ActionTarget::RetryDaemon,
         MenuAction::Quit => ActionTarget::Quit,
         MenuAction::SetPaused(paused) => {
             ActionTarget::DaemonCommand(TrayCommand::SetPaused(*paused))
