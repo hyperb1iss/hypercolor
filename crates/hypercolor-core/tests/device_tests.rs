@@ -1880,6 +1880,60 @@ fn state_machine_flap_escalation_fires_once_per_streak() {
 }
 
 #[test]
+fn state_machine_requested_reconnect_after_a_stable_run_ends_the_streak() {
+    let (mut sm, mut failed_at) = machine_after_first_fault();
+    for _ in 0..FLAP_ESCALATION_THRESHOLD {
+        let (_, at) = reconnect_then_fail(&mut sm, failed_at, Duration::from_millis(50));
+        failed_at = at;
+    }
+    assert!(sm.take_flap_escalation().is_some());
+
+    // The device recovers and runs cleanly, then its driver asks for a rebuild.
+    let connected_at = failed_at + Duration::from_secs(8);
+    sm.on_connected_at(DeviceHandle::new(sample_identifier(), "mock"), connected_at)
+        .expect("reconnect should work");
+    sm.on_reconnect_requested_at(connected_at + Duration::from_hours(2))
+        .expect("a driver may rebuild a connected session");
+    assert_eq!(sm.flap_count(), 0, "the stable run ended the old streak");
+    assert_eq!(
+        sm.reconnect_status().map(|status| status.next_retry),
+        Some(Duration::from_secs(1))
+    );
+
+    // A fault right after the rebuilt connection starts a new streak.
+    let (next_retry, _) = reconnect_then_fail(
+        &mut sm,
+        connected_at + Duration::from_hours(2),
+        Duration::from_millis(50),
+    );
+    assert_eq!(sm.flap_count(), 1);
+    assert_eq!(next_retry, Duration::from_secs(2));
+}
+
+#[test]
+fn state_machine_requested_reconnect_mid_streak_is_not_a_flap() {
+    let (mut sm, failed_at) = machine_after_first_fault();
+    let (_, failed_at) = reconnect_then_fail(&mut sm, failed_at, Duration::from_millis(50));
+    assert_eq!(sm.flap_count(), 1);
+
+    let connected_at = failed_at + Duration::from_secs(2);
+    sm.on_connected_at(DeviceHandle::new(sample_identifier(), "mock"), connected_at)
+        .expect("reconnect should work");
+    sm.on_reconnect_requested_at(connected_at + Duration::from_millis(50))
+        .expect("a driver may rebuild a connected session");
+
+    assert_eq!(
+        sm.flap_count(),
+        1,
+        "a request inside the window neither grows nor ends the streak"
+    );
+    assert_eq!(
+        sm.reconnect_status().map(|status| status.next_retry),
+        Some(Duration::from_secs(1))
+    );
+}
+
+#[test]
 fn state_machine_hot_unplug_ends_the_flap_streak() {
     let (mut sm, mut failed_at) = machine_after_first_fault();
     for _ in 0..2 {

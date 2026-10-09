@@ -373,17 +373,30 @@ impl DeviceStateMachine {
     /// to rebuild a working session, for example after its identity or route
     /// changed.
     ///
-    /// This is not a fault: the retry uses the initial delay, and the flap
-    /// streak neither grows nor ends.
+    /// This is not a fault: the retry uses the initial delay and the request
+    /// never counts as a flap. A connection that already outlived
+    /// [`RECONNECT_STABLE_AFTER`] still ends any earlier flap streak, exactly
+    /// as it would on its next fault.
     pub fn on_reconnect_requested(&mut self) -> Result<(), DeviceError> {
+        self.on_reconnect_requested_at(Instant::now())
+    }
+
+    /// [`Self::on_reconnect_requested`] with an explicit clock reading.
+    pub fn on_reconnect_requested_at(&mut self, now: Instant) -> Result<(), DeviceError> {
         match self.state {
             DeviceState::Connected | DeviceState::Active => {
+                let proved_stable = self.flap.connected_at.is_none_or(|connected_at| {
+                    now.saturating_duration_since(connected_at) >= RECONNECT_STABLE_AFTER
+                });
+                if proved_stable {
+                    self.flap = FlapTracker::default();
+                }
                 self.flap.connected_at = None;
                 self.flap.unproven_delay = None;
                 self.flap.escalation_pending = false;
                 self.handle = None;
                 self.reconnect = Some(ReconnectStatus {
-                    since: Instant::now(),
+                    since: now,
                     attempt: 0,
                     next_retry: self.reconnect_policy.initial_delay,
                 });
