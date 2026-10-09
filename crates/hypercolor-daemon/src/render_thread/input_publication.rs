@@ -1423,6 +1423,56 @@ impl Drop for DeviceInputDemand {
     }
 }
 
+/// Owns the host capture demand the pump applies to the input manager.
+///
+/// Dropping it releases every capture domain, so a pump that panics or is
+/// aborted past its shutdown deadline still closes screen, audio, and
+/// interaction capture like a clean exit. An abort is asynchronous, though:
+/// it lands at the worker's next `.await`, and the release runs only when
+/// the runtime drops the cancelled task, which can be after `shutdown` has
+/// already returned its deadline error. A worker blocked inside a
+/// synchronous call releases nothing until that call returns.
+struct HostCaptureDemand {
+    manager: InputManager,
+    state: CaptureDemandState,
+}
+
+impl HostCaptureDemand {
+    fn new(manager: InputManager) -> Self {
+        Self {
+            manager,
+            state: CaptureDemandState::default(),
+        }
+    }
+
+    fn is_current(&self, graph_generation: u64, demand: CaptureDemand) -> bool {
+        self.state.is_current(graph_generation, demand)
+    }
+
+    fn reconcile(
+        &mut self,
+        demand: CaptureDemand,
+        is_current: impl FnOnce() -> bool,
+    ) -> CaptureDemandReconcile {
+        self.state.reconcile(&self.manager, demand, is_current)
+    }
+}
+
+impl Drop for HostCaptureDemand {
+    fn drop(&mut self) {
+        let inactive = CaptureDemand::new(false, ScreenCaptureDemand::Inactive, false);
+        match self.reconcile(inactive, || true) {
+            CaptureDemandReconcile::Applied => {}
+            CaptureDemandReconcile::Busy => {
+                debug!("input publication shutdown deferred capture release to source retirement");
+            }
+            CaptureDemandReconcile::Stale => {
+                debug!("input publication shutdown rejected an unexpectedly stale capture release");
+            }
+        }
+    }
+}
+
 async fn run_pump(
     manager: InputManager,
     reader: InputPublicationReader,
@@ -1432,12 +1482,15 @@ async fn run_pump(
     status: watch::Sender<InputPublicationStatus>,
     ready: oneshot::Sender<()>,
 ) {
+    // Declared before the device guard, so a panic or abort drops the device
+    // guard first and withdraws device input before host capture is
+    // released, the same order as the clean exit below.
+    let mut capture_demand = HostCaptureDemand::new(manager.clone());
     let device_demand = DeviceInputDemand::new(device_input);
     status.send_replace(InputPublicationStatus::Ready);
     let _ = ready.send(());
 
     let mut schedule = InputPublicationSchedule::default();
-    let mut capture_demand = CaptureDemandState::default();
     let mut applied_exact_screen = None;
     let mut exact_screen_retry = None;
     let mut exact_screen_recovery = None;
@@ -1591,7 +1644,7 @@ async fn run_pump(
         let desired_capture = demand.capture_demand();
         let mut graph = reader.graph_snapshot();
         if !capture_demand.is_current(graph.generation(), desired_capture) {
-            let reconcile = capture_demand.reconcile(&manager, desired_capture, || {
+            let reconcile = capture_demand.reconcile(desired_capture, || {
                 demands.snapshot().revision() == demand.revision()
             });
             match reconcile {
@@ -1770,16 +1823,7 @@ async fn run_pump(
     }
 
     drop(device_demand);
-    let inactive_capture = CaptureDemand::new(false, ScreenCaptureDemand::Inactive, false);
-    match capture_demand.reconcile(&manager, inactive_capture, || true) {
-        CaptureDemandReconcile::Applied => {}
-        CaptureDemandReconcile::Busy => {
-            debug!("input publication shutdown deferred capture release to source retirement");
-        }
-        CaptureDemandReconcile::Stale => {
-            debug!("input publication shutdown rejected an unexpectedly stale capture release");
-        }
-    }
+    drop(capture_demand);
     debug!("input publication worker exited");
 }
 

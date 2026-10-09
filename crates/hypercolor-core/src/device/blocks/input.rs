@@ -14,12 +14,13 @@ use hypercolor_driver_api::{DeviceInputPublisher, DeviceInputSink};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::device_input::{DeviceInputEdge, TouchPosition};
 use hypercolor_types::event::InputButtonState;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 use tracing::{debug, warn};
 
+use super::framing::{LineRead, read_line_capped};
 use super::types::{BlocksButton, BlocksButtonAction, BlocksEvent, BlocksTouch, BlocksTouchAction};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -358,40 +359,15 @@ impl BlocksEventConnection {
     ///
     /// Fails when the socket read fails.
     async fn next_item(&mut self) -> Result<Option<StreamItem>> {
-        self.line.clear();
-        let mut oversized = false;
-        loop {
-            let available = self.reader.fill_buf().await?;
-            if available.is_empty() {
-                // blocksd closed the stream. A partial last line is still
-                // decoded.
-                if self.line.is_empty() && !oversized {
-                    return Ok(None);
-                }
-                break;
-            }
-            let newline = available.iter().position(|&byte| byte == b'\n');
-            let content = newline.unwrap_or(available.len());
-            if !oversized {
-                if self.line.len() + content > MAX_EVENT_LINE {
-                    oversized = true;
-                    self.line.clear();
-                } else {
-                    self.line.extend_from_slice(&available[..content]);
-                }
-            }
-            self.reader.consume(newline.map_or(content, |at| at + 1));
-            if newline.is_some() {
-                break;
-            }
-        }
-        if oversized {
-            return Ok(Some(StreamItem::Oversized));
-        }
-        Ok(Some(match serde_json::from_slice(&self.line) {
-            Ok(event) => StreamItem::Event(event),
-            Err(error) => StreamItem::Undecodable(error),
-        }))
+        let read = read_line_capped(&mut self.reader, &mut self.line, MAX_EVENT_LINE).await?;
+        Ok(match read {
+            LineRead::Closed => None,
+            LineRead::Oversized => Some(StreamItem::Oversized),
+            LineRead::Line => Some(match serde_json::from_slice(&self.line) {
+                Ok(event) => StreamItem::Event(event),
+                Err(error) => StreamItem::Undecodable(error),
+            }),
+        })
     }
 }
 

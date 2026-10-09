@@ -462,6 +462,12 @@ disconnection — it simply returns empty device lists from `discover()` until r
 **JSON messages:** newline-delimited (`\n`). Each message is a complete JSON object. The reader
 scans for `\n` boundaries and parses each line independently.
 
+Both connections cap the line they buffer, and a longer line is discarded through its newline so
+the stream stays framed. Request replies cap at 1 MiB, sized for a `discover_response` that lists
+several full topologies (about 28 KiB each, 215 KiB with every name and version string at its
+127-character limit), and an oversized reply fails its request. The event stream caps at 64 KiB and
+skips an oversized line like an undecodable one (spec 82, section 7).
+
 **Binary messages:** length-prefixed by the magic byte + known fixed size. The reader peeks at byte
 0: if `0xBD`, read exactly 681 bytes (frame) or parse by type byte; if `{`, read until `\n` and
 parse as JSON.
@@ -1207,6 +1213,7 @@ if config.backends.blocks.enabled {
 | Frame rejected              | Binary response `0x00`    | Retry on next render tick; treat as unavailable device or invalid payload |
 | Socket write timeout        | 1s write deadline         | Treat as disconnect, reconnect                                            |
 | Malformed JSON from blocksd | `serde_json` parse error  | Log warning, skip message, continue                                       |
+| Oversized reply line        | Line passes the 1 MiB cap | Discard through the newline, fail the request, reconnect                  |
 | Version mismatch            | `pong` version check      | Treat as failed handshake and retry with backoff                          |
 
 ### 12.2 Graceful Degradation

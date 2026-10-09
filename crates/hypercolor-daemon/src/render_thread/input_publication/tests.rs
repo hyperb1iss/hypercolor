@@ -1287,6 +1287,140 @@ async fn aborted_pump_worker_withdraws_device_input_demand() {
     );
 }
 
+/// Interaction source that records, at each host capture change, whether
+/// device input was still demanded.
+struct DeviceDemandProbeSource {
+    devices: hypercolor_core::input::DeviceInputHandle,
+    changes: Arc<StdMutex<Vec<(bool, bool)>>>,
+    running: bool,
+}
+
+impl InputSource for DeviceDemandProbeSource {
+    fn name(&self) -> &'static str {
+        "device_demand_probe"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for DeviceDemandProbeSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for DeviceDemandProbeSource {
+    fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.changes
+            .lock()
+            .expect("probe change log")
+            .push((active, self.devices.is_demanded()));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn aborted_pump_worker_releases_host_capture_demand() {
+    // An abort, as when shutdown passes its deadline, skips the worker's
+    // normal exit; host capture must still be released when the worker is
+    // dropped, after device input demand is withdrawn.
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let interaction_changes = Arc::new(StdMutex::new(Vec::new()));
+    let devices = hypercolor_core::input::DeviceInputHandle::new();
+    let manager = InputManager::new();
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(
+            ScreenDemandSource::new(Arc::clone(&transitions)),
+        )))
+        .expect("screen demand source should register");
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            DeviceDemandProbeSource {
+                devices: devices.clone(),
+                changes: Arc::clone(&interaction_changes),
+                running: false,
+            },
+        )))
+        .expect("probe source should register");
+    manager.start_all().expect("input sources should start");
+    let demands = InputPublicationDemandHandle::default();
+    let _registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default()
+            .with_fixture_screen(60, extent(1_280, 720))
+            .with_source(SourceKind::Interaction, 120),
+    );
+    let reader = InputPublicationReader::new(
+        manager.input_graph_handle(),
+        manager.screen_publication_hub(),
+        demands.native_execution_policy(),
+    );
+    let (status, _status_rx) = tokio::sync::watch::channel(InputPublicationStatus::Starting);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let worker = tokio::spawn(run_pump(
+        manager,
+        reader,
+        demands,
+        Some(devices.clone()),
+        tokio_util::sync::CancellationToken::new(),
+        status,
+        ready_tx,
+    ));
+    ready_rx.await.expect("pump worker reports readiness");
+    wait_for_screen_demand(&transitions, ScreenCaptureDemand::active()).await;
+    wait_for_device_demand(&devices, true).await;
+    tokio::time::timeout(Duration::from_millis(500), async {
+        while interaction_changes
+            .lock()
+            .expect("probe change log")
+            .last()
+            .is_none_or(|&(active, _)| !active)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("interaction capture should become active");
+
+    worker.abort();
+    let joined = worker.await;
+    assert!(
+        joined.is_err_and(|error| error.is_cancelled()),
+        "the worker was aborted rather than exiting on its own"
+    );
+    assert_eq!(
+        transitions
+            .lock()
+            .expect("screen demand transition lock")
+            .last()
+            .copied(),
+        Some(ScreenCaptureDemand::Inactive),
+        "an aborted pump releases host screen capture"
+    );
+    assert_eq!(
+        interaction_changes
+            .lock()
+            .expect("probe change log")
+            .last()
+            .copied(),
+        Some((false, false)),
+        "an aborted pump releases host interaction capture after withdrawing device input"
+    );
+}
+
 async fn wait_for_device_demand(
     devices: &hypercolor_core::input::DeviceInputHandle,
     expected: bool,
