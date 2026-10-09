@@ -8,15 +8,25 @@ const jobs = new Map([...workflow.slice(workflow.indexOf('\njobs:')).matchAll(/^
   .map(([, name, body]) => [name, body]));
 
 // Evaluates the subset of the GitHub expression language these conditions use.
+// Every upstream job reads as succeeded with every output enabled, so a job
+// stays off only because of its own guard, never because a dependency skipped.
 function evaluate(expression, { ref, event, mode = '' }) {
   const context = {
-    github: { ref, event_name: event },
+    github: {
+      ref,
+      ref_name: ref.replace(/^refs\/(heads|tags|pull)\//, ''),
+      event_name: event,
+      repository: 'hyperb1iss/hypercolor',
+    },
     inputs: { release_artifacts: mode },
+    needs: new Proxy({}, { get: () => ({ result: 'success', outputs: new Proxy({}, { get: () => 'true' }) }) }),
     steps: { filter: { outputs: new Proxy({}, { get: () => 'filtered' }) } },
   };
-  const source = expression.replace(/^\$\{\{\s*|\s*\}\}$/g, '');
-  return Function('github', 'inputs', 'steps', 'contains', 'fromJSON', 'startsWith', `return (${source});`)(
-    context.github, context.inputs, context.steps,
+  // Job ids like create-release would parse as subtraction in JavaScript.
+  const source = expression.replace(/^\$\{\{\s*|\s*\}\}$/g, '').replace(/\bneeds\.([\w-]+)/g, "needs['$1']");
+  return Function('github', 'inputs', 'needs', 'steps', 'always', 'cancelled', 'contains', 'fromJSON', 'startsWith',
+    `return (${source});`)(
+    context.github, context.inputs, context.needs, context.steps, () => true, () => false,
     (list, value) => list.includes(value), JSON.parse, (value, prefix) => value.startsWith(prefix),
   );
 }
@@ -66,6 +76,16 @@ test('warm refuses every ref but main before signing can depend on it', () => {
   for (const name of ['sign-macos', 'build-native-app', 'build-release']) {
     assert.match(jobs.get(name), /^    needs: \[[^\]]*release-credentials[^\]]*\]$/m, name);
   }
+});
+
+test('warm never reads the Apple signing secrets', () => {
+  const credentials = jobs.get('release-credentials');
+  const verify = credentials.slice(credentials.indexOf('- name: Verify signing credentials')).split('\n      - ')[0];
+  assert.match(verify, /secrets\.APPLE_API_KEY_CONTENT/);
+  const guard = verify.match(/^        if: (.+)$/m)?.[1];
+  assert.ok(guard, 'the credential check must be guarded');
+  assert.equal(Boolean(evaluate(guard, runs.warm)), false);
+  for (const run of ['tag', 'full']) assert.equal(Boolean(evaluate(guard, runs[run])), true, run);
 });
 
 test('warm and smoke skip the normal lanes; tags, full dispatch, and main keep them', () => {

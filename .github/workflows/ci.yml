@@ -1743,7 +1743,10 @@ jobs:
           echo "::error::release_artifacts=warm runs only on main, not ${GITHUB_REF}" >&2
           exit 1
       - uses: actions/checkout@v7
+      # Warm signs nothing, so it must not need the Apple secrets or write
+      # the notary key to disk.
       - name: Verify signing credentials before building release artifacts
+        if: inputs.release_artifacts != 'warm'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
