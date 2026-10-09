@@ -3,10 +3,10 @@
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
     "vendors": 32,
-    "devices": 419,
+    "devices": 420,
     "byStatus": {
       "supported": 184,
-      "in_progress": 0,
+      "in_progress": 1,
       "planned": 0,
       "researched": 95,
       "known": 138,
@@ -3080,6 +3080,19 @@
           "notes": "Legacy USB vendor protocol"
         },
         {
+          "pid": 41096,
+          "pidHex": "0xA088",
+          "vid": 7358,
+          "vidHex": "0x1CBE",
+          "name": "Universal Screen 8.8\"",
+          "type": "lcd",
+          "status": "in_progress",
+          "driver": "lianli",
+          "transport": "usb_bulk",
+          "leds": null,
+          "notes": "1920x480 bar panel in LCD mode; the firmware only decodes 480x1920 portrait JPEGs. WinUSB-variant DES header (500-byte plaintext, A1 1A trailer) plus one variable-length JPEG write. Awaiting hardware confirmation. The LED ring is a separate device (0x0416:0x8050)."
+        },
+        {
           "pid": 29589,
           "pidHex": "0x7395",
           "vid": null,
@@ -3108,13 +3121,13 @@
       ],
       "counts": {
         "supported": 13,
-        "in_progress": 0,
+        "in_progress": 1,
         "planned": 0,
         "researched": 2,
         "known": 0,
         "blocked": 0
       },
-      "totalDevices": 15,
+      "totalDevices": 16,
       "drivers": [
         "lianli"
       ],

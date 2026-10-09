@@ -123,6 +123,18 @@ driver = "lianli"
 transport = "usb_bulk"
 notes = "SL V3 wireless LCD receiver; same protocol as the TL receiver."
 
+# ─── In Progress ─────────────────────────────────────────────────────
+
+[[devices]]
+pid = 0xA088
+vid = 0x1CBE
+name = "Universal Screen 8.8\""
+type = "lcd"
+status = "in_progress"
+driver = "lianli"
+transport = "usb_bulk"
+notes = "1920x480 bar panel in LCD mode; the firmware only decodes 480x1920 portrait JPEGs. WinUSB-variant DES header (500-byte plaintext, A1 1A trailer) plus one variable-length JPEG write. Awaiting hardware confirmation. The LED ring is a separate device (0x0416:0x8050)."
+
 # ─── Not Yet Supported ───────────────────────────────────────────────
 
 [[devices]]

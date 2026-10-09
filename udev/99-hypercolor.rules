@@ -112,6 +112,9 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04fc", ATTR{idPro
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1cbe", ATTR{idProduct}=="0006", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1cbe", ATTR{idProduct}=="0005", MODE="0660", GROUP="users", TAG+="uaccess"
 
+# Universal Screen 8.8" in LCD mode (a088), same vendor ID, same scoping.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1cbe", ATTR{idProduct}=="a088", MODE="0660", GROUP="users", TAG+="uaccess"
+
 # ─── Ableton ──────────────────────────────────────────────────────────────────
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2982", MODE="0660", GROUP="users", TAG+="uaccess"
 
