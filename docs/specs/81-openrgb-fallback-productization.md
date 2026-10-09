@@ -46,8 +46,9 @@ Ownership is decided per physical device, not per driver:
 "Must not see it" is enforced on the OpenRGB side by the detector partition
 the supervisor writes into a Hypercolor-managed OpenRGB config directory, and
 on the Hypercolor side by the conflict guard. Neither alone is sufficient:
-the partition is a name-based approximation, the guard is exact but only
-protects after both stacks have already opened the hardware once.
+the partition is a detector-level approximation (per USB device where the
+detector's ids are known, per name prefix elsewhere), the guard is exact but
+only protects after both stacks have already opened the hardware once.
 
 ## Layer 1: Bridge driver hardening
 
@@ -238,13 +239,36 @@ crate only.
   loaded, `/dev/i2c-*` and `/dev/hidraw*` writable by the current user; each
   failing check carries the exact remedy command from OpenRGB's own docs.
 - `managed_config_dir()` under Hypercolor's data dir, and
-  `write_detector_partition(dir, disabled_detectors)` producing an
-  `OpenRGB.json` whose `Detectors.detectors` map disables the given names.
-  The detector-name map lives in `crates/hypercolor-openrgb-host/data/detectors.toml`: for each
-  native driver family, the OpenRGB detector name prefixes it owns
-  (`Razer `, `Lian Li `, `Corsair `, `Dygma `, `Nollie `, `ASUS Aura`,
-  `ENE SMBus DRAM`). The partition disables prefixes for every native driver
-  that is enabled and has at least one enabled device.
+  `write_detector_partition(dir, rules)` producing an `OpenRGB.json` whose
+  `Detectors.detectors` map disables the detectors `rules` withhold.
+  A native driver is withheld when it is enabled and has at least one
+  enabled device; every other family is handed back. A withheld driver
+  withholds per device, by USB id:
+  - `crates/hypercolor-openrgb-host/data/detector_usb_ids.toml` maps each
+    OpenRGB detector name to the USB `vvvv:pppp` ids it claims (`vvvv:*`
+    for vendor-wide detectors). It is generated from the udev rules an
+    unmodified OpenRGB binary prints (`openrgb --print-udev-rules`, one
+    section per detector), which keeps it inside the Spec 68 provenance
+    gate; the embedded copy covers OpenRGB 1.0.
+  - The daemon already publishes each driver's protocol catalog with its
+    USB ids in `GET /api/v1/drivers`, so the CLI, the app, and the CLI
+    owner pass it through `DriverFacts`; `openrgb-host` takes no HAL
+    dependency.
+  - A detector is disabled when any id it claims is in a withheld driver's
+    catalog, connected or not ("can claim", so a second supported device
+    plugged in later never races OpenRGB), whatever its name. A mapped
+    detector under a withheld family's prefix that claims none of them is
+    handed back, so the brand's unsupported hardware stays bridgeable.
+  - The name-prefix rule remains the fallback. `crates/hypercolor-openrgb-host/data/detectors.toml`
+    lists, per native family, the OpenRGB detector name prefixes it owns
+    (`Razer `, `Lian Li `, `Corsair `, `Dygma `, `Nollie `, `ASUS Aura`,
+    `ENE SMBus DRAM`). Under a withheld prefix, a detector the id map does
+    not know (SMBus RAM and mainboard controllers, names from another
+    OpenRGB release) stays disabled, and a driver that published no USB
+    catalog keeps its whole prefix disabled.
+  - A mapped detector whose ids belong to a native catalog that is not
+    withheld is re-enabled, so an id-based disable outside every prefix is
+    released when its driver lets go.
 - `server_command(binary, dir) -> ProcessSpec` =
   `--server --server-host 127.0.0.1 --noautoconnect --config <dir>`, plus
   `--loglevel 4`. Never `0.0.0.0`: the SDK has no authentication.

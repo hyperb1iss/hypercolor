@@ -102,8 +102,8 @@ the hardware; run `hypercolor devices discover`.
 OpenRGB is a conflict only when it detects hardware a native Hypercolor driver owns. The
 server Hypercolor manages for its [OpenRGB fallback](@/hardware/openrgb-fallback.md)
 never does: `hypercolor openrgb partition` writes a detector partition into a
-Hypercolor-owned config directory that disables OpenRGB's detectors for every enabled
-native driver, and `hypercolor openrgb start` launches the server against that
+Hypercolor-owned config directory that disables OpenRGB's detectors for the hardware each
+enabled native driver can drive, and `hypercolor openrgb start` launches the server against that
 directory. Native drivers keep their devices, the bridge drives the rest, and a conflict
 guard output-disables any bridge route that still lands on natively owned silicon.
 
@@ -318,9 +318,9 @@ Check what is accessing your i2c nodes:
 lsof /dev/i2c-* 2>/dev/null
 ```
 
-The managed OpenRGB server disables the `ASUS Aura` and `ENE SMBus DRAM` detectors
-whenever Hypercolor's own SMBus drivers are enabled, so the two never probe the same
-bus. A hand-run `openrgb` still can, and the symptom is specific: DRAM LED counts come
+The managed OpenRGB server disables the `ENE SMBus DRAM` and `ASUS Aura SMBus Motherboard` detectors
+whenever the native ASUS driver is enabled and owns a device, so the two never probe the
+same bus. A hand-run `openrgb` still can, and the symptom is specific: DRAM LED counts come
 back wrong, or sticks flicker, after OpenRGB detection ran while the daemon was up. Never
 run `openrgb --list-devices` or the OpenRGB GUI while native SMBus drivers are enabled;
 use `hypercolor openrgb start` instead, or disable the native SMBus drivers first. See

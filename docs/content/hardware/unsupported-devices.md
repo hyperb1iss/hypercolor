@@ -90,6 +90,15 @@ hypercolor devices discover --target openrgb
 hypercolor devices coverage       # the device should now read active = bridge
 ```
 
+The managed configuration is written per device, not per brand. A native driver that owns
+one of your devices keeps OpenRGB away from every USB device that driver can drive and
+nothing else, so a Razer headset Hypercolor has no protocol for stays bridgeable next to a
+natively driven Razer base station. Two cases stay conservative and are withheld for the
+whole brand while its native driver owns a device: RAM and motherboard controllers on
+SMBus (they have no USB id to match), and OpenRGB detectors newer than the OpenRGB
+release Hypercolor's detector map was built from. If your device falls in one of those,
+disable that native driver to hand the brand to OpenRGB.
+
 The full flow, including per-platform install, Linux udev and I2C setup, Windows PawnIO
 notes, and zone sizing for ARGB hubs, is on the [OpenRGB fallback](@/hardware/openrgb-fallback.md)
 page.
