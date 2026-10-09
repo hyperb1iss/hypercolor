@@ -241,7 +241,13 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                     Method::PATCH,
                     Method::DELETE,
                 ])
-                .allow_headers([header::ACCEPT, header::AUTHORIZATION, header::CONTENT_TYPE]),
+                .allow_headers([
+                    header::ACCEPT,
+                    header::AUTHORIZATION,
+                    header::CONTENT_TYPE,
+                    header::IF_MATCH,
+                ])
+                .expose_headers([header::ETAG]),
         )
         .layer(axum::middleware::from_fn_with_state(
             access_log::AccessLogState {

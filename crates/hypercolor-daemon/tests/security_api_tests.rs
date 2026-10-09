@@ -143,6 +143,80 @@ async fn exact_bundled_tauri_origins_receive_cors_headers() {
 }
 
 #[tokio::test]
+async fn preflight_from_native_app_origin_permits_versioned_mutations() {
+    // The desktop app serves the UI from a tauri origin, so every daemon
+    // call is cross-origin and the browser preflights any request that
+    // carries a non-simple header. Optimistic-concurrency writes send
+    // `If-Match`; a preflight that omits it from the allow-list makes the
+    // browser drop the request before it ever reaches the daemon.
+    let response = test_app()
+        .oneshot(
+            Request::builder()
+                .method(Method::OPTIONS)
+                .uri("/api/v1/effects/effect/presets/preset/apply")
+                .header(header::ORIGIN, "http://tauri.localhost")
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                .header(
+                    header::ACCESS_CONTROL_REQUEST_HEADERS,
+                    "authorization,content-type,if-match",
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("request failed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "http://tauri.localhost"
+    );
+    let allowed = response.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS]
+        .to_str()
+        .expect("allow-headers should be ASCII")
+        .to_ascii_lowercase();
+    for required in ["authorization", "content-type", "if-match"] {
+        assert!(
+            allowed
+                .split(',')
+                .map(str::trim)
+                .any(|name| name == required),
+            "preflight allow-list {allowed:?} is missing {required}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cross_origin_responses_expose_the_revision_etag() {
+    // The live scene answers with its revision as an ETag. A cross-origin
+    // client can only read that header when the CORS layer exposes it.
+    let response = test_app()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scene")
+                .header(header::ORIGIN, "http://tauri.localhost")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("request failed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().contains_key(header::ETAG),
+        "scene responses should carry a revision ETag"
+    );
+    let exposed = response.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS]
+        .to_str()
+        .expect("expose-headers should be ASCII")
+        .to_ascii_lowercase();
+    assert!(
+        exposed.split(',').map(str::trim).any(|name| name == "etag"),
+        "exposed headers {exposed:?} should include etag"
+    );
+}
+
+#[tokio::test]
 async fn public_origin_does_not_receive_cors_headers() {
     let response = test_app()
         .oneshot(
