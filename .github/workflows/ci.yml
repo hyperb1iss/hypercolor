@@ -9,7 +9,12 @@ on:
   workflow_dispatch:
     inputs:
       release_artifacts:
-        description: "Build release artifacts without publishing a GitHub Release"
+        description: >-
+          Build release artifacts without publishing a GitHub Release. smoke
+          builds the Linux tarball; full builds every platform and signs macOS;
+          warm, from main only, builds every platform without signing or the
+          normal CI lanes, so main writes the release profile into the shared
+          compiler cache.
         required: false
         type: choice
         default: none
@@ -17,6 +22,7 @@ on:
           - none
           - smoke
           - full
+          - warm
       release_version:
         description: "Dry-run semver for artifact names (blank = Cargo version + -ci.0)"
         required: false
@@ -27,7 +33,9 @@ on:
         default: false
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # A warm run takes its own group, so a nightly release build never holds a
+  # main push pending behind it (or lets a newer push cancel that pending run).
+  group: ${{ github.workflow }}-${{ github.ref }}${{ inputs.release_artifacts == 'warm' && '-warm' || '' }}
   # Tag runs publish, and a release is only ever cut from a commit main has
   # already proven green, so neither may be superseded. Cancelling main means
   # the next merge silently discards an hour of Windows and Servo work and
@@ -100,15 +108,16 @@ jobs:
       # broad: it gates the expensive Servo test and doc-test steps so pull
       # requests get the light pass and main and tags get the heavy one. It is
       # NOT a stand-in for "release build", and it must not gate whole jobs —
-      # the per-domain outputs below already force true for tags and non-smoke
-      # dispatch, so they cover release on their own.
-      full: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.release_artifacts != 'smoke')) }}
-      rust: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.rust }}
-      python: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.python }}
-      python_generated: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.python_generated }}
-      sdk: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.sdk }}
-      ui: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.ui }}
-      compat: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.compat }}
+      # the per-domain outputs below already force true for tags and full
+      # dispatch, so they cover release on their own. Smoke and warm dispatches
+      # build release artifacts only and skip the normal lanes.
+      full: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) }}
+      rust: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.rust }}
+      python: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.python }}
+      python_generated: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.python_generated }}
+      sdk: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.sdk }}
+      ui: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.ui }}
+      compat: ${{ (github.event_name == 'workflow_dispatch' && contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts)) && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && !contains(fromJSON('["smoke","warm"]'), inputs.release_artifacts))) && 'true' || steps.filter.outputs.compat }}
       docs: ${{ steps.filter.outputs.docs }}
       nix: ${{ steps.filter.outputs.nix }}
       workflow: ${{ steps.filter.outputs.workflow }}
@@ -250,7 +259,7 @@ jobs:
         run: node --test scripts/tests/homebrew-formula.test.mjs
 
       - name: Test release orchestration
-        run: node --test scripts/tests/release-workflow.test.mjs scripts/tests/resolve-release-version.test.mjs scripts/tests/macos-release.test.mjs
+        run: node --test scripts/tests/release-workflow.test.mjs scripts/tests/resolve-release-version.test.mjs scripts/tests/macos-release.test.mjs scripts/tests/release-cache-warm.test.mjs
 
       - name: Test Docker release contracts
         run: node --test scripts/tests/docker-workflow.test.mjs
@@ -458,6 +467,10 @@ jobs:
             -- -D warnings
           ./scripts/cargo-cache-build.sh \
             cargo clippy --locked \
+            -p hypercolor-macos-session --all-targets \
+            -- -D warnings
+          ./scripts/cargo-cache-build.sh \
+            cargo clippy --locked \
             -p hypercolor-daemon --no-default-features \
             --bin hypercolor-daemon --test macos_owner_tests \
             -- -D warnings
@@ -493,6 +506,10 @@ jobs:
             cargo nextest run --locked \
             -p hypercolor-macos-owner \
             --test coordinator_tests
+          ./scripts/cargo-cache-build.sh \
+            cargo nextest run --locked \
+            -p hypercolor-macos-session \
+            --test process_memory_tests
           ./scripts/cargo-cache-build.sh \
             cargo nextest run --locked \
             -p hypercolor-core --features macos-native-fixtures \
@@ -1676,6 +1693,9 @@ jobs:
           r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
           r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           key: web-assets
+          # Only release runs build web assets. Tags never save, and a main
+          # dispatch would add a commit-keyed archive per run; R2 carries it.
+          save-if: "false"
 
       - name: Install Trunk
         uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
@@ -1708,6 +1728,7 @@ jobs:
           name: web-assets
           path: staging/
           if-no-files-found: error
+          retention-days: ${{ inputs.release_artifacts == 'warm' && 1 || 0 }}
 
       - name: Save Rust build caches
         if: always()
@@ -1719,11 +1740,21 @@ jobs:
   release-credentials:
     if: >-
       startsWith(github.ref, 'refs/tags/') ||
-      (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'full')
+      (github.event_name == 'workflow_dispatch' && contains(fromJSON('["full","warm"]'), inputs.release_artifacts))
     runs-on: ubuntu-latest
     steps:
+      # Signing runs for any tag ref, so warm dispatched from a tag would
+      # notarize. Every signing and release build job needs this one.
+      - name: Refuse warm outside main
+        if: inputs.release_artifacts == 'warm' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::release_artifacts=warm runs only on main, not ${GITHUB_REF}" >&2
+          exit 1
       - uses: actions/checkout@v7
+      # Warm signs nothing, so it must not need the Apple secrets or write
+      # the notary key to disk.
       - name: Verify signing credentials before building release artifacts
+        if: inputs.release_artifacts != 'warm'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -1739,7 +1770,7 @@ jobs:
     if: >-
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
-      inputs.release_artifacts == 'full')
+      contains(fromJSON('["full","warm"]'), inputs.release_artifacts))
     needs: [release-credentials, web-assets]
     strategy:
       fail-fast: false
@@ -1800,6 +1831,10 @@ jobs:
           r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
           r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           key: native-app-${{ matrix.target }}
+          # A warm run on main would otherwise save a release target dir with
+          # Servo per platform into an Actions budget that is already full.
+          # R2 still receives every compile, which is what a tag reuses.
+          save-if: "false"
           workspaces: . -> target
 
       - uses: taiki-e/install-action@v2
@@ -1815,7 +1850,11 @@ jobs:
         # fallback happily grabs the x86_64 cargo-tauri, and Tauri then
         # derives sidecar names for the wrong architecture ("resource path
         # hypercolor-daemon-x86_64-apple-darwin doesn't exist").
-        run: cargo binstall -y --targets "${{ matrix.rust-target }}" "tauri-cli@^2.0.0" || cargo install tauri-cli --version "^2.0.0" --locked
+        #
+        # The version is exact because crates/hypercolor-app/installer.nsi
+        # forks the NSIS template of the tauri-bundler this CLI pins; keep it
+        # in step with that file's header and build-windows-installer.ps1.
+        run: cargo binstall -y --targets "${{ matrix.rust-target }}" "tauri-cli@=2.12.1" || cargo install tauri-cli --version "=2.12.1" --locked
 
       - name: Download web assets
         uses: actions/download-artifact@v8
@@ -1922,6 +1961,8 @@ jobs:
         env:
           TAURI_BUNDLES: ${{ matrix.bundles }}
           RUST_TARGET: ${{ matrix.rust-target }}
+          # Tauri runs cargo directly, outside the cache wrappers.
+          RUSTC_WRAPPER: sccache
         run: |
           $configArgs = @()
           if (Test-Path "tauri.bundle.conf.json") {
@@ -1952,9 +1993,60 @@ jobs:
             ./scripts/check-windows-dll-closure.ps1 -Installer $installer.FullName
           }
 
+      - name: Verify in-place upgrade from the previous release
+        # Installs the highest published release older than this build, then
+        # upgrades it with this build's installer twice, once clicking
+        # through the wizard and once with /S, checking that autostart,
+        # shortcuts, and a clean UI tree survive each time.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $roots = @("target/release/bundle/nsis", "crates/hypercolor-app/target/release/bundle/nsis")
+          if ($env:CARGO_TARGET_DIR) { $roots += Join-Path $env:CARGO_TARGET_DIR "release/bundle/nsis" }
+          $candidate = $roots | Where-Object { Test-Path $_ } |
+            ForEach-Object { Get-ChildItem $_ -Filter "*_x64-setup.exe" } | Sort-Object FullName -Unique |
+            Select-Object -First 1
+          if (-not $candidate) { throw "no NSIS installer found under: $($roots -join ', ')" }
+          if ($candidate.Name -notmatch '^Hypercolor_(.+)_x64-setup\.exe$') {
+            throw "unexpected installer name: $($candidate.Name)"
+          }
+          $version = [semver]$Matches[1]
+          $tags = @(gh release list --repo $env:GITHUB_REPOSITORY --exclude-drafts --exclude-pre-releases --limit 30 --json tagName --jq '.[].tagName')
+          if ($LASTEXITCODE -ne 0) { throw "gh release list failed with exit code $LASTEXITCODE" }
+          $releases = @($tags | ForEach-Object {
+            $parsed = $null
+            if ([semver]::TryParse($_.TrimStart('v'), [ref]$parsed)) {
+              [pscustomobject]@{ Tag = $_; Version = $parsed }
+            }
+          })
+          if ($tags.Count -gt 0 -and $releases.Count -eq 0) {
+            throw "no published release tag parses as a version: $($tags -join ', ')"
+          }
+          # A smoke dispatch builds <version>-ci.0, which sorts below the
+          # release it was cut from, so "older" has to mean semver-lower.
+          $older = $releases | Where-Object { $_.Version -lt $version } |
+            Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $older) {
+            Write-Host "::notice::No published release is older than $version; skipping the upgrade check"
+            exit 0
+          }
+          $previousDir = Join-Path $env:RUNNER_TEMP "previous-installer"
+          gh release download $older.Tag --repo $env:GITHUB_REPOSITORY --pattern "*_x64-setup.exe" --dir $previousDir --clobber
+          if ($LASTEXITCODE -ne 0) { throw "gh release download $($older.Tag) failed with exit code $LASTEXITCODE" }
+          $previous = Get-ChildItem $previousDir -Filter "*_x64-setup.exe" | Select-Object -First 1
+          if (-not $previous) { throw "$($older.Tag) has no *_x64-setup.exe asset" }
+          foreach ($mode in "Interactive", "Silent") {
+            ./scripts/test-windows-installer-upgrade.ps1 -PreviousInstaller $previous.FullName -CandidateInstaller $candidate.FullName -Mode $mode
+          }
+
       - name: Build unsigned macOS app bundle
         if: runner.os == 'macOS'
         working-directory: crates/hypercolor-app
+        env:
+          # Tauri runs cargo directly, outside the cache wrappers.
+          RUSTC_WRAPPER: sccache
         run: >-
           cargo tauri build --ci --bundles app --no-sign
           --config tauri.bundle.conf.json --target '${{ matrix.rust-target }}'
@@ -1991,7 +2083,7 @@ jobs:
           name: unsigned-${{ matrix.target }}
           path: ${{ runner.temp }}/unsigned-${{ matrix.target }}.tar
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ inputs.release_artifacts == 'warm' && 1 || 7 }}
 
       - name: Upload native release bundle
         if: runner.os == 'Windows'
@@ -2000,6 +2092,7 @@ jobs:
           name: hypercolor-app-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.artifact-kind }}
           path: ${{ matrix.artifact-path }}
           if-no-files-found: error
+          retention-days: ${{ inputs.release_artifacts == 'warm' && 1 || 0 }}
 
       - name: Save Rust build caches
         if: always()
@@ -2318,7 +2411,7 @@ jobs:
     if: >-
       startsWith(github.ref, 'refs/tags/') ||
       (github.event_name == 'workflow_dispatch' &&
-      inputs.release_artifacts == 'full')
+      contains(fromJSON('["full","warm"]'), inputs.release_artifacts))
     needs: [release-credentials, web-assets]
     strategy:
       fail-fast: false
@@ -2330,8 +2423,8 @@ jobs:
           - target: linux-arm64
             os: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-gnu
-    # A full workflow_dispatch on the default branch warms these release
-    # shapes. Tags restore that trusted cache; they never publish cache state.
+    # Full and warm dispatches on main write these release shapes' compiles
+    # to R2, which tags read; no run saves an Actions archive for them.
     timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     environment:
@@ -2401,6 +2494,10 @@ jobs:
           r2-bucket: ${{ vars.SCCACHE_R2_BUCKET }}
           r2-endpoint: ${{ vars.SCCACHE_R2_ENDPOINT }}
           key: release-${{ matrix.target }}
+          # A warm run on main would otherwise save a release target dir with
+          # Servo per platform into an Actions budget that is already full.
+          # R2 still receives every compile, which is what a tag reuses.
+          save-if: "false"
 
       - name: Download web assets
         uses: actions/download-artifact@v8
@@ -2528,7 +2625,7 @@ jobs:
           name: container-${{ matrix.target }}
           path: hypercolor-container-${{ matrix.target }}.tar
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ inputs.release_artifacts == 'warm' && 1 || 7 }}
           compression-level: 0
 
       - name: Upload release tarball
@@ -2539,6 +2636,7 @@ jobs:
             dist/${{ steps.version.outputs.dist_name }}.tar.gz
             dist/${{ steps.version.outputs.dist_name }}.tar.gz.sha256
           if-no-files-found: error
+          retention-days: ${{ inputs.release_artifacts == 'warm' && 1 || 0 }}
 
       - name: Upload Debian package
         if: runner.os == 'Linux'
@@ -2547,6 +2645,7 @@ jobs:
           name: hypercolor-deb-${{ steps.version.outputs.version }}-${{ matrix.target }}
           path: dist/hypercolor_*.deb
           if-no-files-found: error
+          retention-days: ${{ inputs.release_artifacts == 'warm' && 1 || 0 }}
 
       - name: Save Rust build caches
         if: always()

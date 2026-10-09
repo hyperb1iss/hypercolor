@@ -140,12 +140,16 @@ def radial_gradient(size: tuple[int, int], inner=(40, 20, 80), outer=(8, 4, 18))
 
 
 # ─── luminary installer compositing ──────────────────────────────────────────
-# The Windows installer only gives us a 164x314 sidebar and a 150x57 header to
-# carry the brand, and Windows DPI-upscales both. So the art is composed
-# supersampled then downsampled (crisp edges), and built from soft glow + bloom
-# rather than fine detail so it stays gorgeous when the installer stretches it.
+# The Windows installer gives the brand a 164x314 sidebar and a 150x57 header
+# at 100% display scale, and both grow with the display's DPI. The art is
+# composed supersampled then downsampled (crisp edges), and built from soft
+# glow + bloom rather than fine detail.
 
 LUMA_SS = 4  # supersample factor for installer art
+# The NSIS bitmaps ship at this multiple of their 100% size. The installer
+# template (crates/hypercolor-app/installer.nsi) resamples them to the wizard
+# controls' real pixel size, so one master stays sharp from 100% to 300%.
+NSIS_ART_SCALE = 3
 LUMA_SEED = 0xC0107  # deterministic sparkle/dither so rebuilds don't churn
 
 DEEP_VIOLET = (138, 72, 255)
@@ -221,15 +225,19 @@ def _vignette(buf: np.ndarray, strength: float) -> None:
     buf *= (1.0 - strength) + strength * fall[..., None]
 
 
-def _sparkles(buf: np.ndarray, rng: np.random.Generator, n: int, ss: int) -> None:
-    """Scatter soft additive light motes — the app's electric energy as particles."""
+def _sparkles(buf: np.ndarray, rng: np.random.Generator, n: int, px: int) -> None:
+    """Scatter soft additive light motes — the app's electric energy as particles.
+
+    `px` is how many buffer pixels make one pixel of the art at 100% scale, so
+    motes keep the same apparent size at any supersample or output scale.
+    """
     h, w = buf.shape[:2]
     palette = [ELECTRIC_MAGENTA, NEON_CYAN, CORAL_PINK, (255, 255, 255)]
     weights = [0.34, 0.30, 0.30, 0.06]
     for _ in range(n):
         x = rng.uniform(0.05, 0.95) * w
         y = rng.uniform(0.04, 0.96) * h
-        r = rng.uniform(0.6, 2.4) * ss
+        r = rng.uniform(0.6, 2.4) * px
         color = palette[rng.choice(len(palette), p=weights)]
         _add_glow(buf, _radial(w, h, x, y, r * 3.2, 2.6), color, rng.uniform(0.45, 1.0))
 
@@ -243,11 +251,16 @@ def _luminary_vertical(
     wm_wf: float,
     wm_y: float,
     sparkles: int,
+    scale: int = 1,
     ss: int = LUMA_SS,
     seed: int = LUMA_SEED,
 ) -> Image.Image:
-    """Glowing triskelion over a nebula field with a glowing wordmark below."""
-    big_w, big_h = w * ss, h * ss
+    """Glowing triskelion over a nebula field with a glowing wordmark below.
+
+    `w` and `h` are the size at 100% scale; the image comes out `scale` times
+    larger with the same composition.
+    """
+    big_w, big_h = w * scale * ss, h * scale * ss
     rng = np.random.default_rng(seed)
     buf = _grad_v(big_w, big_h, [
         (0.00, (12, 7, 22)),
@@ -268,7 +281,7 @@ def _luminary_vertical(
     _add_color_bloom(buf, mlayer, [(big_w * 0.05, 0.55), (big_w * 0.11, 0.40), (big_w * 0.20, 0.22)])
     _over(buf, mlayer, (0, 0))
 
-    _sparkles(buf, rng, sparkles, ss)
+    _sparkles(buf, rng, sparkles, ss * scale)
 
     wm = _fit_width(Image.open(MASTER / "wordmark-glow-color.png").convert("RGBA"), int(big_w * wm_wf))
     wlayer = Image.new("RGBA", (big_w, big_h), (0, 0, 0, 0))
@@ -278,7 +291,7 @@ def _luminary_vertical(
 
     _add_glow(buf, _radial(big_w, big_h, big_w * 0.5, big_h * 1.02, big_w * 0.9, 1.5), HORIZON_MAGENTA, 0.12)
     buf += rng.normal(0.0, 1.4, buf.shape)
-    return _to_pil(buf).resize((w, h), Image.LANCZOS)
+    return _to_pil(buf).resize((w * scale, h * scale), Image.LANCZOS)
 
 
 def _luminary_horizontal(
@@ -287,10 +300,15 @@ def _luminary_horizontal(
     *,
     lockup_wf: float = 0.84,
     underline: bool = True,
+    scale: int = 1,
     ss: int = LUMA_SS,
 ) -> Image.Image:
-    """Horizontal lockup glowing on a dark gradient chip with a neon underline."""
-    big_w, big_h = w * ss, h * ss
+    """Horizontal lockup glowing on a dark gradient chip with a neon underline.
+
+    `w` and `h` are the size at 100% scale; the image comes out `scale` times
+    larger with the same composition.
+    """
+    big_w, big_h = w * scale * ss, h * scale * ss
     buf = _grad_h(big_w, big_h, [(0.0, (10, 6, 20)), (0.5, (23, 11, 44)), (1.0, (10, 6, 20))])
     _add_glow(buf, _radial(big_w, big_h, big_w * 0.5, big_h * 0.5, big_w * 0.7, 1.6), DEEP_VIOLET, 0.12)
     _vignette(buf, 0.30)
@@ -311,7 +329,7 @@ def _luminary_horizontal(
         soft = Image.fromarray((mask * 255).astype(np.uint8), "L").filter(ImageFilter.GaussianBlur(big_h * 0.04))
         buf += line * (np.asarray(soft, np.float32)[..., None] / 255.0) * 0.85
 
-    return _to_pil(buf).resize((w, h), Image.LANCZOS)
+    return _to_pil(buf).resize((w * scale, h * scale), Image.LANCZOS)
 
 
 # ─── stage 1: masters ──────────────────────────────────────────────────────
@@ -769,12 +787,14 @@ def build_installer_win() -> None:
     out = DERIVED / "installer-win"
     out.mkdir(parents=True, exist_ok=True)
 
-    # NSIS welcome/finish hero (164x314) — the first and last thing the user sees.
-    _luminary_vertical(164, 314, mark_wf=0.66, mark_y=0.10, wm_wf=0.74, wm_y=0.77, sparkles=54).save(
-        out / "nsis-sidebar.bmp", format="BMP"
-    )
-    # NSIS page header chip (150x57) — branded bar on the inner wizard pages.
-    _luminary_horizontal(150, 57).save(out / "nsis-header.bmp", format="BMP")
+    # NSIS welcome/finish hero (164x314 at 100%) — the first and last thing the
+    # user sees.
+    _luminary_vertical(
+        164, 314, mark_wf=0.66, mark_y=0.10, wm_wf=0.74, wm_y=0.77, sparkles=54, scale=NSIS_ART_SCALE
+    ).save(out / "nsis-sidebar.bmp", format="BMP")
+    # NSIS page header chip (150x57 at 100%) — branded bar on the inner wizard
+    # pages.
+    _luminary_horizontal(150, 57, scale=NSIS_ART_SCALE).save(out / "nsis-header.bmp", format="BMP")
     # WiX equivalents kept in sync for any MSI build path.
     _luminary_vertical(493, 312, mark_wf=0.30, mark_y=0.12, wm_wf=0.40, wm_y=0.64, sparkles=130).save(
         out / "wix-dialog.bmp", format="BMP"

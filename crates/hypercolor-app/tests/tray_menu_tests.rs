@@ -2,9 +2,14 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_app::{
     state::{AppState, EffectInfo, SceneInfo, ServerEntry},
+    supervisor::SupervisorFailure,
     tray::icons::{IconState, icon_state_for, icon_state_for_with_supervisor},
-    tray::menu::{MenuAction, MenuEntry, action_for_menu_id, ids, menu_model},
+    tray::menu::{
+        MenuAction, MenuEntry, action_for_menu_id, ids, menu_model, menu_model_with_supervisor,
+    },
+    tray::tooltip_text,
 };
+use hypercolor_types::api::system::DaemonStartupPhase;
 use hypercolor_types::server::{DiscoveredServer, ServerIdentity};
 
 #[test]
@@ -157,6 +162,10 @@ fn menu_ids_map_to_app_actions() {
     );
     assert_eq!(action_for_menu_id(ids::QUIT), Some(MenuAction::Quit));
     assert_eq!(
+        action_for_menu_id(ids::RETRY_DAEMON),
+        Some(MenuAction::RetryDaemon)
+    );
+    assert_eq!(
         action_for_menu_id(ids::PAUSE_OUTPUT),
         Some(MenuAction::SetPaused(true))
     );
@@ -269,4 +278,50 @@ fn assert_no_item(entries: &[MenuEntry], id: &str) {
     });
 
     assert!(!has_item);
+}
+
+#[test]
+fn a_failed_supervisor_offers_retry_whether_or_not_a_daemon_answers() {
+    assert_no_item(&menu_model(&AppState::disconnected()), ids::RETRY_DAEMON);
+    assert_no_item(
+        &menu_model_with_supervisor(&connected_state(), false),
+        ids::RETRY_DAEMON,
+    );
+
+    for state in [AppState::disconnected(), connected_state()] {
+        let entries = menu_model_with_supervisor(&state, true);
+        assert_item(&entries, ids::RETRY_DAEMON, "Retry Daemon", true);
+        assert_item(&entries, ids::QUIT, "Quit", true);
+    }
+}
+
+#[test]
+fn the_tooltip_names_the_phase_a_failed_startup_reached() {
+    let failure = SupervisorFailure {
+        restarts: 5,
+        startup_phase: Some(DaemonStartupPhase::StartingRenderThread),
+    };
+    let tooltip = tooltip_text(&connected_state(), Some(&failure));
+    assert!(
+        tooltip.contains("last phase: starting render thread"),
+        "{tooltip}"
+    );
+    assert!(tooltip.contains("Retry Daemon"), "{tooltip}");
+    // Windows truncates tray tooltips past 127 UTF-16 units.
+    assert!(tooltip.encode_utf16().count() <= 127, "{tooltip}");
+
+    let phaseless = tooltip_text(
+        &AppState::disconnected(),
+        Some(&SupervisorFailure {
+            restarts: 5,
+            startup_phase: None,
+        }),
+    );
+    assert!(phaseless.contains("Retry Daemon"), "{phaseless}");
+    assert!(phaseless.encode_utf16().count() <= 127, "{phaseless}");
+
+    assert_eq!(
+        tooltip_text(&AppState::disconnected(), None),
+        "Hypercolor - Disconnected"
+    );
 }

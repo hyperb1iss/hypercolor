@@ -8,6 +8,7 @@ use tracing::{debug, info, warn};
 
 use hypercolor_core::device::{UsbHotplugEvent, UsbHotplugMonitor};
 use hypercolor_core::effect::{EffectWatchEvent, EffectWatcher};
+use hypercolor_types::api::system::DaemonStartupPhase;
 use hypercolor_types::config::{EffectErrorFallbackPolicy, HypercolorConfig};
 use hypercolor_types::event::{HypercolorEvent, SceneChangeReason};
 use hypercolor_types::scene::SceneId;
@@ -55,6 +56,8 @@ impl DaemonState {
 
     async fn start_inner(&mut self) -> Result<()> {
         let config = self.config();
+        self.startup_progress
+            .enter(DaemonStartupPhase::StartingInputs);
         info!(
             listen = %config.daemon.listen_address,
             port = config.daemon.port,
@@ -120,6 +123,8 @@ impl DaemonState {
         }
 
         // Spawn the render thread.
+        self.startup_progress
+            .enter(DaemonStartupPhase::StartingRenderThread);
         let initial_canvas_dims = {
             let spatial = self.spatial_engine.snapshot();
             let layout = spatial.layout();
@@ -152,9 +157,11 @@ impl DaemonState {
             face_fps_cap: config.display.effective_face_fps_cap(),
         };
         self.render_thread = Some(
-            RenderThread::try_spawn(rt_state)
+            RenderThread::try_spawn_reporting(rt_state, self.startup_progress.clone())
                 .context("failed to spawn render thread with resolved compositor mode")?,
         );
+        self.startup_progress
+            .enter(DaemonStartupPhase::StartingServices);
         #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
         self.domains.diagnostics.install_macos_screen_parity(
             self.render_thread
@@ -236,9 +243,15 @@ impl DaemonState {
 
         for extension in self.lifecycle_extensions.clone() {
             info!(extension = extension.name(), "Starting daemon extension");
-            extension.start(self).await.with_context(|| {
-                format!("failed to start daemon extension {}", extension.name())
-            })?;
+            self.startup_progress
+                .step_async(
+                    &format!("daemon extension {}", extension.name()),
+                    extension.start(self),
+                )
+                .await
+                .with_context(|| {
+                    format!("failed to start daemon extension {}", extension.name())
+                })?;
         }
 
         info!("Daemon is running");

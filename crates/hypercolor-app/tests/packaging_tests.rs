@@ -60,6 +60,13 @@ const MACOS_LAUNCHD_PLIST: &str =
 const STAGE_APP_BUNDLE_PS1: &str = include_str!("../../../scripts/stage-app-bundle-assets.ps1");
 const STAGE_APP_BUNDLE_SH: &str = include_str!("../../../scripts/stage-app-bundle-assets.sh");
 const INSTALLER_HOOKS_NSH: &str = include_str!("../installer-hooks.nsh");
+const INSTALLER_NSI: &str = include_str!("../installer.nsi");
+const DAEMON_SERVICES_PS1: &str = include_str!("../installer-daemon-services.ps1");
+const TAURI_WINDOWS_BUNDLE_CONFIG: &str = include_str!("../tauri.windows.bundle.conf.json");
+const WINDOWS_UPGRADE_TEST_PS1: &str =
+    include_str!("../../../scripts/test-windows-installer-upgrade.ps1");
+const SETUP_SH: &str = include_str!("../../../scripts/setup.sh");
+const SETUP_PS1: &str = include_str!("../../../scripts/setup.ps1");
 const INSTALL_WINDOWS_HARDWARE_SUPPORT_PS1: &str =
     include_str!("../../../scripts/install-windows-hardware-support.ps1");
 
@@ -1703,6 +1710,310 @@ fn installer_hooks_stop_the_broker_before_files_change() {
 #[test]
 fn installer_hook_cleans_up_the_broker_on_uninstall() {
     assert!(nsis_macro_body("NSIS_HOOK_PREUNINSTALL").contains("sc.exe delete HypercolorSmBus"));
+}
+
+/// Upgrades only overwrite files, and the UI and bundled effects change file
+/// names between releases, so both folders are cleared first. That has to
+/// wait until the app is closed and happen before any file is copied.
+#[test]
+fn installer_clears_rebuilt_folders_once_the_app_is_closed() {
+    let hook = nsis_macro_body("HYPERCOLOR_HOOK_BEFORE_FILES");
+    for guard in [
+        "${If} ${FileExists} \"$INSTDIR\\${MAINBINARYNAME}.exe\"",
+        "${AndIf} ${FileExists} \"$INSTDIR\\uninstall.exe\"",
+    ] {
+        assert!(hook.contains(guard), "clearing must be guarded by {guard}");
+    }
+    assert!(hook.contains("RMDir /r \"$INSTDIR\\ui\""));
+    assert!(hook.contains("RMDir /r \"$INSTDIR\\effects\\bundled\""));
+
+    let (_, install) = INSTALLER_NSI
+        .split_once("Section Install\n")
+        .expect("installer.nsi has an Install section");
+    let position = |needle: &str| {
+        install
+            .find(needle)
+            .unwrap_or_else(|| panic!("Install section is missing {needle}"))
+    };
+    let app_closed = position("!insertmacro CheckIfAppIsRunning");
+    let cleared = position("!insertmacro HYPERCOLOR_HOOK_BEFORE_FILES");
+    let first_copy = position("File \"${MAINBINARYSRCPATH}\"");
+    assert!(app_closed < cleared && cleared < first_copy);
+}
+
+/// A daemon still running from the install directory (exiting with the app,
+/// orphaned, or registered as a Windows service) holds hypercolor-daemon.exe
+/// open, so upgrades stop it before the copy, with every wait bounded, and
+/// start exactly the daemon services they stopped once the files are in.
+/// The logic ships as a script the installer embeds, with paths passed as
+/// double-quoted arguments that no apostrophe can break.
+#[test]
+fn installer_stops_and_restarts_daemons_around_the_copy() {
+    let before_files = nsis_macro_body("HYPERCOLOR_HOOK_BEFORE_FILES");
+    let stopped = before_files
+        .find("!insertmacro HYPERCOLOR_STOP_DAEMON")
+        .expect("the daemon must be stopped before the copy");
+    let cleared = before_files
+        .find("RMDir /r")
+        .expect("the hook clears rebuilt folders");
+    assert!(stopped < cleared);
+
+    let stop = nsis_macro_body("HYPERCOLOR_STOP_DAEMON");
+    assert!(stop.contains(
+        "File \"/oname=$PLUGINSDIR\\hypercolor-daemon-services.ps1\" \"${HYPERCOLOR_HOOKS_DIR}\\installer-daemon-services.ps1\""
+    ));
+    assert!(stop.contains("-Action Stop ${HYPERCOLOR_DAEMON_SERVICES_ARGS}"));
+    let restore = nsis_macro_body("HYPERCOLOR_RESTORE_DAEMON_SERVICES");
+    assert!(
+        restore.contains("${If} ${FileExists} \"$PLUGINSDIR\\hypercolor-daemon-services.txt\"")
+    );
+    assert!(restore.contains("-Action Restore ${HYPERCOLOR_DAEMON_SERVICES_ARGS}"));
+    assert!(
+        nsis_macro_body("NSIS_HOOK_POSTINSTALL")
+            .contains("!insertmacro HYPERCOLOR_RESTORE_DAEMON_SERVICES")
+    );
+    assert!(INSTALLER_HOOKS_NSH.contains(
+        "!define HYPERCOLOR_DAEMON_SERVICES_ARGS `-InstallDir \"$INSTDIR\" -StateFile \"$PLUGINSDIR\\hypercolor-daemon-services.txt\"`"
+    ));
+
+    for step in [
+        "if ($svc.State -ne \"Stop Pending\") {",
+        "$stopped += $svc.Name",
+        "$service.WaitForStatus(\"Stopped\", [TimeSpan]::FromSeconds(20))",
+        "Set-Content -LiteralPath $StateFile -Value $stopped",
+        "Get-CimInstance Win32_Process -Filter \"Name = 'hypercolor-daemon.exe'\"",
+        "Wait-Process -Id $daemonIds -Timeout 10",
+        "Stop-Process -Id $id -Force",
+        "$service.Start()",
+        "$service.WaitForStatus(\"Running\", [TimeSpan]::FromSeconds(20))",
+    ] {
+        assert!(
+            DAEMON_SERVICES_PS1.contains(step),
+            "daemon services script is missing {step}"
+        );
+    }
+    // The script runs in the installer's 32-bit PowerShell, where Get-Process
+    // cannot see a 64-bit process's path, and Stop-Service and Start-Service
+    // wait unbounded.
+    let code: Vec<&str> = DAEMON_SERVICES_PS1
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    for avoided in ["Get-Process", "Stop-Service", "Start-Service"] {
+        assert!(
+            !code.iter().any(|line| line.contains(avoided)),
+            "daemon services script must not use {avoided}"
+        );
+    }
+}
+
+/// NSIS caps every string at 1024 characters (NSIS_MAX_STRLEN in the build
+/// Tauri ships) and silently truncates longer ones, so every command line
+/// the hooks run has to fit even with long install and temp paths.
+#[test]
+fn installer_hook_commands_fit_the_nsis_string_limit() {
+    const NSIS_MAX_STRLEN: usize = 1024;
+    let long_instdir = format!("C:\\{}", "i".repeat(150));
+    let long_pluginsdir = format!("C:\\{}", "p".repeat(150));
+    let daemon_services_args = INSTALLER_HOOKS_NSH
+        .lines()
+        .find_map(|line| line.strip_prefix("!define HYPERCOLOR_DAEMON_SERVICES_ARGS "))
+        .expect("hooks define the daemon services arguments")
+        .trim_matches('`');
+
+    let mut commands = 0;
+    for line in INSTALLER_HOOKS_NSH.lines() {
+        let Some((_, quoted)) = line.split_once("nsExec::ExecToLog ") else {
+            continue;
+        };
+        let quoted = quoted.trim();
+        let command = quoted[1..quoted.len() - 1]
+            .replace("${HYPERCOLOR_DAEMON_SERVICES_ARGS}", daemon_services_args)
+            .replace("$$", "$")
+            .replace("$INSTDIR", &long_instdir)
+            .replace("$PLUGINSDIR", &long_pluginsdir);
+        let length = command.chars().count();
+        assert!(
+            length < NSIS_MAX_STRLEN,
+            "a {length}-character hook command would be truncated: {command}"
+        );
+        commands += 1;
+    }
+    assert!(
+        commands >= 10,
+        "expected every hook command, found {commands}"
+    );
+}
+
+/// A silent install (`/S`, the way an automated updater runs the installer)
+/// must never wait on a dialog or reboot the machine, and reports a needed
+/// restart with exit code 3010 instead.
+#[test]
+fn installer_reboot_prompt_answers_no_when_silent() {
+    let postinstall = nsis_macro_body("NSIS_HOOK_POSTINSTALL");
+    assert!(postinstall.contains("/SD IDNO IDNO no_reboot_now"));
+    assert!(postinstall.contains("no_reboot_now:\n    SetErrorLevel 3010"));
+}
+
+/// The release lane upgrades the highest older published release on a real
+/// Windows runner, clicking through the wizard and with a bare `/S`, before
+/// the new installer ships, and fails on any break in the upgrade contract.
+/// It may only skip when there really is no older release, never because a
+/// lookup failed.
+#[test]
+fn release_lane_proves_windows_upgrades_in_place() {
+    for step in [
+        "- name: Verify in-place upgrade from the previous release",
+        "if ($LASTEXITCODE -ne 0) { throw \"gh release list failed",
+        "throw \"no published release tag parses as a version",
+        "if ([semver]::TryParse($_.TrimStart('v'), [ref]$parsed))",
+        "Where-Object { $_.Version -lt $version }",
+        "if ($LASTEXITCODE -ne 0) { throw \"gh release download",
+    ] {
+        assert!(CI_WORKFLOW.contains(step), "upgrade step is missing {step}");
+    }
+    assert!(CI_WORKFLOW.contains("foreach ($mode in \"Interactive\", \"Silent\")"));
+    assert!(CI_WORKFLOW.contains(
+        "./scripts/test-windows-installer-upgrade.ps1 -PreviousInstaller $previous.FullName -CandidateInstaller $candidate.FullName -Mode $mode"
+    ));
+    for driver in [
+        "$candidate = Start-Process -FilePath $CandidateInstaller -PassThru",
+        "Wait-Installer -Process $candidate -Description \"the candidate installer\" -ClickThrough",
+        "Start-Process -FilePath $CandidateInstaller -ArgumentList \"/S\" -PassThru",
+        "$SuccessCodes = @(0, 3010)",
+    ] {
+        assert!(
+            WINDOWS_UPGRADE_TEST_PS1.contains(driver),
+            "upgrade test is missing {driver}"
+        );
+    }
+    for check in [
+        "the installed version stayed at",
+        "the autostart Run value did not survive the upgrade",
+        "the upgrade recreated the desktop shortcut the user had removed",
+        "a previous release's file survived the upgrade",
+    ] {
+        assert!(
+            WINDOWS_UPGRADE_TEST_PS1.contains(check),
+            "upgrade check is missing: {check}"
+        );
+    }
+}
+
+fn nsis_function_body<'a>(name: &str) -> &'a str {
+    INSTALLER_NSI
+        .split_once(format!("Function {name}\n").as_str())
+        .and_then(|(_, rest)| rest.split_once("FunctionEnd"))
+        .map(|(body, _)| body)
+        .unwrap_or_else(|| panic!("installer.nsi should define {name}"))
+}
+
+/// Upstream's template treats an upgrade as "uninstall, then install" unless
+/// `/UPDATE` is passed, and that uninstall deletes the autostart entry and
+/// shortcuts. The fork upgrades in place, the `/UPDATE` way, whenever an
+/// older Hypercolor is installed, so a downloaded installer and a silent
+/// automated update take the same path.
+#[test]
+fn nsis_template_upgrades_older_installs_in_place() {
+    assert!(nsis_function_body(".onInit").contains("Call HypercolorDetectUpgrade"));
+    let detect = nsis_function_body("HypercolorDetectUpgrade");
+    assert!(detect.contains("nsis_tauri_utils::SemverCompare \"${VERSION}\" $0"));
+    assert!(detect.contains("StrCpy $UpdateMode 1"));
+
+    let reinstall = nsis_function_body("PageReinstall");
+    let skip = reinstall
+        .find("${If} $UpdateMode = 1\n    Abort")
+        .expect("update mode should skip the reinstall page");
+    let compare = reinstall
+        .find("compare_version:")
+        .expect("reinstall page compares versions");
+    assert!(
+        skip < compare,
+        "the page must be skipped before it is populated"
+    );
+
+    // Same-version repairs and downgrades keep upstream's uninstall; the fork
+    // only changes which installs reach that page.
+    assert!(
+        nsis_function_body("PageLeaveReinstall")
+            .contains("${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 \"$R1 /UPDATE\" ${|}")
+    );
+
+    // An upgrade the installer detected itself still repairs a missing
+    // WebView2 runtime; only an explicit /UPDATE skips that, as upstream.
+    assert!(detect.contains("StrCpy $HypercolorImpliedUpdate 1"));
+    assert!(
+        INSTALLER_NSI.contains("${If} $UpdateMode <> 1\n    ${OrIf} $HypercolorImpliedUpdate = 1")
+    );
+
+    assert!(INSTALLER_NSI.contains(
+        "!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassiveOrUpdate\n!insertmacro MUI_PAGE_DIRECTORY"
+    ));
+    assert!(
+        nsis_function_body("HypercolorFinishShow")
+            .contains("ShowWindow $mui.FinishPage.ShowReadme ${SW_HIDE}")
+    );
+}
+
+/// MUI scales wizard bitmaps to their controls with nearest-neighbour
+/// sampling, so the fork resamples the 3x art masters to each control's real
+/// pixel size, header and sidebar alike, in the installer and uninstaller.
+#[test]
+fn nsis_template_resamples_wizard_art_for_the_display_scale() {
+    for wiring in [
+        "!define MUI_CUSTOMFUNCTION_GUIINIT HypercolorGuiInit",
+        "!define MUI_CUSTOMFUNCTION_UNGUIINIT un.HypercolorGuiInit",
+        "!define MUI_PAGE_CUSTOMFUNCTION_SHOW HypercolorWelcomeShow",
+        "!define MUI_PAGE_CUSTOMFUNCTION_SHOW HypercolorFinishShow",
+        "!insertmacro HYPERCOLOR_FIT_BITMAP_FUNCTION \"un.\"",
+    ] {
+        assert!(
+            INSTALLER_NSI.contains(wiring),
+            "installer.nsi is missing {wiring}"
+        );
+    }
+    assert!(
+        INSTALLER_NSI.contains("gdi32::SetStretchBltMode(p R2, i 4)"),
+        "wizard art must be resampled with HALFTONE filtering"
+    );
+}
+
+/// `installer.nsi` forks the NSIS template of one tauri-bundler release, and
+/// the bundler fills it with its own Handlebars data. Installers must build
+/// with the tauri-cli that pins that bundler, so the fork's header, CI, every
+/// local build path, and the setup scripts name the same version.
+#[test]
+fn nsis_template_fork_builds_with_its_pinned_tauri_cli() {
+    const PINNED_TAURI_CLI: &str = "2.12.1";
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_WINDOWS_BUNDLE_CONFIG).expect("windows bundle config parses");
+    assert_eq!(
+        config.pointer("/bundle/windows/nsis/template"),
+        Some(&serde_json::json!("./installer.nsi"))
+    );
+    assert!(INSTALLER_NSI.contains(&format!(
+        "Forked from tauri-bundler 2.10.1, the bundler that tauri-cli {PINNED_TAURI_CLI} pins"
+    )));
+    assert!(CI_WORKFLOW.contains(&format!("\"tauri-cli@={PINNED_TAURI_CLI}\"")));
+    assert!(CI_WORKFLOW.contains(&format!(
+        "cargo install tauri-cli --version \"={PINNED_TAURI_CLI}\" --locked"
+    )));
+    assert!(
+        !CI_WORKFLOW.contains("tauri-cli@^"),
+        "CI must not float tauri-cli"
+    );
+    assert!(
+        WINDOWS_INSTALLER_SCRIPT.contains(&format!("$PinnedTauriCli = \"{PINNED_TAURI_CLI}\""))
+    );
+    assert!(JUSTFILE.contains(&format!(
+        "if ((cargo tauri --version) -ne 'tauri-cli {PINNED_TAURI_CLI}')"
+    )));
+    assert!(SETUP_SH.contains(&format!("TAURI_CLI_VERSION=\"{PINNED_TAURI_CLI}\"")));
+    assert!(SETUP_PS1.contains(&format!("$TauriCliVersion = '{PINNED_TAURI_CLI}'")));
+    assert!(
+        !SETUP_SH.contains("cargo_get tauri-cli") && !SETUP_PS1.contains("Cargo-Get tauri-cli"),
+        "setup must install the pinned tauri-cli, not the latest"
+    );
 }
 
 #[test]

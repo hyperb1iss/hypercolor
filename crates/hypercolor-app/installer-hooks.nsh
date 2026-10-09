@@ -11,6 +11,24 @@
 ; (installMode = perMachine), so sc.exe / netsh / PawnIO_setup.exe
 ; all inherit the rights they need.
 
+; This file's directory at compile time, for the scripts the hooks embed.
+; NSIS caps every string at 1024 characters, command lines included, so
+; logic longer than a one-liner ships as a script file rather than inline.
+!define HYPERCOLOR_HOOKS_DIR "${__FILEDIR__}"
+
+; Arguments to the daemon services script, double-quoted so no path (a
+; profile named O'Brien, say) can break them.
+!define HYPERCOLOR_DAEMON_SERVICES_ARGS `-InstallDir "$INSTDIR" -StateFile "$PLUGINSDIR\hypercolor-daemon-services.txt"`
+
+; Start exactly the daemon services HYPERCOLOR_STOP_DAEMON stopped for the
+; file copy. A fresh install never stopped any, so there is no list.
+!macro HYPERCOLOR_RESTORE_DAEMON_SERVICES
+  ${If} ${FileExists} "$PLUGINSDIR\hypercolor-daemon-services.txt"
+    nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\hypercolor-daemon-services.ps1" -Action Restore ${HYPERCOLOR_DAEMON_SERVICES_ARGS}'
+    Pop $0
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_POSTINSTALL
   ; Hardware access stack: PawnIO kernel driver plus the HypercolorSmBus
   ; broker, installed in one elevated pass. The orchestrator installs
@@ -67,15 +85,21 @@
   nsExec::ExecToLog 'netsh.exe advfirewall firewall add rule name="Hypercolor App" dir=in action=allow program="$INSTDIR\hypercolor-app.exe" profile=domain,private,public enable=yes'
   Pop $0
 
+  !insertmacro HYPERCOLOR_RESTORE_DAEMON_SERVICES
+
   ; If PawnIO asked for a reboot, surface it. The MUI2 finish page
   ; doesn't natively expose a reboot prompt for installer-driven
   ; restarts, so a simple MessageBox keeps the user informed instead
   ; of letting them launch Hypercolor into a broken hardware-access
-  ; state.
+  ; state. A silent install (/S, as an automated updater runs it)
+  ; answers No: it must never block on a dialog or reboot the machine.
+  ; Either way the installer then exits with 3010, the Windows code for
+  ; "installed, restart required", so a caller can ask for the restart.
   ${If} $R0 = 3010
-    MessageBox MB_YESNO|MB_ICONQUESTION "Hypercolor installed successfully, but the PawnIO kernel driver needs a Windows restart before motherboard lighting and CPU temperature can come online. Restart now?" IDNO no_reboot_now
+    MessageBox MB_YESNO|MB_ICONQUESTION "Hypercolor installed successfully, but the PawnIO kernel driver needs a Windows restart before motherboard lighting and CPU temperature can come online. Restart now?" /SD IDNO IDNO no_reboot_now
       Reboot
     no_reboot_now:
+    SetErrorLevel 3010
   ${EndIf}
 !macroend
 
@@ -97,6 +121,39 @@
   ; and starts the service with -ReinstallService, so stopping it here
   ; costs nothing on a fresh install and unblocks every upgrade.
   !insertmacro HYPERCOLOR_STOP_BROKER
+!macroend
+
+; The app's daemon sidecar lives in the app's kill-on-close job object, so
+; it normally exits with the app, but asynchronously. The daemon can also
+; run on its own: as a Windows service registered by
+; install-windows-service.ps1, or as a process the user started. Any of
+; those still running from $INSTDIR would hold hypercolor-daemon.exe open
+; and fail the copy. installer-daemon-services.ps1 stops them, bounding
+; every wait, and records the services it stopped so
+; HYPERCOLOR_RESTORE_DAEMON_SERVICES can start exactly those again.
+!macro HYPERCOLOR_STOP_DAEMON
+  DetailPrint "Stopping any Hypercolor daemon running from $INSTDIR"
+  File "/oname=$PLUGINSDIR\hypercolor-daemon-services.ps1" "${HYPERCOLOR_HOOKS_DIR}\installer-daemon-services.ps1"
+  nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\hypercolor-daemon-services.ps1" -Action Stop ${HYPERCOLOR_DAEMON_SERVICES_ARGS}'
+  Pop $0
+!macroend
+
+; Upgrades install in place, and copying files only ever overwrites. The UI
+; and bundled effects are rebuilt in full by every install, but their file
+; names change between releases (trunk names UI assets by content hash, and
+; effects come and go), so without this each upgrade left the previous
+; release's files behind, the uninstaller never removed them, and dropped
+; effects kept appearing in the library. installer.nsi runs this hook once
+; the app is closed; the guard only clears folders inside a directory that
+; already holds a Hypercolor install.
+!macro HYPERCOLOR_HOOK_BEFORE_FILES
+  ${If} ${FileExists} "$INSTDIR\${MAINBINARYNAME}.exe"
+  ${AndIf} ${FileExists} "$INSTDIR\uninstall.exe"
+    !insertmacro HYPERCOLOR_STOP_DAEMON
+    DetailPrint "Removing the previous release's UI and bundled effects"
+    RMDir /r "$INSTDIR\ui"
+    RMDir /r "$INSTDIR\effects\bundled"
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

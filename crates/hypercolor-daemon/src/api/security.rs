@@ -1077,7 +1077,7 @@ fn client_identity(request: &Request<Body>) -> String {
     client_ip(request).map_or_else(|| "unknown".to_owned(), |ip| ip.to_string())
 }
 
-fn request_is_loopback(request: &Request<Body>) -> bool {
+pub(crate) fn request_is_loopback(request: &Request<Body>) -> bool {
     client_ip(request).is_some_and(|ip| ip.is_loopback())
 }
 

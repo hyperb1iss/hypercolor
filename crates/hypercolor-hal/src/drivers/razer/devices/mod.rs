@@ -29,6 +29,7 @@ use crate::registry::{
 };
 
 use super::crc::RAZER_REPORT_LEN;
+use super::kraken::{KRAKEN_OUTPUT_REPORT_ID, KRAKEN_REPORT_LEN, KrakenModel, KrakenProtocol};
 use super::protocol::RazerProtocol;
 use super::seiren_v3::SeirenV3Protocol;
 use super::types::{
@@ -63,6 +64,12 @@ pub const PID_SEIREN_EMOTE: u16 = 0x0F1B;
 
 /// Razer Seiren V3 Chroma.
 pub const PID_SEIREN_V3_CHROMA: u16 = 0x056F;
+
+/// Razer Kraken Ultimate.
+pub const PID_KRAKEN_ULTIMATE: u16 = 0x0527;
+
+/// HID interface carrying the Kraken memory-access reports.
+const KRAKEN_HID_INTERFACE: u8 = 3;
 
 /// Razer Blade 14 (2021).
 pub const PID_BLADE_14_2021: u16 = 0x0270;
@@ -207,6 +214,11 @@ pub fn build_seiren_emote_protocol() -> Box<dyn Protocol> {
 /// Build a Seiren V3 Chroma protocol instance.
 pub fn build_seiren_v3_protocol() -> Box<dyn Protocol> {
     Box::new(SeirenV3Protocol)
+}
+
+/// Build a Kraken Ultimate protocol instance.
+pub fn build_kraken_ultimate_protocol() -> Box<dyn Protocol> {
+    Box::new(KrakenProtocol::new(KrakenModel::Ultimate))
 }
 
 /// Build a Blade 15 (Late 2021 Advanced) protocol instance.
@@ -888,6 +900,37 @@ fn hidapi_descriptor(
     }
 }
 
+/// Kraken headsets take their memory-access requests as HID output report
+/// `0x04` on the consumer-control collection of interface 3, not as the
+/// shared 90-byte feature report.
+fn kraken_descriptor(
+    product_id: u16,
+    name: &'static str,
+    protocol_id: &'static str,
+    build: ProtocolFactory,
+) -> DeviceDescriptor {
+    DeviceDescriptor {
+        vendor_id: RAZER_VENDOR_ID,
+        product_id,
+        name,
+        family: DeviceFamily::new_static("razer", "Razer"),
+        transport: TransportType::UsbHidApi {
+            interface: Some(KRAKEN_HID_INTERFACE),
+            report_id: KRAKEN_OUTPUT_REPORT_ID,
+            report_mode: HidRawReportMode::OutputReport,
+            max_report_len: KRAKEN_REPORT_LEN,
+            usage_page: Some(RAZER_CONSUMER_USAGE_PAGE),
+            usage: Some(RAZER_CONSUMER_USAGE),
+        },
+        protocol: ProtocolBinding {
+            id: protocol_id,
+            build,
+        },
+        firmware_predicate: None,
+        serial_quirk: None,
+    }
+}
+
 fn control_descriptor(
     product_id: u16,
     name: &'static str,
@@ -965,8 +1008,11 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     // - Custom-matrix generic devices (DeathAdder Chroma, Naga Epic Chroma,
     //   Mamba 2012, Orbweaver Chroma) because they need
     //   device-specific LED/effect packet routing instead of shared matrix I/O.
-    // - Chroma ARGB Controller, Kraken classic/V3/V4, Hanbo, and other
-    //   specialty controller families because they use dedicated controllers.
+    // - Chroma ARGB Controller, Kraken classic/V2/TE/Kitty V2/V3/V4, Hanbo,
+    //   and other specialty controller families because they use dedicated
+    //   controllers. Kraken Ultimate is the exception: it registers on the
+    //   memory-access protocol in `kraken`, which the V2, TE, and Kitty V2
+    //   share but which is untested on them.
     // - Kraken Kitty Black Edition (VID/PID 1532:0F21) because it collides
     //   with Thunderbolt 4 Dock Chroma and Hypercolor's descriptor selection is
     //   still VID/PID-first.

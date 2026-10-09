@@ -390,6 +390,7 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> Response {
         version: state.server_identity.version.clone(),
         uptime_seconds,
         checks,
+        startup: None,
     };
 
     let status = match health {

@@ -8,7 +8,7 @@ use tempfile::TempDir;
 use hypercolor_core::effect::{
     EffectRegistry, builtin::register_builtin_effects, bundled_effects_root,
     default_effect_search_paths, load_html_effect_file, parse_html_effect_metadata,
-    register_html_effects,
+    register_html_effects, register_html_effects_stepped,
 };
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{EffectCategory, EffectSource};
@@ -878,4 +878,60 @@ fn generated_audio_effects_keep_audio_reactive_metadata() {
             file_name
         );
     }
+}
+
+#[test]
+fn stepped_scan_runs_one_step_per_root_listing_and_per_effect_file() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    for name in ["aurora", "borealis", "comet"] {
+        write_html(
+            &root.join(format!("{name}.html")),
+            &format!("<head><title>{name}</title></head><script></script>"),
+        );
+    }
+    let missing = temp.path().join("not-there");
+
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    let mut steps = Vec::new();
+    let report =
+        register_html_effects_stepped(&mut registry, &[root.clone(), missing], |path, work| {
+            steps.push(path.to_path_buf());
+            work();
+        });
+
+    assert_eq!(report.loaded_effects, 3);
+    assert_eq!(
+        steps,
+        vec![
+            root.clone(),
+            root.join("aurora.html"),
+            root.join("borealis.html"),
+            root.join("comet.html"),
+        ],
+        "the root listing, then each file, and nothing for a missing root"
+    );
+}
+
+#[test]
+fn a_stepped_scan_registers_a_file_only_inside_its_step() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    write_html(
+        &root.join("aurora.html"),
+        "<head><title>Aurora</title></head><script></script>",
+    );
+
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+    let mut completed_steps = 0;
+    let report =
+        register_html_effects_stepped(&mut registry, std::slice::from_ref(&root), |_, work| {
+            work();
+            completed_steps += 1;
+        });
+
+    assert_eq!(completed_steps, 2);
+    assert_eq!(report.scanned_files, 1);
+    assert_eq!(report.loaded_effects, 1);
+    assert_eq!(registry.len(), 1);
 }

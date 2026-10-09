@@ -327,7 +327,22 @@ cargo_get() {
 cargo_get just
 cargo_get trunk
 cargo_get cargo-deny
-cargo_get tauri-cli
+
+# crates/hypercolor-app/installer.nsi forks the NSIS template of the
+# tauri-bundler this exact tauri-cli pins, so install that version.
+TAURI_CLI_VERSION="2.12.1"
+if [ "$(cargo tauri --version 2>/dev/null)" = "tauri-cli ${TAURI_CLI_VERSION}" ]; then
+  ok "tauri-cli ${TAURI_CLI_VERSION}"
+else
+  info "installing tauri-cli ${TAURI_CLI_VERSION}"
+  if [ "$HAS_BINSTALL" -eq 1 ]; then
+    cargo binstall --no-confirm --quiet "tauri-cli@${TAURI_CLI_VERSION}" ||
+      cargo install --locked tauri-cli --version "=${TAURI_CLI_VERSION}"
+  else
+    cargo install --locked tauri-cli --version "=${TAURI_CLI_VERSION}"
+  fi
+  ok "tauri-cli ${TAURI_CLI_VERSION} installed"
+fi
 
 if need sccache; then
   ok "sccache $(bin_version sccache)"

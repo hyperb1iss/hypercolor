@@ -14,6 +14,7 @@ fn observation(vendor_id: u16, product_id: u16) -> UsbObservation {
         product: Some("USB controller".to_owned()),
         serial: Some("fixture-1".to_owned()),
         bus_path: Some("1-2.3".to_owned()),
+        device_class: 0,
         interface_classes: vec![3],
         descriptor_driver_id: ProtocolDatabase::lookup(vendor_id, product_id)
             .map(|descriptor| descriptor.driver_id().to_string()),

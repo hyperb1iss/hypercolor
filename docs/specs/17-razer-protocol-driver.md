@@ -40,6 +40,8 @@ Clean-room implementation derived from publicly available protocol knowledge:
 
 All devices use USB control transfers with HID feature reports — not interrupt endpoints — making `nusb` control transfer APIs the correct transport binding.
 
+Older Kraken headsets (Kraken 7.1 Chroma, V2, Tournament Edition, Ultimate, Kitty V2) are the exception: they expose lighting as a RAM register map written through a 37-byte HID output report. Spec 83 covers that protocol.
+
 ---
 
 ## 2. Packet Format

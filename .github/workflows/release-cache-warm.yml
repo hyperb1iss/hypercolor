@@ -1,0 +1,31 @@
+name: Release Cache Warm
+
+# Release builds run only on tags, and tags read the shared compiler cache
+# without writing it, so nothing ever stored release-profile compiles: the
+# 0.6.1 macOS sidecar build missed 1,954 of 1,956 cacheable units and took
+# 232 minutes. This dispatches CI/CD's warm mode on main each night. Warm runs
+# the real release build jobs, unsigned and without the normal CI lanes, and
+# main writes their compiles to R2 for the next tag to read.
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    name: Dispatch release warm
+    if: github.repository == 'hyperb1iss/hypercolor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch CI/CD warm mode on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref main
+          -f release_artifacts=warm
