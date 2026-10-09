@@ -18,7 +18,9 @@ class UnclaimedDevice:
 
     `claimable_by` names the native driver whose protocol database matches
     the device when that driver is disabled by config; `None` means no
-    native protocol exists for the vendor/product pair at all.
+    native protocol exists for the vendor/product pair at all. Hubs and
+    audio-only functions without a matching protocol are left out, since
+    nothing on them can carry lighting.
 
         Attributes:
             product_id (int):
@@ -27,7 +29,10 @@ class UnclaimedDevice:
             claimable_by (None | str | Unset):
             interface_classes (list[int] | Unset): USB interface class codes of the active configuration, sorted and
                 deduplicated; empty where the platform does not expose them.
-            manufacturer (None | str | Unset):
+            manufacturer (None | str | Unset): Who made the device: its manufacturer string when the host reports
+                a non-blank one, otherwise the company that owns `vendor_id` in the
+                curated vendor table. Absent when neither is known, which is the
+                usual case on Windows for vendors outside that table.
             product (None | str | Unset):
             serial (None | str | Unset):
     """

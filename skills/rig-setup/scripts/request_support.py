@@ -33,7 +33,13 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from coverage import Daemon, is_device_not_found, items_of, scan_host_usb  # noqa: E402
+from coverage import (  # noqa: E402
+    Daemon,
+    is_device_not_found,
+    items_of,
+    scan_host_usb,
+    vendor_and_model,
+)
 
 DEFAULT_BASE = "http://localhost:9420/api/v1"
 REPO = "hyperb1iss/hypercolor"
@@ -141,11 +147,11 @@ def main() -> int:
     vid, pid = parse_vid_pid(args.vid_pid)
     vid_pid = f"{vid:04X}:{pid:04X}"
     found, source = lookup_device(args.base, vid, pid)
-    vendor = args.vendor or found.get("manufacturer") or f"Unknown vendor {vid:04X}"
+    vendor = args.vendor or found.get("manufacturer") or f"VID {vid:04X}"
     model = args.model or found.get("product") or f"Unknown device {pid:04X}"
     fields = {"vendor": vendor, "model": model, "vid_pid": vid_pid, "platform": args.platform,
               "existing_support": args.existing_support, "notes": args.notes, "willing": args.willing,
-              "title": f"[device] {vendor} {model} ({vid_pid})"}
+              "title": f"[device] {vendor_and_model(vendor, model)} ({vid_pid})"}
     url = build_url(fields)
     dupes = existing_issues(vid_pid)
 
