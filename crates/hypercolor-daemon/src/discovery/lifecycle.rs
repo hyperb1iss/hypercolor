@@ -1,7 +1,10 @@
 use std::collections::{HashSet, VecDeque};
 use std::time::Duration;
 
-use hypercolor_core::device::{AsyncWriteFailure, DeviceLifecycleManager, LifecycleAction};
+use hypercolor_core::device::{
+    AsyncWriteFailure, DeviceLifecycleManager, FlapEscalation, LifecycleAction,
+    RECONNECT_STABLE_AFTER,
+};
 use hypercolor_driver_api::{DeviceDeliveryId, DeviceLifecyclePolicy, DiscoveryConnectBehavior};
 use hypercolor_types::device::{
     ConnectionType, DeviceError, DeviceId, DeviceState, ErrorRecoverability,
@@ -17,6 +20,18 @@ use super::device_helpers::{
     publish_device_connected, refresh_connected_device_info, sync_logical_mappings_for_device,
     sync_registry_state,
 };
+
+/// Transient write failures in a row before the daemon rebuilds the device
+/// session.
+///
+/// The producing lane reported each one as transient and kept its session
+/// running, so a single failure is a dropped frame, not a dead device, and
+/// two can still be one bus hiccup straddling a frame boundary. Three failed
+/// transport attempts in a row at the device's own cadence means the lane is
+/// not recovering on its own and a reconnect beats dropping more frames. The
+/// count is of deliveries, never of elapsed time, and failures the lane did
+/// not survive still reconnect on the first one.
+const TRANSIENT_WRITE_FAILURE_RECONNECT_THRESHOLD: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserEnabledStateResult {
@@ -556,6 +571,50 @@ struct LifecycleWriteFailure {
     device_id: DeviceId,
     delivery_id: DeviceDeliveryId,
     error: DeviceError,
+    transient: bool,
+    consecutive_failures: u32,
+}
+
+impl LifecycleWriteFailure {
+    fn recovery(&self) -> WriteFailureRecovery {
+        WriteFailureRecovery::classify(&self.error, self.transient, self.consecutive_failures)
+    }
+}
+
+/// What the lifecycle does about one claimed async write failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriteFailureRecovery {
+    /// Leave the session up and let the next delivery decide.
+    KeepLane,
+    /// Tear the session down and schedule a reconnect.
+    Reconnect,
+    /// Stop driving the device until something changes.
+    Deactivate,
+}
+
+impl WriteFailureRecovery {
+    fn classify(error: &DeviceError, transient: bool, consecutive_failures: u32) -> Self {
+        match error.recoverability() {
+            ErrorRecoverability::Retry => Self::KeepLane,
+            ErrorRecoverability::Reconnect
+                if transient
+                    && consecutive_failures < TRANSIENT_WRITE_FAILURE_RECONNECT_THRESHOLD =>
+            {
+                Self::KeepLane
+            }
+            ErrorRecoverability::Reconnect => Self::Reconnect,
+            ErrorRecoverability::Permanent => Self::Deactivate,
+        }
+    }
+}
+
+/// Lifecycle work planned for one device after an async write failure.
+#[derive(Debug)]
+struct PlannedWriteRecovery {
+    device_id: DeviceId,
+    actions: Vec<LifecycleAction>,
+    /// Published once the actions ran, when this failure escalated a flap.
+    device_error: Option<HypercolorEvent>,
 }
 
 fn claim_current_async_write_failures(
@@ -569,8 +628,15 @@ fn claim_current_async_write_failures(
                 return None;
             }
 
-            let recovery = failure.error.recoverability();
-            let is_current = if recovery == ErrorRecoverability::Retry
+            let recovery = WriteFailureRecovery::classify(
+                &failure.error,
+                failure.transient,
+                failure.consecutive_failures,
+            );
+            // A failure the lane rides out stays unacknowledged, so the next
+            // failed delivery replaces it with a longer streak and the next
+            // completed one clears it.
+            let is_current = if recovery == WriteFailureRecovery::KeepLane
                 && !failure.is_from_retired_generation()
             {
                 failure.is_current()
@@ -583,6 +649,8 @@ fn claim_current_async_write_failures(
                 device_id: failure.device_id,
                 delivery_id: failure.delivery_id,
                 error: failure.error,
+                transient: failure.transient,
+                consecutive_failures: failure.consecutive_failures,
             })
         })
         .collect()
@@ -591,7 +659,7 @@ fn claim_current_async_write_failures(
 fn async_write_failure_actions(
     lifecycle: &mut DeviceLifecycleManager,
     failures: Vec<LifecycleWriteFailure>,
-) -> Vec<(DeviceId, Vec<LifecycleAction>)> {
+) -> Vec<PlannedWriteRecovery> {
     let mut handled = HashSet::new();
     let mut planned = Vec::new();
 
@@ -607,38 +675,30 @@ fn async_write_failure_actions(
             continue;
         }
 
-        let recovery = failure.error.recoverability();
-        if recovery == ErrorRecoverability::Retry {
+        let recovery = failure.recovery();
+        if recovery == WriteFailureRecovery::KeepLane {
             debug!(
                 backend_id = %failure.backend_id,
                 device_id = %failure.device_id,
                 queue_generation = failure.delivery_id.queue_generation,
                 sequence = failure.delivery_id.sequence,
                 error = %failure.error,
-                "retryable async device write failed; keeping output lane active"
+                transient = failure.transient,
+                consecutive_failures = failure.consecutive_failures,
+                reconnect_threshold = TRANSIENT_WRITE_FAILURE_RECONNECT_THRESHOLD,
+                "async device write failed; keeping output lane active"
             );
             continue;
         }
 
-        warn!(
-            backend_id = %failure.backend_id,
-            device_id = %failure.device_id,
-            queue_generation = failure.delivery_id.queue_generation,
-            sequence = failure.delivery_id.sequence,
-            error = %failure.error,
-            recoverability = ?recovery,
-            "async device write failed; applying typed lifecycle recovery"
-        );
-
+        let already_flapping = lifecycle.is_flapping(failure.device_id);
         let actions = match recovery {
-            ErrorRecoverability::Retry => unreachable!("retry failures return above"),
-            ErrorRecoverability::Reconnect => lifecycle.on_comm_error(failure.device_id),
-            ErrorRecoverability::Permanent => lifecycle.on_runtime_deactivate(failure.device_id),
+            WriteFailureRecovery::KeepLane => unreachable!("kept lanes return above"),
+            WriteFailureRecovery::Reconnect => lifecycle.on_comm_error(failure.device_id),
+            WriteFailureRecovery::Deactivate => lifecycle.on_runtime_deactivate(failure.device_id),
         };
-        match actions {
-            Ok(actions) => {
-                planned.push((failure.device_id, actions));
-            }
+        let actions = match actions {
+            Ok(actions) => actions,
             Err(error) => {
                 warn!(
                     backend_id = %failure.backend_id,
@@ -646,11 +706,70 @@ fn async_write_failure_actions(
                     error = %error,
                     "failed to transition lifecycle after async device write error"
                 );
+                continue;
             }
+        };
+
+        let escalation = lifecycle.take_flap_escalation(failure.device_id);
+        if let Some(escalation) = escalation {
+            warn!(
+                backend_id = %failure.backend_id,
+                device_id = %failure.device_id,
+                error = %failure.error,
+                flaps = escalation.flaps,
+                stable_after_secs = RECONNECT_STABLE_AFTER.as_secs(),
+                next_retry_ms = u64::try_from(escalation.next_retry.as_millis())
+                    .unwrap_or(u64::MAX),
+                "device keeps failing writes right after reconnecting; reconnect backoff \
+                 keeps growing until a connection holds"
+            );
+        } else if already_flapping {
+            debug!(
+                backend_id = %failure.backend_id,
+                device_id = %failure.device_id,
+                error = %failure.error,
+                flaps = lifecycle.flap_count(failure.device_id).unwrap_or_default(),
+                "flapping device failed again after reconnecting"
+            );
+        } else {
+            warn!(
+                backend_id = %failure.backend_id,
+                device_id = %failure.device_id,
+                queue_generation = failure.delivery_id.queue_generation,
+                sequence = failure.delivery_id.sequence,
+                error = %failure.error,
+                transient = failure.transient,
+                consecutive_failures = failure.consecutive_failures,
+                recovery = ?recovery,
+                "async device write failed; applying typed lifecycle recovery"
+            );
         }
+
+        planned.push(PlannedWriteRecovery {
+            device_id: failure.device_id,
+            actions,
+            device_error: escalation
+                .map(|escalation| flap_device_error(failure.device_id, &failure.error, escalation)),
+        });
     }
 
     planned
+}
+
+/// The `DeviceError` event that tells clients a device is flapping.
+fn flap_device_error(
+    device_id: DeviceId,
+    error: &DeviceError,
+    escalation: FlapEscalation,
+) -> HypercolorEvent {
+    HypercolorEvent::DeviceError {
+        device_id: device_id.to_string(),
+        error: format!(
+            "writes keep failing right after reconnecting ({} reconnects in a row): {error}",
+            escalation.flaps
+        ),
+        recoverable: true,
+    }
 }
 
 fn spawn_async_write_failure_worker(runtime: DiscoveryRuntime, failures: Vec<AsyncWriteFailure>) {
@@ -668,7 +787,7 @@ fn spawn_async_write_failure_worker(runtime: DiscoveryRuntime, failures: Vec<Asy
 
 fn spawn_async_write_failure_actions(
     runtime: DiscoveryRuntime,
-    actions: Vec<(DeviceId, Vec<LifecycleAction>)>,
+    actions: Vec<PlannedWriteRecovery>,
 ) {
     if actions.is_empty() {
         return;
@@ -682,11 +801,14 @@ fn spawn_async_write_failure_actions(
 
 async fn run_async_write_failure_actions(
     runtime: DiscoveryRuntime,
-    actions: Vec<(DeviceId, Vec<LifecycleAction>)>,
+    planned: Vec<PlannedWriteRecovery>,
 ) {
-    for (device_id, actions) in actions {
-        execute_lifecycle_actions(runtime.clone(), actions).await;
-        sync_registry_state(&runtime, device_id).await;
+    for recovery in planned {
+        execute_lifecycle_actions(runtime.clone(), recovery.actions).await;
+        sync_registry_state(&runtime, recovery.device_id).await;
+        if let Some(event) = recovery.device_error {
+            runtime.event_bus.publish(event);
+        }
     }
 }
 
@@ -870,9 +992,15 @@ fn cancel_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use std::time::Instant;
+
+    use hypercolor_core::device::FLAP_ESCALATION_THRESHOLD;
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceFamily, DeviceInfo, DeviceOrigin,
     };
+    use tracing_subscriber::fmt::writer::MakeWriter;
 
     fn active_lifecycle() -> (DeviceLifecycleManager, DeviceId) {
         let device_id = DeviceId::new();
@@ -908,6 +1036,19 @@ mod tests {
                 sequence: 1,
             },
             error,
+            transient: false,
+            consecutive_failures: 1,
+        }
+    }
+
+    fn transient_failure(device_id: DeviceId, consecutive_failures: u32) -> LifecycleWriteFailure {
+        LifecycleWriteFailure {
+            transient: true,
+            consecutive_failures,
+            ..async_failure(
+                device_id,
+                DeviceError::write(device_id, "hid write reported a short count"),
+            )
         }
     }
 
@@ -972,7 +1113,7 @@ mod tests {
         assert_eq!(planned.len(), 1);
         assert!(
             planned[0]
-                .1
+                .actions
                 .iter()
                 .any(|action| matches!(action, LifecycleAction::SpawnReconnect { .. }))
         );
@@ -997,16 +1138,207 @@ mod tests {
         assert_eq!(planned.len(), 1);
         assert!(
             planned[0]
-                .1
+                .actions
                 .iter()
                 .any(|action| matches!(action, LifecycleAction::Disconnect { .. }))
         );
         assert!(
             !planned[0]
-                .1
+                .actions
                 .iter()
                 .any(|action| matches!(action, LifecycleAction::SpawnReconnect { .. }))
         );
         assert_eq!(lifecycle.state(device_id), Some(DeviceState::Known));
+    }
+
+    #[test]
+    fn single_transient_failure_keeps_healthy_device_active() {
+        let (mut lifecycle, device_id) = active_lifecycle();
+
+        let planned =
+            async_write_failure_actions(&mut lifecycle, vec![transient_failure(device_id, 1)]);
+
+        assert!(planned.is_empty());
+        assert_eq!(lifecycle.state(device_id), Some(DeviceState::Active));
+    }
+
+    #[test]
+    fn transient_failures_reconnect_once_the_streak_reaches_the_threshold() {
+        let (mut lifecycle, device_id) = active_lifecycle();
+
+        for consecutive in 1..TRANSIENT_WRITE_FAILURE_RECONNECT_THRESHOLD {
+            let planned = async_write_failure_actions(
+                &mut lifecycle,
+                vec![transient_failure(device_id, consecutive)],
+            );
+            assert!(
+                planned.is_empty(),
+                "streak of {consecutive} should keep the lane"
+            );
+        }
+        assert_eq!(lifecycle.state(device_id), Some(DeviceState::Active));
+
+        let planned = async_write_failure_actions(
+            &mut lifecycle,
+            vec![transient_failure(
+                device_id,
+                TRANSIENT_WRITE_FAILURE_RECONNECT_THRESHOLD,
+            )],
+        );
+
+        assert_eq!(planned.len(), 1);
+        assert!(
+            planned[0]
+                .actions
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::SpawnReconnect { .. }))
+        );
+        assert!(planned[0].device_error.is_none());
+        assert_eq!(lifecycle.state(device_id), Some(DeviceState::Reconnecting));
+    }
+
+    #[test]
+    fn write_failure_recovery_reconnects_lane_ending_failures_immediately() {
+        let device_id = DeviceId::new();
+        let write = DeviceError::write(device_id, "hid write reported a short count");
+
+        assert_eq!(
+            WriteFailureRecovery::classify(&write, true, 1),
+            WriteFailureRecovery::KeepLane
+        );
+        assert_eq!(
+            WriteFailureRecovery::classify(&write, false, 1),
+            WriteFailureRecovery::Reconnect
+        );
+        assert_eq!(
+            WriteFailureRecovery::classify(
+                &DeviceError::Disconnected {
+                    device: device_id.to_string(),
+                },
+                false,
+                1
+            ),
+            WriteFailureRecovery::Reconnect
+        );
+        assert_eq!(
+            WriteFailureRecovery::classify(
+                &DeviceError::PermissionDenied {
+                    device: device_id.to_string(),
+                    detail: "access revoked".to_owned(),
+                },
+                true,
+                1
+            ),
+            WriteFailureRecovery::Deactivate
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<StdMutex<Vec<u8>>>);
+
+    impl CapturedLogs {
+        fn count(&self, needle: &str) -> usize {
+            let bytes = self
+                .0
+                .lock()
+                .expect("captured log lock should not be poisoned")
+                .clone();
+            String::from_utf8(bytes)
+                .expect("captured logs should be UTF-8")
+                .matches(needle)
+                .count()
+        }
+    }
+
+    impl io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .expect("captured log lock should not be poisoned")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for CapturedLogs {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn flapping_write_failures_escalate_once_with_growing_backoff() {
+        let (mut lifecycle, device_id) = active_lifecycle();
+        // The first fault follows a long healthy run, so it retries fresh.
+        lifecycle
+            .on_comm_error_at(device_id, Instant::now() + Duration::from_hours(1))
+            .expect("first fault should enter reconnecting");
+
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+
+        let flaps = FLAP_ESCALATION_THRESHOLD + 3;
+        let (delays, device_errors) = tracing::subscriber::with_default(subscriber, || {
+            let mut delays = Vec::new();
+            let mut device_errors = Vec::new();
+            for _ in 0..flaps {
+                assert!(lifecycle.on_reconnect_attempt(device_id).is_some());
+                lifecycle
+                    .on_connected(device_id)
+                    .expect("reconnect should succeed");
+                let planned = async_write_failure_actions(
+                    &mut lifecycle,
+                    vec![transient_failure(
+                        device_id,
+                        TRANSIENT_WRITE_FAILURE_RECONNECT_THRESHOLD,
+                    )],
+                );
+                assert_eq!(planned.len(), 1, "every flap should plan a reconnect");
+                let recovery = planned.into_iter().next().expect("one planned recovery");
+                delays.extend(recovery.actions.iter().find_map(|action| match action {
+                    LifecycleAction::SpawnReconnect { delay, .. } => Some(*delay),
+                    _ => None,
+                }));
+                device_errors.extend(recovery.device_error);
+            }
+            (delays, device_errors)
+        });
+
+        assert!(
+            delays.windows(2).all(|pair| pair[1] > pair[0]),
+            "backoff should keep growing across flaps: {delays:?}"
+        );
+        assert_eq!(
+            delays.len(),
+            usize::try_from(flaps).expect("flaps fit usize")
+        );
+
+        assert_eq!(device_errors.len(), 1, "exactly one DeviceError per streak");
+        assert!(matches!(
+            &device_errors[0],
+            HypercolorEvent::DeviceError { device_id: id, error, recoverable: true }
+                if *id == device_id.to_string() && error.contains("short count")
+        ));
+
+        assert_eq!(
+            logs.count("device keeps failing writes right after reconnecting"),
+            1,
+            "the escalation warning should fire once per streak"
+        );
+        assert_eq!(
+            logs.count("async device write failed; applying typed lifecycle recovery"),
+            usize::try_from(FLAP_ESCALATION_THRESHOLD - 1).expect("threshold fits usize"),
+            "flaps before the escalation keep their per-failure warning; later ones go quiet"
+        );
     }
 }

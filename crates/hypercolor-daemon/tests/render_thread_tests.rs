@@ -63,7 +63,9 @@ use hypercolor_daemon::domain::DeviceBindingMigrationContext;
 use hypercolor_daemon::domain::layout::LayoutContext;
 use hypercolor_daemon::domain::scene::{SceneMutation, SceneService};
 use hypercolor_daemon::domain::spatial::SpatialService;
-use hypercolor_driver_api::{BackendInfo, DeviceBackend};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+};
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Rgba;
@@ -429,6 +431,75 @@ impl DeviceBackend for SlowDisconnectFailBackend {
             });
         }
         Err(DeviceError::write(id, "forced async write failure"))
+    }
+}
+
+/// Backend whose deliveries fail the way the USB actor reports a write it
+/// survives: a transient acknowledgement, until `failures_left` runs out.
+struct TransientWriteFailureBackend {
+    device_id: DeviceId,
+    failures_left: Arc<AtomicUsize>,
+    deliveries: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for TransientWriteFailureBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "mock".to_owned(),
+            name: "Transient Write Failure Mock".to_owned(),
+            description: "Acknowledges deliveries as transient failures for lifecycle tests"
+                .to_owned(),
+        }
+    }
+
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn connect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn disconnect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
+        Err(DeviceError::protocol(
+            id,
+            "transient failure mock only answers tracked deliveries",
+        ))
+    }
+
+    async fn deliver_colors_shared_observed(
+        &self,
+        device_id: &DeviceId,
+        delivery_id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        observer.transport_started(delivery_id);
+        self.deliveries.fetch_add(1, Ordering::SeqCst);
+        if *device_id == self.device_id
+            && self
+                .failures_left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+        {
+            return DeviceDeliveryAck::failed_transient(
+                delivery_id,
+                true,
+                Duration::ZERO,
+                DeviceError::write(device_id, "hid write reported a short count"),
+            );
+        }
+        DeviceDeliveryAck::completed(delivery_id, colors.len().saturating_mul(3), Duration::ZERO)
     }
 }
 
@@ -3708,6 +3779,224 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
     for handle in reconnect_tasks {
         handle.abort();
     }
+}
+
+struct TransientFailurePipeline {
+    state: RenderThreadState,
+    render_thread: RenderThread,
+    lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
+    discovery_runtime: DiscoveryRuntime,
+    device_id: DeviceId,
+    deliveries: Arc<AtomicUsize>,
+    failures_left: Arc<AtomicUsize>,
+}
+
+impl TransientFailurePipeline {
+    /// Render a solid color to one active device whose first `failures`
+    /// deliveries fail transiently.
+    async fn spawn(failures: usize) -> Self {
+        let device_id = DeviceId::new();
+        let mock_config = MockDeviceConfig {
+            name: "Transient Strip".into(),
+            led_count: 8,
+            topology: LedTopology::Strip {
+                count: 8,
+                direction: StripDirection::LeftToRight,
+            },
+            id: Some(device_id),
+        };
+        let info = MockDeviceBackend::new()
+            .with_device(&mock_config)
+            .device_infos()
+            .first()
+            .cloned()
+            .expect("mock backend should expose one device");
+        let layout_device_id = DeviceLifecycleManager::layout_device_id(&info);
+
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let failures_left = Arc::new(AtomicUsize::new(failures));
+        let mut backend_manager = BackendManager::new();
+        backend_manager.register_backend(Arc::new(TransientWriteFailureBackend {
+            device_id,
+            failures_left: Arc::clone(&failures_left),
+            deliveries: Arc::clone(&deliveries),
+        }));
+        backend_manager.map_device(&layout_device_id, "mock", device_id);
+        let backend_manager = Arc::new(Mutex::new(backend_manager));
+
+        let device_registry = DeviceRegistry::new();
+        assert_eq!(device_registry.add(info.clone()).await, device_id);
+
+        let lifecycle_manager = Arc::new(Mutex::new(
+            DeviceLifecycleManager::with_reconnect_policy(ReconnectPolicy {
+                initial_delay: Duration::from_secs(5),
+                ..ReconnectPolicy::default()
+            }),
+        ));
+        {
+            let mut lifecycle = lifecycle_manager.lock().await;
+            let _ = lifecycle.on_discovered(device_id, &info, None);
+            lifecycle
+                .on_connected(device_id)
+                .expect("connected state should be valid");
+            lifecycle
+                .on_frame_success(device_id)
+                .expect("frame success should move device to active");
+        }
+
+        let layout = test_layout(vec![strip_zone("zone_0", &layout_device_id, 8)]);
+        let spatial_engine = SpatialService::new(SpatialEngine::new(layout.clone()));
+        let event_bus = Arc::new(HypercolorBus::new());
+        let discovery_runtime = test_discovery_runtime(
+            device_registry,
+            Arc::clone(&backend_manager),
+            Arc::clone(&lifecycle_manager),
+            Arc::clone(&event_bus),
+            spatial_engine.clone(),
+        );
+
+        let effect_seed = active_builtin_effect("solid_color", solid_color_controls(0, 255, 0));
+        let metadata = effect_seed
+            .metadata
+            .clone()
+            .expect("builtin effect should expose metadata");
+        let mut scene_manager = SceneManager::with_default();
+        scene_manager
+            .upsert_primary_zone(
+                &metadata,
+                effect_seed.controls.clone(),
+                effect_seed.preset_id,
+                layout,
+            )
+            .expect("transient-failure test should seed a primary zone");
+        let scene_manager =
+            SceneService::with_temporary_store(scene_manager, Arc::clone(&event_bus))
+                .expect("temporary scene store should open");
+        let scene_plan = scene_manager.plan_reader();
+
+        let (_, power_state) = watch::channel(OutputPowerState::default());
+        let state = RenderThreadState {
+            effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
+            asset_library: test_asset_library(),
+            spatial_engine,
+            backend_manager,
+            device_registry: DeviceRegistry::new(),
+            performance: Arc::new(RwLock::new(PerformanceTracker::default())),
+            discovery_runtime: Some(discovery_runtime.clone()),
+            event_bus: Arc::clone(&event_bus),
+            preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+            zone_layout_previews: Arc::new(
+                hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
+            ),
+            render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+            scene_manager,
+            scene_plan,
+            input_manager: InputManager::new(),
+            interaction_routing:
+                hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
+            power_state,
+            scene_transactions: SceneTransactionQueue::default(),
+            screen_capture_configured: false,
+            canvas_dims: CanvasDims::new(320, 200),
+            render_acceleration_mode: RenderAccelerationMode::Cpu,
+            #[cfg(feature = "wgpu")]
+            render_gpu_device: None,
+            configured_max_fps_tier: FpsTier::Full.into(),
+            face_fps_cap: 30,
+        };
+        state.render_loop.write().await.start();
+        let render_thread = RenderThread::spawn(state.clone());
+
+        Self {
+            state,
+            render_thread,
+            lifecycle_manager,
+            discovery_runtime,
+            device_id,
+            deliveries,
+            failures_left,
+        }
+    }
+
+    async fn wait_for_deliveries(&self, count: usize, timeout: Duration) {
+        let reached = tokio::time::timeout(timeout, async {
+            while self.deliveries.load(Ordering::SeqCst) < count {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(
+            reached.is_ok(),
+            "expected {count} deliveries within {timeout:?}, saw {}",
+            self.deliveries.load(Ordering::SeqCst)
+        );
+    }
+
+    async fn state(&self) -> Option<DeviceState> {
+        self.lifecycle_manager.lock().await.state(self.device_id)
+    }
+
+    async fn shutdown(mut self) {
+        self.state.render_loop.write().await.stop();
+        self.render_thread.shutdown().await.expect("shutdown");
+        let reconnect_tasks = self
+            .discovery_runtime
+            .reconnect_tasks
+            .lock()
+            .expect("reconnect task map lock poisoned")
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect::<Vec<_>>();
+        for handle in reconnect_tasks {
+            handle.abort();
+        }
+    }
+}
+
+#[tokio::test]
+async fn pipeline_rides_out_a_single_transient_write_failure() {
+    let pipeline = TransientFailurePipeline::spawn(1).await;
+
+    // The failed frame is retried on the next tick and lands, so the lane
+    // recovers without the lifecycle tearing the session down.
+    pipeline
+        .wait_for_deliveries(2, Duration::from_millis(750))
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(pipeline.failures_left.load(Ordering::SeqCst), 0);
+    assert_eq!(pipeline.state().await, Some(DeviceState::Active));
+    assert!(
+        pipeline
+            .state
+            .backend_manager
+            .lock()
+            .await
+            .async_write_failures()
+            .is_empty(),
+        "the later success should clear the transient failure"
+    );
+
+    pipeline.shutdown().await;
+}
+
+#[tokio::test]
+async fn pipeline_reconnects_after_a_streak_of_transient_write_failures() {
+    let pipeline = TransientFailurePipeline::spawn(usize::MAX).await;
+
+    wait_for_device_state(
+        &pipeline.lifecycle_manager,
+        pipeline.device_id,
+        DeviceState::Reconnecting,
+        Duration::from_millis(750),
+    )
+    .await;
+    assert!(
+        pipeline.deliveries.load(Ordering::SeqCst) >= 3,
+        "the lifecycle should wait for a streak of transient failures before reconnecting"
+    );
+
+    pipeline.shutdown().await;
 }
 
 #[tokio::test]
