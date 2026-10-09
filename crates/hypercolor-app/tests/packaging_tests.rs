@@ -1784,7 +1784,8 @@ fn installer_stops_and_restarts_daemons_around_the_copy() {
         "Get-CimInstance Win32_Process -Filter \"Name = 'hypercolor-daemon.exe'\"",
         "Wait-Process -Id $daemonIds -Timeout 10",
         "Stop-Process -Id $id -Force",
-        "Start-Service -Name $_ -ErrorAction SilentlyContinue",
+        "$service.Start()",
+        "$service.WaitForStatus(\"Running\", [TimeSpan]::FromSeconds(20))",
     ] {
         assert!(
             DAEMON_SERVICES_PS1.contains(step),
@@ -1792,12 +1793,13 @@ fn installer_stops_and_restarts_daemons_around_the_copy() {
         );
     }
     // The script runs in the installer's 32-bit PowerShell, where Get-Process
-    // cannot see a 64-bit process's path, and Stop-Service waits unbounded.
+    // cannot see a 64-bit process's path, and Stop-Service and Start-Service
+    // wait unbounded.
     let code: Vec<&str> = DAEMON_SERVICES_PS1
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
         .collect();
-    for avoided in ["Get-Process", "Stop-Service"] {
+    for avoided in ["Get-Process", "Stop-Service", "Start-Service"] {
         assert!(
             !code.iter().any(|line| line.contains(avoided)),
             "daemon services script must not use {avoided}"

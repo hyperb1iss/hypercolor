@@ -1972,7 +1972,10 @@ jobs:
             ForEach-Object { Get-ChildItem $_ -Filter "*_x64-setup.exe" } | Sort-Object FullName -Unique |
             Select-Object -First 1
           if (-not $candidate) { throw "no NSIS installer found under: $($roots -join ', ')" }
-          $version = [semver]($candidate.Name -replace '^Hypercolor_(.+)_x64-setup\.exe$', '$1')
+          if ($candidate.Name -notmatch '^Hypercolor_(.+)_x64-setup\.exe$') {
+            throw "unexpected installer name: $($candidate.Name)"
+          }
+          $version = [semver]$Matches[1]
           $tags = @(gh release list --repo $env:GITHUB_REPOSITORY --exclude-drafts --exclude-pre-releases --limit 30 --json tagName --jq '.[].tagName')
           if ($LASTEXITCODE -ne 0) { throw "gh release list failed with exit code $LASTEXITCODE" }
           $releases = @($tags | ForEach-Object {

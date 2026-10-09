@@ -15,7 +15,8 @@
     from the install directory after that, a service that would not stop
     included, get ten seconds to exit before they are ended.
 
-    -Action Restore starts exactly the services -Action Stop listed.
+    -Action Restore starts exactly the services -Action Stop listed and waits
+    up to twenty seconds for each to report Running.
 #>
 param(
     [Parameter(Mandatory)] [ValidateSet("Stop", "Restore")] [string] $Action,
@@ -27,8 +28,14 @@ $daemonExe = Join-Path $InstallDir "hypercolor-daemon.exe"
 
 if ($Action -eq "Restore") {
     if (Test-Path -LiteralPath $StateFile) {
-        Get-Content -LiteralPath $StateFile | Where-Object { $_ } | ForEach-Object {
-            Start-Service -Name $_ -ErrorAction SilentlyContinue
+        foreach ($name in @(Get-Content -LiteralPath $StateFile | Where-Object { $_ })) {
+            try {
+                $service = Get-Service -Name $name
+                $service.Start()
+                $service.WaitForStatus("Running", [TimeSpan]::FromSeconds(20))
+            } catch {
+                Write-Output ("{0} did not start: {1}" -f $name, $_.Exception.Message)
+            }
         }
     }
     return

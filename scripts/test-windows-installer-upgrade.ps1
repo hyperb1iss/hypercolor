@@ -155,6 +155,7 @@ $staleFiles = @(
     (Join-Path $installDir "effects\bundled\removed-effect.html")
 )
 foreach ($stale in $staleFiles) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stale) | Out-Null
     Set-Content -Path $stale -Value "left behind by the previous release"
 }
 

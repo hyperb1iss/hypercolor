@@ -224,6 +224,10 @@ if ((& cargo tauri --version 2>$null) -eq "tauri-cli $TauriCliVersion") {
     }
     if ((& cargo tauri --version 2>$null) -ne "tauri-cli $TauriCliVersion") {
         & cargo install --locked tauri-cli --version "=$TauriCliVersion"
+        if ($LASTEXITCODE -ne 0) {
+            Err "tauri-cli $TauriCliVersion install failed (cargo exit code $LASTEXITCODE)"
+            exit 1
+        }
     }
     Ok "tauri-cli $TauriCliVersion installed"
 }
