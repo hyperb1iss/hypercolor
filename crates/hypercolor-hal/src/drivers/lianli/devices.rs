@@ -18,6 +18,9 @@ use super::ene::Ene6k77Protocol;
 use super::lcd::{TL_LCD_PACKET_LEN, TL_LCD_REPORT_ID, TlLcdProtocol};
 use super::legacy::LegacyUniHubProtocol;
 use super::tl::{TL_PACKET_LEN, TlFanProtocol};
+use super::universal_screen::{
+    PID_UNIVERSAL_SCREEN_88, UNIVERSAL_SCREEN_VENDOR_ID, UniversalScreenProtocol,
+};
 use super::wireless::WirelessControllerProtocol;
 use super::wireless::lcd::{
     PID_SL_WIRELESS_LCD, PID_TL_WIRELESS_LCD, WIRELESS_LCD_VENDOR_ID, WirelessLcdProtocol,
@@ -145,6 +148,12 @@ pub fn build_wireless_controller_protocol() -> Box<dyn Protocol> {
 #[must_use]
 pub fn build_wireless_lcd_protocol() -> Box<dyn Protocol> {
     Box::new(WirelessLcdProtocol::new())
+}
+
+/// Build a Universal Screen 8.8" protocol instance.
+#[must_use]
+pub fn build_universal_screen_protocol() -> Box<dyn Protocol> {
+    Box::new(UniversalScreenProtocol::new())
 }
 
 /// Build an original UNI Hub protocol instance.
@@ -349,6 +358,24 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
                 build: build_wireless_lcd_protocol,
             },
             firmware_predicate: None,
+            serial_quirk: None,
+        },
+        DeviceDescriptor {
+            vendor_id: UNIVERSAL_SCREEN_VENDOR_ID,
+            product_id: PID_UNIVERSAL_SCREEN_88,
+            name: "Lian Li Universal Screen 8.8\"",
+            family: DeviceFamily::new_static("lianli", "Lian Li"),
+            transport: TransportType::UsbBulk {
+                interface: 0,
+                report_id: 0,
+            },
+            protocol: ProtocolBinding {
+                id: "lianli/universal-screen",
+                build: build_universal_screen_protocol,
+            },
+            firmware_predicate: None,
+            // The one serial on record is a unique-looking 16-digit hex
+            // string; no shared-serial quirk is known (spec 84 section 2).
             serial_quirk: None,
         },
     ]
