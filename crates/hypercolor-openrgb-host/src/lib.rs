@@ -16,6 +16,7 @@
 
 mod config_dir;
 mod detect;
+mod detector_ids;
 mod error;
 mod hints;
 mod partition_plan;
@@ -34,6 +35,9 @@ pub use detect::{
     classify_binary, detect_binary, executable_names, find_appimage_in, find_in_path,
     find_native_binary, flatpak_app_version, is_executable_file, known_locations,
     parse_flatpak_info_version, parse_version_output, read_version,
+};
+pub use detector_ids::{
+    DetectorUsbClaim, UsbDeviceId, detector_usb_claim, detector_usb_ids, parse_detector_usb_ids,
 };
 pub use error::{HostError, Result};
 pub use hints::{RELEASES_URL, detect_package_managers, install_hints, install_hints_for};

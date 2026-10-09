@@ -248,6 +248,10 @@ compat *args='':
 compat-check:
     bun scripts/gen-compat.ts --check
 
+# Regenerate the OpenRGB detector USB id map from `openrgb --print-udev-rules` output
+openrgb-detector-ids rules:
+    bun scripts/gen-openrgb-detector-ids.ts {{ rules }}
+
 # Stamp a release version across every version-bearing file (see RELEASING.md)
 set-version version:
     bun scripts/set-version.ts {{ version }}
