@@ -237,8 +237,7 @@ fn parent_is_adjacent_app_binary(parent_executable: &Path, daemon_directory: &Pa
         paths_are_equal(parent_executable, &daemon_directory.join(name))
             && parent_executable
                 .canonicalize()
-                .ok()
-                .is_some_and(|path| path.file_name() == Some(OsStr::new(name)))
+                .is_ok_and(|path| path.file_name() == Some(OsStr::new(name)))
     })
 }
 
