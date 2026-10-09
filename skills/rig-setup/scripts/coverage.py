@@ -182,6 +182,17 @@ def scan_windows() -> list[dict]:
     return out
 
 
+def vendor_and_model(vendor: str | None, model: str | None) -> str:
+    """Join vendor and model without doubling a vendor the model already leads with, as the UI does."""
+    vendor, model = (vendor or "").strip(), (model or "").strip()
+    if not vendor or not model:
+        return vendor or model
+    head, rest = model[:len(vendor)], model[len(vendor):]
+    if head.lower() == vendor.lower() and (not rest or rest[0].isspace()):
+        return model
+    return f"{vendor} {model}"
+
+
 def is_noise(dev: dict) -> bool:
     """Class 0 (per interface) says nothing and HID may ride along a headset, so both are set aside;
     what remains has to be non-empty and made only of classes that rule out lighting."""
@@ -317,7 +328,7 @@ def fallback_rows(daemon: Daemon, host_scan: bool, show_all: bool = False) -> tu
             twin["claimable_by"] = u.get("claimable_by")
             twin["identity"] = f"{twin['identity']} + {ident}"
             continue
-        rows.append({"identity": ident, "name": " ".join(x for x in (u.get("manufacturer"), u.get("product")) if x),
+        rows.append({"identity": ident, "name": vendor_and_model(u.get("manufacturer"), u.get("product")),
                      "native": None, "bridge": None, "unclaimed": True, "active": "none",
                      "claimable_by": u.get("claimable_by"), "bus_path": u.get("bus_path"),
                      "interface_classes": u.get("interface_classes", [])})
