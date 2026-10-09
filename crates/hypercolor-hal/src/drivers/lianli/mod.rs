@@ -4,6 +4,8 @@ mod common;
 mod ene;
 mod lcd;
 mod tl;
+pub mod universal_screen;
+pub mod winusb;
 pub mod wireless;
 
 pub mod devices;
@@ -29,5 +31,6 @@ pub use lcd::{
 };
 pub use legacy::LegacyUniHubProtocol;
 pub use tl::{TL_PACKET_LEN, TlFanProtocol};
+pub use universal_screen::UniversalScreenProtocol;
 pub use wireless::WirelessControllerProtocol;
 pub use wireless::lcd::WirelessLcdProtocol;
