@@ -440,6 +440,8 @@ struct TransientWriteFailureBackend {
     device_id: DeviceId,
     failures_left: Arc<AtomicUsize>,
     deliveries: Arc<AtomicUsize>,
+    /// Deliveries seen when the lifecycle first tore the session down.
+    deliveries_at_disconnect: Arc<StdMutex<Option<usize>>>,
 }
 
 #[async_trait::async_trait]
@@ -465,6 +467,10 @@ impl DeviceBackend for TransientWriteFailureBackend {
     }
 
     async fn disconnect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+        self.deliveries_at_disconnect
+            .lock()
+            .expect("disconnect probe lock should not be poisoned")
+            .get_or_insert(self.deliveries.load(Ordering::SeqCst));
         Ok(())
     }
 
@@ -3789,6 +3795,7 @@ struct TransientFailurePipeline {
     device_id: DeviceId,
     deliveries: Arc<AtomicUsize>,
     failures_left: Arc<AtomicUsize>,
+    deliveries_at_disconnect: Arc<StdMutex<Option<usize>>>,
 }
 
 impl TransientFailurePipeline {
@@ -3815,11 +3822,13 @@ impl TransientFailurePipeline {
 
         let deliveries = Arc::new(AtomicUsize::new(0));
         let failures_left = Arc::new(AtomicUsize::new(failures));
+        let deliveries_at_disconnect = Arc::new(StdMutex::new(None));
         let mut backend_manager = BackendManager::new();
         backend_manager.register_backend(Arc::new(TransientWriteFailureBackend {
             device_id,
             failures_left: Arc::clone(&failures_left),
             deliveries: Arc::clone(&deliveries),
+            deliveries_at_disconnect: Arc::clone(&deliveries_at_disconnect),
         }));
         backend_manager.map_device(&layout_device_id, "mock", device_id);
         let backend_manager = Arc::new(Mutex::new(backend_manager));
@@ -3915,6 +3924,7 @@ impl TransientFailurePipeline {
             device_id,
             deliveries,
             failures_left,
+            deliveries_at_disconnect,
         }
     }
 
@@ -3991,9 +4001,27 @@ async fn pipeline_reconnects_after_a_streak_of_transient_write_failures() {
         Duration::from_millis(750),
     )
     .await;
+    // Once a failure is acknowledged the queue stops resending the frame,
+    // so reconnecting on the first failure would disconnect after one or two
+    // deliveries. Waiting for the streak takes at least three.
+    let disconnect_probe = tokio::time::timeout(Duration::from_millis(750), async {
+        loop {
+            let seen = *pipeline
+                .deliveries_at_disconnect
+                .lock()
+                .expect("disconnect probe lock should not be poisoned");
+            if let Some(seen) = seen {
+                break seen;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the lifecycle should disconnect the failing session");
     assert!(
-        pipeline.deliveries.load(Ordering::SeqCst) >= 3,
-        "the lifecycle should wait for a streak of transient failures before reconnecting"
+        disconnect_probe >= 3,
+        "the lifecycle should wait for a streak of transient failures before reconnecting, \
+         disconnected after {disconnect_probe} deliveries"
     );
 
     pipeline.shutdown().await;

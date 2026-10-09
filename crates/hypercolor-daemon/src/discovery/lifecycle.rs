@@ -1,5 +1,6 @@
+use std::cmp::Reverse;
 use std::collections::{HashSet, VecDeque};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hypercolor_core::device::{
     AsyncWriteFailure, DeviceLifecycleManager, FlapEscalation, LifecycleAction,
@@ -556,7 +557,7 @@ pub(crate) fn handle_async_write_failures(
 
     let actions = if let Ok(mut lifecycle) = runtime.lifecycle_manager.try_lock() {
         let failures = claim_current_async_write_failures(failures);
-        async_write_failure_actions(&mut lifecycle, failures)
+        async_write_failure_actions(&mut lifecycle, failures, Instant::now())
     } else {
         spawn_async_write_failure_worker(runtime.clone(), failures);
         return;
@@ -581,8 +582,9 @@ impl LifecycleWriteFailure {
     }
 }
 
-/// What the lifecycle does about one claimed async write failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the lifecycle does about one claimed async write failure, ordered
+/// from least to most severe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum WriteFailureRecovery {
     /// Leave the session up and let the next delivery decide.
     KeepLane,
@@ -617,22 +619,43 @@ struct PlannedWriteRecovery {
     device_error: Option<HypercolorEvent>,
 }
 
-fn claim_current_async_write_failures(
-    failures: Vec<AsyncWriteFailure>,
-) -> Vec<LifecycleWriteFailure> {
+/// Keep the most severe failure for each device.
+///
+/// The backend manager orders failures by typed recoverability alone, which
+/// ranks a transient failure the lane is riding out beside one that needs a
+/// reconnect. A device with two output lanes (LEDs and an LCD) must not let
+/// the kept lane shadow the failed one, so severity decides first and the
+/// manager's order breaks ties.
+fn most_severe_per_device<T>(
+    mut failures: Vec<(WriteFailureRecovery, DeviceId, T)>,
+) -> Vec<(WriteFailureRecovery, T)> {
+    failures.sort_by_key(|(recovery, _, _)| Reverse(*recovery));
     let mut handled = HashSet::new();
     failures
         .into_iter()
-        .filter_map(|failure| {
-            if !handled.insert(failure.device_id) {
-                return None;
-            }
+        .filter(|(_, device_id, _)| handled.insert(*device_id))
+        .map(|(recovery, _, failure)| (recovery, failure))
+        .collect()
+}
 
+fn claim_current_async_write_failures(
+    failures: Vec<AsyncWriteFailure>,
+) -> Vec<LifecycleWriteFailure> {
+    let classified = failures
+        .into_iter()
+        .map(|failure| {
             let recovery = WriteFailureRecovery::classify(
                 &failure.error,
                 failure.transient,
                 failure.consecutive_failures,
             );
+            (recovery, failure.device_id, failure)
+        })
+        .collect();
+
+    most_severe_per_device(classified)
+        .into_iter()
+        .filter_map(|(recovery, failure)| {
             // A failure the lane rides out stays unacknowledged, so the next
             // failed delivery replaces it with a longer streak and the next
             // completed one clears it.
@@ -659,6 +682,7 @@ fn claim_current_async_write_failures(
 fn async_write_failure_actions(
     lifecycle: &mut DeviceLifecycleManager,
     failures: Vec<LifecycleWriteFailure>,
+    now: Instant,
 ) -> Vec<PlannedWriteRecovery> {
     let mut handled = HashSet::new();
     let mut planned = Vec::new();
@@ -691,10 +715,9 @@ fn async_write_failure_actions(
             continue;
         }
 
-        let already_flapping = lifecycle.is_flapping(failure.device_id);
         let actions = match recovery {
             WriteFailureRecovery::KeepLane => unreachable!("kept lanes return above"),
-            WriteFailureRecovery::Reconnect => lifecycle.on_comm_error(failure.device_id),
+            WriteFailureRecovery::Reconnect => lifecycle.on_comm_error_at(failure.device_id, now),
             WriteFailureRecovery::Deactivate => lifecycle.on_runtime_deactivate(failure.device_id),
         };
         let actions = match actions {
@@ -711,6 +734,11 @@ fn async_write_failure_actions(
         };
 
         let escalation = lifecycle.take_flap_escalation(failure.device_id);
+        // Read after the transition: a fault that ended a streak has already
+        // reset it, and deactivation clears it, so both still warn below.
+        let flap_already_reported = escalation.is_none()
+            && recovery == WriteFailureRecovery::Reconnect
+            && lifecycle.is_flapping(failure.device_id);
         if let Some(escalation) = escalation {
             warn!(
                 backend_id = %failure.backend_id,
@@ -723,7 +751,7 @@ fn async_write_failure_actions(
                 "device keeps failing writes right after reconnecting; reconnect backoff \
                  keeps growing until a connection holds"
             );
-        } else if already_flapping {
+        } else if flap_already_reported {
             debug!(
                 backend_id = %failure.backend_id,
                 device_id = %failure.device_id,
@@ -778,7 +806,7 @@ fn spawn_async_write_failure_worker(runtime: DiscoveryRuntime, failures: Vec<Asy
         let actions = {
             let mut lifecycle = runtime.lifecycle_manager.lock().await;
             let failures = claim_current_async_write_failures(failures);
-            async_write_failure_actions(&mut lifecycle, failures)
+            async_write_failure_actions(&mut lifecycle, failures, Instant::now())
         };
 
         run_async_write_failure_actions(runtime, actions).await;
@@ -1092,6 +1120,7 @@ mod tests {
                     after: Duration::from_millis(25),
                 },
             )],
+            Instant::now(),
         );
 
         assert!(planned.is_empty());
@@ -1108,6 +1137,7 @@ mod tests {
                 device_id,
                 DeviceError::write(device_id, "connection reset"),
             )],
+            Instant::now(),
         );
 
         assert_eq!(planned.len(), 1);
@@ -1133,6 +1163,7 @@ mod tests {
                     detail: "access revoked".to_owned(),
                 },
             )],
+            Instant::now(),
         );
 
         assert_eq!(planned.len(), 1);
@@ -1155,8 +1186,11 @@ mod tests {
     fn single_transient_failure_keeps_healthy_device_active() {
         let (mut lifecycle, device_id) = active_lifecycle();
 
-        let planned =
-            async_write_failure_actions(&mut lifecycle, vec![transient_failure(device_id, 1)]);
+        let planned = async_write_failure_actions(
+            &mut lifecycle,
+            vec![transient_failure(device_id, 1)],
+            Instant::now(),
+        );
 
         assert!(planned.is_empty());
         assert_eq!(lifecycle.state(device_id), Some(DeviceState::Active));
@@ -1170,6 +1204,7 @@ mod tests {
             let planned = async_write_failure_actions(
                 &mut lifecycle,
                 vec![transient_failure(device_id, consecutive)],
+                Instant::now(),
             );
             assert!(
                 planned.is_empty(),
@@ -1184,6 +1219,7 @@ mod tests {
                 device_id,
                 TRANSIENT_WRITE_FAILURE_RECONNECT_THRESHOLD,
             )],
+            Instant::now(),
         );
 
         assert_eq!(planned.len(), 1);
@@ -1302,6 +1338,7 @@ mod tests {
                         device_id,
                         TRANSIENT_WRITE_FAILURE_RECONNECT_THRESHOLD,
                     )],
+                    Instant::now(),
                 );
                 assert_eq!(planned.len(), 1, "every flap should plan a reconnect");
                 let recovery = planned.into_iter().next().expect("one planned recovery");
@@ -1339,6 +1376,124 @@ mod tests {
             logs.count("async device write failed; applying typed lifecycle recovery"),
             usize::try_from(FLAP_ESCALATION_THRESHOLD - 1).expect("threshold fits usize"),
             "flaps before the escalation keep their per-failure warning; later ones go quiet"
+        );
+    }
+
+    #[test]
+    fn most_severe_failure_per_device_wins_the_claim() {
+        let led_and_lcd = DeviceId::new();
+        let strip = DeviceId::new();
+
+        let claimed = most_severe_per_device(vec![
+            (WriteFailureRecovery::KeepLane, led_and_lcd, "led transient"),
+            (WriteFailureRecovery::KeepLane, strip, "strip transient"),
+            (
+                WriteFailureRecovery::Reconnect,
+                led_and_lcd,
+                "lcd disconnected",
+            ),
+            (
+                WriteFailureRecovery::KeepLane,
+                strip,
+                "strip older transient",
+            ),
+        ]);
+
+        assert_eq!(
+            claimed,
+            vec![
+                (WriteFailureRecovery::Reconnect, "lcd disconnected"),
+                (WriteFailureRecovery::KeepLane, "strip transient"),
+            ]
+        );
+    }
+
+    /// Escalate a flap streak on an active fixture and leave it connected.
+    fn escalated_flapping_lifecycle() -> (DeviceLifecycleManager, DeviceId) {
+        let (mut lifecycle, device_id) = active_lifecycle();
+        lifecycle
+            .on_comm_error_at(device_id, Instant::now() + Duration::from_hours(1))
+            .expect("first fault should enter reconnecting");
+        for _ in 0..=FLAP_ESCALATION_THRESHOLD {
+            assert!(lifecycle.on_reconnect_attempt(device_id).is_some());
+            lifecycle
+                .on_connected(device_id)
+                .expect("reconnect should succeed");
+            async_write_failure_actions(
+                &mut lifecycle,
+                vec![async_failure(
+                    device_id,
+                    DeviceError::write(device_id, "short count"),
+                )],
+                Instant::now(),
+            );
+        }
+        assert!(lifecycle.is_flapping(device_id));
+        assert!(lifecycle.on_reconnect_attempt(device_id).is_some());
+        lifecycle
+            .on_connected(device_id)
+            .expect("reconnect should succeed");
+        (lifecycle, device_id)
+    }
+
+    fn captured_warnings<R>(run: impl FnOnce() -> R) -> (R, CapturedLogs) {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+        let result = tracing::subscriber::with_default(subscriber, run);
+        (result, logs)
+    }
+
+    #[test]
+    fn fault_after_a_recovered_streak_warns_again() {
+        let (mut lifecycle, device_id) = escalated_flapping_lifecycle();
+
+        let (planned, logs) = captured_warnings(|| {
+            async_write_failure_actions(
+                &mut lifecycle,
+                vec![async_failure(
+                    device_id,
+                    DeviceError::write(device_id, "cable bumped"),
+                )],
+                Instant::now() + RECONNECT_STABLE_AFTER + Duration::from_secs(1),
+            )
+        });
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(lifecycle.flap_count(device_id), Some(0));
+        assert_eq!(
+            logs.count("async device write failed; applying typed lifecycle recovery"),
+            1,
+            "a fault on a recovered device is news, not part of the old streak"
+        );
+    }
+
+    #[test]
+    fn deactivating_a_flapping_device_warns() {
+        let (mut lifecycle, device_id) = escalated_flapping_lifecycle();
+
+        let (planned, logs) = captured_warnings(|| {
+            async_write_failure_actions(
+                &mut lifecycle,
+                vec![async_failure(
+                    device_id,
+                    DeviceError::PermissionDenied {
+                        device: device_id.to_string(),
+                        detail: "access revoked".to_owned(),
+                    },
+                )],
+                Instant::now(),
+            )
+        });
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(lifecycle.state(device_id), Some(DeviceState::Known));
+        assert_eq!(
+            logs.count("async device write failed; applying typed lifecycle recovery"),
+            1
         );
     }
 }
