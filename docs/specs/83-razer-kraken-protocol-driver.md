@@ -213,9 +213,12 @@ short reports per second.
 ### Diagnostics
 
 `connection_diagnostics()` reads the 2-byte firmware version from EEPROM
-`0x0030` with a 250 ms response budget. The backend logs the probe result
+`0x0030` with a 250 ms response budget. The backend logs a successful probe
 at debug level and never fails a connect on it, so it doubles as a cheap
-"the device answers on this collection" signal in user logs.
+"the device answers on this collection" signal in user logs. A headset that
+stays silent past the budget produces one warning per connect, carrying the
+probe bytes and the empty reply, which is how a silent collection shows up
+in a report.
 
 ---
 
@@ -268,8 +271,9 @@ field.
   `SET_REPORT(Output)` control transfer otherwise; both reach the same
   firmware handler. Windows requires the buffer to be at least the
   collection's `OutputReportByteLength`. HIDAPI pads shorter writes and then
-  reports the padded length, so the transport must accept
-  `written >= len`. A 37-byte write matches the report size OpenRazer and
+  reports the padded length (or 0 when `WriteFile` completes synchronously),
+  and the hidapi transport's `check_output_write` accepts both. A 37-byte
+  write matches the report size OpenRazer and
   OpenRGB use, so no padding is expected. Consumer Control collections are
   not opened exclusively by the OS, so sharing with Synapse's own handle is
   allowed, though the two will fight over the LED.
