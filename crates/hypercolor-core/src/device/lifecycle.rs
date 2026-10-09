@@ -357,10 +357,32 @@ impl DeviceLifecycleManager {
         device_id: DeviceId,
         now: Instant,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
+        self.reconnect_after(device_id, |state_machine| {
+            state_machine.on_comm_error_at(now)
+        })
+    }
+
+    /// Rebuild a working session because its driver asked for it.
+    ///
+    /// Unlike [`Self::on_comm_error`] this is not a fault, so it retries at
+    /// the initial delay and leaves the flap streak alone. See
+    /// [`DeviceStateMachine::on_reconnect_requested`].
+    pub fn on_reconnect_requested(
+        &mut self,
+        device_id: DeviceId,
+    ) -> Result<Vec<LifecycleAction>, DeviceError> {
+        self.reconnect_after(device_id, DeviceStateMachine::on_reconnect_requested)
+    }
+
+    fn reconnect_after(
+        &mut self,
+        device_id: DeviceId,
+        transition: impl FnOnce(&mut DeviceStateMachine) -> Result<(), DeviceError>,
+    ) -> Result<Vec<LifecycleAction>, DeviceError> {
         self.connect_in_flight.remove(&device_id);
         let (disconnect_action, unmap_action, next_retry_delay) = {
             let managed = self.managed_mut(device_id)?;
-            managed.state_machine.on_comm_error_at(now)?;
+            transition(&mut managed.state_machine)?;
             (
                 Self::disconnect_action(device_id, managed),
                 LifecycleAction::Unmap {

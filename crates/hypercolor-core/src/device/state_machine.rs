@@ -369,6 +369,31 @@ impl DeviceStateMachine {
         }
     }
 
+    /// Transition: `Connected|Active -> Reconnecting` because the driver asked
+    /// to rebuild a working session, for example after its identity or route
+    /// changed.
+    ///
+    /// This is not a fault: the retry uses the initial delay, and the flap
+    /// streak neither grows nor ends.
+    pub fn on_reconnect_requested(&mut self) -> Result<(), DeviceError> {
+        match self.state {
+            DeviceState::Connected | DeviceState::Active => {
+                self.flap.connected_at = None;
+                self.flap.unproven_delay = None;
+                self.flap.escalation_pending = false;
+                self.handle = None;
+                self.reconnect = Some(ReconnectStatus {
+                    since: Instant::now(),
+                    attempt: 0,
+                    next_retry: self.reconnect_policy.initial_delay,
+                });
+                self.set_state(DeviceState::Reconnecting, "reconnect_requested");
+                Ok(())
+            }
+            _ => Err(self.invalid_transition("Reconnecting")),
+        }
+    }
+
     /// Advance reconnect attempt state.
     ///
     /// Returns the next retry delay, or `None` if max attempts are exhausted

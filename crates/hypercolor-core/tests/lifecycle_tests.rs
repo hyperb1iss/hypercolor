@@ -983,6 +983,32 @@ fn device_that_stays_healthy_after_reconnect_resets_backoff() {
 }
 
 #[test]
+fn driver_requested_reconnects_neither_grow_backoff_nor_count_as_flaps() {
+    let (mut lifecycle, device_id) = faulted_lifecycle("OpenRGB Route");
+    flap(&mut lifecycle, device_id);
+    assert_eq!(lifecycle.flap_count(device_id), Some(1));
+
+    for _ in 0..=FLAP_ESCALATION_THRESHOLD {
+        assert!(lifecycle.on_reconnect_attempt(device_id).is_some());
+        lifecycle
+            .on_connected(device_id)
+            .expect("reconnect should succeed");
+        let actions = lifecycle
+            .on_reconnect_requested(device_id)
+            .expect("a driver may rebuild a connected session");
+        assert_eq!(spawned_reconnect_delay(&actions), Duration::from_secs(1));
+    }
+
+    assert_eq!(
+        lifecycle.flap_count(device_id),
+        Some(1),
+        "requested reconnects neither grow nor end the flap streak"
+    );
+    assert!(lifecycle.take_flap_escalation(device_id).is_none());
+    assert_eq!(lifecycle.state(device_id), Some(DeviceState::Reconnecting));
+}
+
+#[test]
 fn rediscovered_reconnecting_device_connects_without_waiting_for_retry_timer() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
