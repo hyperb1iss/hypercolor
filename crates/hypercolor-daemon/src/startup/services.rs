@@ -57,6 +57,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
+use hypercolor_types::api::system::DaemonStartupPhase;
 use hypercolor_types::audio::AudioPipelineConfig;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::event::HypercolorEvent;
@@ -90,9 +91,9 @@ use crate::scene_transactions::SceneTransactionQueue;
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
-use super::DaemonState;
 use super::config::resolve_server_identity;
 use super::resolve_compositor_acceleration_mode;
+use super::{DaemonState, StartupProgress};
 use crate::render_thread::ConfiguredFpsTier;
 
 #[cfg(test)]
@@ -149,11 +150,30 @@ impl DaemonState {
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
         initial_service_status: Option<hypercolor_types::service::ServiceStatus>,
     ) -> Result<Self> {
+        Self::initialize_with_progress(
+            boot,
+            config_manager,
+            macos_owner_snapshot,
+            initial_service_status,
+            StartupProgress::default(),
+        )
+    }
+
+    /// Initialize while reporting each startup phase to `progress`, which
+    /// the API listener serves from `/health` until the daemon is ready.
+    pub(crate) fn initialize_with_progress(
+        boot: BootConfig,
+        config_manager: Arc<ConfigManager>,
+        macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
+        initial_service_status: Option<hypercolor_types::service::ServiceStatus>,
+        progress: StartupProgress,
+    ) -> Result<Self> {
         Self::initialize_inner(
             boot,
             config_manager,
             macos_owner_snapshot,
             initial_service_status,
+            progress,
         )
     }
 
@@ -183,6 +203,7 @@ impl DaemonState {
         config_manager: Arc<ConfigManager>,
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
         initial_service_status: Option<hypercolor_types::service::ServiceStatus>,
+        progress: StartupProgress,
     ) -> Result<Self> {
         let config: &HypercolorConfig = &boot;
         let data_dir = ConfigManager::data_dir();
@@ -239,6 +260,7 @@ impl DaemonState {
             );
         }
 
+        progress.enter(DaemonStartupPhase::ProbingGpu);
         let render_acceleration = resolve_compositor_acceleration_mode(
             config.effect_engine.compositor_acceleration_mode,
             config.rendering.servo_gpu_import.mode,
@@ -336,6 +358,7 @@ impl DaemonState {
         info!("Device registry created");
 
         // ── Effect Registry ─────────────────────────────────────────────
+        progress.enter(DaemonStartupPhase::ScanningEffects);
         let effect_search_paths =
             default_effect_search_paths(&config.effect_engine.extra_effect_dirs);
         let mut effect_registry = EffectRegistry::new(effect_search_paths.clone());
@@ -367,6 +390,7 @@ impl DaemonState {
         };
 
         // ── Layout Store ─────────────────────────────────────────────
+        progress.enter(DaemonStartupPhase::LoadingStores);
         let layouts_path = ConfigManager::data_dir().join("layouts.json");
         let layout_auto_exclusions_path =
             ConfigManager::data_dir().join("layout-auto-exclusions.json");
@@ -814,6 +838,7 @@ impl DaemonState {
         );
         info!("All subsystems initialized");
 
+        progress.enter(DaemonStartupPhase::RegisteringBackends);
         {
             // `initialize()` is invoked from `tokio::main` and `#[tokio::test]`,
             // so taking a blocking mutex guard here will panic inside the runtime.
@@ -903,6 +928,7 @@ impl DaemonState {
             session_controller: None,
             session_monitors: None,
             start_time: Instant::now(),
+            startup_progress: progress,
             server_identity,
             audit_log: Some(audit_log),
         })

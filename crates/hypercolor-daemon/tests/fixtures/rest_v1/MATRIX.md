@@ -278,7 +278,7 @@ Mounted on the **outer** router, not under `/api/v1`. There is no
 
 | Field | Domain |
 | --- | --- |
-| `status` | `healthy` \| `degraded` |
+| `status` | `healthy` \| `degraded` \| `starting` |
 | `version` | served identity version (`server_identity.version`, the same value as `/api/v1/system` `identity.version`) |
 | `uptime_seconds` | unsigned integer |
 | `checks.render_loop` | `ok` (running) \| `idle` (created or paused) \| `degraded` (stopped) |
@@ -287,6 +287,17 @@ Mounted on the **outer** router, not under `/api/v1`. There is no
 
 Status code is `200` when `status` is `healthy` and `503` otherwise. An `idle`
 check still yields `healthy`; only a `degraded` check downgrades the whole probe.
+
+Before startup finishes, the bound listener serves a startup surface instead
+of the router above. `GET /health` from a loopback peer answers `503` with
+`status: "starting"`, every check `starting`, the daemon build's `version`,
+and `startup: { phase, sequence }`, where `phase` is one of `initializing`,
+`probing_gpu`, `scanning_effects`, `loading_stores`, `registering_backends`,
+`starting_inputs`, `starting_render_thread`, `starting_services`, or
+`preparing_api`, and `sequence` advances on every phase change. Every other
+path, and every path from a remote peer, answers `503 service_unavailable`
+(loopback peers get `details: { phase, sequence }`). The `startup` field is
+absent once the daemon is ready.
 
 ---
 
