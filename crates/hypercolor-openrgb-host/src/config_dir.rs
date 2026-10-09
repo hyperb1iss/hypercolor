@@ -2,10 +2,11 @@
 //!
 //! OpenRGB decides which hardware to claim through the `Detectors.detectors`
 //! map in `OpenRGB.json`. Hypercolor keeps its own config directory for the
-//! headless server and rewrites that map so OpenRGB skips every device
-//! family a native Hypercolor driver already owns. Everything else in the
-//! file (SMBus settings, plugin state, the user's own detector toggles) is
-//! preserved by a read-modify-write and a durable replace.
+//! headless server and rewrites that map so OpenRGB skips every device a
+//! native Hypercolor driver can claim: per USB device where the detector id
+//! map knows the detector, per name prefix where it does not. Everything
+//! else in the file (SMBus settings, plugin state, the user's own detector
+//! toggles) is preserved by a read-modify-write and a durable replace.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -15,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tracing::{debug, info};
 
+use crate::detector_ids::{UsbDeviceId, detector_usb_claim, detector_usb_ids};
 use crate::error::{HostError, Result};
 use crate::types::ManagedConfigDir;
 
@@ -114,25 +116,102 @@ pub fn managed_config_dir(base_data_dir: &Path) -> ManagedConfigDir {
     }
 }
 
+/// How the partition decides each OpenRGB detector (Spec 81 §3.1).
+///
+/// Prefixes come from the embedded family table; USB ids come from the
+/// protocol catalogs the daemon publishes per driver. The default value
+/// withholds nothing and hands nothing back.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DetectorRules {
+    /// Name prefixes withheld wholesale: every detector under one is
+    /// disabled. Used for native families whose driver published no USB
+    /// catalog, so nothing finer is known.
+    pub disabled_prefixes: Vec<String>,
+    /// Name prefixes of withheld families whose driver published its USB
+    /// catalog. A detector under one is disabled when it claims a device in
+    /// `claimed_usb_ids`, or when the id map does not know it at all; a
+    /// mapped detector that claims none of them is handed back to OpenRGB.
+    pub id_gated_prefixes: Vec<String>,
+    /// Name prefixes handed back to OpenRGB (written `true`).
+    pub re_enable_prefixes: Vec<String>,
+    /// USB devices the withheld native drivers can claim. A mapped detector
+    /// that claims one is disabled whatever its name.
+    pub claimed_usb_ids: BTreeSet<UsbDeviceId>,
+    /// Every USB device a registered native driver can claim, withheld or
+    /// not. A mapped detector that claims one but none of `claimed_usb_ids`
+    /// is handed back, so a detector disabled by id outside every family
+    /// prefix is released once its native driver lets go.
+    pub native_usb_ids: BTreeSet<UsbDeviceId>,
+}
+
+impl DetectorRules {
+    /// Prefix-only rules: the conservative partition with no USB knowledge.
+    #[must_use]
+    pub fn by_prefix<S: AsRef<str>, R: AsRef<str>>(
+        disabled_prefixes: &[S],
+        re_enable_prefixes: &[R],
+    ) -> Self {
+        Self {
+            disabled_prefixes: owned(disabled_prefixes),
+            re_enable_prefixes: owned(re_enable_prefixes),
+            ..Self::default()
+        }
+    }
+
+    /// Whether the detector `name` is written enabled. `current` is its value
+    /// in the existing file, if any.
+    ///
+    /// In order:
+    ///
+    /// 1. a mapped detector that claims a device in `claimed_usb_ids` is
+    ///    disabled;
+    /// 2. a name under `disabled_prefixes` is disabled;
+    /// 3. a name under `id_gated_prefixes` is enabled when the id map knows
+    ///    it (step 1 already proved it claims nothing withheld) and disabled
+    ///    when it does not;
+    /// 4. a name under `re_enable_prefixes` is enabled;
+    /// 5. a mapped detector that claims a device in `native_usb_ids` is
+    ///    enabled;
+    /// 6. anything else keeps `current`, defaulting to enabled.
+    #[must_use]
+    pub fn detector_enabled(&self, name: &str, current: Option<bool>) -> bool {
+        let claim = detector_usb_claim(name);
+        if claim.is_some_and(|claim| claim.overlaps(&self.claimed_usb_ids))
+            || matches_prefix(name, &self.disabled_prefixes)
+        {
+            false
+        } else if matches_prefix(name, &self.id_gated_prefixes) {
+            claim.is_some()
+        } else if matches_prefix(name, &self.re_enable_prefixes)
+            || claim.is_some_and(|claim| claim.overlaps(&self.native_usb_ids))
+        {
+            true
+        } else {
+            current.unwrap_or(true)
+        }
+    }
+}
+
+fn owned<S: AsRef<str>>(items: &[S]) -> Vec<String> {
+    items.iter().map(|item| item.as_ref().to_owned()).collect()
+}
+
 /// Compute the detector map for a partition without touching the filesystem.
 ///
-/// The universe of names is the union of `existing` keys, `seed_names`, and
-/// every detector listed in the embedded families. For each name:
+/// The universe of names is the union of `existing` keys, `seed_names`,
+/// every detector listed in the embedded families, and every mapped
+/// detector that claims a device in `rules.claimed_usb_ids` (so a fresh
+/// config disables it before OpenRGB ever writes the file). Each name is
+/// decided by [`DetectorRules::detector_enabled`].
 ///
-/// 1. a match on `disabled_prefixes` writes `false`;
-/// 2. otherwise a match on `re_enable_prefixes` writes `true`, which is how a
-///    caller hands a family back to OpenRGB once Hypercolor stops claiming
-///    it;
-/// 3. otherwise the existing value is preserved, defaulting to `true` for
-///    names the file has never seen.
-///
-/// Nothing flips an existing `false` to `true` unless its prefix is listed
-/// in `re_enable_prefixes`, so a user's own detector toggles survive.
+/// Nothing flips an existing `false` to `true` unless a rule hands the name
+/// back (a re-enable prefix, an id-gated prefix that proves the device is
+/// not natively claimable, or a native catalog id that is no longer
+/// withheld), so a user's own toggles for unrelated detectors survive.
 #[must_use]
-pub fn partition_detectors<S: AsRef<str>, R: AsRef<str>>(
+pub fn partition_detectors(
     existing: &Map<String, Value>,
-    disabled_prefixes: &[S],
-    re_enable_prefixes: &[R],
+    rules: &DetectorRules,
     seed_names: Option<&[String]>,
 ) -> BTreeMap<String, bool> {
     let mut universe: BTreeSet<&str> = existing.keys().map(String::as_str).collect();
@@ -142,37 +221,36 @@ pub fn partition_detectors<S: AsRef<str>, R: AsRef<str>>(
             .iter()
             .flat_map(|family| family.detectors.iter().map(String::as_str)),
     );
+    if !rules.claimed_usb_ids.is_empty() {
+        universe.extend(
+            detector_usb_ids()
+                .iter()
+                .filter(|(_, claim)| claim.overlaps(&rules.claimed_usb_ids))
+                .map(|(name, _)| name.as_str()),
+        );
+    }
 
     universe
         .into_iter()
         .map(|name| {
-            let enabled = if matches_prefix(name, disabled_prefixes) {
-                false
-            } else if matches_prefix(name, re_enable_prefixes) {
-                true
-            } else {
-                existing.get(name).and_then(Value::as_bool).unwrap_or(true)
-            };
-            (name.to_owned(), enabled)
+            let current = existing.get(name).and_then(Value::as_bool);
+            (name.to_owned(), rules.detector_enabled(name, current))
         })
         .collect()
 }
 
 /// Write `OpenRGB.json` in `dir` with `Detectors.detectors` partitioned.
 ///
-/// Detector names matching `disabled_prefixes` (case-insensitive) become
-/// `false` and names matching `re_enable_prefixes` become `true`; see
-/// [`partition_detectors`] for the full rule. Callers typically pass the
-/// prefixes of every native driver that is enabled with at least one device
-/// as `disabled_prefixes`, and the prefixes of families they previously
-/// disabled but no longer claim as `re_enable_prefixes`. `known_detectors`
-/// seeds names OpenRGB has not written yet (for example a list obtained from
-/// a running server). Any other key in an existing file is preserved, and the
+/// Every detector name is decided by `rules` (see [`partition_detectors`]
+/// and [`DetectorRules::detector_enabled`]). Callers build `rules` from a
+/// [`crate::DetectorPartitionPlan`] with
+/// [`crate::DetectorPartitionPlan::detector_rules`]. `known_detectors` seeds
+/// names OpenRGB has not written yet (for example a list obtained from a
+/// running server). Any other key in an existing file is preserved, and the
 /// file is replaced durably.
-pub fn write_detector_partition<S: AsRef<str>, R: AsRef<str>>(
+pub fn write_detector_partition(
     dir: &ManagedConfigDir,
-    disabled_prefixes: &[S],
-    re_enable_prefixes: &[R],
+    rules: &DetectorRules,
     known_detectors: Option<&[String]>,
 ) -> Result<DetectorPartition> {
     std::fs::create_dir_all(&dir.root).map_err(|source| HostError::Io {
@@ -202,12 +280,7 @@ pub fn write_detector_partition<S: AsRef<str>, R: AsRef<str>>(
         }
     };
 
-    let partition = partition_detectors(
-        &existing_map,
-        disabled_prefixes,
-        re_enable_prefixes,
-        known_detectors,
-    );
+    let partition = partition_detectors(&existing_map, rules, known_detectors);
     let mut report = DetectorPartition::default();
     let mut map = Map::new();
     for (name, enabled) in partition {

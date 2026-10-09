@@ -26,9 +26,9 @@ mod process;
 mod types;
 
 pub use config_dir::{
-    DETECTORS_MAP, DETECTORS_SECTION, DetectorFamily, DetectorPartition, MANAGED_DIR_NAME,
-    detector_families, detector_prefixes_for_drivers, managed_config_dir, matches_prefix,
-    parse_detector_table, partition_detectors, write_detector_partition,
+    DETECTORS_MAP, DETECTORS_SECTION, DetectorFamily, DetectorPartition, DetectorRules,
+    MANAGED_DIR_NAME, detector_families, detector_prefixes_for_drivers, managed_config_dir,
+    matches_prefix, parse_detector_table, partition_detectors, write_detector_partition,
 };
 pub use detect::{
     FLATPAK_APP_ID, SUBPROCESS_TIMEOUT, appimage_search_dirs, appimage_version_key,

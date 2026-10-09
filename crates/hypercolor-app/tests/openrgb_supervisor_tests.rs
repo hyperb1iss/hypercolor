@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ fn facts(id: &str, module_kind: DriverModuleKind, enabled: bool) -> DriverFacts 
         id: id.to_owned(),
         module_kind,
         enabled,
+        usb_ids: BTreeSet::new(),
     }
 }
 
@@ -155,6 +157,7 @@ fn partition_ignores_case_and_bridge_devices() {
         DetectorPartitionPlan {
             disabled_driver_ids: vec!["Razer".to_owned()],
             re_enable_driver_ids: vec!["openrgb".to_owned()],
+            ..DetectorPartitionPlan::default()
         }
     );
 }

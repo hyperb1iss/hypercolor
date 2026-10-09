@@ -2,21 +2,33 @@
 #
 # When the OpenRGB fallback bridge runs beside a native Hypercolor driver,
 # both would claim the same USB or SMBus device. The managed OpenRGB config
-# (Spec 81 §3.1) disables every OpenRGB detector whose name starts with one
-# of the `prefixes` below for each native driver that is enabled and owns at
-# least one enabled device. Matching is case-insensitive.
+# (Spec 81 §3.1) withholds hardware from OpenRGB for each native driver that
+# is enabled and owns at least one enabled device. Matching is
+# case-insensitive.
+#
+# Per device first: when the driver publishes its USB protocol catalog and
+# detector_usb_ids.toml knows a detector's USB ids, that detector is
+# disabled only if it claims a device the driver can claim, so the same
+# brand's unsupported hardware stays bridgeable. The `prefixes` below catch
+# what the id map cannot place: SMBus detectors with no USB id, names newer
+# or older than the map's OpenRGB release, and every name of a driver that
+# published no catalog. Those stay disabled whole-prefix, as before.
 #
 # `detectors` lists known OpenRGB detector names under each prefix so a fresh
 # OpenRGB.json can be seeded before OpenRGB has ever written one. The list is
-# a seed, not an inventory: prefixes do the real work, and any name OpenRGB
-# already recorded in an existing OpenRGB.json is matched by prefix too.
+# a seed, not an inventory: any name OpenRGB already recorded in an existing
+# OpenRGB.json is matched too, and detectors the id map ties to a natively
+# claimed device are seeded from the map.
 #
 # Every name below was verified against the Detectors.detectors map written
-# by OpenRGB 1.0rc3 (hotfix 1). Families with no OpenRGB detector overlap are
-# intentionally absent: prismrgb and push2 have no OpenRGB support; wled,
-# hue, nanoleaf, and govee are configured through OpenRGB settings, not
-# detectors; and QMK keyboards are config-driven in OpenRGB (per-device
-# entries in settings), so no "QMK" detector name exists to disable.
+# by OpenRGB 1.0rc3 (hotfix 1), and every USB name also appears in the
+# OpenRGB 1.0 id map (the crate tests enforce that). Families with no
+# OpenRGB detector name to claim are intentionally absent: prismrgb and
+# push2 have no OpenRGB support; wled, hue, nanoleaf, and govee are
+# configured through OpenRGB settings, not detectors; and QMK keyboards are
+# config-driven in OpenRGB, so no "QMK" prefix exists. Their USB overlap is
+# still covered by the id map (OpenRGB 1.0's vendor-wide Keychron QMK/ZMK
+# detector is withheld while the native QMK driver claims a Keychron board).
 #
 # This file is embedded into hypercolor-openrgb-host with include_str!, so
 # the binaries need no data file at runtime.
