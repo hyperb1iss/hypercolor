@@ -347,6 +347,47 @@ async fn blocks_input_cancels_holds_when_the_stream_or_device_is_lost() -> TestR
 }
 
 #[tokio::test]
+async fn an_oversized_event_line_is_skipped_and_the_stream_stays_framed() -> TestResult {
+    let dir = tempdir()?;
+    let socket_path = dir.path().join("blocksd.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let sink = RecordingSink::default();
+
+    let (_backend, _device_id, _frames) = connected_backend(&listener, socket_path, &sink).await?;
+    let mut events = accept_subscription(&listener).await?;
+
+    // A valid touch padded with JSON whitespace to twice the reader's 64 KiB
+    // line cap. Buffered whole it would decode and publish, so seeing it
+    // published would mean the cap is gone.
+    let padded = format!(
+        r#"{{"type":"touch",{}"uid":{PAD_UID},"action":"start","index":3,"x":0.9,"y":0.5,"z":0.25}}"#,
+        " ".repeat(128 * 1024)
+    );
+    send(&mut events, &[&padded, &touch(PAD_UID, "start", 0, 0.5)]).await?;
+
+    let records = sink
+        .wait_for(|records| !published(records).is_empty())
+        .await;
+    assert_eq!(
+        attaches(&records),
+        2,
+        "the skipped line could have been a touch end"
+    );
+    assert_eq!(
+        published(&records),
+        vec![(
+            2,
+            DeviceInputEdge::TouchBegan {
+                contact: 0,
+                position: at(0.5)
+            }
+        )],
+        "the line after the oversized one still decodes"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn disconnecting_a_device_drops_its_input_lease() -> TestResult {
     let dir = tempdir()?;
     let socket_path = dir.path().join("blocksd.sock");

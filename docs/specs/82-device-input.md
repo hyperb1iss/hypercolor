@@ -241,13 +241,18 @@ topic sees further device traffic.
   `TouchEnded` with `index` as the contact. Buttons use blocksd's SDK
   function name (`mode`, `up`, `down`), then `button{id}` from the protocol
   index.
+- Event lines are capped at 64 KiB, two orders of magnitude above the
+  largest subscribed event (`device_added`, a few hundred bytes). A longer
+  line is skipped through its newline without being buffered, with one
+  warning per connection, so a peer that never sends a newline cannot grow
+  the reader without bound.
 - Every event that could hide a lift supersedes leases so held input
-  cancels: `device_removed` for that device, and an undecodable line or a
-  lost connection for all devices. After an undecodable line the stream keeps
-  reading; after a lost connection it reconnects with backoff from 250 ms
-  doubling to 5 s, without cancelling again while blocksd stays unreachable.
-  `device_added` payloads are ignored, so schema drift there cancels nothing.
-  Dropping the backend aborts the stream.
+  cancels: `device_removed` for that device, and an undecodable or oversized
+  line or a lost connection for all devices. After a skipped line the stream
+  keeps reading; after a lost connection it reconnects with backoff from
+  250 ms doubling to 5 s, without cancelling again while blocksd stays
+  unreachable. `device_added` payloads are ignored, so schema drift there
+  cancels nothing. Dropping the backend aborts the stream.
 
 ## Phasing
 
@@ -277,8 +282,9 @@ topic sees further device traffic.
   registered, and an aborted pump worker withdraws it.
 - Blocks (`blocks_input_tests.rs`): a fake blocksd drives subscribe, touches,
   buttons with and without SDK names, unadopted uids, unknown event types,
-  `device_removed`, an undecodable line, connection loss and resubscription,
-  device disconnect, and the absence of an event connection without a sink.
+  `device_removed`, an undecodable line, an oversized line, connection loss
+  and resubscription, device disconnect, and the absence of an event
+  connection without a sink.
   A unit test holds an aborted stream across a disconnect and reconnect and
   checks it publishes nothing into the new lease.
 - Hardware: touch a Lightpad and LUMI with an interactive effect active and

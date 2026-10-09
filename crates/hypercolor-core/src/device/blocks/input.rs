@@ -28,6 +28,15 @@ const RECONNECT_MAX: Duration = Duration::from_secs(5);
 const SUBSCRIBE_REQUEST: &[u8] =
     b"{\"type\":\"subscribe\",\"events\":[\"device\",\"touch\",\"button\"]}\n";
 
+/// Longest event line the reader buffers, excluding its newline.
+///
+/// The largest event on the subscribed categories is `device_added`, a few
+/// hundred bytes of device metadata, and touches and buttons are smaller
+/// still. 64 KiB leaves two orders of magnitude for payload growth while
+/// bounding what a peer that never sends a newline can make this reader
+/// hold.
+const MAX_EVENT_LINE: usize = 64 * 1024;
+
 /// Input side of one Blocks backend.
 ///
 /// Holds a publisher lease for every connected device and runs the event
@@ -229,6 +238,7 @@ async fn run_stream(socket_path: PathBuf, stream: EventStream) {
                 backoff = RECONNECT_INITIAL;
                 delivered = true;
                 let mut warned = false;
+                let mut warned_oversized = false;
                 loop {
                     let current = match connection.next_item().await {
                         Ok(Some(StreamItem::Event(event))) => stream.handle_event(event),
@@ -238,6 +248,17 @@ async fn run_stream(socket_path: PathBuf, stream: EventStream) {
                                 warned = true;
                             }
                             // The skipped line could have been a touch end.
+                            stream.reattach_all()
+                        }
+                        Ok(Some(StreamItem::Oversized)) => {
+                            if !warned_oversized {
+                                warn!(
+                                    limit = MAX_EVENT_LINE,
+                                    "blocksd sent an input event line over the length limit"
+                                );
+                                warned_oversized = true;
+                            }
+                            // So could a line too long to read.
                             stream.reattach_all()
                         }
                         Ok(None) => break,
@@ -302,11 +323,13 @@ fn reattach(sink: &Arc<dyn DeviceInputSink>, device: &mut InputDevice) {
 enum StreamItem {
     Event(BlocksEvent),
     Undecodable(serde_json::Error),
+    /// A line longer than [`MAX_EVENT_LINE`], discarded through its newline.
+    Oversized,
 }
 
 struct BlocksEventConnection {
     reader: BufReader<UnixStream>,
-    line: String,
+    line: Vec<u8>,
 }
 
 impl BlocksEventConnection {
@@ -321,21 +344,51 @@ impl BlocksEventConnection {
             .context("blocksd subscribe failed")?;
         Ok(Self {
             reader: BufReader::new(stream),
-            line: String::with_capacity(512),
+            line: Vec::with_capacity(512),
         })
     }
 
     /// Read the next line, or `None` once blocksd closes the stream.
+    ///
+    /// A line longer than [`MAX_EVENT_LINE`] is skipped through its newline
+    /// without being buffered, so the stream stays framed and a peer that
+    /// never sends a newline cannot grow the buffer without bound.
     ///
     /// # Errors
     ///
     /// Fails when the socket read fails.
     async fn next_item(&mut self) -> Result<Option<StreamItem>> {
         self.line.clear();
-        if self.reader.read_line(&mut self.line).await? == 0 {
-            return Ok(None);
+        let mut oversized = false;
+        loop {
+            let available = self.reader.fill_buf().await?;
+            if available.is_empty() {
+                // blocksd closed the stream. A partial last line is still
+                // decoded.
+                if self.line.is_empty() && !oversized {
+                    return Ok(None);
+                }
+                break;
+            }
+            let newline = available.iter().position(|&byte| byte == b'\n');
+            let content = newline.unwrap_or(available.len());
+            if !oversized {
+                if self.line.len() + content > MAX_EVENT_LINE {
+                    oversized = true;
+                    self.line.clear();
+                } else {
+                    self.line.extend_from_slice(&available[..content]);
+                }
+            }
+            self.reader.consume(newline.map_or(content, |at| at + 1));
+            if newline.is_some() {
+                break;
+            }
         }
-        Ok(Some(match serde_json::from_str(&self.line) {
+        if oversized {
+            return Ok(Some(StreamItem::Oversized));
+        }
+        Ok(Some(match serde_json::from_slice(&self.line) {
             Ok(event) => StreamItem::Event(event),
             Err(error) => StreamItem::Undecodable(error),
         }))
