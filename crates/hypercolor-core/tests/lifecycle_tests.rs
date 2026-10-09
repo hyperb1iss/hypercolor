@@ -7,10 +7,13 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use hypercolor_core::device::{BackendManager, DeviceLifecycleManager, LifecycleAction};
+use hypercolor_core::device::{
+    BackendManager, DeviceLifecycleManager, FLAP_ESCALATION_THRESHOLD, LifecycleAction,
+    RECONNECT_STABLE_AFTER, ReconnectPolicy,
+};
 use hypercolor_core::input::{
     InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
     ManagedSourceKey, ManagedSourceRole, SourceIssue, SourceKind, SourceRoleBinding, SourceState,
@@ -879,6 +882,104 @@ fn repeated_reconnect_attempt_suppresses_duplicate_connect_while_in_flight() {
         ),
         "a completed reconnect attempt should allow the next scheduled tick"
     );
+}
+
+fn spawned_reconnect_delay(actions: &[LifecycleAction]) -> Duration {
+    actions
+        .iter()
+        .find_map(|action| match action {
+            LifecycleAction::SpawnReconnect { delay, .. } => Some(*delay),
+            _ => None,
+        })
+        .expect("comm error should schedule a reconnect")
+}
+
+/// A lifecycle tracking one device that has already faulted once after a
+/// long healthy run, so its next reconnect is on probation.
+fn faulted_lifecycle(name: &str) -> (DeviceLifecycleManager, DeviceId) {
+    let mut lifecycle = DeviceLifecycleManager::with_reconnect_policy(ReconnectPolicy {
+        initial_delay: Duration::from_secs(1),
+        max_delay: Duration::from_mins(1),
+        backoff_factor: 2.0,
+        max_attempts: Some(6),
+        jitter: 0.0,
+    });
+    let device_id = DeviceId::new();
+    let info = device_info(device_id, name);
+    lifecycle.on_discovered(device_id, &info, None);
+    lifecycle
+        .on_connected(device_id)
+        .expect("first connect should work");
+    let actions = lifecycle
+        .on_comm_error_at(device_id, Instant::now() + Duration::from_hours(1))
+        .expect("first fault should enter reconnecting");
+    assert_eq!(spawned_reconnect_delay(&actions), Duration::from_secs(1));
+    (lifecycle, device_id)
+}
+
+/// Run the scheduled reconnect to success and fail the device right away.
+fn flap(lifecycle: &mut DeviceLifecycleManager, device_id: DeviceId) -> Vec<LifecycleAction> {
+    assert!(matches!(
+        lifecycle.on_reconnect_attempt(device_id),
+        Some(LifecycleAction::Connect { .. })
+    ));
+    lifecycle
+        .on_connected(device_id)
+        .expect("reconnect should succeed");
+    lifecycle
+        .on_comm_error(device_id)
+        .expect("write failure should re-enter reconnecting")
+}
+
+#[test]
+fn flapping_device_reconnect_delay_grows_across_reconnects() {
+    let (mut lifecycle, device_id) = faulted_lifecycle("Nollie Hub");
+
+    let delays = (0..4)
+        .map(|_| spawned_reconnect_delay(&flap(&mut lifecycle, device_id)).as_secs())
+        .collect::<Vec<_>>();
+
+    assert_eq!(delays, vec![2, 4, 8, 16]);
+    assert_eq!(lifecycle.flap_count(device_id), Some(4));
+    assert_eq!(lifecycle.state(device_id), Some(DeviceState::Reconnecting));
+}
+
+#[test]
+fn flapping_device_escalates_once() {
+    let (mut lifecycle, device_id) = faulted_lifecycle("Nollie Hub");
+
+    let mut escalations = Vec::new();
+    for _ in 0..(FLAP_ESCALATION_THRESHOLD + 3) {
+        flap(&mut lifecycle, device_id);
+        escalations.extend(lifecycle.take_flap_escalation(device_id));
+    }
+
+    assert_eq!(escalations.len(), 1);
+    assert_eq!(escalations[0].flaps, FLAP_ESCALATION_THRESHOLD);
+    assert_eq!(escalations[0].next_retry, Duration::from_secs(8));
+    assert!(lifecycle.is_flapping(device_id));
+}
+
+#[test]
+fn device_that_stays_healthy_after_reconnect_resets_backoff() {
+    let (mut lifecycle, device_id) = faulted_lifecycle("Desk Strip");
+    for _ in 0..2 {
+        flap(&mut lifecycle, device_id);
+    }
+    assert_eq!(lifecycle.flap_count(device_id), Some(2));
+
+    assert!(lifecycle.on_reconnect_attempt(device_id).is_some());
+    lifecycle
+        .on_connected(device_id)
+        .expect("reconnect should succeed");
+    let actions = lifecycle
+        .on_comm_error_at(device_id, Instant::now() + RECONNECT_STABLE_AFTER)
+        .expect("a later fault should enter reconnecting");
+
+    assert_eq!(spawned_reconnect_delay(&actions), Duration::from_secs(1));
+    assert_eq!(lifecycle.flap_count(device_id), Some(0));
+    assert!(!lifecycle.is_flapping(device_id));
+    assert!(lifecycle.take_flap_escalation(device_id).is_none());
 }
 
 #[test]

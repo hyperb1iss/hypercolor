@@ -12,7 +12,8 @@ use anyhow::{Result, bail};
 use tokio::sync::Mutex;
 
 use hypercolor_core::device::{
-    DeviceRegistry, DeviceStateMachine, DiscoveryOrchestrator, ReconnectPolicy,
+    DeviceRegistry, DeviceStateMachine, DiscoveryOrchestrator, FLAP_ESCALATION_THRESHOLD,
+    FlapEscalation, RECONNECT_STABLE_AFTER, ReconnectPolicy,
 };
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior,
@@ -1724,6 +1725,184 @@ fn state_machine_hot_unplug_from_any_state_returns_known() {
     disabled.on_user_disable();
     disabled.on_hot_unplug();
     assert_eq!(*disabled.state(), DeviceState::Known);
+}
+
+// ── Reconnect flap backoff ───────────────────────────────────────────────
+
+fn flap_policy() -> ReconnectPolicy {
+    ReconnectPolicy {
+        initial_delay: Duration::from_secs(1),
+        max_delay: Duration::from_mins(1),
+        backoff_factor: 2.0,
+        max_attempts: Some(6),
+        jitter: 0.0,
+    }
+}
+
+/// Connect a fresh machine, keep it healthy for an hour, then fail it once.
+fn machine_after_first_fault() -> (DeviceStateMachine, Instant) {
+    let mut sm = DeviceStateMachine::with_policy(sample_identifier(), flap_policy());
+    let connected_at = Instant::now();
+    sm.on_connected_at(DeviceHandle::new(sample_identifier(), "mock"), connected_at)
+        .expect("first connect should work");
+    let failed_at = connected_at + Duration::from_hours(1);
+    sm.on_comm_error_at(failed_at)
+        .expect("comm error should transition");
+    (sm, failed_at)
+}
+
+/// Reconnect after the scheduled delay, fail again `uptime` later, and return
+/// the delay scheduled for the next retry plus the failure time.
+fn reconnect_then_fail(
+    sm: &mut DeviceStateMachine,
+    last_failure: Instant,
+    uptime: Duration,
+) -> (Duration, Instant) {
+    let delay = sm
+        .reconnect_status()
+        .expect("machine should be waiting to reconnect")
+        .next_retry;
+    let connected_at = last_failure + delay;
+    sm.on_connected_at(DeviceHandle::new(sample_identifier(), "mock"), connected_at)
+        .expect("reconnect should work");
+    let failed_at = connected_at + uptime;
+    sm.on_comm_error_at(failed_at)
+        .expect("comm error should transition");
+    let next_retry = sm
+        .reconnect_status()
+        .expect("comm error should schedule a retry")
+        .next_retry;
+    (next_retry, failed_at)
+}
+
+#[test]
+fn state_machine_flapping_reconnects_keep_growing_backoff() {
+    let (mut sm, mut failed_at) = machine_after_first_fault();
+    assert_eq!(
+        sm.reconnect_status().map(|status| status.next_retry),
+        Some(Duration::from_secs(1)),
+        "the first fault after a long healthy run retries at the initial delay"
+    );
+    assert_eq!(sm.flap_count(), 0);
+
+    let mut delays = Vec::new();
+    for _ in 0..7 {
+        let (next_retry, at) = reconnect_then_fail(&mut sm, failed_at, Duration::from_millis(50));
+        delays.push(next_retry.as_secs());
+        failed_at = at;
+    }
+
+    assert_eq!(delays, vec![2, 4, 8, 16, 32, 60, 60]);
+    assert_eq!(sm.flap_count(), 7);
+    assert_eq!(sm.debug_snapshot().reconnect_flaps, 7);
+    assert_eq!(
+        sm.reconnect_status().map(|status| status.attempt),
+        Some(0),
+        "flaps grow the delay without spending connect-failure attempts"
+    );
+}
+
+#[test]
+fn state_machine_failure_just_inside_the_stable_window_is_a_flap() {
+    let (mut sm, failed_at) = machine_after_first_fault();
+
+    let (next_retry, _) = reconnect_then_fail(
+        &mut sm,
+        failed_at,
+        RECONNECT_STABLE_AFTER
+            .checked_sub(Duration::from_millis(1))
+            .expect("the stable window should exceed one millisecond"),
+    );
+
+    assert_eq!(next_retry, Duration::from_secs(2));
+    assert_eq!(sm.flap_count(), 1);
+}
+
+#[test]
+fn state_machine_stable_reconnect_resets_backoff() {
+    let (mut sm, mut failed_at) = machine_after_first_fault();
+    for _ in 0..3 {
+        let (_, at) = reconnect_then_fail(&mut sm, failed_at, Duration::from_millis(50));
+        failed_at = at;
+    }
+    assert_eq!(
+        sm.reconnect_status().map(|status| status.next_retry),
+        Some(Duration::from_secs(8))
+    );
+
+    let (next_retry, _) = reconnect_then_fail(&mut sm, failed_at, RECONNECT_STABLE_AFTER);
+
+    assert_eq!(
+        next_retry,
+        Duration::from_secs(1),
+        "a reconnect that outlived the stable window recovered the device"
+    );
+    assert_eq!(sm.flap_count(), 0);
+    assert!(!sm.is_flapping());
+}
+
+#[test]
+fn state_machine_flap_escalation_fires_once_per_streak() {
+    let (mut sm, mut failed_at) = machine_after_first_fault();
+    assert_eq!(sm.take_flap_escalation(), None);
+
+    let mut escalations = Vec::new();
+    for _ in 0..6 {
+        let (_, at) = reconnect_then_fail(&mut sm, failed_at, Duration::from_millis(50));
+        failed_at = at;
+        if let Some(escalation) = sm.take_flap_escalation() {
+            escalations.push(escalation);
+        }
+    }
+
+    assert_eq!(
+        escalations,
+        vec![FlapEscalation {
+            flaps: FLAP_ESCALATION_THRESHOLD,
+            next_retry: Duration::from_secs(8),
+        }]
+    );
+    assert!(sm.is_flapping());
+    assert_eq!(sm.take_flap_escalation(), None);
+
+    // A stable connection ends the streak, so a later streak escalates again.
+    let (_, at) = reconnect_then_fail(&mut sm, failed_at, Duration::from_mins(5));
+    failed_at = at;
+    assert!(!sm.is_flapping());
+    for _ in 0..FLAP_ESCALATION_THRESHOLD {
+        let (_, at) = reconnect_then_fail(&mut sm, failed_at, Duration::from_millis(50));
+        failed_at = at;
+    }
+    assert_eq!(
+        sm.take_flap_escalation().map(|escalation| escalation.flaps),
+        Some(FLAP_ESCALATION_THRESHOLD)
+    );
+}
+
+#[test]
+fn state_machine_hot_unplug_ends_the_flap_streak() {
+    let (mut sm, mut failed_at) = machine_after_first_fault();
+    for _ in 0..2 {
+        let (_, at) = reconnect_then_fail(&mut sm, failed_at, Duration::from_millis(50));
+        failed_at = at;
+    }
+    assert_eq!(sm.flap_count(), 2);
+
+    sm.on_hot_unplug();
+    assert_eq!(sm.flap_count(), 0);
+
+    let connected_at = failed_at + Duration::from_secs(1);
+    sm.on_connected_at(DeviceHandle::new(sample_identifier(), "mock"), connected_at)
+        .expect("a replugged device should connect from known");
+    sm.on_comm_error_at(connected_at + Duration::from_millis(50))
+        .expect("comm error should transition");
+
+    assert_eq!(
+        sm.reconnect_status().map(|status| status.next_retry),
+        Some(Duration::from_secs(1)),
+        "a fresh connection from known has no reconnect on probation"
+    );
+    assert_eq!(sm.flap_count(), 0);
 }
 
 #[test]

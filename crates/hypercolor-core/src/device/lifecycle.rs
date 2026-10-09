@@ -12,7 +12,7 @@ use hypercolor_types::device::{
     DeviceState,
 };
 
-use super::state_machine::{DeviceStateMachine, ReconnectPolicy};
+use super::state_machine::{DeviceStateMachine, FlapEscalation, ReconnectPolicy};
 
 const DEFAULT_MAX_RECONNECT_ATTEMPTS: u32 = 6;
 const CONNECT_IN_FLIGHT_STALE_AFTER: Duration = Duration::from_mins(1);
@@ -341,14 +341,26 @@ impl DeviceLifecycleManager {
     }
 
     /// Handle a communication failure and schedule reconnect.
+    ///
+    /// A failure shortly after a reconnect keeps growing the backoff; see
+    /// [`DeviceStateMachine::on_comm_error`].
     pub fn on_comm_error(
         &mut self,
         device_id: DeviceId,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
+        self.on_comm_error_at(device_id, Instant::now())
+    }
+
+    /// [`Self::on_comm_error`] with an explicit clock reading.
+    pub fn on_comm_error_at(
+        &mut self,
+        device_id: DeviceId,
+        now: Instant,
+    ) -> Result<Vec<LifecycleAction>, DeviceError> {
         self.connect_in_flight.remove(&device_id);
         let (disconnect_action, unmap_action, next_retry_delay) = {
             let managed = self.managed_mut(device_id)?;
-            managed.state_machine.on_comm_error()?;
+            managed.state_machine.on_comm_error_at(now)?;
             (
                 Self::disconnect_action(device_id, managed),
                 LifecycleAction::Unmap {
@@ -369,6 +381,31 @@ impl DeviceLifecycleManager {
         }
 
         Ok(actions)
+    }
+
+    /// Reconnects in a row that failed again before proving stable.
+    #[must_use]
+    pub fn flap_count(&self, device_id: DeviceId) -> Option<u32> {
+        self.devices
+            .get(&device_id)
+            .map(|managed| managed.state_machine.flap_count())
+    }
+
+    /// Whether the device's flap streak has already been escalated.
+    #[must_use]
+    pub fn is_flapping(&self, device_id: DeviceId) -> bool {
+        self.devices
+            .get(&device_id)
+            .is_some_and(|managed| managed.state_machine.is_flapping())
+    }
+
+    /// Take the one-shot report raised when a device's flap streak crossed
+    /// the escalation threshold. See [`DeviceStateMachine::take_flap_escalation`].
+    pub fn take_flap_escalation(&mut self, device_id: DeviceId) -> Option<FlapEscalation> {
+        self.devices
+            .get_mut(&device_id)?
+            .state_machine
+            .take_flap_escalation()
     }
 
     /// Build a reconnect connect action after retry delay elapses.

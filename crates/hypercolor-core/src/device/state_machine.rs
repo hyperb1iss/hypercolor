@@ -10,6 +10,26 @@ use serde::Serialize;
 
 use hypercolor_types::device::{DeviceError, DeviceHandle, DeviceIdentifier, DeviceState};
 
+/// How long a reconnected device must stay up without a communication error
+/// before the reconnect counts as a recovery and the backoff starts over.
+///
+/// A device that fails again sooner reconnected into the same fault, so its
+/// next retry keeps growing from the delay that brought it back. A device
+/// that is still broken reports its fault within a few frames of connecting,
+/// a third of a second even at the lowest 10 fps render tier, so ten seconds
+/// leaves an order of magnitude of margin. It also sits well inside the 60 s
+/// backoff ceiling, so a device that really recovered returns to fast
+/// retries on its next unrelated fault.
+pub const RECONNECT_STABLE_AFTER: Duration = Duration::from_secs(10);
+
+/// Unstable reconnects in a row before the device is reported as flapping.
+///
+/// One reconnect that fails again can be a device still settling after
+/// re-enumeration, and two can coincide with a bus hiccup. Three in a row
+/// (about 7 s of retries on the default policy) is a persistent fault that
+/// reconnecting does not fix, and the user needs to hear about it.
+pub const FLAP_ESCALATION_THRESHOLD: u32 = 3;
+
 /// Reconnection backoff configuration.
 #[derive(Debug, Clone)]
 pub struct ReconnectPolicy {
@@ -55,6 +75,33 @@ pub struct ReconnectStatus {
     pub next_retry: Duration,
 }
 
+/// One-shot report that a device keeps failing right after reconnecting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlapEscalation {
+    /// Reconnects in a row that failed again inside [`RECONNECT_STABLE_AFTER`].
+    pub flaps: u32,
+
+    /// Delay before the next reconnect attempt.
+    pub next_retry: Duration,
+}
+
+/// Connection stability carried across reconnects.
+#[derive(Debug, Clone, Copy, Default)]
+struct FlapTracker {
+    /// When the current connection came up; `None` while disconnected.
+    connected_at: Option<Instant>,
+
+    /// Retry delay of the reconnect that produced the current connection,
+    /// kept until the connection proves stable.
+    unproven_delay: Option<Duration>,
+
+    /// Unstable reconnects in a row.
+    flaps: u32,
+
+    /// Escalation reached but not yet taken by the executor.
+    escalation_pending: bool,
+}
+
 /// Recorded state transition for diagnostics.
 #[derive(Debug, Clone, Serialize)]
 pub struct StateTransitionRecord {
@@ -89,6 +136,9 @@ pub struct DeviceStateMachineDebugSnapshot {
     /// Delay until next reconnect attempt, if reconnecting.
     pub next_retry_ms: Option<u64>,
 
+    /// Reconnects in a row that failed again before proving stable.
+    pub reconnect_flaps: u32,
+
     /// Number of recorded transition records.
     pub transition_count: usize,
 
@@ -103,6 +153,7 @@ pub struct DeviceStateMachine {
     handle: Option<DeviceHandle>,
     reconnect: Option<ReconnectStatus>,
     reconnect_policy: ReconnectPolicy,
+    flap: FlapTracker,
     last_transition: Instant,
     transition_history: VecDeque<StateTransitionRecord>,
     history_limit: usize,
@@ -124,6 +175,7 @@ impl DeviceStateMachine {
             handle: None,
             reconnect: None,
             reconnect_policy,
+            flap: FlapTracker::default(),
             last_transition: Instant::now(),
             transition_history: VecDeque::new(),
             history_limit: 64,
@@ -154,12 +206,57 @@ impl DeviceStateMachine {
         self.last_transition
     }
 
+    /// Reconnects in a row that failed again before proving stable.
+    #[must_use]
+    pub fn flap_count(&self) -> u32 {
+        self.flap.flaps
+    }
+
+    /// Whether the current flap streak has reached [`FLAP_ESCALATION_THRESHOLD`].
+    #[must_use]
+    pub fn is_flapping(&self) -> bool {
+        self.flap.flaps >= FLAP_ESCALATION_THRESHOLD
+    }
+
+    /// Take the escalation raised when the flap streak reached
+    /// [`FLAP_ESCALATION_THRESHOLD`].
+    ///
+    /// Returns `Some` once per streak; the streak must end with a stable
+    /// connection or a fresh start before another escalation can fire.
+    pub fn take_flap_escalation(&mut self) -> Option<FlapEscalation> {
+        if !std::mem::take(&mut self.flap.escalation_pending) {
+            return None;
+        }
+        Some(FlapEscalation {
+            flaps: self.flap.flaps,
+            next_retry: self
+                .reconnect
+                .as_ref()
+                .map_or(self.reconnect_policy.initial_delay, |status| {
+                    status.next_retry
+                }),
+        })
+    }
+
     /// Transition: `Known|Reconnecting -> Connected`.
+    ///
+    /// A reconnect keeps its retry delay on probation: the backoff starts
+    /// over only once the connection outlives [`RECONNECT_STABLE_AFTER`].
     pub fn on_connected(&mut self, handle: DeviceHandle) -> Result<(), DeviceError> {
+        self.on_connected_at(handle, Instant::now())
+    }
+
+    /// [`Self::on_connected`] with an explicit clock reading.
+    pub fn on_connected_at(
+        &mut self,
+        handle: DeviceHandle,
+        now: Instant,
+    ) -> Result<(), DeviceError> {
         match self.state {
             DeviceState::Known | DeviceState::Reconnecting => {
                 self.handle = Some(handle);
-                self.reconnect = None;
+                self.flap.connected_at = Some(now);
+                self.flap.unproven_delay = self.reconnect.take().map(|status| status.next_retry);
                 self.set_state(DeviceState::Connected, "connect");
                 Ok(())
             }
@@ -208,6 +305,7 @@ impl DeviceStateMachine {
     pub fn on_connect_abandoned(&mut self) {
         self.handle = None;
         self.reconnect = None;
+        self.flap = FlapTracker::default();
         if self.state == DeviceState::Reconnecting {
             self.set_state(DeviceState::Known, "connect_abandoned");
         }
@@ -226,14 +324,43 @@ impl DeviceStateMachine {
     }
 
     /// Transition: `Connected|Active -> Reconnecting`.
+    ///
+    /// A connection that failed inside [`RECONNECT_STABLE_AFTER`] of a
+    /// reconnect is a flap: the next retry grows from the delay that brought
+    /// the device back instead of restarting at the initial delay.
     pub fn on_comm_error(&mut self) -> Result<(), DeviceError> {
+        self.on_comm_error_at(Instant::now())
+    }
+
+    /// [`Self::on_comm_error`] with an explicit clock reading.
+    pub fn on_comm_error_at(&mut self, now: Instant) -> Result<(), DeviceError> {
         match self.state {
             DeviceState::Connected | DeviceState::Active => {
+                // An escalation is reported for the failure that raised it;
+                // one the caller never took does not outlive that failure.
+                self.flap.escalation_pending = false;
+                let unstable_reconnect_delay = self.flap.unproven_delay.filter(|_| {
+                    self.flap.connected_at.is_some_and(|connected_at| {
+                        now.saturating_duration_since(connected_at) < RECONNECT_STABLE_AFTER
+                    })
+                });
+                let next_retry = if let Some(previous) = unstable_reconnect_delay {
+                    self.flap.flaps = self.flap.flaps.saturating_add(1);
+                    if self.flap.flaps == FLAP_ESCALATION_THRESHOLD {
+                        self.flap.escalation_pending = true;
+                    }
+                    self.grow_delay(previous, self.flap.flaps)
+                } else {
+                    self.flap = FlapTracker::default();
+                    self.reconnect_policy.initial_delay
+                };
+                self.flap.connected_at = None;
+                self.flap.unproven_delay = None;
                 self.handle = None;
                 self.reconnect = Some(ReconnectStatus {
-                    since: Instant::now(),
+                    since: now,
                     attempt: 0,
-                    next_retry: self.reconnect_policy.initial_delay,
+                    next_retry,
                 });
                 self.set_state(DeviceState::Reconnecting, "comm_error");
                 Ok(())
@@ -259,33 +386,37 @@ impl DeviceStateMachine {
         {
             self.handle = None;
             self.reconnect = None;
+            self.flap = FlapTracker::default();
             self.set_state(DeviceState::Known, "reconnect_exhausted");
             return None;
         }
 
-        let current_secs = reconnect.next_retry.as_secs_f64();
-        let base_secs = (current_secs * self.reconnect_policy.backoff_factor)
+        let (current, attempt) = (reconnect.next_retry, reconnect.attempt);
+        let next = self.grow_delay(current, attempt);
+        if let Some(reconnect) = self.reconnect.as_mut() {
+            reconnect.next_retry = next;
+        }
+
+        Some(next)
+    }
+
+    /// Apply one backoff step to `current`, capped and jittered.
+    fn grow_delay(&self, current: Duration, step: u32) -> Duration {
+        let base_secs = (current.as_secs_f64() * self.reconnect_policy.backoff_factor)
             .min(self.reconnect_policy.max_delay.as_secs_f64());
 
         // Deterministic +/- jitter keeps retries spread without requiring RNG.
-        let centered = if reconnect.attempt % 2 == 0 {
-            1.0
-        } else {
-            -1.0
-        };
+        let centered = if step.is_multiple_of(2) { 1.0 } else { -1.0 };
         let jitter = centered * self.reconnect_policy.jitter;
 
-        let jittered_secs = (base_secs * (1.0 + jitter)).max(0.1);
-        let next = Duration::from_secs_f64(jittered_secs);
-        reconnect.next_retry = next;
-
-        Some(next)
+        Duration::from_secs_f64((base_secs * (1.0 + jitter)).max(0.1))
     }
 
     /// Transition to `Disabled` from any state.
     pub fn on_user_disable(&mut self) {
         self.handle = None;
         self.reconnect = None;
+        self.flap = FlapTracker::default();
         self.set_state(DeviceState::Disabled, "user_disable");
     }
 
@@ -300,6 +431,7 @@ impl DeviceStateMachine {
     pub fn on_hot_unplug(&mut self) {
         self.handle = None;
         self.reconnect = None;
+        self.flap = FlapTracker::default();
         self.set_state(DeviceState::Known, "hot_unplug");
     }
 
@@ -316,6 +448,7 @@ impl DeviceStateMachine {
                 let ms = r.next_retry.as_millis();
                 u64::try_from(ms).unwrap_or(u64::MAX)
             }),
+            reconnect_flaps: self.flap.flaps,
             transition_count: self.transition_history.len(),
             transitions: self.transition_history.iter().cloned().collect(),
         }
