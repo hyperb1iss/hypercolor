@@ -533,16 +533,33 @@ fn send_output_report_locked(
     let written = device
         .write(packet)
         .map_err(|error| map_hidapi_error(&error))?;
-    if written == packet.len() {
+    check_output_write(written, packet.len())
+}
+
+/// Judges the byte count hidapi reports for an output write.
+///
+/// The Windows backend pads every write to the collection's longest output
+/// report and reports that padded length once the overlapped write
+/// completes, so a 1024-byte packet on a 1025-byte collection reports 1025.
+/// When `WriteFile` completes synchronously it reports 0. Neither loses
+/// bytes. A nonzero count below the packet length does: the backend
+/// truncates packets longer than the report.
+fn check_output_write(written: usize, packet_len: usize) -> Result<(), TransportError> {
+    if written == 0 || written >= packet_len {
         Ok(())
     } else {
         Err(TransportError::IoError {
-            detail: format!(
-                "short hidapi output write: wrote {written} of {} bytes",
-                packet.len()
-            ),
+            detail: format!("short hidapi output write: wrote {written} of {packet_len} bytes"),
         })
     }
+}
+
+#[doc(hidden)]
+pub fn check_output_write_for_testing(
+    written: usize,
+    packet_len: usize,
+) -> Result<(), TransportError> {
+    check_output_write(written, packet_len)
 }
 
 fn receive_feature_report_locked(
