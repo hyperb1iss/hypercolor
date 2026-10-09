@@ -234,7 +234,7 @@ async fn request_device_reconnect(
         {
             return Ok(false);
         }
-        lifecycle.on_comm_error(device_id)?
+        lifecycle.on_reconnect_requested(device_id)?
     };
     discovery::execute_lifecycle_actions(runtime.clone(), actions).await;
     discovery::sync_registry_state(runtime, device_id).await;

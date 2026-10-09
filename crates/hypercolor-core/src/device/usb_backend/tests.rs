@@ -1739,6 +1739,10 @@ async fn a_wedged_lianli_tx_ends_the_actor_and_is_reset_through_the_rx() {
         "a wedge is a disconnect, not a retryable timeout: {:?}",
         ack.error
     );
+    assert!(
+        !ack.transient,
+        "a failure that ends the actor must not be reported as transient"
+    );
 
     let result = timeout(Duration::from_secs(1), actor)
         .await
@@ -2549,6 +2553,10 @@ async fn assert_transient_frame_failure_survival(
     assert_eq!(first_ack.id, first_id);
     assert_eq!(first_ack.status, DeviceDeliveryStatus::Failed);
     assert!(first_ack.transport_started);
+    assert!(
+        first_ack.transient,
+        "a failure the actor survives should be acknowledged as transient"
+    );
     assert_eq!(first_ack.completed_payload_bytes, 0);
     match failure {
         InjectedPrimaryFailure::Timeout => assert!(matches!(
@@ -2576,6 +2584,7 @@ async fn assert_transient_frame_failure_survival(
     assert_eq!(second_ack.id, second_id);
     assert_eq!(second_ack.status, DeviceDeliveryStatus::Completed);
     assert!(second_ack.transport_started);
+    assert!(!second_ack.transient);
     assert_eq!(second_ack.completed_payload_bytes, 3);
     assert!(!actor.is_finished());
 

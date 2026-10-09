@@ -786,7 +786,7 @@ impl UsbBackend {
                     &error,
                 );
                 if let Some(id) = frame.delivery_id {
-                    frame.acknowledge(super::DeviceDeliveryAck::failed(
+                    frame.acknowledge(super::DeviceDeliveryAck::failed_transient(
                         id,
                         true,
                         transport_started_at.elapsed(),

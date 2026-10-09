@@ -5451,3 +5451,206 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
         "queue should be recreated to use the direct frame sink once it is registered"
     );
 }
+
+// ── Failure streak accounting ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy)]
+enum ScriptedDelivery {
+    Complete,
+    TransientFailure,
+    Failure,
+}
+
+struct ScriptedFrameSink {
+    script: Arc<StdMutex<std::collections::VecDeque<ScriptedDelivery>>>,
+    attempts: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl DeviceFrameSink for ScriptedFrameSink {
+    async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<()> {
+        bail!("scripted sink only answers queue-qualified deliveries")
+    }
+
+    async fn deliver_colors_shared_observed(
+        &self,
+        id: DeviceDeliveryId,
+        colors: Arc<Vec<[u8; 3]>>,
+        observer: Arc<dyn DeviceDeliveryObserver>,
+    ) -> DeviceDeliveryAck {
+        observer.transport_started(id);
+        let next = self
+            .script
+            .lock()
+            .expect("delivery script lock should not be poisoned")
+            .pop_front()
+            .unwrap_or(ScriptedDelivery::Complete);
+        let error = DeviceError::write("scripted", "hid write reported a short count");
+        let ack = match next {
+            ScriptedDelivery::Complete => {
+                DeviceDeliveryAck::completed(id, colors.len().saturating_mul(3), Duration::ZERO)
+            }
+            ScriptedDelivery::TransientFailure => {
+                DeviceDeliveryAck::failed_transient(id, true, Duration::ZERO, error)
+            }
+            ScriptedDelivery::Failure => DeviceDeliveryAck::failed(id, true, Duration::ZERO, error),
+        };
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        ack
+    }
+}
+
+struct ScriptedFrameSinkBackend {
+    expected_device_id: DeviceId,
+    script: Arc<StdMutex<std::collections::VecDeque<ScriptedDelivery>>>,
+    attempts: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for ScriptedFrameSinkBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "scripted_sink".to_owned(),
+            name: "Scripted Frame Sink Backend".to_owned(),
+            description: "Acknowledges deliveries from a fixed outcome script".to_owned(),
+        }
+    }
+
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        Ok(())
+    }
+
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        bail!("backend-wide write path should not be used when a frame sink is available")
+    }
+
+    fn frame_sink(&self, id: &DeviceId) -> Option<Arc<dyn DeviceFrameSink>> {
+        (*id == self.expected_device_id).then(|| {
+            Arc::new(ScriptedFrameSink {
+                script: Arc::clone(&self.script),
+                attempts: Arc::clone(&self.attempts),
+            }) as Arc<dyn DeviceFrameSink>
+        })
+    }
+}
+
+async fn scripted_sink_manager(
+    script: impl IntoIterator<Item = ScriptedDelivery>,
+) -> (BackendManager, Arc<AtomicUsize>, SpatialLayout) {
+    let device_id = DeviceId::new();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(ScriptedFrameSinkBackend {
+        expected_device_id: device_id,
+        script: Arc::new(StdMutex::new(script.into_iter().collect())),
+        attempts: Arc::clone(&attempts),
+    }));
+    manager
+        .connect_device("scripted_sink", device_id, "scripted_sink:strip")
+        .await
+        .expect("scripted sink should connect");
+    let layout = make_layout(vec![make_zone("zone_0", "scripted_sink:strip", 2)]);
+    (manager, attempts, layout)
+}
+
+/// Push one distinct frame and wait until the sink has acknowledged it.
+async fn deliver_scripted_frame(
+    manager: &mut BackendManager,
+    attempts: &AtomicUsize,
+    layout: &SpatialLayout,
+    shade: u8,
+) {
+    let before = attempts.load(Ordering::SeqCst);
+    manager.write_frame(
+        &[ZoneColors {
+            zone_id: "zone_0".into(),
+            colors: vec![[shade, 0, 0]; 2],
+        }],
+        layout,
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while attempts.load(Ordering::SeqCst) == before {
+        assert!(
+            Instant::now() < deadline,
+            "scripted delivery {shade} was never acknowledged"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    // The queue records the acknowledgement just after the sink returns it.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+}
+
+#[tokio::test]
+async fn async_failures_count_consecutive_transient_deliveries_until_a_success() {
+    let (mut manager, attempts, layout) = scripted_sink_manager([
+        ScriptedDelivery::TransientFailure,
+        ScriptedDelivery::TransientFailure,
+        ScriptedDelivery::Complete,
+        ScriptedDelivery::TransientFailure,
+    ])
+    .await;
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 10).await;
+    let first = manager.async_write_failures();
+    assert_eq!(first.len(), 1);
+    assert!(first[0].transient);
+    assert_eq!(first[0].consecutive_failures, 1);
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 20).await;
+    let second = manager.async_write_failures();
+    assert_eq!(second.len(), 1);
+    assert!(second[0].transient);
+    assert_eq!(second[0].consecutive_failures, 2);
+    assert!(
+        !first[0].is_current(),
+        "a newer failure replaces the retained ticket"
+    );
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 30).await;
+    assert!(
+        manager.async_write_failures().is_empty(),
+        "a completed delivery clears the retained failure"
+    );
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 40).await;
+    let after_success = manager.async_write_failures();
+    assert_eq!(after_success.len(), 1);
+    assert_eq!(
+        after_success[0].consecutive_failures, 1,
+        "a completed delivery restarts the failure run"
+    );
+}
+
+#[tokio::test]
+async fn async_failures_keep_fatal_lane_failures_non_transient() {
+    let (mut manager, attempts, layout) = scripted_sink_manager([
+        ScriptedDelivery::TransientFailure,
+        ScriptedDelivery::Failure,
+    ])
+    .await;
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 10).await;
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 20).await;
+
+    let failures = manager.async_write_failures();
+    assert_eq!(failures.len(), 1);
+    assert!(
+        !failures[0].transient,
+        "the newest failure carries its own producer classification"
+    );
+    assert_eq!(failures[0].consecutive_failures, 2);
+}

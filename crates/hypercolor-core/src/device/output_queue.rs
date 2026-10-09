@@ -1,7 +1,7 @@
 //! Latest-frame output queues for device writes.
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -511,6 +511,13 @@ pub struct AsyncWriteFailure {
     pub delivery_id: DeviceDeliveryId,
     /// Most recent typed async write error.
     pub error: DeviceError,
+    /// Whether the producing lane reported this failure as transient and kept
+    /// its device session running.
+    pub transient: bool,
+    /// Failed deliveries in a row on this lane, ending with this one. A
+    /// completed delivery resets the run; suppressed deliveries, which do no
+    /// transport I/O, neither extend nor reset it.
+    pub consecutive_failures: u32,
     retired_generation: bool,
     fence: std::sync::Weak<AsyncWriteFailureFence>,
 }
@@ -555,6 +562,8 @@ impl std::fmt::Debug for AsyncWriteFailure {
             .field("device_id", &self.device_id)
             .field("delivery_id", &self.delivery_id)
             .field("error", &self.error)
+            .field("transient", &self.transient)
+            .field("consecutive_failures", &self.consecutive_failures)
             .field("retired_generation", &self.retired_generation)
             .finish_non_exhaustive()
     }
@@ -566,6 +575,8 @@ impl PartialEq for AsyncWriteFailure {
             && self.device_id == other.device_id
             && self.delivery_id == other.delivery_id
             && self.error == other.error
+            && self.transient == other.transient
+            && self.consecutive_failures == other.consecutive_failures
             && self.retired_generation == other.retired_generation
     }
 }
@@ -576,6 +587,8 @@ impl Eq for AsyncWriteFailure {}
 struct RetainedWriteFailure {
     id: DeviceDeliveryId,
     error: DeviceError,
+    transient: bool,
+    consecutive_failures: u32,
     acknowledged: bool,
 }
 
@@ -637,6 +650,9 @@ struct OutputQueueMetrics {
     last_handled_sequence: AtomicU64,
     last_success_sequence: AtomicU64,
     last_error_sequence: AtomicU64,
+    /// Failed deliveries since the last completed one; written only while
+    /// holding `retained_failure`.
+    consecutive_failures: AtomicU32,
     retained_failure: StdMutex<Option<RetainedWriteFailure>>,
 }
 
@@ -668,6 +684,7 @@ impl OutputQueueMetrics {
             last_handled_sequence: AtomicU64::new(0),
             last_success_sequence: AtomicU64::new(0),
             last_error_sequence: AtomicU64::new(0),
+            consecutive_failures: AtomicU32::new(0),
             retained_failure: StdMutex::new(None),
         }
     }
@@ -684,6 +701,7 @@ impl OutputQueueMetrics {
         self.last_handled_sequence.store(0, Ordering::Relaxed);
         self.last_success_sequence.store(0, Ordering::Relaxed);
         self.last_error_sequence.store(0, Ordering::Relaxed);
+        self.consecutive_failures.store(0, Ordering::Relaxed);
         *retained_failure = None;
     }
 
@@ -760,6 +778,7 @@ impl OutputQueueMetrics {
             .store(id.sequence, Ordering::Relaxed);
         self.last_handled_sequence
             .store(id.sequence, Ordering::Release);
+        self.consecutive_failures.store(0, Ordering::Relaxed);
         if retained_failure.as_ref().is_some_and(|failure| {
             failure.id.queue_generation == id.queue_generation && failure.id.sequence <= id.sequence
         }) {
@@ -795,7 +814,13 @@ impl OutputQueueMetrics {
         }
     }
 
-    fn record_write_error(&self, id: DeviceDeliveryId, sent_at: Instant, error: DeviceError) {
+    fn record_write_error(
+        &self,
+        id: DeviceDeliveryId,
+        sent_at: Instant,
+        error: DeviceError,
+        transient: bool,
+    ) {
         let mut retained_failure = self
             .retained_failure
             .lock()
@@ -812,9 +837,17 @@ impl OutputQueueMetrics {
         self.last_error_sequence
             .store(id.sequence, Ordering::Release);
         if id.sequence > self.last_handled_sequence.load(Ordering::Acquire) {
+            let consecutive_failures = self
+                .consecutive_failures
+                .load(Ordering::Relaxed)
+                .saturating_add(1);
+            self.consecutive_failures
+                .store(consecutive_failures, Ordering::Relaxed);
             *retained_failure = Some(RetainedWriteFailure {
                 id,
                 error,
+                transient,
+                consecutive_failures,
                 acknowledged: false,
             });
         }
@@ -852,6 +885,7 @@ impl OutputQueueMetrics {
                 ack.error.clone().unwrap_or_else(|| {
                     DeviceError::protocol("output queue", "delivery failed without an error")
                 }),
+                ack.transient,
             ),
         }
     }
@@ -1062,6 +1096,9 @@ struct DeliverySequence {
 struct StandaloneFailureState {
     active_generation: AtomicU64,
     last_handled_sequence: AtomicU64,
+    /// Failed deliveries since the last completed one; written only while
+    /// holding `retained_failure`.
+    consecutive_failures: AtomicU32,
     retained_failure: StdMutex<Option<RetainedWriteFailure>>,
 }
 
@@ -1070,17 +1107,20 @@ impl StandaloneFailureState {
         Self {
             active_generation: AtomicU64::new(generation),
             last_handled_sequence: AtomicU64::new(0),
+            consecutive_failures: AtomicU32::new(0),
             retained_failure: StdMutex::new(None),
         }
     }
 
     fn activate_generation(&self, generation: u64) {
-        self.active_generation.store(generation, Ordering::Release);
-        self.last_handled_sequence.store(0, Ordering::Release);
-        *self
+        let mut retained = self
             .retained_failure
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.active_generation.store(generation, Ordering::Release);
+        self.last_handled_sequence.store(0, Ordering::Release);
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+        *retained = None;
     }
 
     fn record_success(&self, id: DeviceDeliveryId) {
@@ -1096,6 +1136,7 @@ impl StandaloneFailureState {
         }
         self.last_handled_sequence
             .store(id.sequence, Ordering::Release);
+        self.consecutive_failures.store(0, Ordering::Relaxed);
         if retained.as_ref().is_some_and(|failure| {
             failure.id.queue_generation == id.queue_generation && failure.id.sequence <= id.sequence
         }) {
@@ -1103,7 +1144,7 @@ impl StandaloneFailureState {
         }
     }
 
-    fn record_failure(&self, id: DeviceDeliveryId, error: DeviceError) {
+    fn record_failure(&self, id: DeviceDeliveryId, error: DeviceError, transient: bool) {
         if self.active_generation.load(Ordering::Acquire) != id.queue_generation {
             return;
         }
@@ -1119,9 +1160,17 @@ impl StandaloneFailureState {
         }
         self.last_handled_sequence
             .store(id.sequence, Ordering::Release);
+        let consecutive_failures = self
+            .consecutive_failures
+            .load(Ordering::Relaxed)
+            .saturating_add(1);
+        self.consecutive_failures
+            .store(consecutive_failures, Ordering::Relaxed);
         *retained = Some(RetainedWriteFailure {
             id,
             error,
+            transient,
+            consecutive_failures,
             acknowledged: false,
         });
     }
@@ -1220,8 +1269,8 @@ impl AsyncWriteFailureTracker {
         self.state.record_success(id);
     }
 
-    pub(super) fn record_failure(&self, id: DeviceDeliveryId, error: DeviceError) {
-        self.state.record_failure(id, error);
+    pub(super) fn record_failure(&self, id: DeviceDeliveryId, error: DeviceError, transient: bool) {
+        self.state.record_failure(id, error, transient);
     }
 
     pub(super) fn pending_failure(&self) -> Option<AsyncWriteFailure> {
@@ -1231,6 +1280,8 @@ impl AsyncWriteFailureTracker {
             device_id: self.device_id,
             delivery_id: failure.id,
             error: failure.error,
+            transient: failure.transient,
+            consecutive_failures: failure.consecutive_failures,
             retired_generation: false,
             fence: Arc::downgrade(&self.fence),
         })
@@ -1834,6 +1885,8 @@ impl OutputQueue {
             device_id,
             delivery_id: failure.id,
             error: failure.error,
+            transient: failure.transient,
+            consecutive_failures: failure.consecutive_failures,
             retired_generation: false,
             fence: Arc::downgrade(&self.failure_fence),
         })

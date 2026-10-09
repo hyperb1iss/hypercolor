@@ -174,6 +174,10 @@ pub struct DeviceDeliveryAck {
     pub transport_latency: Duration,
     /// Typed error reported by a failed attempt.
     pub error: Option<DeviceError>,
+    /// Whether the producing lane judged a failed attempt transient and kept
+    /// its device session running, so one failure alone says nothing about
+    /// the session's health. Always `false` unless `status` is `Failed`.
+    pub transient: bool,
 }
 
 /// Observer notified as a queue-qualified delivery crosses transport boundaries.
@@ -204,6 +208,7 @@ impl DeviceDeliveryAck {
                 completed_payload_bytes: u64::try_from(payload_bytes).unwrap_or(u64::MAX),
                 transport_latency,
                 error: None,
+                transient: false,
             },
             Ok(DeviceWriteOutcome::SuppressedDuplicate) => {
                 Self::suppressed(id, DeviceDeliveryStatus::SuppressedDuplicate)
@@ -235,6 +240,7 @@ impl DeviceDeliveryAck {
             completed_payload_bytes: u64::try_from(payload_bytes).unwrap_or(u64::MAX),
             transport_latency,
             error: None,
+            transient: false,
         }
     }
 
@@ -253,6 +259,26 @@ impl DeviceDeliveryAck {
             completed_payload_bytes: 0,
             transport_latency,
             error: Some(error),
+            transient: false,
+        }
+    }
+
+    /// Build an acknowledgement for a failed attempt the producing lane
+    /// survives: the device session stays up and later attempts may succeed.
+    ///
+    /// The daemon rebuilds the session only after several of these arrive in
+    /// a row, so a producer reports one only when it keeps running after the
+    /// failure.
+    #[must_use]
+    pub fn failed_transient(
+        id: DeviceDeliveryId,
+        transport_started: bool,
+        transport_latency: Duration,
+        error: DeviceError,
+    ) -> Self {
+        Self {
+            transient: true,
+            ..Self::failed(id, transport_started, transport_latency, error)
         }
     }
 
@@ -264,6 +290,7 @@ impl DeviceDeliveryAck {
             completed_payload_bytes: 0,
             transport_latency: Duration::ZERO,
             error: None,
+            transient: false,
         }
     }
 }
