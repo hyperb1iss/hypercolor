@@ -27,7 +27,10 @@ class UnclaimedDevice:
             claimable_by (None | str | Unset):
             interface_classes (list[int] | Unset): USB interface class codes of the active configuration, sorted and
                 deduplicated; empty where the platform does not expose them.
-            manufacturer (None | str | Unset):
+            manufacturer (None | str | Unset): Who made the device: its manufacturer string when the host reports
+                a non-blank one, otherwise the company that owns `vendor_id` in the
+                curated vendor table. Absent when neither is known, which is the
+                usual case on Windows for vendors outside that table.
             product (None | str | Unset):
             serial (None | str | Unset):
     """

@@ -13,6 +13,7 @@ use hypercolor_types::device::{
 #[cfg(doc)]
 use hypercolor_types::portable::ReviewedSerial;
 use hypercolor_types::portable::{PortableIdentityClaim, SerialNormalizerRegistry};
+use hypercolor_types::usb::reported_manufacturer;
 
 use super::unclaimed::{UnclaimedDeviceStore, UsbObservation};
 
@@ -120,7 +121,7 @@ impl UsbScanner {
             )
         };
 
-        let vendor = usb.manufacturer_string().map_or_else(
+        let vendor = reported_manufacturer(usb.manufacturer_string()).map_or_else(
             || descriptor.family.vendor_name().to_owned(),
             ToOwned::to_owned,
         );
@@ -260,7 +261,7 @@ pub(crate) fn usb_observation(
     UsbObservation {
         vendor_id: usb.vendor_id(),
         product_id: usb.product_id(),
-        manufacturer: usb.manufacturer_string().map(ToOwned::to_owned),
+        manufacturer: reported_manufacturer(usb.manufacturer_string()).map(ToOwned::to_owned),
         product: usb.product_string().map(ToOwned::to_owned),
         serial: usb
             .serial_number()

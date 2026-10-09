@@ -170,3 +170,43 @@ fn the_store_publishes_a_count_only_when_the_view_changes() {
     store.replace_snapshot([]);
     assert_eq!(drain_counts(&mut events), vec![0]);
 }
+
+#[test]
+fn a_missing_manufacturer_string_falls_back_to_the_vid_owner() {
+    let store = UnclaimedDeviceStore::new();
+    let mut razer = observation(0x1532, 0x0527, "1-1.2");
+    razer.manufacturer = None;
+    let mut blank = observation(0x1B1C, 0x0C99, "1-1.3");
+    blank.manufacturer = Some("  ".to_owned());
+    let mut shared = observation(0x1CBE, 0xA088, "1-1.4");
+    shared.manufacturer = None;
+    store.replace_snapshot([razer, blank, shared]);
+
+    let manufacturers: Vec<_> = store
+        .snapshot()
+        .into_iter()
+        .map(|device| (device.vendor_id, device.manufacturer))
+        .collect();
+    assert_eq!(
+        manufacturers,
+        vec![
+            (0x1532, Some("Razer".to_owned())),
+            (0x1B1C, Some("Corsair".to_owned())),
+            (0x1CBE, None),
+        ],
+        "a shared VID names nobody rather than guessing a brand"
+    );
+}
+
+#[test]
+fn a_reported_manufacturer_string_wins_over_the_vid_owner() {
+    let store = UnclaimedDeviceStore::new();
+    let mut razer = observation(0x1532, 0x0527, "1-1.2");
+    razer.manufacturer = Some("Razer Inc.".to_owned());
+    store.replace_snapshot([razer]);
+
+    assert_eq!(
+        store.snapshot()[0].manufacturer.as_deref(),
+        Some("Razer Inc.")
+    );
+}

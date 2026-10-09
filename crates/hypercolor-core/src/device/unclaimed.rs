@@ -14,10 +14,15 @@ use std::sync::{Arc, RwLock};
 
 use hypercolor_types::api::devices::UnclaimedDevice;
 use hypercolor_types::event::HypercolorEvent;
+use hypercolor_types::usb::usb_vendor;
 
 use crate::bus::HypercolorBus;
 
 /// One USB device as the scanner or hotplug watcher saw it.
+///
+/// `manufacturer` is only what the device itself reports (`None` when
+/// blank); the unclaimed record resolves a vendor name from the VID when
+/// it is missing.
 ///
 /// `descriptor_driver_id` is the native driver whose protocol database
 /// matches the vendor/product pair, when one exists; the store consults
@@ -56,10 +61,14 @@ impl UsbObservation {
         let mut interface_classes = self.interface_classes;
         interface_classes.sort_unstable();
         interface_classes.dedup();
+        // Not every host reports the manufacturer string (nusb on Windows
+        // never does), so the record falls back to the VID's owner.
+        let manufacturer =
+            usb_vendor(self.manufacturer.as_deref(), self.vendor_id).map(ToOwned::to_owned);
         UnclaimedDevice {
             vendor_id: self.vendor_id,
             product_id: self.product_id,
-            manufacturer: self.manufacturer,
+            manufacturer,
             product: self.product,
             serial: self.serial,
             bus_path: self.bus_path,

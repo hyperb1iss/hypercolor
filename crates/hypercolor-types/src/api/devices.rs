@@ -1,5 +1,7 @@
 //! Device API contracts — `/api/v1/devices/*`.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 use crate::api::envelope::ListResponse;
@@ -8,6 +10,7 @@ use crate::device::{DeviceOrigin, DriverPresentation};
 use crate::event::DeviceRef;
 use crate::pairing::{DeviceAuthSummary, PairDeviceStatus};
 use crate::scene::DisplayRotation;
+use crate::usb::usb_vendor_label;
 
 /// Query parameters for `GET /api/v1/devices`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -435,6 +438,10 @@ pub type UnclaimedDeviceListResponse = ListResponse<UnclaimedDevice>;
 pub struct UnclaimedDevice {
     pub vendor_id: u16,
     pub product_id: u16,
+    /// Who made the device: its manufacturer string when the host reports
+    /// a non-blank one, otherwise the company that owns `vendor_id` in the
+    /// curated vendor table. Absent when neither is known, which is the
+    /// usual case on Windows for vendors outside that table.
     #[serde(default)]
     pub manufacturer: Option<String>,
     #[serde(default)]
@@ -450,6 +457,15 @@ pub struct UnclaimedDevice {
     pub interface_classes: Vec<u8>,
     #[serde(default)]
     pub claimable_by: Option<String>,
+}
+
+impl UnclaimedDevice {
+    /// Display text for the device's vendor, never empty: `manufacturer`,
+    /// then the owner of `vendor_id`, then `VID 1532` style text.
+    #[must_use]
+    pub fn vendor_label(&self) -> Cow<'_, str> {
+        usb_vendor_label(self.manufacturer.as_deref(), self.vendor_id)
+    }
 }
 
 /// Response for `GET /api/v1/devices/coverage`.

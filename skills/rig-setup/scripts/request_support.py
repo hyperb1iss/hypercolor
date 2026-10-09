@@ -141,7 +141,7 @@ def main() -> int:
     vid, pid = parse_vid_pid(args.vid_pid)
     vid_pid = f"{vid:04X}:{pid:04X}"
     found, source = lookup_device(args.base, vid, pid)
-    vendor = args.vendor or found.get("manufacturer") or f"Unknown vendor {vid:04X}"
+    vendor = args.vendor or found.get("manufacturer") or f"VID {vid:04X}"
     model = args.model or found.get("product") or f"Unknown device {pid:04X}"
     fields = {"vendor": vendor, "model": model, "vid_pid": vid_pid, "platform": args.platform,
               "existing_support": args.existing_support, "notes": args.notes, "willing": args.willing,
