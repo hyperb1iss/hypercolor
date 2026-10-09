@@ -246,7 +246,8 @@ crate only.
   withholds per device, by USB id:
   - `crates/hypercolor-openrgb-host/data/detector_usb_ids.toml` maps each
     OpenRGB detector name to the USB `vvvv:pppp` ids it claims (`vvvv:*`
-    for vendor-wide detectors). It is generated from the udev rules an
+    for vendor-wide detectors). A native protocol with a vendor id but no
+    product id claims its whole vendor the same way. It is generated from the udev rules an
     unmodified OpenRGB binary prints (`openrgb --print-udev-rules`, one
     section per detector), which keeps it inside the Spec 68 provenance
     gate; the embedded copy covers OpenRGB 1.0.

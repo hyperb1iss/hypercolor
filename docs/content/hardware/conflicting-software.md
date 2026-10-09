@@ -102,8 +102,9 @@ the hardware; run `hypercolor devices discover`.
 OpenRGB is a conflict only when it detects hardware a native Hypercolor driver owns. The
 server Hypercolor manages for its [OpenRGB fallback](@/hardware/openrgb-fallback.md)
 never does: `hypercolor openrgb partition` writes a detector partition into a
-Hypercolor-owned config directory that disables OpenRGB's detectors for the hardware each
-enabled native driver can drive, and `hypercolor openrgb start` launches the server against that
+Hypercolor-owned config directory that disables OpenRGB's detectors for the hardware
+each native driver can drive once that driver is enabled and owns a device, and
+`hypercolor openrgb start` launches the server against that
 directory. Native drivers keep their devices, the bridge drives the rest, and a conflict
 guard output-disables any bridge route that still lands on natively owned silicon.
 

@@ -190,7 +190,8 @@ enabled and owns at least one enabled device, and then it withholds per device:
   for that headset.
 - Detectors with no USB id to match stay disabled for the whole brand prefix (`Corsair`,
   `ENE SMBus DRAM`, `ASUS Aura`, and so on): SMBus RAM and motherboard controllers, and
-  detector names newer than the OpenRGB release Hypercolor's detector map was built from.
+  detector names from a different OpenRGB release than the one Hypercolor's detector map
+  was built from.
 
 The server is launched as:
 
