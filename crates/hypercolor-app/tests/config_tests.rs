@@ -531,13 +531,16 @@ fn tauri_windows_bundle_config_uses_branded_nsis_assets() {
         );
     }
 
+    // installer.nsi resamples both bitmaps to the wizard controls' real pixel
+    // size, so they ship at 3x the 100%-scale size (150x57 header, 164x314
+    // sidebar) and stay sharp up to 300% display scaling.
     assert_eq!(
         bitmap_dimensions(&root.join("icons/nsis-header.bmp")),
-        (150, 57)
+        (150 * 3, 57 * 3)
     );
     assert_eq!(
         bitmap_dimensions(&root.join("icons/nsis-sidebar.bmp")),
-        (164, 314)
+        (164 * 3, 314 * 3)
     );
 }
 
