@@ -8,9 +8,11 @@
 //!
 //! Before spawning, the supervisor writes the detector partition into the
 //! Hypercolor-managed OpenRGB config directory so natively driven hardware
-//! stays invisible to OpenRGB. Per Spec 81 §3.1 a family is disabled only
-//! when its native driver is enabled and owns at least one enabled device,
-//! which takes both `GET /api/v1/drivers` and `GET /api/v1/devices`.
+//! stays invisible to OpenRGB. Per Spec 81 §3.1 a native driver is withheld
+//! only when it is enabled and owns at least one enabled device, and then
+//! only for the USB devices its protocol catalog can claim, which takes both
+//! `GET /api/v1/drivers` (with its protocol catalogs) and
+//! `GET /api/v1/devices`.
 
 use std::{
     ffi::OsStr,
@@ -28,9 +30,9 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use hypercolor_openrgb_host::{
     DEFAULT_SERVER_PORT, DetectorPartition, InstallHint, ManagedConfigDir, OpenRgbBinary,
-    PermissionCheck, ProcessSpec, ServerClaim, ServerProbe, detect_binary,
-    detector_prefixes_for_drivers, install_hints, managed_config_dir, permission_checks,
-    probe_server, server_command_at, write_detector_partition,
+    PermissionCheck, ProcessSpec, ServerClaim, ServerProbe, detect_binary, install_hints,
+    managed_config_dir, permission_checks, probe_server, server_command_at,
+    write_detector_partition,
 };
 use hypercolor_types::api::{drivers::DriverConfigResponse, envelope::ApiResponse};
 use serde::Serialize;
@@ -641,13 +643,10 @@ impl OpenRgbSupervisor {
                 };
                 // The partition must land before the launch: the Flatpak
                 // `--filesystem=` grant needs the directory to exist.
-                let disabled =
-                    detector_prefixes_for_drivers(&inspection.partition_plan.disabled_driver_ids);
-                let re_enable =
-                    detector_prefixes_for_drivers(&inspection.partition_plan.re_enable_driver_ids);
+                let rules = inspection.partition_plan.detector_rules();
                 let config_dir = inspection.config_dir.clone();
                 let partition = tokio::task::spawn_blocking(move || {
-                    write_detector_partition(&config_dir, &disabled, &re_enable, None)
+                    write_detector_partition(&config_dir, &rules, None)
                 })
                 .await
                 .context("detector partition task failed")?

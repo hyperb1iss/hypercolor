@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use hypercolor_openrgb_host::{
-    DETECTORS_MAP, DETECTORS_SECTION, HostError, MANAGED_DIR_NAME, detector_families,
-    detector_prefixes_for_drivers, managed_config_dir, matches_prefix, parse_detector_table,
-    partition_detectors, write_detector_partition,
+    DETECTORS_MAP, DETECTORS_SECTION, DetectorRules, HostError, MANAGED_DIR_NAME,
+    detector_families, detector_prefixes_for_drivers, managed_config_dir, matches_prefix,
+    parse_detector_table, partition_detectors, write_detector_partition,
 };
 use serde_json::{Map, Value, json};
 
@@ -74,11 +74,19 @@ fn partition_re_enable_flips_only_the_listed_prefixes() {
     let mut existing = Map::new();
     existing.insert("Corsair Commander Pro".to_owned(), Value::Bool(false));
     existing.insert("Razer Huntsman".to_owned(), Value::Bool(false));
-    let map = partition_detectors(&existing, &Vec::<String>::new(), &["Corsair "], None);
+    let map = partition_detectors(
+        &existing,
+        &DetectorRules::by_prefix(&Vec::<String>::new(), &["Corsair "]),
+        None,
+    );
     assert_eq!(map["Corsair Commander Pro"], true);
     assert_eq!(map["Razer Huntsman"], false, "not listed, so preserved");
 
-    let map = partition_detectors(&existing, &["Corsair "], &["Corsair "], None);
+    let map = partition_detectors(
+        &existing,
+        &DetectorRules::by_prefix(&["Corsair "], &["Corsair "]),
+        None,
+    );
     assert_eq!(
         map["Corsair Commander Pro"], false,
         "disabled wins over re-enable"
@@ -95,8 +103,7 @@ fn partition_disables_prefix_matches_and_preserves_unrelated_toggles() {
 
     let map = partition_detectors(
         &existing,
-        &["Razer "],
-        &["Nollie "],
+        &DetectorRules::by_prefix(&["Razer "], &["Nollie "]),
         Some(&["Nollie 32CH".to_owned(), "Wooting Two".to_owned()]),
     );
 
@@ -134,9 +141,12 @@ fn write_partition_creates_dir_and_fresh_file() {
     let dir = managed_config_dir(temp.path());
     assert!(!dir.root.exists());
 
-    let report =
-        write_detector_partition(&dir, &["Lian Li ".to_owned()], &Vec::<String>::new(), None)
-            .expect("partition should write");
+    let report = write_detector_partition(
+        &dir,
+        &DetectorRules::by_prefix(&["Lian Li ".to_owned()], &Vec::<String>::new()),
+        None,
+    )
+    .expect("partition should write");
     assert!(
         report
             .disabled
@@ -176,9 +186,12 @@ fn write_partition_preserves_unrelated_keys_and_replaces_in_place() {
     )
     .expect("write fixture");
 
-    let report =
-        write_detector_partition(&dir, &["razer ".to_owned()], &Vec::<String>::new(), None)
-            .expect("partition should write");
+    let report = write_detector_partition(
+        &dir,
+        &DetectorRules::by_prefix(&["razer ".to_owned()], &Vec::<String>::new()),
+        None,
+    )
+    .expect("partition should write");
     assert!(report.disabled.contains(&"Razer Huntsman".to_owned()));
 
     let text = std::fs::read_to_string(dir.config_path()).expect("config rewritten");
@@ -203,8 +216,12 @@ fn write_partition_preserves_unrelated_keys_and_replaces_in_place() {
 fn write_partition_hands_a_family_back_only_on_explicit_re_enable() {
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = managed_config_dir(temp.path());
-    write_detector_partition(&dir, &["Corsair ".to_owned()], &Vec::<String>::new(), None)
-        .expect("first write");
+    write_detector_partition(
+        &dir,
+        &DetectorRules::by_prefix(&["Corsair ".to_owned()], &Vec::<String>::new()),
+        None,
+    )
+    .expect("first write");
     let first: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.config_path()).expect("read"))
             .expect("json");
@@ -213,8 +230,12 @@ fn write_partition_hands_a_family_back_only_on_explicit_re_enable() {
         false
     );
 
-    write_detector_partition(&dir, &Vec::<String>::new(), &Vec::<String>::new(), None)
-        .expect("second write without re-enable");
+    write_detector_partition(
+        &dir,
+        &DetectorRules::by_prefix(&Vec::<String>::new(), &Vec::<String>::new()),
+        None,
+    )
+    .expect("second write without re-enable");
     let second: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.config_path()).expect("read"))
             .expect("json");
@@ -223,8 +244,12 @@ fn write_partition_hands_a_family_back_only_on_explicit_re_enable() {
         "dropping a prefix from the disabled list does not flip it back"
     );
 
-    write_detector_partition(&dir, &Vec::<String>::new(), &["Corsair ".to_owned()], None)
-        .expect("third write with re-enable");
+    write_detector_partition(
+        &dir,
+        &DetectorRules::by_prefix(&Vec::<String>::new(), &["Corsair ".to_owned()]),
+        None,
+    )
+    .expect("third write with re-enable");
     let third: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.config_path()).expect("read"))
             .expect("json");
@@ -241,13 +266,21 @@ fn write_partition_rejects_invalid_json_and_wrong_shapes() {
     std::fs::create_dir_all(&dir.root).expect("mkdir");
 
     std::fs::write(dir.config_path(), "{ not json").expect("write");
-    let error = write_detector_partition(&dir, &["Razer ".to_owned()], &Vec::<String>::new(), None)
-        .expect_err("invalid JSON must not be clobbered");
+    let error = write_detector_partition(
+        &dir,
+        &DetectorRules::by_prefix(&["Razer ".to_owned()], &Vec::<String>::new()),
+        None,
+    )
+    .expect_err("invalid JSON must not be clobbered");
     assert!(matches!(error, HostError::InvalidExistingConfig { .. }));
 
     std::fs::write(dir.config_path(), r#"{"Detectors": []}"#).expect("write");
-    let error = write_detector_partition(&dir, &["Razer ".to_owned()], &Vec::<String>::new(), None)
-        .expect_err("non-object Detectors must not be clobbered");
+    let error = write_detector_partition(
+        &dir,
+        &DetectorRules::by_prefix(&["Razer ".to_owned()], &Vec::<String>::new()),
+        None,
+    )
+    .expect_err("non-object Detectors must not be clobbered");
     assert!(matches!(
         error,
         HostError::UnexpectedConfigShape {
@@ -257,8 +290,12 @@ fn write_partition_rejects_invalid_json_and_wrong_shapes() {
     ));
 
     std::fs::write(dir.config_path(), r#"{"Detectors": {"detectors": 5}}"#).expect("write");
-    let error = write_detector_partition(&dir, &["Razer ".to_owned()], &Vec::<String>::new(), None)
-        .expect_err("non-object detectors must not be clobbered");
+    let error = write_detector_partition(
+        &dir,
+        &DetectorRules::by_prefix(&["Razer ".to_owned()], &Vec::<String>::new()),
+        None,
+    )
+    .expect_err("non-object detectors must not be clobbered");
     assert!(matches!(
         error,
         HostError::UnexpectedConfigShape {
@@ -268,8 +305,12 @@ fn write_partition_rejects_invalid_json_and_wrong_shapes() {
     ));
 
     std::fs::write(dir.config_path(), "[]").expect("write");
-    let error = write_detector_partition(&dir, &["Razer ".to_owned()], &Vec::<String>::new(), None)
-        .expect_err("array root must not be clobbered");
+    let error = write_detector_partition(
+        &dir,
+        &DetectorRules::by_prefix(&["Razer ".to_owned()], &Vec::<String>::new()),
+        None,
+    )
+    .expect_err("array root must not be clobbered");
     assert!(matches!(
         error,
         HostError::UnexpectedConfigShape {
@@ -285,8 +326,12 @@ fn write_partition_treats_empty_file_as_fresh() {
     let dir = managed_config_dir(temp.path());
     std::fs::create_dir_all(&dir.root).expect("mkdir");
     std::fs::write(dir.config_path(), "  \n").expect("write");
-    write_detector_partition(&dir, &["Nollie ".to_owned()], &Vec::<String>::new(), None)
-        .expect("write");
+    write_detector_partition(
+        &dir,
+        &DetectorRules::by_prefix(&["Nollie ".to_owned()], &Vec::<String>::new()),
+        None,
+    )
+    .expect("write");
     let value: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.config_path()).expect("read"))
             .expect("json");

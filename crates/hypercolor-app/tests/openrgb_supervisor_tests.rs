@@ -11,7 +11,7 @@ use hypercolor_app::supervisor::openrgb::{
 use hypercolor_app::supervisor::{OpenRgbHoldReason, OpenRgbPlan};
 use hypercolor_openrgb_host::{
     BinaryKind, DEFAULT_SERVER_PORT, LOOPBACK_HOST, ManagedConfigDir, OpenRgbBinary, ProcessSpec,
-    ServerProbe, detector_prefixes_for_drivers,
+    ServerProbe, UsbClaim, detector_prefixes_for_drivers,
 };
 use hypercolor_types::device::DriverModuleKind;
 
@@ -20,6 +20,7 @@ fn facts(id: &str, module_kind: DriverModuleKind, enabled: bool) -> DriverFacts 
         id: id.to_owned(),
         module_kind,
         enabled,
+        usb: UsbClaim::default(),
     }
 }
 
@@ -155,6 +156,7 @@ fn partition_ignores_case_and_bridge_devices() {
         DetectorPartitionPlan {
             disabled_driver_ids: vec!["Razer".to_owned()],
             re_enable_driver_ids: vec!["openrgb".to_owned()],
+            ..DetectorPartitionPlan::default()
         }
     );
 }
