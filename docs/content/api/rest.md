@@ -167,8 +167,8 @@ it is still starting, `/health` returns `503` with `"status": "starting"` and a
 `startup` block naming the current `phase`, a `sequence` counter that advances
 each time startup completes a unit of work (a phase, or a step inside one such
 as loading one effect file or compiling one compositor pipeline), and, while a
-step is running, a `detail` naming it. Every other route returns `503 service_unavailable`. Only `200`
-means the daemon is ready.
+step is running, a `detail` naming it. Every other route returns
+`503 service_unavailable`. Only `200` means the daemon is ready.
 
 ```json
 {
