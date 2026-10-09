@@ -102,6 +102,30 @@ pub(crate) fn platform_session_monitors(
     }
 }
 
+/// Resident set size of the daemon process in mebibytes, measured by this
+/// host's platform session crate.
+pub(crate) fn process_resident_memory_mb() -> Option<f64> {
+    #[cfg(target_os = "linux")]
+    {
+        hypercolor_linux_session::process_resident_memory_mb()
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        hypercolor_windows_session::process_resident_memory_mb()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        hypercolor_macos_session::process_resident_memory_mb()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        None
+    }
+}
+
 async fn run_session_loop(
     mut rx: tokio::sync::broadcast::Receiver<SessionEvent>,
     runtime: SessionRuntime,
