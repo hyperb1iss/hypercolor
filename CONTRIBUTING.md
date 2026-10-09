@@ -14,7 +14,7 @@ just verify        # the full nine-gate check: run this after every change
 
 **Requirements:**
 
-- Rust 1.94+ (edition 2024; `rust-toolchain.toml` pins 1.95.0 via rustup, and
+- Rust 1.94+ (edition 2024; `rust-toolchain.toml` pins 1.99.0 via rustup, and
   1.94 is the minimum supported version)
 - [just](https://github.com/casey/just) command runner
 - [Bun](https://bun.sh/) for the effect SDK
