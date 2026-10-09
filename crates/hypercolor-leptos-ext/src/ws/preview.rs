@@ -2688,7 +2688,12 @@ impl PreviewFrameView {
                 let mut rgba = Vec::new();
                 rgba.try_reserve_exact(rgba_len).ok()?;
                 rgba.resize(rgba_len, 0);
-                for (src, dst) in rgb.chunks_exact(3).zip(rgba.chunks_exact_mut(4)) {
+                for (src, dst) in rgb
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .zip(rgba.as_chunks_mut::<4>().0)
+                {
                     dst[0] = src[0];
                     dst[1] = src[1];
                     dst[2] = src[2];

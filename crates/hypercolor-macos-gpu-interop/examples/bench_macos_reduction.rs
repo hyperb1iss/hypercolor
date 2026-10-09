@@ -594,8 +594,8 @@ mod macos {
         metal4: MacosMetal4CapabilityProbe,
     ) -> Result<QualifiedBenchmarkReport, Metal4RunError> {
         let setup_error = |error: String| Metal4RunError::new(Metal4Failure::QualifiedSetup, error);
-        let source_pixels = synthetic_bgra(args.source).map_err(&setup_error)?;
-        let frame = Arc::new(capture_frame(args.source, &source_pixels).map_err(&setup_error)?);
+        let source_pixels = synthetic_bgra(args.source).map_err(setup_error)?;
+        let frame = Arc::new(capture_frame(args.source, &source_pixels).map_err(setup_error)?);
         let bridge =
             MacosScreenBridge::new(&wgpu.device).map_err(|error| setup_error(error.to_string()))?;
         let imported = bridge
@@ -611,9 +611,9 @@ mod macos {
                 MacosNativeTargetFormat::Rgba8,
             )
             .map_err(|error| setup_error(error.to_string()))?;
-        let descriptor = reduction_descriptor(args).map_err(&setup_error)?;
-        let output_bytes = args.output.byte_len().map_err(&setup_error)?;
-        let mut cpu_output = allocate_bytes(output_bytes, "CPU output").map_err(&setup_error)?;
+        let descriptor = reduction_descriptor(args).map_err(setup_error)?;
+        let output_bytes = args.output.byte_len().map_err(setup_error)?;
+        let mut cpu_output = allocate_bytes(output_bytes, "CPU output").map_err(setup_error)?;
 
         for _ in 0..args.warmup {
             reduce_scalar(&frame, args.output, args.filter, &mut cpu_output)
@@ -722,7 +722,9 @@ mod macos {
         let mut pixels = allocate_bytes(extent.byte_len()?, "source fixture")?;
         let width = usize::try_from(extent.width).map_err(|error| error.to_string())?;
         for (index, pixel) in pixels
-            .chunks_exact_mut(BYTES_PER_PIXEL as usize)
+            .as_chunks_mut::<{ BYTES_PER_PIXEL as usize }>()
+            .0
+            .iter_mut()
             .enumerate()
         {
             let x = index % width;

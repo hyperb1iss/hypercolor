@@ -416,7 +416,12 @@ impl EffectRenderer for GradientRenderer {
             .enumerate()
         {
             let ny = (y as f32 + 0.5) / height;
-            for (x, pixel) in row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
+            for (x, pixel) in row
+                .as_chunks_mut::<BYTES_PER_PIXEL>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
                 let nx = (x as f32 + 0.5) / width;
                 let raw_t = geometry.position(nx, ny);
                 let transformed = match self.mode {

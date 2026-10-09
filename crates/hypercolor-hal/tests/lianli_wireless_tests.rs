@@ -623,7 +623,7 @@ fn assert_upkeep_restores_frame(protocol: &Clocked, expected: &[ProtocolCommand]
         rgb_end + 4 + 1,
         "PWM, RGB, clock, poll only"
     );
-    for pwm in commands[..pwm_end].chunks_exact(4) {
+    for pwm in commands[..pwm_end].as_chunks::<4>().0 {
         assert_eq!(pwm[0].data[5], RfSubCommand::Pwm as u8);
     }
     for (actual, expected) in commands[pwm_end..rgb_end].iter().zip(expected) {

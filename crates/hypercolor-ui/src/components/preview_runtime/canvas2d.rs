@@ -9,11 +9,10 @@ pub fn expand_rgb_to_rgba_bytes(source: &[u8], destination: &mut Vec<u8>) {
     let pixel_count = source.len() / 3;
     destination.resize(pixel_count.saturating_mul(4), 0);
 
-    for (rgb, rgba) in source.chunks_exact(3).zip(destination.chunks_exact_mut(4)) {
-        rgba[0] = rgb[0];
-        rgba[1] = rgb[1];
-        rgba[2] = rgb[2];
-        rgba[3] = 255;
+    let (rgb_pixels, _) = source.as_chunks::<3>();
+    let (rgba_pixels, _) = destination.as_chunks_mut::<4>();
+    for (&[r, g, b], rgba) in rgb_pixels.iter().zip(rgba_pixels) {
+        *rgba = [r, g, b, 255];
     }
 }
 

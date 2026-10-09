@@ -378,7 +378,7 @@ fn build_brightness_lut(brightness: f32) -> [u8; 256] {
 /// Apply a precomputed brightness LUT to the R/G/B bytes of an RGBA
 /// slice, leaving alpha untouched. Auto-vectorizes cleanly on AVX2.
 fn apply_brightness_lut_rgb(bytes: &mut [u8], lut: &[u8; 256]) {
-    for chunk in bytes.chunks_exact_mut(BYTES_PER_PIXEL) {
+    for chunk in bytes.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
         chunk[0] = lut[usize::from(chunk[0])];
         chunk[1] = lut[usize::from(chunk[1])];
         chunk[2] = lut[usize::from(chunk[2])];

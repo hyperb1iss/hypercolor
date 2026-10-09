@@ -164,7 +164,7 @@ fn patterned_rgba_frame(width: u32, height: u32) -> Vec<u8> {
         .and_then(|pixels| pixels.checked_mul(4))
         .expect("test frame extent should fit usize");
     let mut frame = vec![0_u8; byte_len];
-    for (index, pixel) in frame.chunks_exact_mut(4).enumerate() {
+    for (index, pixel) in frame.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let coordinate = index.to_le_bytes()[0];
         pixel.copy_from_slice(&[
             coordinate,

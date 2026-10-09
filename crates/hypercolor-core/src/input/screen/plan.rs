@@ -1201,7 +1201,7 @@ impl ScreenWorkerPreparationTicket {
     ) -> Result<ScreenResourceLifetime, ScreenPlanError> {
         let previous_nonce = self
             .next_allocation_nonce
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |nonce| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |nonce| {
                 nonce.checked_add(1)
             })
             .map_err(|_| ScreenPlanError::ResourceLifetimeNonceExhausted)?;

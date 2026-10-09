@@ -114,7 +114,9 @@ fn red_labels(
     };
     storage
         .bytes()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|pixel| pixel[0])
         .collect()
 }

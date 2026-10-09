@@ -155,7 +155,7 @@ impl ScreenNativeTargetPreparer for WindowsScreenTargetPreparer {
             .prepare_target(manifest)
             .context("failed to prepare the renderer screen-copy target")?;
         let storage_id = NEXT_GPU_TEXTURE_STORAGE_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .map_err(|_| anyhow::anyhow!("GPU texture storage identity space is exhausted"))?;
@@ -446,7 +446,7 @@ fn create_screen_target(
     max_texture_dimension: u32,
 ) -> Option<ScreenNativeExecutionTarget> {
     let Ok(target_id) =
-        NEXT_SCREEN_TARGET_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        NEXT_SCREEN_TARGET_ID.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
     else {

@@ -346,7 +346,7 @@ fn acquire_surface_lease(
     } else {
         if telemetry
             .admitted_native_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |admitted| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |admitted| {
                 admitted.checked_add(peak_top_up_bytes)
             })
             .is_err()

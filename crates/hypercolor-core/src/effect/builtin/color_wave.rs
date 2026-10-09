@@ -258,7 +258,7 @@ impl ColorWaveRenderer {
         let red_lut = fade_lut(background.r, opacity);
         let green_lut = fade_lut(background.g, opacity);
         let blue_lut = fade_lut(background.b, opacity);
-        for chunk in canvas.as_rgba_bytes_mut().chunks_exact_mut(4) {
+        for chunk in canvas.as_rgba_bytes_mut().as_chunks_mut::<4>().0 {
             chunk[0] = red_lut[usize::from(chunk[0])];
             chunk[1] = green_lut[usize::from(chunk[1])];
             chunk[2] = blue_lut[usize::from(chunk[2])];
@@ -512,7 +512,7 @@ fn fill_rect(canvas: &mut Canvas, x: i32, y: i32, width: i32, height: i32, color
     for row in start_y..end_y {
         let row_offset = row * row_stride;
         let slice = &mut bytes[row_offset + row_start..row_offset + row_end];
-        for pixel in slice.chunks_exact_mut(BYTES_PER_PIXEL) {
+        for pixel in slice.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
             pixel.copy_from_slice(&color);
         }
     }

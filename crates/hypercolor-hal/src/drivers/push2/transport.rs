@@ -54,7 +54,6 @@ const PUSH2_RAWMIDI_SPACE_WAIT_STEP: Duration = Duration::from_millis(1);
 const PUSH2_STALL_REPORT_INTERVAL: Duration = Duration::from_mins(5);
 
 /// Open the driver-owned Push 2 composite transport.
-#[must_use]
 pub fn open_push2_transport(request: UsbTransportOpenRequest) -> UsbTransportFuture {
     Box::pin(async move {
         let transport = Push2Transport::new(

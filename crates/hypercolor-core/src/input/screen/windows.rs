@@ -474,7 +474,7 @@ impl ExactPublicationShared {
     fn next_gpu_descriptor_id(&self) -> anyhow::Result<GpuSurfaceDescriptorId> {
         let previous = self
             .next_descriptor_id
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
             .map_err(|_| anyhow!("Windows GPU descriptor identity exhausted"))?;
         let id = previous
             .checked_add(1)

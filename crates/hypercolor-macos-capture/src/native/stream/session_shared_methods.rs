@@ -341,7 +341,7 @@ impl SessionShared {
 
     pub(super) fn allocate_resolution_epoch(&self) -> Result<u64, MacosCaptureError> {
         self.resolution_epoch
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                 epoch.checked_add(1)
             })
             .map(|epoch| epoch + 1)

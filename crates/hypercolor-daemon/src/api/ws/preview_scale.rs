@@ -173,7 +173,7 @@ fn apply_brightness_inplace_rgba(buffer: &mut [u8], brightness_lut: Option<&[u8;
     let Some(lut) = brightness_lut else {
         return;
     };
-    for pixel in buffer.chunks_exact_mut(4) {
+    for pixel in buffer.as_chunks_mut::<4>().0 {
         pixel[0] = lut[usize::from(pixel[0])];
         pixel[1] = lut[usize::from(pixel[1])];
         pixel[2] = lut[usize::from(pixel[2])];
@@ -185,7 +185,12 @@ fn copy_rgba_to_rgb_with_brightness(
     rgb_out: &mut [u8],
     brightness_lut: Option<&[u8; 256]>,
 ) {
-    for (rgba_chunk, rgb_chunk) in rgba.chunks_exact(4).zip(rgb_out.chunks_exact_mut(3)) {
+    for (rgba_chunk, rgb_chunk) in rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(rgb_out.as_chunks_mut::<3>().0)
+    {
         rgb_chunk[0] = apply_brightness(rgba_chunk[0], brightness_lut);
         rgb_chunk[1] = apply_brightness(rgba_chunk[1], brightness_lut);
         rgb_chunk[2] = apply_brightness(rgba_chunk[2], brightness_lut);

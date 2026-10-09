@@ -79,7 +79,7 @@ impl AtomicLatencyHistogram {
         self.buckets[bucket].fetch_add(1, Ordering::Relaxed);
         let _ = self
             .total_ns
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
                 Some(total.saturating_add(elapsed_ns))
             });
         self.max_ns.fetch_max(elapsed_ns, Ordering::Relaxed);

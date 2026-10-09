@@ -2343,7 +2343,8 @@ fn cpu_screen_publication(
     for pixel in prepared
         .surface_pixels_mut()
         .expect("screen fixture surface should be CPU-writable")
-        .chunks_exact_mut(4)
+        .as_chunks_mut::<4>()
+        .0
     {
         pixel.copy_from_slice(&rgba);
     }

@@ -93,7 +93,12 @@ impl EffectRenderer for RainbowRenderer {
             RainbowDirection::Horizontal => {
                 // Every row is identical: compute the first row, then copy.
                 let (first_row, remaining_rows) = pixels.split_at_mut(row_len);
-                for (x, pixel) in first_row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
+                for (x, pixel) in first_row
+                    .as_chunks_mut::<BYTES_PER_PIXEL>()
+                    .0
+                    .iter_mut()
+                    .enumerate()
+                {
                     let pos_hue = (x as f32 / width) * 360.0 * self.scale;
                     let hue = (pos_hue + time_offset).rem_euclid(360.0);
                     let rgb = Hsv::new(hue, self.saturation, self.brightness).to_rgb();
@@ -113,7 +118,7 @@ impl EffectRenderer for RainbowRenderer {
                     let pos_hue = (y as f32 / height) * 360.0 * self.scale;
                     let hue = (pos_hue + time_offset).rem_euclid(360.0);
                     let rgb = Hsv::new(hue, self.saturation, self.brightness).to_rgb();
-                    for pixel in row.chunks_exact_mut(BYTES_PER_PIXEL) {
+                    for pixel in row.as_chunks_mut::<BYTES_PER_PIXEL>().0 {
                         pixel[0] = rgb.r;
                         pixel[1] = rgb.g;
                         pixel[2] = rgb.b;
@@ -126,9 +131,14 @@ impl EffectRenderer for RainbowRenderer {
                 // accepted only in this mode.
                 for (y, row) in pixels.chunks_exact_mut(row_len).enumerate() {
                     let ny = y as f32 / height;
-                    for (x, pixel) in row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
+                    for (x, pixel) in row
+                        .as_chunks_mut::<BYTES_PER_PIXEL>()
+                        .0
+                        .iter_mut()
+                        .enumerate()
+                    {
                         let nx = x as f32 / width;
-                        let pos_hue = (nx + ny) * 0.5 * 360.0 * self.scale;
+                        let pos_hue = f32::midpoint(nx, ny) * 360.0 * self.scale;
                         let hue = (pos_hue + time_offset).rem_euclid(360.0);
                         let rgb = Hsv::new(hue, self.saturation, self.brightness).to_rgb();
                         pixel[0] = rgb.r;

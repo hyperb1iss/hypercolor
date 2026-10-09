@@ -225,7 +225,11 @@ fn apply_output_adjustments(
     // common hue_shift == 0 path skips it entirely.
     let apply_hue = hue_shift.abs() > 1e-3;
     let hue_degrees = hue_shift.to_degrees();
-    for pixel in canvas.as_rgba_bytes_mut().chunks_exact_mut(BYTES_PER_PIXEL) {
+    for pixel in canvas
+        .as_rgba_bytes_mut()
+        .as_chunks_mut::<BYTES_PER_PIXEL>()
+        .0
+    {
         let mut color = Rgba::new(pixel[0], pixel[1], pixel[2], pixel[3]).to_linear();
         if apply_hue {
             color = rotate_hue(color, hue_degrees);

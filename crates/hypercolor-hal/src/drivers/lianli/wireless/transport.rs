@@ -32,7 +32,6 @@ const NO_REPORT_ID: u8 = 0;
 /// Without the RX there is no device table and nothing to drive, so a
 /// missing sibling fails the open rather than yielding a controller that
 /// discovers nothing.
-#[must_use]
 pub fn open_wireless_controller(request: UsbTransportOpenRequest) -> UsbTransportFuture {
     Box::pin(async move {
         let tx = UsbBulkTransport::new(request.device, WIRELESS_INTERFACE, NO_REPORT_ID).await?;

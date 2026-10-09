@@ -50,6 +50,8 @@ too_many_lines = { level = "allow", priority = 22 }
 uninlined_format_args = { level = "allow", priority = 22 }
 unnested_or_patterns = { level = "allow", priority = 22 }
 unused_self = { level = "allow", priority = 22 }
+# assert!(x.is_empty()) reads cleaner than assert_eq!(x, [] as [T; 0]).
+assert_is_empty = { level = "allow", priority = 22 }
 out_of_bounds_indexing = { level = "deny", priority = 30 }
 enum_glob_use = { level = "deny", priority = 30 }
 unwrap_used = { level = "deny", priority = 30 }
@@ -61,7 +63,6 @@ redundant_else = { level = "warn", priority = 36 }
 semicolon_if_nothing_returned = { level = "warn", priority = 36 }
 cloned_instead_of_copied = { level = "warn", priority = 36 }
 flat_map_option = { level = "warn", priority = 36 }
-from_iter_instead_of_collect = { level = "warn", priority = 36 }
 needless_pass_by_value = { level = "allow", priority = 36 }
 trivially_copy_pass_by_ref = { level = "allow", priority = 36 }
 if_not_else = { level = "warn", priority = 36 }

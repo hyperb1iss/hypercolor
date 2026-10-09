@@ -1397,7 +1397,7 @@ async fn prepare_identify_backend(
         direct_backend
     };
     let supports_temporary_identify = device_state != DeviceState::Disabled
-        && direct_backend.supports_temporary_direct_control(info).await;
+        && direct_backend.supports_temporary_direct_control(info);
     if !device_state.is_renderable() && !supports_temporary_identify {
         warn!(
             backend_id = %backend_id,

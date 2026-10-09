@@ -338,8 +338,9 @@ fn table_count(reply: &[u8], master: Option<Mac>) -> Result<u8, DiscoveryError> 
     Ok(count)
 }
 
-fn whole_records(reply: &[u8]) -> std::slice::ChunksExact<'_, u8> {
-    reply[TABLE_HEADER_LEN..].chunks_exact(RECORD_LEN)
+fn whole_records(reply: &[u8]) -> impl ExactSizeIterator<Item = &[u8]> {
+    let (records, _) = reply[TABLE_HEADER_LEN..].as_chunks::<RECORD_LEN>();
+    records.iter().map(<[u8; RECORD_LEN]>::as_slice)
 }
 
 fn parse_record(record: &[u8]) -> Option<FanCluster> {

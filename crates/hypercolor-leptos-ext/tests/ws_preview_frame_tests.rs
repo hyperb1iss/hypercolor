@@ -119,19 +119,19 @@ fn assert_manifest_layout(
             }
             ("repeated_f32_le", ManifestFieldValue::F32List(value)) => {
                 let actual = encoded[offset..offset + value.len() * 4]
-                    .chunks_exact(4)
-                    .map(|chunk| {
-                        f32::from_le_bytes(chunk.try_into().expect("f32 list item is complete"))
-                    })
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|chunk| f32::from_le_bytes(*chunk))
                     .collect();
                 offset += value.len() * 4;
                 ManifestFieldValue::F32List(actual)
             }
             ("repeated_u8_rgb", ManifestFieldValue::RgbList(value)) => {
                 let actual = encoded[offset..offset + value.len() * 3]
-                    .chunks_exact(3)
-                    .map(|chunk| <[u8; 3]>::try_from(chunk).expect("RGB list item is complete"))
-                    .collect();
+                    .as_chunks::<3>()
+                    .0
+                    .to_vec();
                 offset += value.len() * 3;
                 ManifestFieldValue::RgbList(actual)
             }

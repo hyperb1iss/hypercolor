@@ -169,7 +169,12 @@ fn alpha_is_opaque_across_repeated_acquisitions() {
         match duplicator.next_frame(Duration::from_millis(150)) {
             Ok(Some(frame)) => {
                 assert!(
-                    frame.rgba().chunks_exact(4).all(|pixel| pixel[3] == 0xFF),
+                    frame
+                        .rgba()
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .all(|pixel| pixel[3] == 0xFF),
                     "every captured pixel must be fully opaque"
                 );
                 checked += 1;

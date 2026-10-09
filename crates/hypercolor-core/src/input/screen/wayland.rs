@@ -4729,7 +4729,12 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
             dst.copy_from_slice(src);
         }
         SpaVideoFormat::Bgra => {
-            for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+            for (src_px, dst_px) in src
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(dst.as_chunks_mut::<4>().0)
+            {
                 dst_px[0] = src_px[2];
                 dst_px[1] = src_px[1];
                 dst_px[2] = src_px[0];
@@ -4737,7 +4742,12 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
             }
         }
         SpaVideoFormat::Rgbx => {
-            for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+            for (src_px, dst_px) in src
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(dst.as_chunks_mut::<4>().0)
+            {
                 dst_px[0] = src_px[0];
                 dst_px[1] = src_px[1];
                 dst_px[2] = src_px[2];
@@ -4745,7 +4755,12 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
             }
         }
         SpaVideoFormat::Bgrx => {
-            for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+            for (src_px, dst_px) in src
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(dst.as_chunks_mut::<4>().0)
+            {
                 dst_px[0] = src_px[2];
                 dst_px[1] = src_px[1];
                 dst_px[2] = src_px[0];
@@ -4753,7 +4768,12 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
             }
         }
         SpaVideoFormat::Argb => {
-            for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+            for (src_px, dst_px) in src
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(dst.as_chunks_mut::<4>().0)
+            {
                 dst_px[0] = src_px[1];
                 dst_px[1] = src_px[2];
                 dst_px[2] = src_px[3];
@@ -4761,7 +4781,12 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
             }
         }
         SpaVideoFormat::Abgr => {
-            for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+            for (src_px, dst_px) in src
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(dst.as_chunks_mut::<4>().0)
+            {
                 dst_px[0] = src_px[3];
                 dst_px[1] = src_px[2];
                 dst_px[2] = src_px[1];
@@ -4769,7 +4794,12 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
             }
         }
         SpaVideoFormat::Xrgb => {
-            for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+            for (src_px, dst_px) in src
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(dst.as_chunks_mut::<4>().0)
+            {
                 dst_px[0] = src_px[1];
                 dst_px[1] = src_px[2];
                 dst_px[2] = src_px[3];
@@ -4777,7 +4807,12 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
             }
         }
         SpaVideoFormat::Xbgr => {
-            for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+            for (src_px, dst_px) in src
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(dst.as_chunks_mut::<4>().0)
+            {
                 dst_px[0] = src_px[3];
                 dst_px[1] = src_px[2];
                 dst_px[2] = src_px[1];
@@ -4785,7 +4820,12 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
             }
         }
         SpaVideoFormat::Rgb => {
-            for (src_px, dst_px) in src.chunks_exact(3).zip(dst.chunks_exact_mut(4)) {
+            for (src_px, dst_px) in src
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(dst.as_chunks_mut::<4>().0)
+            {
                 dst_px[0] = src_px[0];
                 dst_px[1] = src_px[1];
                 dst_px[2] = src_px[2];
@@ -4793,7 +4833,12 @@ fn convert_row_to_rgba(src: &[u8], dst: &mut [u8], format: SpaVideoFormat) {
             }
         }
         SpaVideoFormat::Bgr => {
-            for (src_px, dst_px) in src.chunks_exact(3).zip(dst.chunks_exact_mut(4)) {
+            for (src_px, dst_px) in src
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(dst.as_chunks_mut::<4>().0)
+            {
                 dst_px[0] = src_px[2];
                 dst_px[1] = src_px[1];
                 dst_px[2] = src_px[0];

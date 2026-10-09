@@ -55,7 +55,7 @@ fn to_pixel_rounded_clamps() {
     let (px, py) = pos.to_pixel_rounded(320, 200);
     // Clamped to canvas bounds
     assert!(px <= 319);
-    assert!(py == 0); // negative clamped to 0
+    assert_eq!(py, 0); // negative clamped to 0
 }
 
 #[test]

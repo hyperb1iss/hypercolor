@@ -105,10 +105,10 @@ impl CalibrationDirection {
             Self::RightToLeft => 1.0 - nx,
             Self::TopToBottom => ny,
             Self::BottomToTop => 1.0 - ny,
-            Self::TopLeftToBottomRight => (nx + ny) * 0.5,
-            Self::BottomRightToTopLeft => 1.0 - ((nx + ny) * 0.5),
-            Self::TopRightToBottomLeft => ((1.0 - nx) + ny) * 0.5,
-            Self::BottomLeftToTopRight => (nx + (1.0 - ny)) * 0.5,
+            Self::TopLeftToBottomRight => f32::midpoint(nx, ny),
+            Self::BottomRightToTopLeft => 1.0 - f32::midpoint(nx, ny),
+            Self::TopRightToBottomLeft => f32::midpoint(1.0 - nx, ny),
+            Self::BottomLeftToTopRight => f32::midpoint(nx, 1.0 - ny),
             Self::Clockwise | Self::CounterClockwise | Self::Outward | Self::Inward => nx,
         }
     }
@@ -413,7 +413,12 @@ impl EffectRenderer for CalibrationRenderer {
             let ny = (y as f32 + 0.5) / height;
             let row_offset = y as usize * row_stride;
             let row = &mut pixels[row_offset..row_offset + row_stride];
-            for (x, pixel) in row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
+            for (x, pixel) in row
+                .as_chunks_mut::<BYTES_PER_PIXEL>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
                 let nx = (x as f32 + 0.5) / width;
                 let mut color = match self.pattern {
                     CalibrationPattern::Sweep => self.render_sweep(nx, ny, phase, &palette),

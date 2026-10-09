@@ -39,7 +39,7 @@ impl StreamSlot {
 
     pub(super) fn allocate_epoch(&self) -> Result<u64, MacosCaptureError> {
         self.next_epoch
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                 epoch.checked_add(1)
             })
             .map_err(|_| MacosCaptureError::SequenceExhausted)

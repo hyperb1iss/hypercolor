@@ -95,7 +95,7 @@ impl MacosScreenCache {
 
 pub(super) fn next_texture_storage_id() -> Result<u64> {
     NEXT_GPU_TEXTURE_STORAGE_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .map_err(|_| anyhow::anyhow!("GPU texture storage identity space is exhausted"))

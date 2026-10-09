@@ -259,8 +259,8 @@ fn assert_pixels(
         copied.width,
         copied.height,
     )?;
-    for pixel in pixels.chunks_exact(4) {
-        if pixel != expected {
+    for pixel in pixels.as_chunks::<4>().0 {
+        if *pixel != expected {
             return Err(format!("copied pixel {pixel:?} did not match {expected:?}"));
         }
     }
