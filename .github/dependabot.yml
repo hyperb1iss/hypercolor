@@ -20,6 +20,21 @@ updates:
       # handles split /Tp.
       - dependency-name: "cc"
         versions: [">=1.5.0"]
+      # The Hue driver passes webrtc-util's Conn into webrtc-dtls, so
+      # webrtc-util has to stay on the release webrtc-dtls links (0.11 for
+      # dtls 0.12). A newer webrtc-util alone splits the trait in two and
+      # the Hue driver stops compiling. Move it by hand with webrtc-dtls.
+      - dependency-name: "webrtc-util"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # Servo's RenderingContext trait names surfman, glow, and gleam types,
+      # and core implements it with its own copies of those crates. They
+      # have to match Servo's versions, so bump them by hand with Servo.
+      - dependency-name: "surfman"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "glow"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "gleam"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: "cargo"
     directory: "/crates/hypercolor-ui"

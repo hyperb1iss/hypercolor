@@ -34,4 +34,5 @@ pub mod service;
 pub mod session;
 pub mod source_status;
 pub mod spatial;
+pub mod usb;
 pub mod viewport;

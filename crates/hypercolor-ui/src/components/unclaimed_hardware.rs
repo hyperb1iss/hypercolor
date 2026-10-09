@@ -22,6 +22,23 @@ pub fn matching_bridge<'a>(
         .map(|bridge| bridge.device_id.as_str())
 }
 
+/// `vendor model`, without repeating a vendor the product string already
+/// leads with (Razer reports "Razer Kraken Ultimate", not "Kraken Ultimate").
+pub fn vendor_and_model(vendor: &str, model: &str) -> String {
+    let leads_with_vendor = model
+        .get(..vendor.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(vendor))
+        && model[vendor.len()..]
+            .chars()
+            .next()
+            .is_none_or(char::is_whitespace);
+    if leads_with_vendor {
+        model.to_owned()
+    } else {
+        format!("{vendor} {model}")
+    }
+}
+
 /// Prefill the repository's device-support issue form without submitting it.
 pub fn support_issue_url(device: &UnclaimedDevice, platform: &str, available: bool) -> String {
     let platform = match platform.to_ascii_lowercase().as_str() {
@@ -31,7 +48,7 @@ pub fn support_issue_url(device: &UnclaimedDevice, platform: &str, available: bo
         _ => "",
     };
     let model = device.product.as_deref().unwrap_or("Unknown USB device");
-    let vendor = device.manufacturer.as_deref().unwrap_or("Unknown vendor");
+    let vendor = device.vendor_label();
     let support = if available {
         "OpenRGB lists a controller with the same serial number.".to_owned()
     } else if let Some(driver) = &device.claimable_by {
@@ -41,8 +58,11 @@ pub fn support_issue_url(device: &UnclaimedDevice, platform: &str, available: bo
     };
     let fields = [
         ("template", "device-support.yml".to_owned()),
-        ("title", format!("[device] {vendor} {model}")),
-        ("vendor", vendor.to_owned()),
+        (
+            "title",
+            format!("[device] {}", vendor_and_model(&vendor, model)),
+        ),
+        ("vendor", vendor.into_owned()),
         ("model", model.to_owned()),
         (
             "vid-pid",
@@ -104,10 +124,9 @@ fn UnclaimedRow(
     status: LocalResource<api::ApiResult<hypercolor_types::api::system::OpenRgbStatus>>,
     devices: LocalResource<api::ApiResult<Vec<api::DeviceSummary>>>,
 ) -> impl IntoView {
-    let title = format!(
-        "{} {}",
-        device.manufacturer.as_deref().unwrap_or("Unknown vendor"),
-        device.product.as_deref().unwrap_or("USB device")
+    let title = vendor_and_model(
+        &device.vendor_label(),
+        device.product.as_deref().unwrap_or("USB device"),
     );
     let ids = format!("{:04X}:{:04X}", device.vendor_id, device.product_id);
     let device_for_match = device.clone();

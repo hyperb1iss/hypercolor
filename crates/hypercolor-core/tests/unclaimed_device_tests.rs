@@ -16,6 +16,7 @@ fn observation(vendor_id: u16, product_id: u16, bus_path: &str) -> UsbObservatio
         product: Some("Widget".to_owned()),
         serial: None,
         bus_path: Some(bus_path.to_owned()),
+        device_class: 0,
         interface_classes: vec![3, 3, 255],
         descriptor_driver_id: None,
     }
@@ -169,4 +170,124 @@ fn the_store_publishes_a_count_only_when_the_view_changes() {
 
     store.replace_snapshot([]);
     assert_eq!(drain_counts(&mut events), vec![0]);
+}
+
+#[test]
+fn a_missing_manufacturer_string_falls_back_to_the_vid_owner() {
+    let store = UnclaimedDeviceStore::new();
+    let mut razer = observation(0x1532, 0x0527, "1-1.2");
+    razer.manufacturer = None;
+    let mut blank = observation(0x1B1C, 0x0C99, "1-1.3");
+    blank.manufacturer = Some("  ".to_owned());
+    let mut shared = observation(0x1CBE, 0xA088, "1-1.4");
+    shared.manufacturer = None;
+    store.replace_snapshot([razer, blank, shared]);
+
+    let manufacturers: Vec<_> = store
+        .snapshot()
+        .into_iter()
+        .map(|device| (device.vendor_id, device.manufacturer))
+        .collect();
+    assert_eq!(
+        manufacturers,
+        vec![
+            (0x1532, Some("Razer".to_owned())),
+            (0x1B1C, Some("Corsair".to_owned())),
+            (0x1CBE, None),
+        ],
+        "a shared VID names nobody rather than guessing a brand"
+    );
+}
+
+#[test]
+fn a_reported_manufacturer_string_wins_over_the_vid_owner() {
+    let store = UnclaimedDeviceStore::new();
+    let mut razer = observation(0x1532, 0x0527, "1-1.2");
+    razer.manufacturer = Some("Razer Inc.".to_owned());
+    store.replace_snapshot([razer]);
+
+    assert_eq!(
+        store.snapshot()[0].manufacturer.as_deref(),
+        Some("Razer Inc.")
+    );
+}
+
+fn with_classes(
+    mut observation: UsbObservation,
+    device_class: u8,
+    interface_classes: &[u8],
+) -> UsbObservation {
+    observation.device_class = device_class;
+    observation.interface_classes = interface_classes.to_vec();
+    observation
+}
+
+#[test]
+fn hubs_and_audio_only_functions_cannot_be_lighting() {
+    let base = || observation(0x1532, 0x48F0, "1-1.2");
+
+    assert!(with_classes(base(), 0x09, &[0x09]).cannot_be_lighting());
+    assert!(
+        with_classes(base(), 0x09, &[]).cannot_be_lighting(),
+        "the device class alone marks a hub whose interfaces went unread"
+    );
+    assert!(
+        with_classes(base(), 0x00, &[0x09, 0x09]).cannot_be_lighting(),
+        "every interface a hub interface is a hub"
+    );
+    assert!(with_classes(base(), 0x00, &[0x01, 0x01, 0x01]).cannot_be_lighting());
+    assert!(with_classes(base(), 0xEF, &[0x01, 0x01]).cannot_be_lighting());
+}
+
+#[test]
+fn anything_with_a_controllable_interface_may_be_lighting() {
+    let base = || observation(0x1532, 0x0527, "1-1.2");
+
+    assert!(
+        !with_classes(base(), 0x00, &[0x01, 0x01, 0x01, 0x03]).cannot_be_lighting(),
+        "an RGB headset exposes HID beside its audio interfaces"
+    );
+    assert!(!with_classes(base(), 0x00, &[0x01, 0xFF]).cannot_be_lighting());
+    assert!(!with_classes(base(), 0x00, &[0x03]).cannot_be_lighting());
+    assert!(!with_classes(base(), 0xEF, &[0x02, 0x0A]).cannot_be_lighting());
+    assert!(
+        !with_classes(base(), 0x00, &[]).cannot_be_lighting(),
+        "no interfaces reported proves nothing"
+    );
+}
+
+#[test]
+fn the_unclaimed_view_hides_hubs_and_audio_only_functions() {
+    let store = UnclaimedDeviceStore::new();
+    store.replace_snapshot([
+        with_classes(observation(0x1532, 0x48F0, "1-1"), 0x09, &[0x09]),
+        with_classes(observation(0x1532, 0x0527, "1-1.1"), 0x00, &[0x01, 0x03]),
+        with_classes(observation(0x1234, 0x0002, "1-1.2"), 0x00, &[0x01, 0x01]),
+        with_classes(observation(0x1CBE, 0xA088, "1-1.3"), 0xEF, &[0x02, 0x0A]),
+    ]);
+
+    let listed: Vec<_> = store
+        .snapshot()
+        .into_iter()
+        .map(|device| (device.vendor_id, device.product_id))
+        .collect();
+    assert_eq!(listed, vec![(0x1532, 0x0527), (0x1CBE, 0xA088)]);
+}
+
+#[test]
+fn a_matching_descriptor_outranks_the_class_filter() {
+    let store = UnclaimedDeviceStore::new();
+    store.replace_snapshot([claimed_by(
+        with_classes(observation(0x1532, 0x0F20, "1-1.4"), 0x09, &[0x09]),
+        "razer",
+    )]);
+    store.set_enabled_driver_ids(Some(BTreeSet::new()));
+
+    let snapshot = store.snapshot();
+    assert_eq!(
+        snapshot.len(),
+        1,
+        "a disabled driver's device stays claimable whatever its classes say"
+    );
+    assert_eq!(snapshot[0].claimable_by.as_deref(), Some("razer"));
 }
