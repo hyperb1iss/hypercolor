@@ -300,8 +300,8 @@ step inside a phase (each effect directory listing and effect file in
 `scanning_effects`, each render runtime piece and compositor pipeline compile
 in `starting_render_thread`, each extension hook in `starting_services` and
 `preparing_api`); and `detail`, present only while a step runs, names that
-step. Every other path, and every
-path from a remote peer, answers `503 service_unavailable` (loopback peers get
+step. Every other path, and every path from a remote peer, answers
+`503 service_unavailable` (loopback peers get
 `details: { phase, sequence, detail? }`). The `startup` field is absent once
 the daemon is ready.
 

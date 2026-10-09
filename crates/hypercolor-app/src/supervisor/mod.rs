@@ -2147,7 +2147,7 @@ async fn run_watchdog_loop(
         let output = match daemon_log_file().and_then(ChildOutputProbe::new) {
             Ok(output) => Some(output),
             Err(error) => {
-                tracing::debug!(%error, "daemon output is not observable; using the no-answer deadline");
+                tracing::warn!(%error, "daemon output is not observable; using the no-answer deadline");
                 None
             }
         };
