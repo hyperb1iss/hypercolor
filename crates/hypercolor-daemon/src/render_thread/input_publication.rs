@@ -1397,6 +1397,32 @@ async fn run_exact_screen_transition(
         .map(|committed| ExactScreenTransitionOutcome::Completed(Some(committed)))
 }
 
+/// Mirrors interaction demand into device input for as long as the pump runs.
+///
+/// Dropping it withdraws the demand, so a pump that panics or is aborted
+/// past its shutdown deadline still stops device input like a clean exit.
+struct DeviceInputDemand {
+    device_input: Option<DeviceInputHandle>,
+}
+
+impl DeviceInputDemand {
+    const fn new(device_input: Option<DeviceInputHandle>) -> Self {
+        Self { device_input }
+    }
+
+    fn mirror(&self, demanded: bool) {
+        if let Some(device_input) = &self.device_input {
+            device_input.set_demanded(demanded);
+        }
+    }
+}
+
+impl Drop for DeviceInputDemand {
+    fn drop(&mut self) {
+        self.mirror(false);
+    }
+}
+
 async fn run_pump(
     manager: InputManager,
     reader: InputPublicationReader,
@@ -1406,6 +1432,7 @@ async fn run_pump(
     status: watch::Sender<InputPublicationStatus>,
     ready: oneshot::Sender<()>,
 ) {
+    let device_demand = DeviceInputDemand::new(device_input);
     status.send_replace(InputPublicationStatus::Ready);
     let _ = ready.send(());
 
@@ -1426,14 +1453,12 @@ async fn run_pump(
         // Device input ignores the host capture consent and every manager
         // reconcile below, including the Busy and Stale retries; it only
         // follows whether anything wants interaction.
-        if let Some(device_input) = &device_input {
-            device_input.set_demanded(
-                demands
-                    .snapshot()
-                    .capture_demand()
-                    .is_active(CaptureDomain::Interaction),
-            );
-        }
+        device_demand.mirror(
+            demands
+                .snapshot()
+                .capture_demand()
+                .is_active(CaptureDomain::Interaction),
+        );
         reap_screen_publication_retirements(&mut publication_retirements);
         while let Some(result) = worker_retirement_tasks.try_join_next() {
             if let Err(error) = result {
@@ -1744,9 +1769,7 @@ async fn run_pump(
         }
     }
 
-    if let Some(device_input) = &device_input {
-        device_input.set_demanded(false);
-    }
+    drop(device_demand);
     let inactive_capture = CaptureDemand::new(false, ScreenCaptureDemand::Inactive, false);
     match capture_demand.reconcile(&manager, inactive_capture, || true) {
         CaptureDemandReconcile::Applied => {}

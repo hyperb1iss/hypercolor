@@ -213,10 +213,12 @@ Device input is not keystroke capture, so `[input].enabled` does not gate
 it. The input publication pump mirrors the interaction bit of its aggregate
 capture demand into the device handle on every iteration, independent of the
 manager reconcile that governs host capture, and clears it when the pump
-stops. That demand is the union of authoritative render, preview, and
-`input_events` WebSocket subscribers. Once the cancels for held input have
-gone out, children publish nothing while undemanded, so neither the bus nor
-the `input_events` topic sees further device traffic.
+stops. A drop guard owns the clear, so a worker that panics or is aborted
+past the shutdown deadline withdraws demand like a clean exit. That demand
+is the union of authoritative render, preview, and `input_events` WebSocket
+subscribers. Once the cancels for held input have gone out, children
+publish nothing while undemanded, so neither the bus nor the `input_events`
+topic sees further device traffic.
 
 ### 7. ROLI Blocks producer
 
@@ -266,8 +268,8 @@ the `input_events` topic sees further device traffic.
   release on demand loss followed by a fresh tap, device buttons, and the
   allocation contract with held device input.
 - Daemon: device sources route under `Host` without reporting host input
-  availability, and the pump drives device demand with no host capture
-  source registered.
+  availability, the pump drives device demand with no host capture source
+  registered, and an aborted pump worker withdraws it.
 - Blocks (`blocks_input_tests.rs`): a fake blocksd drives subscribe, touches,
   buttons with and without SDK names, unadopted uids, unknown event types,
   `device_removed`, an undecodable line, connection loss and resubscription,

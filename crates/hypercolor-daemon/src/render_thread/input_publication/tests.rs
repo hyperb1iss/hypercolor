@@ -39,7 +39,7 @@ use super::{
     InputPublicationDemand, InputPublicationDemandHandle, InputPublicationPump,
     InputPublicationReader, InputPublicationSchedule, InputPublicationStatus,
     InputScreenBranchDemand, LIFECYCLE_PROBE_INTERVAL, cadence_interval,
-    exact_screen_failure_retry_at, run_exact_screen_transition,
+    exact_screen_failure_retry_at, run_exact_screen_transition, run_pump,
     screen_executor_matches_render_target,
 };
 use crate::render_thread::capture_demand::CaptureDomain;
@@ -1242,6 +1242,48 @@ async fn device_input_follows_interaction_demand_without_host_capture() {
     assert!(
         !devices.is_demanded(),
         "a stopped pump leaves no device input demanded"
+    );
+}
+
+#[tokio::test]
+async fn aborted_pump_worker_withdraws_device_input_demand() {
+    // An abort, as when shutdown passes its deadline, skips the worker's
+    // normal exit; the demand must still clear when the worker is dropped.
+    let manager = InputManager::new();
+    let devices = hypercolor_core::input::DeviceInputHandle::new();
+    let demands = InputPublicationDemandHandle::default();
+    let _lease = demands.register(
+        InputPublicationConsumer::PassiveStream,
+        InputPublicationDemand::default().with_source(SourceKind::Interaction, 120),
+    );
+    let reader = InputPublicationReader::new(
+        manager.input_graph_handle(),
+        manager.screen_publication_hub(),
+        demands.native_execution_policy(),
+    );
+    let (status, _status_rx) = tokio::sync::watch::channel(InputPublicationStatus::Starting);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let worker = tokio::spawn(run_pump(
+        manager,
+        reader,
+        demands,
+        Some(devices.clone()),
+        tokio_util::sync::CancellationToken::new(),
+        status,
+        ready_tx,
+    ));
+    ready_rx.await.expect("pump worker reports readiness");
+    wait_for_device_demand(&devices, true).await;
+
+    worker.abort();
+    let joined = worker.await;
+    assert!(
+        joined.is_err_and(|error| error.is_cancelled()),
+        "the worker was aborted rather than exiting on its own"
+    );
+    assert!(
+        !devices.is_demanded(),
+        "an aborted pump leaves no device input demanded"
     );
 }
 
