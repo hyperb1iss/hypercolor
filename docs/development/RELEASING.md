@@ -50,6 +50,14 @@ notarized them, publishes `hypercolor` +
 dist-tag), publishes the Python client to PyPI (stable only), and updates
 the AUR metadata (stable only).
 
+Before it uploads the Windows installer, the tag lane installs the highest
+published release older than the build on the runner and upgrades it with
+the new installer twice, once clicking through the wizard and once with
+`/S`. The build fails if either upgrade loses the user's autostart
+setting, recreates a removed shortcut, or leaves the previous release's
+files behind. [Windows Installer](WINDOWS_INSTALLER.md) describes that
+upgrade contract and the pinned NSIS template behind it.
+
 The tag lane also updates the Homebrew tap: `update-homebrew` renders
 `packaging/homebrew/hypercolor.rb` and `packaging/homebrew/hypercolor-app.rb`
 with `scripts/homebrew-formula.mjs`, filling the Linux amd64 and arm64

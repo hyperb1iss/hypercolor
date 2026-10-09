@@ -1815,7 +1815,11 @@ jobs:
         # fallback happily grabs the x86_64 cargo-tauri, and Tauri then
         # derives sidecar names for the wrong architecture ("resource path
         # hypercolor-daemon-x86_64-apple-darwin doesn't exist").
-        run: cargo binstall -y --targets "${{ matrix.rust-target }}" "tauri-cli@^2.0.0" || cargo install tauri-cli --version "^2.0.0" --locked
+        #
+        # The version is exact because crates/hypercolor-app/installer.nsi
+        # forks the NSIS template of the tauri-bundler this CLI pins; keep it
+        # in step with that file's header and build-windows-installer.ps1.
+        run: cargo binstall -y --targets "${{ matrix.rust-target }}" "tauri-cli@=2.12.1" || cargo install tauri-cli --version "=2.12.1" --locked
 
       - name: Download web assets
         uses: actions/download-artifact@v8
@@ -1950,6 +1954,54 @@ jobs:
           if (-not $installers) { throw "no NSIS installer found under: $($roots -join ', ')" }
           foreach ($installer in $installers) {
             ./scripts/check-windows-dll-closure.ps1 -Installer $installer.FullName
+          }
+
+      - name: Verify in-place upgrade from the previous release
+        # Installs the highest published release older than this build, then
+        # upgrades it with this build's installer twice, once clicking
+        # through the wizard and once with /S, checking that autostart,
+        # shortcuts, and a clean UI tree survive each time.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $roots = @("target/release/bundle/nsis", "crates/hypercolor-app/target/release/bundle/nsis")
+          if ($env:CARGO_TARGET_DIR) { $roots += Join-Path $env:CARGO_TARGET_DIR "release/bundle/nsis" }
+          $candidate = $roots | Where-Object { Test-Path $_ } |
+            ForEach-Object { Get-ChildItem $_ -Filter "*_x64-setup.exe" } | Sort-Object FullName -Unique |
+            Select-Object -First 1
+          if (-not $candidate) { throw "no NSIS installer found under: $($roots -join ', ')" }
+          if ($candidate.Name -notmatch '^Hypercolor_(.+)_x64-setup\.exe$') {
+            throw "unexpected installer name: $($candidate.Name)"
+          }
+          $version = [semver]$Matches[1]
+          $tags = @(gh release list --repo $env:GITHUB_REPOSITORY --exclude-drafts --exclude-pre-releases --limit 30 --json tagName --jq '.[].tagName')
+          if ($LASTEXITCODE -ne 0) { throw "gh release list failed with exit code $LASTEXITCODE" }
+          $releases = @($tags | ForEach-Object {
+            $parsed = $null
+            if ([semver]::TryParse($_.TrimStart('v'), [ref]$parsed)) {
+              [pscustomobject]@{ Tag = $_; Version = $parsed }
+            }
+          })
+          if ($tags.Count -gt 0 -and $releases.Count -eq 0) {
+            throw "no published release tag parses as a version: $($tags -join ', ')"
+          }
+          # A smoke dispatch builds <version>-ci.0, which sorts below the
+          # release it was cut from, so "older" has to mean semver-lower.
+          $older = $releases | Where-Object { $_.Version -lt $version } |
+            Sort-Object Version -Descending | Select-Object -First 1
+          if (-not $older) {
+            Write-Host "::notice::No published release is older than $version; skipping the upgrade check"
+            exit 0
+          }
+          $previousDir = Join-Path $env:RUNNER_TEMP "previous-installer"
+          gh release download $older.Tag --repo $env:GITHUB_REPOSITORY --pattern "*_x64-setup.exe" --dir $previousDir --clobber
+          if ($LASTEXITCODE -ne 0) { throw "gh release download $($older.Tag) failed with exit code $LASTEXITCODE" }
+          $previous = Get-ChildItem $previousDir -Filter "*_x64-setup.exe" | Select-Object -First 1
+          if (-not $previous) { throw "$($older.Tag) has no *_x64-setup.exe asset" }
+          foreach ($mode in "Interactive", "Silent") {
+            ./scripts/test-windows-installer-upgrade.ps1 -PreviousInstaller $previous.FullName -CandidateInstaller $candidate.FullName -Mode $mode
           }
 
       - name: Build unsigned macOS app bundle
