@@ -186,6 +186,56 @@ if ($diagnose -and $diagnose.data.snapshot.device_output) {
     Write-Check "Queue snapshot" $false "diagnose snapshot unavailable"
 }
 
+Write-Section "Competing Software"
+try {
+    $conflicts = Invoke-RestMethod -Uri "$Api/api/v1/system/conflicts" -TimeoutSec 3
+    $status = $conflicts.data
+    $running = @($status.conflicts)
+    if (-not $status.supported) {
+        Write-Check "Competing software" $true "not inspected on this platform"
+    } elseif ($running.Count -eq 0) {
+        Write-Check "Competing software" $true "none running"
+    } else {
+        foreach ($conflict in $running) {
+            Write-Check $conflict.name $false ("matched " + (@($conflict.matched) -join ", "))
+            Write-Host "       $($conflict.remedy)"
+        }
+    }
+} catch {
+    Write-Check "Competing software" $false $_.Exception.Message
+}
+
+Write-Section "Unclaimed USB Devices"
+try {
+    $unclaimed = Invoke-RestMethod -Uri "$Api/api/v1/devices/unclaimed" -TimeoutSec 3
+    $items = @(Get-ApiItems $unclaimed)
+    Write-Check "Unclaimed endpoint" $true "$($items.Count) device(s) no enabled driver claims"
+    foreach ($device in $items) {
+        $id = "{0:X4}:{1:X4}" -f [int]$device.vendor_id, [int]$device.product_id
+        $classes = (@($device.interface_classes) | ForEach-Object { "0x{0:X2}" -f [int]$_ }) -join ","
+        Write-Host "       $id $($device.manufacturer) $($device.product) interface_classes=[$classes] claimable_by=$($device.claimable_by)"
+    }
+} catch {
+    Write-Check "Unclaimed endpoint" $false $_.Exception.Message
+}
+
+Write-Section "USB Driver Bindings"
+# Which Windows driver owns each USB device and interface: HidUsb, WinUSB,
+# usbccgp, a vendor filter. Instance serials are left out.
+try {
+    $usbNodes = @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop |
+        Where-Object { $_.PNPDeviceID -like "USB\VID_*" } |
+        Sort-Object PNPDeviceID)
+    Write-Check "USB device nodes" $true "$($usbNodes.Count) present"
+    foreach ($node in $usbNodes) {
+        $hardwareId = ($node.PNPDeviceID -split "\\")[1]
+        $service = if ($node.Service) { $node.Service } else { "(none)" }
+        Write-Host ("       {0,-32} {1,-12} {2} [{3}]" -f $hardwareId, $service, $node.Name, $node.Status)
+    }
+} catch {
+    Write-Check "USB device nodes" $false $_.Exception.Message
+}
+
 Write-Host ""
 Write-Host "$Yellow Tip:$Reset Hypercolor should usually run as your user. Only the SMBus broker should be a service:"
 Write-Host "      Start-Service HypercolorSmBus"
