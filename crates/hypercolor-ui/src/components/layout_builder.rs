@@ -16,6 +16,9 @@ use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::layout_history::{LayoutEditorSnapshot, RemovedOutputCache};
+use crate::pointer_gesture::{
+    GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
+};
 use crate::storage;
 use crate::toasts;
 use hypercolor_leptos_ext::events::target_is_text_entry;
@@ -285,26 +288,91 @@ pub(crate) fn LayoutWorkspace(
         BOTTOM_MAX,
     ));
 
-    // Which panel edge is being dragged (if any)
+    // Which panel edge is being dragged, and its size at the press so a
+    // cancelled drag can put it back.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum PanelDrag {
         Sidebar,
         Bottom,
     }
+    #[derive(Clone, Copy, Debug)]
+    struct PanelGrip {
+        panel: PanelDrag,
+        start_size: f64,
+    }
     let (dragging, set_dragging) = signal(None::<PanelDrag>);
+    let grip = StoredValue::new(PointerGesture::<PanelGrip>::new());
     let container_ref = NodeRef::<leptos::html::Div>::new();
+    let sidebar_grip_ref = NodeRef::<leptos::html::Div>::new();
+    let bottom_grip_ref = NodeRef::<leptos::html::Div>::new();
 
-    // Global mousemove / mouseup listeners for drag (registered once)
-    let _drag_move = window_event_listener(ev::mousemove, move |ev| {
-        let Some(drag) = dragging.try_get_untracked().flatten() else {
+    let grip_element = move |panel: PanelDrag| -> Option<web_sys::Element> {
+        match panel {
+            PanelDrag::Sidebar => sidebar_grip_ref.get_untracked().map(Into::into),
+            PanelDrag::Bottom => bottom_grip_ref.get_untracked().map(Into::into),
+        }
+    };
+
+    let finish_grip = move |outcome: GestureEnd, state: PanelGrip| {
+        set_dragging.set(None);
+        match (outcome, state.panel) {
+            (GestureEnd::Cancel, PanelDrag::Sidebar) => set_sidebar_width.set(state.start_size),
+            (GestureEnd::Cancel, PanelDrag::Bottom) => set_bottom_height.set(state.start_size),
+            // Persist on release.
+            (GestureEnd::Commit, PanelDrag::Sidebar) => {
+                if let Some(width) = sidebar_width.try_get_untracked() {
+                    save_panel_size(LS_KEY_SIDEBAR, width);
+                }
+            }
+            (GestureEnd::Commit, PanelDrag::Bottom) => {
+                if let Some(height) = bottom_height.try_get_untracked() {
+                    save_panel_size(LS_KEY_BOTTOM, height);
+                }
+            }
+        }
+    };
+
+    // Each splitter captures its pointer on press, so the drag keeps
+    // tracking anywhere on screen without window listeners.
+    let start_grip = move |ev: web_sys::PointerEvent, panel: PanelDrag| {
+        ev.prevent_default();
+        let Some(element) = grip_element(panel) else {
+            return;
+        };
+        let pointer_id = ev.pointer_id();
+        let press = grip
+            .try_update_value(|g| {
+                g.press(pointer_id, |owner, state| {
+                    holds_capture(grip_element(state.panel).as_ref(), owner)
+                })
+            })
+            .unwrap_or(Press::Busy);
+        match press {
+            Press::Busy => return,
+            Press::Stale(stale) => finish_grip(GestureEnd::Cancel, stale),
+            Press::Ready => {}
+        }
+        let start_size = match panel {
+            PanelDrag::Sidebar => sidebar_width.get_untracked(),
+            PanelDrag::Bottom => bottom_height.get_untracked(),
+        };
+        capture_pointer(&element, &ev);
+        grip.update_value(|g| g.start(pointer_id, PanelGrip { panel, start_size }));
+        set_dragging.set(Some(panel));
+    };
+
+    let move_grip = move |ev: web_sys::PointerEvent| {
+        let Some(panel) = grip.with_value(|g| g.state(ev.pointer_id()).map(|state| state.panel))
+        else {
             return;
         };
         let Some(container) = container_ref.try_get_untracked().flatten() else {
             return;
         };
+        ev.prevent_default();
         let rect = container.get_bounding_client_rect();
 
-        match drag {
+        match panel {
             PanelDrag::Sidebar => {
                 let x = f64::from(ev.client_x()) - rect.left();
                 let clamped = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(rect.width() - 200.0));
@@ -317,27 +385,16 @@ pub(crate) fn LayoutWorkspace(
                 set_bottom_height.set(clamped);
             }
         }
-    });
+    };
 
-    let _drag_end = window_event_listener(ev::mouseup, move |_| {
-        let Some(drag) = dragging.try_get_untracked().flatten() else {
-            return;
-        };
-        set_dragging.set(None);
-        // Persist on release.
-        match drag {
-            PanelDrag::Sidebar => {
-                if let Some(width) = sidebar_width.try_get_untracked() {
-                    save_panel_size(LS_KEY_SIDEBAR, width);
-                }
-            }
-            PanelDrag::Bottom => {
-                if let Some(height) = bottom_height.try_get_untracked() {
-                    save_panel_size(LS_KEY_BOTTOM, height);
-                }
-            }
+    let end_grip = move |ev: web_sys::PointerEvent, how: PointerEnd| {
+        let ended = grip
+            .try_update_value(|g| g.end(ev.pointer_id(), how))
+            .flatten();
+        if let Some((outcome, state)) = ended {
+            finish_grip(outcome, state);
         }
-    });
+    };
 
     view! {
         <Show
@@ -378,12 +435,14 @@ pub(crate) fn LayoutWorkspace(
                     </div>
 
                     <div
-                        class="shrink-0 w-1 cursor-col-resize group/handle relative hover:bg-accent-muted/20
-                               active:bg-accent-muted/30 transition-colors border-r border-edge-subtle"
-                        on:mousedown=move |ev| {
-                            ev.prevent_default();
-                            set_dragging.set(Some(PanelDrag::Sidebar));
-                        }
+                        node_ref=sidebar_grip_ref
+                        class="shrink-0 w-1 cursor-col-resize group/handle relative touch-none touch-grab
+                               hover:bg-accent-muted/20 active:bg-accent-muted/30 transition-colors border-r border-edge-subtle"
+                        on:pointerdown=move |ev| start_grip(ev, PanelDrag::Sidebar)
+                        on:pointermove=move_grip
+                        on:pointerup=move |ev| end_grip(ev, PointerEnd::Up)
+                        on:pointercancel=move |ev| end_grip(ev, PointerEnd::Cancel)
+                        on:lostpointercapture=move |ev| end_grip(ev, PointerEnd::LostCapture)
                     >
                         <div class="absolute inset-y-0 -left-0.5 -right-0.5" />
                         <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8
@@ -403,12 +462,14 @@ pub(crate) fn LayoutWorkspace(
 
                     // Bottom panel resize handle
                     <div
-                        class="shrink-0 h-1 cursor-row-resize group/handle relative hover:bg-accent-muted/20
-                               active:bg-accent-muted/30 transition-colors border-t border-edge-subtle"
-                        on:mousedown=move |ev| {
-                            ev.prevent_default();
-                            set_dragging.set(Some(PanelDrag::Bottom));
-                        }
+                        node_ref=bottom_grip_ref
+                        class="shrink-0 h-1 cursor-row-resize group/handle relative touch-none touch-grab
+                               hover:bg-accent-muted/20 active:bg-accent-muted/30 transition-colors border-t border-edge-subtle"
+                        on:pointerdown=move |ev| start_grip(ev, PanelDrag::Bottom)
+                        on:pointermove=move_grip
+                        on:pointerup=move |ev| end_grip(ev, PointerEnd::Up)
+                        on:pointercancel=move |ev| end_grip(ev, PointerEnd::Cancel)
+                        on:lostpointercapture=move |ev| end_grip(ev, PointerEnd::LostCapture)
                     >
                         <div class="absolute inset-x-0 -top-0.5 -bottom-0.5" />
                         <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-0.5 w-8
