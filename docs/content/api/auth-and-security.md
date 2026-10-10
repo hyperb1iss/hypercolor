@@ -38,7 +38,11 @@ graph TD
   B -- no --> R1[403 forbidden]
   B -- yes --> C{Bearer-exempt path?}
   C -- yes --> P[Handler]
-  C -- no --> D{Loopback client?}
+  C -- no --> C2{Declared public route?}
+  C2 -- yes --> L{Under its class limit?}
+  L -- no --> R5
+  L -- yes --> P
+  C2 -- no --> D{Loopback client?}
   D -- yes --> E{Cross-site mutating request?}
   E -- yes --> R2[403 forbidden - CSRF]
   E -- no --> J{Protected capture or input?}
@@ -67,9 +71,11 @@ daemon startup:
 | `HYPERCOLOR_API_KEY` | Control | Read **and** write (every method) |
 | `HYPERCOLOR_READ_API_KEY` | Read | `GET`, `HEAD`, `OPTIONS` only |
 
-Authentication is **enabled** when either variable holds a non-blank value.
-Whitespace-only values are treated as unset. With neither set, the API-key gate
-is bypassed and only the network allowlist applies.
+Authentication is **enabled** when either variable holds a non-blank value, or
+when an embedding build installs a credential authority (below).
+Whitespace-only values are treated as unset. With neither set and no
+authority, the API-key gate is bypassed and only the network allowlist
+applies.
 
 ```bash
 # Control tier only: one key that can do everything
@@ -126,6 +132,25 @@ gets `403 forbidden` with a detail body naming the required and current tiers:
 
 A missing or unparseable token on a non-loopback request returns
 `401 unauthorized`.
+
+### Credential authorities
+
+A build that embeds the daemon can install a credential authority
+(`hypercolor_daemon::api::security::CredentialAuthority`, supplied through
+its `DaemonExtensionInstaller`) to issue credentials beyond the two
+variables. The middleware checks a presented token against the environment
+keys first, then against the authority, on loopback and network requests
+alike. Authority credentials grant read or control, never protected control,
+which stays with the control key, the launcher session, and trusted
+in-process callers.
+
+An installed authority turns authentication on for every non-loopback request
+even before it holds a single credential, so it admits nobody until it issues
+one. An authority that can grant control satisfies the network bind rule the
+way `HYPERCOLOR_API_KEY` does (see
+[Fail-closed startup binds](#fail-closed-startup-binds)). Revoking one of its
+credentials closes every WebSocket that credential opened with close code
+1008, reason `credential revoked`.
 
 ## The loopback exemption
 
@@ -225,7 +250,8 @@ control and understand the exposure.
 The bind address itself is enforced at startup, so a network-reachable daemon
 without auth never comes up by accident. The validation
 (`validate_network_bind_auth` in the daemon) refuses to bind the control API
-to any non-loopback address unless `HYPERCOLOR_API_KEY` is configured or
+to any non-loopback address unless `HYPERCOLOR_API_KEY` is configured, a
+credential authority that can grant control is installed, or
 `network.allow_unauthenticated_remote_access = true` is set; an explicit
 non-loopback bind flag (`--bind`, `--listen-address`, `--listen-all`) without
 either aborts startup with an error naming those exact remedies.
@@ -329,6 +355,22 @@ mounted, so the API surface, `/health`, and the MCP mount at its configured
 base path are never inside it. The UI shell loads without a key; every API
 call the UI then makes still needs one.
 
+An embedding build may also declare routes it mounts as public
+(`ApiExtension::public_routes`). A declared route needs no key and grants
+none: its handler sees an anonymous caller whatever token arrives, and never
+a loopback one, because any web page can reach a public route through a
+browser on the same machine. It still passes the network policy, a launcher
+session credential presented from the network is still refused, and every
+caller, loopback included, spends the declared rate class (read, write, or
+pairing). A declaration that names a route the engine serves, or falls within
+the API docs paths or the MCP mount when that is configured under `/api/v1`,
+is ignored at startup with an error, and that route keeps its authentication:
+a refused declaration beneath the docs paths also withdraws their exemption
+from its exact path. The engine cannot tell one extension's routes from
+another's, so an extension must declare only routes it mounts, and must not
+mount undeclared routes beneath the docs paths, which the exemption covers
+whole.
+
 The MCP server (mounted at `/mcp` when `mcp.enabled` is true) sits outside the
 `/api/v1` middleware stack. MCP is **off by default**; enable it before using
 any agent integration. See [MCP setup](@/api/mcp.md) for the transport and
@@ -350,6 +392,18 @@ needs no token for ordinary channels. The three sensitive channels require a
 control token in the upgrade URL or a trusted in-process connection. For the
 channel and frame protocol once connected, see
 [WebSocket protocol](@/api/websocket.md).
+
+The upgrade also checks the browser `Origin`. An anonymous upgrade is admitted
+only from loopback origins, the desktop shell's Tauri origins, and, on a keyed
+daemon, the origins in `web.cors_origins`: the allowlist keeps other pages from
+riding the credentialless loopback tier.
+
+A WebSocket upgrade that presents a valid API key is no longer subject to the
+browser origin allowlist. This is a behavior change for every key holder,
+environment keys included: such an upgrade is admitted from any `Origin`,
+including the daemon's own LAN address when the bundled UI was loaded from
+there, where earlier releases refused it with `403`. The key carries its own
+authority, so there is no ambient credential for another page to ride.
 
 ## Hardening checklist
 

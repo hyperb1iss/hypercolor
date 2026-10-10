@@ -22,6 +22,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::api;
+use crate::api::security::{CredentialAuthority, CredentialTier};
 use crate::app_state::AppState;
 use crate::macos_owner::{MacosDaemonOwner, MacosDaemonSessionAttestation, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
@@ -65,6 +66,10 @@ pub struct DaemonRunOptions {
     pub service_status: Option<ServiceStatus>,
     /// Platform session monitors supplied by the process host.
     pub session_monitors: Option<Vec<Box<dyn SessionMonitor>>>,
+    /// API credentials beyond the environment keys, supplied by a
+    /// downstream build. It is needed before any listener is bound,
+    /// because it decides whether a network bind is allowed.
+    pub credential_authority: Option<Arc<dyn CredentialAuthority>>,
 }
 
 /// Ownership handle for the exact sockets bound during daemon preparation.
@@ -132,7 +137,13 @@ impl PreparedDaemon {
     ) -> Result<()> {
         let macos_daemon_session_attestation =
             self.options.macos_daemon_session_attestation.clone();
+        let credential_authority = self.options.credential_authority.clone();
         let listeners = std::mem::take(&mut self.listeners);
+        let api_listen_addresses = listeners
+            .iter()
+            .map(TcpListener::local_addr)
+            .collect::<std::io::Result<Vec<_>>>()
+            .context("failed to read API listener addresses")?;
 
         // Answer `/health` from the first moment of startup, so a
         // supervisor sees a starting daemon make progress instead of a
@@ -161,6 +172,11 @@ impl PreparedDaemon {
         )?;
         let ui_dir = resolve_ui_dir(self.options.ui_dir.clone());
         daemon_state.session_monitors = self.options.session_monitors.take();
+        record_api_binding(
+            &mut daemon_state,
+            api_listen_addresses,
+            has_explicit_bind_override(&self.options),
+        );
         install_extensions(&mut daemon_state, ui_dir.clone(), extension_installers)?;
         Box::pin(daemon_state.start()).await?;
 
@@ -168,7 +184,9 @@ impl PreparedDaemon {
         let app_state = Arc::new(api::build_state(
             &daemon_state,
             macos_daemon_session_attestation.as_ref(),
+            credential_authority,
         ));
+        let api_auth_required = app_state.security_state.security_enabled();
         daemon_state.domains.display.sync_connected_surfaces().await;
         daemon_state
             .domains
@@ -191,7 +209,7 @@ impl PreparedDaemon {
             &daemon_state.server_identity,
             self.advertised_bind,
             mdns_publish,
-            api::security::api_auth_required_from_env(),
+            api_auth_required,
         )?;
 
         if ui_dir.is_some() {
@@ -219,6 +237,16 @@ impl PreparedDaemon {
     }
 }
 
+/// Publish where the API listens, before installers read it.
+fn record_api_binding(
+    daemon: &mut DaemonState,
+    addresses: Vec<SocketAddr>,
+    overridden_at_launch: bool,
+) {
+    daemon.api_listen_addresses = addresses;
+    daemon.api_bind_overridden_at_launch = overridden_at_launch;
+}
+
 fn install_extensions(
     daemon: &mut DaemonState,
     ui_dir: Option<PathBuf>,
@@ -238,6 +266,54 @@ pub trait DaemonExtensionInstaller: Send + Sync {
     ///
     /// Returns an error when the extension cannot register itself.
     fn install(&self, daemon: &mut DaemonState) -> Result<()>;
+
+    /// The credential authority this extension supplies, if any.
+    ///
+    /// Read before any listener is bound, ahead of [`install`](Self::install),
+    /// so it must be cheap and perform no I/O: return the authority object
+    /// here and load its state in `install`. No request reaches the
+    /// authority before the full router is served.
+    fn credential_authority(&self) -> Option<Arc<dyn CredentialAuthority>> {
+        None
+    }
+}
+
+/// Adopt the credential authority an installer supplies.
+///
+/// Options that already carry an authority keep it and the installers are
+/// not consulted. Every process path calls this before
+/// [`prepare`](crate::daemon::prepare), which decides the bind.
+///
+/// # Errors
+///
+/// Returns an error when more than one installer supplies an authority.
+pub fn adopt_credential_authority(
+    options: &mut DaemonRunOptions,
+    extension_installers: &[&dyn DaemonExtensionInstaller],
+) -> Result<()> {
+    if options.credential_authority.is_some() {
+        return Ok(());
+    }
+    let mut supplied = extension_installers
+        .iter()
+        .filter_map(|installer| installer.credential_authority());
+    let authority = supplied.next();
+    if supplied.next().is_some() {
+        bail!("more than one daemon extension supplies a credential authority");
+    }
+    options.credential_authority = authority;
+    Ok(())
+}
+
+/// Whether the run options carry a credential authority that can grant
+/// control, which satisfies a network bind the way `HYPERCOLOR_API_KEY`
+/// does.
+#[must_use]
+pub fn credential_authority_grants_control(options: &DaemonRunOptions) -> bool {
+    options
+        .credential_authority
+        .as_ref()
+        .is_some_and(|authority| authority.ceiling() == CredentialTier::Control)
 }
 
 /// Build the daemon's main Tokio runtime.
@@ -272,10 +348,11 @@ pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) 
 /// Returns an error when startup, extension installation, serving, or graceful
 /// shutdown fails.
 pub async fn run_with_extensions(
-    options: DaemonRunOptions,
+    mut options: DaemonRunOptions,
     shutdown_rx: watch::Receiver<bool>,
     extension_installers: &[&dyn DaemonExtensionInstaller],
 ) -> Result<()> {
+    adopt_credential_authority(&mut options, extension_installers)?;
     let prepared = prepare(options).await?;
     Box::pin(prepared.run_with_extensions(shutdown_rx, extension_installers)).await
 }
@@ -318,18 +395,20 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
     crate::startup::logging::install(env_filter);
 
     let requested_listen_targets = effective_bind_targets(&options, &config);
-    let control_api_key_configured = api::security::control_api_key_configured_from_env();
+    let control_credentials_configured = api::security::control_api_key_configured_from_env()
+        || credential_authority_grants_control(&options);
     let (listen_targets, fell_back_to_loopback) = effective_startup_bind_targets(
         &options,
         &config,
-        control_api_key_configured,
+        control_credentials_configured,
         config.network.unauthenticated_remote_access_allowed(),
     );
     if fell_back_to_loopback {
         warn!(
             requested = %requested_listen_targets.join(", "),
             effective = %listen_targets.join(", "),
-            "Network listen config requires HYPERCOLOR_API_KEY; falling back to loopback"
+            "Network listen config requires control credentials (HYPERCOLOR_API_KEY or a \
+             credential authority); falling back to loopback"
         );
     }
     let listen_addr = listen_targets.join(", ");
@@ -356,7 +435,7 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
     for bind in &binds {
         validate_network_bind_auth(
             *bind,
-            control_api_key_configured,
+            control_credentials_configured,
             config.network.unauthenticated_remote_access_allowed(),
         )?;
     }
@@ -703,15 +782,20 @@ async fn api_shutdown_deadline(
 
 /// Validate that network-reachable binds require control-tier authentication.
 ///
+/// `control_credentials_configured` is true when `HYPERCOLOR_API_KEY` is
+/// set or an installed credential authority can grant control.
+///
 /// # Errors
 ///
-/// Returns an error when `bind` is non-loopback and no control API key is configured.
+/// Returns an error when `bind` is non-loopback and no control credentials are configured.
 pub fn validate_network_bind_auth(
     bind: SocketAddr,
-    control_api_key_configured: bool,
+    control_credentials_configured: bool,
     allow_unauthenticated_remote_access: bool,
 ) -> Result<()> {
-    if bind.ip().is_loopback() || control_api_key_configured || allow_unauthenticated_remote_access
+    if bind.ip().is_loopback()
+        || control_credentials_configured
+        || allow_unauthenticated_remote_access
     {
         return Ok(());
     }
@@ -766,11 +850,11 @@ pub fn effective_bind_targets(
 pub fn effective_startup_bind_targets(
     options: &DaemonRunOptions,
     config: &HypercolorConfig,
-    control_api_key_configured: bool,
+    control_credentials_configured: bool,
     allow_unauthenticated_remote_access: bool,
 ) -> (Vec<String>, bool) {
     let targets = effective_bind_targets(options, config);
-    if control_api_key_configured
+    if control_credentials_configured
         || allow_unauthenticated_remote_access
         || has_explicit_bind_override(options)
     {
@@ -934,8 +1018,8 @@ mod tests {
 
     use super::{
         DaemonExtensionInstaller, bind_api_listener, bind_api_listener_with_lease,
-        default_env_filter, install_extensions, notify_api_ready_extensions, resolve_log_level,
-        serve_api_listeners_with_shutdown_timeout,
+        default_env_filter, install_extensions, notify_api_ready_extensions, record_api_binding,
+        resolve_log_level, serve_api_listeners_with_shutdown_timeout,
     };
     use crate::app_state::AppState;
     use crate::extensions::DaemonLifecycleExtension;
@@ -974,6 +1058,23 @@ mod tests {
     }
 
     struct UiDirProbe(Arc<Mutex<Option<std::path::PathBuf>>>);
+
+    type ObservedBinding = Option<(Vec<std::net::SocketAddr>, bool)>;
+
+    struct BindingProbe(Arc<Mutex<ObservedBinding>>);
+
+    impl DaemonExtensionInstaller for BindingProbe {
+        fn install(&self, daemon: &mut DaemonState) -> anyhow::Result<()> {
+            *self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+                daemon.api_listen_addresses().to_vec(),
+                daemon.api_bind_overridden_at_launch(),
+            ));
+            Ok(())
+        }
+    }
 
     impl DaemonExtensionInstaller for UiDirProbe {
         fn install(&self, daemon: &mut DaemonState) -> anyhow::Result<()> {
@@ -1155,6 +1256,40 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_deref(),
             Some(ui_dir.as_path())
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_installers_observe_the_bound_api_addresses() {
+        let directory = tempfile::tempdir().expect("daemon test directory should be created");
+        let _paths = PathOverrides::install(directory.path()).await;
+        let mut config = default_config();
+        config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
+        let config_manager = Arc::new(ConfigManager::from_config_unchecked(
+            directory.path().join("hypercolor.toml"),
+            config.clone(),
+        ));
+        let mut daemon =
+            DaemonState::initialize(BootConfig::from_config_unchecked(config), config_manager)
+                .expect("daemon test state should initialize");
+        assert!(daemon.api_listen_addresses().is_empty());
+        assert!(!daemon.api_bind_overridden_at_launch());
+
+        let observed = Arc::new(Mutex::new(None));
+        let probe = BindingProbe(Arc::clone(&observed));
+        let address: std::net::SocketAddr = "0.0.0.0:9420"
+            .parse()
+            .expect("fixture address should parse");
+        record_api_binding(&mut daemon, vec![address], true);
+        install_extensions(&mut daemon, None, &[&probe])
+            .expect("extension installation should succeed");
+
+        assert_eq!(
+            observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+            Some((vec![address], true))
         );
     }
 }

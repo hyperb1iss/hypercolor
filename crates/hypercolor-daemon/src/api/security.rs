@@ -4,6 +4,9 @@
 //! - `HYPERCOLOR_API_KEY` (control tier)
 //! - `HYPERCOLOR_READ_API_KEY` (read-only tier, optional)
 //!
+//! or when a downstream build installs a [`CredentialAuthority`], whose
+//! credentials are resolved after the environment keys.
+//!
 //! Read-only keys can call GET/HEAD/OPTIONS endpoints. Mutating endpoints
 //! require a control-tier key.
 
@@ -23,7 +26,9 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 use tracing::warn;
 
+pub use super::credential_authority::{CredentialAuthority, CredentialGrant, CredentialTier};
 use crate::domain::DomainError;
+use crate::extensions::{ApiExtension, PublicRateClass};
 use crate::macos_owner::MacosDaemonSessionAttestation;
 use hypercolor_types::config::{
     HypercolorConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
@@ -63,9 +68,11 @@ pub struct SecurityState {
     auth: AuthConfig,
     launcher_session_credential: Option<ProtectedControlCredential>,
     attested_session_credential: Option<ProtectedControlCredential>,
+    authority: Option<Arc<dyn CredentialAuthority>>,
     network: NetworkAccessPolicy,
     rate_limiter: Arc<Mutex<RateLimiter>>,
     static_assets: StaticAssetSurface,
+    public_routes: PublicRouteTable,
 }
 
 /// The paths the bundled web UI is served from.
@@ -117,17 +124,35 @@ impl StaticAssetSurface {
     }
 }
 
+/// The security decision the middleware made for one request.
+///
+/// Every request that reaches a handler carries one as an extension.
+/// Handlers mounted by downstream builds read it to apply the same tier
+/// and protected-control rules the engine's own routes apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RequestAuthContext {
+pub struct RequestAuthContext {
     security_enabled: bool,
     granted_tier: Option<AccessTier>,
     protected_control: ProtectedControl,
+    locality: RequestLocality,
+    presented_credential: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProtectedControl {
     Denied,
     Granted,
+}
+
+/// Where a request came from, as the middleware classified it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestLocality {
+    /// A socket peer on another host, or a loopback proxy forwarding one.
+    Network,
+    /// A loopback socket peer with no forwarded client.
+    Loopback,
+    /// The in-process trusted transport.
+    InProcess,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -140,6 +165,8 @@ impl RequestAuthContext {
             security_enabled: false,
             granted_tier: None,
             protected_control: ProtectedControl::Denied,
+            locality: RequestLocality::Network,
+            presented_credential: false,
         }
     }
 
@@ -149,7 +176,16 @@ impl RequestAuthContext {
             security_enabled: true,
             granted_tier: None,
             protected_control: ProtectedControl::Denied,
+            locality: RequestLocality::Network,
+            presented_credential: false,
         }
+    }
+
+    /// A caller on a public route: no tier, no protected control, and no
+    /// loopback locality, whatever it presented and wherever it came from.
+    #[must_use]
+    const fn anonymous() -> Self {
+        Self::preflight()
     }
 
     #[must_use]
@@ -161,6 +197,24 @@ impl RequestAuthContext {
                 AccessTier::Read => ProtectedControl::Denied,
                 AccessTier::Control => ProtectedControl::Granted,
             },
+            locality: RequestLocality::Network,
+            presented_credential: true,
+        }
+    }
+
+    /// A credential from an installed authority. Client credentials never
+    /// carry protected control, whatever their tier.
+    #[must_use]
+    pub(crate) const fn authority_grant(tier: CredentialTier) -> Self {
+        Self {
+            security_enabled: true,
+            granted_tier: Some(match tier {
+                CredentialTier::Read => AccessTier::Read,
+                CredentialTier::Control => AccessTier::Control,
+            }),
+            protected_control: ProtectedControl::Denied,
+            locality: RequestLocality::Network,
+            presented_credential: true,
         }
     }
 
@@ -170,7 +224,15 @@ impl RequestAuthContext {
             security_enabled,
             granted_tier: Some(AccessTier::Control),
             protected_control: ProtectedControl::Granted,
+            locality: RequestLocality::Network,
+            presented_credential: true,
         }
+    }
+
+    #[must_use]
+    const fn with_locality(mut self, locality: RequestLocality) -> Self {
+        self.locality = locality;
+        self
     }
 
     #[must_use]
@@ -190,14 +252,38 @@ impl RequestAuthContext {
         self.security_enabled
     }
 
+    /// Whether the caller may make mutating requests.
     #[must_use]
-    pub(crate) const fn can_control(self) -> bool {
+    pub const fn can_control(self) -> bool {
         !self.security_enabled || matches!(self.granted_tier, Some(AccessTier::Control))
     }
 
+    /// Whether the caller holds an operator credential: the control
+    /// environment key, the launcher session, or in-process trusted
+    /// control. Authority credentials never do.
     #[must_use]
-    pub(crate) const fn can_protected_control(self) -> bool {
+    pub const fn can_protected_control(self) -> bool {
         matches!(self.protected_control, ProtectedControl::Granted)
+    }
+
+    /// Whether the request came from a loopback peer.
+    ///
+    /// A loopback proxy that forwards a client address makes the request
+    /// the forwarded client's, so this is the classification to trust,
+    /// not the raw socket address. Always `false` on a public route, which
+    /// any web page can reach through a loopback browser.
+    #[must_use]
+    pub const fn is_loopback(self) -> bool {
+        matches!(self.locality, RequestLocality::Loopback)
+    }
+
+    /// Whether the request presented a credential that resolved.
+    ///
+    /// Such a request carries its own authority, so it has nothing
+    /// ambient for a cross-origin page to ride.
+    #[must_use]
+    pub(crate) const fn presented_credential(self) -> bool {
+        self.presented_credential
     }
 
     #[must_use]
@@ -224,9 +310,11 @@ impl SecurityState {
             auth: AuthConfig::default(),
             launcher_session_credential: None,
             attested_session_credential: None,
+            authority: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
+            public_routes: PublicRouteTable::default(),
         }
     }
 
@@ -245,9 +333,11 @@ impl SecurityState {
             },
             launcher_session_credential: protected_control_credential_from_env(),
             attested_session_credential: None,
+            authority: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
+            public_routes: PublicRouteTable::default(),
         }
     }
 
@@ -268,8 +358,29 @@ impl SecurityState {
         self
     }
 
+    /// Install the downstream credential authority.
+    ///
+    /// Authentication turns on for every non-loopback request as soon as
+    /// an authority is installed, whether or not it holds credentials yet:
+    /// an empty authority admits nobody, which is what makes a network
+    /// bind safe before the first credential exists.
+    #[must_use]
+    pub fn with_credential_authority(mut self, authority: Arc<dyn CredentialAuthority>) -> Self {
+        self.authority = Some(authority);
+        self
+    }
+
+    /// Declare the public routes this router serves.
+    ///
+    /// Called once at router assembly, next to the static-asset surface.
+    #[must_use]
+    pub(crate) fn with_public_routes(mut self, public_routes: PublicRouteTable) -> Self {
+        self.public_routes = public_routes;
+        self
+    }
+
     pub(crate) fn security_enabled(&self) -> bool {
-        self.auth.control_key.is_some() || self.auth.read_key.is_some()
+        self.auth.control_key.is_some() || self.auth.read_key.is_some() || self.authority.is_some()
     }
 
     pub(crate) fn install_macos_daemon_session(
@@ -289,11 +400,203 @@ impl SecurityState {
         .any(|credential| secret_matches(Some(credential.expose_secret()), token))
     }
 
-    fn resolve_loopback_token(&self, token: &str) -> Option<RequestAuthContext> {
+    fn resolve_loopback_token(&self, token: &str) -> Option<ResolvedCredential> {
         if self.is_session_credential(token) {
-            Some(RequestAuthContext::daemon_session(self.security_enabled()))
+            Some(ResolvedCredential {
+                context: RequestAuthContext::daemon_session(self.security_enabled()),
+                grant: None,
+            })
         } else {
-            resolve_token_tier(token, &self.auth).map(RequestAuthContext::authenticated)
+            self.resolve_presented_token(token)
+        }
+    }
+
+    /// Resolve a bearer against the environment keys, then the authority.
+    ///
+    /// Every source is consulted before any result is read, so the time a
+    /// rejection takes does not report which source the caller came
+    /// closest to matching.
+    fn resolve_presented_token(&self, token: &str) -> Option<ResolvedCredential> {
+        let environment = resolve_token_tier(token, &self.auth);
+        let grant = self.authority.as_ref().and_then(|authority| {
+            authority
+                .authenticate(token)
+                .filter(|grant| !grant.revocation().is_cancelled())
+                .map(|grant| grant.clamped_to(authority.ceiling()))
+        });
+
+        match (environment, grant) {
+            (Some(tier), _) => Some(ResolvedCredential {
+                context: RequestAuthContext::authenticated(tier),
+                grant: None,
+            }),
+            (None, Some(grant)) => Some(ResolvedCredential {
+                context: RequestAuthContext::authority_grant(grant.tier()),
+                grant: Some(grant),
+            }),
+            (None, None) => None,
+        }
+    }
+}
+
+/// A presented bearer that resolved, with the authority grant when one
+/// issued it.
+struct ResolvedCredential {
+    context: RequestAuthContext,
+    grant: Option<CredentialGrant>,
+}
+
+impl ResolvedCredential {
+    fn attach(self, request: &mut Request<Body>, locality: RequestLocality) {
+        request
+            .extensions_mut()
+            .insert(self.context.with_locality(locality));
+        if let Some(grant) = self.grant {
+            request.extensions_mut().insert(grant);
+        }
+    }
+}
+
+/// The public routes a router serves, resolved to full request paths.
+#[derive(Clone, Default)]
+pub(crate) struct PublicRouteTable {
+    routes: Arc<[PublicRouteEntry]>,
+    /// Full paths whose declaration was refused because they sit beneath
+    /// the bearer-exempt docs paths. An extension route there would
+    /// otherwise answer without a credential, so these paths lose the
+    /// exemption and authenticate like any undeclared route.
+    withheld_exemptions: Arc<[String]>,
+}
+
+#[derive(Debug, Clone)]
+struct PublicRouteEntry {
+    method: Method,
+    path: String,
+    class: OperationClass,
+}
+
+impl PublicRouteTable {
+    /// Resolve every extension's declarations under `api_prefix`.
+    ///
+    /// `engine_routes` are the path templates the engine itself serves
+    /// under the same prefix, and `reserved_prefixes` are full paths of
+    /// engine mounts that sit outside its route table, such as the MCP
+    /// service. The bearer-exempt API docs paths are always reserved, and
+    /// a declaration refused beneath them also withdraws the exemption
+    /// from its exact path, so that extension route authenticates instead
+    /// of answering anyone.
+    /// A declaration that names an engine route, falls within a reserved
+    /// prefix, or is not an exact path is dropped with an error, and its
+    /// route stays authenticated. Extensions are trusted not to declare one
+    /// another's routes; the engine cannot tell them apart.
+    pub(crate) fn from_extensions<'a>(
+        extensions: impl IntoIterator<Item = &'a Arc<dyn ApiExtension>>,
+        api_prefix: &str,
+        engine_routes: &[String],
+        reserved_prefixes: &[String],
+    ) -> Self {
+        let mut routes = Vec::new();
+        let mut withheld_exemptions = Vec::new();
+        for extension in extensions {
+            for route in extension.public_routes() {
+                if let Err(reason) = validate_public_route(
+                    route.path(),
+                    api_prefix,
+                    engine_routes,
+                    reserved_prefixes,
+                ) {
+                    tracing::error!(
+                        extension = extension.name(),
+                        method = %route.method(),
+                        path = route.path(),
+                        reason,
+                        "Ignoring public route declaration; the route stays authenticated"
+                    );
+                    let full_path = format!("{api_prefix}{}", route.path());
+                    if is_docs_exempt_path(&full_path) {
+                        withheld_exemptions.push(full_path);
+                    }
+                    continue;
+                }
+                routes.push(PublicRouteEntry {
+                    method: route.method().clone(),
+                    path: format!("{api_prefix}{}", route.path()),
+                    class: match route.class() {
+                        PublicRateClass::Read => OperationClass::Read,
+                        PublicRateClass::Write => OperationClass::Write,
+                        PublicRateClass::Pairing => OperationClass::Pairing,
+                    },
+                });
+            }
+        }
+        Self {
+            routes: routes.into(),
+            withheld_exemptions: withheld_exemptions.into(),
+        }
+    }
+
+    fn withholds_exemption(&self, path: &str) -> bool {
+        self.withheld_exemptions
+            .iter()
+            .any(|withheld| withheld == path)
+    }
+
+    fn class_for(&self, method: &Method, path: &str) -> Option<OperationClass> {
+        self.routes
+            .iter()
+            .find(|route| {
+                route.path == path
+                    && (route.method == *method
+                        || (route.method == Method::GET && *method == Method::HEAD))
+            })
+            .map(|route| route.class)
+    }
+}
+
+fn validate_public_route(
+    path: &str,
+    api_prefix: &str,
+    engine_routes: &[String],
+    reserved_prefixes: &[String],
+) -> Result<(), &'static str> {
+    let Some(rest) = path.strip_prefix('/') else {
+        return Err("path must start with '/'");
+    };
+    if rest.is_empty()
+        || rest
+            .split('/')
+            .any(|segment| segment.is_empty() || segment.contains(['{', '}', '*', '?', '#']))
+    {
+        return Err("path must be exact, with no empty, parameter, or wildcard segments");
+    }
+    if engine_routes
+        .iter()
+        .any(|template| template_matches(template, path))
+    {
+        return Err("path names a route the engine serves");
+    }
+    let full_path = format!("{api_prefix}{path}");
+    if is_docs_exempt_path(&full_path)
+        || reserved_prefixes
+            .iter()
+            .any(|prefix| path_within(&full_path, prefix))
+    {
+        return Err("path falls within an engine mount");
+    }
+    Ok(())
+}
+
+/// Whether an OpenAPI path template (`/devices/{id}`) matches `path`.
+fn template_matches(template: &str, path: &str) -> bool {
+    let mut template_segments = template.trim_matches('/').split('/');
+    let mut path_segments = path.trim_matches('/').split('/');
+    loop {
+        match (template_segments.next(), path_segments.next()) {
+            (None, None) => return true,
+            (Some(expected), Some(actual))
+                if expected == actual || (expected.starts_with('{') && expected.ends_with('}')) => {
+            }
+            _ => return false,
         }
     }
 }
@@ -350,9 +653,11 @@ impl SecurityState {
             },
             launcher_session_credential: None,
             attested_session_credential: None,
+            authority: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
+            public_routes: PublicRouteTable::default(),
         }
     }
 
@@ -361,9 +666,11 @@ impl SecurityState {
             auth: AuthConfig::default(),
             launcher_session_credential: None,
             attested_session_credential: None,
+            authority: None,
             network: NetworkAccessPolicy::from_config(&network),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
+            public_routes: PublicRouteTable::default(),
         }
     }
 
@@ -378,9 +685,11 @@ impl SecurityState {
             auth: AuthConfig::default(),
             launcher_session_credential: None,
             attested_session_credential: None,
+            authority: None,
             network,
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
+            public_routes: PublicRouteTable::default(),
         }
     }
 }
@@ -723,14 +1032,27 @@ pub async fn enforce_security(
     next: Next,
 ) -> Response {
     let mut request = request;
+    // A grant attached before this layer, as on a replayed WebSocket
+    // command or an in-process call, was resolved earlier and is never
+    // resolved again, so its revocation is checked here, ahead of every
+    // other branch.
+    if request
+        .extensions()
+        .get::<CredentialGrant>()
+        .is_some_and(|grant| grant.revocation().is_cancelled())
+    {
+        return DomainError::unauthorized("Invalid API key").into_response();
+    }
+
     if request
         .extensions_mut()
         .remove::<TrustedLocalControl>()
         .is_some()
     {
-        request
-            .extensions_mut()
-            .insert(RequestAuthContext::authenticated(AccessTier::Control));
+        request.extensions_mut().insert(
+            RequestAuthContext::authenticated(AccessTier::Control)
+                .with_locality(RequestLocality::InProcess),
+        );
         return next.run(request).await;
     }
 
@@ -738,22 +1060,54 @@ pub async fn enforce_security(
         return response;
     }
 
-    if !request_is_loopback(&request)
+    let locality = if request_is_loopback(&request) {
+        RequestLocality::Loopback
+    } else {
+        RequestLocality::Network
+    };
+
+    if locality == RequestLocality::Network
         && extract_token(&request).is_some_and(|token| state.is_session_credential(&token))
     {
         return DomainError::unauthorized("Invalid API key").into_response();
     }
 
-    if is_bearer_exempt(request.uri().path(), &state.static_assets) {
+    // Exempt paths, like public routes, run ahead of the loopback
+    // cross-site gate, so they never confer locality or carry a grant.
+    if is_bearer_exempt(request.uri().path(), &state.static_assets)
+        && !state
+            .public_routes
+            .withholds_exemption(request.uri().path())
+    {
+        request.extensions_mut().remove::<CredentialGrant>();
         request
             .extensions_mut()
             .insert(RequestAuthContext::unsecured());
         return next.run(request).await;
     }
 
+    // A public route needs no credential and confers none, locality
+    // included: it runs ahead of the loopback cross-site gate, so a page
+    // on any origin can reach it through the browser, and its handler must
+    // never see such a caller as local. A grant attached upstream, as on a
+    // replayed WebSocket command, is dropped for the same reason. Locality
+    // buys no rate exemption either; the budget exists for those pages.
+    // In-process trusted calls were admitted above and keep their
+    // authority: they are the daemon's own process, not a request.
+    if let Some(class) = state
+        .public_routes
+        .class_for(request.method(), request.uri().path())
+    {
+        request.extensions_mut().remove::<CredentialGrant>();
+        request
+            .extensions_mut()
+            .insert(RequestAuthContext::anonymous());
+        return rate_limited(&state, request, next, class).await;
+    }
+
     let optional_system_auth = is_optional_system_auth(request.method(), request.uri().path());
 
-    if request_is_loopback(&request) {
+    if locality == RequestLocality::Loopback {
         if is_mutating_request(request.method())
             && is_cross_site_request(&request)
             && !has_trusted_tauri_session(&state, &request)
@@ -764,18 +1118,18 @@ pub async fn enforce_security(
             .into_response();
         }
 
-        let auth_context = if let Some(token) = extract_token(&request) {
-            match state.resolve_loopback_token(&token) {
-                Some(context) => context,
-                None if optional_system_auth => {
-                    return DomainError::unauthorized("Invalid API key").into_response();
-                }
-                None => RequestAuthContext::unsecured(),
+        let resolved = extract_token(&request).map(|token| state.resolve_loopback_token(&token));
+        match resolved {
+            Some(Some(resolved)) => resolved.attach(&mut request, locality),
+            Some(None) if optional_system_auth => {
+                return DomainError::unauthorized("Invalid API key").into_response();
             }
-        } else {
-            RequestAuthContext::unsecured()
-        };
-        request.extensions_mut().insert(auth_context);
+            Some(None) | None => {
+                request
+                    .extensions_mut()
+                    .insert(RequestAuthContext::unsecured().with_locality(locality));
+            }
+        }
         return next.run(request).await;
     }
 
@@ -786,60 +1140,74 @@ pub async fn enforce_security(
         if request.extensions().get::<RequestAuthContext>().is_none() {
             request
                 .extensions_mut()
-                .insert(RequestAuthContext::unsecured());
+                .insert(RequestAuthContext::unsecured().with_locality(locality));
         }
         return next.run(request).await;
     }
 
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
-    let mut granted_tier = request
+    let mut resolved = request
         .extensions()
         .get::<RequestAuthContext>()
         .copied()
-        .filter(|context| context.security_enabled())
-        .and_then(RequestAuthContext::granted_tier);
+        .filter(|context| context.security_enabled() && context.granted_tier().is_some())
+        .map(|context| ResolvedCredential {
+            context,
+            grant: request.extensions().get::<CredentialGrant>().cloned(),
+        });
 
     if method != Method::OPTIONS {
-        let required_tier = required_tier_for_method(&method);
-        let granted = if let Some(granted_tier) = granted_tier {
-            Some(granted_tier)
-        } else if let Some(token) = extract_token(&request) {
-            let Some(granted_tier) = resolve_token_tier(&token, &state.auth) else {
-                return DomainError::unauthorized("Invalid API key").into_response();
-            };
-            Some(granted_tier)
-        } else if optional_system_auth {
-            None
-        } else {
-            return DomainError::unauthorized(
-                "Missing API key. Use Authorization: Bearer <token>.",
-            )
-            .into_response();
-        };
-
-        if let Some(granted) = granted {
-            granted_tier = Some(granted);
-
-            if !tier_satisfies(granted, required_tier) {
-                return DomainError::forbidden_details(
-                    "Read-only API key cannot perform write operations",
-                    json!({
-                        "required_tier": "control",
-                        "current_tier": "read"
-                    }),
+        if resolved.is_none() {
+            if let Some(token) = extract_token(&request) {
+                let Some(found) = state.resolve_presented_token(&token) else {
+                    return DomainError::unauthorized("Invalid API key").into_response();
+                };
+                resolved = Some(found);
+            } else if !optional_system_auth {
+                return DomainError::unauthorized(
+                    "Missing API key. Use Authorization: Bearer <token>.",
                 )
                 .into_response();
             }
         }
+
+        if let Some(granted) = resolved
+            .as_ref()
+            .and_then(|resolved| resolved.context.granted_tier())
+            && !tier_satisfies(granted, required_tier_for_method(&method))
+        {
+            return DomainError::forbidden_details(
+                "Read-only API key cannot perform write operations",
+                json!({
+                    "required_tier": "control",
+                    "current_tier": "read"
+                }),
+            )
+            .into_response();
+        }
     }
 
-    request.extensions_mut().insert(granted_tier.map_or_else(
-        RequestAuthContext::preflight,
-        RequestAuthContext::authenticated,
-    ));
+    match resolved {
+        Some(resolved) => resolved.attach(&mut request, locality),
+        None => {
+            request
+                .extensions_mut()
+                .insert(RequestAuthContext::preflight());
+        }
+    }
 
     let operation = classify_operation(&method, &path);
+    rate_limited(&state, request, next, operation).await
+}
+
+/// Spend one unit of `operation`'s budget for this client, then serve.
+async fn rate_limited(
+    state: &SecurityState,
+    request: Request<Body>,
+    next: Next,
+    operation: OperationClass,
+) -> Response {
     let client_id = client_identity(&request);
 
     let decision = {
@@ -869,7 +1237,7 @@ pub(crate) fn mark_trusted_local_control(request: &mut Request<Body>) {
 }
 
 pub(crate) const fn trusted_local_control_context() -> RequestAuthContext {
-    RequestAuthContext::authenticated(AccessTier::Control)
+    RequestAuthContext::authenticated(AccessTier::Control).with_locality(RequestLocality::InProcess)
 }
 
 /// Swagger UI's mount and the document it fetches.
@@ -887,10 +1255,12 @@ const OPENAPI_DOCUMENT_PATH: &str = "/api/v1/openapi.json";
 /// this check; the exemption is from presenting a key, not from being
 /// allowed to reach the daemon at all.
 fn is_bearer_exempt(path: &str, static_assets: &StaticAssetSurface) -> bool {
-    path == "/health"
-        || path == OPENAPI_DOCUMENT_PATH
-        || path_within(path, SWAGGER_UI_PREFIX)
-        || static_assets.serves(path)
+    path == "/health" || is_docs_exempt_path(path) || static_assets.serves(path)
+}
+
+/// The API docs paths the bearer exemption covers.
+fn is_docs_exempt_path(path: &str) -> bool {
+    path == OPENAPI_DOCUMENT_PATH || path_within(path, SWAGGER_UI_PREFIX)
 }
 
 fn is_optional_system_auth(method: &Method, path: &str) -> bool {
@@ -1760,7 +2130,8 @@ mod tests {
         assert!(!state.security_enabled());
         let context = state
             .resolve_loopback_token(credential.expose_secret())
-            .expect("session credential should resolve");
+            .expect("session credential should resolve")
+            .context;
         assert!(context.can_control());
         assert!(context.can_protected_control());
         assert!(!context.security_enabled());
@@ -2459,5 +2830,211 @@ mod tests {
         let request = with_connect_info(request, IpAddr::V4(Ipv4Addr::LOCALHOST), 9420);
 
         assert_eq!(super::client_identity(&request), "203.0.113.50");
+    }
+
+    struct PublicPairExtension;
+
+    impl crate::extensions::ApiExtension for PublicPairExtension {
+        fn name(&self) -> &'static str {
+            "public-pair"
+        }
+
+        fn mount_api_routes(
+            &self,
+            router: utoipa_axum::router::OpenApiRouter<std::sync::Arc<crate::app_state::AppState>>,
+        ) -> utoipa_axum::router::OpenApiRouter<std::sync::Arc<crate::app_state::AppState>>
+        {
+            router
+        }
+
+        fn public_routes(&self) -> Vec<crate::extensions::PublicRoute> {
+            vec![crate::extensions::PublicRoute::new(
+                Method::POST,
+                "/ext/pair",
+                crate::extensions::PublicRateClass::Pairing,
+            )]
+        }
+    }
+
+    #[tokio::test]
+    async fn a_public_route_still_rejects_a_network_session_credential() {
+        let credential = ProtectedControlCredential::from_bytes([0x42; 32]);
+        let extensions: Vec<std::sync::Arc<dyn crate::extensions::ApiExtension>> =
+            vec![std::sync::Arc::new(PublicPairExtension)];
+        let state = SecurityState::with_session_credential(credential.clone()).with_public_routes(
+            super::PublicRouteTable::from_extensions(&extensions, "/api/v1", &[], &[]),
+        );
+        let app = Router::new()
+            .route("/api/v1/ext/pair", post(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                enforce_security,
+            ));
+        let lan = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+
+        let anonymous = app
+            .clone()
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/ext/pair")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                lan,
+                41_000,
+            ))
+            .await
+            .expect("request should complete");
+        assert_eq!(anonymous.status(), StatusCode::OK);
+
+        let session = app
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/v1/ext/pair"),
+                    credential.expose_secret(),
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                lan,
+                41_000,
+            ))
+            .await
+            .expect("request should complete");
+        assert_eq!(session.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    struct MountProbeExtension;
+
+    impl crate::extensions::ApiExtension for MountProbeExtension {
+        fn name(&self) -> &'static str {
+            "mount-probe"
+        }
+
+        fn mount_api_routes(
+            &self,
+            router: utoipa_axum::router::OpenApiRouter<std::sync::Arc<crate::app_state::AppState>>,
+        ) -> utoipa_axum::router::OpenApiRouter<std::sync::Arc<crate::app_state::AppState>>
+        {
+            router
+        }
+
+        fn public_routes(&self) -> Vec<crate::extensions::PublicRoute> {
+            [
+                "/agents",
+                "/agents/sse",
+                "/agentsx",
+                "/docs",
+                "/docs/exchange",
+                "/openapi.json",
+            ]
+            .into_iter()
+            .map(|path| {
+                crate::extensions::PublicRoute::new(
+                    Method::GET,
+                    path,
+                    crate::extensions::PublicRateClass::Read,
+                )
+            })
+            .collect()
+        }
+    }
+
+    #[test]
+    fn public_declarations_inside_a_reserved_engine_mount_are_dropped() {
+        let extensions: Vec<std::sync::Arc<dyn crate::extensions::ApiExtension>> =
+            vec![std::sync::Arc::new(MountProbeExtension)];
+        let table = super::PublicRouteTable::from_extensions(
+            &extensions,
+            "/api/v1",
+            &[],
+            &["/api/v1/agents".to_owned()],
+        );
+
+        assert_eq!(table.class_for(&Method::GET, "/api/v1/agents"), None);
+        assert_eq!(table.class_for(&Method::GET, "/api/v1/agents/sse"), None);
+        assert_eq!(
+            table.class_for(&Method::GET, "/api/v1/agentsx"),
+            Some(super::OperationClass::Read),
+            "the reserved prefix is segment-aware"
+        );
+        // The bearer-exempt docs paths are reserved even when unlisted.
+        for path in [
+            "/api/v1/docs",
+            "/api/v1/docs/exchange",
+            "/api/v1/openapi.json",
+        ] {
+            assert_eq!(table.class_for(&Method::GET, path), None, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bearer_exempt_path_drops_an_attached_grant() {
+        let app = Router::new()
+            .route(
+                "/health",
+                get(
+                    |grant: Option<Extension<super::CredentialGrant>>| async move {
+                        axum::Json(serde_json::json!({ "grant": grant.is_some() }))
+                    },
+                ),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                SecurityState::with_keys(Some(CONTROL_KEY), None),
+                enforce_security,
+            ));
+        let mut request = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .expect("failed to build request");
+        request.extensions_mut().insert(super::CredentialGrant::new(
+            super::CredentialTier::Control,
+            "replayed",
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        let response = app
+            .oneshot(with_connect_info(
+                request,
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
+                41_000,
+            ))
+            .await
+            .expect("request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["grant"], false);
+    }
+
+    #[tokio::test]
+    async fn a_bearer_exempt_path_never_confers_loopback_locality() {
+        let app = Router::new()
+            .route(
+                "/health",
+                get(
+                    |Extension(context): Extension<RequestAuthContext>| async move {
+                        axum::Json(serde_json::json!({ "is_loopback": context.is_loopback() }))
+                    },
+                ),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                SecurityState::with_keys(Some(CONTROL_KEY), None),
+                enforce_security,
+            ));
+
+        let response = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/health")
+                    .header("sec-fetch-site", "cross-site")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                41_000,
+            ))
+            .await
+            .expect("request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["is_loopback"], false);
     }
 }

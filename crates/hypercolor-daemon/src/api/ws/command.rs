@@ -13,7 +13,7 @@ use tower::ServiceExt;
 
 use super::cache::cached_command_router;
 use super::protocol::{ServerMessage, WsProtocolError};
-use crate::api::security::RequestAuthContext;
+use crate::api::security::{CredentialGrant, RequestAuthContext};
 use crate::app_state::AppState;
 
 /// Maximum WebSocket command response body we buffer before relaying to the client.
@@ -23,6 +23,7 @@ const WS_COMMAND_BODY_MAX: usize = 1024 * 1024;
 pub(super) async fn dispatch_command(
     state: &Arc<AppState>,
     auth_context: RequestAuthContext,
+    grant: Option<CredentialGrant>,
     id: String,
     method_raw: String,
     path_raw: String,
@@ -75,6 +76,11 @@ pub(super) async fn dispatch_command(
         }
     };
     request.extensions_mut().insert(auth_context);
+    // The credential that opened the session rides along, so a handler
+    // sees who called and the middleware refuses it once revoked.
+    if let Some(grant) = grant {
+        request.extensions_mut().insert(grant);
+    }
     // The replayed request has no socket of its own; the audit trail names
     // the session's client instead.
     if let Some(peer) = crate::audit_log::current_ws_peer() {
