@@ -29,8 +29,7 @@
 //! [`PointerGesture`] is the pure ownership state machine. The free
 //! functions are the thin DOM half.
 
-use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
+use std::collections::{BTreeMap, BTreeSet};
 
 use wasm_bindgen::JsCast;
 
@@ -212,79 +211,143 @@ impl<S> PointerGesture<S> {
     }
 }
 
+/// A change in a button's combined state, to forward as an input edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonEdge<B> {
+    Pressed(B),
+    Released(B),
+}
+
 /// Buttons held by possibly several pointers at once, for a surface that
 /// forwards presses as one virtual button state (the interactive canvas
 /// preview). A button counts as down while any pointer holds it, so two
 /// fingers on the same button press it once and release it once.
+///
+/// Callers reconcile from each event's `buttons` mask rather than its
+/// `button` field: a mouse or pen that adds or drops a button while another
+/// stays held reports the change as a `pointermove`, not as a
+/// `pointerdown` or `pointerup`.
+///
+/// Only an engaged pointer reconciles from moves: one whose press the
+/// surface accepted ([`Self::press`]) and that has not lifted, been
+/// cancelled, or been released wholesale since. Pointer capture is not
+/// proof of engagement; a touch can hold capture from a press the surface
+/// ignored, and capture outlives a blur that released everything.
 #[derive(Debug, Clone)]
 pub struct HeldButtons<B> {
-    holders: HashMap<B, HashSet<i32>>,
+    holders: BTreeMap<B, BTreeSet<i32>>,
+    engaged: BTreeSet<i32>,
 }
 
 impl<B> Default for HeldButtons<B> {
     fn default() -> Self {
         Self {
-            holders: HashMap::new(),
+            holders: BTreeMap::new(),
+            engaged: BTreeSet::new(),
         }
     }
 }
 
-impl<B: Copy + Eq + Hash> HeldButtons<B> {
+impl<B: Copy + Ord> HeldButtons<B> {
     /// An empty set.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Record `pointer_id` holding `button`. True when the button was up,
-    /// so the press should be forwarded.
-    pub fn press(&mut self, button: B, pointer_id: i32) -> bool {
-        let holders = self.holders.entry(button).or_default();
-        let was_up = holders.is_empty();
-        holders.insert(pointer_id);
-        was_up
-    }
-
-    /// Record `pointer_id` letting go of `button`. True when no pointer
-    /// holds it any more, so the release should be forwarded. A release
-    /// for a press this set never saw is forwarded unless another pointer
-    /// still holds the button.
-    pub fn release(&mut self, button: B, pointer_id: i32) -> bool {
-        let Some(holders) = self.holders.get_mut(&button) else {
-            return true;
-        };
-        holders.remove(&pointer_id);
-        if holders.is_empty() {
-            self.holders.remove(&button);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Drop every button `pointer_id` holds (it was cancelled or lost
-    /// capture), returning the buttons that are now up.
-    pub fn release_pointer(&mut self, pointer_id: i32) -> Vec<B> {
-        let mut released = Vec::new();
-        self.holders.retain(|button, holders| {
-            if holders.remove(&pointer_id) && holders.is_empty() {
-                released.push(*button);
-                return false;
+    /// Bring `pointer_id`'s holds in line with `held`, the buttons it
+    /// reports down right now. Returns one edge per button whose combined
+    /// state changed: releases first, then presses, each in button order.
+    /// A button another pointer still holds changes nothing.
+    pub fn reconcile(
+        &mut self,
+        pointer_id: i32,
+        held: impl IntoIterator<Item = B>,
+    ) -> Vec<ButtonEdge<B>> {
+        let now: BTreeSet<B> = held.into_iter().collect();
+        let dropped: Vec<B> = self
+            .holders
+            .iter()
+            .filter(|(button, holders)| holders.contains(&pointer_id) && !now.contains(button))
+            .map(|(button, _)| *button)
+            .collect();
+        let mut edges = Vec::new();
+        for button in dropped {
+            if let Some(holders) = self.holders.get_mut(&button) {
+                holders.remove(&pointer_id);
+                if holders.is_empty() {
+                    self.holders.remove(&button);
+                    edges.push(ButtonEdge::Released(button));
+                }
             }
-            !holders.is_empty()
-        });
-        released
+        }
+        for button in now {
+            let holders = self.holders.entry(button).or_default();
+            let was_up = holders.is_empty();
+            if holders.insert(pointer_id) && was_up {
+                edges.push(ButtonEdge::Pressed(button));
+            }
+        }
+        edges
     }
 
-    /// Drop every held button, returning them.
+    /// Accept a press from `pointer_id`: engage it and reconcile its
+    /// holds with `held`.
+    pub fn press(
+        &mut self,
+        pointer_id: i32,
+        held: impl IntoIterator<Item = B>,
+    ) -> Vec<ButtonEdge<B>> {
+        self.engaged.insert(pointer_id);
+        self.reconcile(pointer_id, held)
+    }
+
+    /// Reconcile a move from `pointer_id` while it is engaged. A pointer
+    /// that never pressed here, or whose press already ended, changes
+    /// nothing whatever its mask says.
+    pub fn track(
+        &mut self,
+        pointer_id: i32,
+        held: impl IntoIterator<Item = B>,
+    ) -> Vec<ButtonEdge<B>> {
+        if !self.is_engaged(pointer_id) {
+            return Vec::new();
+        }
+        self.reconcile(pointer_id, held)
+    }
+
+    /// End `pointer_id`'s press (it lifted, was cancelled, or lost
+    /// capture): disengage it and release every button it still holds.
+    pub fn lift(&mut self, pointer_id: i32) -> Vec<ButtonEdge<B>> {
+        self.engaged.remove(&pointer_id);
+        self.reconcile(pointer_id, [])
+    }
+
+    /// True while `pointer_id`'s accepted press is still live.
+    #[must_use]
+    pub fn is_engaged(&self, pointer_id: i32) -> bool {
+        self.engaged.contains(&pointer_id)
+    }
+
+    /// Drop every held button and every engagement (blur, hidden page,
+    /// interactive mode turned off), returning the buttons in button order.
     pub fn release_all(&mut self) -> Vec<B> {
-        self.holders.drain().map(|(button, _)| button).collect()
+        self.engaged.clear();
+        std::mem::take(&mut self.holders).into_keys().collect()
     }
 
     /// True while any pointer holds `button`.
     #[must_use]
     pub fn is_down(&self, button: B) -> bool {
         self.holders.contains_key(&button)
+    }
+
+    /// True while `pointer_id` holds at least one button.
+    #[must_use]
+    pub fn holds_any(&self, pointer_id: i32) -> bool {
+        self.holders
+            .values()
+            .any(|holders| holders.contains(&pointer_id))
     }
 }
 

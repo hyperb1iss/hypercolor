@@ -1,6 +1,8 @@
 use hypercolor_ui::pointer_gesture::{
-    GestureEnd, HeldButtons, PointerEnd, PointerGesture, Press, button_mask, cancels_press_defaults,
+    ButtonEdge, GestureEnd, HeldButtons, PointerEnd, PointerGesture, Press, button_mask,
+    cancels_press_defaults,
 };
+use hypercolor_ui::ws::input::InputEdgeButton;
 
 const MOUSE: i32 = 1;
 const FIRST_FINGER: i32 = 2;
@@ -229,68 +231,255 @@ fn an_idle_gesture_has_nothing_to_release() {
     assert!(!gesture.press_released(MOUSE, 0));
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Button {
-    Left,
-    Right,
+// `PointerEvent.buttons` bits.
+const PRIMARY_BIT: u16 = 1;
+const SECONDARY_BIT: u16 = 2;
+const AUXILIARY_BIT: u16 = 4;
+const BACK_BIT: u16 = 8;
+const ERASER_BIT: u16 = 32;
+const PEN: i32 = 4;
+
+fn reconcile(
+    held: &mut HeldButtons<InputEdgeButton>,
+    pointer_id: i32,
+    mask: u16,
+) -> Vec<ButtonEdge<InputEdgeButton>> {
+    held.reconcile(pointer_id, InputEdgeButton::held_in(mask))
+}
+
+use ButtonEdge::{Pressed, Released};
+use InputEdgeButton::{Left, Middle, Right};
+
+#[test]
+fn masks_decode_to_wire_buttons_in_wire_order() {
+    let all: Vec<_> =
+        InputEdgeButton::held_in(AUXILIARY_BIT | SECONDARY_BIT | PRIMARY_BIT).collect();
+    assert_eq!(all, vec![Left, Right, Middle]);
+    assert_eq!(InputEdgeButton::held_in(0).count(), 0);
+    // Back, forward, and the pen eraser have no wire identity.
+    assert_eq!(
+        InputEdgeButton::held_in(BACK_BIT | 16 | ERASER_BIT).count(),
+        0
+    );
 }
 
 #[test]
 fn one_pointer_presses_and_releases_a_button_once_each() {
     let mut held = HeldButtons::new();
-    assert!(held.press(Button::Left, MOUSE));
-    assert!(held.is_down(Button::Left));
-    assert!(held.release(Button::Left, MOUSE));
-    assert!(!held.is_down(Button::Left));
+    assert_eq!(
+        reconcile(&mut held, MOUSE, PRIMARY_BIT),
+        vec![Pressed(Left)]
+    );
+    assert!(held.is_down(Left));
+    assert!(held.holds_any(MOUSE));
+    // The same mask again (a plain move) changes nothing.
+    assert_eq!(reconcile(&mut held, MOUSE, PRIMARY_BIT), vec![]);
+    assert_eq!(reconcile(&mut held, MOUSE, 0), vec![Released(Left)]);
+    assert!(!held.is_down(Left));
+    assert!(!held.holds_any(MOUSE));
+}
+
+#[test]
+fn a_chorded_press_arriving_as_a_move_presses_the_added_button() {
+    let mut held = HeldButtons::new();
+    assert_eq!(
+        reconcile(&mut held, MOUSE, PRIMARY_BIT),
+        vec![Pressed(Left)]
+    );
+    // Secondary added while primary stays down: pointermove, not pointerdown.
+    assert_eq!(
+        reconcile(&mut held, MOUSE, PRIMARY_BIT | SECONDARY_BIT),
+        vec![Pressed(Right)]
+    );
+    assert!(held.is_down(Left) && held.is_down(Right));
+}
+
+#[test]
+fn an_intermediate_release_arriving_as_a_move_releases_only_that_button() {
+    let mut held = HeldButtons::new();
+    reconcile(&mut held, MOUSE, PRIMARY_BIT);
+    reconcile(&mut held, MOUSE, PRIMARY_BIT | SECONDARY_BIT);
+    // Primary lifts while secondary stays held.
+    assert_eq!(
+        reconcile(&mut held, MOUSE, SECONDARY_BIT),
+        vec![Released(Left)]
+    );
+    assert!(!held.is_down(Left));
+    assert!(held.is_down(Right));
+    // The final pointerup carries an empty mask and releases the rest.
+    assert_eq!(reconcile(&mut held, MOUSE, 0), vec![Released(Right)]);
+}
+
+#[test]
+fn releasing_every_button_at_once_emits_releases_in_button_order() {
+    let mut held = HeldButtons::new();
+    assert_eq!(
+        reconcile(
+            &mut held,
+            MOUSE,
+            PRIMARY_BIT | SECONDARY_BIT | AUXILIARY_BIT
+        ),
+        vec![Pressed(Left), Pressed(Right), Pressed(Middle)]
+    );
+    assert_eq!(
+        reconcile(&mut held, MOUSE, 0),
+        vec![Released(Left), Released(Right), Released(Middle)]
+    );
+    assert!(!held.holds_any(MOUSE));
+}
+
+#[test]
+fn a_swap_in_one_event_releases_before_it_presses() {
+    let mut held = HeldButtons::new();
+    reconcile(&mut held, MOUSE, SECONDARY_BIT);
+    assert_eq!(
+        reconcile(&mut held, MOUSE, PRIMARY_BIT),
+        vec![Released(Right), Pressed(Left)]
+    );
+}
+
+#[test]
+fn another_pointers_mask_never_touches_this_pointers_holds() {
+    let mut held = HeldButtons::new();
+    assert_eq!(
+        reconcile(&mut held, MOUSE, SECONDARY_BIT),
+        vec![Pressed(Right)]
+    );
+    // A finger reporting only primary must not release the mouse's
+    // secondary, and its own empty mask later must not either.
+    assert_eq!(
+        reconcile(&mut held, FIRST_FINGER, PRIMARY_BIT),
+        vec![Pressed(Left)]
+    );
+    assert_eq!(reconcile(&mut held, FIRST_FINGER, 0), vec![Released(Left)]);
+    assert!(held.is_down(Right));
+    assert_eq!(reconcile(&mut held, MOUSE, 0), vec![Released(Right)]);
 }
 
 #[test]
 fn two_pointers_on_one_button_release_it_when_the_last_lets_go() {
     for (first_up, second_up) in [(FIRST_FINGER, SECOND_FINGER), (SECOND_FINGER, FIRST_FINGER)] {
         let mut held = HeldButtons::new();
-        assert!(held.press(Button::Left, FIRST_FINGER));
+        assert_eq!(
+            reconcile(&mut held, FIRST_FINGER, PRIMARY_BIT),
+            vec![Pressed(Left)]
+        );
         // Already down: the second finger must not press it again.
-        assert!(!held.press(Button::Left, SECOND_FINGER));
-        assert!(!held.release(Button::Left, first_up));
-        assert!(held.is_down(Button::Left));
-        assert!(held.release(Button::Left, second_up));
-        assert!(!held.is_down(Button::Left));
+        assert_eq!(reconcile(&mut held, SECOND_FINGER, PRIMARY_BIT), vec![]);
+        assert_eq!(reconcile(&mut held, first_up, 0), vec![]);
+        assert!(held.is_down(Left));
+        assert_eq!(reconcile(&mut held, second_up, 0), vec![Released(Left)]);
     }
 }
 
 #[test]
-fn cancelling_one_pointer_keeps_buttons_another_pointer_holds() {
+fn a_pen_barrel_button_is_a_secondary_chord_on_the_tip() {
     let mut held = HeldButtons::new();
-    held.press(Button::Left, FIRST_FINGER);
-    held.press(Button::Left, SECOND_FINGER);
-    held.press(Button::Right, MOUSE);
-    assert_eq!(held.release_pointer(SECOND_FINGER), Vec::<Button>::new());
-    assert!(held.is_down(Button::Left));
-    assert_eq!(held.release_pointer(FIRST_FINGER), vec![Button::Left]);
-    assert!(held.is_down(Button::Right));
-    assert_eq!(held.release_pointer(MOUSE), vec![Button::Right]);
-    // Nothing left to release, and a repeat is harmless.
-    assert_eq!(held.release_pointer(MOUSE), Vec::<Button>::new());
+    // Tip contact, then the barrel button while touching.
+    assert_eq!(reconcile(&mut held, PEN, PRIMARY_BIT), vec![Pressed(Left)]);
+    assert_eq!(
+        reconcile(&mut held, PEN, PRIMARY_BIT | SECONDARY_BIT),
+        vec![Pressed(Right)]
+    );
+    // Barrel released first, then the tip lifts.
+    assert_eq!(
+        reconcile(&mut held, PEN, PRIMARY_BIT),
+        vec![Released(Right)]
+    );
+    assert_eq!(reconcile(&mut held, PEN, 0), vec![Released(Left)]);
+    // The eraser has no wire button and forwards nothing.
+    assert_eq!(reconcile(&mut held, PEN, ERASER_BIT), vec![]);
+    assert!(!held.holds_any(PEN));
 }
 
 #[test]
-fn a_release_for_an_unseen_press_is_forwarded_unless_someone_holds_it() {
+fn a_cancelled_pointer_drops_only_its_own_holds() {
     let mut held = HeldButtons::new();
-    assert!(held.release(Button::Left, MOUSE));
-    held.press(Button::Left, FIRST_FINGER);
-    assert!(!held.release(Button::Left, MOUSE));
-    assert!(held.is_down(Button::Left));
+    reconcile(&mut held, FIRST_FINGER, PRIMARY_BIT);
+    reconcile(&mut held, SECOND_FINGER, PRIMARY_BIT);
+    reconcile(&mut held, MOUSE, SECONDARY_BIT);
+    assert_eq!(held.reconcile(SECOND_FINGER, []), vec![]);
+    assert!(held.is_down(Left));
+    assert_eq!(held.reconcile(FIRST_FINGER, []), vec![Released(Left)]);
+    assert!(held.is_down(Right));
+    // A repeat for a pointer that holds nothing is harmless.
+    assert_eq!(held.reconcile(FIRST_FINGER, []), vec![]);
 }
 
 #[test]
-fn release_all_drains_every_held_button() {
+fn release_all_drains_every_held_button_in_order() {
     let mut held = HeldButtons::new();
-    held.press(Button::Left, FIRST_FINGER);
-    held.press(Button::Left, SECOND_FINGER);
-    held.press(Button::Right, MOUSE);
-    let mut released = held.release_all();
-    released.sort_by_key(|button| *button as u8);
-    assert_eq!(released, vec![Button::Left, Button::Right]);
-    assert!(!held.is_down(Button::Left));
+    reconcile(&mut held, FIRST_FINGER, PRIMARY_BIT);
+    reconcile(&mut held, SECOND_FINGER, PRIMARY_BIT);
+    reconcile(&mut held, MOUSE, AUXILIARY_BIT | SECONDARY_BIT);
+    assert_eq!(held.release_all(), vec![Left, Right, Middle]);
+    assert!(!held.is_down(Left));
     assert!(held.release_all().is_empty());
+}
+
+#[test]
+fn a_pointer_that_never_pressed_here_moves_nothing() {
+    // A drag that started outside the surface, or a touch that began while
+    // the surface ignored presses, reports buttons down on its moves.
+    let mut held = HeldButtons::new();
+    assert_eq!(
+        held.track(MOUSE, InputEdgeButton::held_in(PRIMARY_BIT)),
+        vec![]
+    );
+    assert!(!held.is_engaged(MOUSE));
+    assert!(!held.is_down(Left));
+}
+
+#[test]
+fn a_press_engages_and_tracks_chords_until_it_lifts() {
+    let mut held = HeldButtons::new();
+    assert_eq!(
+        held.press(MOUSE, InputEdgeButton::held_in(PRIMARY_BIT)),
+        vec![Pressed(Left)]
+    );
+    assert!(held.is_engaged(MOUSE));
+    assert_eq!(
+        held.track(MOUSE, InputEdgeButton::held_in(PRIMARY_BIT | SECONDARY_BIT)),
+        vec![Pressed(Right)]
+    );
+    assert_eq!(held.lift(MOUSE), vec![Released(Left), Released(Right)]);
+    assert!(!held.is_engaged(MOUSE));
+    // Moves after the lift change nothing, whatever their mask says.
+    assert_eq!(
+        held.track(MOUSE, InputEdgeButton::held_in(PRIMARY_BIT)),
+        vec![]
+    );
+}
+
+#[test]
+fn release_all_ends_engagement_so_a_still_held_button_is_not_pressed_again() {
+    // Escape blurs the canvas mid-press: blur releases everything, but the
+    // button is physically still down and capture survives.
+    let mut held = HeldButtons::new();
+    held.press(MOUSE, InputEdgeButton::held_in(PRIMARY_BIT));
+    assert_eq!(held.release_all(), vec![Left]);
+    assert!(!held.is_engaged(MOUSE));
+    assert_eq!(
+        held.track(MOUSE, InputEdgeButton::held_in(PRIMARY_BIT)),
+        vec![]
+    );
+    assert!(!held.is_down(Left));
+}
+
+#[test]
+fn lifting_one_pointer_leaves_another_engaged() {
+    let mut held = HeldButtons::new();
+    held.press(FIRST_FINGER, InputEdgeButton::held_in(PRIMARY_BIT));
+    held.press(MOUSE, InputEdgeButton::held_in(SECONDARY_BIT));
+    assert_eq!(held.lift(FIRST_FINGER), vec![Released(Left)]);
+    assert!(held.is_engaged(MOUSE));
+    assert_eq!(
+        held.track(
+            MOUSE,
+            InputEdgeButton::held_in(SECONDARY_BIT | AUXILIARY_BIT)
+        ),
+        vec![Pressed(Middle)]
+    );
+    // A repeated lift for the finger is harmless.
+    assert_eq!(held.lift(FIRST_FINGER), vec![]);
 }
