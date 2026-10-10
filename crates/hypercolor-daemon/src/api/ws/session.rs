@@ -389,6 +389,7 @@ async fn handle_socket(
             height = screen_base_height,
             "Cannot open WebSocket with an empty passive screen extent"
         );
+        socket.close_if_revoked().await;
         return;
     };
     let mut input_demand_leases = WsInputDemandLeases::new(

@@ -6915,3 +6915,35 @@ async fn a_revoked_session_closes_with_1008_even_when_an_outbound_send_wins() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_session_revoked_before_setup_fails_still_closes_with_1008() {
+    let directory = tempfile::tempdir().expect("config directory should be created");
+    let mut config = crate::startup::default_config();
+    config.daemon.canvas_width = 0;
+    let mut state = AppState::new();
+    state.security_state =
+        SecurityState::with_keys(Some("hc_ak_control_test"), Some("hc_ak_r_read_test"));
+    state.config_manager = Some(Arc::new(
+        hypercolor_core::config::ConfigManager::from_config_unchecked(
+            directory.path().join("hypercolor.toml"),
+            config,
+        ),
+    ));
+    let revocation = tokio_util::sync::CancellationToken::new();
+    revocation.cancel();
+    let mut socket = spawn_test_revocable_local_socket(
+        Arc::new(state),
+        &tokio::runtime::Handle::current(),
+        authority_control(),
+        revocation,
+    );
+
+    let mut close_code = None;
+    while let Some(message) = socket.recv().await {
+        if let Message::Close(frame) = message {
+            close_code = frame.map(|frame| frame.code);
+        }
+    }
+    assert_eq!(close_code, Some(axum::extract::ws::close_code::POLICY));
+}
