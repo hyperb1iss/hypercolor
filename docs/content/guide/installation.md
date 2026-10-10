@@ -181,7 +181,7 @@ On all platforms, Hypercolor ships a unified desktop app (`hypercolor-app`) buil
 
 1. The app checks if a daemon is already running on `127.0.0.1:9420`. If so, it connects to it.
 2. On Linux, it checks for an enabled systemd user service (`hypercolor.service`) and defers to it.
-3. If no daemon is found, the app spawns one as a supervised child process with a watchdog that restarts it on crash.
+3. If no daemon is found, the app spawns one as a supervised child process with a watchdog that restarts it on crash. That daemon follows your `[network]` access mode, so it stays loopback-only unless you open it to the LAN.
 4. The tray icon appears, and the main window opens (or the app starts minimized if launched with `--minimized`).
 
 Autostart is managed by the app's autostart plugin. On Linux it creates a `~/.config/autostart/` entry; on macOS it registers a LaunchAgent; on Windows it writes a Run key in the current user's registry. Toggle it from the tray menu or from within the app's Settings page.
