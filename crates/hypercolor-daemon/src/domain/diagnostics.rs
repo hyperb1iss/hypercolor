@@ -271,11 +271,16 @@ impl DiagnosticsContext {
         }
     }
 
-    /// Scan for competing RGB software now, so the report never shows a
-    /// stale picture, and report what is running.
+    /// Report competing RGB software from a scan no older than the watch
+    /// interval, scanning first only when the latest one is older. A
+    /// report never blocks on a slow WMI query the watch just ran.
     async fn conflicts_check(&self) -> DiagnoseCheck {
         let store = self.authorities.devices.software_conflicts();
-        crate::software_conflicts::scan_now(&store).await;
+        crate::software_conflicts::scan_if_stale(
+            &store,
+            crate::software_conflicts::RESCAN_INTERVAL,
+        )
+        .await;
         conflicts_check(&store.status())
     }
 
@@ -472,27 +477,37 @@ fn device_checks(inputs: &DiagnosticsInputs, snapshot: &DiagnoseSnapshot) -> Vec
 }
 
 fn conflicts_check(status: &SoftwareConflictsStatus) -> DiagnoseCheck {
+    let found = status
+        .conflicts
+        .iter()
+        .map(|conflict| {
+            format!(
+                "{} ({}): {}",
+                conflict.name,
+                conflict.matched.join(", "),
+                conflict.remedy
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
     let (status_label, detail) = if !status.supported {
         (
             "pass",
             "running software is not inspected on this platform yet".to_owned(),
         )
-    } else if status.conflicts.is_empty() {
+    } else if status.scan_failed && found.is_empty() {
+        (
+            "warning",
+            "could not list running software, so competing programs are unknown".to_owned(),
+        )
+    } else if status.scan_failed {
+        (
+            "warning",
+            format!("could not list running software; the last successful scan found {found}"),
+        )
+    } else if found.is_empty() {
         ("pass", "no competing RGB software is running".to_owned())
     } else {
-        let found = status
-            .conflicts
-            .iter()
-            .map(|conflict| {
-                format!(
-                    "{} ({}): {}",
-                    conflict.name,
-                    conflict.matched.join(", "),
-                    conflict.remedy
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
         ("warning", found)
     };
     DiagnoseCheck {
@@ -951,6 +966,7 @@ mod tests {
         let status = SoftwareConflictsStatus {
             supported: true,
             scanned: true,
+            scan_failed: false,
             conflicts: vec![SoftwareConflict {
                 id: "signalrgb".to_owned(),
                 name: "SignalRGB".to_owned(),
@@ -976,6 +992,7 @@ mod tests {
         let clear = conflicts_check(&SoftwareConflictsStatus {
             supported: true,
             scanned: true,
+            scan_failed: false,
             conflicts: Vec::new(),
         });
         assert_eq!(clear.status, "pass");
@@ -984,5 +1001,38 @@ mod tests {
         let unsupported = conflicts_check(&SoftwareConflictsStatus::default());
         assert_eq!(unsupported.status, "pass");
         assert!(unsupported.detail.contains("not inspected"));
+    }
+
+    #[test]
+    fn competing_software_check_warns_when_the_scan_failed() {
+        let blind = conflicts_check(&SoftwareConflictsStatus {
+            supported: true,
+            scanned: true,
+            scan_failed: true,
+            conflicts: Vec::new(),
+        });
+        assert_eq!(blind.status, "warning");
+        assert!(blind.detail.contains("could not list running software"));
+
+        let stale = conflicts_check(&SoftwareConflictsStatus {
+            supported: true,
+            scanned: true,
+            scan_failed: true,
+            conflicts: vec![SoftwareConflict {
+                id: "signalrgb".to_owned(),
+                name: "SignalRGB".to_owned(),
+                matched: vec!["SignalRgb.exe".to_owned()],
+                driver_ids: Vec::new(),
+                all_drivers: true,
+                smbus: true,
+                remedy: "Quit it.".to_owned(),
+            }],
+        });
+        assert_eq!(stale.status, "warning");
+        assert!(
+            stale
+                .detail
+                .contains("last successful scan found SignalRGB")
+        );
     }
 }

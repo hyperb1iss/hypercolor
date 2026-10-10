@@ -1759,8 +1759,11 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedWarnings {
 }
 
 /// Connect a device whose backend always refuses, with `running` as the
-/// host's process list, and return the warnings the attempt logged.
-async fn failed_connect_warnings(running: &[&str]) -> String {
+/// host's process list (`None` leaves the store unscanned), and return the
+/// warnings the attempt logged along with the store afterwards.
+async fn failed_connect(
+    running: Option<&[&str]>,
+) -> (String, hypercolor_core::device::SoftwareConflictStore) {
     let info = mock_device_info();
     let mut backend = hypercolor_core::device::mock::MockDeviceBackend::new().with_device(
         &hypercolor_core::device::mock::MockDeviceConfig {
@@ -1797,15 +1800,19 @@ async fn failed_connect_warnings(running: &[&str]) -> String {
         .lock()
         .await
         .register_backend(Arc::new(backend));
-    runtime.software_conflicts.record(Some(
-        &hypercolor_types::host_software::HostSoftwareSnapshot {
-            processes: running
-                .iter()
-                .map(|name| hypercolor_types::host_software::HostProcess::named(*name))
-                .collect(),
-            services: Vec::new(),
-        },
-    ));
+    if let Some(running) = running {
+        runtime
+            .software_conflicts
+            .record(&hypercolor_types::host_software::HostInventory::Listed(
+                hypercolor_types::host_software::HostSoftwareSnapshot {
+                    processes: running
+                        .iter()
+                        .map(|name| hypercolor_types::host_software::HostProcess::named(*name))
+                        .collect(),
+                    services: Vec::new(),
+                },
+            ));
+    }
 
     let logs = CapturedWarnings::default();
     let subscriber = tracing_subscriber::fmt()
@@ -1817,7 +1824,11 @@ async fn failed_connect_warnings(running: &[&str]) -> String {
         let _guard = tracing::subscriber::set_default(subscriber);
         sync_active_layout_connectivity(&runtime, None).await;
     }
-    logs.text()
+    (logs.text(), runtime.software_conflicts.clone())
+}
+
+async fn failed_connect_warnings(running: &[&str]) -> String {
+    failed_connect(Some(running)).await.0
 }
 
 #[tokio::test]
@@ -1839,4 +1850,14 @@ async fn a_failed_connect_with_nothing_competing_adds_no_hint() {
     let warnings = failed_connect_warnings(&["explorer.exe"]).await;
     assert!(warnings.contains("lifecycle connect action failed"));
     assert!(!warnings.contains("other RGB software may be holding this device"));
+}
+
+#[tokio::test]
+async fn a_failed_connect_before_the_first_scan_scans_inline() {
+    let (warnings, store) = failed_connect(None).await;
+    assert!(warnings.contains("lifecycle connect action failed"));
+    assert!(
+        store.status().scanned,
+        "the failure path scans rather than hinting from an empty record"
+    );
 }

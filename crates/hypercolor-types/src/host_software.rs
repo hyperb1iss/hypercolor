@@ -45,3 +45,16 @@ pub struct HostSoftwareSnapshot {
     /// processes.
     pub services: Vec<String>,
 }
+
+/// What one attempt to take a host inventory produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostInventory {
+    /// The processes and services running now.
+    Listed(HostSoftwareSnapshot),
+    /// This platform has no inventory, so nothing can be known.
+    Unsupported,
+    /// The platform has an inventory, but this attempt failed (WMI was
+    /// unreachable, `/proc` could not be listed). It says nothing about
+    /// what is running.
+    Failed,
+}

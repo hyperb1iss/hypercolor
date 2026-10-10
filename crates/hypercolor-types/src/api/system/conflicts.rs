@@ -45,6 +45,10 @@ pub struct SoftwareConflictsStatus {
     pub supported: bool,
     /// Whether a scan has finished since the daemon started.
     pub scanned: bool,
+    /// Whether the latest scan failed. `conflicts` then still holds the
+    /// last successful scan's result rather than claiming nothing runs.
+    #[serde(default)]
+    pub scan_failed: bool,
     /// Competing software that is running now, in catalog order.
     pub conflicts: Vec<SoftwareConflict>,
 }

@@ -13,11 +13,13 @@
 //! [`HypercolorEvent::SoftwareConflictsChanged`] when the set changes.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, PoisonError, RwLock};
+use std::time::{Duration, Instant};
 
 use hypercolor_types::api::system::{SoftwareConflict, SoftwareConflictsStatus};
 use hypercolor_types::event::HypercolorEvent;
-use hypercolor_types::host_software::{HostProcess, HostSoftwareSnapshot};
+use hypercolor_types::host_software::{HostInventory, HostProcess, HostSoftwareSnapshot};
 use serde::Deserialize;
 use tokio::sync::Notify;
 
@@ -298,13 +300,29 @@ impl ConflictChanges {
     }
 }
 
+/// Where a scan sits in the order scans began. Scans run concurrently
+/// (the watch, `POST /scan`, diagnostics, a failing device), and a slow
+/// one must not overwrite the result of one that began after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ScanTicket(u64);
+
+#[derive(Debug, Default)]
+struct ConflictRecord {
+    status: SoftwareConflictsStatus,
+    /// The newest ticket recorded so far.
+    last_ticket: u64,
+    /// When the latest successful scan was recorded.
+    recorded_at: Option<Instant>,
+}
+
 /// Shared record of the latest conflict scan.
 ///
 /// Cloning shares one record, so the scan loop, the API, diagnostics, and
 /// lifecycle hints all read the same result.
 #[derive(Clone)]
 pub struct SoftwareConflictStore {
-    inner: Arc<RwLock<SoftwareConflictsStatus>>,
+    inner: Arc<RwLock<ConflictRecord>>,
+    tickets: Arc<AtomicU64>,
     catalog: &'static SoftwareCatalog,
     event_bus: Option<Arc<HypercolorBus>>,
     scan_requests: Arc<Notify>,
@@ -319,7 +337,7 @@ impl Default for SoftwareConflictStore {
 impl std::fmt::Debug for SoftwareConflictStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SoftwareConflictStore")
-            .field("conflicts", &self.read().conflicts.len())
+            .field("conflicts", &self.read().status.conflicts.len())
             .finish_non_exhaustive()
     }
 }
@@ -336,6 +354,7 @@ impl SoftwareConflictStore {
     pub fn with_catalog(catalog: &'static SoftwareCatalog) -> Self {
         Self {
             inner: Arc::default(),
+            tickets: Arc::default(),
             catalog,
             event_bus: None,
             scan_requests: Arc::default(),
@@ -350,28 +369,68 @@ impl SoftwareConflictStore {
         self
     }
 
-    /// Record a scan and report which programs appeared or cleared.
-    /// `None` means this host cannot list its software.
-    pub fn record(&self, snapshot: Option<&HostSoftwareSnapshot>) -> ConflictChanges {
-        let conflicts = snapshot.map_or_else(Vec::new, |snapshot| self.catalog.detect(snapshot));
+    /// Take a ticket before reading the host inventory.
+    #[must_use]
+    pub fn begin_scan(&self) -> ScanTicket {
+        ScanTicket(self.tickets.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+
+    /// Record the inventory a ticketed scan produced, and report which
+    /// programs appeared or cleared.
+    ///
+    /// A scan that began before the newest recorded one is dropped. A
+    /// failed inventory keeps the last known conflicts and marks the
+    /// status failed instead of claiming nothing is running.
+    pub fn finish_scan(&self, ticket: ScanTicket, inventory: &HostInventory) -> ConflictChanges {
+        let detected = match inventory {
+            HostInventory::Listed(snapshot) => Some(self.catalog.detect(snapshot)),
+            HostInventory::Unsupported => Some(Vec::new()),
+            HostInventory::Failed => None,
+        };
         let (changes, published) = {
-            let mut status = self.write();
-            let changes = ConflictChanges {
-                appeared: absent_from(&conflicts, &status.conflicts),
-                cleared: absent_from(&status.conflicts, &conflicts),
+            let mut record = self.write();
+            if ticket.0 <= record.last_ticket {
+                return ConflictChanges::default();
+            }
+            record.last_ticket = ticket.0;
+            let Some(conflicts) = detected else {
+                record.status.supported = true;
+                record.status.scanned = true;
+                record.status.scan_failed = true;
+                return ConflictChanges::default();
             };
-            let published = (conflicts != status.conflicts).then_some(conflicts.len());
-            *status = SoftwareConflictsStatus {
-                supported: snapshot.is_some(),
+            let changes = ConflictChanges {
+                appeared: absent_from(&conflicts, &record.status.conflicts),
+                cleared: absent_from(&record.status.conflicts, &conflicts),
+            };
+            let published = (conflicts != record.status.conflicts).then_some(conflicts.len());
+            record.status = SoftwareConflictsStatus {
+                supported: !matches!(inventory, HostInventory::Unsupported),
                 scanned: true,
+                scan_failed: false,
                 conflicts,
             };
+            record.recorded_at = Some(Instant::now());
             (changes, published)
         };
         if let (Some(count), Some(bus)) = (published, self.event_bus.as_ref()) {
             bus.publish(HypercolorEvent::SoftwareConflictsChanged { count });
         }
         changes
+    }
+
+    /// Record an inventory taken outside the ticketed scan path, as tests
+    /// and one-off callers do.
+    pub fn record(&self, inventory: &HostInventory) -> ConflictChanges {
+        let ticket = self.begin_scan();
+        self.finish_scan(ticket, inventory)
+    }
+
+    /// How long ago the latest successful scan was recorded. `None` until
+    /// one has been.
+    #[must_use]
+    pub fn age(&self) -> Option<Duration> {
+        self.read().recorded_at.map(|at| at.elapsed())
     }
 
     /// Ask whoever runs scans for a fresh one, for example after a device
@@ -389,13 +448,14 @@ impl SoftwareConflictStore {
     /// The latest scan result.
     #[must_use]
     pub fn status(&self) -> SoftwareConflictsStatus {
-        self.read().clone()
+        self.read().status.clone()
     }
 
     /// Running conflicts that compete for a device of `driver_id`.
     #[must_use]
     pub fn affecting(&self, driver_id: &str, smbus_device: bool) -> Vec<SoftwareConflict> {
         self.read()
+            .status
             .conflicts
             .iter()
             .filter(|conflict| conflict.affects(driver_id, smbus_device))
@@ -403,11 +463,11 @@ impl SoftwareConflictStore {
             .collect()
     }
 
-    fn read(&self) -> std::sync::RwLockReadGuard<'_, SoftwareConflictsStatus> {
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, ConflictRecord> {
         self.inner.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn write(&self) -> std::sync::RwLockWriteGuard<'_, SoftwareConflictsStatus> {
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, ConflictRecord> {
         self.inner.write().unwrap_or_else(PoisonError::into_inner)
     }
 }

@@ -14,10 +14,11 @@ use hypercolor_core::device::{ConflictChanges, SoftwareConflictStore};
 use hypercolor_types::api::system::SoftwareConflict;
 use hypercolor_types::device::{DeviceInfo, DriverTransportKind};
 use hypercolor_types::event::{EventCategory, HypercolorEvent};
+use hypercolor_types::host_software::HostInventory;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// How often the watch rescans with no other trigger. Users quit a vendor
 /// suite and expect the warning to clear without restarting anything.
@@ -25,14 +26,27 @@ pub(crate) const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Take one host inventory, record it, and log what changed.
 pub(crate) async fn scan_now(store: &SoftwareConflictStore) {
-    let snapshot = match tokio::task::spawn_blocking(crate::session::host_software_snapshot).await {
-        Ok(snapshot) => snapshot,
+    let ticket = store.begin_scan();
+    let inventory = match tokio::task::spawn_blocking(crate::session::host_inventory).await {
+        Ok(inventory) => inventory,
         Err(error) => {
             warn!(%error, "software inventory scan did not finish");
-            return;
+            HostInventory::Failed
         }
     };
-    log_changes(&store.record(snapshot.as_ref()));
+    if inventory == HostInventory::Failed {
+        debug!("software inventory failed; keeping the last known conflicts");
+    }
+    log_changes(&store.finish_scan(ticket, &inventory));
+}
+
+/// Scan only when the latest successful scan is older than `max_age`.
+/// Diagnostics use this so a report never waits on a slow WMI query when
+/// the watch scanned moments ago.
+pub(crate) async fn scan_if_stale(store: &SoftwareConflictStore, max_age: Duration) {
+    if store.age().is_none_or(|age| age > max_age) {
+        scan_now(store).await;
+    }
 }
 
 fn log_changes(changes: &ConflictChanges) {

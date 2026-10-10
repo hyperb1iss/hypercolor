@@ -891,7 +891,7 @@ async fn name_competing_software(
     HypercolorEvent::DeviceError {
         device_id,
         error: match hint {
-            Some(hint) => format!("{error}. {hint}"),
+            Some(hint) => format!("{}. {hint}", error.trim_end_matches('.')),
             None => error,
         },
         recoverable,

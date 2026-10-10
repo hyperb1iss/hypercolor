@@ -7,6 +7,8 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from typing_extensions import Self
 
+from ..types import UNSET, Unset
+
 if TYPE_CHECKING:
     from ..models.software_conflict import SoftwareConflict
 
@@ -23,11 +25,14 @@ class SoftwareConflictsStatus:
         scanned (bool): Whether a scan has finished since the daemon started.
         supported (bool): Whether this host can list running software. When false,
             `conflicts` is always empty and proves nothing.
+        scan_failed (bool | Unset): Whether the latest scan failed. `conflicts` then still holds the
+            last successful scan's result rather than claiming nothing runs.
     """
 
     conflicts: list[SoftwareConflict]
     scanned: bool
     supported: bool
+    scan_failed: bool | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -40,6 +45,8 @@ class SoftwareConflictsStatus:
 
         supported = self.supported
 
+        scan_failed = self.scan_failed
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -49,6 +56,8 @@ class SoftwareConflictsStatus:
                 "supported": supported,
             }
         )
+        if scan_failed is not UNSET:
+            field_dict["scan_failed"] = scan_failed
 
         return field_dict
 
@@ -68,10 +77,13 @@ class SoftwareConflictsStatus:
 
         supported = d.pop("supported")
 
+        scan_failed = d.pop("scan_failed", UNSET)
+
         software_conflicts_status = cls(
             conflicts=conflicts,
             scanned=scanned,
             supported=supported,
+            scan_failed=scan_failed,
         )
 
         software_conflicts_status.additional_properties = d

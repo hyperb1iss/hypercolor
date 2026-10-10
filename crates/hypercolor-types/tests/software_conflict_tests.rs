@@ -48,6 +48,7 @@ fn status_round_trips_with_snake_case_fields() {
     let status = SoftwareConflictsStatus {
         supported: true,
         scanned: true,
+        scan_failed: false,
         conflicts: vec![conflict(&["lianli"], false, false)],
     };
     let value = serde_json::to_value(&status).expect("serialize status");
@@ -64,5 +65,17 @@ fn the_default_status_claims_nothing() {
     let status = SoftwareConflictsStatus::default();
     assert!(!status.supported);
     assert!(!status.scanned);
+    assert!(!status.scan_failed);
     assert!(status.conflicts.is_empty());
+}
+
+#[test]
+fn an_older_client_payload_without_scan_failed_still_parses() {
+    let status: SoftwareConflictsStatus = serde_json::from_value(serde_json::json!({
+        "supported": true,
+        "scanned": true,
+        "conflicts": []
+    }))
+    .expect("scan_failed defaults");
+    assert!(!status.scan_failed);
 }

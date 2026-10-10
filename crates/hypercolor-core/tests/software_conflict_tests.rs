@@ -7,7 +7,7 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::conflicts::CatalogError;
 use hypercolor_core::device::{SoftwareCatalog, SoftwareConflictStore};
 use hypercolor_types::event::HypercolorEvent;
-use hypercolor_types::host_software::{HostProcess, HostSoftwareSnapshot};
+use hypercolor_types::host_software::{HostInventory, HostProcess, HostSoftwareSnapshot};
 
 const TEST_CATALOG: &str = r#"
 [[software]]
@@ -253,7 +253,7 @@ async fn the_store_publishes_only_when_the_set_changes() {
     let before = store.status();
     assert!(!before.scanned && !before.supported);
 
-    store.record(Some(&snapshot(Vec::new(), &[])));
+    store.record(&HostInventory::Listed(snapshot(Vec::new(), &[])));
     let status = store.status();
     assert!(status.scanned && status.supported && status.conflicts.is_empty());
     assert!(
@@ -262,7 +262,7 @@ async fn the_store_publishes_only_when_the_set_changes() {
     );
 
     let running = snapshot(vec![HostProcess::named("Panel Tool.exe")], &[]);
-    let changes = store.record(Some(&running));
+    let changes = store.record(&HostInventory::Listed(running.clone()));
     assert_eq!(changes.appeared.len(), 1);
     assert_eq!(changes.appeared[0].id, "panels");
     assert!(changes.cleared.is_empty());
@@ -272,13 +272,13 @@ async fn the_store_publishes_only_when_the_set_changes() {
         HypercolorEvent::SoftwareConflictsChanged { count: 1 }
     ));
 
-    assert!(store.record(Some(&running)).is_empty());
+    assert!(store.record(&HostInventory::Listed(running)).is_empty());
     assert!(events.try_recv().is_err(), "the same set publishes nothing");
 
     assert_eq!(store.affecting("lianli", false).len(), 1);
     assert!(store.affecting("razer", false).is_empty());
 
-    let changes = store.record(Some(&snapshot(Vec::new(), &[])));
+    let changes = store.record(&HostInventory::Listed(snapshot(Vec::new(), &[])));
     assert_eq!(changes.cleared.len(), 1);
     assert!(changes.appeared.is_empty());
     let event = events.try_recv().expect("a cleared conflict publishes");
@@ -291,11 +291,77 @@ async fn the_store_publishes_only_when_the_set_changes() {
 #[test]
 fn a_host_without_an_inventory_is_unsupported() {
     let store = SoftwareConflictStore::with_catalog(&CATALOG);
-    store.record(None);
+    store.record(&HostInventory::Unsupported);
     let status = store.status();
     assert!(status.scanned);
     assert!(!status.supported);
+    assert!(!status.scan_failed);
     assert!(status.conflicts.is_empty());
+}
+
+fn panel_tool_running() -> HostInventory {
+    HostInventory::Listed(snapshot(vec![HostProcess::named("Panel Tool.exe")], &[]))
+}
+
+#[tokio::test]
+async fn a_failed_inventory_keeps_the_last_result_and_says_so() {
+    let bus = Arc::new(HypercolorBus::new());
+    let store = SoftwareConflictStore::with_catalog(&CATALOG).with_event_bus(Arc::clone(&bus));
+    store.record(&panel_tool_running());
+    let mut events = bus.subscribe_all();
+
+    let changes = store.record(&HostInventory::Failed);
+    assert!(changes.is_empty(), "a failure is not a change");
+    assert!(events.try_recv().is_err(), "a failure publishes nothing");
+    let status = store.status();
+    assert!(status.scan_failed);
+    assert!(status.supported, "only a supported platform can fail");
+    assert_eq!(status.conflicts.len(), 1, "the last known conflict stays");
+
+    let changes = store.record(&panel_tool_running());
+    assert!(
+        changes.is_empty(),
+        "recovering to the same set changes nothing"
+    );
+    assert!(!store.status().scan_failed);
+}
+
+#[test]
+fn a_failure_before_any_success_reports_failure_not_absence() {
+    let store = SoftwareConflictStore::with_catalog(&CATALOG);
+    store.record(&HostInventory::Failed);
+    let status = store.status();
+    assert!(status.scanned && status.scan_failed && status.supported);
+    assert!(status.conflicts.is_empty());
+    assert!(
+        store.age().is_none(),
+        "no successful scan has been recorded"
+    );
+}
+
+#[test]
+fn a_scan_that_began_earlier_cannot_overwrite_a_newer_one() {
+    let store = SoftwareConflictStore::with_catalog(&CATALOG);
+    let slow = store.begin_scan();
+    let fast = store.begin_scan();
+
+    store.finish_scan(fast, &HostInventory::Listed(snapshot(Vec::new(), &[])));
+    let stale = store.finish_scan(slow, &panel_tool_running());
+
+    assert!(stale.is_empty(), "the older scan is dropped");
+    assert!(
+        store.status().conflicts.is_empty(),
+        "the newer scan's result stands"
+    );
+}
+
+#[test]
+fn age_counts_from_the_latest_successful_scan() {
+    let store = SoftwareConflictStore::with_catalog(&CATALOG);
+    assert!(store.age().is_none());
+    store.record(&panel_tool_running());
+    let age = store.age().expect("a successful scan was recorded");
+    assert!(age < std::time::Duration::from_secs(5));
 }
 
 #[tokio::test]
