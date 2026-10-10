@@ -81,12 +81,19 @@ drag surface follows, with its ownership rules unit-tested in
 - One pointer owns a gesture. A second finger that lands mid-drag is
   ignored outright (on the Studio canvas that includes selection), which
   keeps every surface single-finger and pinch-free.
-- A release commits. `pointercancel`, or a capture lost before the
-  release, cancels: the surface restores its press-time state (geometry,
-  color, rect, or panel size) and records no history entry. A gesture
-  whose end never arrived (the owner re-presses, or no longer holds
-  capture) is rolled back on the next press instead of locking the
-  surface.
+- A release commits. So does releasing the pressing button while another
+  stays held: pointer events report that as a `pointermove`, and the old
+  `mouseup` handlers ended the drag there. `pointercancel`, or a capture
+  lost before the release, cancels: the surface restores its press-time
+  state (geometry, color, rect, or panel size) without a geometry edit in
+  history. A gesture whose end never arrived (the owner re-presses, or no
+  longer holds capture) is rolled back on the next press instead of
+  locking the surface.
+- An element that leaves the DOM mid-drag loses capture to the document,
+  not to itself. The Studio canvas (Escape clears the selection and with
+  it the resize handles) and the layout workspace splitters (rendered
+  under `Show`) therefore cancel from a window `lostpointercapture`
+  listener, removed on cleanup.
 - Drag surfaces set `touch-action: none`, so the browser never turns a
   drag into a pan or zoom.
 - Mouse and pen presses cancel their default actions, as the old
@@ -116,6 +123,13 @@ Counted in `crates/hypercolor-ui/src`:
 | `on:pointer*` and capture handlers | 5 | 49 |
 | Drag callbacks typed `MouseEvent` | 2 | 0 |
 
+Six of those eleven, the drag listeners in the resize handle, the
+viewport picker, and the layout workspace, also leaked. Leptos 0.8's
+`window_event_listener` handle neither removes its listener on drop nor
+registers a cleanup, and the old code kept the handles only as unused
+bindings, so every mount added listeners that were never removed. The
+five dismissal listeners went through leptos-use, which cleans up.
+
 No interactive control uses `on:mouse*`. The eight survivors are hover
 affordances that a tap neither needs nor breaks; on touch, the
 compatibility mouse events from a tap leave the last-tapped item lightly
@@ -132,6 +146,9 @@ Window and document pointer listeners that remain:
 
 - Five `pointerdown` outside-press dismissal handlers. Detecting a press
   outside a popover needs a document or window listener by definition.
+- Two `lostpointercapture` window listeners (Studio canvas, layout
+  workspace splitters), for captured elements that leave the DOM
+  mid-drag. Both are removed on cleanup.
 - `layout_zone_properties.rs`, window `pointerup` and `pointercancel`
   (unchanged): native range inputs own their drag, and these only close
   the undo bracket that a slider press opens, wherever the release lands.
@@ -167,8 +184,10 @@ Studio specs do.
 | Studio canvas, box | Tap or click selects; empty-canvas click deselects | Pass | Pass |
 | Studio canvas, box | Double-tap or double-click enters the device without nudging | Pass | Pass |
 | Studio canvas, box | Shift-press toggles selection without dragging | | Pass |
+| Studio canvas, box | Releasing the left button while the right stays held commits there | | Pass |
 | Studio canvas, handles | Corner resize grows the box | Pass | Pass |
 | Studio canvas, handles | Grab margin on coarse pointers only | Pass | Pass |
+| Studio canvas, handles | Escape mid-resize removes the handles and cancels; later moves paint nothing | | Pass |
 | Studio zone-tree splitter | Drag resizes (touch cancel restores) | Pass | Pass |
 | Studio bottom-panel splitter | Drag resizes (touch cancel restores; mouse release persists) | Pass | Pass |
 | Studio zone properties | Range slider drag is one undoable edit | Pass | |
