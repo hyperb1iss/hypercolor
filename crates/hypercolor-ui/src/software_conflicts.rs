@@ -221,19 +221,27 @@ pub fn banner_scope(conflict: &SoftwareConflict) -> String {
 
 /// Warning for the Windows SMBus support card, naming every running program
 /// that drives SMBus lighting. `None` when there is nothing to warn about.
+/// When the latest scan failed, the names come from the last scan that
+/// worked and the warning says so.
 #[must_use]
-pub fn smbus_conflict_warning(conflicts: &[SoftwareConflict]) -> Option<String> {
-    let names: Vec<&str> = conflicts
+pub fn smbus_conflict_warning(status: &SoftwareConflictsStatus) -> Option<String> {
+    let names: Vec<&str> = status
+        .conflicts
         .iter()
         .filter(|conflict| conflict.smbus)
         .map(|conflict| conflict.name.as_str())
         .collect();
-    (!names.is_empty()).then(|| {
-        format!(
-            "Other RGB software is running: {}. Quit it first to avoid SMBus conflicts.",
-            names.join(", ")
-        )
-    })
+    if names.is_empty() {
+        return None;
+    }
+    let mut warning = format!(
+        "Other RGB software is running: {}. Quit it first to avoid SMBus conflicts.",
+        names.join(", ")
+    );
+    if status.scan_failed {
+        warning.push_str(" The latest check failed, so this may be out of date.");
+    }
+    Some(warning)
 }
 
 /// Display name for a driver id: the vendor registry's brand when it knows

@@ -224,7 +224,7 @@ fn a_failed_scan_with_nothing_to_show_stays_silent() {
 
     assert_eq!(stale_note(&empty), None);
     assert!(visible_conflicts(&empty.conflicts, &BTreeSet::new()).is_empty());
-    assert_eq!(smbus_conflict_warning(&empty.conflicts), None);
+    assert_eq!(smbus_conflict_warning(&empty), None);
 }
 
 #[test]
@@ -423,13 +423,24 @@ fn smbus_card_warns_only_about_smbus_programs() {
     ];
 
     assert_eq!(
-        smbus_conflict_warning(&running).as_deref(),
+        smbus_conflict_warning(&status(running.clone())).as_deref(),
         Some(
             "Other RGB software is running: SignalRGB, MSI Center. Quit it first to avoid SMBus conflicts."
         )
     );
-    assert_eq!(smbus_conflict_warning(&running[..1]), None);
-    assert_eq!(smbus_conflict_warning(&[]), None);
+    assert_eq!(smbus_conflict_warning(&status(running[..1].to_vec())), None);
+    assert_eq!(smbus_conflict_warning(&status(Vec::new())), None);
+}
+
+#[test]
+fn smbus_card_says_when_its_list_may_be_out_of_date() {
+    assert_eq!(
+        smbus_conflict_warning(&failed(vec![suite("signalrgb", "SignalRGB")])).as_deref(),
+        Some(
+            "Other RGB software is running: SignalRGB. Quit it first to avoid SMBus conflicts. \
+             The latest check failed, so this may be out of date."
+        )
+    );
 }
 
 // ── Live updates ────────────────────────────────────────────────────────────

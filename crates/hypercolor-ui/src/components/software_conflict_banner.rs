@@ -24,8 +24,8 @@ use crate::components::status_banner::StatusBannerTone;
 use crate::icons::{LuRefreshCw, LuTriangleAlert, LuX};
 use crate::software_conflicts::{
     CheckFeedback, DISMISSED_STORAGE_KEY, SOFTWARE_CONFLICTS_EVENT, banner_headline, banner_scope,
-    check_feedback, encode_dismissed, parse_dismissed, prune_dismissed, stale_note,
-    visible_conflicts,
+    check_feedback, encode_dismissed, parse_dismissed, prune_dismissed, smbus_conflict_warning,
+    stale_note, visible_conflicts,
 };
 use crate::{storage, toasts};
 
@@ -54,7 +54,6 @@ pub struct SoftwareConflictsState {
     status: LocalResource<ApiResult<SoftwareConflictsStatus>>,
     dismissed: RwSignal<BTreeSet<String>>,
     scanning: RwSignal<bool>,
-    running: Memo<Vec<SoftwareConflict>>,
     visible: Memo<Vec<SoftwareConflict>>,
     stale: Memo<Option<&'static str>>,
 }
@@ -93,23 +92,26 @@ pub fn software_conflicts_state() -> SoftwareConflictsState {
         status,
         dismissed,
         scanning: RwSignal::new(false),
-        running,
         visible,
         stale,
     }
 }
 
 impl SoftwareConflictsState {
-    /// Every running conflict the latest scan reported, dismissed or not.
-    #[must_use]
-    pub fn running(self) -> Memo<Vec<SoftwareConflict>> {
-        self.running
-    }
-
     /// Running conflicts the user has not dismissed.
     #[must_use]
     pub fn visible(self) -> Memo<Vec<SoftwareConflict>> {
         self.visible
+    }
+
+    /// Warning for the Windows SMBus support card, ignoring dismissals.
+    #[must_use]
+    pub fn smbus_warning(self) -> Signal<Option<String>> {
+        let status = self.status;
+        Signal::derive(move || match status.get() {
+            Some(Ok(current)) => smbus_conflict_warning(&current),
+            _ => None,
+        })
     }
 
     /// Hide the warning for `id` until a scan shows that program stopped.

@@ -8,7 +8,6 @@ use crate::components::settings_controls::*;
 use crate::components::software_conflict_banner::SoftwareConflictsState;
 use crate::driver_settings::{DiscoveryDriverSetting, discovery_driver_settings};
 use crate::icons::*;
-use crate::software_conflicts::smbus_conflict_warning;
 use crate::tauri_bridge::{
     self, PawnIoHelperOptions, PawnIoSupportStatus, bundled_payload_ready, smbus_support_ready,
 };
@@ -220,8 +219,7 @@ fn HardwareSupportStatusPanel(
     // what is running. Dismissals on the Devices page don't apply here:
     // installing SMBus support beside a running SMBus tool is risky either
     // way.
-    let running = expect_context::<SoftwareConflictsState>().running();
-    let conflict_warning = Signal::derive(move || running.with(|all| smbus_conflict_warning(all)));
+    let conflict_warning = expect_context::<SoftwareConflictsState>().smbus_warning();
 
     view! {
         <HardwareSupportFrame>
