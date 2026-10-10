@@ -4,6 +4,7 @@ use leptos::prelude::*;
 
 use crate::pointer_gesture::{
     GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
+    suppress_press_defaults,
 };
 
 /// Vertical resize handle for drag-to-resize between adjacent panels.
@@ -47,7 +48,7 @@ pub fn ResizeHandle(
             class="resize-handle-zone touch-grab"
             class:resize-handle-active=move || dragging.get()
             on:pointerdown=move |ev: web_sys::PointerEvent| {
-                ev.prevent_default();
+                suppress_press_defaults(&ev);
                 let Some(handle) = handle_ref.get_untracked() else {
                     return;
                 };

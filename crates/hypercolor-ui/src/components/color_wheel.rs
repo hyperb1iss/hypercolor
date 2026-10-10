@@ -10,6 +10,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::pointer_gesture::{
     GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
+    suppress_press_defaults,
 };
 
 use hypercolor_color::Hsv as KernelHsv;
@@ -268,7 +269,7 @@ pub fn ColorWheel(
     };
 
     let on_pointer_down = move |ev: web_sys::PointerEvent| {
-        ev.prevent_default();
+        suppress_press_defaults(&ev);
         let Some(canvas) = canvas_ref.get_untracked() else {
             return;
         };

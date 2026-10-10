@@ -32,7 +32,8 @@ use crate::render_canvas;
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
 use crate::pointer_gesture::{
-    GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture, listener_element,
+    GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
+    listener_element, suppress_press_defaults,
 };
 use crate::style_utils::device_accent_colors;
 use hypercolor_types::spatial::{NormalizedPosition, Output};
@@ -704,7 +705,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     }
                                     on:pointerdown=move |ev| {
                                         ev.stop_propagation();
-                                        ev.prevent_default();
+                                        suppress_press_defaults(&ev);
                                         // A second finger landing mid-drag is ignored outright,
                                         // selection included.
                                         if !claim_interaction(ev.pointer_id()) {
@@ -732,9 +733,10 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             (ids, different)
                                         });
 
-                                        // prevent_default above also stops the browser moving
-                                        // focus; hand it to the viewport before any early return
-                                        // so Escape works after shift-clicks too.
+                                        // A cancelled mouse press also stops the browser moving
+                                        // focus, and a tap leaves it wherever the tap lands; hand
+                                        // it to the viewport before any early return so Escape
+                                        // works after shift-clicks too.
                                         let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
                                             return;
                                         };
@@ -935,7 +937,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             let zone_id_template = zid_resize_nw.clone();
                                             Rc::new(move |handle, ev| {
                                                 ev.stop_propagation();
-                                                ev.prevent_default();
+                                                suppress_press_defaults(&ev);
                                                 if !claim_interaction(ev.pointer_id()) {
                                                     return;
                                                 }

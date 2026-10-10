@@ -18,6 +18,7 @@ use crate::layout_geometry;
 use crate::layout_history::{LayoutEditorSnapshot, RemovedOutputCache};
 use crate::pointer_gesture::{
     GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
+    suppress_press_defaults,
 };
 use crate::storage;
 use crate::toasts;
@@ -335,7 +336,7 @@ pub(crate) fn LayoutWorkspace(
     // Each splitter captures its pointer on press, so the drag keeps
     // tracking anywhere on screen without window listeners.
     let start_grip = move |ev: web_sys::PointerEvent, panel: PanelDrag| {
-        ev.prevent_default();
+        suppress_press_defaults(&ev);
         let Some(element) = grip_element(panel) else {
             return;
         };

@@ -13,6 +13,11 @@
 //!   press.
 //! - Drag surfaces set `touch-action: none` so the browser never turns the
 //!   drag into a page scroll or zoom (which would cancel it).
+//! - A mouse or pen press cancels its default actions (text selection, focus
+//!   moves), as the old `mousedown` handlers did. A touch press keeps them:
+//!   `touch-action` already stops panning, and Chromium gives a tap whose
+//!   `pointerdown` was cancelled a click `detail` of 0 and never follows it
+//!   with `dblclick`, which would break double-tap.
 //!
 //! Capture goes on the element that received the press, never on an
 //! ancestor: browsers retarget `click` and `dblclick` to the capture
@@ -160,6 +165,21 @@ impl<S> PointerGesture<S> {
     /// Drop the live gesture without an event (the surface is going away).
     pub fn abandon(&mut self) -> Option<S> {
         self.active.take().map(|(_, state)| state)
+    }
+}
+
+/// Whether a press from this pointer type should cancel its default
+/// actions. Only touch keeps them; see the module docs for why.
+#[must_use]
+pub fn cancels_press_defaults(pointer_type: &str) -> bool {
+    pointer_type != "touch"
+}
+
+/// Cancel a press's default actions for mouse and pen. Call from every drag
+/// surface's `pointerdown` instead of `prevent_default` directly.
+pub fn suppress_press_defaults(ev: &web_sys::PointerEvent) {
+    if cancels_press_defaults(&ev.pointer_type()) {
+        ev.prevent_default();
     }
 }
 

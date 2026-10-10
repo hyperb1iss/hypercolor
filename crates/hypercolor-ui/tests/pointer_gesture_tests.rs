@@ -1,4 +1,6 @@
-use hypercolor_ui::pointer_gesture::{GestureEnd, PointerEnd, PointerGesture, Press};
+use hypercolor_ui::pointer_gesture::{
+    GestureEnd, PointerEnd, PointerGesture, Press, cancels_press_defaults,
+};
 
 const MOUSE: i32 = 1;
 const FIRST_FINGER: i32 = 2;
@@ -158,4 +160,13 @@ fn current_reads_the_live_gesture_for_any_caller() {
     assert_eq!(gesture.state(FIRST_FINGER), Some(&8));
     assert!(gesture.end(FIRST_FINGER, PointerEnd::Up).is_some());
     assert_eq!(gesture.current(), None);
+}
+
+#[test]
+fn only_touch_presses_keep_their_default_actions() {
+    assert!(cancels_press_defaults("mouse"));
+    assert!(cancels_press_defaults("pen"));
+    // Unknown pointer types behave like a mouse.
+    assert!(cancels_press_defaults(""));
+    assert!(!cancels_press_defaults("touch"));
 }

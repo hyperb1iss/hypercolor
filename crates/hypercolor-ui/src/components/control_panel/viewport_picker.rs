@@ -19,6 +19,7 @@ use crate::control_geometry::{
 };
 use crate::pointer_gesture::{
     GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
+    suppress_press_defaults,
 };
 use crate::toasts::toast_error;
 use crate::ws::CanvasFrame;
@@ -148,7 +149,7 @@ pub(super) fn ViewportPicker(
     // handlers, so retargeting their clicks to the frame changes nothing.
     let start_interaction =
         Callback::new(move |(handle, ev): (FrameHandle, web_sys::PointerEvent)| {
-            ev.prevent_default();
+            suppress_press_defaults(&ev);
             ev.stop_propagation();
             let Some(frame) = frame_ref.get_untracked() else {
                 return;
