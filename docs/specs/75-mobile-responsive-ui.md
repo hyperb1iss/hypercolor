@@ -137,7 +137,11 @@ viewport picker, and the layout workspace, also leaked. Leptos 0.8's
 `window_event_listener` handle neither removes its listener on drop nor
 registers a cleanup, and the old code kept the handles only as unused
 bindings, so every mount added listeners that were never removed. The
-five dismissal listeners went through leptos-use, which cleans up.
+five dismissal listeners went through leptos-use, which cleans up. The
+Studio canvas `resize` listener, the layout workspace's undo shortcuts,
+and the dashboard's fullscreen Escape handler leaked the same way and
+are now removed on cleanup too; a stale undo shortcut used to panic on
+the next Ctrl+Z after leaving Studio.
 
 No interactive control uses `on:mouse*`. The eight survivors are hover
 affordances that a tap neither needs nor breaks; on touch, the
@@ -223,8 +227,11 @@ Not exercised by the matrix:
 
 - Interactive canvas preview input. No interactive effect runs on a
   driverless daemon. The canvas now sets `touch-action: none` while
-  interactive, holds a button down while any pointer holds it, and
-  releases a pointer's buttons when it is cancelled or loses capture.
+  interactive, holds a button down while any pointer holds it,
+  reconciles each pointer's buttons from the event's `buttons` mask (so a
+  chorded press or release arriving as a `pointermove` reaches the
+  effect), and releases a pointer's buttons when it is cancelled or loses
+  capture.
   The button bookkeeping (`HeldButtons`) is unit-tested; the wiring is
   covered by code review only.
 - The full-page layout workspace's palette-column splitter. Studio mounts
