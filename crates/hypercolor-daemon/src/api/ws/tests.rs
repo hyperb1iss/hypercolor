@@ -6712,6 +6712,14 @@ impl crate::extensions::ApiExtension for RevocationProbe {
         "revocation-probe"
     }
 
+    fn public_routes(&self) -> Vec<crate::extensions::PublicRoute> {
+        vec![crate::extensions::PublicRoute::new(
+            axum::http::Method::GET,
+            "/probe/public",
+            crate::extensions::PublicRateClass::Read,
+        )]
+    }
+
     fn mount_api_routes(
         &self,
         router: utoipa_axum::router::OpenApiRouter<Arc<AppState>>,
@@ -6721,6 +6729,20 @@ impl crate::extensions::ApiExtension for RevocationProbe {
         let started = Arc::clone(&self.started);
         let release = Arc::clone(&self.release);
         router
+            .route(
+                "/probe/public",
+                axum::routing::get(
+                    |axum::Extension(context): axum::Extension<RequestAuthContext>,
+                     grant: Option<axum::Extension<crate::api::security::CredentialGrant>>| async move {
+                        axum::Json(serde_json::json!({
+                            "can_control": context.can_control(),
+                            "is_loopback": context.is_loopback(),
+                            "credential_id": grant
+                                .map(|axum::Extension(grant)| grant.credential_id().to_owned()),
+                        }))
+                    },
+                ),
+            )
             .route(
                 "/probe/whoami",
                 axum::routing::get(
@@ -7026,4 +7048,33 @@ async fn dispatch_command_refuses_a_revoked_session_grant() {
         _ => panic!("expected command response"),
     }
     assert_eq!(probe.executed.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_replayed_command_to_a_public_route_is_anonymous() {
+    let (state, _probe) = revocation_probe_state();
+    let message = dispatch_command(
+        &state,
+        authority_control(),
+        Some(probe_grant(tokio_util::sync::CancellationToken::new())),
+        "cmd_public".to_owned(),
+        "GET".to_owned(),
+        "/probe/public".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response { status, data, .. } => {
+            assert_eq!(status, 200);
+            let data = data.expect("public route should answer with a body");
+            assert_eq!(data["can_control"], false);
+            assert_eq!(data["is_loopback"], false);
+            assert!(
+                data["credential_id"].is_null(),
+                "the grant must not reach a public handler"
+            );
+        }
+        _ => panic!("expected command response"),
+    }
 }

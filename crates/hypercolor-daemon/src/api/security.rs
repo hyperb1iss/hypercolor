@@ -476,10 +476,12 @@ impl PublicRouteTable {
     /// `engine_routes` are the path templates the engine itself serves
     /// under the same prefix, and `reserved_prefixes` are full paths of
     /// engine mounts that sit outside its route table, such as the MCP
-    /// service. A declaration that names an engine route, falls within a
-    /// reserved prefix, or is not an exact path is dropped with an error,
-    /// and its route stays authenticated. Extensions are trusted not to
-    /// declare one another's routes; the engine cannot tell them apart.
+    /// service. The bearer-exempt API docs paths are always reserved: a
+    /// route beneath them would skip the public-route admission entirely.
+    /// A declaration that names an engine route, falls within a reserved
+    /// prefix, or is not an exact path is dropped with an error, and its
+    /// route stays authenticated. Extensions are trusted not to declare one
+    /// another's routes; the engine cannot tell them apart.
     pub(crate) fn from_extensions<'a>(
         extensions: impl IntoIterator<Item = &'a Arc<dyn ApiExtension>>,
         api_prefix: &str,
@@ -555,8 +557,9 @@ fn validate_public_route(
         return Err("path names a route the engine serves");
     }
     let full_path = format!("{api_prefix}{path}");
-    if reserved_prefixes
-        .iter()
+    if [SWAGGER_UI_PREFIX, OPENAPI_DOCUMENT_PATH]
+        .into_iter()
+        .chain(reserved_prefixes.iter().map(String::as_str))
         .any(|prefix| path_within(&full_path, prefix))
     {
         return Err("path falls within an engine mount");
@@ -1010,9 +1013,10 @@ pub async fn enforce_security(
     next: Next,
 ) -> Response {
     let mut request = request;
-    // Only a replayed WebSocket command arrives with a grant attached. Its
-    // context was resolved when the session opened, so the revocation is
-    // checked here, where nothing else would see it.
+    // A grant attached before this layer, as on a replayed WebSocket
+    // command or an in-process call, was resolved earlier and is never
+    // resolved again, so its revocation is checked here, ahead of every
+    // other branch.
     if request
         .extensions()
         .get::<CredentialGrant>()
@@ -1049,22 +1053,28 @@ pub async fn enforce_security(
         return DomainError::unauthorized("Invalid API key").into_response();
     }
 
+    // Exempt paths, like public routes, run ahead of the loopback
+    // cross-site gate, so they never confer locality either.
     if is_bearer_exempt(request.uri().path(), &state.static_assets) {
         request
             .extensions_mut()
-            .insert(RequestAuthContext::unsecured().with_locality(locality));
+            .insert(RequestAuthContext::unsecured());
         return next.run(request).await;
     }
 
     // A public route needs no credential and confers none, locality
     // included: it runs ahead of the loopback cross-site gate, so a page
     // on any origin can reach it through the browser, and its handler must
-    // never see such a caller as local. Locality buys no rate exemption
-    // either; the budget exists for exactly those pages.
+    // never see such a caller as local. A grant attached upstream, as on a
+    // replayed WebSocket command, is dropped for the same reason. Locality
+    // buys no rate exemption either; the budget exists for those pages.
+    // In-process trusted calls were admitted above and keep their
+    // authority: they are the daemon's own process, not a request.
     if let Some(class) = state
         .public_routes
         .class_for(request.method(), request.uri().path())
     {
+        request.extensions_mut().remove::<CredentialGrant>();
         request
             .extensions_mut()
             .insert(RequestAuthContext::anonymous());
@@ -2885,16 +2895,23 @@ mod tests {
         }
 
         fn public_routes(&self) -> Vec<crate::extensions::PublicRoute> {
-            ["/agents", "/agents/sse", "/agentsx"]
-                .into_iter()
-                .map(|path| {
-                    crate::extensions::PublicRoute::new(
-                        Method::GET,
-                        path,
-                        crate::extensions::PublicRateClass::Read,
-                    )
-                })
-                .collect()
+            [
+                "/agents",
+                "/agents/sse",
+                "/agentsx",
+                "/docs",
+                "/docs/exchange",
+                "/openapi.json",
+            ]
+            .into_iter()
+            .map(|path| {
+                crate::extensions::PublicRoute::new(
+                    Method::GET,
+                    path,
+                    crate::extensions::PublicRateClass::Read,
+                )
+            })
+            .collect()
         }
     }
 
@@ -2916,5 +2933,45 @@ mod tests {
             Some(super::OperationClass::Read),
             "the reserved prefix is segment-aware"
         );
+        // The bearer-exempt docs paths are reserved even when unlisted.
+        for path in [
+            "/api/v1/docs",
+            "/api/v1/docs/exchange",
+            "/api/v1/openapi.json",
+        ] {
+            assert_eq!(table.class_for(&Method::GET, path), None, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_bearer_exempt_path_never_confers_loopback_locality() {
+        let app = Router::new()
+            .route(
+                "/health",
+                get(
+                    |Extension(context): Extension<RequestAuthContext>| async move {
+                        axum::Json(serde_json::json!({ "is_loopback": context.is_loopback() }))
+                    },
+                ),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                SecurityState::with_keys(Some(CONTROL_KEY), None),
+                enforce_security,
+            ));
+
+        let response = app
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/health")
+                    .header("sec-fetch-site", "cross-site")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                41_000,
+            ))
+            .await
+            .expect("request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["is_loopback"], false);
     }
 }

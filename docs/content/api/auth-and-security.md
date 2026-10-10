@@ -363,8 +363,8 @@ browser on the same machine. It still passes the network policy, a launcher
 session credential presented from the network is still refused, and every
 caller, loopback included, spends the declared rate class (read, write, or
 pairing). A declaration that names a route the engine serves, or falls within
-the MCP mount when that is configured under `/api/v1`, is ignored at startup
-with an error, and that route keeps its authentication. The engine cannot
+the API docs paths or the MCP mount when that is configured under `/api/v1`,
+is ignored at startup with an error, and that route keeps its authentication. The engine cannot
 tell one extension's routes from another's, so an extension must declare
 only routes it mounts.
 
