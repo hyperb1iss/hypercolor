@@ -257,6 +257,76 @@ fn anything_with_a_controllable_interface_may_be_lighting() {
 }
 
 #[test]
+fn a_mass_storage_drive_cannot_be_lighting() {
+    let drive = with_classes(observation(0x0BC2, 0x3322, "1-1.2"), 0x00, &[0x08]);
+    assert!(drive.cannot_be_lighting());
+}
+
+#[test]
+fn a_bluetooth_radio_cannot_be_lighting() {
+    let radio = with_classes(observation(0x0489, 0xE116, "1-14"), 0xEF, &[0xE0, 0xE0]);
+    assert!(radio.cannot_be_lighting());
+}
+
+#[test]
+fn a_webcam_with_a_microphone_cannot_be_lighting() {
+    let webcam = with_classes(
+        observation(0x1532, 0x0E06, "1-1.3"),
+        0xEF,
+        &[0x0E, 0x0E, 0x01, 0x01],
+    );
+    assert!(webcam.cannot_be_lighting());
+}
+
+#[test]
+fn an_audio_interface_with_a_firmware_update_function_cannot_be_lighting() {
+    let interface = with_classes(
+        observation(0x0763, 0x400E, "1-10.4.1"),
+        0xEF,
+        &[0x01, 0x01, 0x01, 0x01, 0x01, 0xFE],
+    );
+    assert!(
+        interface.cannot_be_lighting(),
+        "DFU is not a lighting interface"
+    );
+}
+
+#[test]
+fn a_vendor_specific_device_may_be_lighting() {
+    let panel = with_classes(observation(0x1CBE, 0xA088, "1-1.4"), 0xFF, &[0xFF]);
+    assert!(!panel.cannot_be_lighting());
+}
+
+#[test]
+fn a_cdc_serial_device_may_be_lighting() {
+    let serial = with_classes(observation(0x1A86, 0x55D3, "1-1.5"), 0x02, &[0x02, 0x0A]);
+    assert!(!serial.cannot_be_lighting());
+}
+
+#[test]
+fn the_unclaimed_view_keeps_only_interfaces_that_can_carry_lighting() {
+    let store = UnclaimedDeviceStore::new();
+    store.replace_snapshot([
+        with_classes(observation(0x0BC2, 0x3322, "1-1"), 0x00, &[0x08]),
+        with_classes(observation(0x0489, 0xE116, "1-2"), 0xEF, &[0xE0, 0xE0]),
+        with_classes(
+            observation(0x1532, 0x0E06, "1-3"),
+            0xEF,
+            &[0x0E, 0x0E, 0x01, 0x01],
+        ),
+        with_classes(observation(0x1CBE, 0xA088, "1-4"), 0xFF, &[0xFF]),
+        with_classes(observation(0x1A86, 0x55D3, "1-5"), 0x02, &[0x02, 0x0A]),
+    ]);
+
+    let listed: Vec<_> = store
+        .snapshot()
+        .into_iter()
+        .map(|device| (device.vendor_id, device.product_id))
+        .collect();
+    assert_eq!(listed, vec![(0x1A86, 0x55D3), (0x1CBE, 0xA088)]);
+}
+
+#[test]
 fn the_unclaimed_view_hides_hubs_and_audio_only_functions() {
     let store = UnclaimedDeviceStore::new();
     store.replace_snapshot([

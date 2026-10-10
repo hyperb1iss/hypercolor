@@ -8,8 +8,9 @@
 //! event. The store decides what counts as unclaimed from the set of
 //! enabled driver ids the daemon hands it, so a device whose descriptor
 //! exists but whose driver is disabled shows up with `claimable_by` set.
-//! Hubs and audio-only functions with no descriptor stay out of the view
-//! (see [`UsbObservation::cannot_be_lighting`]).
+//! Devices with no descriptor whose interfaces cannot carry lighting
+//! (hubs, audio, storage, radios, cameras) stay out of the view (see
+//! [`UsbObservation::cannot_be_lighting`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
@@ -44,30 +45,51 @@ pub struct UsbObservation {
     pub descriptor_driver_id: Option<String>,
 }
 
-/// USB class code for audio functions.
-const USB_CLASS_AUDIO: u8 = 0x01;
+/// USB class code for CDC communications, the control half of a serial port.
+const USB_CLASS_CDC: u8 = 0x02;
+/// USB class code for HID.
+const USB_CLASS_HID: u8 = 0x03;
 /// USB class code for hubs.
 const USB_CLASS_HUB: u8 = 0x09;
+/// USB class code for CDC data, the bulk half of a serial port.
+const USB_CLASS_CDC_DATA: u8 = 0x0A;
+/// USB class code for vendor-specific interfaces.
+const USB_CLASS_VENDOR: u8 = 0xFF;
+
+/// Interface classes a host can drive lighting through: HID reports, a CDC
+/// serial port, or a vendor-specific protocol.
+const LIGHTING_CAPABLE_CLASSES: [u8; 4] = [
+    USB_CLASS_CDC,
+    USB_CLASS_HID,
+    USB_CLASS_CDC_DATA,
+    USB_CLASS_VENDOR,
+];
 
 impl UsbObservation {
-    /// Whether the descriptors alone rule out lighting hardware: a hub, or
-    /// a function whose every interface is USB audio.
+    /// Whether the descriptors alone rule out lighting hardware.
     ///
-    /// Lighting controllers speak HID, vendor-specific, or serial
-    /// interfaces. A hub has none of those, and neither does a function
-    /// that is nothing but audio streaming and control (on Windows the
-    /// audio driver owns the whole function, so there is nothing to open).
-    /// RGB headsets stay visible: they expose HID beside their audio
-    /// interfaces, and that HID interface is where their lighting lives.
-    /// An empty interface list proves nothing, so only the device class
+    /// Lighting controllers speak HID, CDC serial, or a vendor-specific
+    /// protocol, so a device with none of those interfaces cannot be one.
+    /// That rules out hubs, audio-only functions (on Windows the audio
+    /// driver owns the whole function, so there is nothing to open), mass
+    /// storage, Bluetooth radios, and webcams. RGB headsets stay visible:
+    /// they expose HID beside their audio interfaces, and that HID
+    /// interface is where their lighting lives. MIDI rides the audio class,
+    /// so a pad controller that lights only over MIDI falls out here too;
+    /// the Push 2 stays visible through its vendor display interface.
+    ///
+    /// An empty interface list proves nothing, so only a hub's device class
     /// can rule a device out when the host reports no interfaces.
     #[must_use]
     pub fn cannot_be_lighting(&self) -> bool {
-        let only = |class: u8| {
-            !self.interface_classes.is_empty()
-                && self.interface_classes.iter().all(|&found| found == class)
-        };
-        self.device_class == USB_CLASS_HUB || only(USB_CLASS_HUB) || only(USB_CLASS_AUDIO)
+        if self.device_class == USB_CLASS_HUB {
+            return true;
+        }
+        !self.interface_classes.is_empty()
+            && !self
+                .interface_classes
+                .iter()
+                .any(|class| LIGHTING_CAPABLE_CLASSES.contains(class))
     }
 
     /// Stable key for patching one observation in and out of the snapshot.
@@ -151,7 +173,7 @@ impl UnclaimedInner {
             .filter_map(|observation| match self.ownership(observation) {
                 Ownership::Claimed => None,
                 // A matching descriptor outranks class heuristics; without
-                // one, hubs and audio-only functions are just noise.
+                // one, functions that cannot carry lighting are just noise.
                 Ownership::Unclaimed(None) if observation.cannot_be_lighting() => None,
                 Ownership::Unclaimed(claimable_by) => {
                     Some(observation.clone().into_unclaimed(claimable_by))
