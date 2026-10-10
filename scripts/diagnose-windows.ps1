@@ -146,7 +146,7 @@ try {
 Write-Section "Daemon Diagnostics"
 try {
     $body = @{ system = $true } | ConvertTo-Json -Compress
-    $diagnose = Invoke-RestMethod -Method Post -Uri "$Api/api/v1/diagnose" -Body $body -ContentType "application/json" -TimeoutSec 3
+    $diagnose = Invoke-RestMethod -Method Post -Uri "$Api/api/v1/diagnose" -Body $body -ContentType "application/json" -TimeoutSec 10
     foreach ($check in @($diagnose.data.checks)) {
         $ok = $check.status -eq "pass"
         Write-Check "$($check.category).$($check.name)" $ok "$($check.status): $($check.detail)"
@@ -191,11 +191,16 @@ try {
     $conflicts = Invoke-RestMethod -Uri "$Api/api/v1/system/conflicts" -TimeoutSec 3
     $status = $conflicts.data
     $running = @($status.conflicts)
-    if (-not $status.supported) {
+    if (-not $status.scanned) {
+        Write-Check "Competing software" $false "the daemon has not scanned yet"
+    } elseif (-not $status.supported) {
         Write-Check "Competing software" $true "not inspected on this platform"
-    } elseif ($running.Count -eq 0) {
+    } elseif ($status.scan_failed) {
+        Write-Check "Competing software" $false "the latest scan failed; showing the last successful one"
+    }
+    if ($status.scanned -and $status.supported -and -not $status.scan_failed -and $running.Count -eq 0) {
         Write-Check "Competing software" $true "none running"
-    } else {
+    } elseif ($running.Count -gt 0) {
         foreach ($conflict in $running) {
             Write-Check $conflict.name $false ("matched " + (@($conflict.matched) -join ", "))
             Write-Host "       $($conflict.remedy)"
