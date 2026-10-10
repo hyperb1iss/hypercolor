@@ -1,8 +1,9 @@
 //! Integration tests for downstream credential authorities and public routes.
 
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 
 use axum::Json;
 use axum::body::Body;
@@ -23,6 +24,8 @@ use hypercolor_daemon::extensions::{ApiExtension, PublicRateClass, PublicRoute};
 use hypercolor_daemon::startup::default_config;
 use hypercolor_types::config::{HypercolorConfig, NetworkAccessMode, NetworkConfig};
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 use utoipa_axum::router::OpenApiRouter;
@@ -518,6 +521,127 @@ async fn undeclared_and_refused_declarations_stay_authenticated() {
         StatusCode::UNAUTHORIZED,
         "a declaration covers its own method only"
     );
+}
+
+// ── WebSocket ────────────────────────────────────────────────────────────
+
+async fn serve(app: TestApp) -> (SocketAddr, tempfile::TempDir) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let address = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            app.router
+                .into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
+    });
+    (address, app._data_dir)
+}
+
+/// Open `/api/v1/ws` as the forwarded LAN client a loopback proxy names,
+/// returning the response head and, on 101, the stream.
+async fn upgrade(
+    address: SocketAddr,
+    token: Option<&str>,
+    origin: &str,
+    forwarded_for: Option<IpAddr>,
+) -> (String, TcpStream) {
+    let mut stream = TcpStream::connect(address).await.expect("connect");
+    let query = token.map(|token| format!("?token={token}")).unwrap_or_default();
+    let forwarded = forwarded_for
+        .map(|ip| format!("X-Forwarded-For: {ip}\r\n"))
+        .unwrap_or_default();
+    let request = format!(
+        "GET /api/v1/ws{query} HTTP/1.1\r\n\
+         Host: {address}\r\n\
+         Origin: {origin}\r\n\
+         {forwarded}\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Version: 13\r\n\
+         Sec-WebSocket-Protocol: hypercolor-v1\r\n\
+         \r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write upgrade");
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).await.expect("read head");
+        head.push(byte[0]);
+    }
+    (String::from_utf8_lossy(&head).into_owned(), stream)
+}
+
+/// Read server frames until a close frame, returning its status code.
+async fn read_until_close(stream: &mut TcpStream) -> Option<u16> {
+    loop {
+        let mut header = [0u8; 2];
+        if stream.read_exact(&mut header).await.is_err() {
+            return None;
+        }
+        let opcode = header[0] & 0x0F;
+        let mut len = u64::from(header[1] & 0x7F);
+        if len == 126 {
+            let mut ext = [0u8; 2];
+            stream.read_exact(&mut ext).await.ok()?;
+            len = u64::from(u16::from_be_bytes(ext));
+        } else if len == 127 {
+            let mut ext = [0u8; 8];
+            stream.read_exact(&mut ext).await.ok()?;
+            len = u64::from_be_bytes(ext);
+        }
+        let mut payload = vec![0u8; usize::try_from(len).ok()?];
+        stream.read_exact(&mut payload).await.ok()?;
+        if opcode == 0x8 {
+            return payload
+                .get(..2)
+                .map(|code| u16::from_be_bytes([code[0], code[1]]));
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_credentialed_upgrade_is_admitted_from_the_daemons_lan_origin() {
+    let authority = Arc::new(TestAuthority::new(CredentialTier::Control));
+    let (address, _dir) = serve(app_with_authority(authority)).await;
+    let lan = Some(IpAddr::V4(LAN_CLIENT));
+
+    let (head, _stream) =
+        upgrade(address, Some(CONTROL_KEY), "http://192.168.1.10:9420", lan).await;
+    assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+
+    // An anonymous loopback caller still meets the origin allowlist.
+    let (head, _stream) = upgrade(address, None, "http://192.168.1.10:9420", None).await;
+    assert!(head.starts_with("HTTP/1.1 403"), "{head}");
+}
+
+#[tokio::test]
+async fn revoking_a_grant_closes_the_socket_it_opened() {
+    let authority = Arc::new(TestAuthority::new(CredentialTier::Control));
+    let revocation = authority.revocation(CONTROL_KEY);
+    let (address, _dir) = serve(app_with_authority(authority)).await;
+
+    let (head, mut stream) = upgrade(
+        address,
+        Some(CONTROL_KEY),
+        "http://192.168.1.10:9420",
+        Some(IpAddr::V4(LAN_CLIENT)),
+    )
+    .await;
+    assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+
+    revocation.cancel();
+    let code = tokio::time::timeout(Duration::from_secs(5), read_until_close(&mut stream))
+        .await
+        .expect("the session should close promptly");
+    assert_eq!(code, Some(1008));
 }
 
 // ── Bind ─────────────────────────────────────────────────────────────────

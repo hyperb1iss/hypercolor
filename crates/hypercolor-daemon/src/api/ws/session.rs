@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
-use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, close_code};
 use axum::extract::{Extension, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
@@ -62,7 +62,7 @@ use super::topics::{RelayContext, spawn_relays};
 use crate::api::local::{
     TrustedLocalSocketTransport, TrustedLocalWebSocket, trusted_local_socket_pair,
 };
-use crate::api::security::RequestAuthContext;
+use crate::api::security::{CredentialGrant, RequestAuthContext};
 use crate::app_state::AppState;
 use crate::domain::layout::validate_layout_sampling_radii;
 use crate::domain::output::brightness_percent;
@@ -93,16 +93,20 @@ pub(crate) async fn ws_handler(
     headers: HeaderMap,
     connect_info: Option<Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
     auth_context: Option<Extension<RequestAuthContext>>,
+    credential_grant: Option<Extension<CredentialGrant>>,
 ) -> Response {
-    if !ws_origin_allowed(&state, &headers) {
+    let auth_context =
+        auth_context.map_or_else(RequestAuthContext::unsecured, |Extension(context)| context);
+    if !ws_origin_allowed(&state, &headers, auth_context) {
         return crate::domain::DomainError::forbidden(
             "Origin is not permitted to open a WebSocket against this daemon",
         )
         .into_response();
     }
 
-    let auth_context =
-        auth_context.map_or_else(RequestAuthContext::unsecured, |Extension(context)| context);
+    // A revoked credential ends the session it opened, along with every
+    // command the session would have dispatched under it.
+    let revocation = credential_grant.map(|Extension(grant)| grant.revocation().clone());
     let ws = ws
         .max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES);
@@ -113,7 +117,13 @@ pub(crate) async fn ws_handler(
     upgrade_handler(ws, move |socket| {
         crate::audit_log::with_ws_peer(
             peer,
-            handle_socket(SessionSocket::Network(socket), state, auth_context, None),
+            handle_socket(
+                SessionSocket::Network(socket),
+                state,
+                auth_context,
+                None,
+                revocation,
+            ),
         )
     })
 }
@@ -143,6 +153,7 @@ fn spawn_local_socket_with_context(
             state,
             auth_context,
             Some(shutdown),
+            None,
         ),
     )));
     socket
@@ -189,10 +200,25 @@ impl SessionSocket {
     }
 }
 
-fn ws_origin_allowed(state: &AppState, headers: &HeaderMap) -> bool {
+/// Whether a browser `Origin` may open a session.
+///
+/// The allowlist keeps a foreign page from riding ambient authority: the
+/// anonymous control a loopback caller holds, or an unsecured daemon. An
+/// upgrade that presented its own credential carries nothing ambient, so
+/// it is admitted from any origin, including the daemon's own LAN origin
+/// when the page was served from it.
+fn ws_origin_allowed(
+    state: &AppState,
+    headers: &HeaderMap,
+    auth_context: RequestAuthContext,
+) -> bool {
     let Some(origin) = headers.get(header::ORIGIN) else {
         return true;
     };
+
+    if auth_context.presented_credential() {
+        return true;
+    }
 
     if is_loopback_origin(origin) || crate::api::security::is_trusted_tauri_origin(origin) {
         return true;
@@ -253,6 +279,7 @@ async fn handle_socket(
     state: Arc<AppState>,
     auth_context: RequestAuthContext,
     shutdown: Option<CancellationToken>,
+    revocation: Option<CancellationToken>,
 ) {
     let _client_guard = WsClientGuard::register();
 
@@ -341,6 +368,11 @@ async fn handle_socket(
     loop {
         tokio::select! {
             () = wait_for_shutdown(shutdown.as_ref()) => break,
+
+            () = wait_for_shutdown(revocation.as_ref()) => {
+                close_revoked(&mut socket).await;
+                break;
+            }
 
             // Outbound JSON: bounded queue (drop under pressure in producer tasks).
             json_msg = json_rx.recv() => {
@@ -486,6 +518,12 @@ async fn handle_socket(
 
             // Inbound: process client messages.
             msg = socket.recv() => {
+                // `select!` picks among ready branches at random, so a
+                // message that arrives with the revocation must not run.
+                if revocation.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                    close_revoked(&mut socket).await;
+                    break;
+                }
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         handle_client_message(
@@ -536,6 +574,16 @@ async fn handle_socket(
         .clear_owned_many(zone_layout_preview_owner, zone_layout_preview_keys)
         .await;
     debug!("WebSocket client disconnected");
+}
+
+/// End a session whose credential was revoked, telling the client why.
+async fn close_revoked(socket: &mut SessionSocket) {
+    let _ = socket
+        .send(Message::Close(Some(CloseFrame {
+            code: close_code::POLICY,
+            reason: Utf8Bytes::from_static("credential revoked"),
+        })))
+        .await;
 }
 
 async fn wait_for_shutdown(shutdown: Option<&CancellationToken>) {
@@ -2028,6 +2076,7 @@ mod security_tests {
 #[cfg(test)]
 mod origin_tests {
     use super::{header_value_eq_origin, is_loopback_origin, ws_origin_allowed};
+    use crate::api::security::RequestAuthContext;
     use crate::app_state::AppState;
     use axum::http::{HeaderMap, HeaderValue, header};
 
@@ -2064,7 +2113,7 @@ mod origin_tests {
                 header::ORIGIN,
                 origin.parse().expect("native origin should parse"),
             );
-            assert!(ws_origin_allowed(&state, &headers));
+            assert!(ws_origin_allowed(&state, &headers, RequestAuthContext::unsecured()));
         }
 
         for origin in ["tauri://attacker.example", "https://tauri.localhost.evil"] {
@@ -2073,7 +2122,7 @@ mod origin_tests {
                 header::ORIGIN,
                 origin.parse().expect("lookalike origin should parse"),
             );
-            assert!(!ws_origin_allowed(&state, &headers));
+            assert!(!ws_origin_allowed(&state, &headers, RequestAuthContext::unsecured()));
         }
     }
 
@@ -2088,14 +2137,14 @@ mod origin_tests {
         let state = AppState::new();
 
         // No Origin header: native and CLI clients are always allowed.
-        assert!(ws_origin_allowed(&state, &HeaderMap::new()));
+        assert!(ws_origin_allowed(&state, &HeaderMap::new(), RequestAuthContext::unsecured()));
 
         let mut loopback = HeaderMap::new();
         loopback.insert(
             header::ORIGIN,
             HeaderValue::from_static("http://localhost:9430"),
         );
-        assert!(ws_origin_allowed(&state, &loopback));
+        assert!(ws_origin_allowed(&state, &loopback, RequestAuthContext::unsecured()));
 
         // A non-loopback browser origin is rejected on the default
         // unsecured daemon, where no cors_origins allowlist applies.
@@ -2104,6 +2153,6 @@ mod origin_tests {
             header::ORIGIN,
             HeaderValue::from_static("https://evil.example"),
         );
-        assert!(!ws_origin_allowed(&state, &remote));
+        assert!(!ws_origin_allowed(&state, &remote, RequestAuthContext::unsecured()));
     }
 }
