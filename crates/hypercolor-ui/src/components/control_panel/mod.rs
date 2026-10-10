@@ -428,8 +428,12 @@ fn ControlWidget(
     }
 }
 
-/// Install a window-level mousedown listener that closes the color picker when
-/// clicking outside `.color-picker-popover` or `.swatch-glow`.
+/// Install a window-level pointerdown listener that closes the color picker
+/// when a press lands outside `.color-picker-popover` or `.swatch-glow`.
+///
+/// Outside-press dismissal listens for `pointerdown`, never `mousedown`:
+/// drag surfaces cancel `pointerdown`, which suppresses the compatibility
+/// `mousedown`, and a touch only produces one after the finger lifts.
 fn install_click_outside_handler(
     expanded_picker_id: ReadSignal<Option<String>>,
     set_expanded: WriteSignal<Option<String>>,
@@ -440,8 +444,8 @@ fn install_click_outside_handler(
 
     let _ = use_event_listener_with_options(
         win,
-        ev::mousedown,
-        move |ev: leptos::ev::MouseEvent| {
+        ev::pointerdown,
+        move |ev: leptos::ev::PointerEvent| {
             if expanded_picker_id.get_untracked().is_none() {
                 return;
             }
@@ -458,8 +462,9 @@ fn install_click_outside_handler(
     );
 }
 
-/// Install a one-time document-level mousedown listener that closes a specific
-/// control dropdown when clicking outside its container.
+/// Install a one-time document-level pointerdown listener that closes a
+/// specific control dropdown when a press lands outside its container. See
+/// [`install_click_outside_handler`] for why this is not `mousedown`.
 pub(super) fn install_control_dropdown_outside_handler(
     class_name: String,
     is_open: ReadSignal<bool>,
@@ -471,8 +476,8 @@ pub(super) fn install_control_dropdown_outside_handler(
     let selector = format!(".{class_name}");
     let _ = use_event_listener_with_options(
         doc,
-        ev::mousedown,
-        move |ev: leptos::ev::MouseEvent| {
+        ev::pointerdown,
+        move |ev: leptos::ev::PointerEvent| {
             if !is_open.get_untracked() {
                 return;
             }

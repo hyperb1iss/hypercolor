@@ -646,7 +646,7 @@ fn LayoutMenu(
             style="background: linear-gradient(180deg, \
                    rgba(18, 14, 28, 0.95) 0%, \
                    rgba(10, 8, 20, 0.96) 100%)"
-            on:mousedown=|ev: ev::MouseEvent| ev.stop_propagation()
+            on:pointerdown=|ev: ev::PointerEvent| ev.stop_propagation()
         >
             <div class="px-3 pt-3 pb-2 flex items-center gap-2">
                 <Icon
@@ -733,9 +733,9 @@ fn LayoutMenu(
     }
 }
 
-/// One-time document-level mousedown listener that closes the dashboard
-/// layout menu when the user clicks outside its anchor. Mirrors the
-/// pattern used in `preset_panel::install_dropdown_outside_handler`.
+/// One-time document-level pointerdown listener that closes the dashboard
+/// layout menu when a press lands outside its anchor. Mirrors the pattern
+/// used in `preset_panel::install_dropdown_outside_handler`.
 fn install_layout_menu_outside_handler(set_open: WriteSignal<bool>) {
     let Some(doc) = browser_document() else {
         return;
@@ -743,8 +743,8 @@ fn install_layout_menu_outside_handler(set_open: WriteSignal<bool>) {
 
     let _ = use_event_listener_with_options(
         doc,
-        ev::mousedown,
-        move |ev: leptos::ev::MouseEvent| {
+        ev::pointerdown,
+        move |ev: leptos::ev::PointerEvent| {
             let inside = ev
                 .target()
                 .is_some_and(|target| target_closest(Some(target), ".layout-menu-anchor"));
