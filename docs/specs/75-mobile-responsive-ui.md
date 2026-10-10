@@ -2,9 +2,10 @@
 
 Status: In progress (status line added 2026-08-25; this file previously carried none).
 Wave 0 shipped: `MobileNav` (`crates/hypercolor-ui/src/components/mobile_nav.rs`) and
-the responsive breakpoint pass are live. Wave 1's pointer-event migration is genuinely
-incomplete, so the open-wave framing below is accurate. This spec supersedes the
-archived Spec 63, which designed a separate mobile shell that was never built.
+the responsive breakpoint pass are live. Wave 1 shipped on 2026-10-10 and passed
+emulated touch QA; its real-device pass is still owed (see Wave 1 below). Waves 2
+through 4 are open. This spec supersedes the archived Spec 63, which designed a
+separate mobile shell that was never built.
 
 Make `hypercolor-ui` fully usable on phones and tablets as a pure
 Leptos + Tailwind effort. No new frameworks, no daemon changes beyond
@@ -32,13 +33,13 @@ Measured on main at the time of writing:
 Desktop layout is the default; mobile overrides use `max-md:` so the
 desktop DOM and classes stay untouched. `md` (768px) is the single
 phone/desktop boundary: below it the bottom tab bar replaces the
-sidebar. Tablets (`md`–`lg`) keep the desktop shell with the collapsed
+sidebar. Tablets (`md` to `lg`) keep the desktop shell with the collapsed
 sidebar as the natural mid-size layout. Hover-dependent affordances
 gate on `@media (hover: hover)` rather than width.
 
 ## Waves
 
-### Wave 0 — Shell (prototype, shipped on this branch)
+### Wave 0: Shell (prototype, shipped on this branch)
 
 - `MobileNav` bottom tab bar from the shared `nav_model`, safe-area
   padding, active-route indicator. Sidebar hidden below `md`.
@@ -51,22 +52,200 @@ gate on `@media (hover: hover)` rather than width.
 - Dashboard hero row stacks: full-width 16:9 preview over a
   fixed-height favorites panel, splitter hidden.
 
-### Wave 1 — Pointer-event migration
+### Wave 1: Pointer-event migration
 
-Convert drag surfaces from mouse events to pointer events with
-`setPointerCapture` and `touch-action: none` on the drag origin:
+Shipped 2026-10-10. Every drag, resize, and press-hold control runs on
+pointer events. The original plan, for reference: convert drag surfaces
+from mouse events to pointer events with `setPointerCapture` and
+`touch-action: none` on the drag origin, covering the color wheel, the
+resize handles and dashboard splitter, Studio zone drag and resize, and a
+check of native range sliders.
 
-- `color_wheel.rs` (the flagship touch surface)
-- `resize_handle.rs`, dashboard splitter
-- `layout_canvas.rs` zone drag/resize (Studio)
-- range sliders already work via native inputs; verify thumb hit areas
+The active-route matcher extraction planned alongside it had already
+landed as `route_ui::route_is_active`, which both `sidebar.rs` and
+`mobile_nav.rs` use and `tests/route_ui_tests.rs` covers.
 
-Extract the sidebar/mobile-nav active-route matcher into `nav.rs` as a
-tested pure function while touching this area. Non-drag `on:mouse*`
-uses (hover selection in the command palette, row highlight) stay
-mouse-only by design and get audited, not converted.
+#### Gesture model
 
-### Wave 2 — Per-page audits
+`crates/hypercolor-ui/src/pointer_gesture.rs` holds one model that every
+drag surface follows, with its ownership rules unit-tested in
+`tests/pointer_gesture_tests.rs`:
+
+- A press claims the gesture for its pointer and captures that pointer on
+  the pressed element. Moves and the release arrive there wherever the
+  pointer goes, so no surface needs window listeners.
+- Capture goes on the pressed element, never an ancestor. Chromium
+  retargets `click` and `dblclick` to the capture target, so capturing on
+  the Studio canvas slot would swallow the box's own click and the
+  double-click that enters a device.
+- One pointer owns a gesture. A second finger that lands mid-drag is
+  ignored outright (on the Studio canvas that includes selection), which
+  keeps every surface single-finger and pinch-free.
+- A release commits. So does releasing the pressing button while another
+  stays held: pointer events report that as a `pointermove`, and the old
+  `mouseup` handlers ended the drag there. `pointercancel`, or a capture
+  lost before the release, cancels: the surface restores its press-time
+  state (geometry, color, rect, or panel size) without a geometry edit in
+  history. A gesture whose end never arrived (the owner re-presses, or no
+  longer holds capture) is rolled back on the next press instead of
+  locking the surface.
+- An element that leaves the DOM mid-drag loses capture to the document,
+  not to itself. The Studio canvas (Escape clears the selection and with
+  it the resize handles) and the layout workspace splitters (rendered
+  under `Show`) therefore cancel from a window `lostpointercapture`
+  listener, removed on cleanup.
+- The color popover stays open under a live wheel drag: the wheel marks
+  its canvas with `data-color-wheel-dragging`, and the popover's
+  outside-press and scroll dismissal skip while it is set, so a second
+  finger landing outside cannot unmount the wheel mid-drag.
+- A control that unmounts mid-drag because its effect or page changed
+  drops the gesture without rolling back, as the mouse handlers did.
+  Rolling back there would write through the control session, which
+  targets whichever effect is active by then; a correct rollback needs
+  delivery bound to the press-time target that outlives the session.
+- Drag surfaces set `touch-action: none`, so the browser never turns a
+  drag into a pan or zoom.
+- Mouse and pen presses cancel their default actions, as the old
+  `mousedown` handlers did, which keeps text selection and focus moves
+  out of drags. Touch presses keep theirs: in Chromium, cancelling a
+  touch `pointerdown` gives the tap's `click` a `detail` of 0 and
+  suppresses `dblclick`, which broke double-tap until QA caught it.
+- Outside-press dismissal (color picker, control dropdowns, preset menu,
+  component picker, dashboard layout menu) listens for `pointerdown`.
+  A drag surface that cancels `pointerdown` suppresses the compatibility
+  `mousedown` even for a real mouse, so `mousedown` dismissal would stop
+  closing popovers whenever a drag began.
+- On coarse pointers the cursor-sized handles (Studio box corners,
+  viewport picker grips, splitters) get an invisible grab margin through
+  the `touch-grab` class: about 8px past a bordered handle's edge and
+  10px past a borderless splitter's. Fine pointers are unchanged.
+
+#### Census
+
+Counted in `crates/hypercolor-ui/src`:
+
+| Measure | Before (main 67387466a) | After |
+| --- | --- | --- |
+| `on:mouse*` handlers | 32 | 8, all hover-only |
+| Window or document mouse listeners | 11 | 0 |
+| `on:touch*` handlers | 3 | 0 |
+| `on:pointer*` and capture handlers | 5 | 49 |
+| Drag callbacks typed `MouseEvent` | 2 | 0 |
+
+Six of those eleven, the drag listeners in the resize handle, the
+viewport picker, and the layout workspace, also leaked. Leptos 0.8's
+`window_event_listener` handle neither removes its listener on drop nor
+registers a cleanup, and the old code kept the handles only as unused
+bindings, so every mount added listeners that were never removed. The
+five dismissal listeners went through leptos-use, which cleans up. The
+Studio canvas `resize` listener, the layout workspace's undo shortcuts,
+and the dashboard's fullscreen Escape handler leaked the same way and
+are now removed on cleanup too; a stale undo shortcut used to panic on
+the next Ctrl+Z after leaving Studio.
+
+No interactive control uses `on:mouse*`. The eight survivors are hover
+affordances that a tap neither needs nor breaks; on touch, the
+compatibility mouse events from a tap leave the last-tapped item lightly
+highlighted:
+
+- `layout_canvas.rs`, box `mouseenter`/`mouseleave`: the zone tree mirrors
+  the box under the cursor.
+- `shell.rs`, command palette rows, two `mousemove`: hover moves the
+  keyboard highlight; a tap still runs the row through `click`.
+- `pages/studio/device_card.rs`, two `mouseenter`/`mouseleave` pairs:
+  hovering a device card highlights its outputs.
+
+Window and document pointer listeners that remain:
+
+- Five `pointerdown` outside-press dismissal handlers. Detecting a press
+  outside a popover needs a document or window listener by definition.
+- Two `lostpointercapture` window listeners (Studio canvas, layout
+  workspace splitters), for captured elements that leave the DOM
+  mid-drag. Both are removed on cleanup.
+- `layout_zone_properties.rs`, window `pointerup` and `pointercancel`
+  (unchanged): native range inputs own their drag, and these only close
+  the undo bracket that a slider press opens, wherever the release lands.
+
+Drag surfaces outside this wave's pointer-event scope, all HTML5 drag and
+drop rather than mouse handlers:
+
+- Dashboard panel reorder (`pages/dashboard/panel_frame.rs`). Touch
+  support depends on each mobile browser's drag-and-drop support and is
+  unverified; Wave 2's dashboard audit owns a pointer-driven reorder if
+  phones need one. Show, hide, width, and reset remain plain buttons.
+- Studio palette cards (`layout_palette/devices.rs`, `zone_rows.rs`) set
+  drag data that nothing reads, so the drag is a no-op on every input.
+- Media library file drop (`pages/media.rs`) is an operating-system file
+  drop; the upload button covers touch.
+
+#### Touch QA matrix
+
+Run 2026-10-10 in HeadlessChrome 146 driven over CDP: real touch input
+through `Input.dispatchTouchEvent` with touch emulation on (so
+`pointer: coarse` matches), and real mouse input through
+`Input.dispatchMouseEvent`. The UI ran against an isolated daemon built
+without drivers, in its own network namespace with throwaway config and
+data directories. Studio used a twelve-output scene fixture, as the e2e
+Studio specs do.
+
+| Surface | Check | Touch | Mouse |
+| --- | --- | --- | --- |
+| Studio canvas, box | Drag moves and commits one undo step; page does not scroll | Pass | Pass |
+| Studio canvas, box | Release far outside the canvas commits at the clamped edge, selection kept | | Pass |
+| Studio canvas, box | Cancel mid-drag restores geometry, no history entry | Pass | |
+| Studio canvas, box | Second finger mid-drag ignored (no move, no selection) | Pass | |
+| Studio canvas, box | Tap or click selects; empty-canvas click deselects | Pass | Pass |
+| Studio canvas, box | Double-tap or double-click enters the device without nudging | Pass | Pass |
+| Studio canvas, box | Shift-press toggles selection without dragging | | Pass |
+| Studio canvas, box | Releasing the left button while the right stays held commits there | | Pass |
+| Studio canvas, handles | Corner resize grows the box | Pass | Pass |
+| Studio canvas, handles | Grab margin on coarse pointers only | Pass | Pass |
+| Studio canvas, handles | Escape mid-resize removes the handles and cancels; later moves paint nothing | | Pass |
+| Studio zone-tree splitter | Drag resizes (touch cancel restores) | Pass | Pass |
+| Studio bottom-panel splitter | Drag resizes (touch cancel restores; mouse release persists) | Pass | Pass |
+| Studio zone properties | Range slider drag is one undoable edit | Pass | |
+| Color wheel | Ring drag changes the color (touch also square, with no page scroll) | Pass | Pass |
+| Color wheel | Drag keeps tracking outside the canvas and popover | Pass | Pass |
+| Color wheel | Cancel mid-drag restores the press-time color | Pass | |
+| Color wheel | A second finger pressing outside mid-drag leaves the popover open; release commits; a later outside tap dismisses | Pass | |
+| Color wheel | Second finger does not steer | Pass | |
+| Color wheel | Press outside dismisses; release outside does not | Pass | Pass |
+| Color wheel at 390x844 | All of the touch checks above | Pass | |
+| Effects panel splitter | Drag resizes; cancel restores | Pass | |
+| Effects page | Pressing a drag surface still closes an open dropdown | | Pass |
+| Viewport picker (Screen Cast) | Grip resize and frame move | Pass | Pass |
+| Viewport picker | Cancel mid-move restores the rect; second finger ignored | Pass | |
+| Viewport picker | Release far outside ends cleanly, no stuck grab cursor or selection | | Pass |
+| Dashboard splitter (1024x768) | Drag resizes and clears the body resize class (touch cancel restores) | Pass | Pass |
+| Dashboard layout menu | Press outside dismisses | Pass | Pass |
+| Dashboard at 390x844 | Splitter hidden; swipe over the preview scrolls the page; no horizontal scroll | Pass | |
+
+The e2e Studio, Effects, and UI Playwright specs (35 tests) also pass;
+their synthetic Studio drags now dispatch `PointerEvent`s.
+
+Not exercised by the matrix:
+
+- Interactive canvas preview input. No interactive effect runs on a
+  driverless daemon. The canvas now sets `touch-action: none` while
+  interactive, holds a button down while any pointer holds it,
+  reconciles each pointer's buttons from the event's `buttons` mask (so a
+  chorded press or release arriving as a `pointermove` reaches the
+  effect), and releases a pointer's buttons when it is cancelled or loses
+  capture.
+  The button bookkeeping (`HeldButtons`) is unit-tested; the wiring is
+  covered by code review only.
+- The full-page layout workspace's palette-column splitter. Studio mounts
+  the workspace in compact mode only, so nothing renders it today.
+- The Screen Cast picker's preview box renders 2px tall when no aspect
+  ratio is passed (a separate, pre-existing bug), so QA gave it a 16:9
+  aspect ratio in the page to exercise the drag.
+
+Owed before Wave 1 is closed: the real-device pass from Verification
+below, on at least one Android Chrome phone and one iOS Safari phone,
+over the same matrix. Emulation cannot judge finger size, palm
+rejection, or system edge gestures that fire `pointercancel`.
+
+### Wave 2: Per-page audits
 
 Page by page below `md`, in priority order: Dashboard, Effects,
 Devices, Settings, Media, Studio. Effects and control panels are the
@@ -89,14 +268,14 @@ Wave 2 also owns three decisions the shell prototype surfaces:
   390px phone, and every extension nav item shrinks all of them.
   Probably a "More" overflow tab past six.
 
-### Wave 3 — Touch polish
+### Wave 3: Touch polish
 
 44px minimum touch targets, `overscroll-behavior` on scroll containers,
 tap-highlight suppression with visible `:active` states, hover-only
 affordances gated on `(hover: hover)`, momentum scrolling checks on
 iOS Safari and Android Chrome.
 
-### Wave 4 — PWA affordances
+### Wave 4: PWA affordances
 
 Web app manifest, maskable icons, standalone display, theme color.
 Constraint to document in the README: a plain-http LAN origin is not a
@@ -113,7 +292,7 @@ with actual touch input, not emulated mouse events.
 
 ## Non-Goals
 
-- Native app wrappers (Tauri mobile) — revisit only if LAN discovery
+- Native app wrappers (Tauri mobile): revisit only if LAN discovery
   or app-store presence becomes a real want.
 - Daemon TLS.
 - Mobile-specific feature removal: every capability except the Studio

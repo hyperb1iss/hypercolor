@@ -1,11 +1,17 @@
 //! HSV color wheel picker — hue ring + saturation/value square.
 //!
 //! Renders on an HTML canvas via `web-sys::ImageData` pixel manipulation.
-//! Uses internal HSV state to avoid reactive round-trip flicker.
-//! A transparent drag overlay captures mouse events outside the canvas bounds.
+//! Uses internal HSV state to avoid reactive round-trip flicker. Drags
+//! capture their pointer on the canvas, so mouse, pen, and touch keep
+//! tracking outside its bounds.
 
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
+
+use crate::pointer_gesture::{
+    GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
+    suppress_press_defaults,
+};
 
 use hypercolor_color::Hsv as KernelHsv;
 use hypercolor_leptos_ext::canvas::{context_2d, image_data_rgba};
@@ -74,6 +80,14 @@ impl Hsv {
 enum DragRegion {
     Ring,
     Square,
+}
+
+/// An in-flight wheel drag: the region the press landed in, and the color
+/// to put back if the gesture is cancelled.
+#[derive(Clone, Copy)]
+struct WheelDrag {
+    region: DragRegion,
+    start: Hsv,
 }
 
 fn hit_test(x: f64, y: f64) -> Option<DragRegion> {
@@ -177,9 +191,27 @@ fn draw_thumb(ctx: &web_sys::CanvasRenderingContext2d, x: f64, y: f64, fill_hex:
 
 // ── Leptos component ─────────────────────────────────────────────────────────
 
+/// True while some color wheel on the page has a drag in progress. The
+/// color popover's outside-press and scroll dismissal check it, so a second
+/// finger landing outside, or a page scroll, cannot unmount the wheel under
+/// a live drag.
+#[must_use]
+pub fn color_wheel_drag_active() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| {
+            document
+                .query_selector("[data-color-wheel-dragging]")
+                .ok()
+                .flatten()
+        })
+        .is_some()
+}
+
 /// HSV color wheel with hue ring + saturation/value square.
 /// Manages its own HSV state internally to avoid reactive round-trips.
-/// A transparent overlay captures drag events even when the cursor leaves the canvas.
+/// A drag captures its pointer on the canvas and keeps tracking outside it;
+/// a cancelled drag restores the color from before the press.
 #[component]
 pub fn ColorWheel(
     /// Current hex color (e.g. "#e135ff") — synced from parent when not dragging
@@ -192,12 +224,15 @@ pub fn ColorWheel(
 
     // Internal HSV state — source of truth during interaction
     let (hsv_state, set_hsv_state) = signal(Hsv::from_hex(&color.get_untracked()));
-    let (dragging, set_dragging) = signal(Option::<DragRegion>::None);
+    let gesture = StoredValue::new(PointerGesture::<WheelDrag>::new());
+    // Mirrors `gesture.is_active()` onto the canvas so the popover's
+    // dismissal handlers can see a live drag (see `color_wheel_drag_active`).
+    let (dragging, set_dragging) = signal(false);
 
     // Sync from parent color signal (e.g. swatch click, hex input) — guarded during drag
     Effect::new(move |_| {
         let hex = color.get();
-        if dragging.get_untracked().is_none() {
+        if !gesture.with_value(PointerGesture::is_active) {
             set_hsv_state.set(Hsv::from_hex(&hex));
         }
     });
@@ -248,18 +283,66 @@ pub fn ColorWheel(
         on_change.run(new_hsv.to_hex());
     };
 
-    let on_pointer_down = move |client_x: f64, client_y: f64| {
-        if let Some((x, y)) = get_canvas_coords(client_x, client_y)
-            && let Some(region) = hit_test(x, y)
-        {
-            set_dragging.set(Some(region));
-            update_from_pos(x, y, region);
+    let restore = move |drag: WheelDrag| {
+        set_dragging.set(false);
+        set_hsv_state.set(drag.start);
+        on_change.run(drag.start.to_hex());
+    };
+
+    let on_pointer_down = move |ev: web_sys::PointerEvent| {
+        suppress_press_defaults(&ev);
+        let Some(canvas) = canvas_ref.get_untracked() else {
+            return;
+        };
+        let canvas: web_sys::Element = canvas.into();
+        let pointer_id = ev.pointer_id();
+        let press = gesture
+            .try_update_value(|g| {
+                g.press(pointer_id, |owner, _| holds_capture(Some(&canvas), owner))
+            })
+            .unwrap_or(Press::Busy);
+        match press {
+            Press::Busy => return,
+            Press::Stale(stale) => restore(stale),
+            Press::Ready => {}
+        }
+        let Some((x, y)) = get_canvas_coords(f64::from(ev.client_x()), f64::from(ev.client_y()))
+        else {
+            return;
+        };
+        let Some(region) = hit_test(x, y) else {
+            return;
+        };
+        capture_pointer(&canvas, &ev);
+        let start = hsv_state.get_untracked();
+        let button = ev.button();
+        gesture.update_value(|g| g.start(pointer_id, button, WheelDrag { region, start }));
+        set_dragging.set(true);
+        update_from_pos(x, y, region);
+    };
+
+    let on_pointer_end = move |ev: web_sys::PointerEvent, how: PointerEnd| {
+        let ended = gesture
+            .try_update_value(|g| g.end(ev.pointer_id(), how))
+            .flatten();
+        match ended {
+            Some((GestureEnd::Cancel, drag)) => restore(drag),
+            Some((GestureEnd::Commit, _)) => set_dragging.set(false),
+            None => {}
         }
     };
 
-    let on_pointer_move = move |client_x: f64, client_y: f64| {
-        if let Some(region) = dragging.get_untracked()
-            && let Some((x, y)) = get_canvas_coords(client_x, client_y)
+    let on_pointer_move = move |ev: web_sys::PointerEvent| {
+        if gesture.with_value(|g| g.press_released(ev.pointer_id(), ev.buttons())) {
+            on_pointer_end(ev, PointerEnd::Up);
+            return;
+        }
+        let Some(region) = gesture.with_value(|g| g.state(ev.pointer_id()).map(|drag| drag.region))
+        else {
+            return;
+        };
+        ev.prevent_default();
+        if let Some((x, y)) = get_canvas_coords(f64::from(ev.client_x()), f64::from(ev.client_y()))
         {
             update_from_pos(x, y, region);
         }
@@ -272,37 +355,14 @@ pub fn ColorWheel(
                 width=CANVAS_SIZE
                 height=CANVAS_SIZE
                 class="cursor-crosshair select-none touch-none rounded-full"
+                data-color-wheel-dragging=move || dragging.get().then_some("true")
                 style=format!("width: {}px; height: {}px;", CANVAS_SIZE, CANVAS_SIZE)
-                on:mousedown=move |ev| {
-                    ev.prevent_default();
-                    on_pointer_down(ev.client_x() as f64, ev.client_y() as f64);
-                }
-                on:touchstart=move |ev| {
-                    ev.prevent_default();
-                    if let Some(touch) = ev.touches().get(0) {
-                        on_pointer_down(touch.client_x() as f64, touch.client_y() as f64);
-                    }
-                }
-                on:touchmove=move |ev| {
-                    ev.prevent_default();
-                    if let Some(touch) = ev.touches().get(0) {
-                        on_pointer_move(touch.client_x() as f64, touch.client_y() as f64);
-                    }
-                }
-                on:touchend=move |_| set_dragging.set(None)
+                on:pointerdown=on_pointer_down
+                on:pointermove=on_pointer_move
+                on:pointerup=move |ev| on_pointer_end(ev, PointerEnd::Up)
+                on:pointercancel=move |ev| on_pointer_end(ev, PointerEnd::Cancel)
+                on:lostpointercapture=move |ev| on_pointer_end(ev, PointerEnd::LostCapture)
             />
-
-            // Drag overlay — covers viewport during drag to capture events outside canvas
-            <Show when=move || dragging.get().is_some()>
-                <div
-                    class="fixed inset-0 z-[100] cursor-crosshair"
-                    on:mousemove=move |ev| {
-                        ev.prevent_default();
-                        on_pointer_move(ev.client_x() as f64, ev.client_y() as f64);
-                    }
-                    on:mouseup=move |_| set_dragging.set(None)
-                />
-            </Show>
         </div>
     }
 }

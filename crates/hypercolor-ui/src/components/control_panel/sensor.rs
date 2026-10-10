@@ -171,7 +171,7 @@ pub(super) fn render_sensor_dropdown(
                                        dropdown-glow animate-enter-down
                                        overflow-y-auto scrollbar-dropdown"
                                 style=move || dropdown_panel_style(trigger_ref.get())
-                                on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
+                                on:pointerdown=|ev: leptos::ev::PointerEvent| ev.stop_propagation()
                             >
                                 <div class="sticky top-0 border-b border-edge-subtle/60 bg-surface-overlay/98 px-2 py-1.5">
                                     <input

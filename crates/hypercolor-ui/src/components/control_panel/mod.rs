@@ -19,6 +19,7 @@ use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, Prev
 use hypercolor_types::viewport::ViewportRect;
 
 use crate::app::WsContext;
+use crate::components::color_wheel::color_wheel_drag_active;
 use crate::icons::*;
 
 mod boolean;
@@ -428,8 +429,12 @@ fn ControlWidget(
     }
 }
 
-/// Install a window-level mousedown listener that closes the color picker when
-/// clicking outside `.color-picker-popover` or `.swatch-glow`.
+/// Install a window-level pointerdown listener that closes the color picker
+/// when a press lands outside `.color-picker-popover` or `.swatch-glow`.
+///
+/// Outside-press dismissal listens for `pointerdown`, never `mousedown`:
+/// drag surfaces cancel `pointerdown`, which suppresses the compatibility
+/// `mousedown`, and a touch only produces one after the finger lifts.
 fn install_click_outside_handler(
     expanded_picker_id: ReadSignal<Option<String>>,
     set_expanded: WriteSignal<Option<String>>,
@@ -440,9 +445,14 @@ fn install_click_outside_handler(
 
     let _ = use_event_listener_with_options(
         win,
-        ev::mousedown,
-        move |ev: leptos::ev::MouseEvent| {
+        ev::pointerdown,
+        move |ev: leptos::ev::PointerEvent| {
             if expanded_picker_id.get_untracked().is_none() {
+                return;
+            }
+            // A second finger landing outside must not unmount the wheel
+            // under a drag the first finger is still making.
+            if color_wheel_drag_active() {
                 return;
             }
             let inside = ev.target().is_some_and(|target| {
@@ -458,8 +468,9 @@ fn install_click_outside_handler(
     );
 }
 
-/// Install a one-time document-level mousedown listener that closes a specific
-/// control dropdown when clicking outside its container.
+/// Install a one-time document-level pointerdown listener that closes a
+/// specific control dropdown when a press lands outside its container. See
+/// [`install_click_outside_handler`] for why this is not `mousedown`.
 pub(super) fn install_control_dropdown_outside_handler(
     class_name: String,
     is_open: ReadSignal<bool>,
@@ -471,8 +482,8 @@ pub(super) fn install_control_dropdown_outside_handler(
     let selector = format!(".{class_name}");
     let _ = use_event_listener_with_options(
         doc,
-        ev::mousedown,
-        move |ev: leptos::ev::MouseEvent| {
+        ev::pointerdown,
+        move |ev: leptos::ev::PointerEvent| {
             if !is_open.get_untracked() {
                 return;
             }
@@ -574,7 +585,7 @@ pub(super) fn install_scroll_close_handler_for_picker(
         win,
         ev::scroll,
         move |_: web_sys::Event| {
-            if expanded_picker_id.get_untracked().is_none() {
+            if expanded_picker_id.get_untracked().is_none() || color_wheel_drag_active() {
                 return;
             }
             set_expanded.set(None);

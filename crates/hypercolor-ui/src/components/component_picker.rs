@@ -73,6 +73,9 @@ fn CategoryShape(category: String, size: u32) -> impl IntoView {
 
 // ── Outside click handler ───────────────────────────────────────────────────
 
+/// Close the picker when a press lands outside it. Pointer, not mouse: a
+/// press that starts a drag cancels `pointerdown`, which suppresses
+/// `mousedown`.
 fn install_outside_click_handler(set_open: WriteSignal<bool>) {
     let Some(doc) = browser_document() else {
         return;
@@ -80,8 +83,8 @@ fn install_outside_click_handler(set_open: WriteSignal<bool>) {
 
     let _ = use_event_listener_with_options(
         doc,
-        ev::mousedown,
-        move |ev: leptos::ev::MouseEvent| {
+        ev::pointerdown,
+        move |ev: leptos::ev::PointerEvent| {
             let inside = ev.target().is_some_and(|target| {
                 target_closest(Some(target), ".component-picker, .component-picker-panel")
             });
@@ -271,7 +274,7 @@ pub fn ComponentPicker(
                             class="component-picker-panel fixed flex flex-col rounded-xl border border-edge-subtle
                                    bg-surface-overlay shadow-xl dropdown-glow animate-enter-fade overflow-hidden"
                             style=move || dropdown_panel_style(trigger_ref.get())
-                            on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
+                            on:pointerdown=|ev: leptos::ev::PointerEvent| ev.stop_propagation()
                         >
                             <div class="p-1.5 border-b border-edge-subtle">
                                 <div class="relative">

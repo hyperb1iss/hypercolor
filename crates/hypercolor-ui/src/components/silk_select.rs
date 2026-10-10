@@ -245,7 +245,7 @@ pub fn SilkSelect(
                             id=move || listbox_id_attr.get_value()
                             role="listbox"
                             style=move || dropdown_panel_style(trigger_ref.get())
-                            on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
+                            on:pointerdown=|ev: leptos::ev::PointerEvent| ev.stop_propagation()
                         >
                             {move || options.get().into_iter().enumerate().map(|(index, (val, label))| {
                                 let on_pick = val.clone();

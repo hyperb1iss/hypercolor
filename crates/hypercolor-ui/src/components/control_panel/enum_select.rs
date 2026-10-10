@@ -107,7 +107,7 @@ pub(super) fn render_dropdown(
                                        dropdown-glow animate-enter-down
                                        overflow-y-auto scrollbar-dropdown"
                                 style=move || dropdown_panel_style(trigger_ref.get())
-                                on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
+                                on:pointerdown=|ev: leptos::ev::PointerEvent| ev.stop_propagation()
                             >
                                 {move || dropdown_labels.with_value(|labels| {
                                     labels.iter().map(|label| {

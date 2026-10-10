@@ -14,6 +14,11 @@ use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 /// to the cached `HtmlElement`s without going through the layout signal.
 pub(super) struct DragRuntime {
     pub(super) kind: InteractionKind,
+    /// The element holding pointer capture for this interaction: the box or
+    /// resize handle that was pressed.
+    pub(super) capture: web_sys::Element,
+    /// Every zone as it stood at the press, for a cancelled interaction.
+    pub(super) base_zones: Vec<Output>,
     pub(super) current_zones: Vec<Output>,
     /// `data-zone-id` → element. Captured at interaction start so the RAF
     /// loop never has to query the DOM.
@@ -22,8 +27,8 @@ pub(super) struct DragRuntime {
     /// be processed by the next RAF tick.
     pub(super) pending_mouse: Cell<Option<NormalizedPosition>>,
     /// Have any frames been processed yet for this interaction?
-    /// Tracks whether we've actually mutated zones so mouseup can decide
-    /// between a no-op release and a real commit.
+    /// Tracks whether we've actually mutated zones so the release can
+    /// decide between a no-op and a real commit.
     pub(super) moved: Cell<bool>,
     /// Last preview push timestamp (browser monotonic ms) for throttling.
     pub(super) last_preview_push_ms: Cell<f64>,
@@ -163,10 +168,18 @@ impl DragRuntime {
         changed
     }
 
+    /// Put every painted element back to its geometry at the press. The
+    /// layout signal never saw the in-flight geometry, so repainting the
+    /// base snapshot is the whole rollback.
+    pub(super) fn revert(&mut self) {
+        self.current_zones.clone_from(&self.base_zones);
+        self.paint_affected();
+    }
+
     /// Recompute the inline `style` attribute on every cached element to
     /// reflect the current zone geometry. This is the only DOM write per
     /// frame — it sets the same string Leptos would have produced, so the
-    /// reactive flush at mouseup is a clean handoff (matching strings,
+    /// reactive flush at release is a clean handoff (matching strings,
     /// no extra paint).
     fn paint_affected(&self) {
         for zone in &self.current_zones {
