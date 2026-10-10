@@ -15,7 +15,8 @@ use hypercolor_types::portable::ReviewedSerial;
 use hypercolor_types::portable::{PortableIdentityClaim, SerialNormalizerRegistry};
 use hypercolor_types::usb::reported_manufacturer;
 
-use super::unclaimed::{UnclaimedDeviceStore, UsbObservation};
+use super::hid_usage::{HidUsageIndex, enumerate_off_executor};
+use super::unclaimed::{USB_CLASS_HID, UnclaimedDeviceStore, UsbObservation};
 
 /// The serial normalizations reviewed for cross-OS stability.
 ///
@@ -173,7 +174,10 @@ impl UsbScanner {
                 self.enabled_driver_ids.as_ref(),
             );
             if self.unclaimed.is_some() {
-                observations.push(usb_observation(&usb, descriptor));
+                observations.push(PendingObservation {
+                    observation: usb_observation(&usb, descriptor),
+                    hid_interfaces: hid_interface_numbers(&usb),
+                });
             }
             let Some(descriptor) = descriptor else {
                 continue;
@@ -242,17 +246,86 @@ impl UsbScanner {
         }
 
         if let Some(store) = &self.unclaimed {
-            store.replace_snapshot(observations);
+            store.replace_snapshot(with_hid_usage_pages(observations).await);
         }
 
         Ok(discovered)
     }
 }
 
+/// An observation still waiting for its HID usage pages, with the HID
+/// interface numbers the join checks coverage against.
+struct PendingObservation {
+    observation: UsbObservation,
+    hid_interfaces: Vec<u8>,
+}
+
+/// Attach HID usage pages to every observation whose verdict they can
+/// change, enumerating the HID stack at most once per scan and not at all
+/// when no device needs it.
+async fn with_hid_usage_pages(pending: Vec<PendingObservation>) -> Vec<UsbObservation> {
+    if !pending
+        .iter()
+        .any(|entry| entry.observation.wants_hid_usage_pages())
+    {
+        return pending.into_iter().map(|entry| entry.observation).collect();
+    }
+    attach_hid_usage_pages(pending, &enumerate_off_executor().await)
+}
+
+/// Join `index` onto the observations that want usage pages. Each one's
+/// twin check runs against every other device the same scan saw.
+fn attach_hid_usage_pages(
+    pending: Vec<PendingObservation>,
+    index: &HidUsageIndex,
+) -> Vec<UsbObservation> {
+    let pages: Vec<Vec<u16>> = pending
+        .iter()
+        .enumerate()
+        .map(|(position, entry)| {
+            let observation = &entry.observation;
+            if !observation.wants_hid_usage_pages() {
+                return Vec::new();
+            }
+            let has_twin = pending.iter().enumerate().any(|(other_position, other)| {
+                other_position != position
+                    && observation.is_hid_twin_of(
+                        other.observation.vendor_id,
+                        other.observation.product_id,
+                        other.observation.serial.as_deref(),
+                    )
+            });
+            index.usage_pages_for(observation, &entry.hid_interfaces, has_twin)
+        })
+        .collect();
+
+    pending
+        .into_iter()
+        .zip(pages)
+        .map(|(entry, hid_usage_pages)| UsbObservation {
+            hid_usage_pages,
+            ..entry.observation
+        })
+        .collect()
+}
+
+/// Interface numbers of the device's HID interfaces, sorted and unique.
+fn hid_interface_numbers(usb: &nusb::DeviceInfo) -> Vec<u8> {
+    let mut numbers: Vec<u8> = usb
+        .interfaces()
+        .filter(|interface| interface.class() == USB_CLASS_HID)
+        .map(nusb::InterfaceInfo::interface_number)
+        .collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    numbers
+}
+
 /// Everything the unclaimed inventory wants to know about one USB device.
 ///
 /// Shared with the hotplug watcher so a device arriving mid-session is
-/// recorded with the same shape a full scan would give it.
+/// recorded with the same shape a full scan would give it. HID usage pages
+/// start unknown; the caller joins them when they could matter.
 pub(crate) fn usb_observation(
     usb: &nusb::DeviceInfo,
     descriptor: Option<&'static DeviceDescriptor>,
@@ -272,6 +345,7 @@ pub(crate) fn usb_observation(
         device_class: usb.class(),
         interface_classes: usb.interfaces().map(nusb::InterfaceInfo::class).collect(),
         descriptor_driver_id: descriptor.map(|descriptor| descriptor.driver_id().into_owned()),
+        hid_usage_pages: Vec::new(),
     }
 }
 
@@ -487,6 +561,102 @@ mod tests {
         assert!(descriptor.is_placeholder_serial("  TL_LCDV0.1 "));
         assert!(descriptor.is_placeholder_serial("tl_lcdv0.1"));
         assert!(!descriptor.is_placeholder_serial("TL_LCDV0.2"));
+    }
+
+    fn pending(
+        product_id: u16,
+        bus_path: &str,
+        interface_classes: &[u8],
+        driver: Option<&str>,
+    ) -> PendingObservation {
+        PendingObservation {
+            observation: UsbObservation {
+                vendor_id: 0x1532,
+                product_id,
+                manufacturer: None,
+                product: None,
+                serial: None,
+                bus_path: Some(bus_path.to_owned()),
+                device_class: 0,
+                interface_classes: interface_classes.to_vec(),
+                descriptor_driver_id: driver.map(ToOwned::to_owned),
+                hid_usage_pages: Vec::new(),
+            },
+            hid_interfaces: vec![0],
+        }
+    }
+
+    /// One Consumer collection per listed unit, with no USB path, as
+    /// Windows and macOS report them.
+    fn consumer_collections(product_ids: &[u16]) -> HidUsageIndex {
+        HidUsageIndex::new(
+            product_ids
+                .iter()
+                .map(
+                    |&product_id| hypercolor_hal::transport::hidapi::HidCollectionInfo {
+                        vendor_id: 0x1532,
+                        product_id,
+                        serial: None,
+                        usb_path: None,
+                        interface_number: Some(0),
+                        usage_page: 0x000C,
+                        usage: 0x0001,
+                    },
+                )
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn identical_units_in_one_scan_leave_each_other_unknown() {
+        let joined = attach_hid_usage_pages(
+            vec![
+                pending(0x48F0, "1-1.2", &[0x03], None),
+                pending(0x48F0, "1-1.3", &[0x03], None),
+            ],
+            &consumer_collections(&[0x48F0, 0x48F0]),
+        );
+
+        assert!(
+            joined
+                .iter()
+                .all(|observation| observation.hid_usage_pages.is_empty())
+        );
+    }
+
+    #[test]
+    fn a_lone_unit_joins_even_beside_other_models() {
+        let joined = attach_hid_usage_pages(
+            vec![
+                pending(0x48F0, "1-1.2", &[0x03], None),
+                pending(0x48F1, "1-1.3", &[0x03], None),
+            ],
+            &consumer_collections(&[0x48F0]),
+        );
+
+        assert_eq!(joined[0].hid_usage_pages, vec![0x000C]);
+        assert!(
+            joined[1].hid_usage_pages.is_empty(),
+            "no collection names the second model"
+        );
+    }
+
+    #[test]
+    fn devices_the_pages_cannot_affect_are_left_alone() {
+        let joined = attach_hid_usage_pages(
+            vec![
+                pending(0x48F0, "1-1.2", &[0x03], Some("razer")),
+                pending(0x48F1, "1-1.3", &[0x03, 0xFF], None),
+            ],
+            &consumer_collections(&[0x48F0, 0x48F1]),
+        );
+
+        assert!(
+            joined
+                .iter()
+                .all(|observation| observation.hid_usage_pages.is_empty()),
+            "a descriptor match or a non-HID interface already decides the verdict"
+        );
     }
 
     #[test]

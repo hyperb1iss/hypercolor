@@ -8,8 +8,9 @@
 //! event. The store decides what counts as unclaimed from the set of
 //! enabled driver ids the daemon hands it, so a device whose descriptor
 //! exists but whose driver is disabled shows up with `claimable_by` set.
-//! Hubs and audio-only functions with no descriptor stay out of the view
-//! (see [`UsbObservation::cannot_be_lighting`]).
+//! Devices with no descriptor that cannot carry lighting (hubs, audio,
+//! storage, radios, cameras, and HID functions that only report media
+//! keys) stay out of the view (see [`UsbObservation::cannot_be_lighting`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
@@ -42,32 +43,115 @@ pub struct UsbObservation {
     pub device_class: u8,
     pub interface_classes: Vec<u8>,
     pub descriptor_driver_id: Option<String>,
+    /// Usage pages of the device's HID top-level collections, sorted and
+    /// deduplicated, as the host HID stack reports them.
+    ///
+    /// Empty means unknown: the join fills this only when the HID stack
+    /// accounted for every HID interface, and an unknown page list never
+    /// hides a device.
+    pub hid_usage_pages: Vec<u16>,
 }
 
-/// USB class code for audio functions.
-const USB_CLASS_AUDIO: u8 = 0x01;
+/// USB class code for CDC communications, the control half of a serial port.
+const USB_CLASS_CDC: u8 = 0x02;
+/// USB class code for HID.
+pub(crate) const USB_CLASS_HID: u8 = 0x03;
 /// USB class code for hubs.
 const USB_CLASS_HUB: u8 = 0x09;
+/// USB class code for CDC data, the bulk half of a serial port.
+const USB_CLASS_CDC_DATA: u8 = 0x0A;
+/// USB class code for vendor-specific interfaces.
+const USB_CLASS_VENDOR: u8 = 0xFF;
+
+/// Interface classes a host can drive lighting through: HID reports, a CDC
+/// serial port, or a vendor-specific protocol.
+const LIGHTING_CAPABLE_CLASSES: [u8; 4] = [
+    USB_CLASS_CDC,
+    USB_CLASS_HID,
+    USB_CLASS_CDC_DATA,
+    USB_CLASS_VENDOR,
+];
+
+/// HID usage page for consumer controls: media keys, volume, transport.
+const HID_USAGE_PAGE_CONSUMER: u16 = 0x000C;
 
 impl UsbObservation {
-    /// Whether the descriptors alone rule out lighting hardware: a hub, or
-    /// a function whose every interface is USB audio.
+    /// Whether the descriptors alone rule out lighting hardware.
     ///
-    /// Lighting controllers speak HID, vendor-specific, or serial
-    /// interfaces. A hub has none of those, and neither does a function
-    /// that is nothing but audio streaming and control (on Windows the
-    /// audio driver owns the whole function, so there is nothing to open).
-    /// RGB headsets stay visible: they expose HID beside their audio
-    /// interfaces, and that HID interface is where their lighting lives.
-    /// An empty interface list proves nothing, so only the device class
+    /// Lighting controllers speak HID, CDC serial, or a vendor-specific
+    /// protocol, so a device with none of those interfaces cannot be one.
+    /// That rules out hubs, audio-only functions (on Windows the audio
+    /// driver owns the whole function, so there is nothing to open), mass
+    /// storage, Bluetooth radios, and webcams. RGB headsets stay visible:
+    /// they expose HID beside their audio interfaces, and that HID
+    /// interface is where their lighting lives. MIDI rides the audio class,
+    /// so a pad controller that lights only over MIDI falls out here too;
+    /// the Push 2 stays visible through its vendor display interface.
+    ///
+    /// An empty interface list proves nothing, so only a hub's device class
     /// can rule a device out when the host reports no interfaces.
+    ///
+    /// A device that is nothing but HID, and whose every HID top-level
+    /// collection is Consumer (page `0x0C`), is treated as a media-key or
+    /// volume function and ruled out as well. Generic Desktop collections
+    /// never count, because Razer and others light keyboards and mice
+    /// through feature reports on exactly those collections. Consumer
+    /// collections can carry lighting too, so the rule stops at HID-only
+    /// devices: the Razer Leviathan V2 X soundbar exposes only a Consumer
+    /// collection beside its audio interfaces and takes its lighting as a
+    /// feature report on it. Usage pages cannot see feature reports, so an
+    /// unlisted HID-only device that lights through a Consumer collection
+    /// (the shape the Razer Charging Pad Chroma descriptor targets) is
+    /// ruled out along with the media keys. Unknown usage pages never rule
+    /// anything out.
     #[must_use]
     pub fn cannot_be_lighting(&self) -> bool {
-        let only = |class: u8| {
-            !self.interface_classes.is_empty()
-                && self.interface_classes.iter().all(|&found| found == class)
-        };
-        self.device_class == USB_CLASS_HUB || only(USB_CLASS_HUB) || only(USB_CLASS_AUDIO)
+        if self.device_class == USB_CLASS_HUB {
+            return true;
+        }
+        if self.interface_classes.is_empty() {
+            return false;
+        }
+        let no_lighting_interface = !self
+            .interface_classes
+            .iter()
+            .any(|class| LIGHTING_CAPABLE_CLASSES.contains(class));
+        no_lighting_interface || self.is_consumer_controls_only()
+    }
+
+    /// Whether a second attached device reporting these ids could own the
+    /// same HID collections as this one when no USB path tells them apart:
+    /// same vendor and product, and either this device reports no serial or
+    /// both report the same one.
+    #[must_use]
+    pub fn is_hid_twin_of(&self, vendor_id: u16, product_id: u16, serial: Option<&str>) -> bool {
+        self.vendor_id == vendor_id
+            && self.product_id == product_id
+            && (self.serial.is_none() || self.serial.as_deref() == serial)
+    }
+
+    /// Whether HID usage pages could change this device's verdict, so a
+    /// scan only enumerates the HID stack when some device needs it. A
+    /// descriptor match makes the pages moot.
+    pub(crate) fn wants_hid_usage_pages(&self) -> bool {
+        self.descriptor_driver_id.is_none() && self.is_hid_only()
+    }
+
+    fn is_hid_only(&self) -> bool {
+        !self.interface_classes.is_empty()
+            && self
+                .interface_classes
+                .iter()
+                .all(|&class| class == USB_CLASS_HID)
+    }
+
+    fn is_consumer_controls_only(&self) -> bool {
+        self.is_hid_only()
+            && !self.hid_usage_pages.is_empty()
+            && self
+                .hid_usage_pages
+                .iter()
+                .all(|&page| page == HID_USAGE_PAGE_CONSUMER)
     }
 
     /// Stable key for patching one observation in and out of the snapshot.
@@ -151,7 +235,7 @@ impl UnclaimedInner {
             .filter_map(|observation| match self.ownership(observation) {
                 Ownership::Claimed => None,
                 // A matching descriptor outranks class heuristics; without
-                // one, hubs and audio-only functions are just noise.
+                // one, functions that cannot carry lighting are just noise.
                 Ownership::Unclaimed(None) if observation.cannot_be_lighting() => None,
                 Ownership::Unclaimed(claimable_by) => {
                     Some(observation.clone().into_unclaimed(claimable_by))

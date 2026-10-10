@@ -18,6 +18,7 @@ fn observation(vendor_id: u16, product_id: u16) -> UsbObservation {
         interface_classes: vec![3],
         descriptor_driver_id: ProtocolDatabase::lookup(vendor_id, product_id)
             .map(|descriptor| descriptor.driver_id().to_string()),
+        hid_usage_pages: Vec::new(),
     }
 }
 

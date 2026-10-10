@@ -19,6 +19,7 @@ fn observation(vendor_id: u16, product_id: u16, bus_path: &str) -> UsbObservatio
         device_class: 0,
         interface_classes: vec![3, 3, 255],
         descriptor_driver_id: None,
+        hid_usage_pages: Vec::new(),
     }
 }
 
@@ -257,6 +258,76 @@ fn anything_with_a_controllable_interface_may_be_lighting() {
 }
 
 #[test]
+fn a_mass_storage_drive_cannot_be_lighting() {
+    let drive = with_classes(observation(0x0BC2, 0x3322, "1-1.2"), 0x00, &[0x08]);
+    assert!(drive.cannot_be_lighting());
+}
+
+#[test]
+fn a_bluetooth_radio_cannot_be_lighting() {
+    let radio = with_classes(observation(0x0489, 0xE116, "1-14"), 0xEF, &[0xE0, 0xE0]);
+    assert!(radio.cannot_be_lighting());
+}
+
+#[test]
+fn a_webcam_with_a_microphone_cannot_be_lighting() {
+    let webcam = with_classes(
+        observation(0x1532, 0x0E06, "1-1.3"),
+        0xEF,
+        &[0x0E, 0x0E, 0x01, 0x01],
+    );
+    assert!(webcam.cannot_be_lighting());
+}
+
+#[test]
+fn an_audio_interface_with_a_firmware_update_function_cannot_be_lighting() {
+    let interface = with_classes(
+        observation(0x0763, 0x400E, "1-10.4.1"),
+        0xEF,
+        &[0x01, 0x01, 0x01, 0x01, 0x01, 0xFE],
+    );
+    assert!(
+        interface.cannot_be_lighting(),
+        "DFU is not a lighting interface"
+    );
+}
+
+#[test]
+fn a_vendor_specific_device_may_be_lighting() {
+    let panel = with_classes(observation(0x1CBE, 0xA088, "1-1.4"), 0xFF, &[0xFF]);
+    assert!(!panel.cannot_be_lighting());
+}
+
+#[test]
+fn a_cdc_serial_device_may_be_lighting() {
+    let serial = with_classes(observation(0x1A86, 0x55D3, "1-1.5"), 0x02, &[0x02, 0x0A]);
+    assert!(!serial.cannot_be_lighting());
+}
+
+#[test]
+fn the_unclaimed_view_keeps_only_interfaces_that_can_carry_lighting() {
+    let store = UnclaimedDeviceStore::new();
+    store.replace_snapshot([
+        with_classes(observation(0x0BC2, 0x3322, "1-1"), 0x00, &[0x08]),
+        with_classes(observation(0x0489, 0xE116, "1-2"), 0xEF, &[0xE0, 0xE0]),
+        with_classes(
+            observation(0x1532, 0x0E06, "1-3"),
+            0xEF,
+            &[0x0E, 0x0E, 0x01, 0x01],
+        ),
+        with_classes(observation(0x1CBE, 0xA088, "1-4"), 0xFF, &[0xFF]),
+        with_classes(observation(0x1A86, 0x55D3, "1-5"), 0x02, &[0x02, 0x0A]),
+    ]);
+
+    let listed: Vec<_> = store
+        .snapshot()
+        .into_iter()
+        .map(|device| (device.vendor_id, device.product_id))
+        .collect();
+    assert_eq!(listed, vec![(0x1A86, 0x55D3), (0x1CBE, 0xA088)]);
+}
+
+#[test]
 fn the_unclaimed_view_hides_hubs_and_audio_only_functions() {
     let store = UnclaimedDeviceStore::new();
     store.replace_snapshot([
@@ -289,5 +360,131 @@ fn a_matching_descriptor_outranks_the_class_filter() {
         1,
         "a disabled driver's device stays claimable whatever its classes say"
     );
+    assert_eq!(snapshot[0].claimable_by.as_deref(), Some("razer"));
+}
+
+const CONSUMER: u16 = 0x000C;
+const GENERIC_DESKTOP: u16 = 0x0001;
+
+fn with_usage_pages(mut observation: UsbObservation, pages: &[u16]) -> UsbObservation {
+    observation.hid_usage_pages = pages.to_vec();
+    observation
+}
+
+/// The Razer Base Station V2 Chroma's second USB device: one HID interface
+/// whose only top-level collection is Consumer Control. The stand's
+/// lighting lives on `1532:0F20`.
+fn base_station_media_keys() -> UsbObservation {
+    with_usage_pages(
+        with_classes(observation(0x1532, 0x48F0, "1-1.2"), 0x00, &[0x03]),
+        &[CONSUMER],
+    )
+}
+
+#[test]
+fn a_hid_function_with_only_consumer_controls_cannot_be_lighting() {
+    assert!(base_station_media_keys().cannot_be_lighting());
+}
+
+#[test]
+fn generic_desktop_collections_keep_a_hid_device_visible() {
+    let mouse = with_usage_pages(
+        with_classes(observation(0x1532, 0x0099, "1-1.3"), 0x00, &[0x03, 0x03]),
+        &[GENERIC_DESKTOP],
+    );
+    assert!(
+        !mouse.cannot_be_lighting(),
+        "Razer lights mice and keyboards through feature reports on these"
+    );
+
+    let keyboard = with_usage_pages(
+        with_classes(
+            observation(0x1532, 0x026C, "1-1.4"),
+            0x00,
+            &[0x03, 0x03, 0x03],
+        ),
+        &[GENERIC_DESKTOP, CONSUMER],
+    );
+    assert!(
+        !keyboard.cannot_be_lighting(),
+        "media keys beside a keyboard collection are still a keyboard"
+    );
+}
+
+#[test]
+fn a_hid_device_with_no_usage_page_data_stays_visible() {
+    let unknown = with_classes(observation(0x1532, 0x48F0, "1-1.2"), 0x00, &[0x03]);
+    assert!(unknown.hid_usage_pages.is_empty());
+    assert!(!unknown.cannot_be_lighting());
+}
+
+#[test]
+fn an_undefined_usage_page_is_not_a_consumer_page() {
+    let undefined = with_usage_pages(
+        with_classes(observation(0x1532, 0x48F0, "1-1.2"), 0x00, &[0x03]),
+        &[0x0000, CONSUMER],
+    );
+    assert!(!undefined.cannot_be_lighting());
+}
+
+#[test]
+fn consumer_only_hid_beside_other_interfaces_stays_visible() {
+    // The Leviathan V2 X soundbar takes its lighting as a feature report on
+    // a Consumer collection that sits next to its audio interfaces.
+    let soundbar = with_usage_pages(
+        with_classes(
+            observation(0x1532, 0x054A, "1-1.5"),
+            0x00,
+            &[0x01, 0x01, 0x03],
+        ),
+        &[CONSUMER],
+    );
+    assert!(!soundbar.cannot_be_lighting());
+
+    let with_vendor = with_usage_pages(
+        with_classes(observation(0x1234, 0x0002, "1-1.6"), 0x00, &[0x03, 0xFF]),
+        &[CONSUMER],
+    );
+    assert!(!with_vendor.cannot_be_lighting());
+
+    let with_serial = with_usage_pages(
+        with_classes(
+            observation(0x1234, 0x0003, "1-1.7"),
+            0xEF,
+            &[0x02, 0x0A, 0x03],
+        ),
+        &[CONSUMER],
+    );
+    assert!(!with_serial.cannot_be_lighting());
+}
+
+#[test]
+fn the_unclaimed_view_hides_media_key_functions() {
+    let store = UnclaimedDeviceStore::new();
+    store.replace_snapshot([
+        base_station_media_keys(),
+        with_usage_pages(
+            with_classes(observation(0x1532, 0x0099, "1-1.3"), 0x00, &[0x03, 0x03]),
+            &[GENERIC_DESKTOP, CONSUMER],
+        ),
+        with_classes(observation(0x1532, 0x48F1, "1-1.4"), 0x00, &[0x03]),
+    ]);
+
+    let listed: Vec<_> = store
+        .snapshot()
+        .into_iter()
+        .map(|device| (device.vendor_id, device.product_id))
+        .collect();
+    assert_eq!(listed, vec![(0x1532, 0x0099), (0x1532, 0x48F1)]);
+}
+
+#[test]
+fn a_matching_descriptor_outranks_the_consumer_controls_rule() {
+    let store = UnclaimedDeviceStore::new();
+    store.replace_snapshot([claimed_by(base_station_media_keys(), "razer")]);
+    store.set_enabled_driver_ids(Some(BTreeSet::new()));
+
+    let snapshot = store.snapshot();
+    assert_eq!(snapshot.len(), 1);
     assert_eq!(snapshot[0].claimable_by.as_deref(), Some("razer"));
 }

@@ -176,6 +176,10 @@ async fn run_hotplug_loop(monitor: UsbHotplugMonitor, mut watch: nusb::hotplug::
                     device.product_string(),
                     None,
                 );
+                // HID usage pages stay unknown on arrival. The HID stack may
+                // not have started every collection of the new device yet,
+                // and a partial view could hide it; the next full scan
+                // joins them.
                 let observation = usb_observation(&device, descriptor);
 
                 known_devices.insert(
