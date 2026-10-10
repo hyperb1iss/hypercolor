@@ -305,6 +305,23 @@ coverage plus the output-disabled route count. Endpoints are probed even when
 the bridge is disabled, so setup can check readiness before enabling output.
 {% </api_endpoint> %}
 
+{% <api_endpoint method="GET" path="/api/v1/system/conflicts"> %}
+List RGB software running on the daemon host that competes with Hypercolor for
+devices, such as SignalRGB, L-Connect, or Razer Synapse. The response carries
+`supported` (false where the host can't list running software, macOS today),
+`scanned`, and `conflicts`: each entry has an `id`, a display `name`, the process
+and service names it `matched`, the `driver_ids` it competes with (or
+`all_drivers`), whether it drives SMBus lighting, and a `remedy` for the user. The
+daemon rescans every 30 seconds, after discovery, and when a device fails, and
+publishes `software_conflicts_changed` whenever the set changes. See
+[Conflicting software](@/hardware/conflicting-software.md).
+{% </api_endpoint> %}
+
+{% <api_endpoint method="POST" path="/api/v1/system/conflicts/scan"> %}
+Scan for competing RGB software now and return the same body as
+`GET /api/v1/system/conflicts`.
+{% </api_endpoint> %}
+
 ## Media
 
 {% <api_endpoint method="POST" path="/api/v1/media/authorize"> %}
@@ -1197,7 +1214,8 @@ affordances from this table.
 {% <api_endpoint method="POST" path="/api/v1/diagnose"> %}
 Run system diagnostics: device connectivity, audio capture, effect-engine
 health, memory, and configuration validity. Memory failures are reported as the
-named `memory` check in the same response. The `diagnose` CLI command and MCP
+named `memory` check in the same response. The `conflicts` check scans for
+competing RGB software before it reports, as `devices.competing_software`. The `diagnose` CLI command and MCP
 tool use this exact check vocabulary.
 {% </api_endpoint> %}
 

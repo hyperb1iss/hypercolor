@@ -12,6 +12,34 @@ Hypercolor gets no connection, and no error the user would naturally see, just s
 This page covers which programs conflict, how to confirm a conflict is the culprit, and
 how to resolve it cleanly.
 
+## Hypercolor checks for you
+
+On Linux and Windows the daemon looks for known competing programs on its own. It lists
+running processes (and, on Windows, running services) at startup, every 30 seconds, after
+each discovery scan, and whenever a device fails to open or keeps failing writes. When it
+finds one, you see it in several places:
+
+- `hypercolor diagnose` reports a `devices.competing_software` warning that names each
+  program, the process or service it matched, and what to do about it.
+- The daemon log gets a `competing RGB software is running` warning when a program
+  appears, and a device that fails to open gets an `other RGB software may be holding
+  this device` line naming the likely culprit. Both land in **Export Diagnostics** bundles.
+- A device that keeps failing right after reconnecting reports an error that ends with
+  the same hint, such as "SignalRGB is running and may be holding this device".
+- `GET /api/v1/system/conflicts` returns the latest scan, and
+  `POST /api/v1/system/conflicts/scan` runs a fresh one.
+
+The catalog covers the vendor suites and Linux daemons that touch hardware Hypercolor
+drives: SignalRGB, L-Connect, Razer Synapse, Corsair iCUE, Armoury Crate, MSI Center,
+RGB Fusion, Polychrome, NZXT CAM, TT RGB Plus, NollieRGB, openrazer, ckb-next,
+OpenLinkHub, lian-li-linux, and CoolerControl. It lives in
+`crates/hypercolor-core/src/device/conflicts/catalog.toml`. OpenRGB is not on it: running
+OpenRGB beside Hypercolor is a supported setup, and the [OpenRGB section](#openrgb) below
+explains how the two share hardware. macOS is not checked yet.
+
+A clean check doesn't rule out a conflict. Software missing from the catalog can still
+hold a device, so the manual steps below still apply.
+
 ## Why conflicts happen
 
 Hypercolor controls USB devices through two transport paths:
@@ -40,9 +68,9 @@ and exclusivity are separate concerns.
 
 ### openrazer daemon and kernel modules
 
-The openrazer kernel modules (`razerkbd`, `razermouse`, `razerfirefly`, `razercore`, and
-others) claim Razer USB devices at kernel driver level, before any userspace process opens
-a node. The `openrazer-daemon` then talks to those modules. Both the modules and the
+The openrazer kernel modules (`razerkbd`, `razermouse`, `razerkraken`, and
+`razeraccessory`) claim Razer USB devices at kernel driver level, before any userspace
+process opens a node. The `openrazer-daemon` then talks to those modules. Both the modules and the
 daemon must be out of the picture for Hypercolor's native Razer driver to open the
 devices.
 
@@ -63,9 +91,7 @@ Stopping the daemon is often not enough: the kernel modules may still hold the d
 Unload them:
 
 ```bash
-# Unload in dependency order: peripherals first, then core
-sudo modprobe -r razerkbd razermouse razermousemat razerfirefly \
-               razernaga razerkraken razermug razercore
+sudo modprobe -r razerkbd razermouse razerkraken razeraccessory
 
 # Verify they are gone
 lsmod | grep razer
@@ -76,18 +102,28 @@ To prevent them from reloading at next boot:
 ```bash
 echo "blacklist razerkbd
 blacklist razermouse
-blacklist razermousemat
-blacklist razerfirefly
-blacklist razernaga
 blacklist razerkraken
-blacklist razermug
-blacklist razercore" | sudo tee /etc/modprobe.d/no-openrazer.conf
+blacklist razeraccessory" | sudo tee /etc/modprobe.d/no-openrazer.conf
 
 sudo update-initramfs -u
 ```
 
 After unloading, replug the device so the kernel re-applies the udev ACL. Then run
 `hypercolor devices discover`.
+
+### SignalRGB (Windows)
+
+SignalRGB drives nearly everything Hypercolor does, over USB and SMBus, so running both
+means two programs writing to every device. Closing its window leaves it running in the
+tray: right-click the tray icon and choose Exit. Version 2.5 and later also install a
+`SignalRgb.Service` Windows service.
+
+### Lian Li L-Connect (Windows)
+
+`L-Connect-Service.exe` holds Lian Li hubs, the wireless dongles, and the WinUSB LCD
+panels, and WinUSB lets only one program open a device. Quit L-Connect from its tray
+icon, then stop the **L-Connect Service Watcher** and the **L-Connect Service** in
+`services.msc`. Stop the watcher first, because it restarts the service.
 
 ### Razer Synapse (Windows)
 
@@ -126,8 +162,8 @@ rewrite the partition and rescan. The conflict guard's reason string,
 ### ASUS Aura Sync / Armoury Crate
 
 On Windows, Armoury Crate and Aura Sync claim ASUS HID interfaces and poll the SMBus
-lighting controllers. Stop the ASUS services (Armoury Crate Service, AsusCertService)
-in `services.msc`, or remove the suite with ASUS's official uninstall tool. The SMBus
+lighting controllers. Stop the ASUS AURA SYNC lighting service (`LightingService`) and
+the Armoury Crate Service in `services.msc`, or remove the suite with ASUS's official uninstall tool. The SMBus
 path on Windows additionally contends through the PawnIO broker, so vendor SMBus tools
 and Hypercolor must not poll simultaneously.
 
@@ -138,8 +174,8 @@ Crate before launching Hypercolor.
 ### Corsair iCUE
 
 On Windows, iCUE claims Corsair HID interfaces and keeps background services running
-after the window closes. Exit iCUE from the tray, stop its services, then restart
-Hypercolor.
+after the window closes. Exit iCUE from the tray, stop the Corsair Service
+(`CorsairService`) in `services.msc`, then restart Hypercolor.
 
 Under Wine or Proton, iCUE claims the same interfaces through the prefix. Exit iCUE or
 the Proton prefix hosting it, then restart Hypercolor.
@@ -147,19 +183,24 @@ the Proton prefix hosting it, then restart Hypercolor.
 ### ckb-next
 
 `ckb-next-daemon` controls Corsair keyboards and mice via the same HID nodes Hypercolor
-uses. Stop it before running Hypercolor:
+uses. It installs as a system service, so stop it with `sudo`:
 
 ```bash
-systemctl --user stop ckb-next-daemon
+sudo systemctl stop ckb-next-daemon
 ```
 
-### liquidctl
+### liquidctl and CoolerControl
 
-`liquidctl` primarily handles cooling but can open Corsair or NZXT RGB controllers. If
-running as a service, stop it:
+`liquidctl` primarily handles cooling but can open Corsair, Lian Li, and ASUS controllers.
+It usually runs once and exits, so it only conflicts while a command is running or if you
+set up a service for it yourself (the liquidctl README's example unit is named
+`liquidcfg`).
+
+CoolerControl is different: `coolercontrold` keeps every liquidctl device it finds open
+for as long as it runs. Stop it before starting Hypercolor:
 
 ```bash
-sudo systemctl stop liquidcfg
+sudo systemctl stop coolercontrold
 ```
 
 ### Other RGB managers
@@ -239,13 +280,16 @@ curl -s -X POST http://localhost:9420/api/v1/diagnose | jq
 ```
 
 The `devices` checks report the tracked device-registry count, output-queue health, USB
-actor display-lane timing, and display-output encoder health.
+actor display-lane timing, display-output encoder health, and any competing software the
+daemon found running (`devices.competing_software`).
 
 ### Diagnosing on Windows
 
 The same flow works on Windows with different tools:
 
-1. Find vendor processes with Task Manager, or with `Get-Process` in PowerShell:
+1. Run `hypercolor diagnose` first; its `devices.competing_software` check names the
+   vendor programs it recognizes. For anything it doesn't know, find vendor processes with
+   Task Manager, or with `Get-Process` in PowerShell:
    `Get-Process | Where-Object { $_.Name -match "Razer|iCUE|Armoury|Asus" }`
 2. Check `services.msc` for vendor services (Razer, Corsair, ASUS) and stop them.
 3. Open Device Manager to see which driver has claimed the device.
@@ -263,11 +307,11 @@ a time. Stop the competing software, then let Hypercolor discover the device.
 # openrazer
 systemctl --user stop openrazer-daemon
 
-# ckb-next
-systemctl --user stop ckb-next-daemon
+# ckb-next (a system service)
+sudo systemctl stop ckb-next-daemon
 
-# liquidcfg
-sudo systemctl stop liquidcfg
+# CoolerControl
+sudo systemctl stop coolercontrold
 ```
 
 **For GUI applications:**
