@@ -126,6 +126,31 @@ pub(crate) fn process_resident_memory_mb() -> Option<f64> {
     }
 }
 
+/// What this host is running, for the conflicting-software check. `None`
+/// where the platform has no inventory yet (macOS today).
+pub(crate) fn host_software_snapshot()
+-> Option<hypercolor_types::host_software::HostSoftwareSnapshot> {
+    #[cfg(target_os = "linux")]
+    {
+        hypercolor_linux_session::running_processes().map(|processes| {
+            hypercolor_types::host_software::HostSoftwareSnapshot {
+                processes,
+                services: Vec::new(),
+            }
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        hypercolor_windows_telemetry::running_software()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
 async fn run_session_loop(
     mut rx: tokio::sync::broadcast::Receiver<SessionEvent>,
     runtime: SessionRuntime,

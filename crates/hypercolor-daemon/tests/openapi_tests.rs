@@ -168,6 +168,18 @@ async fn openapi_json_is_served_with_expected_paths() {
     );
     assert!(body["components"]["schemas"]["UpdateAttachmentsRequest"].is_object());
     assert!(body["paths"]["/api/v1/system/audio-devices"]["get"].is_object());
+    for (path, method) in [
+        ("/api/v1/system/conflicts", "get"),
+        ("/api/v1/system/conflicts/scan", "post"),
+    ] {
+        assert_eq!(
+            body["paths"][path][method]["responses"]["200"]["content"]["application/json"]["schema"]
+                ["properties"]["data"]["$ref"],
+            "#/components/schemas/SoftwareConflictsStatus",
+            "{method} {path} should answer the conflict status"
+        );
+    }
+    assert!(body["components"]["schemas"]["SoftwareConflict"].is_object());
     // Retired routes stay absent from the runtime document.
     for retired in [
         "/api/v1/server",

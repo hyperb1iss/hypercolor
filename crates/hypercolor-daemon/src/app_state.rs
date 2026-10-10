@@ -16,8 +16,8 @@ use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, UnclaimedDeviceStore,
-    UsbProtocolConfigStore,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, SoftwareConflictStore,
+    UnclaimedDeviceStore, UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
@@ -529,6 +529,8 @@ impl AppState {
                 .expect("default app state should open driver inventory"),
         );
         let unclaimed_devices = UnclaimedDeviceStore::new().with_event_bus(Arc::clone(&event_bus));
+        let software_conflicts =
+            SoftwareConflictStore::new().with_event_bus(Arc::clone(&event_bus));
         let bridge_output_locks = BridgeOutputLocks::default();
         let driver_registry = driver_registry.unwrap_or_else(|| {
             Arc::new(
@@ -619,6 +621,7 @@ impl AppState {
                     device_aliases_path,
                     usb_protocol_configs: usb_protocol_configs.clone(),
                     unclaimed_devices: unclaimed_devices.clone(),
+                    software_conflicts: software_conflicts.clone(),
                     bridge_output_locks: bridge_output_locks.clone(),
                     probe_serializer: Arc::default(),
                     credential_store: Arc::clone(&credential_store),

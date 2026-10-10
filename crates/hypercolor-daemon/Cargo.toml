@@ -166,6 +166,7 @@ hypercolor-macos-capture = { workspace = true, features = ["capture-fixtures"] }
 hypercolor-windows-capture = { workspace = true, optional = true }
 hypercolor-windows-gpu-interop = { workspace = true, features = ["screen-capture"], optional = true }
 hypercolor-windows-session = { workspace = true }
+hypercolor-windows-telemetry = { workspace = true }
 sysinfo = { workspace = true }
 thread-priority = "3.1.1"
 windows-service = "0.8.1"

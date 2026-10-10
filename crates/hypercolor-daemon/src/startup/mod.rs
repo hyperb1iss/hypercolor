@@ -285,6 +285,9 @@ pub struct DaemonState {
     /// Periodic per-device metrics collector task.
     pub(super) device_metrics_collector_task: Option<tokio::task::JoinHandle<()>>,
 
+    /// Scans for competing RGB software and keeps its record current.
+    pub(super) software_conflict_task: Option<tokio::task::JoinHandle<()>>,
+
     /// Single daemon-owned source-status to event-bus publisher.
     pub(super) input_status_event_publisher: Option<input_status_events::InputStatusEventPublisher>,
 
