@@ -18,6 +18,7 @@ fn observation(vendor_id: u16, product_id: u16) -> UsbObservation {
         interface_classes: vec![3],
         descriptor_driver_id: ProtocolDatabase::lookup(vendor_id, product_id)
             .map(|descriptor| descriptor.driver_id().to_string()),
+        hid_usage_pages: Vec::new(),
     }
 }
 
@@ -30,12 +31,7 @@ fn unsupported_hotplug_updates_shared_inventory_and_publishes_without_scan() {
     let mut claimed_events = monitor.subscribe();
     let arrival = observation(0xffff, 0xffff);
     assert!(ProtocolDatabase::lookup(arrival.vendor_id, arrival.product_id).is_none());
-    let seen = SeenDevice {
-        vendor_id: arrival.vendor_id,
-        product_id: arrival.product_id,
-        claimed: false,
-        observation_key: arrival.key(),
-    };
+    let seen = SeenDevice::new(&arrival, false);
 
     monitor.record_arrival(arrival, None);
     assert_eq!(store.snapshot()[0].serial.as_deref(), Some("fixture-1"));
@@ -63,12 +59,7 @@ fn disabled_native_hotplug_remains_claimable_and_keeps_hal_notifications() {
     let arrival = observation(0x1532, 0x0226);
     let descriptor = ProtocolDatabase::lookup(arrival.vendor_id, arrival.product_id)
         .expect("known Razer keyboard");
-    let seen = SeenDevice {
-        vendor_id: arrival.vendor_id,
-        product_id: arrival.product_id,
-        claimed: true,
-        observation_key: arrival.key(),
-    };
+    let seen = SeenDevice::new(&arrival, true);
 
     monitor.record_arrival(arrival, Some(descriptor));
     assert_eq!(store.snapshot()[0].claimable_by.as_deref(), Some("razer"));
