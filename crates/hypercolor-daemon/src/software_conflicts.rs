@@ -24,6 +24,10 @@ use tracing::{debug, info, warn};
 /// suite and expect the warning to clear without restarting anything.
 pub(crate) const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How long a diagnostics report waits on its own scan before it reports
+/// the stored result instead.
+pub(crate) const DIAGNOSE_SCAN_BUDGET: Duration = Duration::from_secs(5);
+
 /// Take one host inventory, record it, and log what changed.
 pub(crate) async fn scan_now(store: &SoftwareConflictStore) {
     let ticket = store.begin_scan();
@@ -34,22 +38,37 @@ pub(crate) async fn scan_now(store: &SoftwareConflictStore) {
             HostInventory::Failed
         }
     };
-    if inventory == HostInventory::Failed {
-        debug!("software inventory failed; keeping the last known conflicts");
-    }
     log_changes(&store.finish_scan(ticket, &inventory));
 }
 
-/// Scan only when the latest successful scan is older than `max_age`.
-/// Diagnostics use this so a report never waits on a slow WMI query when
-/// the watch scanned moments ago.
-pub(crate) async fn scan_if_stale(store: &SoftwareConflictStore, max_age: Duration) {
-    if store.age().is_none_or(|age| age > max_age) {
-        scan_now(store).await;
+/// Scan only when the latest successful scan is older than `max_age`, and
+/// give that scan at most `budget`. Diagnostics use this so a report
+/// reuses what the watch scanned moments ago, and a hung WMI query (its
+/// connect alone may wait two minutes) can't stall the report. A scan that
+/// runs over budget keeps going on its blocking thread; its result is
+/// dropped and the stored one is reported.
+pub(crate) async fn scan_if_stale(
+    store: &SoftwareConflictStore,
+    max_age: Duration,
+    budget: Duration,
+) {
+    if store.age().is_none_or(|age| age > max_age)
+        && tokio::time::timeout(budget, scan_now(store)).await.is_err()
+    {
+        debug!(
+            ?budget,
+            "software scan ran over budget; reporting the stored result"
+        );
     }
 }
 
 fn log_changes(changes: &ConflictChanges) {
+    if changes.failure_started {
+        warn!("could not list running software; keeping the last known competing programs");
+    }
+    if changes.failure_ended {
+        info!("listing running software works again");
+    }
     for conflict in &changes.appeared {
         warn!(
             software = %conflict.name,

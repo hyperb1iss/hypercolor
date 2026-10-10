@@ -272,13 +272,14 @@ impl DiagnosticsContext {
     }
 
     /// Report competing RGB software from a scan no older than the watch
-    /// interval, scanning first only when the latest one is older. A
-    /// report never blocks on a slow WMI query the watch just ran.
+    /// interval, scanning first (within a time budget) only when the
+    /// latest one is older.
     async fn conflicts_check(&self) -> DiagnoseCheck {
         let store = self.authorities.devices.software_conflicts();
         crate::software_conflicts::scan_if_stale(
             &store,
             crate::software_conflicts::RESCAN_INTERVAL,
+            crate::software_conflicts::DIAGNOSE_SCAN_BUDGET,
         )
         .await;
         conflicts_check(&store.status())

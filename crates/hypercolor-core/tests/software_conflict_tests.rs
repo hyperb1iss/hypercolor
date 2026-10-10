@@ -256,9 +256,17 @@ async fn the_store_publishes_only_when_the_set_changes() {
     store.record(&HostInventory::Listed(snapshot(Vec::new(), &[])));
     let status = store.status();
     assert!(status.scanned && status.supported && status.conflicts.is_empty());
+    let event = events
+        .try_recv()
+        .expect("the first scan changes the status clients see");
+    assert!(matches!(
+        event.event,
+        HypercolorEvent::SoftwareConflictsChanged { count: 0 }
+    ));
+    store.record(&HostInventory::Listed(snapshot(Vec::new(), &[])));
     assert!(
         events.try_recv().is_err(),
-        "an empty first scan changes nothing"
+        "an identical scan publishes nothing"
     );
 
     let running = snapshot(vec![HostProcess::named("Panel Tool.exe")], &[]);
@@ -311,17 +319,32 @@ async fn a_failed_inventory_keeps_the_last_result_and_says_so() {
     let mut events = bus.subscribe_all();
 
     let changes = store.record(&HostInventory::Failed);
-    assert!(changes.is_empty(), "a failure is not a change");
-    assert!(events.try_recv().is_err(), "a failure publishes nothing");
+    assert!(changes.failure_started);
+    assert!(changes.appeared.is_empty() && changes.cleared.is_empty());
+    let event = events
+        .try_recv()
+        .expect("clients learn that scanning failed");
+    assert!(matches!(
+        event.event,
+        HypercolorEvent::SoftwareConflictsChanged { count: 1 }
+    ));
     let status = store.status();
     assert!(status.scan_failed);
     assert!(status.supported, "only a supported platform can fail");
     assert_eq!(status.conflicts.len(), 1, "the last known conflict stays");
 
-    let changes = store.record(&panel_tool_running());
     assert!(
-        changes.is_empty(),
-        "recovering to the same set changes nothing"
+        store.record(&HostInventory::Failed).is_empty(),
+        "failing again changes nothing"
+    );
+    assert!(events.try_recv().is_err());
+
+    let changes = store.record(&panel_tool_running());
+    assert!(changes.failure_ended);
+    assert!(changes.appeared.is_empty() && changes.cleared.is_empty());
+    assert!(
+        events.try_recv().is_ok(),
+        "clients learn that scanning recovered"
     );
     assert!(!store.status().scan_failed);
 }
@@ -353,6 +376,40 @@ fn a_scan_that_began_earlier_cannot_overwrite_a_newer_one() {
         store.status().conflicts.is_empty(),
         "the newer scan's result stands"
     );
+}
+
+#[test]
+fn a_fast_failure_cannot_discard_an_older_success() {
+    let store = SoftwareConflictStore::with_catalog(&CATALOG);
+    let slow_success = store.begin_scan();
+    let fast_failure = store.begin_scan();
+
+    store.finish_scan(fast_failure, &HostInventory::Failed);
+    assert!(store.status().scan_failed);
+    let changes = store.finish_scan(slow_success, &panel_tool_running());
+
+    assert_eq!(changes.appeared.len(), 1, "the older success still lands");
+    let status = store.status();
+    assert_eq!(status.conflicts.len(), 1);
+    assert!(
+        status.scan_failed,
+        "the newest scan failed, so the status still says so"
+    );
+}
+
+#[test]
+fn a_failure_older_than_a_success_is_ignored() {
+    let store = SoftwareConflictStore::with_catalog(&CATALOG);
+    let old_failure = store.begin_scan();
+    let new_success = store.begin_scan();
+
+    store.finish_scan(new_success, &panel_tool_running());
+    assert!(
+        store
+            .finish_scan(old_failure, &HostInventory::Failed)
+            .is_empty()
+    );
+    assert!(!store.status().scan_failed);
 }
 
 #[test]

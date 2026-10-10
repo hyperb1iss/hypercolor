@@ -290,13 +290,20 @@ pub struct ConflictChanges {
     pub appeared: Vec<SoftwareConflict>,
     /// Programs that were running and are gone.
     pub cleared: Vec<SoftwareConflict>,
+    /// Scanning started failing with this scan.
+    pub failure_started: bool,
+    /// Scanning recovered with this scan.
+    pub failure_ended: bool,
 }
 
 impl ConflictChanges {
     /// Whether the scan changed nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.appeared.is_empty() && self.cleared.is_empty()
+        self.appeared.is_empty()
+            && self.cleared.is_empty()
+            && !self.failure_started
+            && !self.failure_ended
     }
 }
 
@@ -309,8 +316,10 @@ pub struct ScanTicket(u64);
 #[derive(Debug, Default)]
 struct ConflictRecord {
     status: SoftwareConflictsStatus,
-    /// The newest ticket recorded so far.
-    last_ticket: u64,
+    /// The newest ticket whose scan succeeded.
+    last_success: u64,
+    /// The newest ticket whose scan failed.
+    last_failure: u64,
     /// When the latest successful scan was recorded.
     recorded_at: Option<Instant>,
 }
@@ -375,12 +384,17 @@ impl SoftwareConflictStore {
         ScanTicket(self.tickets.fetch_add(1, Ordering::Relaxed) + 1)
     }
 
-    /// Record the inventory a ticketed scan produced, and report which
-    /// programs appeared or cleared.
+    /// Record the inventory a ticketed scan produced, and report what
+    /// changed.
     ///
-    /// A scan that began before the newest recorded one is dropped. A
-    /// failed inventory keeps the last known conflicts and marks the
-    /// status failed instead of claiming nothing is running.
+    /// Successes and failures are ordered separately. A success older than
+    /// the newest success is dropped, so a slow scan can't overwrite newer
+    /// data, but a fast failure can't discard an older success that lands
+    /// after it either. The status reports a failure while the newest
+    /// failure is newer than the newest success, and a failure keeps the
+    /// last known conflicts instead of claiming nothing is running.
+    /// [`HypercolorEvent::SoftwareConflictsChanged`] fires whenever the
+    /// status clients see changes, failures and recoveries included.
     pub fn finish_scan(&self, ticket: ScanTicket, inventory: &HostInventory) -> ConflictChanges {
         let detected = match inventory {
             HostInventory::Listed(snapshot) => Some(self.catalog.detect(snapshot)),
@@ -389,28 +403,30 @@ impl SoftwareConflictStore {
         };
         let (changes, published) = {
             let mut record = self.write();
-            if ticket.0 <= record.last_ticket {
-                return ConflictChanges::default();
-            }
-            record.last_ticket = ticket.0;
-            let Some(conflicts) = detected else {
+            let before = record.status.clone();
+            let mut changes = ConflictChanges::default();
+            if let Some(conflicts) = detected {
+                if ticket.0 <= record.last_success {
+                    return ConflictChanges::default();
+                }
+                record.last_success = ticket.0;
+                changes.appeared = absent_from(&conflicts, &before.conflicts);
+                changes.cleared = absent_from(&before.conflicts, &conflicts);
+                record.status.supported = !matches!(inventory, HostInventory::Unsupported);
+                record.status.conflicts = conflicts;
+                record.recorded_at = Some(Instant::now());
+            } else {
+                if ticket.0 <= record.last_failure || ticket.0 <= record.last_success {
+                    return ConflictChanges::default();
+                }
+                record.last_failure = ticket.0;
                 record.status.supported = true;
-                record.status.scanned = true;
-                record.status.scan_failed = true;
-                return ConflictChanges::default();
-            };
-            let changes = ConflictChanges {
-                appeared: absent_from(&conflicts, &record.status.conflicts),
-                cleared: absent_from(&record.status.conflicts, &conflicts),
-            };
-            let published = (conflicts != record.status.conflicts).then_some(conflicts.len());
-            record.status = SoftwareConflictsStatus {
-                supported: !matches!(inventory, HostInventory::Unsupported),
-                scanned: true,
-                scan_failed: false,
-                conflicts,
-            };
-            record.recorded_at = Some(Instant::now());
+            }
+            record.status.scanned = true;
+            record.status.scan_failed = record.last_failure > record.last_success;
+            changes.failure_started = record.status.scan_failed && !before.scan_failed;
+            changes.failure_ended = before.scan_failed && !record.status.scan_failed;
+            let published = (record.status != before).then_some(record.status.conflicts.len());
             (changes, published)
         };
         if let (Some(count), Some(bus)) = (published, self.event_bus.as_ref()) {
