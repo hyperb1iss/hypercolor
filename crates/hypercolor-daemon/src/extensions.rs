@@ -99,9 +99,11 @@ pub trait ApiExtension: Send + Sync {
     /// A declared route skips bearer authentication only. The network
     /// access policy still applies, the request is rate-limited in the
     /// declared class for every caller, and the handler sees an anonymous
-    /// request context. A declaration that names a route the engine
-    /// serves, or that is not an exact path, is dropped at router
-    /// assembly and the route stays authenticated.
+    /// request context that is never loopback. A declaration that names a
+    /// route the engine serves, falls within the MCP mount, or is not an
+    /// exact path is dropped at router assembly, and the route stays
+    /// authenticated. The engine cannot tell one extension's routes from
+    /// another's, so an extension must declare only routes it mounts.
     fn public_routes(&self) -> Vec<PublicRoute> {
         Vec::new()
     }

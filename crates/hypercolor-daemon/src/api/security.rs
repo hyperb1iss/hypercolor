@@ -474,18 +474,27 @@ impl PublicRouteTable {
     /// Resolve every extension's declarations under `api_prefix`.
     ///
     /// `engine_routes` are the path templates the engine itself serves
-    /// under the same prefix. A declaration that names one of them, or
-    /// that is not an exact path, is dropped with an error and its route
-    /// stays authenticated: an extension can only open its own routes.
+    /// under the same prefix, and `reserved_prefixes` are full paths of
+    /// engine mounts that sit outside its route table, such as the MCP
+    /// service. A declaration that names an engine route, falls within a
+    /// reserved prefix, or is not an exact path is dropped with an error,
+    /// and its route stays authenticated. Extensions are trusted not to
+    /// declare one another's routes; the engine cannot tell them apart.
     pub(crate) fn from_extensions<'a>(
         extensions: impl IntoIterator<Item = &'a Arc<dyn ApiExtension>>,
         api_prefix: &str,
         engine_routes: &[String],
+        reserved_prefixes: &[String],
     ) -> Self {
         let mut routes = Vec::new();
         for extension in extensions {
             for route in extension.public_routes() {
-                if let Err(reason) = validate_public_route(route.path(), engine_routes) {
+                if let Err(reason) = validate_public_route(
+                    route.path(),
+                    api_prefix,
+                    engine_routes,
+                    reserved_prefixes,
+                ) {
                     tracing::error!(
                         extension = extension.name(),
                         method = %route.method(),
@@ -523,7 +532,12 @@ impl PublicRouteTable {
     }
 }
 
-fn validate_public_route(path: &str, engine_routes: &[String]) -> Result<(), &'static str> {
+fn validate_public_route(
+    path: &str,
+    api_prefix: &str,
+    engine_routes: &[String],
+    reserved_prefixes: &[String],
+) -> Result<(), &'static str> {
     let Some(rest) = path.strip_prefix('/') else {
         return Err("path must start with '/'");
     };
@@ -539,6 +553,13 @@ fn validate_public_route(path: &str, engine_routes: &[String]) -> Result<(), &'s
         .any(|template| template_matches(template, path))
     {
         return Err("path names a route the engine serves");
+    }
+    let full_path = format!("{api_prefix}{path}");
+    if reserved_prefixes
+        .iter()
+        .any(|prefix| path_within(&full_path, prefix))
+    {
+        return Err("path falls within an engine mount");
     }
     Ok(())
 }
@@ -2805,7 +2826,7 @@ mod tests {
         let extensions: Vec<std::sync::Arc<dyn crate::extensions::ApiExtension>> =
             vec![std::sync::Arc::new(PublicPairExtension)];
         let state = SecurityState::with_session_credential(credential.clone()).with_public_routes(
-            super::PublicRouteTable::from_extensions(&extensions, "/api/v1", &[]),
+            super::PublicRouteTable::from_extensions(&extensions, "/api/v1", &[], &[]),
         );
         let app = Router::new()
             .route("/api/v1/ext/pair", post(|| async { StatusCode::OK }))
@@ -2846,5 +2867,54 @@ mod tests {
             .await
             .expect("request should complete");
         assert_eq!(session.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    struct MountProbeExtension;
+
+    impl crate::extensions::ApiExtension for MountProbeExtension {
+        fn name(&self) -> &'static str {
+            "mount-probe"
+        }
+
+        fn mount_api_routes(
+            &self,
+            router: utoipa_axum::router::OpenApiRouter<std::sync::Arc<crate::app_state::AppState>>,
+        ) -> utoipa_axum::router::OpenApiRouter<std::sync::Arc<crate::app_state::AppState>>
+        {
+            router
+        }
+
+        fn public_routes(&self) -> Vec<crate::extensions::PublicRoute> {
+            ["/agents", "/agents/sse", "/agentsx"]
+                .into_iter()
+                .map(|path| {
+                    crate::extensions::PublicRoute::new(
+                        Method::GET,
+                        path,
+                        crate::extensions::PublicRateClass::Read,
+                    )
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn public_declarations_inside_a_reserved_engine_mount_are_dropped() {
+        let extensions: Vec<std::sync::Arc<dyn crate::extensions::ApiExtension>> =
+            vec![std::sync::Arc::new(MountProbeExtension)];
+        let table = super::PublicRouteTable::from_extensions(
+            &extensions,
+            "/api/v1",
+            &[],
+            &["/api/v1/agents".to_owned()],
+        );
+
+        assert_eq!(table.class_for(&Method::GET, "/api/v1/agents"), None);
+        assert_eq!(table.class_for(&Method::GET, "/api/v1/agents/sse"), None);
+        assert_eq!(
+            table.class_for(&Method::GET, "/api/v1/agentsx"),
+            Some(super::OperationClass::Read),
+            "the reserved prefix is segment-aware"
+        );
     }
 }

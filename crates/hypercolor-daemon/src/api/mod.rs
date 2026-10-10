@@ -192,8 +192,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         usize::try_from(assets::asset_upload_body_limit_bytes()).unwrap_or(usize::MAX);
 
     let api = documented_api_routes(asset_upload_body_limit);
-    // Extensions may only open routes they mount themselves, so their
-    // public declarations are checked against every engine route first.
+    // Extensions may never open an engine route, so their public
+    // declarations are checked against every documented engine route and
+    // against the MCP mount, which can be configured under `/api/v1`. The
+    // engine cannot tell one extension's routes from another's.
     let engine_routes = api
         .get_openapi()
         .paths
@@ -205,6 +207,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         &state.api_extensions,
         "/api/v1",
         &engine_routes,
+        &dynamic_route_prefixes(&mcp_config),
     );
 
     let mut api = api;
