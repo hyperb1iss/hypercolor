@@ -160,7 +160,7 @@ use super::relays::{
 };
 use super::session::{
     BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_topics, build_hello_state,
-    spawn_test_local_socket, spawn_test_revocable_local_socket, validated_zone_layout_preview,
+    spawn_test_granted_local_socket, spawn_test_local_socket, validated_zone_layout_preview,
 };
 
 #[tokio::test]
@@ -5429,6 +5429,7 @@ async fn dispatch_command_keeps_retired_status_route_absent() {
     let message = dispatch_command(
         &state,
         RequestAuthContext::unsecured(),
+        None,
         "cmd_status".to_owned(),
         "GET".to_owned(),
         "/status".to_owned(),
@@ -5461,6 +5462,7 @@ async fn dispatch_command_routes_to_system() {
     let message = dispatch_command(
         &state,
         RequestAuthContext::unsecured(),
+        None,
         "cmd_system".to_owned(),
         "GET".to_owned(),
         "/system".to_owned(),
@@ -5502,6 +5504,7 @@ async fn dispatch_command_audits_mutations_as_the_session_peer() {
         let read = dispatch_command(
             &state,
             RequestAuthContext::unsecured(),
+            None,
             "cmd_read".to_owned(),
             "GET".to_owned(),
             "/scenes".to_owned(),
@@ -5512,6 +5515,7 @@ async fn dispatch_command_audits_mutations_as_the_session_peer() {
         dispatch_command(
             &state,
             RequestAuthContext::unsecured(),
+            None,
             "cmd_write".to_owned(),
             "POST".to_owned(),
             "/scenes?token=ws-secret".to_owned(),
@@ -5549,6 +5553,7 @@ async fn dispatch_command_rejects_invalid_method() {
     let message = dispatch_command(
         &state,
         RequestAuthContext::unsecured(),
+        None,
         "cmd_bad_method".to_owned(),
         "BREW".to_owned(),
         "/status".to_owned(),
@@ -5581,6 +5586,7 @@ async fn dispatch_command_preserves_secured_ws_auth_context() {
     let message = dispatch_command(
         &state,
         RequestAuthContext::read_only(),
+        None,
         "cmd_system".to_owned(),
         "GET".to_owned(),
         "/system".to_owned(),
@@ -5610,6 +5616,7 @@ async fn dispatch_command_rejects_unsecured_protected_capture_access() {
     let message = dispatch_command(
         &state,
         RequestAuthContext::unsecured(),
+        None,
         "cmd_capture_monitors".to_owned(),
         "GET".to_owned(),
         "/capture/monitors".to_owned(),
@@ -5641,6 +5648,7 @@ async fn dispatch_command_allows_control_protected_capture_access() {
     let message = dispatch_command(
         &state,
         RequestAuthContext::control(),
+        None,
         "cmd_capture_monitors".to_owned(),
         "GET".to_owned(),
         "/capture/monitors".to_owned(),
@@ -5672,6 +5680,7 @@ async fn dispatch_command_keeps_an_authority_grant_without_protected_control() {
     let message = dispatch_command(
         &state,
         RequestAuthContext::authority_grant(crate::api::security::CredentialTier::Control),
+        None,
         "cmd_capture_monitors".to_owned(),
         "GET".to_owned(),
         "/capture/monitors".to_owned(),
@@ -5691,6 +5700,7 @@ async fn dispatch_command_requires_auth_context_when_security_is_enabled() {
     let message = dispatch_command(
         &state,
         RequestAuthContext::unsecured(),
+        None,
         "cmd_status".to_owned(),
         "GET".to_owned(),
         "/status".to_owned(),
@@ -6712,6 +6722,17 @@ impl crate::extensions::ApiExtension for RevocationProbe {
         let release = Arc::clone(&self.release);
         router
             .route(
+                "/probe/whoami",
+                axum::routing::get(
+                    |grant: Option<axum::Extension<crate::api::security::CredentialGrant>>| async move {
+                        axum::Json(serde_json::json!({
+                            "credential_id": grant
+                                .map(|axum::Extension(grant)| grant.credential_id().to_owned()),
+                        }))
+                    },
+                ),
+            )
+            .route(
                 "/probe/count",
                 axum::routing::post(move || {
                     let counted = Arc::clone(&counted);
@@ -6770,6 +6791,16 @@ fn authority_control() -> RequestAuthContext {
     RequestAuthContext::authority_grant(crate::api::security::CredentialTier::Control)
 }
 
+fn probe_grant(
+    revocation: tokio_util::sync::CancellationToken,
+) -> crate::api::security::CredentialGrant {
+    crate::api::security::CredentialGrant::new(
+        crate::api::security::CredentialTier::Control,
+        "probe-session",
+        revocation,
+    )
+}
+
 #[tokio::test]
 async fn a_revoked_session_never_starts_a_command_that_arrives_with_the_revocation() {
     // The session loop picks among ready branches at random. Queue the
@@ -6779,11 +6810,11 @@ async fn a_revoked_session_never_starts_a_command_that_arrives_with_the_revocati
     for round in 0..32 {
         let (state, probe) = revocation_probe_state();
         let revocation = tokio_util::sync::CancellationToken::new();
-        let mut socket = spawn_test_revocable_local_socket(
+        let mut socket = spawn_test_granted_local_socket(
             Arc::clone(&state),
             &tokio::runtime::Handle::current(),
             authority_control(),
-            revocation.clone(),
+            probe_grant(revocation.clone()),
         );
         let hello = socket.recv().await.expect("test socket should emit hello");
         assert!(matches!(hello, Message::Text(_)));
@@ -6807,11 +6838,11 @@ async fn a_revoked_session_never_starts_a_command_that_arrives_with_the_revocati
 async fn a_command_executing_when_the_session_is_revoked_completes() {
     let (state, probe) = revocation_probe_state();
     let revocation = tokio_util::sync::CancellationToken::new();
-    let mut socket = spawn_test_revocable_local_socket(
+    let mut socket = spawn_test_granted_local_socket(
         Arc::clone(&state),
         &tokio::runtime::Handle::current(),
         authority_control(),
-        revocation.clone(),
+        probe_grant(revocation.clone()),
     );
     let hello = socket.recv().await.expect("test socket should emit hello");
     assert!(matches!(hello, Message::Text(_)));
@@ -6832,11 +6863,11 @@ async fn a_command_executing_when_the_session_is_revoked_completes() {
 async fn revocation_ends_a_session_blocked_on_a_peer_that_stopped_reading() {
     let (state, probe) = revocation_probe_state();
     let revocation = tokio_util::sync::CancellationToken::new();
-    let mut socket = spawn_test_revocable_local_socket(
+    let mut socket = spawn_test_granted_local_socket(
         Arc::clone(&state),
         &tokio::runtime::Handle::current(),
         authority_control(),
-        revocation.clone(),
+        probe_grant(revocation.clone()),
     );
     let hello = socket.recv().await.expect("test socket should emit hello");
     assert!(matches!(hello, Message::Text(_)));
@@ -6884,11 +6915,11 @@ async fn a_revoked_session_closes_with_1008_even_when_an_outbound_send_wins() {
     for round in 0..32 {
         let (state, _probe) = revocation_probe_state();
         let revocation = tokio_util::sync::CancellationToken::new();
-        let mut socket = spawn_test_revocable_local_socket(
+        let mut socket = spawn_test_granted_local_socket(
             Arc::clone(&state),
             &tokio::runtime::Handle::current(),
             authority_control(),
-            revocation.clone(),
+            probe_grant(revocation.clone()),
         );
         let hello = socket.recv().await.expect("test socket should emit hello");
         assert!(matches!(hello, Message::Text(_)));
@@ -6932,11 +6963,11 @@ async fn a_session_revoked_before_setup_fails_still_closes_with_1008() {
     ));
     let revocation = tokio_util::sync::CancellationToken::new();
     revocation.cancel();
-    let mut socket = spawn_test_revocable_local_socket(
+    let mut socket = spawn_test_granted_local_socket(
         Arc::new(state),
         &tokio::runtime::Handle::current(),
         authority_control(),
-        revocation,
+        probe_grant(revocation),
     );
 
     let mut close_code = None;
@@ -6946,4 +6977,53 @@ async fn a_session_revoked_before_setup_fails_still_closes_with_1008() {
         }
     }
     assert_eq!(close_code, Some(axum::extract::ws::close_code::POLICY));
+}
+
+#[tokio::test]
+async fn dispatch_command_hands_the_session_grant_to_the_handler() {
+    let (state, _probe) = revocation_probe_state();
+    let message = dispatch_command(
+        &state,
+        authority_control(),
+        Some(probe_grant(tokio_util::sync::CancellationToken::new())),
+        "cmd_whoami".to_owned(),
+        "GET".to_owned(),
+        "/probe/whoami".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response { status, data, .. } => {
+            assert_eq!(status, 200);
+            assert_eq!(
+                data.and_then(|data| data.get("credential_id").cloned()),
+                Some(serde_json::json!("probe-session"))
+            );
+        }
+        _ => panic!("expected command response"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_refuses_a_revoked_session_grant() {
+    let (state, probe) = revocation_probe_state();
+    let revocation = tokio_util::sync::CancellationToken::new();
+    revocation.cancel();
+    let message = dispatch_command(
+        &state,
+        authority_control(),
+        Some(probe_grant(revocation)),
+        "cmd_count".to_owned(),
+        "POST".to_owned(),
+        "/probe/count".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response { status, .. } => assert_eq!(status, 401),
+        _ => panic!("expected command response"),
+    }
+    assert_eq!(probe.executed.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

@@ -989,6 +989,17 @@ pub async fn enforce_security(
     next: Next,
 ) -> Response {
     let mut request = request;
+    // Only a replayed WebSocket command arrives with a grant attached. Its
+    // context was resolved when the session opened, so the revocation is
+    // checked here, where nothing else would see it.
+    if request
+        .extensions()
+        .get::<CredentialGrant>()
+        .is_some_and(|grant| grant.revocation().is_cancelled())
+    {
+        return DomainError::unauthorized("Invalid API key").into_response();
+    }
+
     if request
         .extensions_mut()
         .remove::<TrustedLocalControl>()

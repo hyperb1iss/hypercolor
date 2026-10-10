@@ -109,7 +109,7 @@ pub(crate) async fn ws_handler(
 
     // A revoked credential ends the session it opened, along with every
     // command the session would have dispatched under it.
-    let revocation = credential_grant.map(|Extension(grant)| grant.revocation().clone());
+    let grant = credential_grant.map(|Extension(grant)| grant);
     let ws = ws
         .max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES);
@@ -121,7 +121,7 @@ pub(crate) async fn ws_handler(
         crate::audit_log::with_ws_peer(
             peer,
             handle_socket(
-                SessionSocket::network(socket, revocation),
+                SessionSocket::network(socket, grant),
                 state,
                 auth_context,
                 None,
@@ -153,7 +153,7 @@ fn spawn_local_socket(
     state: Arc<AppState>,
     runtime: &tokio::runtime::Handle,
     auth_context: RequestAuthContext,
-    revocation: Option<CancellationToken>,
+    grant: Option<CredentialGrant>,
 ) -> TrustedLocalWebSocket {
     let (socket, transport) = trusted_local_socket_pair();
     let shutdown = transport.shutdown_token();
@@ -162,7 +162,7 @@ fn spawn_local_socket(
         handle_socket(
             SessionSocket {
                 transport: SessionTransport::Local(transport),
-                revocation,
+                grant,
             },
             state,
             auth_context,
@@ -181,25 +181,25 @@ pub(super) fn spawn_test_local_socket(
     spawn_local_socket_with_context(state, runtime, auth_context)
 }
 
-/// A test session whose credential `revocation` can revoke.
+/// A test session opened by `grant`, which the test can revoke.
 #[cfg(test)]
-pub(super) fn spawn_test_revocable_local_socket(
+pub(super) fn spawn_test_granted_local_socket(
     state: Arc<AppState>,
     runtime: &tokio::runtime::Handle,
     auth_context: RequestAuthContext,
-    revocation: CancellationToken,
+    grant: CredentialGrant,
 ) -> TrustedLocalWebSocket {
-    spawn_local_socket(state, runtime, auth_context, Some(revocation))
+    spawn_local_socket(state, runtime, auth_context, Some(grant))
 }
 
-/// A session's transport, plus the revocation of the credential that
-/// opened it.
+/// A session's transport, plus the authority credential that opened it.
 ///
-/// Every send races the revocation, so a revoked session neither waits on
-/// a peer that stopped reading nor delivers anything more to it.
+/// Every send races the credential's revocation, so a revoked session
+/// neither waits on a peer that stopped reading nor delivers anything
+/// more to it.
 struct SessionSocket {
     transport: SessionTransport,
-    revocation: Option<CancellationToken>,
+    grant: Option<CredentialGrant>,
 }
 
 enum SessionTransport {
@@ -218,15 +218,19 @@ enum SessionSocketError {
 }
 
 impl SessionSocket {
-    const fn network(socket: WebSocket, revocation: Option<CancellationToken>) -> Self {
+    const fn network(socket: WebSocket, grant: Option<CredentialGrant>) -> Self {
         Self {
             transport: SessionTransport::Network(socket),
-            revocation,
+            grant,
         }
     }
 
+    fn revocation(&self) -> Option<CancellationToken> {
+        self.grant.as_ref().map(|grant| grant.revocation().clone())
+    }
+
     async fn send(&mut self, message: Message) -> Result<(), SessionSocketError> {
-        let Some(revocation) = self.revocation.clone() else {
+        let Some(revocation) = self.revocation() else {
             return self.transport.send(message).await;
         };
         tokio::select! {
@@ -245,9 +249,9 @@ impl SessionSocket {
     /// session open.
     async fn close_if_revoked(&mut self) {
         if !self
-            .revocation
+            .grant
             .as_ref()
-            .is_some_and(CancellationToken::is_cancelled)
+            .is_some_and(|grant| grant.revocation().is_cancelled())
         {
             return;
         }
@@ -359,7 +363,7 @@ async fn handle_socket(
     shutdown: Option<CancellationToken>,
 ) {
     let _client_guard = WsClientGuard::register();
-    let revocation = socket.revocation.clone();
+    let revocation = socket.revocation();
 
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
@@ -1607,7 +1611,9 @@ async fn handle_client_message(
             path,
             body,
         } => {
-            let response = dispatch_command(state, auth_context, id, method, path, body).await;
+            let grant = socket.grant.clone();
+            let response =
+                dispatch_command(state, auth_context, grant, id, method, path, body).await;
             let _ = send_json(socket, &response).await;
         }
         ClientMessage::ZoneLayoutPreview { zone_id, layout } => {
