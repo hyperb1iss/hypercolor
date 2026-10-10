@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hidapi::{HidApi, HidDevice};
+use hidapi::{BusType, HidApi, HidDevice};
 use tracing::{debug, trace};
 
 use crate::registry::HidRawReportMode;
@@ -765,6 +765,77 @@ fn map_hidapi_error(error: &hidapi::HidError) -> TransportError {
         | std::io::ErrorKind::NotConnected => TransportError::Disconnected { detail },
         _ => TransportError::IoError { detail },
     }
+}
+
+/// One top-level collection of a USB HID function, as the host HID stack
+/// enumerates it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HidCollectionInfo {
+    /// USB vendor ID.
+    pub vendor_id: u16,
+    /// USB product ID.
+    pub product_id: u16,
+    /// Serial string the HID stack reports, trimmed, or `None` when blank.
+    ///
+    /// Windows substitutes a fragment of the device instance ID when the
+    /// device has no serial descriptor, so a value here does not prove the
+    /// device reports one.
+    pub serial: Option<String>,
+    /// USB topology path (`bus-port.port`), where the platform resolves one.
+    /// Only Linux does today.
+    pub usb_path: Option<String>,
+    /// USB interface number, when the HID stack knows it.
+    pub interface_number: Option<u8>,
+    /// Usage page of the top-level collection.
+    pub usage_page: u16,
+    /// Usage of the top-level collection.
+    pub usage: u16,
+}
+
+impl HidCollectionInfo {
+    /// Whether this collection belongs to the USB device at `usb_path`.
+    ///
+    /// Bus numbers compare by value, so `001-2.3` and `1-2.3` name the same
+    /// device. A collection without a resolved path never matches.
+    #[must_use]
+    pub fn is_at_usb_path(&self, usb_path: &str) -> bool {
+        self.usb_path
+            .as_deref()
+            .is_some_and(|own| usb_paths_match(own, usb_path))
+    }
+}
+
+/// Every top-level collection of every USB HID function the host exposes.
+///
+/// Enumeration reads what the HID stack already cached and opens no device,
+/// so it is safe against hardware another program holds. One call covers
+/// the whole stack: callers that need collections for many devices should
+/// enumerate once and join the result. Bluetooth, I2C, and SPI devices are
+/// left out; collections whose bus the platform could not determine stay.
+///
+/// # Errors
+///
+/// Returns [`TransportError`] when the platform HID stack cannot be
+/// initialized or enumerated.
+pub fn enumerate_usb_hid_collections() -> Result<Vec<HidCollectionInfo>, TransportError> {
+    let api = HidApi::new().map_err(|error| map_hidapi_error(&error))?;
+    Ok(api
+        .device_list()
+        .filter(|device| matches!(device.bus_type(), BusType::Usb | BusType::Unknown))
+        .map(|device| HidCollectionInfo {
+            vendor_id: device.vendor_id(),
+            product_id: device.product_id(),
+            serial: device
+                .serial_number()
+                .map(|serial| serial.trim_matches(|c: char| c.is_whitespace() || c == '\0'))
+                .filter(|serial| !serial.is_empty())
+                .map(ToOwned::to_owned),
+            usb_path: hidapi_usb_path(device.path()),
+            interface_number: u8::try_from(device.interface_number()).ok(),
+            usage_page: device.usage_page(),
+            usage: device.usage(),
+        })
+        .collect())
 }
 
 #[cfg(target_os = "linux")]
