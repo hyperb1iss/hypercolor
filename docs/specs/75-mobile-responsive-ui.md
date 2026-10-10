@@ -94,6 +94,15 @@ drag surface follows, with its ownership rules unit-tested in
   it the resize handles) and the layout workspace splitters (rendered
   under `Show`) therefore cancel from a window `lostpointercapture`
   listener, removed on cleanup.
+- The color popover stays open under a live wheel drag: the wheel marks
+  its canvas with `data-color-wheel-dragging`, and the popover's
+  outside-press and scroll dismissal skip while it is set, so a second
+  finger landing outside cannot unmount the wheel mid-drag.
+- A control that unmounts mid-drag because its effect or page changed
+  drops the gesture without rolling back, as the mouse handlers did.
+  Rolling back there would write through the control session, which
+  targets whichever effect is active by then; a correct rollback needs
+  delivery bound to the press-time target that outlives the session.
 - Drag surfaces set `touch-action: none`, so the browser never turns a
   drag into a pan or zoom.
 - Mouse and pen presses cancel their default actions, as the old
@@ -194,6 +203,7 @@ Studio specs do.
 | Color wheel | Ring drag changes the color (touch also square, with no page scroll) | Pass | Pass |
 | Color wheel | Drag keeps tracking outside the canvas and popover | Pass | Pass |
 | Color wheel | Cancel mid-drag restores the press-time color | Pass | |
+| Color wheel | A second finger pressing outside mid-drag leaves the popover open; release commits; a later outside tap dismisses | Pass | |
 | Color wheel | Second finger does not steer | Pass | |
 | Color wheel | Press outside dismisses; release outside does not | Pass | Pass |
 | Color wheel at 390x844 | All of the touch checks above | Pass | |
@@ -213,8 +223,10 @@ Not exercised by the matrix:
 
 - Interactive canvas preview input. No interactive effect runs on a
   driverless daemon. The canvas now sets `touch-action: none` while
-  interactive and releases held buttons on lost capture; this is covered
-  by code review only.
+  interactive, holds a button down while any pointer holds it, and
+  releases a pointer's buttons when it is cancelled or loses capture.
+  The button bookkeeping (`HeldButtons`) is unit-tested; the wiring is
+  covered by code review only.
 - The full-page layout workspace's palette-column splitter. Studio mounts
   the workspace in compact mode only, so nothing renders it today.
 - The Screen Cast picker's preview box renders 2px tall when no aspect
