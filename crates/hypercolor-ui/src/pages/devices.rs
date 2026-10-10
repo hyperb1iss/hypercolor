@@ -19,9 +19,7 @@ use crate::components::empty_state::EmptyState;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::page_search_bar::PageSearchBar;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
-use crate::components::software_conflict_banner::{
-    SoftwareConflictBanner, software_conflicts_state,
-};
+use crate::components::software_conflict_banner::{SoftwareConflictBanner, SoftwareConflictsState};
 use crate::icons::*;
 use crate::software_conflicts::device_hints;
 use crate::storage;
@@ -140,7 +138,7 @@ pub fn DevicesPage() -> impl IntoView {
 
     // Competing RGB software: one status for the banner and every device
     // hint, so dismissing a program quiets both.
-    let conflicts = software_conflicts_state();
+    let conflicts = expect_context::<SoftwareConflictsState>();
     let conflict_hints = Memo::new(move |_| {
         let visible = conflicts.visible().get();
         if visible.is_empty() {

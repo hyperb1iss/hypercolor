@@ -21,8 +21,9 @@ finds one, you see it in several places:
 
 - The **Devices** page opens with a warning banner that names each running program, what
   it competes for, and how to quit it. **Check again** runs a fresh scan. If you run a
-  program on purpose, dismiss its warning. This browser remembers the dismissal until the
-  program stops, and the warning comes back if the program starts again.
+  program on purpose, dismiss its warning. Hypercolor remembers the dismissal in this
+  browser until it sees the program stop, so the warning comes back if the program starts
+  again.
 - Every device a running program competes for shows a short line on its card and in its
   detail panel, such as "SignalRGB is running and may be holding this device". Dismissing
   the program in the banner hides these lines too.

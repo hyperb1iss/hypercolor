@@ -1,6 +1,6 @@
-//! Competing RGB software on the Devices page: a warning banner listing each
-//! running program with its remedy, and a one-line hint on every device a
-//! program competes for.
+//! Competing RGB software: the shared conflict state, the Devices page
+//! warning banner, and the one-line hint on every device a program competes
+//! for.
 //!
 //! Freshness rides signals, never timers. The daemon rescans on its own and
 //! publishes `software_conflicts_changed` when the set changes, so the status
@@ -8,8 +8,10 @@
 //! (`connection_generation`). "Check again" is the only scan the UI asks for,
 //! and only when the user clicks it.
 //!
-//! The rules (which devices a program competes for, which warnings are
-//! dismissed, when a dismissal expires) live in [`crate::software_conflicts`].
+//! The state lives at app level so a dismissal expires whenever a scan shows
+//! its program stopped, not only while the Devices page is open. The rules
+//! (which devices a program competes for, which warnings are dismissed, when
+//! a dismissal expires) live in [`crate::software_conflicts`].
 
 use std::collections::BTreeSet;
 
@@ -21,39 +23,42 @@ use crate::app::WsContext;
 use crate::components::status_banner::StatusBannerTone;
 use crate::icons::{LuRefreshCw, LuTriangleAlert, LuX};
 use crate::software_conflicts::{
-    DISMISSED_STORAGE_KEY, SOFTWARE_CONFLICTS_EVENT, banner_headline, banner_scope,
+    DISMISSED_STORAGE_KEY, SOFTWARE_CONFLICTS_EVENT, banner_headline, banner_scope, check_feedback,
     encode_dismissed, parse_dismissed, prune_dismissed, visible_conflicts,
 };
 use crate::{storage, toasts};
 
 /// The daemon's latest conflict scan, refetched when the daemon reports a
 /// change and when the socket reconnects.
-pub fn conflicts_resource() -> LocalResource<ApiResult<SoftwareConflictsStatus>> {
+fn conflicts_resource() -> LocalResource<ApiResult<SoftwareConflictsStatus>> {
     let hint = expect_context::<WsContext>().last_device_event;
     let status = api::daemon_resource(api::fetch_software_conflicts);
-    Effect::new(move |_| {
-        if hint
+    // The hint keeps its last value, so the first run would only repeat the
+    // initial fetch.
+    Effect::new(move |initialized: Option<()>| {
+        let changed = hint
             .get()
-            .is_some_and(|hint| hint.event_type == SOFTWARE_CONFLICTS_EVENT)
-        {
+            .is_some_and(|hint| hint.event_type == SOFTWARE_CONFLICTS_EVENT);
+        if initialized.is_some() && changed {
             status.refetch();
         }
     });
     status
 }
 
-/// Conflict status plus the user's dismissals, shared by the banner and the
-/// per-device hints on one page.
+/// Conflict status plus the user's dismissals, provided once for the whole
+/// app and read by the banner, the device hints, and the SMBus support card.
 #[derive(Clone, Copy)]
 pub struct SoftwareConflictsState {
     status: LocalResource<ApiResult<SoftwareConflictsStatus>>,
     dismissed: RwSignal<BTreeSet<String>>,
     scanning: RwSignal<bool>,
+    running: Memo<Vec<SoftwareConflict>>,
     visible: Memo<Vec<SoftwareConflict>>,
 }
 
-/// Build the page's conflict state. Dismissals load from `localStorage`;
-/// when storage is unavailable they live for the page's lifetime instead.
+/// Build the conflict state. Dismissals load from `localStorage`; when
+/// storage is unavailable they live in memory for the session instead.
 pub fn software_conflicts_state() -> SoftwareConflictsState {
     let status = conflicts_resource();
     let dismissed = RwSignal::new(parse_dismissed(
@@ -71,27 +76,36 @@ pub fn software_conflicts_state() -> SoftwareConflictsState {
         }
     });
 
-    let visible = Memo::new(move |_| match status.get() {
-        Some(Ok(current)) => dismissed.with(|ids| visible_conflicts(&current.conflicts, ids)),
+    let running = Memo::new(move |_| match status.get() {
+        Some(Ok(current)) => current.conflicts,
         _ => Vec::new(),
     });
+    let visible =
+        Memo::new(move |_| running.with(|all| dismissed.with(|ids| visible_conflicts(all, ids))));
 
     SoftwareConflictsState {
         status,
         dismissed,
         scanning: RwSignal::new(false),
+        running,
         visible,
     }
 }
 
 impl SoftwareConflictsState {
+    /// Every running conflict the latest scan reported, dismissed or not.
+    #[must_use]
+    pub fn running(self) -> Memo<Vec<SoftwareConflict>> {
+        self.running
+    }
+
     /// Running conflicts the user has not dismissed.
     #[must_use]
     pub fn visible(self) -> Memo<Vec<SoftwareConflict>> {
         self.visible
     }
 
-    /// Hide the warning for `id` until that program stops running.
+    /// Hide the warning for `id` until a scan shows that program stopped.
     pub fn dismiss(self, id: &str) {
         self.dismissed.update(|ids| {
             ids.insert(id.to_owned());
@@ -99,7 +113,8 @@ impl SoftwareConflictsState {
         self.dismissed.with_untracked(store_dismissed);
     }
 
-    /// Ask the daemon to scan now and show its answer.
+    /// Ask the daemon to scan now and show its answer. Every signal access
+    /// after the await is fallible, so a disposed owner ends the task quietly.
     pub fn check_again(self) {
         if self.scanning.get_untracked() {
             return;
@@ -108,20 +123,20 @@ impl SoftwareConflictsState {
         leptos::task::spawn_local(async move {
             match api::scan_software_conflicts().await {
                 Ok(current) => {
-                    let still_running: Vec<String> = self.dismissed.with_untracked(|ids| {
-                        visible_conflicts(&current.conflicts, ids)
-                            .into_iter()
-                            .map(|conflict| conflict.name)
-                            .collect()
-                    });
-                    if !still_running.is_empty() {
-                        toasts::toast_info(&format!("Still running: {}", still_running.join(", ")));
+                    let Some(feedback) = self
+                        .dismissed
+                        .try_with_untracked(|ids| check_feedback(&current, ids))
+                    else {
+                        return;
+                    };
+                    if let Some(message) = feedback {
+                        toasts::toast_info(&message);
                     }
-                    self.status.set(Some(Ok(current)));
+                    let _ = self.status.try_set(Some(Ok(current)));
                 }
                 Err(error) => toasts::toast_error(&format!("Check failed: {error}")),
             }
-            self.scanning.set(false);
+            let _ = self.scanning.try_set(false);
         });
     }
 }
@@ -149,7 +164,6 @@ pub fn SoftwareConflictBanner(state: SoftwareConflictsState) -> impl IntoView {
             (!conflicts.is_empty()).then(|| view! {
                 <section
                     class=format!("{} mb-4", tone.container_class())
-                    role="status"
                     aria-label="Competing RGB software"
                 >
                     <div class="flex items-start gap-3">

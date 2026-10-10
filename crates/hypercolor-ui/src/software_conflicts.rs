@@ -68,6 +68,20 @@ pub fn prune_dismissed(
         .collect()
 }
 
+/// What to tell the user after a check they asked for: the programs still
+/// running that they have not dismissed, or `None` when nothing is left.
+#[must_use]
+pub fn check_feedback(
+    status: &SoftwareConflictsStatus,
+    dismissed: &BTreeSet<String>,
+) -> Option<String> {
+    let names: Vec<String> = visible_conflicts(&status.conflicts, dismissed)
+        .into_iter()
+        .map(|conflict| conflict.name)
+        .collect();
+    (!names.is_empty()).then(|| format!("Still running: {}", names.join(", ")))
+}
+
 /// Running conflicts the user has not dismissed, in catalog order.
 #[must_use]
 pub fn visible_conflicts(

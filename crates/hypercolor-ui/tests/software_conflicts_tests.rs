@@ -14,7 +14,7 @@ use hypercolor_ui::api::{
     scan_software_conflicts,
 };
 use hypercolor_ui::software_conflicts::{
-    DISMISSED_STORAGE_KEY, SOFTWARE_CONFLICTS_EVENT, banner_headline, banner_scope,
+    DISMISSED_STORAGE_KEY, SOFTWARE_CONFLICTS_EVENT, banner_headline, banner_scope, check_feedback,
     conflicts_for_device, device_can_be_held, device_hint, device_hints, encode_dismissed,
     parse_dismissed, prune_dismissed, scan_is_conclusive, smbus_conflict_warning,
     visible_conflicts,
@@ -158,6 +158,28 @@ fn dismissed_conflicts_are_hidden_and_order_is_kept() {
     let visible: Vec<&str> = visible.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(visible, ["signalrgb", "razer_synapse"]);
     assert_eq!(visible_conflicts(&running, &BTreeSet::new()).len(), 3);
+}
+
+#[test]
+fn a_check_names_what_is_still_running_and_not_dismissed() {
+    let current = status(vec![
+        suite("signalrgb", "SignalRGB"),
+        vendor_tool("razer_synapse", "Razer Synapse", &["razer"], false),
+    ]);
+
+    assert_eq!(
+        check_feedback(&current, &BTreeSet::new()).as_deref(),
+        Some("Still running: SignalRGB, Razer Synapse")
+    );
+    assert_eq!(
+        check_feedback(&current, &ids(&["signalrgb"])).as_deref(),
+        Some("Still running: Razer Synapse")
+    );
+    assert_eq!(
+        check_feedback(&current, &ids(&["signalrgb", "razer_synapse"])),
+        None
+    );
+    assert_eq!(check_feedback(&status(Vec::new()), &BTreeSet::new()), None);
 }
 
 // ── Which devices a program competes for ────────────────────────────────────

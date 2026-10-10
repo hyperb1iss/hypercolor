@@ -5,7 +5,7 @@ use hypercolor_types::config::HypercolorConfig;
 
 use crate::api;
 use crate::components::settings_controls::*;
-use crate::components::software_conflict_banner::conflicts_resource;
+use crate::components::software_conflict_banner::SoftwareConflictsState;
 use crate::driver_settings::{DiscoveryDriverSetting, discovery_driver_settings};
 use crate::icons::*;
 use crate::software_conflicts::smbus_conflict_warning;
@@ -220,11 +220,8 @@ fn HardwareSupportStatusPanel(
     // what is running. Dismissals on the Devices page don't apply here:
     // installing SMBus support beside a running SMBus tool is risky either
     // way.
-    let conflicts = conflicts_resource();
-    let conflict_warning = Signal::derive(move || match conflicts.get() {
-        Some(Ok(current)) => smbus_conflict_warning(&current.conflicts),
-        _ => None,
-    });
+    let running = expect_context::<SoftwareConflictsState>().running();
+    let conflict_warning = Signal::derive(move || running.with(|all| smbus_conflict_warning(all)));
 
     view! {
         <HardwareSupportFrame>
