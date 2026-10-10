@@ -821,6 +821,9 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         layouts_resource,
     });
     provide_context(DisplaysContext { displays_resource });
+    // Competing RGB software, shared by the Devices page and the SMBus
+    // support card. Living here lets a dismissal expire on any page.
+    provide_context(crate::components::software_conflict_banner::software_conflicts_state());
 
     // Refresh devices reactively from daemon lifecycle events instead of
     // rebuilding the grid on a fixed timer.

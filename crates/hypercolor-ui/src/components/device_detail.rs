@@ -17,6 +17,7 @@ use crate::components::device_card::{
 use crate::components::device_driver_controls::DeviceDriverControls;
 use crate::components::device_pairing_modal::needs_pairing;
 use crate::components::mounting_select::MountingSelect;
+use crate::components::software_conflict_banner::SoftwareConflictHint;
 use crate::icons::*;
 use crate::toasts;
 use crate::vendors::{VendorMark, VendorMarkSize};
@@ -28,6 +29,9 @@ pub fn DeviceDetail(
     #[prop(into)] on_pair: Callback<String>,
     #[prop(into)] on_forget: Callback<String>,
     #[prop(into)] on_delete_simulator: Callback<String>,
+    /// Names the running software that may be holding this device, if any.
+    #[prop(into, optional)]
+    conflict_hint: MaybeProp<String>,
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
@@ -308,6 +312,11 @@ pub fn DeviceDetail(
                             </div>
 
                             <crate::components::bridge_status::BridgeStatus device=bridge_device />
+                            {move || conflict_hint.get().map(|text| view! {
+                                <div class="mb-2.5">
+                                    <SoftwareConflictHint text=text />
+                                </div>
+                            })}
                             // ── Stats chips: LEDs · channels · connection ──
                             <div class="flex items-center gap-1.5 flex-wrap mb-3">
                                 <span class="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded-md"

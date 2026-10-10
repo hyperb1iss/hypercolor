@@ -4,7 +4,8 @@ pub use hypercolor_types::api::system::{
     GpuCompositorProbeStatus, InputSourceIssueStatus, InputSourceStatus, InputStatus,
     MacosCapabilityOwner, MacosDaemonHandoverPhase, MacosDaemonOwnerConflictStatus,
     MacosDaemonOwnerRecoveryRequiredStatus, MacosDaemonOwnershipStatus, RenderAccelerationStatus,
-    RenderLoopStatus, ServerInfo, SystemResource, SystemStatus,
+    RenderLoopStatus, ServerInfo, SoftwareConflict, SoftwareConflictsStatus, SystemResource,
+    SystemStatus,
 };
 use hypercolor_types::sensor::SystemSnapshot;
 pub use hypercolor_types::service::{
@@ -97,4 +98,15 @@ pub async fn fetch_status() -> ApiResult<SystemStatus> {
 /// Fetch the latest system sensor snapshot.
 pub async fn fetch_system_sensors() -> ApiResult<SystemSnapshot> {
     client::fetch_json("/api/v1/system/sensors").await
+}
+
+/// Fetch the competing RGB software the daemon's latest scan found.
+pub async fn fetch_software_conflicts() -> ApiResult<SoftwareConflictsStatus> {
+    client::fetch_json("/api/v1/system/conflicts").await
+}
+
+/// Ask the daemon to scan for competing RGB software now. The reply is the
+/// result of that scan, so callers need no follow-up fetch.
+pub async fn scan_software_conflicts() -> ApiResult<SoftwareConflictsStatus> {
+    client::post_empty_json("/api/v1/system/conflicts/scan").await
 }
