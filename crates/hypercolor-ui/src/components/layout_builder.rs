@@ -245,7 +245,10 @@ pub(crate) fn LayoutWorkspace(
     let can_undo = editor.can_undo;
     let can_redo = editor.can_redo;
     let write = editor.set_layout;
-    let _history_shortcuts =
+    // Removed on cleanup: Leptos 0.8 leaves a window listener attached when
+    // its handle drops, and a stale copy reads this workspace's disposed
+    // signals on the next Ctrl+Z anywhere in the app.
+    let history_shortcuts =
         window_event_listener(ev::keydown, move |ev: web_sys::KeyboardEvent| {
             if keyboard_target_is_text_input(ev.target()) {
                 return;
@@ -274,6 +277,7 @@ pub(crate) fn LayoutWorkspace(
                 _ => {}
             }
         });
+    on_cleanup(move || history_shortcuts.remove());
 
     // --- Resizable panel state ---
     let (sidebar_width, set_sidebar_width) = signal(load_panel_size(

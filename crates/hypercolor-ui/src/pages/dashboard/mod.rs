@@ -241,8 +241,9 @@ pub fn DashboardPage() -> impl IntoView {
 
     // Escape exits fullscreen even when the browser Fullscreen API isn't
     // in play (the API handles its own Escape). Listening on window is
-    // fine — keydown bubbles to window regardless of focus target.
-    window_event_listener(ev::keydown, move |event: ev::KeyboardEvent| {
+    // fine — keydown bubbles to window regardless of focus target. The
+    // handle is removed on cleanup; Leptos 0.8 never removes it otherwise.
+    let fullscreen_escape = window_event_listener(ev::keydown, move |event: ev::KeyboardEvent| {
         if event.key() == "Escape" && fullscreen.get_untracked() {
             fullscreen.set(false);
             if let Some(document) = browser_document()
@@ -252,6 +253,7 @@ pub fn DashboardPage() -> impl IntoView {
             }
         }
     });
+    on_cleanup(move || fullscreen_escape.remove());
 
     // Sync our signal when the user exits fullscreen through the browser
     // (native Esc, address bar click, etc.). `fullscreenchange` fires on

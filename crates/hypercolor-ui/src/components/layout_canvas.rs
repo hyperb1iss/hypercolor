@@ -291,9 +291,12 @@ pub fn LayoutCanvas() -> impl IntoView {
         }
     });
 
-    let _resize_listener = window_event_listener(ev::resize, move |_| {
+    // Leptos 0.8 never removes a window listener on its own: dropping the
+    // handle leaves the listener attached, so each mount must remove its own.
+    let resize_listener = window_event_listener(ev::resize, move |_| {
         update_canvas_slot_size(canvas_slot_ref, set_canvas_slot_size);
     });
+    on_cleanup(move || resize_listener.remove());
 
     // Settle an interaction the gesture has already handed back. A commit
     // writes the in-flight zones to the layout signal; a cancel repaints the
