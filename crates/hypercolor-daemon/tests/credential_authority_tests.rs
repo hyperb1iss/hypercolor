@@ -117,6 +117,13 @@ impl ApiExtension for TestExtension {
             // Engine routes and inexact paths must never become public.
             PublicRoute::new(Method::GET, "/devices", PublicRateClass::Read),
             PublicRoute::new(Method::GET, "/capture/monitors", PublicRateClass::Read),
+            // Concrete instances of engine templates are engine routes too.
+            PublicRoute::new(Method::GET, "/devices/example", PublicRateClass::Read),
+            PublicRoute::new(
+                Method::GET,
+                "/scene/zones/main/layers/base",
+                PublicRateClass::Read,
+            ),
             PublicRoute::new(Method::GET, "/test-ext/{id}", PublicRateClass::Read),
             PublicRoute::new(Method::GET, "test-ext/whoami", PublicRateClass::Read),
         ]
@@ -227,7 +234,11 @@ async fn an_authority_key_authenticates_a_network_request_at_its_tier() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(rate_limit(&response), Some("60"), "writes spend the write budget");
+    assert_eq!(
+        rate_limit(&response),
+        Some("60"),
+        "writes spend the write budget"
+    );
     let body = json_body(response).await;
     assert_eq!(body["can_control"], true);
     assert_eq!(body["is_loopback"], false);
@@ -235,7 +246,12 @@ async fn an_authority_key_authenticates_a_network_request_at_its_tier() {
 
     let engine_read = send(
         &app,
-        request(LAN_CLIENT, Method::GET, "/api/v1/devices", Some(CONTROL_KEY)),
+        request(
+            LAN_CLIENT,
+            Method::GET,
+            "/api/v1/devices",
+            Some(CONTROL_KEY),
+        ),
     )
     .await;
     assert_eq!(engine_read.status(), StatusCode::OK);
@@ -287,7 +303,11 @@ async fn an_unknown_or_revoked_key_is_rejected() {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{key}");
     }
 
-    let missing = send(&app, request(LAN_CLIENT, Method::GET, "/api/v1/devices", None)).await;
+    let missing = send(
+        &app,
+        request(LAN_CLIENT, Method::GET, "/api/v1/devices", None),
+    )
+    .await;
     assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -297,7 +317,12 @@ async fn a_read_grant_cannot_write() {
 
     let read = send(
         &app,
-        request(LAN_CLIENT, Method::GET, "/api/v1/test-ext/whoami", Some(READ_KEY)),
+        request(
+            LAN_CLIENT,
+            Method::GET,
+            "/api/v1/test-ext/whoami",
+            Some(READ_KEY),
+        ),
     )
     .await;
     assert_eq!(read.status(), StatusCode::OK);
@@ -305,7 +330,12 @@ async fn a_read_grant_cannot_write() {
 
     let write = send(
         &app,
-        request(LAN_CLIENT, Method::POST, "/api/v1/test-ext/whoami", Some(READ_KEY)),
+        request(
+            LAN_CLIENT,
+            Method::POST,
+            "/api/v1/test-ext/whoami",
+            Some(READ_KEY),
+        ),
     )
     .await;
     assert_eq!(write.status(), StatusCode::FORBIDDEN);
@@ -379,11 +409,19 @@ async fn an_authority_key_resolves_on_loopback_too() {
 #[tokio::test]
 async fn an_empty_daemon_answers_as_before_and_an_authority_turns_auth_on() {
     let unsecured = app_with(|security| security);
-    let open = send(&unsecured, request(LAN_CLIENT, Method::GET, "/api/v1/devices", None)).await;
+    let open = send(
+        &unsecured,
+        request(LAN_CLIENT, Method::GET, "/api/v1/devices", None),
+    )
+    .await;
     assert_eq!(open.status(), StatusCode::OK);
 
     let secured = app_with_authority(Arc::new(TestAuthority::new(CredentialTier::Control)));
-    let closed = send(&secured, request(LAN_CLIENT, Method::GET, "/api/v1/devices", None)).await;
+    let closed = send(
+        &secured,
+        request(LAN_CLIENT, Method::GET, "/api/v1/devices", None),
+    )
+    .await;
     assert_eq!(closed.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -423,7 +461,11 @@ async fn a_public_route_is_rate_limited_in_its_declared_class_for_every_caller()
                 request(caller, Method::POST, "/api/v1/test-ext/exchange", None),
             )
             .await;
-            assert_eq!(response.status(), StatusCode::OK, "{caller} attempt {attempt}");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{caller} attempt {attempt}"
+            );
             assert_eq!(rate_limit(&response), Some("6"));
         }
         let limited = send(
@@ -502,6 +544,9 @@ async fn undeclared_and_refused_declarations_stay_authenticated() {
         (Method::GET, "/api/v1/test-ext/whoami"),
         (Method::GET, "/api/v1/devices"),
         (Method::GET, "/api/v1/capture/monitors"),
+        // Public, these would reach the engine handler and answer 404.
+        (Method::GET, "/api/v1/devices/example"),
+        (Method::GET, "/api/v1/scene/zones/main/layers/base"),
     ] {
         let response = send(&app, request(LAN_CLIENT, method.clone(), path, None)).await;
         assert_eq!(
@@ -550,7 +595,9 @@ async fn upgrade(
     forwarded_for: Option<IpAddr>,
 ) -> (String, TcpStream) {
     let mut stream = TcpStream::connect(address).await.expect("connect");
-    let query = token.map(|token| format!("?token={token}")).unwrap_or_default();
+    let query = token
+        .map(|token| format!("?token={token}"))
+        .unwrap_or_default();
     let forwarded = forwarded_for
         .map(|ip| format!("X-Forwarded-For: {ip}\r\n"))
         .unwrap_or_default();
@@ -690,7 +737,10 @@ fn the_bind_rule_accepts_an_authority_that_can_grant_control() {
 #[test]
 fn the_bind_rule_refuses_a_read_only_authority_and_no_authority() {
     let config = lan_protected();
-    for options in [options_with(CredentialTier::Read), DaemonRunOptions::default()] {
+    for options in [
+        options_with(CredentialTier::Read),
+        DaemonRunOptions::default(),
+    ] {
         assert!(!credential_authority_grants_control(&options));
         let (targets, fell_back) = effective_startup_bind_targets(
             &options,

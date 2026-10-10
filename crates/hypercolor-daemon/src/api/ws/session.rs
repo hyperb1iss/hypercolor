@@ -83,6 +83,9 @@ use crate::render_thread::{
 use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
+/// How long a revoked session waits to deliver its close frame. The frame
+/// is a courtesy; a peer that stopped reading must not hold the session.
+const REVOKED_CLOSE_DEADLINE: Duration = Duration::from_secs(1);
 const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
 const SENSOR_STREAM_HZ: u32 = 1;
 
@@ -118,11 +121,10 @@ pub(crate) async fn ws_handler(
         crate::audit_log::with_ws_peer(
             peer,
             handle_socket(
-                SessionSocket::Network(socket),
+                SessionSocket::network(socket, revocation),
                 state,
                 auth_context,
                 None,
-                revocation,
             ),
         )
     })
@@ -144,16 +146,27 @@ fn spawn_local_socket_with_context(
     runtime: &tokio::runtime::Handle,
     auth_context: RequestAuthContext,
 ) -> TrustedLocalWebSocket {
+    spawn_local_socket(state, runtime, auth_context, None)
+}
+
+fn spawn_local_socket(
+    state: Arc<AppState>,
+    runtime: &tokio::runtime::Handle,
+    auth_context: RequestAuthContext,
+    revocation: Option<CancellationToken>,
+) -> TrustedLocalWebSocket {
     let (socket, transport) = trusted_local_socket_pair();
     let shutdown = transport.shutdown_token();
     drop(runtime.spawn(crate::audit_log::with_ws_peer(
         crate::audit_log::AuditPeer::in_process(),
         handle_socket(
-            SessionSocket::Local(transport),
+            SessionSocket {
+                transport: SessionTransport::Local(transport),
+                revocation,
+            },
             state,
             auth_context,
             Some(shutdown),
-            None,
         ),
     )));
     socket
@@ -168,7 +181,28 @@ pub(super) fn spawn_test_local_socket(
     spawn_local_socket_with_context(state, runtime, auth_context)
 }
 
-enum SessionSocket {
+/// A test session whose credential `revocation` can revoke.
+#[cfg(test)]
+pub(super) fn spawn_test_revocable_local_socket(
+    state: Arc<AppState>,
+    runtime: &tokio::runtime::Handle,
+    auth_context: RequestAuthContext,
+    revocation: CancellationToken,
+) -> TrustedLocalWebSocket {
+    spawn_local_socket(state, runtime, auth_context, Some(revocation))
+}
+
+/// A session's transport, plus the revocation of the credential that
+/// opened it.
+///
+/// Every send races the revocation, so a revoked session neither waits on
+/// a peer that stopped reading nor delivers anything more to it.
+struct SessionSocket {
+    transport: SessionTransport,
+    revocation: Option<CancellationToken>,
+}
+
+enum SessionTransport {
     Network(WebSocket),
     Local(TrustedLocalSocketTransport),
 }
@@ -179,9 +213,45 @@ enum SessionSocketError {
     Network(#[from] axum::Error),
     #[error("trusted local websocket transport closed")]
     LocalClosed,
+    #[error("the session's credential was revoked")]
+    Revoked,
 }
 
 impl SessionSocket {
+    const fn network(socket: WebSocket, revocation: Option<CancellationToken>) -> Self {
+        Self {
+            transport: SessionTransport::Network(socket),
+            revocation,
+        }
+    }
+
+    async fn send(&mut self, message: Message) -> Result<(), SessionSocketError> {
+        let Some(revocation) = self.revocation.clone() else {
+            return self.transport.send(message).await;
+        };
+        tokio::select! {
+            biased;
+            () = revocation.cancelled() => Err(SessionSocketError::Revoked),
+            result = self.transport.send(message) => result,
+        }
+    }
+
+    async fn recv(&mut self) -> Option<Result<Message, SessionSocketError>> {
+        self.transport.recv().await
+    }
+
+    /// Tell a revoked session's peer why it is closing, without letting a
+    /// peer that stopped reading hold the session open.
+    async fn close_revoked(&mut self) {
+        let close = Message::Close(Some(CloseFrame {
+            code: close_code::POLICY,
+            reason: Utf8Bytes::from_static("credential revoked"),
+        }));
+        let _ = tokio::time::timeout(REVOKED_CLOSE_DEADLINE, self.transport.send(close)).await;
+    }
+}
+
+impl SessionTransport {
     async fn send(&mut self, message: Message) -> Result<(), SessionSocketError> {
         match self {
             Self::Network(socket) => socket.send(message).await.map_err(Into::into),
@@ -279,9 +349,9 @@ async fn handle_socket(
     state: Arc<AppState>,
     auth_context: RequestAuthContext,
     shutdown: Option<CancellationToken>,
-    revocation: Option<CancellationToken>,
 ) {
     let _client_guard = WsClientGuard::register();
+    let revocation = socket.revocation.clone();
 
     let initial_subscriptions = SubscriptionState::default();
     let (subscriptions_tx, subscriptions_rx) = watch::channel(initial_subscriptions.clone());
@@ -370,7 +440,7 @@ async fn handle_socket(
             () = wait_for_shutdown(shutdown.as_ref()) => break,
 
             () = wait_for_shutdown(revocation.as_ref()) => {
-                close_revoked(&mut socket).await;
+                socket.close_revoked().await;
                 break;
             }
 
@@ -521,7 +591,7 @@ async fn handle_socket(
                 // `select!` picks among ready branches at random, so a
                 // message that arrives with the revocation must not run.
                 if revocation.as_ref().is_some_and(CancellationToken::is_cancelled) {
-                    close_revoked(&mut socket).await;
+                    socket.close_revoked().await;
                     break;
                 }
                 match msg {
@@ -574,16 +644,6 @@ async fn handle_socket(
         .clear_owned_many(zone_layout_preview_owner, zone_layout_preview_keys)
         .await;
     debug!("WebSocket client disconnected");
-}
-
-/// End a session whose credential was revoked, telling the client why.
-async fn close_revoked(socket: &mut SessionSocket) {
-    let _ = socket
-        .send(Message::Close(Some(CloseFrame {
-            code: close_code::POLICY,
-            reason: Utf8Bytes::from_static("credential revoked"),
-        })))
-        .await;
 }
 
 async fn wait_for_shutdown(shutdown: Option<&CancellationToken>) {
@@ -2113,7 +2173,11 @@ mod origin_tests {
                 header::ORIGIN,
                 origin.parse().expect("native origin should parse"),
             );
-            assert!(ws_origin_allowed(&state, &headers, RequestAuthContext::unsecured()));
+            assert!(ws_origin_allowed(
+                &state,
+                &headers,
+                RequestAuthContext::unsecured()
+            ));
         }
 
         for origin in ["tauri://attacker.example", "https://tauri.localhost.evil"] {
@@ -2122,7 +2186,11 @@ mod origin_tests {
                 header::ORIGIN,
                 origin.parse().expect("lookalike origin should parse"),
             );
-            assert!(!ws_origin_allowed(&state, &headers, RequestAuthContext::unsecured()));
+            assert!(!ws_origin_allowed(
+                &state,
+                &headers,
+                RequestAuthContext::unsecured()
+            ));
         }
     }
 
@@ -2137,14 +2205,22 @@ mod origin_tests {
         let state = AppState::new();
 
         // No Origin header: native and CLI clients are always allowed.
-        assert!(ws_origin_allowed(&state, &HeaderMap::new(), RequestAuthContext::unsecured()));
+        assert!(ws_origin_allowed(
+            &state,
+            &HeaderMap::new(),
+            RequestAuthContext::unsecured()
+        ));
 
         let mut loopback = HeaderMap::new();
         loopback.insert(
             header::ORIGIN,
             HeaderValue::from_static("http://localhost:9430"),
         );
-        assert!(ws_origin_allowed(&state, &loopback, RequestAuthContext::unsecured()));
+        assert!(ws_origin_allowed(
+            &state,
+            &loopback,
+            RequestAuthContext::unsecured()
+        ));
 
         // A non-loopback browser origin is rejected on the default
         // unsecured daemon, where no cors_origins allowlist applies.
@@ -2153,6 +2229,10 @@ mod origin_tests {
             header::ORIGIN,
             HeaderValue::from_static("https://evil.example"),
         );
-        assert!(!ws_origin_allowed(&state, &remote, RequestAuthContext::unsecured()));
+        assert!(!ws_origin_allowed(
+            &state,
+            &remote,
+            RequestAuthContext::unsecured()
+        ));
     }
 }

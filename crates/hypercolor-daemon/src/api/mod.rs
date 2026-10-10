@@ -201,8 +201,11 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .keys()
         .cloned()
         .collect::<Vec<_>>();
-    let public_routes =
-        security::PublicRouteTable::from_extensions(&state.api_extensions, "/api/v1", &engine_routes);
+    let public_routes = security::PublicRouteTable::from_extensions(
+        &state.api_extensions,
+        "/api/v1",
+        &engine_routes,
+    );
 
     let mut api = api;
     for extension in &state.api_extensions {

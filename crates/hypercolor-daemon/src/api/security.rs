@@ -550,7 +550,8 @@ fn template_matches(template: &str, path: &str) -> bool {
         match (template_segments.next(), path_segments.next()) {
             (None, None) => return true,
             (Some(expected), Some(actual))
-                if expected == actual || (expected.starts_with('{') && expected.ends_with('}')) => {}
+                if expected == actual || (expected.starts_with('{') && expected.ends_with('}')) => {
+            }
             _ => return false,
         }
     }
@@ -1121,7 +1122,9 @@ pub async fn enforce_security(
     match resolved {
         Some(resolved) => resolved.attach(&mut request, locality),
         None => {
-            request.extensions_mut().insert(RequestAuthContext::preflight());
+            request
+                .extensions_mut()
+                .insert(RequestAuthContext::preflight());
         }
     }
 
@@ -2768,7 +2771,8 @@ mod tests {
         fn mount_api_routes(
             &self,
             router: utoipa_axum::router::OpenApiRouter<std::sync::Arc<crate::app_state::AppState>>,
-        ) -> utoipa_axum::router::OpenApiRouter<std::sync::Arc<crate::app_state::AppState>> {
+        ) -> utoipa_axum::router::OpenApiRouter<std::sync::Arc<crate::app_state::AppState>>
+        {
             router
         }
 
@@ -2791,7 +2795,10 @@ mod tests {
         );
         let app = Router::new()
             .route("/api/v1/ext/pair", post(|| async { StatusCode::OK }))
-            .layer(axum::middleware::from_fn_with_state(state, enforce_security));
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                enforce_security,
+            ));
         let lan = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
 
         let anonymous = app
@@ -2812,7 +2819,9 @@ mod tests {
         let session = app
             .oneshot(with_connect_info(
                 with_bearer(
-                    Request::builder().method(Method::POST).uri("/api/v1/ext/pair"),
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/v1/ext/pair"),
                     credential.expose_secret(),
                 )
                 .body(Body::empty())

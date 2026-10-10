@@ -160,7 +160,7 @@ use super::relays::{
 };
 use super::session::{
     BrowserPreviewSession, WsInputDemandLeases, authorize_subscription_topics, build_hello_state,
-    spawn_test_local_socket, validated_zone_layout_preview,
+    spawn_test_local_socket, spawn_test_revocable_local_socket, validated_zone_layout_preview,
 };
 
 #[tokio::test]
@@ -6687,4 +6687,191 @@ fn screen_zones_empty_frame_encodes_as_no_signal() {
     assert_eq!(decoded.grid_cols, 0);
     assert_eq!(decoded.grid_rows, 0);
     assert!(decoded.payload.is_empty());
+}
+
+/// Mounts `/probe/count`, which counts executions, and `/probe/gated`,
+/// which signals when it starts and finishes only when released.
+struct RevocationProbe {
+    executed: Arc<std::sync::atomic::AtomicUsize>,
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl crate::extensions::ApiExtension for RevocationProbe {
+    fn name(&self) -> &'static str {
+        "revocation-probe"
+    }
+
+    fn mount_api_routes(
+        &self,
+        router: utoipa_axum::router::OpenApiRouter<Arc<AppState>>,
+    ) -> utoipa_axum::router::OpenApiRouter<Arc<AppState>> {
+        let counted = Arc::clone(&self.executed);
+        let gated = Arc::clone(&self.executed);
+        let started = Arc::clone(&self.started);
+        let release = Arc::clone(&self.release);
+        router
+            .route(
+                "/probe/count",
+                axum::routing::post(move || {
+                    let counted = Arc::clone(&counted);
+                    async move {
+                        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        axum::http::StatusCode::OK
+                    }
+                }),
+            )
+            .route(
+                "/probe/gated",
+                axum::routing::post(move || {
+                    let gated = Arc::clone(&gated);
+                    let started = Arc::clone(&started);
+                    let release = Arc::clone(&release);
+                    async move {
+                        started.notify_one();
+                        release.notified().await;
+                        gated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        axum::http::StatusCode::OK
+                    }
+                }),
+            )
+    }
+}
+
+fn revocation_probe_state() -> (Arc<AppState>, Arc<RevocationProbe>) {
+    let probe = Arc::new(RevocationProbe {
+        executed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        started: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    });
+    let mut state = AppState::new();
+    state.security_state =
+        SecurityState::with_keys(Some("hc_ak_control_test"), Some("hc_ak_r_read_test"));
+    state
+        .api_extensions
+        .push(Arc::clone(&probe) as Arc<dyn crate::extensions::ApiExtension>);
+    (Arc::new(state), probe)
+}
+
+fn probe_command(path: &str) -> Message {
+    Message::Text(
+        serde_json::json!({
+            "type": "command",
+            "id": "probe",
+            "method": "POST",
+            "path": path,
+        })
+        .to_string()
+        .into(),
+    )
+}
+
+fn authority_control() -> RequestAuthContext {
+    RequestAuthContext::authority_grant(crate::api::security::CredentialTier::Control)
+}
+
+#[tokio::test]
+async fn a_revoked_session_never_starts_a_command_that_arrives_with_the_revocation() {
+    // The session loop picks among ready branches at random. Queue the
+    // command and revoke before the session runs again, so both are
+    // ready together, for enough rounds that a missing per-message check
+    // would let one through all but certainly.
+    for round in 0..32 {
+        let (state, probe) = revocation_probe_state();
+        let revocation = tokio_util::sync::CancellationToken::new();
+        let mut socket = spawn_test_revocable_local_socket(
+            Arc::clone(&state),
+            &tokio::runtime::Handle::current(),
+            authority_control(),
+            revocation.clone(),
+        );
+        let hello = socket.recv().await.expect("test socket should emit hello");
+        assert!(matches!(hello, Message::Text(_)));
+
+        socket
+            .send(probe_command("/probe/count"))
+            .await
+            .expect("test socket should queue the command");
+        revocation.cancel();
+        while socket.recv().await.is_some() {}
+
+        assert_eq!(
+            probe.executed.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "round {round} ran a command after revocation"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_command_executing_when_the_session_is_revoked_completes() {
+    let (state, probe) = revocation_probe_state();
+    let revocation = tokio_util::sync::CancellationToken::new();
+    let mut socket = spawn_test_revocable_local_socket(
+        Arc::clone(&state),
+        &tokio::runtime::Handle::current(),
+        authority_control(),
+        revocation.clone(),
+    );
+    let hello = socket.recv().await.expect("test socket should emit hello");
+    assert!(matches!(hello, Message::Text(_)));
+
+    socket
+        .send(probe_command("/probe/gated"))
+        .await
+        .expect("test socket should queue the command");
+    probe.started.notified().await;
+    revocation.cancel();
+    probe.release.notify_one();
+    while socket.recv().await.is_some() {}
+
+    assert_eq!(probe.executed.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn revocation_ends_a_session_blocked_on_a_peer_that_stopped_reading() {
+    let (state, probe) = revocation_probe_state();
+    let revocation = tokio_util::sync::CancellationToken::new();
+    let mut socket = spawn_test_revocable_local_socket(
+        Arc::clone(&state),
+        &tokio::runtime::Handle::current(),
+        authority_control(),
+        revocation.clone(),
+    );
+    let hello = socket.recv().await.expect("test socket should emit hello");
+    assert!(matches!(hello, Message::Text(_)));
+
+    // More responses than the outbound buffer holds, and nothing reads
+    // them, so the session ends up parked on a send.
+    for _ in 0..80 {
+        socket
+            .send(probe_command("/probe/count"))
+            .await
+            .expect("test socket should queue the command");
+    }
+    let mut last = usize::MAX;
+    let mut stable = 0;
+    while stable < 200 {
+        tokio::task::yield_now().await;
+        let executed = probe.executed.load(std::sync::atomic::Ordering::SeqCst);
+        if executed == last {
+            stable += 1;
+        } else {
+            last = executed;
+            stable = 0;
+        }
+    }
+    assert!(
+        last > 0 && last < 80,
+        "the session should be parked mid-queue"
+    );
+
+    revocation.cancel();
+    // The session's end drops its inbound receiver; until then the queue
+    // accepts messages and eventually blocks.
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        while socket.send(Message::Pong(Vec::new().into())).await.is_ok() {}
+    })
+    .await;
+    assert!(ended.is_ok(), "a revoked session must not wait on its peer");
 }
