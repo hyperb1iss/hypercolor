@@ -1193,6 +1193,7 @@ button:hover:not(:disabled) > .relative {
     flex-shrink: 0;
     position: relative;
     z-index: 5;
+    touch-action: none;
 }
 
 .resize-handle-line {
@@ -1214,6 +1215,22 @@ button:hover:not(:disabled) > .relative {
     background: rgba(225, 53, 255, 0.65);
     height: 80px;
     box-shadow: 0 0 14px rgba(225, 53, 255, 0.35);
+}
+
+/* Drag handles sized for a cursor get a larger invisible grab area on
+   coarse pointers (fingers), without moving any layout. The element must
+   be positioned so the pseudo-element anchors to it. */
+@media (pointer: coarse) {
+    .touch-grab::before {
+        content: "";
+        position: absolute;
+        inset: -10px;
+    }
+
+    /* A full-height splitter only needs to grow sideways. */
+    .resize-handle-zone.touch-grab::before {
+        inset: 0 -10px;
+    }
 }
 
 /* Lock cursor & prevent selection during panel resize drag */
