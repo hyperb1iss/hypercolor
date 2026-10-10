@@ -364,9 +364,12 @@ session credential presented from the network is still refused, and every
 caller, loopback included, spends the declared rate class (read, write, or
 pairing). A declaration that names a route the engine serves, or falls within
 the API docs paths or the MCP mount when that is configured under `/api/v1`,
-is ignored at startup with an error, and that route keeps its authentication. The engine cannot
-tell one extension's routes from another's, so an extension must declare
-only routes it mounts.
+is ignored at startup with an error, and that route keeps its authentication:
+a refused declaration beneath the docs paths also withdraws their exemption
+from its exact path. The engine cannot tell one extension's routes from
+another's, so an extension must declare only routes it mounts, and must not
+mount undeclared routes beneath the docs paths, which the exemption covers
+whole.
 
 The MCP server (mounted at `/mcp` when `mcp.enabled` is true) sits outside the
 `/api/v1` middleware stack. MCP is **off by default**; enable it before using

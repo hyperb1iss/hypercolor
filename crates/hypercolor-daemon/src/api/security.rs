@@ -461,6 +461,11 @@ impl ResolvedCredential {
 #[derive(Clone, Default)]
 pub(crate) struct PublicRouteTable {
     routes: Arc<[PublicRouteEntry]>,
+    /// Full paths whose declaration was refused because they sit beneath
+    /// the bearer-exempt docs paths. An extension route there would
+    /// otherwise answer without a credential, so these paths lose the
+    /// exemption and authenticate like any undeclared route.
+    withheld_exemptions: Arc<[String]>,
 }
 
 #[derive(Debug, Clone)]
@@ -476,8 +481,10 @@ impl PublicRouteTable {
     /// `engine_routes` are the path templates the engine itself serves
     /// under the same prefix, and `reserved_prefixes` are full paths of
     /// engine mounts that sit outside its route table, such as the MCP
-    /// service. The bearer-exempt API docs paths are always reserved: a
-    /// route beneath them would skip the public-route admission entirely.
+    /// service. The bearer-exempt API docs paths are always reserved, and
+    /// a declaration refused beneath them also withdraws the exemption
+    /// from its exact path, so that extension route authenticates instead
+    /// of answering anyone.
     /// A declaration that names an engine route, falls within a reserved
     /// prefix, or is not an exact path is dropped with an error, and its
     /// route stays authenticated. Extensions are trusted not to declare one
@@ -489,6 +496,7 @@ impl PublicRouteTable {
         reserved_prefixes: &[String],
     ) -> Self {
         let mut routes = Vec::new();
+        let mut withheld_exemptions = Vec::new();
         for extension in extensions {
             for route in extension.public_routes() {
                 if let Err(reason) = validate_public_route(
@@ -504,6 +512,10 @@ impl PublicRouteTable {
                         reason,
                         "Ignoring public route declaration; the route stays authenticated"
                     );
+                    let full_path = format!("{api_prefix}{}", route.path());
+                    if is_docs_exempt_path(&full_path) {
+                        withheld_exemptions.push(full_path);
+                    }
                     continue;
                 }
                 routes.push(PublicRouteEntry {
@@ -519,7 +531,14 @@ impl PublicRouteTable {
         }
         Self {
             routes: routes.into(),
+            withheld_exemptions: withheld_exemptions.into(),
         }
+    }
+
+    fn withholds_exemption(&self, path: &str) -> bool {
+        self.withheld_exemptions
+            .iter()
+            .any(|withheld| withheld == path)
     }
 
     fn class_for(&self, method: &Method, path: &str) -> Option<OperationClass> {
@@ -557,10 +576,10 @@ fn validate_public_route(
         return Err("path names a route the engine serves");
     }
     let full_path = format!("{api_prefix}{path}");
-    if [SWAGGER_UI_PREFIX, OPENAPI_DOCUMENT_PATH]
-        .into_iter()
-        .chain(reserved_prefixes.iter().map(String::as_str))
-        .any(|prefix| path_within(&full_path, prefix))
+    if is_docs_exempt_path(&full_path)
+        || reserved_prefixes
+            .iter()
+            .any(|prefix| path_within(&full_path, prefix))
     {
         return Err("path falls within an engine mount");
     }
@@ -1054,8 +1073,13 @@ pub async fn enforce_security(
     }
 
     // Exempt paths, like public routes, run ahead of the loopback
-    // cross-site gate, so they never confer locality either.
-    if is_bearer_exempt(request.uri().path(), &state.static_assets) {
+    // cross-site gate, so they never confer locality or carry a grant.
+    if is_bearer_exempt(request.uri().path(), &state.static_assets)
+        && !state
+            .public_routes
+            .withholds_exemption(request.uri().path())
+    {
+        request.extensions_mut().remove::<CredentialGrant>();
         request
             .extensions_mut()
             .insert(RequestAuthContext::unsecured());
@@ -1231,10 +1255,12 @@ const OPENAPI_DOCUMENT_PATH: &str = "/api/v1/openapi.json";
 /// this check; the exemption is from presenting a key, not from being
 /// allowed to reach the daemon at all.
 fn is_bearer_exempt(path: &str, static_assets: &StaticAssetSurface) -> bool {
-    path == "/health"
-        || path == OPENAPI_DOCUMENT_PATH
-        || path_within(path, SWAGGER_UI_PREFIX)
-        || static_assets.serves(path)
+    path == "/health" || is_docs_exempt_path(path) || static_assets.serves(path)
+}
+
+/// The API docs paths the bearer exemption covers.
+fn is_docs_exempt_path(path: &str) -> bool {
+    path == OPENAPI_DOCUMENT_PATH || path_within(path, SWAGGER_UI_PREFIX)
 }
 
 fn is_optional_system_auth(method: &Method, path: &str) -> bool {
@@ -2941,6 +2967,43 @@ mod tests {
         ] {
             assert_eq!(table.class_for(&Method::GET, path), None, "{path}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_bearer_exempt_path_drops_an_attached_grant() {
+        let app = Router::new()
+            .route(
+                "/health",
+                get(
+                    |grant: Option<Extension<super::CredentialGrant>>| async move {
+                        axum::Json(serde_json::json!({ "grant": grant.is_some() }))
+                    },
+                ),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                SecurityState::with_keys(Some(CONTROL_KEY), None),
+                enforce_security,
+            ));
+        let mut request = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .expect("failed to build request");
+        request.extensions_mut().insert(super::CredentialGrant::new(
+            super::CredentialTier::Control,
+            "replayed",
+            tokio_util::sync::CancellationToken::new(),
+        ));
+
+        let response = app
+            .oneshot(with_connect_info(
+                request,
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
+                41_000,
+            ))
+            .await
+            .expect("request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["grant"], false);
     }
 
     #[tokio::test]

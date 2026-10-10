@@ -108,13 +108,17 @@ impl ApiExtension for TestExtension {
             .route("/test-ext/exchange", post(whoami))
             .route("/test-ext/probe", get(whoami))
             .route("/test-ext/private", post(whoami))
+            // Beneath the bearer-exempt docs prefix; must stay unreachable.
+            .route("/docs/exchange", get(whoami).post(whoami))
     }
 
     fn public_routes(&self) -> Vec<PublicRoute> {
         vec![
             PublicRoute::new(Method::POST, "/test-ext/exchange", PublicRateClass::Pairing),
             PublicRoute::new(Method::GET, "/test-ext/probe", PublicRateClass::Read),
-            // Engine routes and inexact paths must never become public.
+            // Engine routes, engine mounts, and inexact paths must never
+            // become public.
+            PublicRoute::new(Method::POST, "/docs/exchange", PublicRateClass::Pairing),
             PublicRoute::new(Method::GET, "/devices", PublicRateClass::Read),
             PublicRoute::new(Method::GET, "/capture/monitors", PublicRateClass::Read),
             // Concrete instances of engine templates are engine routes too.
@@ -816,4 +820,42 @@ fn installers_supply_at_most_one_authority_and_options_win() {
     let mut preset = options_with(CredentialTier::Read);
     adopt_credential_authority(&mut preset, &[&supplying]).expect("preset options are kept");
     assert!(!credential_authority_grants_control(&preset));
+}
+
+#[tokio::test]
+async fn a_refused_declaration_beneath_the_docs_exemption_stays_authenticated() {
+    // The docs exemption covers every path under `/api/v1/docs`, and an
+    // extension's exact route there outranks the docs mount. Refusing the
+    // declaration must also withdraw the exemption from that path, or the
+    // route would answer anyone.
+    let app = app_with_authority(Arc::new(TestAuthority::new(CredentialTier::Control)));
+    for method in [Method::GET, Method::POST] {
+        let anonymous = send(
+            &app,
+            request(LAN_CLIENT, method.clone(), "/api/v1/docs/exchange", None),
+        )
+        .await;
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED, "{method}");
+    }
+
+    let keyed = send(
+        &app,
+        request(
+            LAN_CLIENT,
+            Method::GET,
+            "/api/v1/docs/exchange",
+            Some(CONTROL_KEY),
+        ),
+    )
+    .await;
+    assert_eq!(keyed.status(), StatusCode::OK);
+    assert_eq!(json_body(keyed).await["credential_id"], CONTROL_KEY);
+
+    // The rest of the docs namespace keeps its exemption.
+    let openapi = send(
+        &app,
+        request(LAN_CLIENT, Method::GET, "/api/v1/openapi.json", None),
+    )
+    .await;
+    assert_eq!(openapi.status(), StatusCode::OK);
 }
