@@ -357,12 +357,16 @@ call the UI then makes still needs one.
 
 An embedding build may also declare routes it mounts as public
 (`ApiExtension::public_routes`). A declared route needs no key and grants
-none: its handler sees an anonymous caller whatever token arrives. It still
-passes the network policy, a launcher session credential presented from the
-network is still refused, and every caller, loopback included, spends the
-declared rate class (read, write, or pairing). A declaration that names a
-route the engine serves is ignored at startup with an error, and that route
-keeps its authentication.
+none: its handler sees an anonymous caller whatever token arrives, and never
+a loopback one, because any web page can reach a public route through a
+browser on the same machine. It still passes the network policy, a launcher
+session credential presented from the network is still refused, and every
+caller, loopback included, spends the declared rate class (read, write, or
+pairing). A declaration that names a route the engine serves, or falls within
+the MCP mount when that is configured under `/api/v1`, is ignored at startup
+with an error, and that route keeps its authentication. The engine cannot
+tell one extension's routes from another's, so an extension must declare
+only routes it mounts.
 
 The MCP server (mounted at `/mcp` when `mcp.enabled` is true) sits outside the
 `/api/v1` middleware stack. MCP is **off by default**; enable it before using
@@ -387,12 +391,16 @@ channel and frame protocol once connected, see
 [WebSocket protocol](@/api/websocket.md).
 
 The upgrade also checks the browser `Origin`. An anonymous upgrade is admitted
-only from loopback origins, the desktop app's origins, and, on a keyed daemon,
-the origins in `web.cors_origins`: the allowlist keeps other pages from riding
-the credentialless loopback tier. An upgrade that presents a token that
-resolves carries its own authority, so it is admitted from any origin,
+only from loopback origins, the desktop shell's Tauri origins, and, on a keyed
+daemon, the origins in `web.cors_origins`: the allowlist keeps other pages from
+riding the credentialless loopback tier.
+
+A WebSocket upgrade that presents a valid API key is no longer subject to the
+browser origin allowlist. This is a behavior change for every key holder,
+environment keys included: such an upgrade is admitted from any `Origin`,
 including the daemon's own LAN address when the bundled UI was loaded from
-there.
+there, where earlier releases refused it with `403`. The key carries its own
+authority, so there is no ambient credential for another page to ride.
 
 ## Hardening checklist
 
