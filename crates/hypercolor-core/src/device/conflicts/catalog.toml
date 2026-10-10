@@ -44,7 +44,7 @@ processes = ["SignalRgbLauncher.exe", "SignalRgb.exe", "SignalRgbService.exe"]
 services = ["SignalRgb.Service"]
 all_drivers = true
 smbus = true
-remedy = "Quit SignalRGB from its tray icon (right-click, then Exit). Closing its window leaves it running."
+remedy = "Quit SignalRGB from its tray icon (right-click, then Exit). Closing its window leaves it running. Version 2.5 and later also run the SignalRgb.Service Windows service; stop it in services.msc if the warning stays."
 
 # ── Vendor suites ───────────────────────────────────────────────────
 
@@ -74,7 +74,7 @@ processes = [
 ]
 services = ["Razer Synapse Service"]
 drivers = ["razer"]
-remedy = "Quit Razer Synapse from its tray icon, then check Task Manager for Razer processes that are still running."
+remedy = "Quit Razer Synapse from its tray icon. With Synapse 3, also stop the Razer Synapse Service in services.msc, which starts with Windows and keeps running after the app quits."
 
 # Sources: bleepingcomputer.com FRST logs (iCUE 4: t/779776; iCUE 5:
 # t/798623, t/812948); help.corsair.com article 30167929440781. The
@@ -86,7 +86,7 @@ processes = ["iCUE.exe", "Corsair.Service.exe", "iCUEDevicePluginHost.exe"]
 services = ["CorsairService", "iCUEDevicePluginHost"]
 drivers = ["corsair"]
 smbus = true
-remedy = "Quit iCUE from its tray icon, then stop the Corsair Service in services.msc. It keeps holding Corsair devices after the window closes."
+remedy = "Quit iCUE from its tray icon, then stop the Corsair Service (and the iCUE Device Plugin Host service, if present) in services.msc. They keep holding Corsair devices after the window closes."
 
 # Sources: github.com/seerge/g-helper app/Helpers/AsusService.cs;
 # docs.signalrgb.com/troubleshooting/brand-specific/asus/. The Aac*Hal
@@ -115,7 +115,7 @@ name = "MSI Center"
 processes = ["LEDKeeper2.exe", "Mystic_Light_Service.exe", "LightKeeperService.exe"]
 services = ["MSI_Center_Service", "Mystic_Light_Service", "LightKeeperService", "MSI_Central_Service"]
 smbus = true
-remedy = "Quit MSI Center, then stop the Mystic Light and LightKeeper services in services.msc. MSI Center reaches RGB memory over SMBus."
+remedy = "Quit MSI Center, then stop the MSI Center Service (MSI Central Service on Dragon Center installs), the Mystic Light Service, and the LightKeeper Service in services.msc. MSI Center reaches RGB memory over SMBus."
 
 # Sources: community reports only (medium confidence). Gigabyte Control
 # Center is left out because GCC.exe collides with GNU gcc.exe.
