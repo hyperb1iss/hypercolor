@@ -92,15 +92,18 @@ impl UsbObservation {
     /// can rule a device out when the host reports no interfaces.
     ///
     /// A device that is nothing but HID, and whose every HID top-level
-    /// collection is Consumer (page `0x0C`), is a media-key or volume
-    /// function and is ruled out as well. Both halves are deliberate.
-    /// Generic Desktop collections never count, because Razer and others
-    /// light keyboards and mice through feature reports on exactly those
-    /// collections. And a Consumer-only HID interface beside anything else
-    /// keeps the device visible, because some lighting does live there:
-    /// the Razer Leviathan V2 X soundbar exposes only a Consumer collection
-    /// next to its audio interfaces and takes its lighting as a feature
-    /// report on it. Unknown usage pages never rule anything out.
+    /// collection is Consumer (page `0x0C`), is treated as a media-key or
+    /// volume function and ruled out as well. Generic Desktop collections
+    /// never count, because Razer and others light keyboards and mice
+    /// through feature reports on exactly those collections. Consumer
+    /// collections can carry lighting too, so the rule stops at HID-only
+    /// devices: the Razer Leviathan V2 X soundbar exposes only a Consumer
+    /// collection beside its audio interfaces and takes its lighting as a
+    /// feature report on it. Usage pages cannot see feature reports, so an
+    /// unlisted HID-only device that lights through a Consumer collection
+    /// (the shape the Razer Charging Pad Chroma descriptor targets) is
+    /// ruled out along with the media keys. Unknown usage pages never rule
+    /// anything out.
     #[must_use]
     pub fn cannot_be_lighting(&self) -> bool {
         if self.device_class == USB_CLASS_HUB {
@@ -127,9 +130,9 @@ impl UsbObservation {
             && (self.serial.is_none() || self.serial.as_deref() == serial)
     }
 
-    /// Whether HID usage pages could change this device's verdict, so the
-    /// scanner and hotplug watcher only enumerate the HID stack when some
-    /// device needs it. A descriptor match makes the pages moot.
+    /// Whether HID usage pages could change this device's verdict, so a
+    /// scan only enumerates the HID stack when some device needs it. A
+    /// descriptor match makes the pages moot.
     pub(crate) fn wants_hid_usage_pages(&self) -> bool {
         self.descriptor_driver_id.is_none() && self.is_hid_only()
     }

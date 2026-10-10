@@ -215,10 +215,18 @@ fn nothing_is_known_without_collections_or_hid_interfaces() {
 }
 
 #[test]
-fn enumeration_never_fails_the_caller() {
-    // Whatever the host exposes, a join against it returns pages or nothing.
-    let index = HidUsageIndex::enumerate();
-    let _ = index.usage_pages_for(&unit(0x48F0, None, "1-1.2"), &[0], false);
+fn a_live_enumeration_joins_nothing_onto_a_device_it_never_saw() {
+    // Whatever this host exposes, or if its HID stack refuses to start, no
+    // collection carries this reserved vendor ID.
+    let mut ghost = unit(0x0000, None, "9-9.9");
+    ghost.vendor_id = 0xFFFF;
+    ghost.product_id = 0xFFFF;
+
+    assert!(
+        HidUsageIndex::enumerate()
+            .usage_pages_for(&ghost, &[0], false)
+            .is_empty()
+    );
 }
 
 #[test]

@@ -4,9 +4,10 @@
 //! usage pages of its HID collections, and those pages are what separate a
 //! media-key function from a lighting controller. hidapi reports a usage
 //! pair per top-level collection; this module decides which collections
-//! belong to which nusb device. Every doubt resolves to "unknown", which
-//! leaves the observation's page list empty, and an empty list never hides
-//! a device.
+//! belong to which nusb device. Every doubt the join can detect resolves
+//! to "unknown", which leaves the observation's page list empty, and an
+//! empty list never hides a device. A collection the HID stack itself
+//! leaves out of an interface it otherwise reports is beyond its sight.
 
 use hypercolor_hal::transport::hidapi::{HidCollectionInfo, enumerate_usb_hid_collections};
 use tracing::debug;
@@ -137,7 +138,7 @@ impl HidUsageIndex {
 }
 
 /// Enumerate the host HID stack on the blocking pool so the executor thread
-/// running a scan or the hotplug loop never waits on the platform HID API.
+/// running a scan never waits on the platform HID API.
 pub(crate) async fn enumerate_off_executor() -> HidUsageIndex {
     tokio::task::spawn_blocking(HidUsageIndex::enumerate)
         .await

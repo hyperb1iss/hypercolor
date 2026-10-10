@@ -807,8 +807,9 @@ impl HidCollectionInfo {
 
 /// Every top-level collection of every USB HID function the host exposes.
 ///
-/// Enumeration reads what the HID stack already cached and opens no device,
-/// so it is safe against hardware another program holds. One call covers
+/// Enumeration claims nothing and sends no reports. Windows opens each HID
+/// interface without read or write access to query its attributes, which
+/// does not conflict with a program holding the device. One call covers
 /// the whole stack: callers that need collections for many devices should
 /// enumerate once and join the result. Bluetooth, I2C, and SPI devices are
 /// left out; collections whose bus the platform could not determine stay.

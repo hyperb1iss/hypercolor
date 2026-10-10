@@ -10,9 +10,8 @@ use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
 use nusb::hotplug::HotplugEvent;
 use tracing::{debug, warn};
 
-use super::hid_usage::enumerate_off_executor;
 use super::unclaimed::{UnclaimedDeviceStore, UsbObservation};
-use super::usb_scanner::{hid_interface_numbers, usb_observation};
+use super::usb_scanner::usb_observation;
 
 /// USB hotplug event emitted by the monitor.
 #[derive(Debug, Clone)]
@@ -157,25 +156,10 @@ impl UsbHotplugMonitor {
 struct SeenDevice {
     vendor_id: u16,
     product_id: u16,
-    /// Kept so a later arrival can tell whether it has an attached twin the
-    /// HID usage join cannot separate it from.
-    serial: Option<String>,
     claimed: bool,
     /// [`UsbObservation::key`](super::unclaimed::UsbObservation::key) for
     /// the unclaimed inventory patch on removal.
     observation_key: String,
-}
-
-impl SeenDevice {
-    fn new(observation: &UsbObservation, claimed: bool) -> Self {
-        Self {
-            vendor_id: observation.vendor_id,
-            product_id: observation.product_id,
-            serial: observation.serial.clone(),
-            claimed,
-            observation_key: observation.key(),
-        }
-    }
 }
 
 async fn run_hotplug_loop(monitor: UsbHotplugMonitor, mut watch: nusb::hotplug::HotplugWatch) {
@@ -192,29 +176,20 @@ async fn run_hotplug_loop(monitor: UsbHotplugMonitor, mut watch: nusb::hotplug::
                     device.product_string(),
                     None,
                 );
-                let mut observation = usb_observation(&device, descriptor);
-                if observation.wants_hid_usage_pages() {
-                    // The HID stack may still be binding the new device's
-                    // interfaces. The join then comes back incomplete and
-                    // the device stays listed until the next full scan.
-                    let has_twin = known_devices.iter().any(|(id, seen)| {
-                        *id != device.id()
-                            && observation.is_hid_twin_of(
-                                seen.vendor_id,
-                                seen.product_id,
-                                seen.serial.as_deref(),
-                            )
-                    });
-                    observation.hid_usage_pages = enumerate_off_executor().await.usage_pages_for(
-                        &observation,
-                        &hid_interface_numbers(&device),
-                        has_twin,
-                    );
-                }
+                // HID usage pages stay unknown on arrival. The HID stack may
+                // not have started every collection of the new device yet,
+                // and a partial view could hide it; the next full scan
+                // joins them.
+                let observation = usb_observation(&device, descriptor);
 
                 known_devices.insert(
                     device.id(),
-                    SeenDevice::new(&observation, descriptor.is_some()),
+                    SeenDevice {
+                        vendor_id,
+                        product_id,
+                        claimed: descriptor.is_some(),
+                        observation_key: observation.key(),
+                    },
                 );
                 monitor.record_arrival(observation, descriptor);
             }
@@ -237,15 +212,22 @@ async fn enumerate_known_devices() -> HashMap<nusb::DeviceId, SeenDevice> {
     match nusb::list_devices().await {
         Ok(devices) => {
             for device in devices {
+                let vendor_id = device.vendor_id();
+                let product_id = device.product_id();
                 let descriptor = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
-                    device.vendor_id(),
-                    device.product_id(),
+                    vendor_id,
+                    product_id,
                     device.product_string(),
                     None,
                 );
                 known_devices.insert(
                     device.id(),
-                    SeenDevice::new(&usb_observation(&device, descriptor), descriptor.is_some()),
+                    SeenDevice {
+                        vendor_id,
+                        product_id,
+                        claimed: descriptor.is_some(),
+                        observation_key: usb_observation(&device, descriptor).key(),
+                    },
                 );
             }
         }
