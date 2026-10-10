@@ -391,8 +391,8 @@ pub fn LayoutCanvas() -> impl IntoView {
     };
 
     // A box or handle can leave the DOM mid-drag: Escape clears the
-    // selection and with it the resize handles, and a remote layout update
-    // can drop a box. A detached element's lost capture goes to the
+    // selection and with it the resize handles, and a layout update from
+    // another client can drop a box. A detached element's lost capture goes to the
     // document, never the slot, so a window listener cancels the drag.
     let detached_capture_loss = window_event_listener(ev::lostpointercapture, move |ev| {
         end_interaction(&ev, PointerEnd::LostCapture);

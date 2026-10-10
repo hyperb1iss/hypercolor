@@ -191,6 +191,23 @@ fn draw_thumb(ctx: &web_sys::CanvasRenderingContext2d, x: f64, y: f64, fill_hex:
 
 // ── Leptos component ─────────────────────────────────────────────────────────
 
+/// True while some color wheel on the page has a drag in progress. The
+/// color popover's outside-press and scroll dismissal check it, so a second
+/// finger landing outside, or a page scroll, cannot unmount the wheel under
+/// a live drag.
+#[must_use]
+pub fn color_wheel_drag_active() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| {
+            document
+                .query_selector("[data-color-wheel-dragging]")
+                .ok()
+                .flatten()
+        })
+        .is_some()
+}
+
 /// HSV color wheel with hue ring + saturation/value square.
 /// Manages its own HSV state internally to avoid reactive round-trips.
 /// A drag captures its pointer on the canvas and keeps tracking outside it;
@@ -208,6 +225,9 @@ pub fn ColorWheel(
     // Internal HSV state — source of truth during interaction
     let (hsv_state, set_hsv_state) = signal(Hsv::from_hex(&color.get_untracked()));
     let gesture = StoredValue::new(PointerGesture::<WheelDrag>::new());
+    // Mirrors `gesture.is_active()` onto the canvas so the popover's
+    // dismissal handlers can see a live drag (see `color_wheel_drag_active`).
+    let (dragging, set_dragging) = signal(false);
 
     // Sync from parent color signal (e.g. swatch click, hex input) — guarded during drag
     Effect::new(move |_| {
@@ -264,6 +284,7 @@ pub fn ColorWheel(
     };
 
     let restore = move |drag: WheelDrag| {
+        set_dragging.set(false);
         set_hsv_state.set(drag.start);
         on_change.run(drag.start.to_hex());
     };
@@ -296,6 +317,7 @@ pub fn ColorWheel(
         let start = hsv_state.get_untracked();
         let button = ev.button();
         gesture.update_value(|g| g.start(pointer_id, button, WheelDrag { region, start }));
+        set_dragging.set(true);
         update_from_pos(x, y, region);
     };
 
@@ -303,8 +325,10 @@ pub fn ColorWheel(
         let ended = gesture
             .try_update_value(|g| g.end(ev.pointer_id(), how))
             .flatten();
-        if let Some((GestureEnd::Cancel, drag)) = ended {
-            restore(drag);
+        match ended {
+            Some((GestureEnd::Cancel, drag)) => restore(drag),
+            Some((GestureEnd::Commit, _)) => set_dragging.set(false),
+            None => {}
         }
     };
 
@@ -331,6 +355,7 @@ pub fn ColorWheel(
                 width=CANVAS_SIZE
                 height=CANVAS_SIZE
                 class="cursor-crosshair select-none touch-none rounded-full"
+                data-color-wheel-dragging=move || dragging.get().then_some("true")
                 style=format!("width: {}px; height: {}px;", CANVAS_SIZE, CANVAS_SIZE)
                 on:pointerdown=on_pointer_down
                 on:pointermove=on_pointer_move

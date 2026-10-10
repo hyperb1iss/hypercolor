@@ -19,6 +19,7 @@ use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, Prev
 use hypercolor_types::viewport::ViewportRect;
 
 use crate::app::WsContext;
+use crate::components::color_wheel::color_wheel_drag_active;
 use crate::icons::*;
 
 mod boolean;
@@ -449,6 +450,11 @@ fn install_click_outside_handler(
             if expanded_picker_id.get_untracked().is_none() {
                 return;
             }
+            // A second finger landing outside must not unmount the wheel
+            // under a drag the first finger is still making.
+            if color_wheel_drag_active() {
+                return;
+            }
             let inside = ev.target().is_some_and(|target| {
                 target_closest(Some(target.clone()), ".color-picker-popover")
                     || target_closest(Some(target), ".swatch-glow")
@@ -579,7 +585,7 @@ pub(super) fn install_scroll_close_handler_for_picker(
         win,
         ev::scroll,
         move |_: web_sys::Event| {
-            if expanded_picker_id.get_untracked().is_none() {
+            if expanded_picker_id.get_untracked().is_none() || color_wheel_drag_active() {
                 return;
             }
             set_expanded.set(None);
