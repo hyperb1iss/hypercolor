@@ -508,9 +508,11 @@ input[type="range"].slider-silk::-moz-range-track {
     to   { opacity: 1; transform: scale(1); }
 }
 
+/* The color picker popover's inline `left` is already centered on its
+   swatch and clamped to the viewport, so the entrance must not shift it. */
 @keyframes pickerIn {
-    from { opacity: 0; transform: translateX(-50%) scale(0.92) translateY(6px); }
-    to   { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
+    from { opacity: 0; transform: scale(0.92) translateY(6px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 @keyframes enter-pop {
