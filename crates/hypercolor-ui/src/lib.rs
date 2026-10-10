@@ -51,6 +51,7 @@ pub mod render_canvas;
 pub mod render_presets;
 pub mod route_ui;
 pub mod settings_audio_devices;
+pub mod software_conflicts;
 pub mod storage;
 pub mod style_utils;
 pub mod tauri_bridge;
