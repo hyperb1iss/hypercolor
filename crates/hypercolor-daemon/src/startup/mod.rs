@@ -105,6 +105,13 @@ pub struct DaemonState {
     /// Extensions may inspect the same path before their install/start hooks.
     pub(crate) ui_dir: Option<PathBuf>,
 
+    /// Addresses the API listeners bound, set before extension installers
+    /// run. Empty for a daemon state that serves no listeners.
+    pub(crate) api_listen_addresses: Vec<std::net::SocketAddr>,
+
+    /// Whether a launch flag chose those addresses instead of config.
+    pub(crate) api_bind_overridden_at_launch: bool,
+
     /// Complete domain service graph shared by every transport.
     pub domains: DomainContexts,
 
@@ -314,6 +321,24 @@ impl DaemonState {
     #[must_use]
     pub fn ui_dir(&self) -> Option<&std::path::Path> {
         self.ui_dir.as_deref()
+    }
+
+    /// Addresses the API listeners actually bound.
+    ///
+    /// A launcher's explicit bind overrides the configured network mode,
+    /// so this, not the config, says whether the API is reachable from
+    /// other hosts.
+    #[must_use]
+    pub fn api_listen_addresses(&self) -> &[std::net::SocketAddr] {
+        &self.api_listen_addresses
+    }
+
+    /// Whether `--bind`, `--listen`, or `--listen-all` chose the API
+    /// addresses instead of config, so a restart binds the same way
+    /// whatever the network settings say.
+    #[must_use]
+    pub const fn api_bind_overridden_at_launch(&self) -> bool {
+        self.api_bind_overridden_at_launch
     }
 
     #[doc(hidden)]

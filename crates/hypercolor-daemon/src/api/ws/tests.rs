@@ -5664,6 +5664,28 @@ async fn dispatch_command_allows_control_protected_capture_access() {
 }
 
 #[tokio::test]
+async fn dispatch_command_keeps_an_authority_grant_without_protected_control() {
+    // A replayed command carries the session's context into the router;
+    // rebuilding it from the tier would hand a client credential the
+    // protected control its HTTP requests are denied.
+    let state = secured_state();
+    let message = dispatch_command(
+        &state,
+        RequestAuthContext::authority_grant(crate::api::security::CredentialTier::Control),
+        "cmd_capture_monitors".to_owned(),
+        "GET".to_owned(),
+        "/capture/monitors".to_owned(),
+        None,
+    )
+    .await;
+
+    match message {
+        ServerMessage::Response { status, .. } => assert_eq!(status, 403),
+        _ => panic!("expected command response"),
+    }
+}
+
+#[tokio::test]
 async fn dispatch_command_requires_auth_context_when_security_is_enabled() {
     let state = secured_state();
     let message = dispatch_command(

@@ -179,6 +179,7 @@ impl DaemonArgs {
             macos_daemon_session_attestation: None,
             service_status: None,
             session_monitors: None,
+            credential_authority: None,
         }
     }
 }
@@ -455,10 +456,15 @@ pub fn run(extension_installers: &'static [&'static dyn DaemonExtensionInstaller
     if args.windows_service {
         let mut options = args.into_run_options();
         options.service_status = Some(service_status);
+        daemon::adopt_credential_authority(&mut options, extension_installers)?;
         return windows_service::run(options, extension_installers);
     }
 
-    let options = args.into_run_options();
+    let mut options = args.into_run_options();
+    // The bind decision in `prepare` needs the authority, and the macOS
+    // path calls `prepare` directly rather than through
+    // `run_with_extensions`.
+    daemon::adopt_credential_authority(&mut options, extension_installers)?;
     #[cfg(not(target_os = "macos"))]
     let options = {
         let mut options = options;
