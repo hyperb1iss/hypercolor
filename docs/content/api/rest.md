@@ -309,11 +309,12 @@ the bridge is disabled, so setup can check readiness before enabling output.
 List RGB software running on the daemon host that competes with Hypercolor for
 devices, such as SignalRGB, L-Connect, or Razer Synapse. The response carries
 `supported` (false where the host can't list running software, macOS today),
-`scanned`, and `conflicts`: each entry has an `id`, a display `name`, the process
+`scanned`, `scan_failed` (the latest scan failed, so `conflicts` holds the last
+successful result), and `conflicts`: each entry has an `id`, a display `name`, the process
 and service names it `matched`, the `driver_ids` it competes with (or
 `all_drivers`), whether it drives SMBus lighting, and a `remedy` for the user. The
 daemon rescans every 30 seconds, after discovery, and when a device fails, and
-publishes `software_conflicts_changed` whenever the set changes. See
+publishes `software_conflicts_changed` whenever that status changes. See
 [Conflicting software](@/hardware/conflicting-software.md).
 {% </api_endpoint> %}
 

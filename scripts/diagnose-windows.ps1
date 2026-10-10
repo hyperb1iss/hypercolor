@@ -195,6 +195,8 @@ try {
         Write-Check "Competing software" $false "the daemon has not scanned yet"
     } elseif (-not $status.supported) {
         Write-Check "Competing software" $true "not inspected on this platform"
+    } elseif ($status.scan_failed -and $running.Count -eq 0) {
+        Write-Check "Competing software" $false "the latest scan failed, so competing programs are unknown"
     } elseif ($status.scan_failed) {
         Write-Check "Competing software" $false "the latest scan failed; showing the last successful one"
     }

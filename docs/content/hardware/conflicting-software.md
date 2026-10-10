@@ -38,7 +38,8 @@ OpenRGB beside Hypercolor is a supported setup, and the [OpenRGB section](#openr
 explains how the two share hardware. macOS is not checked yet.
 
 A clean check doesn't rule out a conflict. Software missing from the catalog can still
-hold a device, so the manual steps below still apply.
+hold a device, so the manual steps below still apply. A daemon running in a container
+sees only the container's processes, so it can't spot programs running on the host.
 
 ## Why conflicts happen
 
