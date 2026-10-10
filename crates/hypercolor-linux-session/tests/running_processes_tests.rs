@@ -39,12 +39,14 @@ fn a_child_shows_up_with_its_name_and_command_line() {
 #[cfg(target_os = "linux")]
 #[test]
 fn arguments_with_spaces_are_quoted() {
-    // `sh -c SCRIPT NAME` keeps NAME as $0 in its own argv; the trailing
-    // `true` keeps sh from exec'ing sleep and replacing that argv. The
-    // marker is built at runtime so no shell holding this source matches.
+    // `sh -c SCRIPT NAME` keeps NAME as $0 in its own argv. The script
+    // blocks in the `read` builtin on a pipe, so killing sh leaves no
+    // child behind. The marker is built at runtime so no shell holding
+    // this source matches.
     let marker = format!("quoting probe {}", std::process::id());
     let mut child = std::process::Command::new("sh")
-        .args(["-c", "sleep 30; true", marker.as_str()])
+        .args(["-c", "read line; true", marker.as_str()])
+        .stdin(std::process::Stdio::piped())
         .spawn()
         .expect("spawn sh");
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -58,7 +60,7 @@ fn arguments_with_spaces_are_quoted() {
         .find(|line| line.contains(marker.as_str()))
         .expect("the probe shell should be listed");
     assert!(
-        line.ends_with(&format!(r#"-c "sleep 30; true" "{marker}""#)),
+        line.ends_with(&format!(r#"-c "read line; true" "{marker}""#)),
         "arguments with spaces are single quoted words: {line}"
     );
 }
