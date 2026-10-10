@@ -39,31 +39,26 @@ fn a_child_shows_up_with_its_name_and_command_line() {
 #[cfg(target_os = "linux")]
 #[test]
 fn arguments_with_spaces_are_quoted() {
-    let mut child = std::process::Command::new("sleep")
-        .arg("27.1828")
-        .arg("--")
+    // `sh -c SCRIPT NAME` keeps NAME as $0 in its own argv; the trailing
+    // `true` keeps sh from exec'ing sleep and replacing that argv. The
+    // marker is built at runtime so no shell holding this source matches.
+    let marker = format!("quoting probe {}", std::process::id());
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "sleep 30; true", marker.as_str()])
         .spawn()
-        .expect("spawn sleep");
+        .expect("spawn sh");
+    std::thread::sleep(std::time::Duration::from_millis(100));
     let processes = running_processes().expect("Linux should list processes");
     let _ = child.kill();
     let _ = child.wait();
-    assert!(
-        processes.iter().any(|process| process
-            .command_line
-            .as_deref()
-            .is_some_and(|line| line.ends_with("sleep 27.1828 --"))),
-        "plain words stay unquoted"
-    );
 
-    let me = std::env::current_exe().expect("current exe");
-    let me = me.to_string_lossy();
-    if me.contains(' ') {
-        assert!(
-            processes.iter().any(|process| process
-                .command_line
-                .as_deref()
-                .is_some_and(|line| line.starts_with(&format!("\"{me}\"")))),
-            "a path with spaces is one quoted word"
-        );
-    }
+    let line = processes
+        .iter()
+        .filter_map(|process| process.command_line.as_deref())
+        .find(|line| line.contains(marker.as_str()))
+        .expect("the probe shell should be listed");
+    assert!(
+        line.ends_with(&format!(r#"-c "sleep 30; true" "{marker}""#)),
+        "arguments with spaces are single quoted words: {line}"
+    );
 }
