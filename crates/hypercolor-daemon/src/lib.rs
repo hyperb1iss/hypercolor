@@ -1,6 +1,11 @@
 //! Hypercolor daemon — render loop, device orchestration, HTTP/WebSocket API,
 //! MCP server, and system integration.
 
+// wgpu 30 deepens the auto-trait tree behind `AppState` enough that proving
+// the WebSocket session future `Send` sits at the default limit; a session
+// whose sends race a credential revocation goes past it.
+#![recursion_limit = "256"]
+
 pub mod api;
 pub mod app_state;
 pub mod attachment_profiles;
