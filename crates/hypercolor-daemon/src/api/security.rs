@@ -181,8 +181,8 @@ impl RequestAuthContext {
         }
     }
 
-    /// A caller on a public route: no tier and no protected control,
-    /// whatever it presented.
+    /// A caller on a public route: no tier, no protected control, and no
+    /// loopback locality, whatever it presented and wherever it came from.
     #[must_use]
     const fn anonymous() -> Self {
         Self::preflight()
@@ -270,7 +270,8 @@ impl RequestAuthContext {
     ///
     /// A loopback proxy that forwards a client address makes the request
     /// the forwarded client's, so this is the classification to trust,
-    /// not the raw socket address.
+    /// not the raw socket address. Always `false` on a public route, which
+    /// any web page can reach through a loopback browser.
     #[must_use]
     pub const fn is_loopback(self) -> bool {
         matches!(self.locality, RequestLocality::Loopback)
@@ -1023,16 +1024,18 @@ pub async fn enforce_security(
         return next.run(request).await;
     }
 
-    // A public route needs no credential and confers none. Locality buys
-    // it nothing either: the budget exists for callers that could be a
-    // page driving the loopback API.
+    // A public route needs no credential and confers none, locality
+    // included: it runs ahead of the loopback cross-site gate, so a page
+    // on any origin can reach it through the browser, and its handler must
+    // never see such a caller as local. Locality buys no rate exemption
+    // either; the budget exists for exactly those pages.
     if let Some(class) = state
         .public_routes
         .class_for(request.method(), request.uri().path())
     {
         request
             .extensions_mut()
-            .insert(RequestAuthContext::anonymous().with_locality(locality));
+            .insert(RequestAuthContext::anonymous());
         return rate_limited(&state, request, next, class).await;
     }
 

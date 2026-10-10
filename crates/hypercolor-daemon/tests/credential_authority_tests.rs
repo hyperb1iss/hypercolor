@@ -451,6 +451,47 @@ async fn a_public_route_answers_without_a_credential_and_confers_none() {
 }
 
 #[tokio::test]
+async fn a_public_route_never_confers_loopback_locality() {
+    let app = app_with_authority(Arc::new(TestAuthority::new(CredentialTier::Control)));
+    let cross_site = |path: &str| {
+        let mut request = request(Ipv4Addr::LOCALHOST, Method::POST, path, None);
+        let headers = request.headers_mut();
+        headers.insert("sec-fetch-site", "cross-site".parse().expect("header"));
+        headers.insert(
+            header::ORIGIN,
+            "https://evil.example".parse().expect("header"),
+        );
+        request
+    };
+
+    // Any page can drive a loopback browser at a public route, so its
+    // handler must not see that caller as local. It still spends the
+    // route's rate class.
+    let public = send(&app, cross_site("/api/v1/test-ext/exchange")).await;
+    assert_eq!(public.status(), StatusCode::OK);
+    assert_eq!(rate_limit(&public), Some("6"));
+    assert_eq!(json_body(public).await["is_loopback"], false);
+
+    // A route that is not public still meets the loopback CSRF gate.
+    let private = send(&app, cross_site("/api/v1/test-ext/private")).await;
+    assert_eq!(private.status(), StatusCode::FORBIDDEN);
+
+    // A same-site loopback caller of a non-public route is still local.
+    let local = send(
+        &app,
+        request(
+            Ipv4Addr::LOCALHOST,
+            Method::POST,
+            "/api/v1/test-ext/private",
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(local.status(), StatusCode::OK);
+    assert_eq!(json_body(local).await["is_loopback"], true);
+}
+
+#[tokio::test]
 async fn a_public_route_is_rate_limited_in_its_declared_class_for_every_caller() {
     let app = app_with_authority(Arc::new(TestAuthority::new(CredentialTier::Control)));
 
