@@ -1,6 +1,6 @@
 //! Foreground daemon runtime shared by console and service entry points.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -41,6 +41,13 @@ pub struct DaemonRunOptions {
     pub config: Option<PathBuf>,
     /// Address and port to bind the API server to.
     pub bind: Option<String>,
+    /// Port that replaces `daemon.port` for this launch.
+    ///
+    /// It never picks interfaces. Unless `listen_address` or `listen_all`
+    /// does, the configured network mode picks them, and loopback stays
+    /// reachable on this port so a local launcher can always find the
+    /// daemon. An explicit [`bind`](Self::bind) wins over it.
+    pub port: Option<u16>,
     /// Host/interface to bind using the configured daemon port.
     pub listen_address: Option<String>,
     /// Bind the API server to every network interface.
@@ -421,6 +428,7 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
     info!(
         version = env!("CARGO_PKG_VERSION"),
         bind = ?options.bind,
+        port = ?options.port,
         log_level = %log_level,
         "Hypercolor daemon starting"
     );
@@ -824,6 +832,7 @@ pub fn effective_bind_targets(
         return expand_bind_target(bind);
     }
 
+    let port = effective_port(options, config);
     let hosts = if options.listen_all {
         all_interface_hosts()
     } else if let Some(host) = options.listen_address.as_deref() {
@@ -831,7 +840,7 @@ pub fn effective_bind_targets(
     } else if config.network.access_mode == NetworkAccessMode::LocalOnly
         && !config.network.remote_access
     {
-        return loopback_bind_targets(config.daemon.port);
+        return loopback_bind_targets(port);
     } else if config.network.remote_access_enabled()
         && is_loopback_host(&config.daemon.listen_address)
     {
@@ -840,10 +849,24 @@ pub fn effective_bind_targets(
         expand_listen_host(&config.daemon.listen_address)
     };
 
-    hosts
+    let targets = hosts
         .into_iter()
-        .map(|host| format_bind_target(&host, config.daemon.port))
-        .collect()
+        .map(|host| format_bind_target(&host, port))
+        .collect();
+    if options.port.is_some() && !has_explicit_bind_override(options) {
+        // A launcher that passes only a port reaches the daemon over
+        // loopback, so a config that names one specific interface must
+        // not strand it.
+        with_loopback_reachable(targets, port)
+    } else {
+        targets
+    }
+}
+
+/// The port the API binds when no explicit `--bind` names one: the launch
+/// override when present, otherwise `daemon.port`.
+fn effective_port(options: &DaemonRunOptions, config: &HypercolorConfig) -> u16 {
+    options.port.unwrap_or(config.daemon.port)
 }
 
 #[must_use]
@@ -862,14 +885,48 @@ pub fn effective_startup_bind_targets(
     }
 
     if targets.iter().any(|target| bind_target_needs_auth(target)) {
-        return (loopback_bind_targets(config.daemon.port), true);
+        return (loopback_bind_targets(effective_port(options, config)), true);
     }
 
     (targets, false)
 }
 
+/// Whether a launch flag picked the API interfaces instead of the
+/// configured network mode. `--port` alone does not: it only moves the
+/// port.
 fn has_explicit_bind_override(options: &DaemonRunOptions) -> bool {
     options.bind.is_some() || options.listen_address.is_some() || options.listen_all
+}
+
+/// Append the loopback targets on `port` that `targets` does not already
+/// serve. A wildcard target serves the loopback address of its own family.
+fn with_loopback_reachable(mut targets: Vec<String>, port: u16) -> Vec<String> {
+    let served: Vec<IpAddr> = targets
+        .iter()
+        .filter_map(|target| {
+            let (host, _) = split_bind_host_port(target)?;
+            unbracket_host(host).parse().ok()
+        })
+        .collect();
+    let families = [
+        (
+            IpAddr::from(Ipv4Addr::LOCALHOST),
+            IpAddr::from(Ipv4Addr::UNSPECIFIED),
+        ),
+        (
+            IpAddr::from(Ipv6Addr::LOCALHOST),
+            IpAddr::from(Ipv6Addr::UNSPECIFIED),
+        ),
+    ];
+    for (loopback, wildcard) in families {
+        if !served
+            .iter()
+            .any(|address| *address == loopback || *address == wildcard)
+        {
+            targets.push(format_bind_target(&loopback.to_string(), port));
+        }
+    }
+    targets
 }
 
 fn bind_target_needs_auth(target: &str) -> bool {
@@ -1017,9 +1074,10 @@ mod tests {
     use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
 
     use super::{
-        DaemonExtensionInstaller, bind_api_listener, bind_api_listener_with_lease,
-        default_env_filter, install_extensions, notify_api_ready_extensions, record_api_binding,
-        resolve_log_level, serve_api_listeners_with_shutdown_timeout,
+        DaemonExtensionInstaller, DaemonRunOptions, bind_api_listener,
+        bind_api_listener_with_lease, default_env_filter, has_explicit_bind_override,
+        install_extensions, notify_api_ready_extensions, record_api_binding, resolve_log_level,
+        serve_api_listeners_with_shutdown_timeout,
     };
     use crate::app_state::AppState;
     use crate::extensions::DaemonLifecycleExtension;
@@ -1257,6 +1315,35 @@ mod tests {
                 .as_deref(),
             Some(ui_dir.as_path())
         );
+    }
+
+    #[test]
+    fn port_override_alone_leaves_the_bind_to_config() {
+        let port_only = DaemonRunOptions {
+            port: Some(9555),
+            ..DaemonRunOptions::default()
+        };
+        assert!(!has_explicit_bind_override(&port_only));
+
+        for explicit in [
+            DaemonRunOptions {
+                bind: Some("127.0.0.1:9555".to_owned()),
+                port: Some(9555),
+                ..DaemonRunOptions::default()
+            },
+            DaemonRunOptions {
+                listen_address: Some("192.168.1.42".to_owned()),
+                port: Some(9555),
+                ..DaemonRunOptions::default()
+            },
+            DaemonRunOptions {
+                listen_all: true,
+                port: Some(9555),
+                ..DaemonRunOptions::default()
+            },
+        ] {
+            assert!(has_explicit_bind_override(&explicit));
+        }
     }
 
     #[tokio::test]

@@ -253,8 +253,9 @@ without auth never comes up by accident. The validation
 to any non-loopback address unless `HYPERCOLOR_API_KEY` is configured, a
 credential authority that can grant control is installed, or
 `network.allow_unauthenticated_remote_access = true` is set; an explicit
-non-loopback bind flag (`--bind`, `--listen-address`, `--listen-all`) without
-either aborts startup with an error naming those exact remedies.
+non-loopback bind flag (`--bind`, `--listen`, `--listen-all`) without
+either aborts startup with an error naming those exact remedies. `--port` is
+not a bind flag: it moves the port and leaves the interfaces to config.
 
 A non-loopback target that comes from **config** rather than a flag degrades
 instead of aborting: the daemon falls back to loopback at startup and logs a

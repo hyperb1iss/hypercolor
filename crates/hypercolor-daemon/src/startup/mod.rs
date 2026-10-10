@@ -335,7 +335,9 @@ impl DaemonState {
 
     /// Whether `--bind`, `--listen`, or `--listen-all` chose the API
     /// addresses instead of config, so a restart binds the same way
-    /// whatever the network settings say.
+    /// whatever the network settings say. `--port` alone leaves this
+    /// false: it moves the port, and the network settings still pick the
+    /// interfaces.
     #[must_use]
     pub const fn api_bind_overridden_at_launch(&self) -> bool {
         self.api_bind_overridden_at_launch

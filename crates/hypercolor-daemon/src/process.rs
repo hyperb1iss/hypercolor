@@ -109,6 +109,15 @@ struct DaemonArgs {
     #[arg(long)]
     bind: Option<String>,
 
+    /// Port to serve on instead of the configured daemon port. Unlike
+    /// --bind, the configured network mode still picks the interfaces.
+    #[arg(
+        long,
+        conflicts_with = "bind",
+        value_parser = clap::value_parser!(u16).range(1..)
+    )]
+    port: Option<u16>,
+
     /// Host/interface to bind using the configured daemon port.
     #[arg(long, conflicts_with = "bind")]
     listen: Option<String>,
@@ -164,6 +173,7 @@ impl DaemonArgs {
         DaemonRunOptions {
             config: self.config,
             bind: self.bind,
+            port: self.port,
             listen_address: self.listen,
             listen_all: self.listen_all,
             log_level: self.log_level,
@@ -1110,6 +1120,44 @@ mod tests {
             let error = DaemonArgs::try_parse_from(["hypercolor-daemon", retired])
                 .expect_err("retired listen-all flag must be rejected");
             assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+    }
+
+    #[test]
+    fn daemon_port_flag_moves_the_port_without_naming_a_bind() {
+        let options = DaemonArgs::try_parse_from(["hypercolor-daemon", "--port", "9555"])
+            .expect("port flag should parse")
+            .into_run_options();
+        assert_eq!(options.port, Some(9555));
+        assert_eq!(options.bind, None);
+        assert_eq!(options.listen_address, None);
+        assert!(!options.listen_all);
+
+        let with_listen = DaemonArgs::try_parse_from([
+            "hypercolor-daemon",
+            "--port",
+            "9555",
+            "--listen",
+            "192.168.1.10",
+        ])
+        .expect("port flag should combine with an interface flag")
+        .into_run_options();
+        assert_eq!(with_listen.port, Some(9555));
+        assert_eq!(with_listen.listen_address.as_deref(), Some("192.168.1.10"));
+
+        let conflict = DaemonArgs::try_parse_from([
+            "hypercolor-daemon",
+            "--port",
+            "9555",
+            "--bind",
+            "127.0.0.1:9556",
+        ])
+        .expect_err("--bind already names a port");
+        assert_eq!(conflict.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        for invalid in ["0", "65536", "http"] {
+            DaemonArgs::try_parse_from(["hypercolor-daemon", "--port", invalid])
+                .expect_err("port flag must reject values outside 1-65535");
         }
     }
 
