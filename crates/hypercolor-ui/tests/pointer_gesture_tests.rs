@@ -1,10 +1,12 @@
 use hypercolor_ui::pointer_gesture::{
-    GestureEnd, PointerEnd, PointerGesture, Press, cancels_press_defaults,
+    GestureEnd, PointerEnd, PointerGesture, Press, button_mask, cancels_press_defaults,
 };
 
 const MOUSE: i32 = 1;
 const FIRST_FINGER: i32 = 2;
 const SECOND_FINGER: i32 = 3;
+const PRIMARY: i16 = 0;
+const SECONDARY: i16 = 2;
 
 fn live(_: i32, _: &&str) -> bool {
     true
@@ -17,7 +19,7 @@ fn gone(_: i32, _: &&str) -> bool {
 fn started(pointer_id: i32, state: &'static str) -> PointerGesture<&'static str> {
     let mut gesture = PointerGesture::new();
     assert_eq!(gesture.press(pointer_id, live), Press::Ready);
-    gesture.start(pointer_id, state);
+    gesture.start(pointer_id, PRIMARY, state);
     gesture
 }
 
@@ -110,7 +112,7 @@ fn press_from_the_owner_means_its_release_was_lost() {
     assert_eq!(press, Press::Stale("stale"));
     assert!(!gesture.is_active());
 
-    gesture.start(MOUSE, "fresh");
+    gesture.start(MOUSE, PRIMARY, "fresh");
     assert_eq!(gesture.state(MOUSE), Some(&"fresh"));
 }
 
@@ -118,7 +120,7 @@ fn press_from_the_owner_means_its_release_was_lost() {
 fn owner_without_capture_is_stale_and_yields_to_the_new_pointer() {
     let mut gesture = started(FIRST_FINGER, "stale");
     assert_eq!(gesture.press(SECOND_FINGER, gone), Press::Stale("stale"));
-    gesture.start(SECOND_FINGER, "fresh");
+    gesture.start(SECOND_FINGER, PRIMARY, "fresh");
     assert_eq!(gesture.state(FIRST_FINGER), None);
     assert_eq!(gesture.state(SECOND_FINGER), Some(&"fresh"));
 }
@@ -127,7 +129,7 @@ fn owner_without_capture_is_stale_and_yields_to_the_new_pointer() {
 fn state_mut_updates_the_live_gesture() {
     let mut gesture = PointerGesture::new();
     assert_eq!(gesture.press(MOUSE, |_, _: &u32| true), Press::Ready);
-    gesture.start(MOUSE, 1_u32);
+    gesture.start(MOUSE, PRIMARY, 1_u32);
     if let Some(state) = gesture.state_mut(MOUSE) {
         *state += 1;
     }
@@ -152,7 +154,7 @@ fn current_reads_the_live_gesture_for_any_caller() {
     assert_eq!(gesture.current(), None);
     assert_eq!(gesture.current_mut(), None);
 
-    gesture.start(FIRST_FINGER, 7);
+    gesture.start(FIRST_FINGER, PRIMARY, 7);
     assert_eq!(gesture.current(), Some(&7));
     if let Some(state) = gesture.current_mut() {
         *state = 8;
@@ -169,4 +171,60 @@ fn only_touch_presses_keep_their_default_actions() {
     // Unknown pointer types behave like a mouse.
     assert!(cancels_press_defaults(""));
     assert!(!cancels_press_defaults("touch"));
+}
+
+#[test]
+fn button_masks_follow_the_pointer_events_buttons_bits() {
+    assert_eq!(button_mask(0), 1);
+    assert_eq!(button_mask(1), 4);
+    assert_eq!(button_mask(2), 2);
+    assert_eq!(button_mask(3), 8);
+    assert_eq!(button_mask(4), 16);
+    assert_eq!(button_mask(5), 32);
+    assert_eq!(button_mask(-1), 0);
+    assert_eq!(button_mask(9), 0);
+}
+
+#[test]
+fn releasing_the_pressing_button_mid_chord_ends_the_gesture() {
+    let mut gesture = PointerGesture::new();
+    assert_eq!(gesture.press(MOUSE, live), Press::Ready);
+    gesture.start(MOUSE, PRIMARY, "drag");
+    // Primary held, then secondary added: still dragging.
+    assert!(!gesture.press_released(MOUSE, 0b01));
+    assert!(!gesture.press_released(MOUSE, 0b11));
+    // Primary released while secondary stays down arrives as a move.
+    assert!(gesture.press_released(MOUSE, 0b10));
+    // Another pointer's moves never end this gesture.
+    assert!(!gesture.press_released(FIRST_FINGER, 0));
+}
+
+#[test]
+fn a_secondary_button_drag_ends_when_that_button_lifts() {
+    let mut gesture = PointerGesture::new();
+    gesture.start(MOUSE, SECONDARY, "drag");
+    assert!(!gesture.press_released(MOUSE, 0b10));
+    assert!(gesture.press_released(MOUSE, 0b01));
+    assert!(gesture.press_released(MOUSE, 0));
+}
+
+#[test]
+fn a_touch_contact_stays_pressed_until_it_lifts() {
+    let mut gesture = PointerGesture::new();
+    gesture.start(FIRST_FINGER, PRIMARY, "drag");
+    assert!(!gesture.press_released(FIRST_FINGER, 1));
+    assert!(gesture.press_released(FIRST_FINGER, 0));
+}
+
+#[test]
+fn an_unknown_button_is_never_released_by_a_move() {
+    let mut gesture = PointerGesture::new();
+    gesture.start(MOUSE, -1, "drag");
+    assert!(!gesture.press_released(MOUSE, 0));
+}
+
+#[test]
+fn an_idle_gesture_has_nothing_to_release() {
+    let gesture = PointerGesture::<&str>::new();
+    assert!(!gesture.press_released(MOUSE, 0));
 }

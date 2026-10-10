@@ -42,6 +42,20 @@ pub fn ResizeHandle(
         }
     };
 
+    // A handle torn down mid-drag never sees its release. Put the panel back
+    // and let the parent settle (body cursor class, persistence). The parent
+    // may already be gone, hence `try_run`.
+    on_cleanup(move || {
+        if gesture
+            .try_update_value(PointerGesture::abandon)
+            .flatten()
+            .is_some()
+        {
+            let _ = on_drag.try_run(0.0);
+            let _ = on_drag_end.try_run(());
+        }
+    });
+
     view! {
         <div
             node_ref=handle_ref
@@ -65,11 +79,16 @@ pub fn ResizeHandle(
                     Press::Ready => {}
                 }
                 capture_pointer(&handle, &ev);
-                gesture.update_value(|g| g.start(pointer_id, f64::from(ev.client_x())));
+                let button = ev.button();
+                gesture.update_value(|g| g.start(pointer_id, button, f64::from(ev.client_x())));
                 set_dragging.set(true);
                 on_drag_start.run(());
             }
             on:pointermove=move |ev: web_sys::PointerEvent| {
+                if gesture.with_value(|g| g.press_released(ev.pointer_id(), ev.buttons())) {
+                    on_pointer_end(ev, PointerEnd::Up);
+                    return;
+                }
                 let Some(start_x) = gesture.with_value(|g| g.state(ev.pointer_id()).copied())
                 else {
                     return;

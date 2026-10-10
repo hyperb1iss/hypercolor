@@ -294,20 +294,9 @@ pub fn ColorWheel(
         };
         capture_pointer(&canvas, &ev);
         let start = hsv_state.get_untracked();
-        gesture.update_value(|g| g.start(pointer_id, WheelDrag { region, start }));
+        let button = ev.button();
+        gesture.update_value(|g| g.start(pointer_id, button, WheelDrag { region, start }));
         update_from_pos(x, y, region);
-    };
-
-    let on_pointer_move = move |ev: web_sys::PointerEvent| {
-        let Some(region) = gesture.with_value(|g| g.state(ev.pointer_id()).map(|drag| drag.region))
-        else {
-            return;
-        };
-        ev.prevent_default();
-        if let Some((x, y)) = get_canvas_coords(f64::from(ev.client_x()), f64::from(ev.client_y()))
-        {
-            update_from_pos(x, y, region);
-        }
     };
 
     let on_pointer_end = move |ev: web_sys::PointerEvent, how: PointerEnd| {
@@ -316,6 +305,22 @@ pub fn ColorWheel(
             .flatten();
         if let Some((GestureEnd::Cancel, drag)) = ended {
             restore(drag);
+        }
+    };
+
+    let on_pointer_move = move |ev: web_sys::PointerEvent| {
+        if gesture.with_value(|g| g.press_released(ev.pointer_id(), ev.buttons())) {
+            on_pointer_end(ev, PointerEnd::Up);
+            return;
+        }
+        let Some(region) = gesture.with_value(|g| g.state(ev.pointer_id()).map(|drag| drag.region))
+        else {
+            return;
+        };
+        ev.prevent_default();
+        if let Some((x, y)) = get_canvas_coords(f64::from(ev.client_x()), f64::from(ev.client_y()))
+        {
+            update_from_pos(x, y, region);
         }
     };
 

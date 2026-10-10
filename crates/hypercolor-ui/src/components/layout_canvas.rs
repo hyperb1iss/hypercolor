@@ -390,10 +390,19 @@ pub fn LayoutCanvas() -> impl IntoView {
         }
     };
 
+    // A box or handle can leave the DOM mid-drag: Escape clears the
+    // selection and with it the resize handles, and a remote layout update
+    // can drop a box. A detached element's lost capture goes to the
+    // document, never the slot, so a window listener cancels the drag.
+    let detached_capture_loss = window_event_listener(ev::lostpointercapture, move |ev| {
+        end_interaction(&ev, PointerEnd::LostCapture);
+    });
+
     // A canvas torn down mid-drag (route change, Stage switch) never sees
     // its release. Close the history bracket it opened so undo comes back,
     // and put the saved layout back on the daemon's live preview.
     on_cleanup(move || {
+        detached_capture_loss.remove();
         let Some(runtime) = drag_runtime
             .try_update_value(PointerGesture::abandon)
             .flatten()
@@ -426,6 +435,10 @@ pub fn LayoutCanvas() -> impl IntoView {
                 // and ask the RAF scheduler for a frame. All the real work
                 // happens in the scheduler callback at most once per frame,
                 // so 120-Hz pointer storms collapse to ~60-Hz updates.
+                if drag_runtime.with_value(|g| g.press_released(ev.pointer_id(), ev.buttons())) {
+                    end_interaction(&ev, PointerEnd::Up);
+                    return;
+                }
                 let owns = drag_runtime.with_value(|g| g.state(ev.pointer_id()).is_some());
                 if !owns {
                     return;
@@ -828,7 +841,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             last_preview_push_ms: Cell::new(0.0),
                                         };
                                         let pointer_id = ev.pointer_id();
-                                        drag_runtime.update_value(|g| g.start(pointer_id, runtime));
+                                        let button = ev.button();
+                                        drag_runtime.update_value(|g| g.start(pointer_id, button, runtime));
                                     }
                                     on:dblclick=move |ev| {
                                         ev.stop_propagation();
@@ -997,7 +1011,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     last_preview_push_ms: Cell::new(0.0),
                                                 };
                                                 let pointer_id = ev.pointer_id();
-                                                drag_runtime.update_value(|g| g.start(pointer_id, runtime));
+                                                let button = ev.button();
+                                                drag_runtime.update_value(|g| g.start(pointer_id, button, runtime));
                                             })
                                         };
                                         let start_resize_nw = Rc::clone(&start_resize);

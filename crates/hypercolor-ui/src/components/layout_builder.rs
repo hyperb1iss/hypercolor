@@ -358,11 +358,25 @@ pub(crate) fn LayoutWorkspace(
             PanelDrag::Bottom => bottom_height.get_untracked(),
         };
         capture_pointer(&element, &ev);
-        grip.update_value(|g| g.start(pointer_id, PanelGrip { panel, start_size }));
+        let button = ev.button();
+        grip.update_value(|g| g.start(pointer_id, button, PanelGrip { panel, start_size }));
         set_dragging.set(Some(panel));
     };
 
+    let end_grip = move |ev: web_sys::PointerEvent, how: PointerEnd| {
+        let ended = grip
+            .try_update_value(|g| g.end(ev.pointer_id(), how))
+            .flatten();
+        if let Some((outcome, state)) = ended {
+            finish_grip(outcome, state);
+        }
+    };
+
     let move_grip = move |ev: web_sys::PointerEvent| {
+        if grip.with_value(|g| g.press_released(ev.pointer_id(), ev.buttons())) {
+            end_grip(ev, PointerEnd::Up);
+            return;
+        }
         let Some(panel) = grip.with_value(|g| g.state(ev.pointer_id()).map(|state| state.panel))
         else {
             return;
@@ -388,14 +402,13 @@ pub(crate) fn LayoutWorkspace(
         }
     };
 
-    let end_grip = move |ev: web_sys::PointerEvent, how: PointerEnd| {
-        let ended = grip
-            .try_update_value(|g| g.end(ev.pointer_id(), how))
-            .flatten();
-        if let Some((outcome, state)) = ended {
-            finish_grip(outcome, state);
-        }
-    };
+    // The splitters render under `Show`, so they can leave the DOM mid-drag
+    // while this state lives on. A detached element's lost capture goes to
+    // the document, not the splitter, so a window listener ends the drag.
+    let detached_capture_loss = window_event_listener(ev::lostpointercapture, move |ev| {
+        end_grip(ev, PointerEnd::LostCapture);
+    });
+    on_cleanup(move || detached_capture_loss.remove());
 
     view! {
         <Show

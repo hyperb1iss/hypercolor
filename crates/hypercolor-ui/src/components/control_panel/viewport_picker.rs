@@ -173,11 +173,28 @@ pub(super) fn ViewportPicker(
                 start_client_x: f64::from(ev.client_x()),
                 start_client_y: f64::from(ev.client_y()),
             };
-            gesture.update_value(|g| g.start(pointer_id, state));
+            let button = ev.button();
+            gesture.update_value(|g| g.start(pointer_id, button, state));
             set_grabbing.set(true);
         });
 
+    let end_interaction = move |ev: web_sys::PointerEvent, how: PointerEnd| {
+        let ended = gesture
+            .try_update_value(|g| g.end(ev.pointer_id(), how))
+            .flatten();
+        if let Some((outcome, state)) = ended {
+            set_grabbing.set(false);
+            if outcome == GestureEnd::Cancel {
+                restore(state);
+            }
+        }
+    };
+
     let move_interaction = move |ev: web_sys::PointerEvent| {
+        if gesture.with_value(|g| g.press_released(ev.pointer_id(), ev.buttons())) {
+            end_interaction(ev, PointerEnd::Up);
+            return;
+        }
         let Some(state) = gesture.with_value(|g| g.state(ev.pointer_id()).copied()) else {
             return;
         };
@@ -210,18 +227,6 @@ pub(super) fn ViewportPicker(
         };
 
         control_key.with_value(|id| emit_viewport_update(&on_change, id, next_rect));
-    };
-
-    let end_interaction = move |ev: web_sys::PointerEvent, how: PointerEnd| {
-        let ended = gesture
-            .try_update_value(|g| g.end(ev.pointer_id(), how))
-            .flatten();
-        if let Some((outcome, state)) = ended {
-            set_grabbing.set(false);
-            if outcome == GestureEnd::Cancel {
-                restore(state);
-            }
-        }
     };
 
     let reset_viewport = {
