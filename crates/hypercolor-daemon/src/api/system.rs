@@ -86,6 +86,18 @@ pub async fn get_audit_log(
 pub async fn get_openrgb_status(State(state): State<Arc<AppState>>) -> Response {
     envelope::ok(crate::domain::openrgb_setup::openrgb_status(&state.domains.devices).await)
 }
+
+/// Read the latest scan for RGB software that competes for devices.
+pub async fn get_software_conflicts(State(state): State<Arc<AppState>>) -> Response {
+    envelope::ok(state.domains.devices.software_conflicts().status())
+}
+
+/// Scan for competing RGB software now and return what it found.
+pub async fn scan_software_conflicts(State(state): State<Arc<AppState>>) -> Response {
+    let store = state.domains.devices.software_conflicts();
+    crate::software_conflicts::scan_now(&store).await;
+    envelope::ok(store.status())
+}
 const MULTI_ZONE_CAPABILITIES: &[&str] = &[
     "multi-zone-sampling",
     "zone-crud",

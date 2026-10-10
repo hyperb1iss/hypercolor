@@ -734,6 +734,13 @@ pub enum HypercolorEvent {
         count: usize,
     },
 
+    /// The set of running RGB software that competes with Hypercolor for
+    /// devices changed; re-read `GET /api/v1/system/conflicts`.
+    SoftwareConflictsChanged {
+        /// How many competing programs are running now.
+        count: usize,
+    },
+
     // ── Effect Events ───────────────────────────────────────────────
     /// A new effect has been loaded and rendering has begun.
     EffectStarted {
@@ -1168,7 +1175,8 @@ impl HypercolorEvent {
             | Self::DeviceSettingsChanged { .. }
             | Self::DeviceDiscoveryStarted { .. }
             | Self::DeviceDiscoveryCompleted { .. }
-            | Self::UnclaimedDevicesChanged { .. } => EventCategory::Device,
+            | Self::UnclaimedDevicesChanged { .. }
+            | Self::SoftwareConflictsChanged { .. } => EventCategory::Device,
 
             Self::EffectStarted { .. }
             | Self::EffectStopped { .. }

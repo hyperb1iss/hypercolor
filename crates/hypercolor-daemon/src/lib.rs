@@ -55,6 +55,7 @@ pub use scene_transactions::SceneTransactionQueue;
 pub use scene_transactions::{LayoutPublicationTestExecutor, LayoutTransactionRejection};
 pub mod session;
 pub mod simulators;
+pub(crate) mod software_conflicts;
 pub mod startup;
 pub mod state_history;
 pub mod zone_layout_preview;

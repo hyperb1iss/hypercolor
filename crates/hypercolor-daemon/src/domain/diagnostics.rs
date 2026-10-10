@@ -11,7 +11,7 @@ use hypercolor_types::api::diagnose::{
     DiagnoseRenderWindowSnapshot, DiagnoseResponse, DiagnoseSnapshot, DiagnoseSummary,
     DiagnoseUsbActorSnapshot,
 };
-use hypercolor_types::api::system::InputStatus;
+use hypercolor_types::api::system::{InputStatus, SoftwareConflictsStatus};
 use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
 
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
@@ -25,8 +25,15 @@ use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};
 
 const RENDER_FRAME_STALE_WARNING_MS: f64 = 2_000.0;
 const RENDER_FRAME_STALE_FAIL_MS: f64 = 10_000.0;
-const DEFAULT_SAFE_CHECKS: [&str; 7] = [
-    "daemon", "render", "devices", "config", "input", "memory", "openrgb",
+const DEFAULT_SAFE_CHECKS: [&str; 8] = [
+    "daemon",
+    "render",
+    "devices",
+    "conflicts",
+    "config",
+    "input",
+    "memory",
+    "openrgb",
 ];
 
 /// The macOS screen-parity probe, armed only while a Metal render thread runs.
@@ -213,6 +220,7 @@ impl DiagnosticsContext {
                 "daemon" => checks.push(daemon_check()),
                 "render" => checks.extend(render_checks(&inputs)),
                 "devices" => checks.extend(device_checks(&inputs, &snapshot)),
+                "conflicts" => checks.push(self.conflicts_check().await),
                 "config" => checks.push(config_check(&inputs)),
                 "input" => checks.extend(input_checks(&snapshot.input)),
                 "memory" => checks.push(servo_memory_check().await),
@@ -261,6 +269,20 @@ impl DiagnosticsContext {
             },
             snapshot,
         }
+    }
+
+    /// Report competing RGB software from a scan no older than the watch
+    /// interval, scanning first (within a time budget) only when the
+    /// latest one is older.
+    async fn conflicts_check(&self) -> DiagnoseCheck {
+        let store = self.authorities.devices.software_conflicts();
+        crate::software_conflicts::scan_if_stale(
+            &store,
+            crate::software_conflicts::RESCAN_INTERVAL,
+            crate::software_conflicts::DIAGNOSE_SCAN_BUDGET,
+        )
+        .await;
+        conflicts_check(&store.status())
     }
 
     /// Probe the OpenRGB bridge: reachability and protocol handshake per
@@ -453,6 +475,48 @@ fn device_checks(inputs: &DiagnosticsInputs, snapshot: &DiagnoseSnapshot) -> Vec
             ),
         },
     ]
+}
+
+fn conflicts_check(status: &SoftwareConflictsStatus) -> DiagnoseCheck {
+    let found = status
+        .conflicts
+        .iter()
+        .map(|conflict| {
+            format!(
+                "{} ({}): {}",
+                conflict.name,
+                conflict.matched.join(", "),
+                conflict.remedy
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let (status_label, detail) = if !status.supported {
+        (
+            "pass",
+            "running software is not inspected on this platform yet".to_owned(),
+        )
+    } else if status.scan_failed && found.is_empty() {
+        (
+            "warning",
+            "could not list running software, so competing programs are unknown".to_owned(),
+        )
+    } else if status.scan_failed {
+        (
+            "warning",
+            format!("could not list running software; the last successful scan found {found}"),
+        )
+    } else if found.is_empty() {
+        ("pass", "no competing RGB software is running".to_owned())
+    } else {
+        ("warning", found)
+    };
+    DiagnoseCheck {
+        category: "devices".to_owned(),
+        name: "competing_software".to_owned(),
+        status: status_label.to_owned(),
+        detail,
+    }
 }
 
 fn config_check(inputs: &DiagnosticsInputs) -> DiagnoseCheck {
@@ -825,7 +889,9 @@ fn servo_memory_failure(detail: String) -> DiagnoseCheck {
 mod tests {
     use crate::performance::{FrameTimeline, LatestFrameMetrics, OutputFrameSourceKind};
 
-    use super::{render_frame_liveness_status, render_led_freshness_status};
+    use hypercolor_types::api::system::{SoftwareConflict, SoftwareConflictsStatus};
+
+    use super::{conflicts_check, render_frame_liveness_status, render_led_freshness_status};
 
     #[cfg(all(feature = "servo", not(target_os = "windows")))]
     use super::servo_memory_failure;
@@ -894,5 +960,80 @@ mod tests {
         assert!(detail.contains("output_source=published_frame"));
         assert!(detail.contains("gpu_sample_stale=true"));
         assert!(detail.contains("devices_written=2"));
+    }
+
+    #[test]
+    fn competing_software_check_names_each_program_and_its_remedy() {
+        let status = SoftwareConflictsStatus {
+            supported: true,
+            scanned: true,
+            scan_failed: false,
+            conflicts: vec![SoftwareConflict {
+                id: "signalrgb".to_owned(),
+                name: "SignalRGB".to_owned(),
+                matched: vec!["SignalRgb.exe".to_owned()],
+                driver_ids: Vec::new(),
+                all_drivers: true,
+                smbus: true,
+                remedy: "Quit SignalRGB from its tray icon.".to_owned(),
+            }],
+        };
+        let check = conflicts_check(&status);
+        assert_eq!(check.category, "devices");
+        assert_eq!(check.name, "competing_software");
+        assert_eq!(check.status, "warning");
+        assert_eq!(
+            check.detail,
+            "SignalRGB (SignalRgb.exe): Quit SignalRGB from its tray icon."
+        );
+    }
+
+    #[test]
+    fn competing_software_check_passes_when_nothing_or_nothing_known_runs() {
+        let clear = conflicts_check(&SoftwareConflictsStatus {
+            supported: true,
+            scanned: true,
+            scan_failed: false,
+            conflicts: Vec::new(),
+        });
+        assert_eq!(clear.status, "pass");
+        assert_eq!(clear.detail, "no competing RGB software is running");
+
+        let unsupported = conflicts_check(&SoftwareConflictsStatus::default());
+        assert_eq!(unsupported.status, "pass");
+        assert!(unsupported.detail.contains("not inspected"));
+    }
+
+    #[test]
+    fn competing_software_check_warns_when_the_scan_failed() {
+        let blind = conflicts_check(&SoftwareConflictsStatus {
+            supported: true,
+            scanned: true,
+            scan_failed: true,
+            conflicts: Vec::new(),
+        });
+        assert_eq!(blind.status, "warning");
+        assert!(blind.detail.contains("could not list running software"));
+
+        let stale = conflicts_check(&SoftwareConflictsStatus {
+            supported: true,
+            scanned: true,
+            scan_failed: true,
+            conflicts: vec![SoftwareConflict {
+                id: "signalrgb".to_owned(),
+                name: "SignalRGB".to_owned(),
+                matched: vec!["SignalRgb.exe".to_owned()],
+                driver_ids: Vec::new(),
+                all_drivers: true,
+                smbus: true,
+                remedy: "Quit it.".to_owned(),
+            }],
+        });
+        assert_eq!(stale.status, "warning");
+        assert!(
+            stale
+                .detail
+                .contains("last successful scan found SignalRGB")
+        );
     }
 }

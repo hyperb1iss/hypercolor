@@ -6,6 +6,7 @@
 
 #[cfg(unix)]
 pub mod blocks;
+pub mod conflicts;
 mod discovery;
 mod discovery_server;
 mod lifecycle;
@@ -24,6 +25,9 @@ pub mod usb_scanner;
 
 #[cfg(unix)]
 pub use blocks::{BlocksBackend, BlocksScanner};
+pub use conflicts::{
+    ConflictChanges, ScanTicket, SoftwareCatalog, SoftwareConflictStore, SoftwareSpec,
+};
 pub use discovery::{DiscoveryOrchestrator, DiscoveryProgress, DiscoveryReport, ScannerScanReport};
 pub use discovery_server::discover_servers;
 pub use lifecycle::{DeviceLifecycleManager, LifecycleAction};

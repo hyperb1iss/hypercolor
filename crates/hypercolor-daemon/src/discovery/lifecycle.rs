@@ -443,6 +443,7 @@ pub(crate) async fn execute_lifecycle_actions(
                             will_retry,
                             "lifecycle connect action failed"
                         );
+                        warn_if_other_software_holds(&runtime, device_id).await;
                         let mut lifecycle = runtime.lifecycle_manager.lock().await;
                         let follow_up = if will_retry {
                             lifecycle.on_connect_failed(device_id)
@@ -835,8 +836,65 @@ async fn run_async_write_failure_actions(
         execute_lifecycle_actions(runtime.clone(), recovery.actions).await;
         sync_registry_state(&runtime, recovery.device_id).await;
         if let Some(event) = recovery.device_error {
+            let event = name_competing_software(&runtime, recovery.device_id, event).await;
             runtime.event_bus.publish(event);
         }
+    }
+}
+
+/// Log the competing software that may explain a device failing to open,
+/// and ask for a fresh scan so the record is current when the user looks.
+/// Startup discovery can fail a device before the watch's first scan, so
+/// that case scans inline rather than logging nothing.
+async fn warn_if_other_software_holds(runtime: &DiscoveryRuntime, device_id: DeviceId) {
+    if runtime.software_conflicts.status().scanned {
+        runtime.software_conflicts.request_scan();
+    } else {
+        crate::software_conflicts::scan_now(&runtime.software_conflicts).await;
+    }
+    let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+        return;
+    };
+    let conflicts =
+        crate::software_conflicts::conflicts_for_device(&runtime.software_conflicts, &tracked.info);
+    if let Some(hint) = crate::software_conflicts::device_hint(&conflicts) {
+        warn!(
+            device = %tracked.info.name,
+            device_id = %device_id,
+            hint = %hint,
+            "other RGB software may be holding this device"
+        );
+    }
+}
+
+/// Append the competing-software hint to a flapping device's error, so
+/// clients showing the error also show the likely cause.
+async fn name_competing_software(
+    runtime: &DiscoveryRuntime,
+    id: DeviceId,
+    event: HypercolorEvent,
+) -> HypercolorEvent {
+    let HypercolorEvent::DeviceError {
+        device_id,
+        error,
+        recoverable,
+    } = event
+    else {
+        return event;
+    };
+    let hint = runtime.device_registry.get(&id).await.and_then(|tracked| {
+        crate::software_conflicts::device_hint(&crate::software_conflicts::conflicts_for_device(
+            &runtime.software_conflicts,
+            &tracked.info,
+        ))
+    });
+    HypercolorEvent::DeviceError {
+        device_id,
+        error: match hint {
+            Some(hint) => format!("{}. {hint}", error.trim_end_matches('.')),
+            None => error,
+        },
+        recoverable,
     }
 }
 

@@ -213,6 +213,10 @@ impl DaemonState {
             Arc::clone(&self.device_metrics),
             Arc::clone(&self.backend_manager),
         ));
+        self.software_conflict_task = Some(crate::software_conflicts::spawn_watch(
+            self.discovery_runtime().software_conflicts,
+            &self.event_bus,
+        ));
 
         // Publish a startup event so subscribers know the daemon is alive.
         let device_count = self.device_registry.len().await;
@@ -347,6 +351,9 @@ impl DaemonState {
             handle.abort();
         }
         if let Some(handle) = self.device_metrics_collector_task.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.software_conflict_task.take() {
             handle.abort();
         }
 

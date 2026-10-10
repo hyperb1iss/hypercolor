@@ -173,6 +173,7 @@
     "service_identity_changed",
     "session_changed",
     "shutdown_requested",
+    "software_conflicts_changed",
     "trigger_fired",
     "unclaimed_devices_changed",
     "webhook_received",

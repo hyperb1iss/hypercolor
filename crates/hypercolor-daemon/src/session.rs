@@ -12,6 +12,7 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::session::{SessionMonitor, SessionWatcher, SleepPolicy};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::event::HypercolorEvent;
+use hypercolor_types::host_software::HostInventory;
 use hypercolor_types::session::{OffOutputBehavior, SessionEvent, SleepAction, WakeAction};
 
 use crate::discovery::{self, DiscoveryRuntime, DiscoveryTarget};
@@ -123,6 +124,33 @@ pub(crate) fn process_resident_memory_mb() -> Option<f64> {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         None
+    }
+}
+
+/// What this host is running, for the conflicting-software check.
+/// Platforms without an inventory yet (macOS today) report
+/// [`HostInventory::Unsupported`]; a supported platform whose query
+/// fails reports [`HostInventory::Failed`], never an empty list.
+pub(crate) fn host_inventory() -> HostInventory {
+    #[cfg(target_os = "linux")]
+    {
+        hypercolor_linux_session::running_processes().map_or(HostInventory::Failed, |processes| {
+            HostInventory::Listed(hypercolor_types::host_software::HostSoftwareSnapshot {
+                processes,
+                services: Vec::new(),
+            })
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        hypercolor_windows_telemetry::running_software()
+            .map_or(HostInventory::Failed, HostInventory::Listed)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        HostInventory::Unsupported
     }
 }
 

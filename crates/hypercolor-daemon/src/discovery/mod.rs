@@ -16,8 +16,8 @@ use std::time::Duration;
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, UnclaimedDeviceStore,
-    UsbProtocolConfigStore,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, SoftwareConflictStore,
+    UnclaimedDeviceStore, UsbProtocolConfigStore,
 };
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
@@ -118,6 +118,9 @@ pub struct DiscoveryRuntime {
 
     /// USB devices the host sees that no enabled native driver claims.
     pub unclaimed_devices: UnclaimedDeviceStore,
+
+    /// Competing RGB software the latest host scan found running.
+    pub software_conflicts: SoftwareConflictStore,
 
     /// Bridge routes the conflict guard has output-disabled, with reasons.
     pub bridge_output_locks: BridgeOutputLocks,

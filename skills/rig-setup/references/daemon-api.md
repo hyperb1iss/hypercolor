@@ -68,6 +68,13 @@ Facts that bite:
   the daemon quiesces it while a native SMBus scan runs, and vice versa.
 - Events: `UnclaimedDevicesChanged { count }` on the default `events` topic when the
   unclaimed store changes, so a UI or a long-lived agent refetches instead of polling.
+- A device that shows up but never lights is often held by other RGB software.
+  `GET /system/conflicts` names what is running (`conflicts[].name`, `matched`,
+  `driver_ids` or `all_drivers`, `smbus`, `remedy`); `POST /system/conflicts/scan`
+  rescans first. `scan_failed: true` means the latest scan failed and `conflicts` is the
+  last successful result. `SoftwareConflictsChanged { count }` fires when the status
+  changes.
+  OpenRGB never appears there: it coexists through the bridge.
 
 ## Attachments
 

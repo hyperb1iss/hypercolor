@@ -168,6 +168,18 @@ async fn openapi_json_is_served_with_expected_paths() {
     );
     assert!(body["components"]["schemas"]["UpdateAttachmentsRequest"].is_object());
     assert!(body["paths"]["/api/v1/system/audio-devices"]["get"].is_object());
+    for (path, method) in [
+        ("/api/v1/system/conflicts", "get"),
+        ("/api/v1/system/conflicts/scan", "post"),
+    ] {
+        assert_eq!(
+            body["paths"][path][method]["responses"]["200"]["content"]["application/json"]["schema"]
+                ["properties"]["data"]["$ref"],
+            "#/components/schemas/SoftwareConflictsStatus",
+            "{method} {path} should answer the conflict status"
+        );
+    }
+    assert!(body["components"]["schemas"]["SoftwareConflict"].is_object());
     // Retired routes stay absent from the runtime document.
     for retired in [
         "/api/v1/server",
@@ -344,15 +356,15 @@ fn runtime_document_exactly_matches_the_spec_78_target_manifest() {
     let live = documented_operations(&document);
     let target = target_operations();
 
-    assert_eq!(target.len(), 125, "target operation count drifted");
-    assert_eq!(live.len(), 125, "live operation count has not converged");
+    assert_eq!(target.len(), 127, "target operation count drifted");
+    assert_eq!(live.len(), 127, "live operation count has not converged");
     assert_eq!(
         target
             .iter()
             .map(|(_, path)| path)
             .collect::<BTreeSet<_>>()
             .len(),
-        89,
+        91,
         "target path count drifted"
     );
     assert_eq!(
@@ -360,7 +372,7 @@ fn runtime_document_exactly_matches_the_spec_78_target_manifest() {
             .map(|(_, path)| path)
             .collect::<BTreeSet<_>>()
             .len(),
-        89,
+        91,
         "live path count has not converged"
     );
     assert_eq!(
@@ -456,7 +468,7 @@ fn runtime_document_has_complete_operation_contracts() {
         }
     }
 
-    assert_eq!(operation_ids.len(), 125);
+    assert_eq!(operation_ids.len(), 127);
     let schemas = &document["components"]["schemas"];
     assert!(schemas["Vec"].is_null());
     assert!(schemas["ListResponse"].is_null());

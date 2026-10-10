@@ -4552,6 +4552,7 @@ dependencies = [
  "hypercolor-windows-gpu-interop",
  "hypercolor-windows-input",
  "hypercolor-windows-session",
+ "hypercolor-windows-telemetry",
  "if-addrs",
  "image",
  "jsonschema",

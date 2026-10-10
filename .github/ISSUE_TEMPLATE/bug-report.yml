@@ -38,10 +38,13 @@ body:
     attributes:
       label: Diagnostics
       description: |
-        Run `hypercolor diagnose` and paste the output here. This captures the OS
-        version, daemon state, device inventory, and recent logs. Attach as a
-        file if it's very long.
-      render: shell
+        With the desktop app, choose Export Diagnostics from the tray menu and
+        attach the zip it saves to your Desktop. It holds the app and daemon logs
+        and system info; on Windows it also lists your devices, per-device output
+        stats, other RGB software that's running, and which driver owns each USB
+        device. Without the app, run `hypercolor diagnose` and paste the output.
+        If a device shows up but never lights, set Settings > Developer > Log
+        Level to Debug and restart Hypercolor before you reproduce the problem.
 
   - type: input
     id: hypercolor-version

@@ -22,8 +22,8 @@ use hypercolor_core::config::{
 };
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, UnclaimedDeviceStore,
-    UsbProtocolConfigStore,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, SoftwareConflictStore,
+    UnclaimedDeviceStore, UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
@@ -749,6 +749,8 @@ impl DaemonState {
         };
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let unclaimed_devices = UnclaimedDeviceStore::new().with_event_bus(Arc::clone(&event_bus));
+        let software_conflicts =
+            SoftwareConflictStore::new().with_event_bus(Arc::clone(&event_bus));
         let bridge_output_locks = BridgeOutputLocks::default();
         let driver_registry = Arc::new(
             network::build_builtin_driver_module_registry(
@@ -830,6 +832,7 @@ impl DaemonState {
                     device_aliases_path: device_aliases_path.clone(),
                     usb_protocol_configs: usb_protocol_configs.clone(),
                     unclaimed_devices: unclaimed_devices.clone(),
+                    software_conflicts: software_conflicts.clone(),
                     bridge_output_locks: bridge_output_locks.clone(),
                     probe_serializer: Arc::default(),
                     credential_store: Arc::clone(&credential_store),
@@ -940,6 +943,7 @@ impl DaemonState {
             discovery_task: None,
             driver_reconcile_task: None,
             device_metrics_collector_task: None,
+            software_conflict_task: None,
             input_status_event_publisher: None,
             session_controller: None,
             session_monitors: None,
