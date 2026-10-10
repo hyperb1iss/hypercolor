@@ -6875,3 +6875,43 @@ async fn revocation_ends_a_session_blocked_on_a_peer_that_stopped_reading() {
     .await;
     assert!(ended.is_ok(), "a revoked session must not wait on its peer");
 }
+
+#[tokio::test]
+async fn a_revoked_session_closes_with_1008_even_when_an_outbound_send_wins() {
+    // Queue an event for the session's default `events` subscription and
+    // revoke together, so the outbound branch and the revocation race.
+    // Whichever wins, the peer must still be told why the session ended.
+    for round in 0..32 {
+        let (state, _probe) = revocation_probe_state();
+        let revocation = tokio_util::sync::CancellationToken::new();
+        let mut socket = spawn_test_revocable_local_socket(
+            Arc::clone(&state),
+            &tokio::runtime::Handle::current(),
+            authority_control(),
+            revocation.clone(),
+        );
+        let hello = socket.recv().await.expect("test socket should emit hello");
+        assert!(matches!(hello, Message::Text(_)));
+
+        state
+            .event_bus
+            .publish(HypercolorEvent::ExtensionStateChanged {
+                source: "probe".to_owned(),
+                kind: "changed".to_owned(),
+                payload: serde_json::Value::Null,
+            });
+        revocation.cancel();
+
+        let mut close_code = None;
+        while let Some(message) = socket.recv().await {
+            if let Message::Close(frame) = message {
+                close_code = frame.map(|frame| frame.code);
+            }
+        }
+        assert_eq!(
+            close_code,
+            Some(axum::extract::ws::close_code::POLICY),
+            "round {round} ended without the revocation close"
+        );
+    }
+}

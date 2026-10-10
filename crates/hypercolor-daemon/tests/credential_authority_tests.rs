@@ -132,7 +132,7 @@ impl ApiExtension for TestExtension {
 
 struct TestApp {
     router: axum::Router,
-    _data_dir: tempfile::TempDir,
+    data_dir: tempfile::TempDir,
 }
 
 fn isolated_builder() -> (tempfile::TempDir, AppStateBuilder) {
@@ -152,7 +152,7 @@ fn app_with(security: impl FnOnce(SecurityState) -> SecurityState) -> TestApp {
     state.api_extensions.push(Arc::new(TestExtension));
     TestApp {
         router: api::build_router(Arc::new(state), None),
-        _data_dir: tempdir,
+        data_dir: tempdir,
     }
 }
 
@@ -179,7 +179,7 @@ fn app_with_network(network: NetworkConfig, authority: Arc<TestAuthority>) -> Te
     state.api_extensions.push(Arc::new(TestExtension));
     TestApp {
         router: api::build_router(Arc::new(state), None),
-        _data_dir: tempdir,
+        data_dir: tempdir,
     }
 }
 
@@ -583,7 +583,7 @@ async fn serve(app: TestApp) -> (SocketAddr, tempfile::TempDir) {
         )
         .await;
     });
-    (address, app._data_dir)
+    (address, app.data_dir)
 }
 
 /// Open `/api/v1/ws` as the forwarded LAN client a loopback proxy names,

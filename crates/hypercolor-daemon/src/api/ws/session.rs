@@ -240,9 +240,17 @@ impl SessionSocket {
         self.transport.recv().await
     }
 
-    /// Tell a revoked session's peer why it is closing, without letting a
-    /// peer that stopped reading hold the session open.
-    async fn close_revoked(&mut self) {
+    /// When the session's credential was revoked, tell its peer why it is
+    /// closing, without letting a peer that stopped reading hold the
+    /// session open.
+    async fn close_if_revoked(&mut self) {
+        if !self
+            .revocation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return;
+        }
         let close = Message::Close(Some(CloseFrame {
             code: close_code::POLICY,
             reason: Utf8Bytes::from_static("credential revoked"),
@@ -416,6 +424,7 @@ async fn handle_socket(
     };
     if send_json(&mut socket, &hello).await.is_err() {
         abort_and_join_relays(relay_handles).await;
+        socket.close_if_revoked().await;
         return;
     }
 
@@ -439,10 +448,7 @@ async fn handle_socket(
         tokio::select! {
             () = wait_for_shutdown(shutdown.as_ref()) => break,
 
-            () = wait_for_shutdown(revocation.as_ref()) => {
-                socket.close_revoked().await;
-                break;
-            }
+            () = wait_for_shutdown(revocation.as_ref()) => break,
 
             // Outbound JSON: bounded queue (drop under pressure in producer tasks).
             json_msg = json_rx.recv() => {
@@ -591,7 +597,6 @@ async fn handle_socket(
                 // `select!` picks among ready branches at random, so a
                 // message that arrives with the revocation must not run.
                 if revocation.as_ref().is_some_and(CancellationToken::is_cancelled) {
-                    socket.close_revoked().await;
                     break;
                 }
                 match msg {
@@ -633,6 +638,8 @@ async fn handle_socket(
         }
     }
 
+    // However the loop ended, a revoked session tells its peer why, once.
+    socket.close_if_revoked().await;
     abort_and_join_relays(relay_handles).await;
     browser_previews.shutdown().await;
     while let Some(cursor) = preview_cursors.pop_next() {
