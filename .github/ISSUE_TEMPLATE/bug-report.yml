@@ -45,7 +45,6 @@ body:
         device. Without the app, run `hypercolor diagnose` and paste the output.
         If a device shows up but never lights, set Settings > Developer > Log
         Level to Debug and restart Hypercolor before you reproduce the problem.
-      render: shell
 
   - type: input
     id: hypercolor-version

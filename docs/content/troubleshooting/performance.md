@@ -20,7 +20,7 @@ Never lower the FPS cap, canvas resolution, or LED output rate as a "fix." Those
 hypercolor diagnose
 ```
 
-This calls `POST /api/v1/diagnose` against the running daemon. By default it runs six check groups: `daemon`, `render`, `devices`, `config`, `input`, and `memory`. Use `--check` to focus on one:
+This calls `POST /api/v1/diagnose` against the running daemon. By default it runs eight check groups: `daemon`, `render`, `devices`, `conflicts`, `config`, `input`, `memory`, and `openrgb`. Use `--check` to focus on one:
 
 ```bash
 hypercolor diagnose --check render
