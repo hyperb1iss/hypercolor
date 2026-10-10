@@ -134,6 +134,19 @@ impl<S> PointerGesture<S> {
             .map(|(_, state)| state)
     }
 
+    /// The live gesture's state, whichever pointer owns it. For work that
+    /// runs outside a pointer event, like an animation frame.
+    #[must_use]
+    pub fn current(&self) -> Option<&S> {
+        self.active.as_ref().map(|(_, state)| state)
+    }
+
+    /// Mutable access to the live gesture's state, whichever pointer owns
+    /// it.
+    pub fn current_mut(&mut self) -> Option<&mut S> {
+        self.active.as_mut().map(|(_, state)| state)
+    }
+
     /// End the gesture if `pointer_id` owns it, returning how it ended and
     /// its state. Events from any other pointer, and a lost capture that
     /// trails a release, return `None`.

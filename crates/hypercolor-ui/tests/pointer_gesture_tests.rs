@@ -143,3 +143,19 @@ fn abandon_drops_the_live_gesture_without_an_event() {
     assert_eq!(gesture.abandon(), None);
     assert_eq!(gesture.end(MOUSE, PointerEnd::Up), None);
 }
+
+#[test]
+fn current_reads_the_live_gesture_for_any_caller() {
+    let mut gesture = PointerGesture::<u32>::new();
+    assert_eq!(gesture.current(), None);
+    assert_eq!(gesture.current_mut(), None);
+
+    gesture.start(FIRST_FINGER, 7);
+    assert_eq!(gesture.current(), Some(&7));
+    if let Some(state) = gesture.current_mut() {
+        *state = 8;
+    }
+    assert_eq!(gesture.state(FIRST_FINGER), Some(&8));
+    assert!(gesture.end(FIRST_FINGER, PointerEnd::Up).is_some());
+    assert_eq!(gesture.current(), None);
+}

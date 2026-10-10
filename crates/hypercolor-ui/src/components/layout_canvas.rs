@@ -4,9 +4,14 @@
 //! `requestAnimationFrame` scheduler reads the latest pointer position from a
 //! `Cell`, computes the new zone geometry against an immutable base snapshot,
 //! and writes the result *directly* to the cached zone DOM elements. The
-//! layout signal is only updated once on `mouseup`. This bypasses the
+//! layout signal is only updated once, on release. This bypasses the
 //! reactive flush that would otherwise trigger O(N²) zone-style recomputes
-//! on every mousemove and lets the `CanvasPreview` RAF loop keep painting.
+//! on every pointer move and lets the `CanvasPreview` RAF loop keep painting.
+//!
+//! Drags and resizes run on pointer events (see [`crate::pointer_gesture`]):
+//! the pressed box or handle captures the pointer, one pointer owns the
+//! interaction, a release commits, and a cancel or lost capture repaints
+//! the press-time geometry without touching the layout.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -26,6 +31,9 @@ use crate::render_canvas;
 
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
+use crate::pointer_gesture::{
+    GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture, listener_element,
+};
 use crate::style_utils::device_accent_colors;
 use hypercolor_types::spatial::{NormalizedPosition, Output};
 
@@ -83,16 +91,18 @@ pub fn LayoutCanvas() -> impl IntoView {
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
     let (canvas_slot_size, set_canvas_slot_size) = signal((0.0_f64, 0.0_f64));
 
-    // Active drag/resize runtime — non-reactive, accessed by mouse handlers
-    // and the RAF scheduler. Cleared on mouseup. `LocalStorage` lets us
-    // store the (non-Send) `web_sys::HtmlElement` cache while the
-    // `StoredValue` handle itself stays `Copy + Send + Sync` so it can ride
-    // along inside reactive `move ||` closures.
-    let drag_runtime: StoredValue<Option<DragRuntime>, LocalStorage> = StoredValue::new_local(None);
+    // Active drag/resize runtime, owned by the pressing pointer —
+    // non-reactive, accessed by pointer handlers and the RAF scheduler.
+    // Cleared on release or cancel. `LocalStorage` lets us store the
+    // (non-Send) `web_sys` element cache while the `StoredValue` handle
+    // itself stays `Copy + Send + Sync` so it can ride along inside reactive
+    // `move ||` closures.
+    let drag_runtime: StoredValue<PointerGesture<DragRuntime>, LocalStorage> =
+        StoredValue::new_local(PointerGesture::new());
     let pending_pointer = StoredValue::new_local(None::<(i32, i32)>);
 
     // Read layout once before the frame's writes, rather than forcing a
-    // layout read for every mouse event between animation frames.
+    // layout read for every pointer event between animation frames.
     let sample_pointer = move || {
         let Some((x, y)) = pending_pointer.try_update_value(Option::take).flatten() else {
             return;
@@ -101,8 +111,8 @@ pub fn LayoutCanvas() -> impl IntoView {
             return;
         };
         if let Some(position) = pointer_to_normalized(&viewport, x, y) {
-            drag_runtime.update_value(|runtime| {
-                if let Some(runtime) = runtime {
+            drag_runtime.with_value(|gesture| {
+                if let Some(runtime) = gesture.current() {
                     runtime.pending_mouse.set(Some(position));
                 }
             });
@@ -126,7 +136,7 @@ pub fn LayoutCanvas() -> impl IntoView {
         let scheduler_inst = Scheduler::new(move |frame_info| {
             sample_pointer();
             let painted_change = drag_runtime
-                .try_update_value(|opt| opt.as_mut().is_some_and(DragRuntime::step))
+                .try_update_value(|gesture| gesture.current_mut().is_some_and(DragRuntime::step))
                 .unwrap_or(false);
             if !painted_change {
                 return;
@@ -136,8 +146,8 @@ pub fn LayoutCanvas() -> impl IntoView {
             // debounce we use outside of drags.
             let now_ms = frame_info.monotonic_ms;
             let should_push = drag_runtime
-                .try_update_value(|opt| {
-                    let runtime = opt.as_mut()?;
+                .try_update_value(|gesture| {
+                    let runtime = gesture.current_mut()?;
                     if now_ms - runtime.last_preview_push_ms.get() < PREVIEW_PUSH_INTERVAL_MS {
                         return None;
                     }
@@ -284,56 +294,118 @@ pub fn LayoutCanvas() -> impl IntoView {
         update_canvas_slot_size(canvas_slot_ref, set_canvas_slot_size);
     });
 
-    // Commit the in-flight runtime to the layout signal and clear it. Run
-    // when the pointer is released or leaves the canvas slot. Idempotent:
-    // safe to call when no runtime is active.
-    let finish_interaction = {
-        move || {
-            sample_pointer();
-            let Some(mut runtime) = drag_runtime.try_update_value(Option::take).flatten() else {
-                return;
-            };
-            // A release can arrive before the scheduled frame. Commit the
-            // latest pointer, including short drags completed in one frame.
-            runtime.step();
-            interacting_zone_id.set(None);
+    // Settle an interaction the gesture has already handed back. A commit
+    // writes the in-flight zones to the layout signal; a cancel repaints the
+    // press-time geometry and leaves the layout and history untouched.
+    let finish_interaction = move |outcome: GestureEnd, mut runtime: DragRuntime| {
+        interacting_zone_id.set(None);
 
-            if !runtime.moved.get() {
-                // No actual movement happened — discard without touching
-                // the signal or history stack.
-                set_layout.finish_interaction();
-                return;
-            }
-
-            // Apply size normalization (strip aspect / circle squaring)
-            // once at release. Doing this mid-drag would fight the pointer.
-            let aspect = layout.with_untracked(|current| {
-                current.as_ref().map_or(1.0, |l| {
-                    layout_geometry::canvas_pixel_aspect(l.canvas_width, l.canvas_height)
-                })
-            });
-            for zone in &mut runtime.current_zones {
-                zone.size = layout_geometry::normalize_zone_size_for_editor(
-                    zone.position,
-                    zone.size,
-                    &zone.topology,
-                    zone.shape.as_ref(),
-                    aspect,
-                );
-            }
-            let final_zones = std::mem::take(&mut runtime.current_zones);
-            let committed = set_layout.commit_zones(final_zones);
+        if outcome == GestureEnd::Cancel {
+            pending_pointer.set_value(None);
+            let moved = runtime.moved.get();
+            runtime.revert();
             set_layout.finish_interaction();
-            swallow_next_click.set_value(true);
-            if committed {
-                // The provider's layout-change effect pushes the committed
-                // (normalized) zones to the daemon from here.
-                set_is_dirty.set(true);
+            // In-flight geometry may already have reached the daemon's live
+            // preview; hand it the saved layout again.
+            if moved && let Some(snapshot) = layout.get_untracked() {
+                push_preview.run(snapshot);
             }
+            return;
+        }
+
+        // A release can arrive before the scheduled frame. Commit the
+        // latest pointer, including short drags completed in one frame.
+        runtime.step();
+
+        if !runtime.moved.get() {
+            // No actual movement happened — discard without touching
+            // the signal or history stack.
+            set_layout.finish_interaction();
+            return;
+        }
+
+        // Apply size normalization (strip aspect / circle squaring)
+        // once at release. Doing this mid-drag would fight the pointer.
+        let aspect = layout.with_untracked(|current| {
+            current.as_ref().map_or(1.0, |l| {
+                layout_geometry::canvas_pixel_aspect(l.canvas_width, l.canvas_height)
+            })
+        });
+        for zone in &mut runtime.current_zones {
+            zone.size = layout_geometry::normalize_zone_size_for_editor(
+                zone.position,
+                zone.size,
+                &zone.topology,
+                zone.shape.as_ref(),
+                aspect,
+            );
+        }
+        let final_zones = std::mem::take(&mut runtime.current_zones);
+        let committed = set_layout.commit_zones(final_zones);
+        set_layout.finish_interaction();
+        swallow_next_click.set_value(true);
+        if committed {
+            // The provider's layout-change effect pushes the committed
+            // (normalized) zones to the daemon from here.
+            set_is_dirty.set(true);
         }
     };
-    let finish_for_mouseup = finish_interaction;
-    let finish_for_leave = finish_interaction;
+
+    // End the interaction `ev`'s pointer owns, if any. A release first
+    // folds its own position in, so the commit lands where the pointer let
+    // go even when no frame ran since the last move.
+    let end_interaction = move |ev: &web_sys::PointerEvent, how: PointerEnd| {
+        let pointer_id = ev.pointer_id();
+        if how == PointerEnd::Up && drag_runtime.with_value(|g| g.state(pointer_id).is_some()) {
+            pending_pointer.set_value(Some((ev.client_x(), ev.client_y())));
+            sample_pointer();
+        }
+        let ended = drag_runtime
+            .try_update_value(|g| g.end(pointer_id, how))
+            .flatten();
+        if let Some((outcome, runtime)) = ended {
+            finish_interaction(outcome, runtime);
+        }
+    };
+
+    // Claim the interaction for a press, or report that another pointer
+    // owns it. A stale interaction whose release never arrived is rolled
+    // back first.
+    let claim_interaction = move |pointer_id: i32| -> bool {
+        let press = drag_runtime
+            .try_update_value(|g| {
+                g.press(pointer_id, |owner, runtime| {
+                    holds_capture(Some(&runtime.capture), owner)
+                })
+            })
+            .unwrap_or(Press::Busy);
+        match press {
+            Press::Busy => false,
+            Press::Stale(stale) => {
+                finish_interaction(GestureEnd::Cancel, stale);
+                true
+            }
+            Press::Ready => true,
+        }
+    };
+
+    // A canvas torn down mid-drag (route change, Stage switch) never sees
+    // its release. Close the history bracket it opened so undo comes back,
+    // and put the saved layout back on the daemon's live preview.
+    on_cleanup(move || {
+        let Some(runtime) = drag_runtime
+            .try_update_value(PointerGesture::abandon)
+            .flatten()
+        else {
+            return;
+        };
+        set_layout.finish_interaction();
+        if runtime.moved.get()
+            && let Some(snapshot) = layout.try_get_untracked().flatten()
+        {
+            push_preview.run(snapshot);
+        }
+    });
 
     let scheduler_for_move = Rc::clone(&scheduler);
 
@@ -342,26 +414,19 @@ pub fn LayoutCanvas() -> impl IntoView {
             node_ref=canvas_slot_ref
             class="relative w-full h-full overflow-hidden"
             style="background: var(--color-surface-base)"
-            on:mousedown=move |_| swallow_next_click.set_value(false)
-            on:mouseup=move |ev| {
-                if drag_runtime.with_value(Option::is_some) {
-                    pending_pointer.set_value(Some((ev.client_x(), ev.client_y())));
-                }
-                finish_for_mouseup();
-            }
-            on:mouseleave=move |ev| {
-                if drag_runtime.with_value(Option::is_some) {
-                    pending_pointer.set_value(Some((ev.client_x(), ev.client_y())));
-                }
-                finish_for_leave();
-            }
-            on:mousemove=move |ev| {
+            on:pointerdown=move |_| swallow_next_click.set_value(false)
+            // A box or handle captures the pressing pointer, so these see
+            // the interaction's moves and its end bubble up from it.
+            on:pointerup=move |ev| end_interaction(&ev, PointerEnd::Up)
+            on:pointercancel=move |ev| end_interaction(&ev, PointerEnd::Cancel)
+            on:lostpointercapture=move |ev| end_interaction(&ev, PointerEnd::LostCapture)
+            on:pointermove=move |ev| {
                 // Lightweight hot path: stash the latest pointer position
                 // and ask the RAF scheduler for a frame. All the real work
                 // happens in the scheduler callback at most once per frame,
-                // so 120-Hz mousemove storms collapse to ~60-Hz updates.
-                let active = drag_runtime.with_value(Option::is_some);
-                if !active {
+                // so 120-Hz pointer storms collapse to ~60-Hz updates.
+                let owns = drag_runtime.with_value(|g| g.state(ev.pointer_id()).is_some());
+                if !owns {
                     return;
                 }
                 pending_pointer.set_value(Some((ev.client_x(), ev.client_y())));
@@ -553,9 +618,9 @@ pub fn LayoutCanvas() -> impl IntoView {
                                 <div
                                     data-zone-id=zid.clone()
                                     class=move || if is_interacting.get() {
-                                        "absolute rounded-md cursor-move group"
+                                        "absolute rounded-md cursor-move group touch-none"
                                     } else {
-                                        "absolute rounded-md cursor-move group transition-[border-color,box-shadow,background,opacity,filter] duration-300"
+                                        "absolute rounded-md cursor-move group touch-none transition-[border-color,box-shadow,background,opacity,filter] duration-300"
                                     }
                                     style=move || {
                                         let Some(zd) = zone_style.get() else {
@@ -564,8 +629,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         // Hover can restyle a compound member between drag
                                         // frames. Keep the runtime's position until release
                                         // transfers ownership back to the layout signal.
-                                        let position_style = drag_runtime.with_value(|runtime| {
-                                            let runtime = runtime.as_ref()?;
+                                        let position_style = drag_runtime.with_value(|gesture| {
+                                            let runtime = gesture.current()?;
                                             if !runtime.elements.contains_key(&zid_style) {
                                                 return None;
                                             }
@@ -637,9 +702,14 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             pointer_zone_id.set(None);
                                         }
                                     }
-                                    on:mousedown=move |ev| {
+                                    on:pointerdown=move |ev| {
                                         ev.stop_propagation();
                                         ev.prevent_default();
+                                        // A second finger landing mid-drag is ignored outright,
+                                        // selection included.
+                                        if !claim_interaction(ev.pointer_id()) {
+                                            return;
+                                        }
                                         swallow_next_click.set_value(false);
                                         primary_zone_id.set(Some(zid_select.clone()));
 
@@ -699,6 +769,12 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         ) else {
                                             return;
                                         };
+                                        // Capture on the pressed box itself, never an ancestor:
+                                        // browsers retarget click and dblclick to the capture
+                                        // target, and the box's own handlers must keep them.
+                                        let Some(capture) = listener_element(&ev) else {
+                                            return;
+                                        };
 
                                         // Snapshot the layout once and capture every zone we need
                                         // so the drag can run entirely against an in-flight copy.
@@ -733,6 +809,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         set_layout.begin_interaction();
                                         interacting_zone_id.set(Some(zid_drag2.clone()));
 
+                                        capture_pointer(&capture, &ev);
                                         let runtime = DragRuntime {
                                             kind: InteractionKind::Drag {
                                                 primary_zone_id,
@@ -740,13 +817,16 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 offset_y: mouse_norm.y - zy,
                                                 initial_positions,
                                             },
+                                            capture,
+                                            base_zones: snapshot.zones.clone(),
                                             current_zones: snapshot.zones,
                                             elements,
                                             pending_mouse: Cell::new(None),
                                             moved: Cell::new(false),
                                             last_preview_push_ms: Cell::new(0.0),
                                         };
-                                        drag_runtime.set_value(Some(runtime));
+                                        let pointer_id = ev.pointer_id();
+                                        drag_runtime.update_value(|g| g.start(pointer_id, runtime));
                                     }
                                     on:dblclick=move |ev| {
                                         ev.stop_propagation();
@@ -847,13 +927,18 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         let zid_for_rotation = zid_for_resize.clone();
 
                                         let handle_class = "absolute w-3 h-3 rounded-full border-2 transition-[box-shadow,transform] duration-150 \
-                                                           hover:scale-125";
+                                                           hover:scale-125 touch-grab";
 
                                         // Shared resize starter — builds a `DragRuntime` keyed to the
                                         // requested handle and seeds it with the current zone snapshot.
-                                        let start_resize: Rc<dyn Fn(ResizeHandle, i32, i32)> = {
+                                        let start_resize: Rc<dyn Fn(ResizeHandle, web_sys::PointerEvent)> = {
                                             let zone_id_template = zid_resize_nw.clone();
-                                            Rc::new(move |handle, client_x, client_y| {
+                                            Rc::new(move |handle, ev| {
+                                                ev.stop_propagation();
+                                                ev.prevent_default();
+                                                if !claim_interaction(ev.pointer_id()) {
+                                                    return;
+                                                }
                                                 let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
                                                     return;
                                                 };
@@ -861,9 +946,12 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     (*viewport).clone();
                                                 let Some(mouse_norm) = pointer_to_normalized(
                                                     &viewport_el,
-                                                    client_x,
-                                                    client_y,
+                                                    ev.client_x(),
+                                                    ev.client_y(),
                                                 ) else {
+                                                    return;
+                                                };
+                                                let Some(capture) = listener_element(&ev) else {
                                                     return;
                                                 };
                                                 let Some(snapshot) = layout.get_untracked() else {
@@ -887,6 +975,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     std::iter::once(zone_id.clone()),
                                                 );
 
+                                                capture_pointer(&capture, &ev);
                                                 let runtime = DragRuntime {
                                                     kind: InteractionKind::Resize {
                                                         zone_id,
@@ -897,13 +986,16 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                         rotation,
                                                         keep_aspect_ratio: keep_aspect_ratio.get_untracked(),
                                                     },
+                                                    capture,
+                                                    base_zones: snapshot.zones.clone(),
                                                     current_zones: snapshot.zones,
                                                     elements,
                                                     pending_mouse: Cell::new(None),
                                                     moved: Cell::new(false),
                                                     last_preview_push_ms: Cell::new(0.0),
                                                 };
-                                                drag_runtime.set_value(Some(runtime));
+                                                let pointer_id = ev.pointer_id();
+                                                drag_runtime.update_value(|g| g.start(pointer_id, runtime));
                                             })
                                         };
                                         let start_resize_nw = Rc::clone(&start_resize);
@@ -972,38 +1064,22 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             <div
                                                 class=format!("{handle_class} -top-1.5 -left-1.5")
                                                 style=handle_style_nw
-                                                on:mousedown=move |ev| {
-                                                    ev.stop_propagation();
-                                                    ev.prevent_default();
-                                                    start_resize_nw(ResizeHandle::NorthWest, ev.client_x(), ev.client_y());
-                                                }
+                                                on:pointerdown=move |ev| start_resize_nw(ResizeHandle::NorthWest, ev)
                                             />
                                             <div
                                                 class=format!("{handle_class} -top-1.5 -right-1.5")
                                                 style=handle_style_ne
-                                                on:mousedown=move |ev| {
-                                                    ev.stop_propagation();
-                                                    ev.prevent_default();
-                                                    start_resize_ne(ResizeHandle::NorthEast, ev.client_x(), ev.client_y());
-                                                }
+                                                on:pointerdown=move |ev| start_resize_ne(ResizeHandle::NorthEast, ev)
                                             />
                                             <div
                                                 class=format!("{handle_class} -bottom-1.5 -left-1.5")
                                                 style=handle_style_sw
-                                                on:mousedown=move |ev| {
-                                                    ev.stop_propagation();
-                                                    ev.prevent_default();
-                                                    start_resize_sw(ResizeHandle::SouthWest, ev.client_x(), ev.client_y());
-                                                }
+                                                on:pointerdown=move |ev| start_resize_sw(ResizeHandle::SouthWest, ev)
                                             />
                                             <div
                                                 class=format!("{handle_class} -bottom-1.5 -right-1.5")
                                                 style=handle_style_se
-                                                on:mousedown=move |ev| {
-                                                    ev.stop_propagation();
-                                                    ev.prevent_default();
-                                                    start_resize_se(ResizeHandle::SouthEast, ev.client_x(), ev.client_y());
-                                                }
+                                                on:pointerdown=move |ev| start_resize_se(ResizeHandle::SouthEast, ev)
                                             />
                                         }
                                     })}

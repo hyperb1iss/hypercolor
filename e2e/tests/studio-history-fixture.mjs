@@ -164,8 +164,11 @@ export async function dragOutput(page, id) {
     const bounds = element.getBoundingClientRect();
     const x = Math.round(bounds.x + bounds.width / 2);
     const y = Math.round(bounds.y + bounds.height / 2);
-    for (const [type, dx, dy, buttons] of [["mousedown", 0, 0, 1], ["mousemove", 35, 20, 1], ["mouseup", 35, 20, 0]]) {
-      element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons, clientX: x + dx, clientY: y + dy }));
+    for (const [type, dx, dy, buttons] of [["pointerdown", 0, 0, 1], ["pointermove", 35, 20, 1], ["pointerup", 35, 20, 0]]) {
+      element.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", isPrimary: true,
+        button: 0, buttons, clientX: x + dx, clientY: y + dy,
+      }));
     }
   });
 }
