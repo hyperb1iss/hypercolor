@@ -1,5 +1,5 @@
 use hypercolor_ui::pointer_gesture::{
-    GestureEnd, PointerEnd, PointerGesture, Press, button_mask, cancels_press_defaults,
+    GestureEnd, HeldButtons, PointerEnd, PointerGesture, Press, button_mask, cancels_press_defaults,
 };
 
 const MOUSE: i32 = 1;
@@ -227,4 +227,70 @@ fn an_unknown_button_is_never_released_by_a_move() {
 fn an_idle_gesture_has_nothing_to_release() {
     let gesture = PointerGesture::<&str>::new();
     assert!(!gesture.press_released(MOUSE, 0));
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Button {
+    Left,
+    Right,
+}
+
+#[test]
+fn one_pointer_presses_and_releases_a_button_once_each() {
+    let mut held = HeldButtons::new();
+    assert!(held.press(Button::Left, MOUSE));
+    assert!(held.is_down(Button::Left));
+    assert!(held.release(Button::Left, MOUSE));
+    assert!(!held.is_down(Button::Left));
+}
+
+#[test]
+fn two_pointers_on_one_button_release_it_when_the_last_lets_go() {
+    for (first_up, second_up) in [(FIRST_FINGER, SECOND_FINGER), (SECOND_FINGER, FIRST_FINGER)] {
+        let mut held = HeldButtons::new();
+        assert!(held.press(Button::Left, FIRST_FINGER));
+        // Already down: the second finger must not press it again.
+        assert!(!held.press(Button::Left, SECOND_FINGER));
+        assert!(!held.release(Button::Left, first_up));
+        assert!(held.is_down(Button::Left));
+        assert!(held.release(Button::Left, second_up));
+        assert!(!held.is_down(Button::Left));
+    }
+}
+
+#[test]
+fn cancelling_one_pointer_keeps_buttons_another_pointer_holds() {
+    let mut held = HeldButtons::new();
+    held.press(Button::Left, FIRST_FINGER);
+    held.press(Button::Left, SECOND_FINGER);
+    held.press(Button::Right, MOUSE);
+    assert_eq!(held.release_pointer(SECOND_FINGER), Vec::<Button>::new());
+    assert!(held.is_down(Button::Left));
+    assert_eq!(held.release_pointer(FIRST_FINGER), vec![Button::Left]);
+    assert!(held.is_down(Button::Right));
+    assert_eq!(held.release_pointer(MOUSE), vec![Button::Right]);
+    // Nothing left to release, and a repeat is harmless.
+    assert_eq!(held.release_pointer(MOUSE), Vec::<Button>::new());
+}
+
+#[test]
+fn a_release_for_an_unseen_press_is_forwarded_unless_someone_holds_it() {
+    let mut held = HeldButtons::new();
+    assert!(held.release(Button::Left, MOUSE));
+    held.press(Button::Left, FIRST_FINGER);
+    assert!(!held.release(Button::Left, MOUSE));
+    assert!(held.is_down(Button::Left));
+}
+
+#[test]
+fn release_all_drains_every_held_button() {
+    let mut held = HeldButtons::new();
+    held.press(Button::Left, FIRST_FINGER);
+    held.press(Button::Left, SECOND_FINGER);
+    held.press(Button::Right, MOUSE);
+    let mut released = held.release_all();
+    released.sort_by_key(|button| *button as u8);
+    assert_eq!(released, vec![Button::Left, Button::Right]);
+    assert!(!held.is_down(Button::Left));
+    assert!(held.release_all().is_empty());
 }

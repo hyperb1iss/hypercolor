@@ -29,6 +29,9 @@
 //! [`PointerGesture`] is the pure ownership state machine. The free
 //! functions are the thin DOM half.
 
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
+
 use wasm_bindgen::JsCast;
 
 /// How a gesture ended, from the surface's point of view.
@@ -206,6 +209,82 @@ impl<S> PointerGesture<S> {
     /// Drop the live gesture without an event (the surface is going away).
     pub fn abandon(&mut self) -> Option<S> {
         self.active.take().map(|owner| owner.state)
+    }
+}
+
+/// Buttons held by possibly several pointers at once, for a surface that
+/// forwards presses as one virtual button state (the interactive canvas
+/// preview). A button counts as down while any pointer holds it, so two
+/// fingers on the same button press it once and release it once.
+#[derive(Debug, Clone)]
+pub struct HeldButtons<B> {
+    holders: HashMap<B, HashSet<i32>>,
+}
+
+impl<B> Default for HeldButtons<B> {
+    fn default() -> Self {
+        Self {
+            holders: HashMap::new(),
+        }
+    }
+}
+
+impl<B: Copy + Eq + Hash> HeldButtons<B> {
+    /// An empty set.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record `pointer_id` holding `button`. True when the button was up,
+    /// so the press should be forwarded.
+    pub fn press(&mut self, button: B, pointer_id: i32) -> bool {
+        let holders = self.holders.entry(button).or_default();
+        let was_up = holders.is_empty();
+        holders.insert(pointer_id);
+        was_up
+    }
+
+    /// Record `pointer_id` letting go of `button`. True when no pointer
+    /// holds it any more, so the release should be forwarded. A release
+    /// for a press this set never saw is forwarded unless another pointer
+    /// still holds the button.
+    pub fn release(&mut self, button: B, pointer_id: i32) -> bool {
+        let Some(holders) = self.holders.get_mut(&button) else {
+            return true;
+        };
+        holders.remove(&pointer_id);
+        if holders.is_empty() {
+            self.holders.remove(&button);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Drop every button `pointer_id` holds (it was cancelled or lost
+    /// capture), returning the buttons that are now up.
+    pub fn release_pointer(&mut self, pointer_id: i32) -> Vec<B> {
+        let mut released = Vec::new();
+        self.holders.retain(|button, holders| {
+            if holders.remove(&pointer_id) && holders.is_empty() {
+                released.push(*button);
+                return false;
+            }
+            !holders.is_empty()
+        });
+        released
+    }
+
+    /// Drop every held button, returning them.
+    pub fn release_all(&mut self) -> Vec<B> {
+        self.holders.drain().map(|(button, _)| button).collect()
+    }
+
+    /// True while any pointer holds `button`.
+    #[must_use]
+    pub fn is_down(&self, button: B) -> bool {
+        self.holders.contains_key(&button)
     }
 }
 

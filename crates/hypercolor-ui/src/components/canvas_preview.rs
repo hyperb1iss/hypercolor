@@ -21,6 +21,7 @@ use leptos_use::{
 use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::icons::LuMousePointerClick;
+use crate::pointer_gesture::HeldButtons;
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
 use crate::ws::input::{
     InputEdgeButton, InputEdgeScrollPhase, InputEdgeScrollUnit, InputEdgeState, InputInjectEdge,
@@ -806,7 +807,10 @@ pub fn CanvasPreview(
     });
 
     let pressed_keys = Rc::new(RefCell::new(HashSet::<String>::new()));
-    let pressed_buttons = Rc::new(RefCell::new(HashSet::<InputEdgeButton>::new()));
+    // Held buttons with the pointers holding them. A button stays down in
+    // the effect while any pointer holds it, and a pointer that is
+    // cancelled or loses capture lets go of only its own buttons.
+    let pressed_buttons = Rc::new(RefCell::new(HeldButtons::<InputEdgeButton>::new()));
     let pending_edges = Rc::new(RefCell::new(Vec::<InputInjectEdge>::new()));
     let pending_move = Rc::new(RefCell::new(None::<(f32, f32)>));
 
@@ -858,7 +862,7 @@ pub fn CanvasPreview(
                     state: InputEdgeState::Released,
                 });
             }
-            for button in pressed_buttons.borrow_mut().drain() {
+            for button in pressed_buttons.borrow_mut().release_all() {
                 edges.push(InputInjectEdge::Button {
                     button,
                     state: InputEdgeState::Released,
@@ -930,15 +934,16 @@ pub fn CanvasPreview(
 
     // A press that leaves the canvas without a release (the browser took the
     // pointer, or capture moved elsewhere) must not leave a button held in
-    // the effect.
+    // the effect. Only that pointer's buttons go; another pointer may still
+    // be holding its own.
     let release_pressed_buttons = Rc::new({
         let pressed_buttons = Rc::clone(&pressed_buttons);
         let queue_edge = Rc::clone(&queue_edge);
-        move || {
+        move |pointer_id: i32| {
             if !interactive_active.get_untracked() {
                 return;
             }
-            let released: Vec<_> = pressed_buttons.borrow_mut().drain().collect();
+            let released = pressed_buttons.borrow_mut().release_pointer(pointer_id);
             for button in released {
                 queue_edge(InputInjectEdge::Button {
                     button,
@@ -1050,11 +1055,12 @@ pub fn CanvasPreview(
                         else {
                             return;
                         };
-                        pressed_buttons.borrow_mut().insert(button);
-                        queue_edge(InputInjectEdge::Button {
-                            button,
-                            state: InputEdgeState::Pressed,
-                        });
+                        if pressed_buttons.borrow_mut().press(button, ev.pointer_id()) {
+                            queue_edge(InputInjectEdge::Button {
+                                button,
+                                state: InputEdgeState::Pressed,
+                            });
+                        }
                     }
                 }
                 on:pointerup={
@@ -1068,22 +1074,23 @@ pub fn CanvasPreview(
                         else {
                             return;
                         };
-                        pressed_buttons.borrow_mut().remove(&button);
-                        queue_edge(InputInjectEdge::Button {
-                            button,
-                            state: InputEdgeState::Released,
-                        });
+                        if pressed_buttons.borrow_mut().release(button, ev.pointer_id()) {
+                            queue_edge(InputInjectEdge::Button {
+                                button,
+                                state: InputEdgeState::Released,
+                            });
+                        }
                     }
                 }
                 on:pointercancel={
                     let release_buttons = Rc::clone(&release_pressed_buttons);
-                    move |_| release_buttons()
+                    move |ev: web_sys::PointerEvent| release_buttons(ev.pointer_id())
                 }
-                // Capture also ends after every pointerup; by then the
-                // buttons are released and this finds nothing to do.
+                // Capture also ends after every pointerup; by then that
+                // pointer's buttons are released and this finds nothing.
                 on:lostpointercapture={
                     let release_buttons = Rc::clone(&release_pressed_buttons);
-                    move |_| release_buttons()
+                    move |ev: web_sys::PointerEvent| release_buttons(ev.pointer_id())
                 }
                 on:contextmenu=move |ev| {
                     if interactive_active.get_untracked() {
