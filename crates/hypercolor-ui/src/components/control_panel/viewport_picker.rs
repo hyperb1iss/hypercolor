@@ -17,6 +17,9 @@ use crate::components::viewport_designer::{
 use crate::control_geometry::{
     FrameHandle, FrameRect, clamp_frame_rect, drag_frame_rect, resize_frame_rect,
 };
+use crate::pointer_gesture::{
+    GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
+};
 use crate::toasts::toast_error;
 use crate::ws::CanvasFrame;
 
@@ -53,7 +56,10 @@ pub(super) fn ViewportPicker(
     main_canvas: bool,
 ) -> impl IntoView {
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
-    let (interaction, set_interaction) = signal(None::<ViewportInteractionState>);
+    let frame_ref = NodeRef::<leptos::html::Div>::new();
+    let gesture = StoredValue::new(PointerGesture::<ViewportInteractionState>::new());
+    let (grabbing, set_grabbing) = signal(false);
+    let control_key = StoredValue::new(control_id.clone());
     let preview_rect = Signal::derive(move || frame_rect_from_viewport(value.get().clamp()));
     let readout_rect = Signal::derive(move || preview_rect.get());
     let frame_style = Signal::derive({
@@ -132,62 +138,90 @@ pub(super) fn ViewportPicker(
         });
     }
 
-    let _drag_move = window_event_listener(ev::mousemove, {
-        let control_id = control_id.clone();
-        move |ev| {
-            let Some(state) = interaction.get_untracked() else {
-                return;
-            };
-            let Some(viewport) = viewport_ref.get_untracked() else {
-                return;
-            };
-            let rect = viewport.get_bounding_client_rect();
-            if rect.width() <= 0.0 || rect.height() <= 0.0 {
-                return;
-            }
+    // A cancelled drag puts the frame back where the press found it.
+    let restore = move |state: ViewportInteractionState| {
+        control_key.with_value(|id| emit_viewport_update(&on_change, id, state.start_rect));
+    };
 
-            ev.prevent_default();
-            let delta_x = (f64::from(ev.client_x()) - state.start_client_x) / rect.width();
-            let delta_y = (f64::from(ev.client_y()) - state.start_client_y) / rect.height();
-            let next_rect = match state.handle {
-                FrameHandle::Move => drag_frame_rect(
-                    state.start_rect,
-                    delta_x as f32,
-                    delta_y as f32,
-                    MIN_VIEWPORT_EDGE,
-                    MIN_VIEWPORT_EDGE,
-                ),
-                handle => resize_viewport_rect(
-                    state.start_rect,
-                    handle,
-                    delta_x as f32,
-                    delta_y as f32,
-                    aspect_lock,
-                ),
-            };
-
-            emit_viewport_update(&on_change, &control_id, next_rect);
-        }
-    });
-
-    let _drag_end = window_event_listener(ev::mouseup, move |_| {
-        if interaction.get_untracked().is_some() {
-            set_interaction.set(None);
-        }
-    });
-
+    // Every handle captures its pointer on the frame, so moves keep
+    // arriving there wherever the pointer goes. The grips carry no click
+    // handlers, so retargeting their clicks to the frame changes nothing.
     let start_interaction =
-        Callback::new(move |(handle, ev): (FrameHandle, web_sys::MouseEvent)| {
-            let start_rect = preview_rect.get_untracked();
+        Callback::new(move |(handle, ev): (FrameHandle, web_sys::PointerEvent)| {
             ev.prevent_default();
             ev.stop_propagation();
-            set_interaction.set(Some(ViewportInteractionState {
+            let Some(frame) = frame_ref.get_untracked() else {
+                return;
+            };
+            let frame: web_sys::Element = frame.into();
+            let pointer_id = ev.pointer_id();
+            let press = gesture
+                .try_update_value(|g| {
+                    g.press(pointer_id, |owner, _| holds_capture(Some(&frame), owner))
+                })
+                .unwrap_or(Press::Busy);
+            match press {
+                Press::Busy => return,
+                Press::Stale(stale) => restore(stale),
+                Press::Ready => {}
+            }
+            capture_pointer(&frame, &ev);
+            let state = ViewportInteractionState {
                 handle,
-                start_rect,
+                start_rect: preview_rect.get_untracked(),
                 start_client_x: f64::from(ev.client_x()),
                 start_client_y: f64::from(ev.client_y()),
-            }));
+            };
+            gesture.update_value(|g| g.start(pointer_id, state));
+            set_grabbing.set(true);
         });
+
+    let move_interaction = move |ev: web_sys::PointerEvent| {
+        let Some(state) = gesture.with_value(|g| g.state(ev.pointer_id()).copied()) else {
+            return;
+        };
+        let Some(viewport) = viewport_ref.get_untracked() else {
+            return;
+        };
+        let rect = viewport.get_bounding_client_rect();
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+
+        ev.prevent_default();
+        let delta_x = (f64::from(ev.client_x()) - state.start_client_x) / rect.width();
+        let delta_y = (f64::from(ev.client_y()) - state.start_client_y) / rect.height();
+        let next_rect = match state.handle {
+            FrameHandle::Move => drag_frame_rect(
+                state.start_rect,
+                delta_x as f32,
+                delta_y as f32,
+                MIN_VIEWPORT_EDGE,
+                MIN_VIEWPORT_EDGE,
+            ),
+            handle => resize_viewport_rect(
+                state.start_rect,
+                handle,
+                delta_x as f32,
+                delta_y as f32,
+                aspect_lock,
+            ),
+        };
+
+        control_key.with_value(|id| emit_viewport_update(&on_change, id, next_rect));
+    };
+
+    let end_interaction = move |ev: web_sys::PointerEvent, how: PointerEnd| {
+        let ended = gesture
+            .try_update_value(|g| g.end(ev.pointer_id(), how))
+            .flatten();
+        if let Some((outcome, state)) = ended {
+            set_grabbing.set(false);
+            if outcome == GestureEnd::Cancel {
+                restore(state);
+            }
+        }
+    };
 
     let reset_viewport = {
         let control_id = control_id.clone();
@@ -418,10 +452,15 @@ pub(super) fn ViewportPicker(
                         <div class="absolute top-1/2 left-0 right-0 h-px bg-white/[0.05] -translate-y-1/2" />
 
                         <div
-                            class="absolute rounded-md border cursor-grab"
-                            class:cursor-grabbing=move || interaction.get().is_some()
+                            node_ref=frame_ref
+                            class="absolute rounded-md border cursor-grab touch-none"
+                            class:cursor-grabbing=move || grabbing.get()
                             style=move || frame_style.get()
-                            on:mousedown=move |ev| start_interaction.run((FrameHandle::Move, ev))
+                            on:pointerdown=move |ev| start_interaction.run((FrameHandle::Move, ev))
+                            on:pointermove=move_interaction
+                            on:pointerup=move |ev| end_interaction(ev, PointerEnd::Up)
+                            on:pointercancel=move |ev| end_interaction(ev, PointerEnd::Cancel)
+                            on:lostpointercapture=move |ev| end_interaction(ev, PointerEnd::LostCapture)
                         >
                             <div class="absolute inset-0 rounded-md bg-white/[0.035] backdrop-blur-[1px]" />
                             <div class="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-white/80">
@@ -431,22 +470,22 @@ pub(super) fn ViewportPicker(
                             <FrameHandleGrip
                                 accent_rgb=accent_rgb.clone()
                                 class="left-0 top-0 -translate-x-1/2 -translate-y-1/2 cursor-nwse-resize"
-                                on_mousedown=Callback::new(move |ev| start_interaction.run((FrameHandle::NorthWest, ev)))
+                                on_pointerdown=Callback::new(move |ev| start_interaction.run((FrameHandle::NorthWest, ev)))
                             />
                             <FrameHandleGrip
                                 accent_rgb=accent_rgb.clone()
                                 class="right-0 top-0 translate-x-1/2 -translate-y-1/2 cursor-nesw-resize"
-                                on_mousedown=Callback::new(move |ev| start_interaction.run((FrameHandle::NorthEast, ev)))
+                                on_pointerdown=Callback::new(move |ev| start_interaction.run((FrameHandle::NorthEast, ev)))
                             />
                             <FrameHandleGrip
                                 accent_rgb=accent_rgb.clone()
                                 class="left-0 bottom-0 -translate-x-1/2 translate-y-1/2 cursor-nesw-resize"
-                                on_mousedown=Callback::new(move |ev| start_interaction.run((FrameHandle::SouthWest, ev)))
+                                on_pointerdown=Callback::new(move |ev| start_interaction.run((FrameHandle::SouthWest, ev)))
                             />
                             <FrameHandleGrip
                                 accent_rgb=accent_rgb.clone()
                                 class="right-0 bottom-0 translate-x-1/2 translate-y-1/2 cursor-nwse-resize"
-                                on_mousedown=Callback::new(move |ev| start_interaction.run((FrameHandle::SouthEast, ev)))
+                                on_pointerdown=Callback::new(move |ev| start_interaction.run((FrameHandle::SouthEast, ev)))
                             />
                         </div>
                     </div>
@@ -475,7 +514,7 @@ pub(super) fn ViewportPicker(
 fn FrameHandleGrip(
     accent_rgb: String,
     class: &'static str,
-    on_mousedown: Callback<web_sys::MouseEvent>,
+    on_pointerdown: Callback<web_sys::PointerEvent>,
 ) -> impl IntoView {
     let grip_style = format!(
         "background: rgba({0}, 0.92); box-shadow: 0 0 0 2px rgba(9, 7, 15, 0.88), 0 0 16px rgba({0}, 0.3);",
@@ -485,9 +524,9 @@ fn FrameHandleGrip(
     view! {
         <button
             type="button"
-            class=format!("absolute h-3.5 w-3.5 rounded-full border border-white/20 transition-transform duration-150 hover:scale-110 {class}")
+            class=format!("absolute h-3.5 w-3.5 rounded-full border border-white/20 transition-transform duration-150 hover:scale-110 touch-grab {class}")
             style=grip_style
-            on:mousedown=move |ev| on_mousedown.run(ev)
+            on:pointerdown=move |ev| on_pointerdown.run(ev)
         />
     }
 }
