@@ -45,10 +45,24 @@ pub fn encode_dismissed(dismissed: &BTreeSet<String>) -> Option<String> {
 
 /// Whether `status` proves what is *not* running. A host that cannot list
 /// processes, or a daemon that has not finished its first scan, reports an
-/// empty list that says nothing.
+/// empty list that says nothing. A failed scan carries the last successful
+/// result, which says nothing about what has stopped since.
 #[must_use]
 pub fn scan_is_conclusive(status: &SoftwareConflictsStatus) -> bool {
-    status.supported && status.scanned
+    status.supported && status.scanned && !status.scan_failed
+}
+
+/// Quiet note under the banner title when the list on screen is not fresh.
+pub const STALE_SCAN_NOTE: &str =
+    "The latest check failed, so this list is from the last check that worked.";
+
+/// The note to show beside the conflicts in `status`, if any. A failed scan
+/// keeps its last good list on screen with this note; when that list is
+/// empty there is no banner at all, since an inventory hiccup alone is not
+/// worth a warning.
+#[must_use]
+pub fn stale_note(status: &SoftwareConflictsStatus) -> Option<&'static str> {
+    (status.scan_failed && !status.conflicts.is_empty()).then_some(STALE_SCAN_NOTE)
 }
 
 /// Dismissals that survive `status`: every id the scan still reports.
@@ -68,18 +82,41 @@ pub fn prune_dismissed(
         .collect()
 }
 
-/// What to tell the user after a check they asked for: the programs still
-/// running that they have not dismissed, or `None` when nothing is left.
+/// What to tell the user after a check they asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckFeedback {
+    /// The scan failed; the list on screen is from the last one that worked.
+    Failed,
+    /// These programs are still running and not dismissed.
+    StillRunning(String),
+}
+
+impl CheckFeedback {
+    /// Toast text for this outcome.
+    #[must_use]
+    pub fn message(&self) -> String {
+        match self {
+            Self::Failed => "Check failed. The list shows the last check that worked.".to_owned(),
+            Self::StillRunning(names) => format!("Still running: {names}"),
+        }
+    }
+}
+
+/// Feedback for a check the user asked for, or `None` when it cleared
+/// everything they have not dismissed.
 #[must_use]
 pub fn check_feedback(
     status: &SoftwareConflictsStatus,
     dismissed: &BTreeSet<String>,
-) -> Option<String> {
+) -> Option<CheckFeedback> {
+    if status.scan_failed {
+        return Some(CheckFeedback::Failed);
+    }
     let names: Vec<String> = visible_conflicts(&status.conflicts, dismissed)
         .into_iter()
         .map(|conflict| conflict.name)
         .collect();
-    (!names.is_empty()).then(|| format!("Still running: {}", names.join(", ")))
+    (!names.is_empty()).then(|| CheckFeedback::StillRunning(names.join(", ")))
 }
 
 /// Running conflicts the user has not dismissed, in catalog order.

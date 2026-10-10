@@ -23,8 +23,9 @@ use crate::app::WsContext;
 use crate::components::status_banner::StatusBannerTone;
 use crate::icons::{LuRefreshCw, LuTriangleAlert, LuX};
 use crate::software_conflicts::{
-    DISMISSED_STORAGE_KEY, SOFTWARE_CONFLICTS_EVENT, banner_headline, banner_scope, check_feedback,
-    encode_dismissed, parse_dismissed, prune_dismissed, visible_conflicts,
+    CheckFeedback, DISMISSED_STORAGE_KEY, SOFTWARE_CONFLICTS_EVENT, banner_headline, banner_scope,
+    check_feedback, encode_dismissed, parse_dismissed, prune_dismissed, stale_note,
+    visible_conflicts,
 };
 use crate::{storage, toasts};
 
@@ -55,6 +56,7 @@ pub struct SoftwareConflictsState {
     scanning: RwSignal<bool>,
     running: Memo<Vec<SoftwareConflict>>,
     visible: Memo<Vec<SoftwareConflict>>,
+    stale: Memo<Option<&'static str>>,
 }
 
 /// Build the conflict state. Dismissals load from `localStorage`; when
@@ -82,6 +84,10 @@ pub fn software_conflicts_state() -> SoftwareConflictsState {
     });
     let visible =
         Memo::new(move |_| running.with(|all| dismissed.with(|ids| visible_conflicts(all, ids))));
+    let stale = Memo::new(move |_| match status.get() {
+        Some(Ok(current)) => stale_note(&current),
+        _ => None,
+    });
 
     SoftwareConflictsState {
         status,
@@ -89,6 +95,7 @@ pub fn software_conflicts_state() -> SoftwareConflictsState {
         scanning: RwSignal::new(false),
         running,
         visible,
+        stale,
     }
 }
 
@@ -129,8 +136,12 @@ impl SoftwareConflictsState {
                     else {
                         return;
                     };
-                    if let Some(message) = feedback {
-                        toasts::toast_info(&message);
+                    match feedback {
+                        Some(feedback @ CheckFeedback::Failed) => {
+                            toasts::toast_error(&feedback.message());
+                        }
+                        Some(feedback) => toasts::toast_info(&feedback.message()),
+                        None => {}
                     }
                     let _ = self.status.try_set(Some(Ok(current)));
                 }
@@ -175,6 +186,9 @@ pub fn SoftwareConflictBanner(state: SoftwareConflictsState) -> impl IntoView {
                                 <div class=tone.title_class()>"Competing RGB software"</div>
                                 <CheckAgainButton state=state />
                             </div>
+                            {move || state.stale.get().map(|note| view! {
+                                <p class="mt-1 text-[11px] leading-4 text-fg-tertiary">{note}</p>
+                            })}
                             <ul class="mt-2 space-y-3">
                                 {conflicts.into_iter().map(|conflict| view! {
                                     <ConflictRow conflict=conflict state=state />

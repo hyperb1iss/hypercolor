@@ -14,10 +14,10 @@ use hypercolor_ui::api::{
     scan_software_conflicts,
 };
 use hypercolor_ui::software_conflicts::{
-    DISMISSED_STORAGE_KEY, SOFTWARE_CONFLICTS_EVENT, banner_headline, banner_scope, check_feedback,
-    conflicts_for_device, device_can_be_held, device_hint, device_hints, encode_dismissed,
-    parse_dismissed, prune_dismissed, scan_is_conclusive, smbus_conflict_warning,
-    visible_conflicts,
+    CheckFeedback, DISMISSED_STORAGE_KEY, SOFTWARE_CONFLICTS_EVENT, STALE_SCAN_NOTE,
+    banner_headline, banner_scope, check_feedback, conflicts_for_device, device_can_be_held,
+    device_hint, device_hints, encode_dismissed, parse_dismissed, prune_dismissed,
+    scan_is_conclusive, smbus_conflict_warning, stale_note, visible_conflicts,
 };
 use hypercolor_ui::ws::messages::{DEVICE_LIFECYCLE_EVENTS, extract_device_event_hint};
 
@@ -168,18 +168,88 @@ fn a_check_names_what_is_still_running_and_not_dismissed() {
     ]);
 
     assert_eq!(
-        check_feedback(&current, &BTreeSet::new()).as_deref(),
-        Some("Still running: SignalRGB, Razer Synapse")
+        check_feedback(&current, &BTreeSet::new()).map(|feedback| feedback.message()),
+        Some("Still running: SignalRGB, Razer Synapse".to_owned())
     );
     assert_eq!(
-        check_feedback(&current, &ids(&["signalrgb"])).as_deref(),
-        Some("Still running: Razer Synapse")
+        check_feedback(&current, &ids(&["signalrgb"])),
+        Some(CheckFeedback::StillRunning("Razer Synapse".to_owned()))
     );
     assert_eq!(
         check_feedback(&current, &ids(&["signalrgb", "razer_synapse"])),
         None
     );
     assert_eq!(check_feedback(&status(Vec::new()), &BTreeSet::new()), None);
+}
+
+// ── Failed scans ────────────────────────────────────────────────────────────
+
+fn failed(conflicts: Vec<SoftwareConflict>) -> SoftwareConflictsStatus {
+    SoftwareConflictsStatus {
+        scan_failed: true,
+        ..status(conflicts)
+    }
+}
+
+#[test]
+fn a_failed_scan_keeps_dismissals_even_when_its_list_is_empty() {
+    let dismissed = ids(&["signalrgb", "razer_synapse"]);
+
+    assert!(!scan_is_conclusive(&failed(Vec::new())));
+    assert_eq!(prune_dismissed(&dismissed, &failed(Vec::new())), dismissed);
+    assert_eq!(
+        prune_dismissed(&dismissed, &failed(vec![suite("signalrgb", "SignalRGB")])),
+        dismissed
+    );
+}
+
+#[test]
+fn a_failed_scan_keeps_its_last_list_on_screen_with_a_note() {
+    let last_good = failed(vec![suite("signalrgb", "SignalRGB")]);
+
+    assert_eq!(stale_note(&last_good), Some(STALE_SCAN_NOTE));
+    assert_eq!(
+        visible_conflicts(&last_good.conflicts, &BTreeSet::new()).len(),
+        1
+    );
+    assert_eq!(
+        stale_note(&status(vec![suite("signalrgb", "SignalRGB")])),
+        None
+    );
+}
+
+#[test]
+fn a_failed_scan_with_nothing_to_show_stays_silent() {
+    let empty = failed(Vec::new());
+
+    assert_eq!(stale_note(&empty), None);
+    assert!(visible_conflicts(&empty.conflicts, &BTreeSet::new()).is_empty());
+    assert_eq!(smbus_conflict_warning(&empty.conflicts), None);
+}
+
+#[test]
+fn a_failed_check_says_so_instead_of_listing_names() {
+    let feedback = check_feedback(
+        &failed(vec![suite("signalrgb", "SignalRGB")]),
+        &BTreeSet::new(),
+    );
+
+    assert_eq!(feedback, Some(CheckFeedback::Failed));
+    assert_eq!(
+        feedback.map(|feedback| feedback.message()).as_deref(),
+        Some("Check failed. The list shows the last check that worked.")
+    );
+}
+
+#[test]
+fn status_without_scan_failed_decodes_as_a_clean_scan() {
+    let decoded: SoftwareConflictsStatus = serde_json::from_value(serde_json::json!({
+        "supported": true, "scanned": true, "conflicts": []
+    }))
+    .expect("older daemons omit scan_failed");
+
+    assert!(!decoded.scan_failed);
+    assert!(scan_is_conclusive(&decoded));
 }
 
 // ── Which devices a program competes for ────────────────────────────────────
