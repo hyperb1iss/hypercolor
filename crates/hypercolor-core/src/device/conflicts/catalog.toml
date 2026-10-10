@@ -1,0 +1,213 @@
+# RGB software that competes with Hypercolor for lighting devices.
+#
+# When one of these runs, it holds or drives the same USB interfaces, HID
+# collections, or SMBus controllers Hypercolor does, and the user sees a
+# device that is discovered but never lights. The daemon matches running
+# processes and Windows services against this list and tells the user.
+#
+# Matching ignores case and a trailing `.exe`. A process matches on its
+# reported name, on the program it was launched as (argv[0], which is how
+# Linux daemons whose comm is truncated to 15 characters still match), or,
+# for a script run through an interpreter, on the script's file name.
+# Services match on the Windows service name, never the display name.
+#
+# `drivers` names the Hypercolor driver ids whose devices the program
+# holds. `all_drivers` marks whole-system suites. `smbus` marks programs
+# that drive motherboard, RAM, or GPU lighting over SMBus; those compete
+# for every SMBus device, whichever driver owns it.
+#
+# Only long-running processes belong here: tray apps, device services,
+# and daemons. Updaters, crash handlers, and kernel-driver services prove
+# a program is installed, not that it is running. Generic image names
+# (NZXT's `service.exe`, Gigabyte Control Center's `GCC.exe`, which
+# collides with `gcc`) are left out because they would match unrelated
+# programs. Programs that touch no device Hypercolor drives are left out
+# too.
+#
+# OpenRGB is deliberately absent. Running it beside Hypercolor is a
+# supported setup: the OpenRGB bridge partitions detectors away from
+# natively owned hardware and output-disables any route that still
+# overlaps, and the `openrgb` diagnose check reports that overlap.
+#
+# Each entry cites where its names come from. Keep that up to date when a
+# vendor renames something.
+
+# ── Whole-system suites ─────────────────────────────────────────────
+
+# Sources: bleepingcomputer.com FRST logs (forums t/816185, t/817151);
+# forum.signalrgb.com/t/error-after-latest-update/8763. The service exists
+# from SignalRGB 2.5.0; the launcher stays running as the parent process.
+[[software]]
+id = "signalrgb"
+name = "SignalRGB"
+processes = ["SignalRgbLauncher.exe", "SignalRgb.exe", "SignalRgbService.exe"]
+services = ["SignalRgb.Service"]
+all_drivers = true
+smbus = true
+remedy = "Quit SignalRGB from its tray icon (right-click, then Exit). Closing its window leaves it running."
+
+# ── Vendor suites ───────────────────────────────────────────────────
+
+# Sources: github.com/lewisgibson/FanControl.LianLi README;
+# github.com/MarcusSanchez/FanControl.LianLiWireless src/process.rs.
+# L-Connect-Service.exe holds the devices, including the wireless dongles
+# and the 0x1CBE panels.
+[[software]]
+id = "lian_li_l_connect"
+name = "Lian Li L-Connect"
+processes = ["L-Connect 3.exe", "L-Connect-Service.exe", "L-Connect 2.exe"]
+services = ["LConnectService", "LConnectServiceWatcher"]
+drivers = ["lianli"]
+remedy = "Quit L-Connect from its tray icon, then stop the L-Connect Service Watcher and the L-Connect Service in services.msc, watcher first, because it restarts the service."
+
+# Sources: bleepingcomputer.com FRST logs (Synapse 3: t/806738, t/813116;
+# Synapse 4: t/807712, t/815617). Synapse 4 has no Razer Synapse Service;
+# RazerAppEngine.exe drives the devices.
+[[software]]
+id = "razer_synapse"
+name = "Razer Synapse"
+processes = [
+  "Razer Synapse 3.exe",
+  "Razer Synapse Service.exe",
+  "Razer Synapse Service Process.exe",
+  "RazerAppEngine.exe",
+]
+services = ["Razer Synapse Service"]
+drivers = ["razer"]
+remedy = "Quit Razer Synapse from its tray icon, then check Task Manager for Razer processes that are still running."
+
+# Sources: bleepingcomputer.com FRST logs (iCUE 4: t/779776; iCUE 5:
+# t/798623, t/812948); help.corsair.com article 30167929440781. The
+# service name is CorsairService; "Corsair Service" is its display name.
+[[software]]
+id = "corsair_icue"
+name = "Corsair iCUE"
+processes = ["iCUE.exe", "Corsair.Service.exe", "iCUEDevicePluginHost.exe"]
+services = ["CorsairService", "iCUEDevicePluginHost"]
+drivers = ["corsair"]
+smbus = true
+remedy = "Quit iCUE from its tray icon, then stop the Corsair Service in services.msc. It keeps holding Corsair devices after the window closes."
+
+# Sources: github.com/seerge/g-helper app/Helpers/AsusService.cs;
+# docs.signalrgb.com/troubleshooting/brand-specific/asus/. The Aac*Hal
+# helpers do the motherboard and DRAM writes.
+[[software]]
+id = "asus_armoury_crate"
+name = "ASUS Armoury Crate"
+processes = [
+  "ArmouryCrate.exe",
+  "ArmouryCrate.Service.exe",
+  "LightingService.exe",
+  "Aac3572MbHal_x86.exe",
+  "Aac3572DramHal_x86.exe",
+]
+services = ["LightingService", "ArmouryCrateService"]
+drivers = ["asus"]
+smbus = true
+remedy = "Stop the ASUS AURA SYNC lighting service (LightingService) and the Armoury Crate Service in services.msc, or remove Armoury Crate with ASUS's uninstall tool."
+
+# Sources: MSI Center service dump in github.com/2025-CSU-Group-9-OverSight/
+# OverSight-ITC303 Server/components/ws_data.json. LEDKeeper2.exe calls
+# SMBus_Initial; MSI_Central_Service is the Dragon Center era name.
+[[software]]
+id = "msi_center"
+name = "MSI Center"
+processes = ["LEDKeeper2.exe", "Mystic_Light_Service.exe", "LightKeeperService.exe"]
+services = ["MSI_Center_Service", "Mystic_Light_Service", "LightKeeperService", "MSI_Central_Service"]
+smbus = true
+remedy = "Quit MSI Center, then stop the Mystic Light and LightKeeper services in services.msc. MSI Center reaches RGB memory over SMBus."
+
+# Sources: community reports only (medium confidence). Gigabyte Control
+# Center is left out because GCC.exe collides with GNU gcc.exe.
+[[software]]
+id = "gigabyte_rgb_fusion"
+name = "Gigabyte RGB Fusion"
+processes = ["RGBFusion.exe"]
+smbus = true
+remedy = "Quit RGB Fusion. It reaches RGB memory over SMBus."
+
+# Sources: steamcommunity.com app 581320 discussion 2646360117218982192.
+[[software]]
+id = "asrock_polychrome"
+name = "ASRock Polychrome RGB"
+processes = ["AsrPolychromeRGB.exe"]
+smbus = true
+remedy = "Quit Polychrome RGB from its tray icon."
+
+# Sources: NZXT CAM 4.76.5 installer contents (nzxt-app.nzxt.com/
+# latest.yml); support.nzxt.com article 48391983200667. CAM reaches ENE
+# SMBus memory through cam_driver_mb.sys.
+[[software]]
+id = "nzxt_cam"
+name = "NZXT CAM"
+processes = ["NZXT CAM.exe", "cam_helper.exe"]
+services = ["CAMService"]
+smbus = true
+remedy = "Quit NZXT CAM from its tray icon and stop the CAM Service in services.msc. CAM reaches RGB memory over SMBus."
+
+# Sources: TT RGB Plus 3.0.8 installer contents (file.thermaltake.com).
+# It installs an SMBus driver for ENE memory through a bundled ASUS
+# component.
+[[software]]
+id = "thermaltake_tt_rgb_plus"
+name = "Thermaltake TT RGB Plus"
+processes = ["TTRGBPlus.exe", "TTRGBPLUSGUI_V3.exe", "TTRGBPlusGUI.exe"]
+smbus = true
+remedy = "Quit TT RGB Plus from its tray icon. It reaches RGB memory over SMBus."
+
+# Sources: nolliergb.com/software (2.3.0 portable build). It also drives
+# PrismRGB Prism 8 controllers.
+[[software]]
+id = "nollie_rgb"
+name = "NollieRGB"
+processes = ["NollieRGB.exe"]
+drivers = ["nollie", "prismrgb"]
+remedy = "Quit NollieRGB."
+
+# ── Linux daemons ───────────────────────────────────────────────────
+
+# Sources: github.com/openrazer/openrazer daemon/openrazer_daemon/daemon.py
+# (setproctitle makes argv[0] openrazer-daemon; comm truncates to
+# openrazer-daemo) and the openrazer-daemon user unit.
+[[software]]
+id = "openrazer"
+name = "OpenRazer"
+processes = ["openrazer-daemon"]
+drivers = ["razer"]
+remedy = "Run: systemctl --user stop openrazer-daemon. The openrazer kernel modules can hold devices too; unload them as the conflicting-software guide describes."
+
+# Sources: github.com/ckb-next/ckb-next linux/systemd/
+# ckb-next-daemon.service.in, which installs as a system unit.
+[[software]]
+id = "ckb_next"
+name = "ckb-next"
+processes = ["ckb-next-daemon"]
+drivers = ["corsair"]
+remedy = "Run: sudo systemctl stop ckb-next-daemon (it is a system service)."
+
+# Sources: github.com/jurkovic-nikola/OpenLinkHub OpenLinkHub.service;
+# the AUR package installs the binary lowercase as /usr/bin/openlinkhub.
+[[software]]
+id = "openlinkhub"
+name = "OpenLinkHub"
+processes = ["OpenLinkHub"]
+drivers = ["corsair"]
+remedy = "Stop the OpenLinkHub service: sudo systemctl stop OpenLinkHub (the Arch package names it openlinkhub)."
+
+# Sources: github.com/sgtaziz/lian-li-linux packaging/systemd at 7c0de10.
+[[software]]
+id = "lian_li_linux"
+name = "lian-li-linux"
+processes = ["lianli-daemon"]
+drivers = ["lianli"]
+remedy = "Run: systemctl --user stop lianli-daemon, or sudo systemctl stop lianli-daemon-system for the system install."
+
+# Sources: gitlab.com/coolercontrol/coolercontrol packaging/systemd/
+# coolercontrold.service; its embedded liqctld child holds liquidctl
+# devices.
+[[software]]
+id = "coolercontrol"
+name = "CoolerControl"
+processes = ["coolercontrold"]
+drivers = ["corsair", "lianli", "asus"]
+remedy = "Run: sudo systemctl stop coolercontrold. CoolerControl opens every liquidctl device it finds, including Corsair, Lian Li, and ASUS controllers."
