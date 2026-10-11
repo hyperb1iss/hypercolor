@@ -184,6 +184,10 @@ On all platforms, Hypercolor ships a unified desktop app (`hypercolor-app`) buil
 3. If no daemon is found, the app spawns one as a supervised child process with a watchdog that restarts it on crash. That daemon follows your `[network]` access mode, so it stays loopback-only unless you open it to the LAN.
 4. The tray icon appears, and the main window opens (or the app starts minimized if launched with `--minimized`).
 
+{% <callout type="warning"> %}
+**Upgrading with LAN access selected.** Earlier releases kept the app's own daemon on loopback even when **Settings → Network → Access Mode** said **LAN**, so that choice did nothing for it. Current releases honor it. If you picked **LAN** (`lan_trusted`) before upgrading, the first launch after the upgrade opens the daemon to your local network: any device the client scope admits can control it without an API key, and the daemon advertises itself over mDNS. The daemon log warns when this happens. To stay loopback-only, switch to **Local** before you upgrade, or switch afterward and restart the app. To keep LAN access behind a key, choose **Protected** and set `HYPERCOLOR_API_KEY`.
+{% </callout> %}
+
 Autostart is managed by the app's autostart plugin. On Linux it creates a `~/.config/autostart/` entry; on macOS it registers a LaunchAgent; on Windows it writes a Run key in the current user's registry. Toggle it from the tray menu or from within the app's Settings page.
 
 The app window is 1200×800 by default, with a minimum of 800×500. Close clicks hide the window rather than quit; Hypercolor stays in the tray. To fully quit, use the tray menu.
