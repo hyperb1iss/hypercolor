@@ -13535,3 +13535,71 @@ async fn config_object_patch_rejects_scalar_without_mutation() {
         before
     );
 }
+
+#[tokio::test]
+async fn software_conflicts_report_the_latest_scan() {
+    let app = test_app();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/system/conflicts")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert!(json["data"]["supported"].is_boolean());
+    assert!(json["data"]["scanned"].is_boolean());
+    assert!(json["data"]["conflicts"].is_array());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/system/conflicts/scan")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["scanned"], true, "a scan request scans");
+    assert_eq!(
+        json["data"]["supported"],
+        cfg!(any(target_os = "linux", target_os = "windows")),
+        "Linux and Windows list running software"
+    );
+}
+
+#[tokio::test]
+async fn diagnose_default_set_reports_competing_software() {
+    let response = test_app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/diagnose")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let finding = json["data"]["checks"]
+        .as_array()
+        .expect("diagnose checks should be an array")
+        .iter()
+        .find(|check| check["name"] == "competing_software")
+        .expect("default diagnostics should look for competing software");
+    assert_eq!(finding["category"], "devices");
+    assert!(matches!(
+        finding["status"].as_str(),
+        Some("pass" | "warning")
+    ));
+}

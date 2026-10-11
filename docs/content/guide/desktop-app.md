@@ -94,9 +94,14 @@ Server configuration lives in your CLI config file. See [Configuration](@/guide/
 
 - The 10 most recently modified log files from the app log directory
 - A `system-info.txt` with app version, default daemon URL, daemon executable name, OS, architecture, and motherboard info
-- On Windows: a `platform-probe.txt` with the output of `diagnose-windows.ps1`, which checks PawnIO and SMBus support
+- On Windows: a `platform-probe.txt` with the output of `diagnose-windows.ps1`. It checks PawnIO and SMBus support, then asks the running daemon for the device list, the full `hypercolor diagnose` report with per-device output stats, any competing RGB software it found (see [Conflicting software](@/hardware/conflicting-software.md)), and the USB devices no driver claims. It finishes with the Windows driver that owns each USB device and interface (`HidUsb`, `WINUSB`, `usbccgp`), with device serials left out.
 
 After the export completes the app opens the Desktop folder so the zip is easy to find.
+
+The daemon logs at info level by default. When you're reporting a device that shows up but
+never lights, set **Settings > Developer > Log Level** to **Debug**, quit and reopen the app
+so the daemon restarts with the new level, reproduce the problem, then export. Set it back
+to Info afterwards.
 
 To share the bundle with the Hypercolor team, attach it to your bug report or support thread. No personally identifiable information is collected beyond what is listed above.
 

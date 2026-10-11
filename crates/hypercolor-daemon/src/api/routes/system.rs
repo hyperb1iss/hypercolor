@@ -21,6 +21,28 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
             )],
         ))
         .routes(openapi::documented_route(
+            "/system/conflicts",
+            axum::routing::get(system::get_software_conflicts),
+            [OperationDoc::get::<
+                hypercolor_types::api::system::SoftwareConflictsStatus,
+            >(
+                "get_software_conflicts",
+                "system",
+                "List running RGB software that competes for devices",
+            )],
+        ))
+        .routes(openapi::documented_route(
+            "/system/conflicts/scan",
+            axum::routing::post(system::scan_software_conflicts),
+            [OperationDoc::post::<
+                hypercolor_types::api::system::SoftwareConflictsStatus,
+            >(
+                "scan_software_conflicts",
+                "system",
+                "Scan now for RGB software that competes for devices",
+            )],
+        ))
+        .routes(openapi::documented_route(
             "/system",
             axum::routing::get(system::get_system),
             [OperationDoc::get::<SystemResource>(

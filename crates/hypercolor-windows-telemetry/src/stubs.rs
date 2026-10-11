@@ -1,6 +1,6 @@
 //! Off-platform stand-ins: no WMI, no PawnIO, nothing to report.
 
-use crate::{MotherboardInfo, SystemSnapshot};
+use crate::{HostSoftwareSnapshot, MotherboardInfo, SystemSnapshot};
 
 /// Motherboard identity is only probed on Windows.
 #[must_use]
@@ -21,4 +21,10 @@ impl SensorExtras {
 
     /// Leaves the snapshot untouched.
     pub const fn merge_snapshot(&mut self, _snapshot: &mut SystemSnapshot) {}
+}
+
+/// The software inventory is only taken on Windows by this crate.
+#[must_use]
+pub const fn running_software() -> Option<HostSoftwareSnapshot> {
+    None
 }

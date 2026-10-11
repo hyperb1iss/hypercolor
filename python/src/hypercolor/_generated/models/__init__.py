@@ -408,6 +408,7 @@ from .get_preset_response_200 import GetPresetResponse200
 from .get_scene_response_200 import GetSceneResponse200
 from .get_sensors_response_200 import GetSensorsResponse200
 from .get_simulated_display_response_200 import GetSimulatedDisplayResponse200
+from .get_software_conflicts_response_200 import GetSoftwareConflictsResponse200
 from .get_system_response_200 import GetSystemResponse200
 from .gpu_compositor_probe_status import GpuCompositorProbeStatus
 from .gradient_stop import GradientStop
@@ -585,6 +586,7 @@ from .sampling_mode_type_3 import SamplingModeType3
 from .sampling_mode_type_3_type import SamplingModeType3Type
 from .save_playlist_request import SavePlaylistRequest
 from .save_preset_request import SavePresetRequest
+from .scan_software_conflicts_response_200 import ScanSoftwareConflictsResponse200
 from .scene_document import SceneDocument
 from .scene_document_metadata import SceneDocumentMetadata
 from .scene_document_transition import SceneDocumentTransition
@@ -622,6 +624,8 @@ from .simulated_display import SimulatedDisplay
 from .simulated_display_list_item import SimulatedDisplayListItem
 from .snapshot_scene_request import SnapshotSceneRequest
 from .snapshot_scene_response_201 import SnapshotSceneResponse201
+from .software_conflict import SoftwareConflict
+from .software_conflicts_status import SoftwareConflictsStatus
 from .source_diagnostics_display_field import SourceDiagnosticsDisplayField
 from .source_diagnostics_envelope import SourceDiagnosticsEnvelope
 from .spatial_layout import SpatialLayout
@@ -1026,6 +1030,7 @@ __all__ = (
     "GetSceneResponse200",
     "GetSensorsResponse200",
     "GetSimulatedDisplayResponse200",
+    "GetSoftwareConflictsResponse200",
     "GetSystemResponse200",
     "GpuCompositorProbeStatus",
     "GradientStop",
@@ -1193,6 +1198,7 @@ __all__ = (
     "SamplingModeType3Type",
     "SavePlaylistRequest",
     "SavePresetRequest",
+    "ScanSoftwareConflictsResponse200",
     "SceneDocument",
     "SceneDocumentMetadata",
     "SceneDocumentTransition",
@@ -1230,6 +1236,8 @@ __all__ = (
     "SimulatedDisplayListItem",
     "SnapshotSceneRequest",
     "SnapshotSceneResponse201",
+    "SoftwareConflict",
+    "SoftwareConflictsStatus",
     "SourceDiagnosticsDisplayField",
     "SourceDiagnosticsEnvelope",
     "SpatialLayout",

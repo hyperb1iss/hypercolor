@@ -16,7 +16,7 @@ use hypercolor_types::session::SessionConfig;
 pub use self::logind::LogindMonitor;
 #[cfg(target_os = "linux")]
 pub use self::parent_death::arm_parent_death;
-pub use self::procfs::process_resident_memory_mb;
+pub use self::procfs::{process_resident_memory_mb, running_processes};
 #[cfg(target_os = "linux")]
 pub use self::screensaver::ScreensaverMonitor;
 pub use self::systemd::{notify_ready, spawn_watchdog};

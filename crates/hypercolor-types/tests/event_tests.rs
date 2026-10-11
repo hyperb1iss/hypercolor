@@ -1403,3 +1403,27 @@ fn unclaimed_devices_changed_is_a_device_event_on_the_wire() {
         "the ws vocabulary must advertise the new event"
     );
 }
+
+#[test]
+fn software_conflicts_changed_is_a_device_event_on_the_wire() {
+    let event = HypercolorEvent::SoftwareConflictsChanged { count: 2 };
+    assert_eq!(event.category(), EventCategory::Device);
+    assert_eq!(event.priority(), EventPriority::Normal);
+
+    let value = serde_json::to_value(&event).expect("serialize event");
+    assert_eq!(
+        value,
+        serde_json::json!({ "type": "SoftwareConflictsChanged", "data": { "count": 2 } })
+    );
+    let decoded: HypercolorEvent = serde_json::from_value(value).expect("deserialize event");
+    assert!(matches!(
+        decoded,
+        HypercolorEvent::SoftwareConflictsChanged { count: 2 }
+    ));
+    assert!(
+        hypercolor_types::event::event_vocabulary()
+            .iter()
+            .any(|name| name == "software_conflicts_changed"),
+        "the ws vocabulary must advertise the new event"
+    );
+}

@@ -355,7 +355,7 @@ Run the canonical safe system diagnostic pass. Read-only and idempotent. The too
 { "name": "diagnose", "arguments": {} }
 ```
 
-The response is the canonical REST data object: `checks[]` entries carry `category`, `name`, `status`, and `detail`; `summary` counts passed, warning, and failed checks; `snapshot` carries `input`, `render`, `usb`, `display_output`, and `device_output`. MCP always runs the safe default checks: `daemon`, `render`, `devices`, `config`, `input`, and `memory`. It does not expose the protected `macos_screen_parity` check. This is the backbone of the diagnose flow in [agent workflows](@/agents/workflows.md).
+The response is the canonical REST data object: `checks[]` entries carry `category`, `name`, `status`, and `detail`; `summary` counts passed, warning, and failed checks; `snapshot` carries `input`, `render`, `usb`, `display_output`, and `device_output`. MCP always runs the safe default checks: `daemon`, `render`, `devices`, `conflicts`, `config`, `input`, `memory`, and `openrgb`. It does not expose the protected `macos_screen_parity` check. This is the backbone of the diagnose flow in [agent workflows](@/agents/workflows.md).
 
 ---
 

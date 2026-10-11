@@ -839,6 +839,7 @@ fn make_runtime_with_registry_and_layout(
     let runtime = DiscoveryRuntime {
         unclaimed_devices,
         bridge_output_locks: hypercolor_daemon::discovery::BridgeOutputLocks::default(),
+        software_conflicts: hypercolor_core::device::SoftwareConflictStore::new(),
         probe_serializer: Arc::default(),
         device_registry: device_registry.clone(),
         backend_manager: Arc::clone(&backend_manager),
@@ -1717,5 +1718,146 @@ async fn sync_active_layout_connectivity_only_applies_host_attachment_profiles_f
             .await
             .is_none(),
         "HAL USB protocol config must only be applied by backends that opt in"
+    );
+}
+
+#[derive(Clone, Default)]
+struct CapturedWarnings(Arc<StdMutex<Vec<u8>>>);
+
+impl CapturedWarnings {
+    fn text(&self) -> String {
+        String::from_utf8(
+            self.0
+                .lock()
+                .expect("captured log lock should not be poisoned")
+                .clone(),
+        )
+        .expect("captured logs should be UTF-8")
+    }
+}
+
+impl std::io::Write for CapturedWarnings {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("captured log lock should not be poisoned")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedWarnings {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Connect a device whose backend always refuses, with `running` as the
+/// host's process list (`None` leaves the store unscanned), and return the
+/// warnings the attempt logged along with the store afterwards.
+async fn failed_connect(
+    running: Option<&[&str]>,
+) -> (String, hypercolor_core::device::SoftwareConflictStore) {
+    let info = mock_device_info();
+    let mut backend = hypercolor_core::device::mock::MockDeviceBackend::new().with_device(
+        &hypercolor_core::device::mock::MockDeviceConfig {
+            name: info.name.clone(),
+            led_count: 16,
+            topology: LedTopology::Strip {
+                count: 16,
+                direction: StripDirection::LeftToRight,
+            },
+            id: Some(info.id),
+        },
+    );
+    backend.fail_connect = true;
+
+    let device_registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint::from_persisted("mock:held-device".to_owned());
+    device_registry
+        .add_with_fingerprint_and_metadata(info.clone(), fingerprint.clone(), HashMap::new())
+        .await;
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+    let runtime = make_runtime_with_layout(
+        device_registry,
+        Arc::clone(&lifecycle_manager),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+        layout_with_device(&layout_device_id),
+        HashSet::new(),
+    );
+    runtime
+        .backend_manager
+        .lock()
+        .await
+        .register_backend(Arc::new(backend));
+    if let Some(running) = running {
+        runtime
+            .software_conflicts
+            .record(&hypercolor_types::host_software::HostInventory::Listed(
+                hypercolor_types::host_software::HostSoftwareSnapshot {
+                    processes: running
+                        .iter()
+                        .map(|name| hypercolor_types::host_software::HostProcess::named(*name))
+                        .collect(),
+                    services: Vec::new(),
+                },
+            ));
+    }
+
+    let logs = CapturedWarnings::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(logs.clone())
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .finish();
+    {
+        let _guard = tracing::subscriber::set_default(subscriber);
+        sync_active_layout_connectivity(&runtime, None).await;
+    }
+    (logs.text(), runtime.software_conflicts.clone())
+}
+
+async fn failed_connect_warnings(running: &[&str]) -> String {
+    failed_connect(Some(running)).await.0
+}
+
+#[tokio::test]
+async fn a_failed_connect_names_the_competing_software() {
+    let warnings = failed_connect_warnings(&["SignalRgb.exe", "explorer.exe"]).await;
+    assert!(
+        warnings.contains("lifecycle connect action failed"),
+        "the connect should have failed: {warnings}"
+    );
+    assert!(
+        warnings.contains("other RGB software may be holding this device"),
+        "the failure should name the rival: {warnings}"
+    );
+    assert!(warnings.contains("SignalRGB is running and may be holding this device"));
+}
+
+#[tokio::test]
+async fn a_failed_connect_with_nothing_competing_adds_no_hint() {
+    let warnings = failed_connect_warnings(&["explorer.exe"]).await;
+    assert!(warnings.contains("lifecycle connect action failed"));
+    assert!(!warnings.contains("other RGB software may be holding this device"));
+}
+
+#[tokio::test]
+async fn a_failed_connect_before_the_first_scan_scans_inline() {
+    let (warnings, store) = failed_connect(None).await;
+    assert!(warnings.contains("lifecycle connect action failed"));
+    assert!(
+        store.status().scanned,
+        "the failure path scans rather than hinting from an empty record"
     );
 }

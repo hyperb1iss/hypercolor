@@ -1014,6 +1014,11 @@ impl DeviceContext {
         self.driver_host.discovery_runtime()
     }
 
+    /// The record of competing RGB software the conflict watch keeps.
+    pub(crate) fn software_conflicts(&self) -> hypercolor_core::device::SoftwareConflictStore {
+        self.driver_host.discovery_runtime().software_conflicts
+    }
+
     /// The compiled driver module registry.
     pub(crate) fn driver_registry(&self) -> &Arc<DriverModuleRegistry> {
         &self.driver_registry

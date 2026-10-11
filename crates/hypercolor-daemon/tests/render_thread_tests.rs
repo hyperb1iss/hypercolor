@@ -177,6 +177,7 @@ fn test_discovery_runtime(
         usb_protocol_configs: UsbProtocolConfigStore::new(),
         unclaimed_devices: hypercolor_core::device::UnclaimedDeviceStore::new(),
         bridge_output_locks: hypercolor_daemon::discovery::BridgeOutputLocks::default(),
+        software_conflicts: hypercolor_core::device::SoftwareConflictStore::new(),
         probe_serializer: Arc::default(),
         credential_store: Arc::new(
             CredentialStore::open_blocking(&state_dir).expect("test credential store"),

@@ -67,6 +67,16 @@ body:
         references. If you don't have captures, say what tool currently drives the device and we'll use that
         as a starting point.
 
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: |
+        Optional, and most useful on Windows. With Hypercolor running, choose Export
+        Diagnostics from the tray menu and attach the zip it saves to your Desktop. It
+        records which Windows driver owns the device and any other RGB software that
+        could be holding it.
+
   - type: dropdown
     id: willing-to-test
     attributes:

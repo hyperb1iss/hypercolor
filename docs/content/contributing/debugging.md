@@ -48,7 +48,7 @@ with `RUST_LOG`.
 ## Built-in diagnostics
 
 `hypercolor diagnose` posts to `POST /api/v1/diagnose` and runs a set of named health checks
-against the live daemon. The default check set is `daemon`, `render`, `devices`, `config`, `input`, and `memory`.
+against the live daemon. The default check set is `daemon`, `render`, `devices`, `conflicts`, `config`, `input`, `memory`, and `openrgb`.
 
 ```bash
 # Tabular output (the default, easiest to read)
