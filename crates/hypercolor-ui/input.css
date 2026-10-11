@@ -508,9 +508,11 @@ input[type="range"].slider-silk::-moz-range-track {
     to   { opacity: 1; transform: scale(1); }
 }
 
+/* The color picker popover's inline `left` is already centered on its
+   swatch and clamped to the viewport, so the entrance must not shift it. */
 @keyframes pickerIn {
-    from { opacity: 0; transform: translateX(-50%) scale(0.92) translateY(6px); }
-    to   { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
+    from { opacity: 0; transform: scale(0.92) translateY(6px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 @keyframes enter-pop {
@@ -1193,6 +1195,7 @@ button:hover:not(:disabled) > .relative {
     flex-shrink: 0;
     position: relative;
     z-index: 5;
+    touch-action: none;
 }
 
 .resize-handle-line {
@@ -1214,6 +1217,22 @@ button:hover:not(:disabled) > .relative {
     background: rgba(225, 53, 255, 0.65);
     height: 80px;
     box-shadow: 0 0 14px rgba(225, 53, 255, 0.35);
+}
+
+/* Drag handles sized for a cursor get a larger invisible grab area on
+   coarse pointers (fingers), without moving any layout. The element must
+   be positioned so the pseudo-element anchors to it. */
+@media (pointer: coarse) {
+    .touch-grab::before {
+        content: "";
+        position: absolute;
+        inset: -10px;
+    }
+
+    /* A full-height splitter only needs to grow sideways. */
+    .resize-handle-zone.touch-grab::before {
+        inset: 0 -10px;
+    }
 }
 
 /* Lock cursor & prevent selection during panel resize drag */

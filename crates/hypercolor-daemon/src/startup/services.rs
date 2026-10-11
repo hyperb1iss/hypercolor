@@ -880,6 +880,8 @@ impl DaemonState {
 
         Ok(Self {
             ui_dir: None,
+            api_listen_addresses: Vec::new(),
+            api_bind_overridden_at_launch: false,
             domains,
             config_manager,
             extensions: ExtensionRegistry::default(),

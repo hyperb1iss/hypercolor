@@ -43,6 +43,7 @@ pub mod media;
 pub mod nav;
 pub mod optimistic_controls;
 pub mod pages;
+pub mod pointer_gesture;
 pub mod preferences;
 pub mod preview_telemetry;
 pub mod remote_bridge;

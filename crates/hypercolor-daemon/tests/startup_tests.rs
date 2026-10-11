@@ -1243,6 +1243,160 @@ fn startup_bind_targets_fall_back_for_lan_protected_without_control_key() {
     assert_eq!(targets, vec!["127.0.0.1:9420", "[::1]:9420"]);
 }
 
+// ── Launch Port Override ────────────────────────────────────────────────────
+
+const PORT_OVERRIDE: u16 = 9555;
+
+fn port_override() -> DaemonRunOptions {
+    DaemonRunOptions {
+        port: Some(PORT_OVERRIDE),
+        ..DaemonRunOptions::default()
+    }
+}
+
+#[test]
+fn port_override_keeps_the_default_config_on_loopback() {
+    let config = default_config();
+    let options = port_override();
+
+    assert_eq!(
+        effective_bind_targets(&options, &config),
+        vec!["127.0.0.1:9555", "[::1]:9555"]
+    );
+    let (targets, fell_back) = effective_startup_bind_targets(&options, &config, false, false);
+    assert!(!fell_back);
+    assert_eq!(targets, vec!["127.0.0.1:9555", "[::1]:9555"]);
+}
+
+#[test]
+fn port_override_lets_lan_trusted_mode_open_every_interface() {
+    let mut config = default_config();
+    config.network.access_mode = NetworkAccessMode::LanTrusted;
+    let options = port_override();
+
+    let (targets, fell_back) = effective_startup_bind_targets(
+        &options,
+        &config,
+        false,
+        config.network.unauthenticated_remote_access_allowed(),
+    );
+
+    assert!(!fell_back);
+    assert_eq!(targets, vec!["0.0.0.0:9555", "[::]:9555"]);
+}
+
+#[test]
+fn port_override_lets_lan_protected_mode_open_every_interface_with_control_key() {
+    let mut config = default_config();
+    config.network.access_mode = NetworkAccessMode::LanProtected;
+    let options = port_override();
+
+    let (targets, fell_back) = effective_startup_bind_targets(
+        &options,
+        &config,
+        true,
+        config.network.unauthenticated_remote_access_allowed(),
+    );
+
+    assert!(!fell_back);
+    assert_eq!(targets, vec!["0.0.0.0:9555", "[::]:9555"]);
+}
+
+#[test]
+fn port_override_is_not_an_explicit_bind_so_config_lan_falls_back_without_key() {
+    let mut config = default_config();
+    config.network.access_mode = NetworkAccessMode::LanProtected;
+    let options = port_override();
+
+    let (targets, fell_back) = effective_startup_bind_targets(
+        &options,
+        &config,
+        false,
+        config.network.unauthenticated_remote_access_allowed(),
+    );
+
+    // An explicit bind would keep the network targets and abort at the
+    // auth check; a config-chosen bind degrades to loopback instead.
+    assert!(fell_back);
+    assert_eq!(targets, vec!["127.0.0.1:9555", "[::1]:9555"]);
+}
+
+#[test]
+fn port_override_keeps_loopback_beside_a_specific_configured_interface() {
+    let mut config = default_config();
+    config.network.access_mode = NetworkAccessMode::Custom;
+    config.daemon.listen_address = "192.168.1.42".to_owned();
+
+    assert_eq!(
+        effective_bind_targets(&port_override(), &config),
+        vec!["192.168.1.42:9555", "127.0.0.1:9555", "[::1]:9555"]
+    );
+    assert_eq!(
+        effective_bind_targets(&DaemonRunOptions::default(), &config),
+        vec!["192.168.1.42:9420"],
+        "a launch without --port keeps binding exactly the configured interface"
+    );
+}
+
+#[test]
+fn port_override_adds_only_the_loopback_family_a_wildcard_misses() {
+    let mut config = default_config();
+    config.network.access_mode = NetworkAccessMode::Custom;
+    config.daemon.listen_address = "::".to_owned();
+
+    assert_eq!(
+        effective_bind_targets(&port_override(), &config),
+        vec!["[::]:9555", "127.0.0.1:9555"]
+    );
+}
+
+#[test]
+fn port_override_moves_the_port_of_explicit_listen_flags() {
+    let config = default_config();
+
+    let listen = DaemonRunOptions {
+        listen_address: Some("192.168.1.42".to_owned()),
+        ..port_override()
+    };
+    assert_eq!(
+        effective_bind_targets(&listen, &config),
+        vec!["192.168.1.42:9555"]
+    );
+
+    let listen_all = DaemonRunOptions {
+        listen_all: true,
+        ..port_override()
+    };
+    assert_eq!(
+        effective_bind_targets(&listen_all, &config),
+        vec!["0.0.0.0:9555", "[::]:9555"]
+    );
+}
+
+#[test]
+fn explicit_bind_wins_over_port_override_in_both_directions() {
+    let mut lan = default_config();
+    lan.network.access_mode = NetworkAccessMode::LanTrusted;
+    let loopback_bind = DaemonRunOptions {
+        bind: Some("127.0.0.1:9601".to_owned()),
+        ..port_override()
+    };
+    assert_eq!(
+        effective_bind_targets(&loopback_bind, &lan),
+        vec!["127.0.0.1:9601", "[::1]:9601"]
+    );
+
+    let local_only = default_config();
+    let network_bind = DaemonRunOptions {
+        bind: Some("0.0.0.0:9601".to_owned()),
+        ..port_override()
+    };
+    let (targets, fell_back) =
+        effective_startup_bind_targets(&network_bind, &local_only, false, false);
+    assert!(!fell_back);
+    assert_eq!(targets, vec!["0.0.0.0:9601", "[::]:9601"]);
+}
+
 #[tokio::test]
 async fn api_listener_drop_releases_bound_port() {
     let first = bind_api_listener(
