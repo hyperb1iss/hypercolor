@@ -477,6 +477,22 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
         (config.daemon.canvas_width, config.daemon.canvas_height),
         &listen_addr,
     );
+    let keyless = keyless_network_listeners(
+        &addresses,
+        api::security::api_auth_required_from_env() || options.credential_authority.is_some(),
+    );
+    if !keyless.is_empty() {
+        warn!(
+            listen = %keyless
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            "API is listening on the network without an API key: devices on the local \
+             network can control this daemon. Set HYPERCOLOR_API_KEY, or switch \
+             network.access_mode to lan_protected, to require one"
+        );
+    }
 
     Ok(PreparedDaemon {
         options,
@@ -633,6 +649,20 @@ struct BoundApiListeners {
 fn loopback_fallback_port(options: &DaemonRunOptions, config: &HypercolorConfig) -> Option<u16> {
     (options.port.is_some() && !has_explicit_bind_override(options))
         .then(|| effective_port(options, config))
+}
+
+/// The bound API addresses another host can reach without presenting any
+/// credential: every non-loopback address, unless an API key or a
+/// credential authority makes the API require one.
+fn keyless_network_listeners(addresses: &[SocketAddr], api_auth_required: bool) -> Vec<SocketAddr> {
+    if api_auth_required {
+        return Vec::new();
+    }
+    addresses
+        .iter()
+        .filter(|address| !address.ip().is_loopback())
+        .copied()
+        .collect()
 }
 
 /// The address each listener actually bound, in order.
@@ -1195,8 +1225,8 @@ mod tests {
     use super::{
         DaemonExtensionInstaller, DaemonRunOptions, bind_api_listener,
         bind_api_listener_with_lease, bind_startup_listeners, default_env_filter,
-        has_explicit_bind_override, install_extensions, loopback_fallback_port,
-        notify_api_ready_extensions, record_api_binding, resolve_log_level,
+        has_explicit_bind_override, install_extensions, keyless_network_listeners,
+        loopback_fallback_port, notify_api_ready_extensions, record_api_binding, resolve_log_level,
         serve_api_listeners_with_shutdown_timeout,
     };
     use crate::app_state::AppState;
@@ -1563,6 +1593,29 @@ mod tests {
         .await
         .err()
         .expect("an authorization refusal must still abort startup");
+    }
+
+    #[test]
+    fn keyless_network_listeners_are_the_non_loopback_ones_without_auth() {
+        let loopback = loopback_pair(9555);
+        let wildcard: Vec<std::net::SocketAddr> = vec![
+            "0.0.0.0:9555"
+                .parse()
+                .expect("fixture address should parse"),
+            "[::]:9555".parse().expect("fixture address should parse"),
+        ];
+        let mixed: Vec<std::net::SocketAddr> = vec![
+            "192.168.1.42:9555"
+                .parse()
+                .expect("fixture address should parse"),
+            loopback[0],
+        ];
+
+        assert!(keyless_network_listeners(&loopback, false).is_empty());
+        assert_eq!(keyless_network_listeners(&wildcard, false), wildcard);
+        assert_eq!(keyless_network_listeners(&mixed, false), vec![mixed[0]]);
+        assert!(keyless_network_listeners(&wildcard, true).is_empty());
+        assert!(keyless_network_listeners(&mixed, true).is_empty());
     }
 
     #[test]
