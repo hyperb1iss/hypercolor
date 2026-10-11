@@ -181,7 +181,7 @@ On all platforms, Hypercolor ships a unified desktop app (`hypercolor-app`) buil
 
 1. The app checks if a daemon is already running on `127.0.0.1:9420`. If so, it connects to it.
 2. On Linux, it checks for an enabled systemd user service (`hypercolor.service`) and defers to it.
-3. If no daemon is found, the app spawns one as a supervised child process with a watchdog that restarts it on crash. That daemon follows your `[network]` access mode, so it stays loopback-only unless you open it to the LAN.
+3. If no daemon is found, the app spawns one as a supervised child process with a watchdog that restarts it on crash. That daemon follows your `[network]` access mode, so it stays loopback-only unless you open it to the LAN. The one exception is a `HYPERCOLOR_URL` that points the app at a host other than `127.0.0.1`, `::1`, or `localhost`: the app then binds its daemon to exactly that address, whatever `[network]` says, and the daemon refuses a non-loopback address unless an API key or keyless network access is configured.
 4. The tray icon appears, and the main window opens (or the app starts minimized if launched with `--minimized`).
 
 {% <callout type="warning"> %}
