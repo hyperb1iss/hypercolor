@@ -457,16 +457,20 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
             target = %dropped.target,
             error = %dropped.error,
             "Configured network listen address is unavailable; serving without it so \
-             loopback stays reachable"
+             loopback stays reachable, and skipping mDNS for this run"
         );
     }
     let BoundApiListeners {
         listeners,
         lease: listener_lease,
         addresses,
-        ..
+        dropped,
     } = bound;
-    let advertised_bind = *addresses.first().context("no API listeners were bound")?;
+    // After a degraded bind, advertise loopback, which keeps mDNS off: a
+    // surviving wildcard of one family would otherwise announce host
+    // addresses of the other family this daemon does not serve.
+    let advertised_bind =
+        advertised_bind(&addresses, !dropped.is_empty()).context("no API listeners were bound")?;
     let listen_addr = addresses
         .iter()
         .map(ToString::to_string)
@@ -663,6 +667,20 @@ fn keyless_network_listeners(addresses: &[SocketAddr], api_auth_required: bool) 
         .filter(|address| !address.ip().is_loopback())
         .copied()
         .collect()
+}
+
+/// The address the daemon advertises: the first listener, or after a
+/// degraded bind the first loopback listener, which mDNS never publishes.
+fn advertised_bind(addresses: &[SocketAddr], degraded: bool) -> Option<SocketAddr> {
+    if degraded {
+        addresses
+            .iter()
+            .find(|address| address.ip().is_loopback())
+            .or_else(|| addresses.first())
+            .copied()
+    } else {
+        addresses.first().copied()
+    }
 }
 
 /// The address each listener actually bound, in order.
@@ -1223,7 +1241,7 @@ mod tests {
     use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
 
     use super::{
-        DaemonExtensionInstaller, DaemonRunOptions, bind_api_listener,
+        DaemonExtensionInstaller, DaemonRunOptions, advertised_bind, bind_api_listener,
         bind_api_listener_with_lease, bind_startup_listeners, default_env_filter,
         has_explicit_bind_override, install_extensions, keyless_network_listeners,
         loopback_fallback_port, notify_api_ready_extensions, record_api_binding, resolve_log_level,
@@ -1498,17 +1516,20 @@ mod tests {
 
     /// A loopback port that was free a moment ago on both families.
     fn free_loopback_port() -> u16 {
-        loop {
+        for _ in 0..16 {
             let v4 = std::net::TcpListener::bind("127.0.0.1:0")
                 .expect("an ephemeral IPv4 loopback port should be available");
             let port = v4
                 .local_addr()
                 .expect("listener address should resolve")
                 .port();
-            if std::net::TcpListener::bind(("::1", port)).is_ok() {
-                return port;
+            match std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)) {
+                Ok(_) => return port,
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+                Err(error) => panic!("IPv6 loopback is unavailable: {error}"),
             }
         }
+        panic!("no port was free on both loopback families after 16 tries");
     }
 
     fn loopback_pair(port: u16) -> Vec<std::net::SocketAddr> {
@@ -1616,6 +1637,27 @@ mod tests {
         assert_eq!(keyless_network_listeners(&mixed, false), vec![mixed[0]]);
         assert!(keyless_network_listeners(&wildcard, true).is_empty());
         assert!(keyless_network_listeners(&mixed, true).is_empty());
+    }
+
+    #[test]
+    fn a_degraded_bind_advertises_loopback() {
+        let surviving_wildcard: Vec<std::net::SocketAddr> = vec![
+            "[::]:9555".parse().expect("fixture address should parse"),
+            "127.0.0.1:9555"
+                .parse()
+                .expect("fixture address should parse"),
+        ];
+
+        assert_eq!(
+            advertised_bind(&surviving_wildcard, false),
+            Some(surviving_wildcard[0])
+        );
+        assert_eq!(
+            advertised_bind(&surviving_wildcard, true),
+            Some(surviving_wildcard[1]),
+            "a partial bind must not hand mDNS a wildcard"
+        );
+        assert_eq!(advertised_bind(&[], true), None);
     }
 
     #[test]

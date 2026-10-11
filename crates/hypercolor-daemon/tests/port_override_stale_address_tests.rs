@@ -15,18 +15,31 @@ use hypercolor_types::config::NetworkAccessMode;
 fn free_loopback_ports() -> (u16, u16) {
     let mut held = Vec::new();
     let mut ports = Vec::new();
-    while ports.len() < 2 {
+    for _ in 0..16 {
+        if ports.len() == 2 {
+            break;
+        }
         let v4 = std::net::TcpListener::bind("127.0.0.1:0")
             .expect("an ephemeral IPv4 loopback port should be available");
         let port = v4
             .local_addr()
             .expect("listener address should resolve")
             .port();
-        if std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, port)).is_ok() {
-            ports.push(port);
+        match std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, port)) {
+            Ok(_) => {
+                ports.push(port);
+                // Held until both ports are picked, so they differ.
+                held.push(v4);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+            Err(error) => panic!("IPv6 loopback is unavailable: {error}"),
         }
-        held.push(v4);
     }
+    assert_eq!(
+        ports.len(),
+        2,
+        "no two ports were free on both loopback families"
+    );
     (ports[0], ports[1])
 }
 
