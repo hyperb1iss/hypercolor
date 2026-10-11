@@ -613,6 +613,16 @@ pub fn control_api_key_configured_from_env() -> bool {
     api_key_from_env("HYPERCOLOR_API_KEY").is_some()
 }
 
+/// Whether the network policy built from `config` admits any client other
+/// than loopback, before authentication runs.
+///
+/// An allowlist that names only loopback, an invalid entry, or a client
+/// scope that cannot be resolved blocks every remote client.
+#[must_use]
+pub fn network_policy_admits_remote_clients(config: &NetworkConfig) -> bool {
+    NetworkAccessPolicy::from_config(config).admits_remote_clients()
+}
+
 fn api_key_from_env(name: &str) -> Option<String> {
     normalize_api_key(std::env::var(name).ok())
 }
@@ -751,6 +761,21 @@ impl NetworkAccessPolicy {
             invalid_rules,
             scope_errors,
         }
+    }
+
+    fn admits_remote_clients(&self) -> bool {
+        if self.allowed_clients.is_empty()
+            && self.invalid_rules.is_empty()
+            && self.scope_errors.is_empty()
+        {
+            return true;
+        }
+        self.invalid_rules.is_empty()
+            && self.scope_errors.is_empty()
+            && self
+                .allowed_clients
+                .iter()
+                .any(|rule| !rule.is_loopback_only())
     }
 
     fn reject_request(&self, request: &Request<Body>) -> Option<Response> {
@@ -897,6 +922,21 @@ impl ClientAddressRule {
         match *self {
             Self::Exact(ip) => ip == client,
             Self::Cidr { network, prefix } => cidr_contains(network, prefix, client),
+        }
+    }
+
+    /// Whether every address the rule matches is a loopback address.
+    fn is_loopback_only(&self) -> bool {
+        match *self {
+            Self::Exact(ip) => ip.is_loopback(),
+            Self::Cidr {
+                network: IpAddr::V4(network),
+                prefix,
+            } => prefix >= 8 && network.octets()[0] == 127,
+            Self::Cidr {
+                network: IpAddr::V6(network),
+                prefix,
+            } => prefix == 128 && network.is_loopback(),
         }
     }
 }
@@ -1666,6 +1706,49 @@ mod tests {
         router_with_security_state(SecurityState::with_network_policy(
             NetworkAccessPolicy::from_config_with_local_subnets(config, Ok(local_subnet_rules)),
         ))
+    }
+
+    #[test]
+    fn network_policy_reports_whether_any_remote_client_is_admitted() {
+        let subnet = ClientAddressRule::parse("192.168.1.0/24").expect("rule should parse");
+        let admits = |config: &NetworkConfig, subnets: Result<Vec<ClientAddressRule>, String>| {
+            NetworkAccessPolicy::from_config_with_local_subnets(config, subnets)
+                .admits_remote_clients()
+        };
+        let lan_trusted = NetworkConfig {
+            access_mode: NetworkAccessMode::LanTrusted,
+            ..NetworkConfig::default()
+        };
+
+        assert!(admits(&lan_trusted, Ok(vec![subnet.clone()])));
+        assert!(
+            admits(&NetworkConfig::default(), Ok(Vec::new())),
+            "no allowlist admits every client"
+        );
+        assert!(
+            !admits(&lan_trusted, Ok(Vec::new())),
+            "an unresolvable local-subnet scope blocks remote clients"
+        );
+        assert!(!admits(
+            &NetworkConfig {
+                allowed_clients: vec!["invalid".to_owned()],
+                ..lan_trusted.clone()
+            },
+            Ok(vec![subnet])
+        ));
+        let custom = |allowed: &[&str]| NetworkConfig {
+            access_mode: NetworkAccessMode::Custom,
+            allow_unauthenticated_remote_access: true,
+            allowed_clients: allowed.iter().map(|rule| (*rule).to_owned()).collect(),
+            ..NetworkConfig::default()
+        };
+        assert!(!admits(
+            &custom(&["127.0.0.1", "127.0.0.0/8", "::1", "::1/128"]),
+            Ok(Vec::new())
+        ));
+        assert!(admits(&custom(&["127.0.0.1", "10.0.0.5"]), Ok(Vec::new())));
+        assert!(admits(&custom(&["0.0.0.0/0"]), Ok(Vec::new())));
+        assert!(admits(&custom(&["::/0"]), Ok(Vec::new())));
     }
 
     async fn response_json(response: axum::response::Response) -> Value {

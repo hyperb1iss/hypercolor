@@ -481,9 +481,12 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
         (config.daemon.canvas_width, config.daemon.canvas_height),
         &listen_addr,
     );
+    let credentials_required =
+        api::security::api_auth_required_from_env() || options.credential_authority.is_some();
     let keyless = keyless_network_listeners(
         &addresses,
-        api::security::api_auth_required_from_env() || options.credential_authority.is_some(),
+        !credentials_required
+            && api::security::network_policy_admits_remote_clients(&config.network),
     );
     if !keyless.is_empty() {
         warn!(
@@ -655,11 +658,15 @@ fn loopback_fallback_port(options: &DaemonRunOptions, config: &HypercolorConfig)
         .then(|| effective_port(options, config))
 }
 
-/// The bound API addresses another host can reach without presenting any
-/// credential: every non-loopback address, unless an API key or a
-/// credential authority makes the API require one.
-fn keyless_network_listeners(addresses: &[SocketAddr], api_auth_required: bool) -> Vec<SocketAddr> {
-    if api_auth_required {
+/// The bound API addresses another host can control without presenting any
+/// credential: every non-loopback address, when `remote_control_open` says
+/// no API key or credential authority is configured and the network policy
+/// admits some remote client.
+fn keyless_network_listeners(
+    addresses: &[SocketAddr],
+    remote_control_open: bool,
+) -> Vec<SocketAddr> {
+    if !remote_control_open {
         return Vec::new();
     }
     addresses
@@ -1617,7 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn keyless_network_listeners_are_the_non_loopback_ones_without_auth() {
+    fn keyless_network_listeners_are_the_non_loopback_ones_when_open() {
         let loopback = loopback_pair(9555);
         let wildcard: Vec<std::net::SocketAddr> = vec![
             "0.0.0.0:9555"
@@ -1632,11 +1639,11 @@ mod tests {
             loopback[0],
         ];
 
-        assert!(keyless_network_listeners(&loopback, false).is_empty());
-        assert_eq!(keyless_network_listeners(&wildcard, false), wildcard);
-        assert_eq!(keyless_network_listeners(&mixed, false), vec![mixed[0]]);
-        assert!(keyless_network_listeners(&wildcard, true).is_empty());
-        assert!(keyless_network_listeners(&mixed, true).is_empty());
+        assert!(keyless_network_listeners(&loopback, true).is_empty());
+        assert_eq!(keyless_network_listeners(&wildcard, true), wildcard);
+        assert_eq!(keyless_network_listeners(&mixed, true), vec![mixed[0]]);
+        assert!(keyless_network_listeners(&wildcard, false).is_empty());
+        assert!(keyless_network_listeners(&mixed, false).is_empty());
     }
 
     #[test]
