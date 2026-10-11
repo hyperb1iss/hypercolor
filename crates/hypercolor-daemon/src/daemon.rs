@@ -1,6 +1,6 @@
 //! Foreground daemon runtime shared by console and service entry points.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -22,7 +22,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::api;
-use crate::api::security::{CredentialAuthority, CredentialTier};
+use crate::api::security::{CredentialAuthority, CredentialTier, RemoteClientFamilies};
 use crate::app_state::AppState;
 use crate::macos_owner::{MacosDaemonOwner, MacosDaemonSessionAttestation, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
@@ -41,6 +41,15 @@ pub struct DaemonRunOptions {
     pub config: Option<PathBuf>,
     /// Address and port to bind the API server to.
     pub bind: Option<String>,
+    /// Port that replaces `daemon.port` for this launch.
+    ///
+    /// It never picks interfaces. Unless `listen_address` or `listen_all`
+    /// does, the configured network mode picks them, and loopback stays
+    /// reachable on this port so a local launcher can always find the
+    /// daemon: a configured network address that cannot be resolved or
+    /// bound is dropped with a warning instead of failing startup. An
+    /// explicit [`bind`](Self::bind) wins over it.
+    pub port: Option<u16>,
     /// Host/interface to bind using the configured daemon port.
     pub listen_address: Option<String>,
     /// Bind the API server to every network interface.
@@ -111,6 +120,16 @@ impl PreparedDaemon {
         self.advertised_bind
     }
 
+    /// The address each prepared API listener bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a listener cannot report its address.
+    #[doc(hidden)]
+    pub fn api_listen_addresses(&self) -> Result<Vec<SocketAddr>> {
+        listener_addresses(&self.listeners)
+    }
+
     /// Attach the exact macOS process session published after socket binding.
     pub fn install_macos_daemon_session_attestation(
         &mut self,
@@ -139,11 +158,7 @@ impl PreparedDaemon {
             self.options.macos_daemon_session_attestation.clone();
         let credential_authority = self.options.credential_authority.clone();
         let listeners = std::mem::take(&mut self.listeners);
-        let api_listen_addresses = listeners
-            .iter()
-            .map(TcpListener::local_addr)
-            .collect::<std::io::Result<Vec<_>>>()
-            .context("failed to read API listener addresses")?;
+        let api_listen_addresses = listener_addresses(&listeners)?;
 
         // Answer `/health` from the first moment of startup, so a
         // supervisor sees a starting daemon make progress instead of a
@@ -187,6 +202,24 @@ impl PreparedDaemon {
             credential_authority,
         ));
         let api_auth_required = app_state.security_state.security_enabled();
+        // Judged from the security state the router serves, so the network
+        // policy here is the one that admits or refuses remote clients.
+        let keyless = keyless_network_listeners(
+            daemon_state.api_listen_addresses(),
+            app_state.security_state.keyless_remote_client_families(),
+        );
+        if !keyless.is_empty() {
+            warn!(
+                listen = %keyless
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                "API is listening on the network without an API key: devices on the local \
+                 network can control this daemon. Set HYPERCOLOR_API_KEY, or switch \
+                 network.access_mode to lan_protected, to require one"
+            );
+        }
         daemon_state.domains.display.sync_connected_surfaces().await;
         daemon_state
             .domains
@@ -411,16 +444,10 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
              credential authority); falling back to loopback"
         );
     }
-    let listen_addr = listen_targets.join(", ");
-    crate::startup::banner::print(
-        env!("CARGO_PKG_VERSION"),
-        (config.daemon.canvas_width, config.daemon.canvas_height),
-        &listen_addr,
-    );
-
     info!(
         version = env!("CARGO_PKG_VERSION"),
         bind = ?options.bind,
+        port = ?options.port,
         log_level = %log_level,
         "Hypercolor daemon starting"
     );
@@ -431,20 +458,47 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
         "Configuration ready"
     );
 
-    let binds = resolve_bind_targets(&listen_targets).await?;
-    for bind in &binds {
-        validate_network_bind_auth(
-            *bind,
-            control_credentials_configured,
-            config.network.unauthenticated_remote_access_allowed(),
-        )?;
+    let bound = bind_startup_listeners(
+        &listen_targets,
+        loopback_fallback_port(&options, &config),
+        |bind| {
+            validate_network_bind_auth(
+                bind,
+                control_credentials_configured,
+                config.network.unauthenticated_remote_access_allowed(),
+            )
+        },
+    )
+    .await?;
+    for dropped in &bound.dropped {
+        warn!(
+            target = %dropped.target,
+            error = %dropped.error,
+            "Configured network listen address is unavailable; serving without it so \
+             loopback stays reachable, and skipping mDNS for this run"
+        );
     }
-    let (listeners, listener_lease) = bind_api_listeners(&binds)?;
-    let advertised_bind = listeners
-        .first()
-        .context("no API listeners were bound")?
-        .local_addr()
-        .context("failed to read API listener address")?;
+    let BoundApiListeners {
+        listeners,
+        lease: listener_lease,
+        addresses,
+        dropped,
+    } = bound;
+    // After a degraded bind, advertise loopback, which keeps mDNS off: a
+    // surviving wildcard of one family would otherwise announce host
+    // addresses of the other family this daemon does not serve.
+    let advertised_bind =
+        advertised_bind(&addresses, !dropped.is_empty()).context("no API listeners were bound")?;
+    let listen_addr = addresses
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    crate::startup::banner::print(
+        env!("CARGO_PKG_VERSION"),
+        (config.daemon.canvas_width, config.daemon.canvas_height),
+        &listen_addr,
+    );
 
     Ok(PreparedDaemon {
         options,
@@ -578,31 +632,148 @@ const fn config_log_level_name(level: &LogLevel) -> &'static str {
     }
 }
 
-async fn resolve_bind_targets(targets: &[String]) -> Result<Vec<SocketAddr>> {
-    let mut resolved = Vec::new();
+/// A listen target a `--port` launch dropped because it could not be
+/// resolved or bound.
+#[derive(Debug)]
+struct DroppedListenTarget {
+    target: String,
+    error: String,
+}
 
+/// The API listeners one launch bound.
+struct BoundApiListeners {
+    listeners: Vec<TcpListener>,
+    lease: ApiListenerLease,
+    /// The address each listener in `listeners` bound, in the same order.
+    addresses: Vec<SocketAddr>,
+    dropped: Vec<DroppedListenTarget>,
+}
+
+/// The loopback port a launch falls back to when a config-chosen network
+/// target is unavailable: the `--port` launch port, when config picks the
+/// interfaces. Every other launch fails on an unavailable target.
+fn loopback_fallback_port(options: &DaemonRunOptions, config: &HypercolorConfig) -> Option<u16> {
+    (options.port.is_some() && !has_explicit_bind_override(options))
+        .then(|| effective_port(options, config))
+}
+
+/// The bound API addresses another host can control without presenting any
+/// credential: the non-loopback addresses of a family in which
+/// `open_families` admits a remote client. Pass
+/// [`RemoteClientFamilies::NONE`] when an API key or credential authority
+/// makes the API require a credential.
+fn keyless_network_listeners(
+    addresses: &[SocketAddr],
+    open_families: RemoteClientFamilies,
+) -> Vec<SocketAddr> {
+    addresses
+        .iter()
+        .filter(|address| {
+            !address.ip().is_loopback() && open_families.admits_family_of(address.ip())
+        })
+        .copied()
+        .collect()
+}
+
+/// The address the daemon advertises: the first listener, or after a
+/// degraded bind the first loopback listener, which mDNS never publishes.
+fn advertised_bind(addresses: &[SocketAddr], degraded: bool) -> Option<SocketAddr> {
+    if degraded {
+        addresses
+            .iter()
+            .find(|address| address.ip().is_loopback())
+            .or_else(|| addresses.first())
+            .copied()
+    } else {
+        addresses.first().copied()
+    }
+}
+
+/// The address each listener actually bound, in order.
+fn listener_addresses(listeners: &[TcpListener]) -> Result<Vec<SocketAddr>> {
+    listeners
+        .iter()
+        .map(TcpListener::local_addr)
+        .collect::<std::io::Result<Vec<_>>>()
+        .context("failed to read API listener address")
+}
+
+/// Resolve, authorize, and bind the API listeners for `targets`.
+///
+/// With a `loopback_fallback` port, a network target that fails to resolve
+/// or bind (a stale interface address, one DHCP has not assigned yet, a
+/// hostname that does not resolve) is dropped instead of aborting startup,
+/// and loopback on that port is bound wherever no remaining listener serves
+/// it. A local launcher can then still reach the daemon, including the
+/// settings that would fix the address. Loopback failures, `authorize`
+/// refusals, and every failure without a fallback port still abort.
+async fn bind_startup_listeners(
+    targets: &[String],
+    loopback_fallback: Option<u16>,
+    authorize: impl Fn(SocketAddr) -> Result<()>,
+) -> Result<BoundApiListeners> {
+    let mut dropped = Vec::new();
+    let mut resolved = Vec::new();
     for target in targets {
-        let bind = resolve_socket_addr(target).await?;
-        if !resolved.contains(&bind) {
-            resolved.push(bind);
+        match resolve_socket_addr(target).await {
+            Ok(bind) => {
+                if !resolved.contains(&bind) {
+                    resolved.push(bind);
+                }
+            }
+            Err(error) if loopback_fallback.is_some() && bind_target_needs_auth(target) => {
+                dropped.push(DroppedListenTarget {
+                    target: target.clone(),
+                    error: format!("{error:#}"),
+                });
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    for bind in &resolved {
+        authorize(*bind)?;
+    }
+
+    let mut listeners = Vec::with_capacity(resolved.len());
+    let mut leases = Vec::with_capacity(resolved.len());
+    for bind in resolved {
+        match bind_api_listener_with_lease(bind) {
+            Ok((listener, lease)) => {
+                listeners.push(listener);
+                leases.push(lease);
+            }
+            Err(error) if loopback_fallback.is_some() && !bind.ip().is_loopback() => {
+                dropped.push(DroppedListenTarget {
+                    target: bind.to_string(),
+                    error: format!("{error:#}"),
+                });
+            }
+            Err(error) => {
+                return Err(error.context(format!("failed to bind API server to {bind}")));
+            }
         }
     }
 
-    Ok(resolved)
-}
-
-fn bind_api_listeners(binds: &[SocketAddr]) -> Result<(Vec<TcpListener>, ApiListenerLease)> {
-    let mut listeners = Vec::with_capacity(binds.len());
-    let mut leases = Vec::with_capacity(binds.len());
-
-    for bind in binds {
-        let (listener, lease) = bind_api_listener_with_lease(*bind)
-            .with_context(|| format!("failed to bind API server to {bind}"))?;
-        listeners.push(listener);
-        leases.push(lease);
+    if let Some(port) = loopback_fallback {
+        let served = listener_addresses(&listeners)?
+            .iter()
+            .map(SocketAddr::ip)
+            .collect::<Vec<_>>();
+        for bind in unserved_loopback(&served, port) {
+            let (listener, lease) = bind_api_listener_with_lease(bind)
+                .with_context(|| format!("failed to bind API server to {bind}"))?;
+            listeners.push(listener);
+            leases.push(lease);
+        }
     }
 
-    Ok((listeners, ApiListenerLease { _listeners: leases }))
+    let addresses = listener_addresses(&listeners)?;
+    Ok(BoundApiListeners {
+        listeners,
+        lease: ApiListenerLease { _listeners: leases },
+        addresses,
+        dropped,
+    })
 }
 
 /// Construct one API TCP listener with the daemon's socket options.
@@ -824,6 +995,7 @@ pub fn effective_bind_targets(
         return expand_bind_target(bind);
     }
 
+    let port = effective_port(options, config);
     let hosts = if options.listen_all {
         all_interface_hosts()
     } else if let Some(host) = options.listen_address.as_deref() {
@@ -831,7 +1003,7 @@ pub fn effective_bind_targets(
     } else if config.network.access_mode == NetworkAccessMode::LocalOnly
         && !config.network.remote_access
     {
-        return loopback_bind_targets(config.daemon.port);
+        return loopback_bind_targets(port);
     } else if config.network.remote_access_enabled()
         && is_loopback_host(&config.daemon.listen_address)
     {
@@ -840,10 +1012,24 @@ pub fn effective_bind_targets(
         expand_listen_host(&config.daemon.listen_address)
     };
 
-    hosts
+    let targets = hosts
         .into_iter()
-        .map(|host| format_bind_target(&host, config.daemon.port))
-        .collect()
+        .map(|host| format_bind_target(&host, port))
+        .collect();
+    if options.port.is_some() && !has_explicit_bind_override(options) {
+        // A launcher that passes only a port reaches the daemon over
+        // loopback, so a config that names one specific interface must
+        // not strand it.
+        with_loopback_reachable(targets, port)
+    } else {
+        targets
+    }
+}
+
+/// The port the API binds when no explicit `--bind` names one: the launch
+/// override when present, otherwise `daemon.port`.
+fn effective_port(options: &DaemonRunOptions, config: &HypercolorConfig) -> u16 {
+    options.port.unwrap_or(config.daemon.port)
 }
 
 #[must_use]
@@ -862,14 +1048,58 @@ pub fn effective_startup_bind_targets(
     }
 
     if targets.iter().any(|target| bind_target_needs_auth(target)) {
-        return (loopback_bind_targets(config.daemon.port), true);
+        return (loopback_bind_targets(effective_port(options, config)), true);
     }
 
     (targets, false)
 }
 
+/// Whether a launch flag picked the API interfaces instead of the
+/// configured network mode. `--port` alone does not: it only moves the
+/// port.
 fn has_explicit_bind_override(options: &DaemonRunOptions) -> bool {
     options.bind.is_some() || options.listen_address.is_some() || options.listen_all
+}
+
+/// Append the loopback targets on `port` that `targets` does not already
+/// serve.
+fn with_loopback_reachable(mut targets: Vec<String>, port: u16) -> Vec<String> {
+    let served: Vec<IpAddr> = targets
+        .iter()
+        .filter_map(|target| {
+            let (host, _) = split_bind_host_port(target)?;
+            unbracket_host(host).parse().ok()
+        })
+        .collect();
+    targets.extend(
+        unserved_loopback(&served, port)
+            .iter()
+            .map(ToString::to_string),
+    );
+    targets
+}
+
+/// The loopback addresses on `port` that no address in `served` answers. A
+/// wildcard answers the loopback address of its own family.
+fn unserved_loopback(served: &[IpAddr], port: u16) -> Vec<SocketAddr> {
+    [
+        (
+            IpAddr::from(Ipv4Addr::LOCALHOST),
+            IpAddr::from(Ipv4Addr::UNSPECIFIED),
+        ),
+        (
+            IpAddr::from(Ipv6Addr::LOCALHOST),
+            IpAddr::from(Ipv6Addr::UNSPECIFIED),
+        ),
+    ]
+    .into_iter()
+    .filter(|(loopback, wildcard)| {
+        !served
+            .iter()
+            .any(|address| address == loopback || address == wildcard)
+    })
+    .map(|(loopback, _)| SocketAddr::new(loopback, port))
+    .collect()
 }
 
 fn bind_target_needs_auth(target: &str) -> bool {
@@ -1017,9 +1247,11 @@ mod tests {
     use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
 
     use super::{
-        DaemonExtensionInstaller, bind_api_listener, bind_api_listener_with_lease,
-        default_env_filter, install_extensions, notify_api_ready_extensions, record_api_binding,
-        resolve_log_level, serve_api_listeners_with_shutdown_timeout,
+        DaemonExtensionInstaller, DaemonRunOptions, RemoteClientFamilies, advertised_bind,
+        bind_api_listener, bind_api_listener_with_lease, bind_startup_listeners,
+        default_env_filter, has_explicit_bind_override, install_extensions,
+        keyless_network_listeners, loopback_fallback_port, notify_api_ready_extensions,
+        record_api_binding, resolve_log_level, serve_api_listeners_with_shutdown_timeout,
     };
     use crate::app_state::AppState;
     use crate::extensions::DaemonLifecycleExtension;
@@ -1257,6 +1489,247 @@ mod tests {
                 .as_deref(),
             Some(ui_dir.as_path())
         );
+    }
+
+    #[test]
+    fn port_override_alone_leaves_the_bind_to_config() {
+        let port_only = DaemonRunOptions {
+            port: Some(9555),
+            ..DaemonRunOptions::default()
+        };
+        assert!(!has_explicit_bind_override(&port_only));
+
+        for explicit in [
+            DaemonRunOptions {
+                bind: Some("127.0.0.1:9555".to_owned()),
+                port: Some(9555),
+                ..DaemonRunOptions::default()
+            },
+            DaemonRunOptions {
+                listen_address: Some("192.168.1.42".to_owned()),
+                port: Some(9555),
+                ..DaemonRunOptions::default()
+            },
+            DaemonRunOptions {
+                listen_all: true,
+                port: Some(9555),
+                ..DaemonRunOptions::default()
+            },
+        ] {
+            assert!(has_explicit_bind_override(&explicit));
+        }
+    }
+
+    /// A loopback port that was free a moment ago on both families.
+    fn free_loopback_port() -> u16 {
+        for _ in 0..16 {
+            let v4 = std::net::TcpListener::bind("127.0.0.1:0")
+                .expect("an ephemeral IPv4 loopback port should be available");
+            let port = v4
+                .local_addr()
+                .expect("listener address should resolve")
+                .port();
+            match std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, port)) {
+                Ok(_) => return port,
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+                Err(error) => panic!("IPv6 loopback is unavailable: {error}"),
+            }
+        }
+        panic!("no port was free on both loopback families after 16 tries");
+    }
+
+    fn loopback_pair(port: u16) -> Vec<std::net::SocketAddr> {
+        vec![
+            std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)),
+        ]
+    }
+
+    /// TEST-NET-1 (RFC 5737): never assigned to a real interface, so a bind
+    /// fails the way a stale configured address does.
+    const STALE_ADDRESS: &str = "192.0.2.1";
+
+    #[tokio::test]
+    async fn port_launch_drops_an_unavailable_configured_address_and_keeps_loopback() {
+        let port = free_loopback_port();
+        let stale = format!("{STALE_ADDRESS}:{port}");
+        let targets = vec![
+            stale.clone(),
+            format!("127.0.0.1:{port}"),
+            format!("[::1]:{port}"),
+        ];
+
+        let bound = bind_startup_listeners(&targets, Some(port), |_| Ok(()))
+            .await
+            .expect("a --port launch should survive an unavailable configured address");
+
+        assert_eq!(bound.addresses, loopback_pair(port));
+        assert_eq!(
+            bound
+                .dropped
+                .iter()
+                .map(|dropped| dropped.target.as_str())
+                .collect::<Vec<_>>(),
+            vec![stale.as_str()]
+        );
+    }
+
+    #[tokio::test]
+    async fn port_launch_binds_loopback_when_every_configured_address_is_unavailable() {
+        let port = free_loopback_port();
+        let targets = vec![
+            format!("{STALE_ADDRESS}:{port}"),
+            format!("hypercolor-stale.invalid:{port}"),
+        ];
+
+        let bound = bind_startup_listeners(&targets, Some(port), |_| Ok(()))
+            .await
+            .expect("a --port launch should fall back to loopback");
+
+        assert_eq!(bound.addresses, loopback_pair(port));
+        assert_eq!(bound.dropped.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn launches_without_a_fallback_port_still_fail_on_an_unavailable_address() {
+        let port = free_loopback_port();
+        let targets = vec![
+            format!("{STALE_ADDRESS}:{port}"),
+            format!("127.0.0.1:{port}"),
+        ];
+
+        let error = bind_startup_listeners(&targets, None, |_| Ok(()))
+            .await
+            .err()
+            .expect("a launch without --port must not hide an unavailable address");
+
+        assert!(
+            format!("{error:#}").contains(STALE_ADDRESS),
+            "the error should name the address, got {error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn port_launch_never_tolerates_a_refused_network_bind() {
+        let port = free_loopback_port();
+        let targets = vec![format!("{STALE_ADDRESS}:{port}")];
+
+        bind_startup_listeners(&targets, Some(port), |_| {
+            anyhow::bail!("refusing to bind without a key")
+        })
+        .await
+        .err()
+        .expect("an authorization refusal must still abort startup");
+    }
+
+    #[test]
+    fn keyless_network_listeners_are_the_non_loopback_ones_in_open_families() {
+        let both = RemoteClientFamilies {
+            ipv4: true,
+            ipv6: true,
+        };
+        let ipv4_only = RemoteClientFamilies {
+            ipv4: true,
+            ipv6: false,
+        };
+        let ipv6_only = RemoteClientFamilies {
+            ipv4: false,
+            ipv6: true,
+        };
+        let loopback = loopback_pair(9555);
+        let wildcard: Vec<std::net::SocketAddr> = vec![
+            "0.0.0.0:9555"
+                .parse()
+                .expect("fixture address should parse"),
+            "[::]:9555".parse().expect("fixture address should parse"),
+        ];
+        let mixed: Vec<std::net::SocketAddr> = vec![
+            "192.168.1.42:9555"
+                .parse()
+                .expect("fixture address should parse"),
+            loopback[0],
+        ];
+
+        assert!(keyless_network_listeners(&loopback, both).is_empty());
+        assert_eq!(keyless_network_listeners(&wildcard, both), wildcard);
+        assert_eq!(keyless_network_listeners(&mixed, both), vec![mixed[0]]);
+        assert!(keyless_network_listeners(&wildcard, RemoteClientFamilies::NONE).is_empty());
+        assert!(keyless_network_listeners(&mixed, RemoteClientFamilies::NONE).is_empty());
+        // A listener only accepts clients of its own family.
+        assert_eq!(
+            keyless_network_listeners(&wildcard, ipv4_only),
+            vec![wildcard[0]]
+        );
+        assert_eq!(
+            keyless_network_listeners(&wildcard, ipv6_only),
+            vec![wildcard[1]]
+        );
+        assert!(keyless_network_listeners(&wildcard[1..], ipv4_only).is_empty());
+        assert!(keyless_network_listeners(&mixed, ipv6_only).is_empty());
+    }
+
+    #[test]
+    fn a_degraded_bind_advertises_loopback() {
+        let surviving_wildcard: Vec<std::net::SocketAddr> = vec![
+            "[::]:9555".parse().expect("fixture address should parse"),
+            "127.0.0.1:9555"
+                .parse()
+                .expect("fixture address should parse"),
+        ];
+
+        assert_eq!(
+            advertised_bind(&surviving_wildcard, false),
+            Some(surviving_wildcard[0])
+        );
+        assert_eq!(
+            advertised_bind(&surviving_wildcard, true),
+            Some(surviving_wildcard[1]),
+            "a partial bind must not hand mDNS a wildcard"
+        );
+        assert_eq!(advertised_bind(&[], true), None);
+    }
+
+    #[test]
+    fn only_a_port_only_launch_falls_back_to_loopback() {
+        let config = default_config();
+        let with_port = |options: DaemonRunOptions| DaemonRunOptions {
+            port: Some(9555),
+            ..options
+        };
+
+        assert_eq!(
+            loopback_fallback_port(&with_port(DaemonRunOptions::default()), &config),
+            Some(9555)
+        );
+        assert_eq!(
+            loopback_fallback_port(&DaemonRunOptions::default(), &config),
+            None,
+            "a launch without --port keeps failing on an unavailable address"
+        );
+        for explicit in [
+            DaemonRunOptions {
+                bind: Some("127.0.0.1:9555".to_owned()),
+                ..DaemonRunOptions::default()
+            },
+            with_port(DaemonRunOptions {
+                bind: Some("192.0.2.1:9555".to_owned()),
+                ..DaemonRunOptions::default()
+            }),
+            with_port(DaemonRunOptions {
+                listen_address: Some("192.0.2.1".to_owned()),
+                ..DaemonRunOptions::default()
+            }),
+            with_port(DaemonRunOptions {
+                listen_all: true,
+                ..DaemonRunOptions::default()
+            }),
+        ] {
+            assert_eq!(
+                loopback_fallback_port(&explicit, &config),
+                None,
+                "an explicit interface flag keeps failing loudly"
+            );
+        }
     }
 
     #[tokio::test]

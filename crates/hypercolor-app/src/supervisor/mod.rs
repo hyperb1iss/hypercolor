@@ -46,8 +46,20 @@ pub use startup_watch::{
     MAX_HEALTH_BODY_BYTES, StartupGaveUp, StartupProbe, StartupStall, StartupVerdict, StartupWatch,
 };
 
-/// Default daemon bind address used by the app-spawned daemon.
-pub const DEFAULT_DAEMON_BIND: &str = "127.0.0.1:9420";
+/// Port the app-spawned daemon serves on when the daemon URL names none.
+pub const DEFAULT_DAEMON_PORT: u16 = 9420;
+
+/// How the supervisor tells its daemon where to listen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonListen {
+    /// Serve this port and let the configured network mode pick the
+    /// interfaces. The daemon keeps 127.0.0.1 and ::1 listening on it.
+    Port(u16),
+    /// Bind exactly this address. Used only for a daemon URL whose host the
+    /// daemon's loopback listeners would not answer, so the supervisor can
+    /// still reach the daemon it starts.
+    Bind(String),
+}
 
 const DAEMON_EXECUTABLE_STEM: &str = "hypercolor-daemon";
 
@@ -134,9 +146,21 @@ pub struct DaemonCommand {
 #[derive(Debug)]
 struct SupervisedDaemonConfig {
     daemon_path: PathBuf,
-    bind: String,
+    listen: DaemonListen,
     ui_dir: Option<PathBuf>,
     effects_dir: Option<PathBuf>,
+}
+
+impl SupervisedDaemonConfig {
+    /// The command the watchdog spawns on every restart.
+    fn command(&self) -> DaemonCommand {
+        build_daemon_command(
+            &self.daemon_path,
+            &self.listen,
+            self.ui_dir.as_deref(),
+            self.effects_dir.as_deref(),
+        )
+    }
 }
 
 /// Current state of the Linux systemd user service from the app supervisor's perspective.
@@ -845,11 +869,14 @@ pub fn macos_app_resource_dir(current_exe: &Path) -> Option<PathBuf> {
 #[must_use]
 pub fn build_daemon_command(
     program: impl Into<PathBuf>,
-    bind: &str,
+    listen: &DaemonListen,
     ui_dir: Option<&Path>,
     effects_dir: Option<&Path>,
 ) -> DaemonCommand {
-    let mut args = vec!["--bind".to_owned(), bind.to_owned()];
+    let mut args = match listen {
+        DaemonListen::Port(port) => vec!["--port".to_owned(), port.to_string()],
+        DaemonListen::Bind(bind) => vec!["--bind".to_owned(), bind.clone()],
+    };
     let protected_control_credential = ProtectedControlCredential::generate();
     let environment = vec![
         // The daemon corroborates its supervised-child identity against this
@@ -898,17 +925,31 @@ pub fn build_daemon_command(
     }
 }
 
-/// Convert the app's daemon URL into a daemon bind address.
+/// Where the daemon the supervisor spawns must listen for `url` to reach it.
+///
+/// A URL on 127.0.0.1, ::1, or localhost (the default) gets only a port, so
+/// the configured network mode picks the interfaces the way it does for a
+/// service-managed daemon. Any other host is an address the user pinned
+/// through the daemon URL, which the daemon's loopback listeners would not
+/// answer, so the daemon binds exactly that address instead.
 #[must_use]
-pub fn bind_from_daemon_url(url: &Url) -> Option<String> {
-    let host = url.host_str()?;
-    let port = url.port_or_known_default()?;
-    let host = if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]")
-    } else {
-        host.to_owned()
-    };
-    Some(format!("{host}:{port}"))
+pub fn daemon_listen_from_url(url: &Url) -> DaemonListen {
+    let port = url.port_or_known_default().unwrap_or(DEFAULT_DAEMON_PORT);
+    match url.host() {
+        Some(url::Host::Ipv4(address)) if address == std::net::Ipv4Addr::LOCALHOST => {
+            DaemonListen::Port(port)
+        }
+        Some(url::Host::Ipv6(address)) if address == std::net::Ipv6Addr::LOCALHOST => {
+            DaemonListen::Port(port)
+        }
+        Some(url::Host::Domain(domain)) if domain.eq_ignore_ascii_case("localhost") => {
+            DaemonListen::Port(port)
+        }
+        Some(url::Host::Ipv4(address)) => DaemonListen::Bind(format!("{address}:{port}")),
+        Some(url::Host::Ipv6(address)) => DaemonListen::Bind(format!("[{address}]:{port}")),
+        Some(url::Host::Domain(domain)) => DaemonListen::Bind(format!("{domain}:{port}")),
+        None => DaemonListen::Port(port),
+    }
 }
 
 /// Resolve the daemon health endpoint from the base daemon URL.
@@ -1598,7 +1639,7 @@ fn start_with_plan_inputs<R: Runtime>(
     let effects_dir = effects_dir_candidates(&current_exe, resource_dir.as_deref())
         .into_iter()
         .find(|path| path.is_dir());
-    let bind = bind_from_daemon_url(&daemon_url).unwrap_or_else(|| DEFAULT_DAEMON_BIND.to_owned());
+    let listen = daemon_listen_from_url(&daemon_url);
     let state = app.state::<SupervisorState>().inner().clone();
     // Every supervision start, including an owner handover, supersedes an
     // earlier give-up; leaving it latched would offer a Retry that starts
@@ -1618,7 +1659,7 @@ fn start_with_plan_inputs<R: Runtime>(
         let client = reqwest::Client::new();
         let spawn = build_daemon_command(
             &daemon_path,
-            &bind,
+            &listen,
             ui_dir.as_deref(),
             effects_dir.as_deref(),
         );
@@ -1639,7 +1680,7 @@ fn start_with_plan_inputs<R: Runtime>(
                 client,
                 daemon_url,
                 daemon_path,
-                bind,
+                listen,
                 ui_dir,
                 effects_dir,
                 state,
@@ -1657,7 +1698,7 @@ struct LauncherPlanContext<R: Runtime> {
     client: reqwest::Client,
     daemon_url: Url,
     daemon_path: PathBuf,
-    bind: String,
+    listen: DaemonListen,
     ui_dir: Option<PathBuf>,
     effects_dir: Option<PathBuf>,
     state: SupervisorState,
@@ -1746,7 +1787,7 @@ async fn execute_launcher_plan<R: Runtime>(plan: LauncherPlan, context: Launcher
         client,
         daemon_url,
         daemon_path,
-        bind,
+        listen,
         ui_dir,
         effects_dir,
         state,
@@ -1835,7 +1876,7 @@ async fn execute_launcher_plan<R: Runtime>(plan: LauncherPlan, context: Launcher
                 daemon_url,
                 SupervisedDaemonConfig {
                     daemon_path,
-                    bind,
+                    listen,
                     ui_dir,
                     effects_dir,
                 },
@@ -1850,7 +1891,7 @@ async fn execute_launcher_plan<R: Runtime>(plan: LauncherPlan, context: Launcher
                 daemon_url,
                 SupervisedDaemonConfig {
                     daemon_path,
-                    bind,
+                    listen,
                     ui_dir,
                     effects_dir,
                 },
@@ -2134,14 +2175,7 @@ async fn run_watchdog_loop(
             return;
         }
 
-        let command = initial_command.take().unwrap_or_else(|| {
-            build_daemon_command(
-                &config.daemon_path,
-                &config.bind,
-                config.ui_dir.as_deref(),
-                config.effects_dir.as_deref(),
-            )
-        });
+        let command = initial_command.take().unwrap_or_else(|| config.command());
         // Opened before the spawn, so the baseline predates the child's
         // first byte. The child is the only writer while it runs.
         let output = match daemon_log_file().and_then(ChildOutputProbe::new) {
@@ -2554,8 +2588,8 @@ fn record_failure(count: &mut u32, anchor: &mut Option<Instant>) {
 )]
 mod tests {
     use super::{
-        DaemonStartupObservation, MacosDaemonOwnerOfflineStatus, macos_external_owner_offline,
-        select_daemon_startup_observation,
+        DaemonListen, DaemonStartupObservation, MacosDaemonOwnerOfflineStatus,
+        SupervisedDaemonConfig, macos_external_owner_offline, select_daemon_startup_observation,
     };
     use hypercolor_macos_owner::{MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy};
     use hypercolor_types::service::ProtectedControlCredential;
@@ -2714,6 +2748,30 @@ mod tests {
         .await;
         server.await.expect("fixture server should finish");
         result
+    }
+
+    #[test]
+    fn watchdog_restarts_pass_the_configured_port_and_never_a_bind() {
+        let config = SupervisedDaemonConfig {
+            daemon_path: "hypercolor-daemon".into(),
+            listen: DaemonListen::Port(9555),
+            ui_dir: None,
+            effects_dir: None,
+        };
+
+        let args = config.command().args;
+
+        let port_flag = args
+            .iter()
+            .position(|arg| arg == "--port")
+            .expect("restart command should pass --port");
+        assert_eq!(args.get(port_flag + 1).map(String::as_str), Some("9555"));
+        for interface_flag in ["--bind", "--listen", "--listen-all"] {
+            assert!(
+                !args.iter().any(|arg| arg == interface_flag),
+                "restart command must leave interfaces to config, got {args:?}"
+            );
+        }
     }
 
     #[test]

@@ -383,6 +383,19 @@ impl SecurityState {
         self.auth.control_key.is_some() || self.auth.read_key.is_some() || self.authority.is_some()
     }
 
+    /// The families in which a remote client can control this API without
+    /// presenting a credential: none while any credential is required,
+    /// otherwise every family the network policy admits a non-loopback
+    /// client in. An allowlist that names only loopback, an invalid entry,
+    /// or a client scope that cannot be resolved admits none.
+    pub(crate) fn keyless_remote_client_families(&self) -> RemoteClientFamilies {
+        if self.security_enabled() {
+            RemoteClientFamilies::NONE
+        } else {
+            self.network.remote_client_families()
+        }
+    }
+
     pub(crate) fn install_macos_daemon_session(
         &mut self,
         attestation: &MacosDaemonSessionAttestation,
@@ -613,6 +626,33 @@ pub fn control_api_key_configured_from_env() -> bool {
     api_key_from_env("HYPERCOLOR_API_KEY").is_some()
 }
 
+/// The address families in which a network policy admits some client other
+/// than loopback, before authentication runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RemoteClientFamilies {
+    pub(crate) ipv4: bool,
+    pub(crate) ipv6: bool,
+}
+
+impl RemoteClientFamilies {
+    /// No remote client is admitted in either family.
+    pub(crate) const NONE: Self = Self {
+        ipv4: false,
+        ipv6: false,
+    };
+
+    /// Whether a remote client of `address`'s family can be admitted. A
+    /// listener only ever accepts clients of its own family, because IPv6
+    /// listeners are bound IPv6-only.
+    #[must_use]
+    pub(crate) const fn admits_family_of(self, address: IpAddr) -> bool {
+        match address {
+            IpAddr::V4(_) => self.ipv4,
+            IpAddr::V6(_) => self.ipv6,
+        }
+    }
+}
+
 fn api_key_from_env(name: &str) -> Option<String> {
     normalize_api_key(std::env::var(name).ok())
 }
@@ -750,6 +790,30 @@ impl NetworkAccessPolicy {
             allowed_clients,
             invalid_rules,
             scope_errors,
+        }
+    }
+
+    fn remote_client_families(&self) -> RemoteClientFamilies {
+        if self.allowed_clients.is_empty()
+            && self.invalid_rules.is_empty()
+            && self.scope_errors.is_empty()
+        {
+            return RemoteClientFamilies {
+                ipv4: true,
+                ipv6: true,
+            };
+        }
+        if !self.invalid_rules.is_empty() || !self.scope_errors.is_empty() {
+            return RemoteClientFamilies::NONE;
+        }
+        let admits = |ipv6: bool| {
+            self.allowed_clients
+                .iter()
+                .any(|rule| !rule.is_loopback_only() && rule.network().is_ipv6() == ipv6)
+        };
+        RemoteClientFamilies {
+            ipv4: admits(false),
+            ipv6: admits(true),
         }
     }
 
@@ -897,6 +961,27 @@ impl ClientAddressRule {
         match *self {
             Self::Exact(ip) => ip == client,
             Self::Cidr { network, prefix } => cidr_contains(network, prefix, client),
+        }
+    }
+
+    fn network(&self) -> IpAddr {
+        match *self {
+            Self::Exact(ip) | Self::Cidr { network: ip, .. } => ip,
+        }
+    }
+
+    /// Whether every address the rule matches is a loopback address.
+    fn is_loopback_only(&self) -> bool {
+        match *self {
+            Self::Exact(ip) => ip.is_loopback(),
+            Self::Cidr {
+                network: IpAddr::V4(network),
+                prefix,
+            } => prefix >= 8 && network.octets()[0] == 127,
+            Self::Cidr {
+                network: IpAddr::V6(network),
+                prefix,
+            } => prefix == 128 && network.is_loopback(),
         }
     }
 }
@@ -1577,8 +1662,8 @@ mod tests {
     use hypercolor_types::service::ProtectedControlCredential;
 
     use super::{
-        AccessTier, AuthConfig, ClientAddressRule, NetworkAccessPolicy, RequestAuthContext,
-        SecurityState, StaticAssetSurface, enforce_security, normalize_api_key,
+        AccessTier, AuthConfig, ClientAddressRule, NetworkAccessPolicy, RemoteClientFamilies,
+        RequestAuthContext, SecurityState, StaticAssetSurface, enforce_security, normalize_api_key,
         parse_protected_control_credential, path_within, resolve_token_tier,
     };
     use crate::macos_owner::{
@@ -1666,6 +1751,116 @@ mod tests {
         router_with_security_state(SecurityState::with_network_policy(
             NetworkAccessPolicy::from_config_with_local_subnets(config, Ok(local_subnet_rules)),
         ))
+    }
+
+    #[test]
+    fn network_policy_reports_the_families_remote_clients_are_admitted_in() {
+        let both = RemoteClientFamilies {
+            ipv4: true,
+            ipv6: true,
+        };
+        let ipv4_only = RemoteClientFamilies {
+            ipv4: true,
+            ipv6: false,
+        };
+        let ipv6_only = RemoteClientFamilies {
+            ipv4: false,
+            ipv6: true,
+        };
+        let subnet = ClientAddressRule::parse("192.168.1.0/24").expect("rule should parse");
+        let families = |config: &NetworkConfig, subnets: Result<Vec<ClientAddressRule>, String>| {
+            NetworkAccessPolicy::from_config_with_local_subnets(config, subnets)
+                .remote_client_families()
+        };
+        let lan_trusted = NetworkConfig {
+            access_mode: NetworkAccessMode::LanTrusted,
+            ..NetworkConfig::default()
+        };
+
+        assert_eq!(families(&lan_trusted, Ok(vec![subnet.clone()])), ipv4_only);
+        assert_eq!(
+            families(&NetworkConfig::default(), Ok(Vec::new())),
+            both,
+            "no allowlist admits every client"
+        );
+        assert_eq!(
+            families(&lan_trusted, Ok(Vec::new())),
+            RemoteClientFamilies::NONE,
+            "an unresolvable local-subnet scope blocks remote clients"
+        );
+        assert_eq!(
+            families(
+                &NetworkConfig {
+                    allowed_clients: vec!["invalid".to_owned()],
+                    ..lan_trusted.clone()
+                },
+                Ok(vec![subnet])
+            ),
+            RemoteClientFamilies::NONE
+        );
+        let custom = |allowed: &[&str]| NetworkConfig {
+            access_mode: NetworkAccessMode::Custom,
+            allow_unauthenticated_remote_access: true,
+            allowed_clients: allowed.iter().map(|rule| (*rule).to_owned()).collect(),
+            ..NetworkConfig::default()
+        };
+        assert_eq!(
+            families(
+                &custom(&["127.0.0.1", "127.0.0.0/8", "::1", "::1/128"]),
+                Ok(Vec::new())
+            ),
+            RemoteClientFamilies::NONE
+        );
+        assert_eq!(
+            families(&custom(&["127.0.0.1", "10.0.0.5"]), Ok(Vec::new())),
+            ipv4_only
+        );
+        assert_eq!(families(&custom(&["fd00::/8"]), Ok(Vec::new())), ipv6_only);
+        assert_eq!(
+            families(&custom(&["0.0.0.0/0", "::/0"]), Ok(Vec::new())),
+            both
+        );
+
+        let v4: IpAddr = "192.168.1.42"
+            .parse()
+            .expect("fixture address should parse");
+        let v6: IpAddr = "fd00::42".parse().expect("fixture address should parse");
+        assert!(ipv4_only.admits_family_of(v4));
+        assert!(!ipv4_only.admits_family_of(v6));
+        assert!(ipv6_only.admits_family_of(v6));
+        assert!(!ipv6_only.admits_family_of(v4));
+    }
+
+    #[test]
+    fn keyless_remote_families_come_from_the_serving_state() {
+        let subnet = ClientAddressRule::parse("192.168.1.0/24").expect("rule should parse");
+        let lan_trusted = NetworkConfig {
+            access_mode: NetworkAccessMode::LanTrusted,
+            ..NetworkConfig::default()
+        };
+        let policy = || {
+            NetworkAccessPolicy::from_config_with_local_subnets(
+                &lan_trusted,
+                Ok(vec![subnet.clone()]),
+            )
+        };
+
+        assert_eq!(
+            SecurityState::with_network_policy(policy()).keyless_remote_client_families(),
+            RemoteClientFamilies {
+                ipv4: true,
+                ipv6: false,
+            }
+        );
+        for keys in [(Some(CONTROL_KEY), None), (None, Some(READ_KEY))] {
+            let mut state = SecurityState::with_keys(keys.0, keys.1);
+            state.network = policy();
+            assert_eq!(
+                state.keyless_remote_client_families(),
+                RemoteClientFamilies::NONE,
+                "any configured key makes every remote client present a credential"
+            );
+        }
     }
 
     async fn response_json(response: axum::response::Response) -> Value {
