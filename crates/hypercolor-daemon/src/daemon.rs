@@ -202,6 +202,24 @@ impl PreparedDaemon {
             credential_authority,
         ));
         let api_auth_required = app_state.security_state.security_enabled();
+        // Judged from the security state the router serves, so the network
+        // policy here is the one that admits or refuses remote clients.
+        let keyless = keyless_network_listeners(
+            daemon_state.api_listen_addresses(),
+            app_state.security_state.keyless_remote_client_families(),
+        );
+        if !keyless.is_empty() {
+            warn!(
+                listen = %keyless
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                "API is listening on the network without an API key: devices on the local \
+                 network can control this daemon. Set HYPERCOLOR_API_KEY, or switch \
+                 network.access_mode to lan_protected, to require one"
+            );
+        }
         daemon_state.domains.display.sync_connected_surfaces().await;
         daemon_state
             .domains
@@ -481,28 +499,6 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
         (config.daemon.canvas_width, config.daemon.canvas_height),
         &listen_addr,
     );
-    let credentials_required =
-        api::security::api_auth_required_from_env() || options.credential_authority.is_some();
-    let keyless = keyless_network_listeners(
-        &addresses,
-        if credentials_required {
-            RemoteClientFamilies::NONE
-        } else {
-            api::security::network_policy_remote_client_families(&config.network)
-        },
-    );
-    if !keyless.is_empty() {
-        warn!(
-            listen = %keyless
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-            "API is listening on the network without an API key: devices on the local \
-             network can control this daemon. Set HYPERCOLOR_API_KEY, or switch \
-             network.access_mode to lan_protected, to require one"
-        );
-    }
 
     Ok(PreparedDaemon {
         options,
