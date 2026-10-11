@@ -95,7 +95,7 @@ hypercolor-daemon --port 9421           # configured interfaces, different port
 hypercolor-daemon --bind 0.0.0.0:9421   # explicit address and port
 ```
 
-`--listen` sets the interface and keeps the configured port. `--port` sets the port and leaves the interfaces to `[network]`, so it never opens the daemon to the LAN on its own; loopback also listens on that port, which is how the desktop app reaches the daemon it starts. `--bind` takes a full `address:port`, overrides `[network]` in both directions, and cannot be combined with `--port`. To change the port persistently, set `daemon.port` in the file.
+`--listen` sets the interface and keeps the configured port. `--port` sets the port and leaves the interfaces to `[network]`, so it never opens the daemon to the LAN on its own; loopback also listens on that port, which is how the desktop app reaches the daemon it starts. If a configured interface address cannot be used at startup (it is stale, DHCP has not assigned it yet, or its hostname does not resolve), a `--port` launch logs a warning and serves without it rather than failing; every other launch still fails. `--bind` takes a full `address:port`, overrides `[network]` in both directions, and cannot be combined with `--port`. To change the port persistently, set `daemon.port` in the file.
 
 ---
 
