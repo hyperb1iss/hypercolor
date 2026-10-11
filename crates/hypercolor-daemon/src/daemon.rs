@@ -22,7 +22,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::api;
-use crate::api::security::{CredentialAuthority, CredentialTier};
+use crate::api::security::{CredentialAuthority, CredentialTier, RemoteClientFamilies};
 use crate::app_state::AppState;
 use crate::macos_owner::{MacosDaemonOwner, MacosDaemonSessionAttestation, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
@@ -485,8 +485,11 @@ pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
         api::security::api_auth_required_from_env() || options.credential_authority.is_some();
     let keyless = keyless_network_listeners(
         &addresses,
-        !credentials_required
-            && api::security::network_policy_admits_remote_clients(&config.network),
+        if credentials_required {
+            RemoteClientFamilies::NONE
+        } else {
+            api::security::network_policy_remote_client_families(&config.network)
+        },
     );
     if !keyless.is_empty() {
         warn!(
@@ -659,19 +662,19 @@ fn loopback_fallback_port(options: &DaemonRunOptions, config: &HypercolorConfig)
 }
 
 /// The bound API addresses another host can control without presenting any
-/// credential: every non-loopback address, when `remote_control_open` says
-/// no API key or credential authority is configured and the network policy
-/// admits some remote client.
+/// credential: the non-loopback addresses of a family in which
+/// `open_families` admits a remote client. Pass
+/// [`RemoteClientFamilies::NONE`] when an API key or credential authority
+/// makes the API require a credential.
 fn keyless_network_listeners(
     addresses: &[SocketAddr],
-    remote_control_open: bool,
+    open_families: RemoteClientFamilies,
 ) -> Vec<SocketAddr> {
-    if !remote_control_open {
-        return Vec::new();
-    }
     addresses
         .iter()
-        .filter(|address| !address.ip().is_loopback())
+        .filter(|address| {
+            !address.ip().is_loopback() && open_families.admits_family_of(address.ip())
+        })
         .copied()
         .collect()
 }
@@ -1248,11 +1251,11 @@ mod tests {
     use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
 
     use super::{
-        DaemonExtensionInstaller, DaemonRunOptions, advertised_bind, bind_api_listener,
-        bind_api_listener_with_lease, bind_startup_listeners, default_env_filter,
-        has_explicit_bind_override, install_extensions, keyless_network_listeners,
-        loopback_fallback_port, notify_api_ready_extensions, record_api_binding, resolve_log_level,
-        serve_api_listeners_with_shutdown_timeout,
+        DaemonExtensionInstaller, DaemonRunOptions, RemoteClientFamilies, advertised_bind,
+        bind_api_listener, bind_api_listener_with_lease, bind_startup_listeners,
+        default_env_filter, has_explicit_bind_override, install_extensions,
+        keyless_network_listeners, loopback_fallback_port, notify_api_ready_extensions,
+        record_api_binding, resolve_log_level, serve_api_listeners_with_shutdown_timeout,
     };
     use crate::app_state::AppState;
     use crate::extensions::DaemonLifecycleExtension;
@@ -1624,7 +1627,19 @@ mod tests {
     }
 
     #[test]
-    fn keyless_network_listeners_are_the_non_loopback_ones_when_open() {
+    fn keyless_network_listeners_are_the_non_loopback_ones_in_open_families() {
+        let both = RemoteClientFamilies {
+            ipv4: true,
+            ipv6: true,
+        };
+        let ipv4_only = RemoteClientFamilies {
+            ipv4: true,
+            ipv6: false,
+        };
+        let ipv6_only = RemoteClientFamilies {
+            ipv4: false,
+            ipv6: true,
+        };
         let loopback = loopback_pair(9555);
         let wildcard: Vec<std::net::SocketAddr> = vec![
             "0.0.0.0:9555"
@@ -1639,11 +1654,22 @@ mod tests {
             loopback[0],
         ];
 
-        assert!(keyless_network_listeners(&loopback, true).is_empty());
-        assert_eq!(keyless_network_listeners(&wildcard, true), wildcard);
-        assert_eq!(keyless_network_listeners(&mixed, true), vec![mixed[0]]);
-        assert!(keyless_network_listeners(&wildcard, false).is_empty());
-        assert!(keyless_network_listeners(&mixed, false).is_empty());
+        assert!(keyless_network_listeners(&loopback, both).is_empty());
+        assert_eq!(keyless_network_listeners(&wildcard, both), wildcard);
+        assert_eq!(keyless_network_listeners(&mixed, both), vec![mixed[0]]);
+        assert!(keyless_network_listeners(&wildcard, RemoteClientFamilies::NONE).is_empty());
+        assert!(keyless_network_listeners(&mixed, RemoteClientFamilies::NONE).is_empty());
+        // A listener only accepts clients of its own family.
+        assert_eq!(
+            keyless_network_listeners(&wildcard, ipv4_only),
+            vec![wildcard[0]]
+        );
+        assert_eq!(
+            keyless_network_listeners(&wildcard, ipv6_only),
+            vec![wildcard[1]]
+        );
+        assert!(keyless_network_listeners(&wildcard[1..], ipv4_only).is_empty());
+        assert!(keyless_network_listeners(&mixed, ipv6_only).is_empty());
     }
 
     #[test]

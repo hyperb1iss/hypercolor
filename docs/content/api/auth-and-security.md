@@ -267,8 +267,8 @@ Keyless network access you chose on purpose (`lan_trusted`, or
 `allow_unauthenticated_remote_access = true` with no API key) still gets
 called out. At startup the daemon logs a warning naming every non-loopback
 address it listens on while no API key or credential authority is configured
-and the network policy admits at least one remote client, because any device
-the policy admits can control it.
+and the network policy admits a remote client of that address's family,
+because any device the policy admits can control it.
 
 ## CORS
 
