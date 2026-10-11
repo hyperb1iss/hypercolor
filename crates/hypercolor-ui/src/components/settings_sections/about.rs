@@ -33,6 +33,8 @@ pub fn AboutSection() -> impl IntoView {
                 }
             }}
 
+            <crate::components::release_notifications::ReleaseSettings />
+
             <div class="flex items-center gap-4 mt-4 pt-3 border-t border-edge-subtle/10">
                 <a
                     href="https://github.com/hyperb1iss/hypercolor"

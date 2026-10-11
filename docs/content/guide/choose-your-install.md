@@ -188,6 +188,21 @@ separate permissions step above.
 
 ---
 
+## Release notifications
+
+The standalone OSS daemon checks GitHub for a newer stable release at startup
+when its cached check is older than a day, then checks daily while running.
+Failed checks retry after 15 minutes. An available release appears in a banner;
+release notes are available in Settings or on GitHub.
+
+Open **Settings → System → About → Updates** to check manually, turn automatic
+checks off, or skip a release. Downloading opens the published asset for the
+machine running the daemon. Run the Windows installer or open the macOS DMG
+to complete a desktop upgrade. If you
+installed through Homebrew, AUR, or another package manager, update through
+that same package manager. Linux release-installer users can rerun the
+[prebuilt installer](#prebuilt-linux).
+
 ## After installing
 
 Whichever path you took, your next stop is [First launch](@/guide/first-launch.md), which walks through the first-run wizard, device discovery, and opening the web UI for the first time.

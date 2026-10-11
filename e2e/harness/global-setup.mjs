@@ -264,6 +264,20 @@ export default async function globalSetup() {
     const configPath = path.join(configDir, "hypercolor.toml");
     await fsp.writeFile(configPath, buildConfigToml(), "utf8");
 
+    // Keep browser fixtures independent of live GitHub releases.
+    const stateDir = path.join(
+      process.platform === "darwin"
+        ? path.join(homeDir, "Library", "Application Support")
+        : xdgStateHome,
+      "hypercolor",
+    );
+    await fsp.mkdir(stateDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(stateDir, "release-notifications.json"),
+      JSON.stringify({ automatic_checks: false }),
+      "utf8",
+    );
+
     const daemonPort = await reserveLoopbackPort();
     const appPort = await reserveLoopbackPort();
     const apiOrigin = `http://127.0.0.1:${daemonPort}`;

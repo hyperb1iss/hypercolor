@@ -4566,6 +4566,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "security-framework",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.11.0",

@@ -34,6 +34,7 @@ pub mod scene;
 pub mod scenes;
 pub mod simulators;
 pub mod system;
+pub mod updates;
 
 pub use envelope::{
     ApiErrorBody, ApiErrorDetail, ApiResponse, ListResponse, PageInfo, ResponseMeta,
