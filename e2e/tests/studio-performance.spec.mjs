@@ -102,17 +102,20 @@ test("Studio commits a drag released before animation frame and can undo it", as
     const bounds = element.getBoundingClientRect();
     const clientX = Math.round(bounds.x + bounds.width / 2);
     const clientY = Math.round(bounds.y + bounds.height / 2);
-    const dispatch = (type, dx, dy, buttons) => element.dispatchEvent(new MouseEvent(type, {
+    const dispatch = (type, dx, dy, buttons) => element.dispatchEvent(new PointerEvent(type, {
       bubbles: true,
       cancelable: true,
+      pointerId: 1,
+      pointerType: "mouse",
+      isPrimary: true,
       button: 0,
       buttons,
       clientX: clientX + dx,
       clientY: clientY + dy,
     }));
-    dispatch("mousedown", 0, 0, 1);
-    dispatch("mousemove", 30, 15, 1);
-    dispatch("mouseup", 30, 15, 0);
+    dispatch("pointerdown", 0, 0, 1);
+    dispatch("pointermove", 30, 15, 1);
+    dispatch("pointerup", 30, 15, 0);
   });
 
   const undo = page.getByRole("button", { name: "Undo (Ctrl+Z)", exact: true });
@@ -193,11 +196,12 @@ test("Studio preserves all compound positions when a member is hovered during dr
     const clientX = Math.round(bounds.x + bounds.width / 2);
     const clientY = Math.round(bounds.y + bounds.height / 2);
     element.dispatchEvent(new MouseEvent("mouseenter", { clientX, clientY }));
-    element.dispatchEvent(new MouseEvent("mousedown", {
-      bubbles: true, cancelable: true, button: 0, buttons: 1, clientX, clientY,
+    const pointer = { pointerId: 1, pointerType: "mouse", isPrimary: true };
+    element.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true, cancelable: true, ...pointer, button: 0, buttons: 1, clientX, clientY,
     }));
-    element.dispatchEvent(new MouseEvent("mousemove", {
-      bubbles: true, cancelable: true, buttons: 1, clientX: clientX + 40, clientY: clientY + 20,
+    element.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true, cancelable: true, ...pointer, buttons: 1, clientX: clientX + 40, clientY: clientY + 20,
     }));
   });
   await nextPaint(page);

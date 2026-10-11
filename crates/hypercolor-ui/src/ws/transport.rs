@@ -45,7 +45,10 @@ impl WebSocketBinaryFrame {
         }
     }
 
-    pub(super) fn from_array_buffer(buffer: js_sys::ArrayBuffer) -> Self {
+    /// Wraps a browser `ArrayBuffer` without copying it, so a transport that
+    /// receives binary frames from the browser can hand them over as-is.
+    #[must_use]
+    pub fn from_array_buffer(buffer: js_sys::ArrayBuffer) -> Self {
         Self {
             storage: WebSocketBinaryStorage::ArrayBuffer(buffer),
         }

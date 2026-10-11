@@ -1,13 +1,13 @@
 use std::path::Path;
 
 use hypercolor_app::supervisor::{
-    DEFAULT_DAEMON_BIND, DaemonCommand, HoldReason, LauncherPlan, LauncherProbe, OwnerPreference,
-    SYSTEMD_USER_SERVICE, SupervisorState, SystemdUserServiceProbe, bind_from_daemon_url,
-    build_daemon_command, daemon_executable_name, daemon_path_candidates, health_url,
-    is_terminal_daemon_exit_code, launcher_plan, macos_app_resource_dir, restart_backoff,
-    sibling_daemon_path, sibling_ui_dir, startup_retry_delay, systemctl_is_active_output,
-    systemctl_is_enabled_output, target_triple_candidates, tauri_sidecar_daemon_name,
-    ui_dir_candidates,
+    DEFAULT_DAEMON_PORT, DaemonCommand, DaemonListen, HoldReason, LauncherPlan, LauncherProbe,
+    OwnerPreference, SYSTEMD_USER_SERVICE, SupervisorState, SystemdUserServiceProbe,
+    build_daemon_command, daemon_executable_name, daemon_listen_from_url, daemon_path_candidates,
+    health_url, is_terminal_daemon_exit_code, launcher_plan, macos_app_resource_dir,
+    restart_backoff, sibling_daemon_path, sibling_ui_dir, startup_retry_delay,
+    systemctl_is_active_output, systemctl_is_enabled_output, target_triple_candidates,
+    tauri_sidecar_daemon_name, ui_dir_candidates,
 };
 use hypercolor_app::support::DaemonLauncherStatus;
 use hypercolor_types::service::ServiceIdentity;
@@ -176,10 +176,10 @@ fn candidates_include_macos_app_resources_from_contents_macos_exe() {
 }
 
 #[test]
-fn build_daemon_command_includes_bind_ui_dir_and_effects_dir() {
+fn build_daemon_command_includes_port_ui_dir_and_effects_dir() {
     let command = build_daemon_command(
         Path::new("hypercolor-daemon"),
-        DEFAULT_DAEMON_BIND,
+        &DaemonListen::Port(DEFAULT_DAEMON_PORT),
         Some(Path::new("ui")),
         Some(Path::new("effects")),
     );
@@ -188,8 +188,8 @@ fn build_daemon_command_includes_bind_ui_dir_and_effects_dir() {
     assert_eq!(
         command.args,
         [
-            "--bind",
-            DEFAULT_DAEMON_BIND,
+            "--port",
+            "9420",
             #[cfg(target_os = "macos")]
             "--macos-owner",
             #[cfg(target_os = "macos")]
@@ -233,14 +233,14 @@ fn build_daemon_command_includes_bind_ui_dir_and_effects_dir() {
 fn build_daemon_command_allows_missing_asset_dirs() {
     let command = build_daemon_command(
         Path::new("hypercolor-daemon"),
-        DEFAULT_DAEMON_BIND,
+        &DaemonListen::Port(DEFAULT_DAEMON_PORT),
         None,
         None,
     );
 
     let expected = [
-        "--bind",
-        DEFAULT_DAEMON_BIND,
+        "--port",
+        "9420",
         #[cfg(target_os = "macos")]
         "--macos-owner",
         #[cfg(target_os = "macos")]
@@ -291,20 +291,91 @@ fn effects_dir_candidates_cover_install_layouts() {
 }
 
 #[test]
-fn bind_from_daemon_url_uses_url_host_and_port() {
-    let url = Url::parse("http://127.0.0.1:9420").expect("url should parse");
-
+fn loopback_daemon_urls_hand_the_daemon_only_their_port() {
+    let default = Url::parse(hypercolor_app::DEFAULT_DAEMON_URL).expect("url should parse");
     assert_eq!(
-        bind_from_daemon_url(&url),
-        Some(DEFAULT_DAEMON_BIND.to_owned())
+        daemon_listen_from_url(&default),
+        DaemonListen::Port(DEFAULT_DAEMON_PORT)
     );
+
+    for (url, port) in [
+        ("http://127.0.0.1:9555", 9555),
+        ("http://[::1]:9556", 9556),
+        ("http://localhost:9557", 9557),
+        ("http://LOCALHOST:9558", 9558),
+        ("http://localhost", 80),
+    ] {
+        let url = Url::parse(url).expect("url should parse");
+        assert_eq!(
+            daemon_listen_from_url(&url),
+            DaemonListen::Port(port),
+            "{url}"
+        );
+    }
 }
 
 #[test]
-fn bind_from_daemon_url_brackets_ipv6_hosts() {
-    let url = Url::parse("http://[::1]:9420").expect("url should parse");
+fn other_daemon_url_hosts_keep_an_exact_bind() {
+    // The daemon's loopback listeners answer none of these, so the
+    // supervisor pins the address the URL names, as it always did.
+    for (url, bind) in [
+        ("http://127.0.0.2:9555", "127.0.0.2:9555"),
+        ("http://192.168.1.42:9555", "192.168.1.42:9555"),
+        ("http://[fd00::42]:9555", "[fd00::42]:9555"),
+        ("http://hypercolor.lan:9555", "hypercolor.lan:9555"),
+    ] {
+        let url = Url::parse(url).expect("url should parse");
+        assert_eq!(
+            daemon_listen_from_url(&url),
+            DaemonListen::Bind(bind.to_owned()),
+            "{url}"
+        );
+    }
+}
 
-    assert_eq!(bind_from_daemon_url(&url), Some("[::1]:9420".to_owned()));
+#[test]
+fn sidecar_command_serves_the_daemon_url_port_without_pinning_a_bind() {
+    for (url, port) in [
+        (hypercolor_app::DEFAULT_DAEMON_URL, "9420"),
+        ("http://127.0.0.1:9555", "9555"),
+        ("http://[::1]:9556", "9556"),
+        ("http://localhost:9557", "9557"),
+    ] {
+        let url = Url::parse(url).expect("url should parse");
+        let command = build_daemon_command(
+            Path::new("hypercolor-daemon"),
+            &daemon_listen_from_url(&url),
+            None,
+            None,
+        );
+
+        assert_eq!(command.args.first().map(String::as_str), Some("--port"));
+        assert_eq!(command.args.get(1).map(String::as_str), Some(port));
+        for interface_flag in ["--bind", "--listen", "--listen-all"] {
+            assert!(
+                !command.args.iter().any(|arg| arg == interface_flag),
+                "the sidecar must leave interfaces to the configured network mode, got {:?}",
+                command.args
+            );
+        }
+    }
+}
+
+#[test]
+fn sidecar_command_binds_exactly_a_pinned_daemon_url_address() {
+    let url = Url::parse("http://127.0.0.2:9555").expect("url should parse");
+    let command = build_daemon_command(
+        Path::new("hypercolor-daemon"),
+        &daemon_listen_from_url(&url),
+        None,
+        None,
+    );
+
+    assert_eq!(
+        command.args[..2],
+        ["--bind".to_owned(), "127.0.0.2:9555".to_owned()]
+    );
+    assert!(!command.args.iter().any(|arg| arg == "--port"));
 }
 
 #[test]
@@ -370,7 +441,7 @@ fn endpoint() -> Url {
 fn spawn_command() -> DaemonCommand {
     build_daemon_command(
         Path::new("hypercolor-daemon"),
-        DEFAULT_DAEMON_BIND,
+        &DaemonListen::Port(DEFAULT_DAEMON_PORT),
         None,
         None,
     )

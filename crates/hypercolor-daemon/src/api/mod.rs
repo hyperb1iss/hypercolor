@@ -9,6 +9,7 @@ pub mod attachments;
 pub mod capture;
 pub mod config;
 pub mod controls;
+mod credential_authority;
 pub mod devices;
 pub mod diagnose;
 pub mod displays;
@@ -146,17 +147,22 @@ pub(crate) fn openapi_document() -> utoipa::openapi::OpenApi {
 ///
 /// This is the one place a serving [`security::SecurityState`] is
 /// minted: the environment keys, the configured network policy (which
-/// enumerates the host's interfaces), and the macOS session credential
-/// are each resolved once per process. Every other `AppState` is a
+/// enumerates the host's interfaces), the downstream credential
+/// authority, and the macOS session credential are each resolved once
+/// per process. Every other `AppState` is a
 /// worker projection carrying [`security::SecurityState::unserved`],
 /// so a second projection can neither rescan interfaces nor open a
 /// rate-limit budget the enforced state does not know about.
 pub(crate) fn build_state(
     daemon: &crate::startup::DaemonState,
     macos_daemon_session: Option<&crate::macos_owner::MacosDaemonSessionAttestation>,
+    credential_authority: Option<Arc<dyn security::CredentialAuthority>>,
 ) -> AppState {
     let mut state = AppState::from_daemon_state(daemon);
     let mut security = security::SecurityState::from_config(&daemon.config_manager.get());
+    if let Some(authority) = credential_authority {
+        security = security.with_credential_authority(authority);
+    }
     if let Some(attestation) = macos_daemon_session {
         state.server_session_id = Some(attestation.server_session_id.as_str().to_owned());
         security.install_macos_daemon_session(attestation);
@@ -186,6 +192,23 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         usize::try_from(assets::asset_upload_body_limit_bytes()).unwrap_or(usize::MAX);
 
     let api = documented_api_routes(asset_upload_body_limit);
+    // Extensions may never open an engine route, so their public
+    // declarations are checked against every documented engine route and
+    // against the MCP mount, which can be configured under `/api/v1`. The
+    // engine cannot tell one extension's routes from another's.
+    let engine_routes = api
+        .get_openapi()
+        .paths
+        .paths
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    let public_routes = security::PublicRouteTable::from_extensions(
+        &state.api_extensions,
+        "/api/v1",
+        &engine_routes,
+        &dynamic_route_prefixes(&mcp_config),
+    );
 
     let mut api = api;
     for extension in &state.api_extensions {
@@ -226,7 +249,9 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
 
     router
         .layer(axum::middleware::from_fn_with_state(
-            security_state.with_static_assets(static_assets),
+            security_state
+                .with_static_assets(static_assets)
+                .with_public_routes(public_routes),
             security::enforce_security,
         ))
         .layer(
