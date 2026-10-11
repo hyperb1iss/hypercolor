@@ -19,7 +19,9 @@ use crate::components::empty_state::EmptyState;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
 use crate::components::page_search_bar::PageSearchBar;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
+use crate::components::software_conflict_banner::{SoftwareConflictBanner, SoftwareConflictsState};
 use crate::icons::*;
+use crate::software_conflicts::device_hints;
 use crate::storage;
 use crate::style_utils::filter_chips;
 use crate::toasts;
@@ -132,6 +134,21 @@ pub fn DevicesPage() -> impl IntoView {
             }
         }
         map
+    });
+
+    // Competing RGB software: one status for the banner and every device
+    // hint, so dismissing a program quiets both.
+    let conflicts = expect_context::<SoftwareConflictsState>();
+    let conflict_hints = Memo::new(move |_| {
+        let visible = conflicts.visible().get();
+        if visible.is_empty() {
+            return std::collections::HashMap::new();
+        }
+        ctx.devices_resource
+            .get()
+            .and_then(Result::ok)
+            .map(|devices| device_hints(&devices, &visible))
+            .unwrap_or_default()
     });
 
     // Opt into the `device_metrics` WS topic for as long as this page stays
@@ -468,6 +485,7 @@ pub fn DevicesPage() -> impl IntoView {
             <div class="flex-1 overflow-hidden">
                 <div class="flex h-full">
                     <div class="flex-1 min-w-0 overflow-y-auto px-6 pb-6 pt-4">
+                        <SoftwareConflictBanner state=conflicts />
                         <Suspense fallback=move || view! { <DevicesLoadingSkeleton /> }>
                             {move || {
                                 let devices = filtered_devices.get();
@@ -487,14 +505,18 @@ pub fn DevicesPage() -> impl IntoView {
                                             {devices.into_iter().enumerate().map(|(i, dev)| {
                                                 let dev_id = dev.id.clone();
                                                 let dev_layout_id = dev.layout_device_id.clone();
+                                                let hint_id = dev.id.clone();
                                                 let is_selected = Signal::derive(move || {
                                                     selected_device.get().as_deref() == Some(&dev_id)
                                                 });
                                                 let zone = Signal::derive(move || {
                                                     device_zones.get().get(&dev_layout_id).cloned()
                                                 });
+                                                let conflict_hint = Signal::derive(move || {
+                                                    conflict_hints.with(|hints| hints.get(&hint_id).cloned())
+                                                });
                                                 view! {
-                                                    <DeviceCard device=dev is_selected=is_selected on_select=on_select_device on_pair=on_pair_device index=i zone_name=zone />
+                                                    <DeviceCard device=dev is_selected=is_selected on_select=on_select_device on_pair=on_pair_device index=i zone_name=zone conflict_hint=conflict_hint />
                                                 }
                                             }).collect_view()}
                                         </div>
@@ -511,6 +533,10 @@ pub fn DevicesPage() -> impl IntoView {
                     // studio drawer (scrim 42 over the mobile nav at 40,
                     // panel 45, command palette 50 above).
                     {move || selected_device.get().map(|id| {
+                        let hint_id = id.clone();
+                        let conflict_hint = Signal::derive(move || {
+                            conflict_hints.with(|hints| hints.get(&hint_id).cloned())
+                        });
                         let device_id = Signal::derive(move || id.clone());
                         view! {
                             <div
@@ -532,7 +558,7 @@ pub fn DevicesPage() -> impl IntoView {
                                 >
                                     <Icon icon=LuX width="16px" height="16px" />
                                 </button>
-                                <DeviceDetail device_id=device_id on_pair=on_pair_device on_forget=on_forget_device on_delete_simulator=on_delete_simulator />
+                                <DeviceDetail device_id=device_id on_pair=on_pair_device on_forget=on_forget_device on_delete_simulator=on_delete_simulator conflict_hint=conflict_hint />
                             </aside>
                         }
                     })}

@@ -5,6 +5,7 @@ use hypercolor_types::config::HypercolorConfig;
 
 use crate::api;
 use crate::components::settings_controls::*;
+use crate::components::software_conflict_banner::SoftwareConflictsState;
 use crate::driver_settings::{DiscoveryDriverSetting, discovery_driver_settings};
 use crate::icons::*;
 use crate::tauri_bridge::{
@@ -214,18 +215,11 @@ fn HardwareSupportStatusPanel(
         .filter(|board| board.is_likely_rgb_capable())
         .map(|board| format!("Detected: {} {}", board.manufacturer, board.product));
 
-    let running_conflicts: Vec<String> = status
-        .conflicting_rgb_tools
-        .iter()
-        .filter(|tool| tool.running)
-        .map(|tool| tool.name.clone())
-        .collect();
-    let conflict_warning = (!running_conflicts.is_empty()).then(|| {
-        format!(
-            "Other RGB software is running: {}. Quit it first to avoid SMBus conflicts.",
-            running_conflicts.join(", ")
-        )
-    });
+    // The daemon's own scan, so this card and the Devices page agree on
+    // what is running. Dismissals on the Devices page don't apply here:
+    // installing SMBus support beside a running SMBus tool is risky either
+    // way.
+    let conflict_warning = expect_context::<SoftwareConflictsState>().smbus_warning();
 
     view! {
         <HardwareSupportFrame>
@@ -243,11 +237,9 @@ fn HardwareSupportStatusPanel(
                             {summary}
                         </div>
                     })}
-                    {conflict_warning.map(|warning| view! {
-                        <div
-                            class="flex items-center gap-1.5 text-[11px] mt-1.5 px-2 py-1 rounded"
-                            style="color: rgba(241, 250, 140, 0.95); background: rgba(241, 250, 140, 0.08); border: 1px solid rgba(241, 250, 140, 0.18)"
-                        >
+                    {move || conflict_warning.get().map(|warning| view! {
+                        <div class="flex items-center gap-1.5 text-[11px] mt-1.5 px-2 py-1 rounded \
+                                    border border-status-warning/24 bg-status-warning/8 text-status-warning">
                             <Icon icon=LuTriangleAlert width="11px" height="11px" />
                             <span>{warning}</span>
                         </div>

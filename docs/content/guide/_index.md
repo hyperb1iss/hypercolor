@@ -114,7 +114,7 @@ Hypercolor currently ships working drivers for 179 devices across 12 driver fami
 If you own hardware that is not yet supported, see [contributing a driver](@/contributing/adding-a-driver.md).
 
 {% <callout type="warning"> %}
-**Remove conflicting RGB software before starting.** openrazer daemon, OpenRGB, Aura Sync, and iCUE all grab USB HID devices exclusively. If one of them is running when Hypercolor starts, your devices will appear in `lsusb` but not in `hypercolor devices list`. Stop them first, or run `hypercolor diagnose` to identify the conflict.
+**Remove conflicting RGB software before starting.** SignalRGB, the openrazer daemon, Armoury Crate, and iCUE can hold the same USB devices Hypercolor drives. If one of them is running, a device can show up in `lsusb` and never light in Hypercolor. Stop them first. The Devices page warns when it finds one, and `hypercolor diagnose` names it too. OpenRGB is the exception: it can run beside Hypercolor, as [Conflicting software](@/hardware/conflicting-software.md#openrgb) explains.
 {% </callout> %}
 
 ## Effects

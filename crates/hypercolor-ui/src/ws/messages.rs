@@ -70,6 +70,7 @@ pub const DEVICE_LIFECYCLE_EVENTS: &[&str] = &[
     "device_state_changed",
     "device_discovery_completed",
     "unclaimed_devices_changed",
+    "software_conflicts_changed",
     "config_changed",
 ];
 pub const LAYER_HEALTH_EVENTS: &[&str] = &["layer_health_changed"];
@@ -1409,7 +1410,7 @@ pub fn scene_event_requires_effect_refresh(
         })
 }
 
-fn extract_device_event_hint(
+pub fn extract_device_event_hint(
     event_type: &str,
     data: Option<&serde_json::Value>,
 ) -> Option<DeviceEventHint> {

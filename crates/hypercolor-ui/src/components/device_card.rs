@@ -5,6 +5,7 @@ use leptos_icons::Icon;
 
 use crate::api::DeviceSummary;
 use crate::components::device_metrics_strip::DeviceMetricsStrip;
+use crate::components::software_conflict_banner::SoftwareConflictHint;
 use crate::icons::*;
 use crate::label_utils::humanize_identifier_label;
 use crate::style_utils::device_accent_colors;
@@ -331,6 +332,9 @@ pub fn DeviceCard(
     /// (plan 55 Wave B3). Shown as a chip; absent means unassigned.
     #[prop(into, optional)]
     zone_name: MaybeProp<String>,
+    /// Names the running software that may be holding this device, if any.
+    #[prop(into, optional)]
+    conflict_hint: MaybeProp<String>,
 ) -> impl IntoView {
     let device_id = device.id.clone();
     let device_id_for_pair = device.id.clone();
@@ -555,6 +559,11 @@ pub fn DeviceCard(
                         </div>
                     </div>
                 </div>
+
+                // ── Competing software hint ───────────────────────────────
+                {move || conflict_hint.get().map(|text| view! {
+                    <SoftwareConflictHint text=text />
+                })}
 
                 // ── Pairing badge ─────────────────────────────────────────
                 {auth_badge.map(|(label, badge_rgb)| {

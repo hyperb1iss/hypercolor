@@ -295,7 +295,6 @@ mod tests {
                 product: "ROG STRIX X670E-E".to_string(),
                 version: None,
             }),
-            conflicting_rgb_tools: Vec::new(),
         }
     }
 

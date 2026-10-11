@@ -837,6 +837,15 @@ where
     send_json(HttpMethod::Post, url, Some(body)).await
 }
 
+/// POST with no request body, parse envelope, return inner data. Used for
+/// triggers whose reply is the fresh state, like `scan_software_conflicts`.
+pub async fn post_empty_json<Res>(url: &str) -> ApiResult<Res>
+where
+    Res: DeserializeOwned,
+{
+    send_json::<(), Res>(HttpMethod::Post, url, None).await
+}
+
 /// PATCH JSON body, parse envelope, return inner data.
 pub async fn patch_json<Req, Res>(url: &str, body: &Req) -> ApiResult<Res>
 where
