@@ -97,7 +97,7 @@ pub(super) fn render_color_picker(
                                p-3.5 space-y-2.5
                                color-picker-popover animate-picker-in"
                         style=move || color_picker_panel_style(swatch_ref.get())
-                        on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
+                        on:pointerdown=|ev: leptos::ev::PointerEvent| ev.stop_propagation()
                     >
                         // Color wheel canvas
                         <div class="flex justify-center">

@@ -604,7 +604,7 @@ fn PresetSelectorRow(
                                              inset 0 1px 0 rgba(255, 255, 255, 0.04)"
                             )
                         }
-                        on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
+                        on:pointerdown=|ev: leptos::ev::PointerEvent| ev.stop_propagation()
                     >
                         // Default preset option — resets controls to effect defaults
                         {
@@ -866,8 +866,10 @@ fn DropdownItem(
     }
 }
 
-/// Install a one-time document-level mousedown listener that closes the
-/// dropdown when clicking outside `.preset-dropdown`.
+/// Install a one-time document-level pointerdown listener that closes the
+/// dropdown when a press lands outside `.preset-dropdown`. Pointer, not
+/// mouse: a press that starts a drag cancels `pointerdown`, which
+/// suppresses `mousedown`.
 fn install_dropdown_outside_handler(set_open: WriteSignal<bool>) {
     let Some(doc) = browser_document() else {
         return;
@@ -875,8 +877,8 @@ fn install_dropdown_outside_handler(set_open: WriteSignal<bool>) {
 
     let _ = use_event_listener_with_options(
         doc,
-        ev::mousedown,
-        move |ev: leptos::ev::MouseEvent| {
+        ev::pointerdown,
+        move |ev: leptos::ev::PointerEvent| {
             let inside = ev
                 .target()
                 .is_some_and(|target| target_closest(Some(target), ".preset-dropdown"));

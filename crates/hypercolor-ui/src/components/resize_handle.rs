@@ -1,51 +1,104 @@
 //! Draggable vertical resize handle for resizable panel layouts.
 
-use leptos::ev;
 use leptos::prelude::*;
+
+use crate::pointer_gesture::{
+    GestureEnd, PointerEnd, PointerGesture, Press, capture_pointer, holds_capture,
+    suppress_press_defaults,
+};
 
 /// Vertical resize handle for drag-to-resize between adjacent panels.
 ///
-/// Reports the pixel delta from the drag start position on each mouse move.
-/// The parent component uses this delta to compute new panel widths.
+/// Reports the pixel delta from the press position on each pointer move.
+/// The parent component uses this delta to compute new panel widths. The
+/// press captures its pointer on the handle, so the drag keeps tracking
+/// anywhere on screen; a cancelled drag reports a zero delta (back to the
+/// starting width) before ending.
 #[component]
 pub fn ResizeHandle(
     #[prop(into)] on_drag_start: Callback<()>,
     #[prop(into)] on_drag: Callback<f64>,
     #[prop(into)] on_drag_end: Callback<()>,
 ) -> impl IntoView {
+    let handle_ref = NodeRef::<leptos::html::Div>::new();
     let (dragging, set_dragging) = signal(false);
-    let start_x = StoredValue::new(0.0_f64);
+    // The gesture state is the press position's client x.
+    let gesture = StoredValue::new(PointerGesture::<f64>::new());
 
-    let _drag_move = window_event_listener(ev::mousemove, move |ev| {
-        if !dragging.try_get_untracked().unwrap_or(false) {
-            return;
-        }
-        let Some(start) = start_x.try_get_value() else {
-            return;
-        };
-        ev.prevent_default();
-        let delta = f64::from(ev.client_x()) - start;
-        on_drag.run(delta);
-    });
-
-    let _drag_end = window_event_listener(ev::mouseup, move |_| {
-        if !dragging.try_get_untracked().unwrap_or(false) {
-            return;
-        }
+    let finish = move |outcome: GestureEnd| {
         set_dragging.set(false);
+        if outcome == GestureEnd::Cancel {
+            on_drag.run(0.0);
+        }
         on_drag_end.run(());
+    };
+
+    let on_pointer_end = move |ev: web_sys::PointerEvent, how: PointerEnd| {
+        let ended = gesture
+            .try_update_value(|g| g.end(ev.pointer_id(), how))
+            .flatten();
+        if let Some((outcome, _)) = ended {
+            finish(outcome);
+        }
+    };
+
+    // A handle torn down mid-drag never sees its release. Put the panel back
+    // and let the parent settle (body cursor class, persistence). The parent
+    // may already be gone, hence `try_run`.
+    on_cleanup(move || {
+        if gesture
+            .try_update_value(PointerGesture::abandon)
+            .flatten()
+            .is_some()
+        {
+            let _ = on_drag.try_run(0.0);
+            let _ = on_drag_end.try_run(());
+        }
     });
 
     view! {
         <div
-            class="resize-handle-zone"
+            node_ref=handle_ref
+            class="resize-handle-zone touch-grab"
             class:resize-handle-active=move || dragging.get()
-            on:mousedown=move |ev: web_sys::MouseEvent| {
-                ev.prevent_default();
-                start_x.set_value(f64::from(ev.client_x()));
+            on:pointerdown=move |ev: web_sys::PointerEvent| {
+                suppress_press_defaults(&ev);
+                let Some(handle) = handle_ref.get_untracked() else {
+                    return;
+                };
+                let handle: web_sys::Element = handle.into();
+                let pointer_id = ev.pointer_id();
+                let press = gesture
+                    .try_update_value(|g| {
+                        g.press(pointer_id, |owner, _| holds_capture(Some(&handle), owner))
+                    })
+                    .unwrap_or(Press::Busy);
+                match press {
+                    Press::Busy => return,
+                    Press::Stale(_) => finish(GestureEnd::Cancel),
+                    Press::Ready => {}
+                }
+                capture_pointer(&handle, &ev);
+                let button = ev.button();
+                gesture.update_value(|g| g.start(pointer_id, button, f64::from(ev.client_x())));
                 set_dragging.set(true);
                 on_drag_start.run(());
             }
+            on:pointermove=move |ev: web_sys::PointerEvent| {
+                if gesture.with_value(|g| g.press_released(ev.pointer_id(), ev.buttons())) {
+                    on_pointer_end(ev, PointerEnd::Up);
+                    return;
+                }
+                let Some(start_x) = gesture.with_value(|g| g.state(ev.pointer_id()).copied())
+                else {
+                    return;
+                };
+                ev.prevent_default();
+                on_drag.run(f64::from(ev.client_x()) - start_x);
+            }
+            on:pointerup=move |ev| on_pointer_end(ev, PointerEnd::Up)
+            on:pointercancel=move |ev| on_pointer_end(ev, PointerEnd::Cancel)
+            on:lostpointercapture=move |ev| on_pointer_end(ev, PointerEnd::LostCapture)
         >
             <div class="resize-handle-line" />
         </div>

@@ -27,7 +27,7 @@ Print the path the CLI resolves (it honors the `HYPERCOLOR_CONFIG` environment v
 hypercolor config path
 ```
 
-The daemon creates the file on first run from compile-time defaults, then reads and writes that single file. There is no system-wide layering or include-merge step; every setting lives in one TOML document. CLI flags like `--listen` and `--bind` override the file for a single launch without rewriting it.
+The daemon creates the file on first run from compile-time defaults, then reads and writes that single file. There is no system-wide layering or include-merge step; every setting lives in one TOML document. CLI flags like `--listen`, `--port`, and `--bind` override the file for a single launch without rewriting it.
 
 ---
 
@@ -91,10 +91,11 @@ For one-off daemon launches, CLI flags override these without touching the file:
 ```bash
 hypercolor-daemon --listen-all          # bind to every interface
 hypercolor-daemon --listen 192.168.1.42 # specific interface, configured port
+hypercolor-daemon --port 9421           # configured interfaces, different port
 hypercolor-daemon --bind 0.0.0.0:9421   # explicit address and port
 ```
 
-`--listen` sets the interface and keeps the configured port; `--bind` takes a full `address:port`. To change the port persistently, set `daemon.port` in the file.
+`--listen` sets the interface and keeps the configured port. `--port` sets the port and leaves the interfaces to `[network]`, so it never opens the daemon to the LAN on its own; loopback also listens on that port, which is how the desktop app reaches the daemon it starts. If a configured interface address cannot be used at startup (it is stale, DHCP has not assigned it yet, or its hostname does not resolve), a `--port` launch logs a warning and serves without it rather than failing; every other launch still fails. `--bind` takes a full `address:port`, overrides `[network]` in both directions, and cannot be combined with `--port`. To change the port persistently, set `daemon.port` in the file.
 
 ---
 
