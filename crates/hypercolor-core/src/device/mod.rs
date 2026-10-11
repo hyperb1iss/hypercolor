@@ -8,6 +8,7 @@
 pub mod blocks;
 mod discovery;
 mod discovery_server;
+mod hid_usage;
 mod lifecycle;
 pub mod manager;
 pub mod mock;
@@ -26,6 +27,7 @@ pub mod usb_scanner;
 pub use blocks::{BlocksBackend, BlocksScanner};
 pub use discovery::{DiscoveryOrchestrator, DiscoveryProgress, DiscoveryReport, ScannerScanReport};
 pub use discovery_server::discover_servers;
+pub use hid_usage::HidUsageIndex;
 pub use lifecycle::{DeviceLifecycleManager, LifecycleAction};
 pub use manager::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceOutputStatistics, DirectControlGuard,

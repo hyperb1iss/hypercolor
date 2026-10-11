@@ -602,6 +602,7 @@ async fn coverage_and_unclaimed_routes_answer_complete_lists() {
             device_class: 0,
             interface_classes: vec![3],
             descriptor_driver_id: None,
+            hid_usage_pages: Vec::new(),
         }]);
 
     let app = api::build_router(Arc::new(state), None);
