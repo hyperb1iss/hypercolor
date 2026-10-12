@@ -649,21 +649,73 @@ fn plan_async_write_recovery(
     async_write_failure_actions(lifecycle, failures, now)
 }
 
+/// Which session an async write failure speaks for, decided under the
+/// lifecycle lock before anything is acknowledged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureOwner {
+    /// The device's live session, or a device lifecycle does not track:
+    /// claim and classify it.
+    LiveSession,
+    /// The session an in-flight connect is installing. The connect path
+    /// installs its lanes before lifecycle marks the device connected, so
+    /// the failure stays unclaimed and comes back once lifecycle can act.
+    /// Claiming it now would discard the only report a closed idle lane
+    /// ever makes.
+    ConnectingSession,
+    /// An earlier session, or a device no connect is bringing back:
+    /// acknowledge it without acting on it.
+    Obsolete,
+}
+
+fn failure_owner(lifecycle: &DeviceLifecycleManager, failure: &AsyncWriteFailure) -> FailureOwner {
+    let Some(state) = lifecycle.state(failure.device_id) else {
+        return FailureOwner::LiveSession;
+    };
+    let generation = failure.delivery_id.queue_generation;
+    if state.is_renderable() {
+        let predates_session = lifecycle
+            .session_output_floor(failure.device_id)
+            .is_some_and(|floor| generation < floor);
+        return if predates_session {
+            FailureOwner::Obsolete
+        } else {
+            FailureOwner::LiveSession
+        };
+    }
+    let installed_by_connect = !failure.is_from_retired_generation()
+        && lifecycle
+            .connect_output_floor(failure.device_id)
+            .is_some_and(|floor| generation >= floor);
+    if installed_by_connect {
+        FailureOwner::ConnectingSession
+    } else {
+        FailureOwner::Obsolete
+    }
+}
+
 fn claim_current_async_write_failures(
     lifecycle: &DeviceLifecycleManager,
     failures: Vec<AsyncWriteFailure>,
 ) -> Vec<LifecycleWriteFailure> {
     let classified = failures
         .into_iter()
-        // A tracked device that cannot render yet is mid-connect: the
-        // connect path installs the new session's lanes before lifecycle
-        // marks it connected. Its failure stays unclaimed and is reported
-        // again once lifecycle can recover it. Claiming it now would discard
-        // the only report an idle lane that closed ever makes.
-        .filter(|failure| {
-            lifecycle
-                .state(failure.device_id)
-                .is_none_or(|state| state.is_renderable())
+        .filter(|failure| match failure_owner(lifecycle, failure) {
+            FailureOwner::LiveSession => true,
+            FailureOwner::ConnectingSession => false,
+            FailureOwner::Obsolete => {
+                let drained = failure.try_acknowledge();
+                debug!(
+                    backend_id = %failure.backend_id,
+                    device_id = %failure.device_id,
+                    queue_generation = failure.delivery_id.queue_generation,
+                    sequence = failure.delivery_id.sequence,
+                    retired_generation = failure.is_from_retired_generation(),
+                    drained,
+                    error = %failure.error,
+                    "discarding an async write failure no live or connecting session owns"
+                );
+                false
+            }
         })
         .map(|failure| {
             let recovery = WriteFailureRecovery::classify(
@@ -1237,6 +1289,286 @@ mod tests {
             "the reconnect task connects again"
         );
         assert_closure_during_connect_is_recovered(lifecycle, device_id, DeviceState::Reconnecting);
+    }
+
+    const FIXTURE_BACKEND: &str = "fixture";
+
+    /// Backend whose display writes fail as a session being torn down does.
+    struct DisconnectedDisplayBackend;
+
+    #[async_trait::async_trait]
+    impl hypercolor_driver_api::DeviceBackend for DisconnectedDisplayBackend {
+        fn info(&self) -> hypercolor_driver_api::BackendInfo {
+            hypercolor_driver_api::BackendInfo {
+                id: FIXTURE_BACKEND.to_owned(),
+                name: "Fixture".to_owned(),
+                description: "Display writes fail with a disconnect".to_owned(),
+            }
+        }
+
+        fn adopt_device(
+            &self,
+            _discovered: &hypercolor_driver_api::DiscoveredDevice,
+        ) -> Result<(), DeviceError> {
+            Ok(())
+        }
+
+        async fn connect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+            Ok(())
+        }
+
+        async fn disconnect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+            Ok(())
+        }
+
+        async fn write_colors(
+            &self,
+            _id: &DeviceId,
+            _colors: &[[u8; 3]],
+        ) -> Result<(), DeviceError> {
+            Ok(())
+        }
+
+        async fn write_display_payload_owned(
+            &self,
+            id: &DeviceId,
+            _payload: Arc<hypercolor_types::device::OwnedDisplayFramePayload>,
+        ) -> Result<(), DeviceError> {
+            Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            })
+        }
+    }
+
+    /// A manager driving `device_id` through the fixture backend.
+    fn fixture_manager(device_id: DeviceId) -> hypercolor_core::device::BackendManager {
+        let mut manager = hypercolor_core::device::BackendManager::new();
+        manager.register_backend(Arc::new(DisconnectedDisplayBackend));
+        manager.map_device("fixture:display", FIXTURE_BACKEND, device_id);
+        manager
+    }
+
+    /// An LCD delivery from the session being torn down fails, then the
+    /// disconnect retires its lane. The display authority keeps that
+    /// retired generation until its failure is acknowledged.
+    async fn retire_failed_display_lane(
+        manager: &mut hypercolor_core::device::BackendManager,
+        device_id: DeviceId,
+    ) {
+        let lane = manager
+            .display_output_lane(FIXTURE_BACKEND, device_id)
+            .expect("the fixture backend serves display lanes");
+        let delivery = lane
+            .write(Arc::new(
+                hypercolor_types::device::OwnedDisplayFramePayload::jpeg(
+                    1,
+                    1,
+                    Arc::new(vec![0xD1]),
+                ),
+            ))
+            .await;
+        assert!(delivery.is_err(), "the old session's LCD write fails");
+        manager.remove_device_mappings_for_physical(FIXTURE_BACKEND, device_id);
+        assert!(
+            manager
+                .async_write_failures()
+                .iter()
+                .any(|failure| failure.device_id == device_id
+                    && failure.is_from_retired_generation()),
+            "the retired LCD ticket stays pending"
+        );
+    }
+
+    /// The reconnect attempt installs a healthy replacement session and
+    /// completes.
+    fn connect_healthy_replacement(
+        lifecycle: &mut DeviceLifecycleManager,
+        manager: &mut hypercolor_core::device::BackendManager,
+        device_id: DeviceId,
+    ) {
+        assert!(lifecycle.on_reconnect_attempt(device_id).is_some());
+        manager.set_device_frame_sink(
+            FIXTURE_BACKEND,
+            device_id,
+            Some(Arc::new(ClosableFrameSink::default())),
+        );
+        manager.map_device("fixture:display", FIXTURE_BACKEND, device_id);
+        lifecycle
+            .on_connected(device_id)
+            .expect("the replacement connects");
+    }
+
+    fn assert_replacement_untouched(
+        lifecycle: &mut DeviceLifecycleManager,
+        manager: &hypercolor_core::device::BackendManager,
+        device_id: DeviceId,
+    ) {
+        let planned =
+            plan_async_write_recovery(lifecycle, manager.async_write_failures(), Instant::now());
+        assert!(
+            planned.is_empty(),
+            "an old session's ticket must not reconnect the healthy replacement: {planned:?}"
+        );
+        assert_eq!(lifecycle.state(device_id), Some(DeviceState::Connected));
+        assert!(
+            manager.async_write_failures().is_empty(),
+            "the obsolete ticket was drained"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retired_lcd_failure_during_reconnect_backoff_cannot_reconnect_the_replacement() {
+        let (mut lifecycle, device_id) = active_lifecycle();
+        let mut manager = fixture_manager(device_id);
+        lifecycle
+            .on_comm_error_at(device_id, Instant::now())
+            .expect("an LED actor closure starts a reconnect");
+        retire_failed_display_lane(&mut manager, device_id).await;
+
+        let planned = plan_async_write_recovery(
+            &mut lifecycle,
+            manager.async_write_failures(),
+            Instant::now(),
+        );
+        assert!(planned.is_empty(), "nothing to recover during backoff");
+
+        connect_healthy_replacement(&mut lifecycle, &mut manager, device_id);
+        assert_replacement_untouched(&mut lifecycle, &manager, device_id);
+        // A collection pass prunes retired generations with nothing pending.
+        let _ = manager.async_write_failures();
+        assert_eq!(
+            manager
+                .display_delivery_supervisor_statistics()
+                .retained_generations,
+            0,
+            "the retired generation is pruned once its ticket is drained"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retired_lcd_failure_first_seen_after_the_replacement_connects_is_obsolete() {
+        let (mut lifecycle, device_id) = active_lifecycle();
+        let mut manager = fixture_manager(device_id);
+        lifecycle
+            .on_comm_error_at(device_id, Instant::now())
+            .expect("an LED actor closure starts a reconnect");
+        retire_failed_display_lane(&mut manager, device_id).await;
+
+        // No render pass collects failures until the replacement is up.
+        connect_healthy_replacement(&mut lifecycle, &mut manager, device_id);
+        assert_replacement_untouched(&mut lifecycle, &manager, device_id);
+    }
+
+    #[test]
+    fn a_failure_from_before_the_connect_attempt_is_not_held_for_it() {
+        let device_id = DeviceId::new();
+        let mut manager = hypercolor_core::device::BackendManager::new();
+        let stale = Arc::new(ClosableFrameSink::default());
+        manager.set_device_frame_sink(FIXTURE_BACKEND, device_id, Some(stale.clone()));
+        let mut lifecycle = DeviceLifecycleManager::new();
+        lifecycle.on_discovered(device_id, &fixture_info(device_id), None);
+        stale.close();
+
+        let planned = plan_async_write_recovery(
+            &mut lifecycle,
+            manager.async_write_failures(),
+            Instant::now(),
+        );
+        assert!(planned.is_empty());
+        assert!(
+            manager.async_write_failures().is_empty(),
+            "a lane older than the attempt is not the session it installs"
+        );
+    }
+
+    /// A device mid-connect whose new session already reported a closure
+    /// that lifecycle is holding.
+    fn held_closure() -> (
+        DeviceLifecycleManager,
+        hypercolor_core::device::BackendManager,
+        DeviceId,
+    ) {
+        let device_id = DeviceId::new();
+        let mut lifecycle = DeviceLifecycleManager::new();
+        lifecycle.on_discovered(device_id, &fixture_info(device_id), None);
+        let mut manager = hypercolor_core::device::BackendManager::new();
+        let sink = Arc::new(ClosableFrameSink::default());
+        manager.set_device_frame_sink(FIXTURE_BACKEND, device_id, Some(sink.clone()));
+        sink.close();
+        let planned = plan_async_write_recovery(
+            &mut lifecycle,
+            manager.async_write_failures(),
+            Instant::now(),
+        );
+        assert!(planned.is_empty());
+        assert_eq!(
+            manager.async_write_failures().len(),
+            1,
+            "the closure is held for the connect"
+        );
+        (lifecycle, manager, device_id)
+    }
+
+    #[test]
+    fn unplugging_a_device_drains_its_held_failure() {
+        let (mut lifecycle, manager, device_id) = held_closure();
+        lifecycle.on_device_vanished(device_id);
+
+        let planned = plan_async_write_recovery(
+            &mut lifecycle,
+            manager.async_write_failures(),
+            Instant::now(),
+        );
+        assert!(planned.is_empty(), "a vanished device is not reconnected");
+        assert!(
+            manager.async_write_failures().is_empty(),
+            "no connect will claim it, so it is drained"
+        );
+    }
+
+    #[test]
+    fn disabling_a_device_drains_its_held_failure() {
+        let (mut lifecycle, manager, device_id) = held_closure();
+        lifecycle
+            .on_user_disable(device_id)
+            .expect("the user disables the device mid-connect");
+
+        let planned = plan_async_write_recovery(
+            &mut lifecycle,
+            manager.async_write_failures(),
+            Instant::now(),
+        );
+        assert!(planned.is_empty(), "a disabled device is not reconnected");
+        assert_eq!(lifecycle.state(device_id), Some(DeviceState::Disabled));
+        assert!(
+            manager.async_write_failures().is_empty(),
+            "no connect will claim it, so it is drained"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabling_a_device_drains_its_retired_lcd_failure() {
+        let (mut lifecycle, device_id) = active_lifecycle();
+        let mut manager = fixture_manager(device_id);
+        lifecycle
+            .on_user_disable(device_id)
+            .expect("the user disables the device");
+        retire_failed_display_lane(&mut manager, device_id).await;
+
+        let planned = plan_async_write_recovery(
+            &mut lifecycle,
+            manager.async_write_failures(),
+            Instant::now(),
+        );
+        assert!(planned.is_empty());
+        assert!(manager.async_write_failures().is_empty());
+        assert_eq!(
+            manager
+                .display_delivery_supervisor_statistics()
+                .retained_generations,
+            0,
+            "the retired generation is pruned"
+        );
     }
 
     fn async_failure(device_id: DeviceId, error: DeviceError) -> LifecycleWriteFailure {
