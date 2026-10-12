@@ -112,7 +112,9 @@ pub fn broker_service_status() -> PawnIoResult<BrokerServiceStatus> {
     // The configuration only adds context (start type, log location), so a
     // failure to read it leaves those fields empty instead of failing.
     let config = service.query_config().ok();
-    let executable = config.as_ref().map(|config| config.executable_path.clone());
+    let executable = config
+        .as_ref()
+        .map(|config| registered_executable(&config.executable_path.to_string_lossy()));
     let log_path = executable.as_deref().and_then(broker_log_path);
     let starts_at_boot = config
         .as_ref()
@@ -167,5 +169,53 @@ fn scm_error(action: &str, error: &windows_service::Error) -> PawnIoError {
     };
     PawnIoError::BrokerUnavailable {
         detail: format!("could not {action}: {detail}"),
+    }
+}
+
+/// The executable named by a service's image path. The Service Control
+/// Manager hands back the command line it was registered with, which the
+/// installer quotes (`"C:\Program Files\...\hypercolor-smbus-service.exe"`)
+/// and which may carry arguments, so taken as a path its parent would start
+/// with a stray quote.
+fn registered_executable(image_path: &str) -> PathBuf {
+    let image_path = image_path.trim();
+    let executable = match image_path.strip_prefix('"') {
+        Some(quoted) => quoted.split('"').next().unwrap_or(quoted),
+        None => image_path,
+    };
+    PathBuf::from(executable)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::registered_executable;
+    use crate::broker_log_path;
+
+    #[test]
+    fn quoted_image_paths_name_the_executable_inside_the_quotes() {
+        let executable = registered_executable(
+            r#""C:\Program Files\Hypercolor\tools\hypercolor-smbus-service.exe" --flag"#,
+        );
+
+        assert_eq!(
+            executable,
+            Path::new(r"C:\Program Files\Hypercolor\tools\hypercolor-smbus-service.exe")
+        );
+        assert_eq!(
+            broker_log_path(&executable).as_deref(),
+            Some(Path::new(
+                r"C:\Program Files\Hypercolor\tools\logs\smbus-broker.log"
+            ))
+        );
+    }
+
+    #[test]
+    fn unquoted_image_paths_are_used_as_they_are() {
+        assert_eq!(
+            registered_executable(r" C:\hypercolor\hypercolor-smbus-service.exe "),
+            Path::new(r"C:\hypercolor\hypercolor-smbus-service.exe")
+        );
     }
 }

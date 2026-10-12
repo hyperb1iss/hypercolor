@@ -25,7 +25,7 @@ pub enum PawnIoErrorKind {
 pub const BROKER_SERVICE_NAME: &str = "HypercolorSmBus";
 
 /// Service-specific exit code the broker reports when its request loop
-/// failed.
+/// failed, such as when it could not create its pipe for ten seconds.
 pub const BROKER_EXIT_SERVE_FAILED: u32 = 1;
 
 /// Service-specific exit code the broker reports when it could not start

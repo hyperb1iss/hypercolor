@@ -79,6 +79,11 @@ const SERVICE_STOP_WAIT_HINT: Duration = Duration::from_secs(10);
 /// runtime is torn down regardless. Kept under the stop wait hint.
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const PIPE_NAME: &str = r"\\.\pipe\hypercolor-smbus-v1";
+/// Pause between attempts to create the next pipe instance.
+const PIPE_CREATE_RETRY_DELAY: Duration = Duration::from_millis(250);
+/// Consecutive pipe creation failures (ten seconds of retries) after which
+/// the request loop fails and the broker stops with exit code 1.
+const PIPE_CREATE_ATTEMPTS: u32 = 40;
 const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)";
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_BATCH_DELAY_MS: u64 = 1_000;
@@ -378,11 +383,12 @@ fn run_service() -> Result<()> {
     )?;
     log_pawnio_self_check();
 
-    // Every failure past this point reports SERVICE_STOPPED with a
-    // service-specific exit code, which the Service Control Manager records
-    // as Win32 code 1066 plus that value. Returning without it would strand
-    // the service in START_PENDING until the Service Control Manager gives
-    // up on it, with nothing recorded about why.
+    // Every failure past this point, short of SetServiceStatus itself
+    // failing, reports SERVICE_STOPPED with a service-specific exit code,
+    // which the Service Control Manager records as Win32 code 1066 plus that
+    // value. Returning without it would strand the service in START_PENDING
+    // until the Service Control Manager gives up on it, with nothing
+    // recorded about why.
     let runtime = match build_runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -519,17 +525,27 @@ fn report_stopped(status_handle: &ServiceStatusHandle, exit_code: ServiceExitCod
 async fn serve_until_shutdown(mut shutdown: watch::Receiver<Option<StopReason>>) -> Result<()> {
     let state = Arc::new(BrokerState::default());
     info!(pipe = PIPE_NAME, "Hypercolor SMBus broker listening");
-    let mut create_failures = RepeatGate::default();
+    let mut create_failures = 0_u32;
     let mut connect_failures = RepeatGate::default();
 
     while shutdown.borrow().is_none() {
         let server = match create_server_pipe() {
             Ok(server) => {
-                create_failures.reset();
+                create_failures = 0;
                 server
             }
             Err(error) => {
-                if create_failures.first() {
+                create_failures += 1;
+                // A pipe that cannot be created for this long is not a
+                // hiccup. Fail the loop so the broker stops with exit code 1,
+                // where SCM recovery and diagnose see it, instead of
+                // reporting Running while no client can reach it.
+                if create_failures >= PIPE_CREATE_ATTEMPTS {
+                    return Err(error.context(format!(
+                        "could not create the SMBus broker pipe {PIPE_CREATE_ATTEMPTS} times in a row"
+                    )));
+                }
+                if create_failures == 1 {
                     warn!(
                         error = %format_args!("{error:#}"),
                         "failed to create SMBus broker pipe; retrying"
@@ -537,7 +553,7 @@ async fn serve_until_shutdown(mut shutdown: watch::Receiver<Option<StopReason>>)
                 } else {
                     debug!(error = %format_args!("{error:#}"), "SMBus broker pipe still unavailable");
                 }
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                tokio::time::sleep(PIPE_CREATE_RETRY_DELAY).await;
                 continue;
             }
         };

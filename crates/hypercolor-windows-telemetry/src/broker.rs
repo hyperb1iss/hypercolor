@@ -8,6 +8,9 @@ use hypercolor_windows_pawnio::{
 const REMEDY_START: &str = "Start it from an elevated PowerShell with \
     `Start-Service HypercolorSmBus`, or open Settings > Device Discovery > Windows SMBus \
     Support in the Hypercolor app and choose Install support.";
+const REMEDY_RESTART: &str = "Restart it from an elevated PowerShell with \
+    `Restart-Service HypercolorSmBus`; if it still does not answer, its log says what it is \
+    stuck on.";
 const REMEDY_INSTALL: &str = "Open Settings > Device Discovery > Windows SMBus Support in \
     the Hypercolor app and choose Install support, or rerun the Hypercolor installer.";
 
@@ -38,12 +41,13 @@ pub fn hardware_broker_report() -> Option<HardwareBrokerReport> {
     } else {
         match status.state {
             BrokerServiceState::NotInstalled => (HardwareBrokerState::NotInstalled, REMEDY_INSTALL),
-            BrokerServiceState::Running => (
-                HardwareBrokerState::Running {
-                    answering: status.answering.unwrap_or(true),
-                },
-                REMEDY_START,
-            ),
+            BrokerServiceState::Running => {
+                let answering = status.answering.unwrap_or(true);
+                (
+                    HardwareBrokerState::Running { answering },
+                    if answering { "" } else { REMEDY_RESTART },
+                )
+            }
             BrokerServiceState::StartPending => (transitioning("starting"), REMEDY_START),
             BrokerServiceState::StopPending => (transitioning("stopping"), REMEDY_START),
             BrokerServiceState::Paused => (transitioning("paused"), REMEDY_START),
