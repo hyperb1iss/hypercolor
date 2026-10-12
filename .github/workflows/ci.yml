@@ -170,6 +170,8 @@ jobs:
               # Without this the Rust half of the cross-language color fence
               # skips a pull request that only edits the shared table.
               - 'sdk/shared/color-vectors.json'
+              # Patched Servo source the daemon builds through [patch.crates-io].
+              - 'vendor/servo-script/**'
             python:
               - 'python/**'
               - 'protocol/**'

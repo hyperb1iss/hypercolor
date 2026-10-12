@@ -41,13 +41,13 @@ updates:
       - dependency-name: "servo-allocator"
       # vendor/servo-script replaces servo-script 0.6.0 through
       # [patch.crates-io]. Any other servo-script version, whether a
-      # lockfile-only 0.6.x update or the one a servo bump pulls in, leaves
-      # the patch unused behind a single cargo warning and ships the
+      # lockfile-only 0.6.x update or the one any servo bump pulls in (servo
+      # pins its script crate exactly, so even a patch release counts),
+      # leaves the patch unused behind a single cargo warning and ships the
       # unpatched crate. Move servo and servo-script by hand, re-vendoring
       # or dropping the patch as vendor/servo-script/HYPERCOLOR.md says.
       - dependency-name: "servo-script"
       - dependency-name: "servo"
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: "cargo"
     directory: "/crates/hypercolor-ui"
