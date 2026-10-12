@@ -1574,23 +1574,23 @@ impl ScriptThread {
 
         let major_gc_number = unsafe { JS_GetGCParameter(cx, JSGCParamKey::JSGC_MAJOR_GC_NUMBER) };
         let now = Instant::now();
-        match gc.window.get() {
+        let window_start = match gc.window.get() {
+            // The batch that opens a window can already carry enough source to collect.
             None => {
                 gc.window.set(Some((major_gc_number, now)));
-                return;
+                now
             },
             Some((window_gc_number, _)) if window_gc_number != major_gc_number => {
                 // SpiderMonkey collected on its own, which swept what these evaluations left.
                 gc.reset();
                 return;
             },
-            Some((_, window_start)) => {
-                if now.duration_since(window_start) < EVALUATION_GC_INTERVAL &&
-                    gc.source_bytes.get() < EVALUATION_GC_SOURCE_BYTES
-                {
-                    return;
-                }
-            },
+            Some((_, window_start)) => window_start,
+        };
+        if now.duration_since(window_start) < EVALUATION_GC_INTERVAL &&
+            gc.source_bytes.get() < EVALUATION_GC_SOURCE_BYTES
+        {
+            return;
         }
 
         let gc_bytes_before = unsafe { JS_GetGCParameter(cx, JSGCParamKey::JSGC_BYTES) };
