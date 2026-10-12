@@ -274,6 +274,7 @@ pub(super) struct QueuedFrameInput {
     media: Option<Arc<hypercolor_types::media::MediaState>>,
     net: Option<Arc<hypercolor_types::net::NetStats>>,
     lighting: Option<Arc<hypercolor_types::lighting::LightingState>>,
+    device_surfaces: Option<crate::spatial::DeviceSurfaceMap>,
     canvas_width: u32,
     canvas_height: u32,
 }
@@ -313,6 +314,7 @@ impl QueuedFrameInput {
             } else {
                 None
             },
+            device_surfaces: demanded_device_surfaces(input, demand),
             canvas_width: input.canvas_width,
             canvas_height: input.canvas_height,
         }
@@ -344,6 +346,9 @@ impl QueuedFrameInput {
         clone_optional_demanded_from(&mut self.media, input.sources.media, demand.media);
         clone_optional_demanded_from(&mut self.net, input.sources.net, demand.net);
         clone_optional_demanded_from(&mut self.lighting, input.sources.lighting, demand.lighting);
+        // Superseded touch edges are mapped with the newest placement, the
+        // same one the merged held contacts use.
+        self.device_surfaces = demanded_device_surfaces(input, demand);
         if let Some(interaction) = self.interaction.as_mut() {
             let interaction = Arc::make_mut(interaction);
             // Superseded frames must not lose their input edges: fold the
@@ -355,7 +360,7 @@ impl QueuedFrameInput {
         self.canvas_height = input.canvas_height;
     }
 
-    fn as_frame_input(&self) -> FrameInput<'_> {
+    pub(super) fn as_frame_input(&self) -> FrameInput<'_> {
         FrameInput {
             time_secs: self.time_secs,
             delta_secs: self.delta_secs,
@@ -369,6 +374,7 @@ impl QueuedFrameInput {
                 media: self.media.as_deref(),
                 net: self.net.as_deref(),
                 lighting: self.lighting.as_deref(),
+                device_surfaces: self.device_surfaces.as_ref(),
             },
             canvas_width: self.canvas_width,
             canvas_height: self.canvas_height,
@@ -389,6 +395,11 @@ impl QueuedFrameInput {
     }
 
     #[cfg(test)]
+    pub(super) fn queued_device_surfaces(&self) -> Option<&crate::spatial::DeviceSurfaceMap> {
+        self.device_surfaces.as_ref()
+    }
+
+    #[cfg(test)]
     pub(super) fn queued_interaction(&self) -> Option<&crate::input::InteractionData> {
         self.interaction.as_deref()
     }
@@ -396,6 +407,17 @@ impl QueuedFrameInput {
     #[cfg(test)]
     pub(super) const fn queued_frame_number(&self) -> u64 {
         self.frame_number
+    }
+}
+
+fn demanded_device_surfaces(
+    input: &FrameInput<'_>,
+    demand: QueuedFrameDemand,
+) -> Option<crate::spatial::DeviceSurfaceMap> {
+    if demand.interaction {
+        input.sources.device_surfaces.cloned()
+    } else {
+        None
     }
 }
 

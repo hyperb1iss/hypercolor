@@ -23,6 +23,7 @@ use tokio::sync::RwLock;
 
 use crate::asset::AssetLibrary;
 use crate::input::{InteractionData, ScreenBranchPublication};
+use crate::spatial::DeviceSurfaceMap;
 
 // ── FrameInput ───────────────────────────────────────────────────────────────
 
@@ -60,6 +61,12 @@ pub struct FrameDataSources<'a> {
 
     /// What the rig is showing: scene, effects, dominant colors.
     pub lighting: Option<&'a LightingState>,
+
+    /// Where device touch surfaces sit on this frame's canvas.
+    ///
+    /// `None` when no device is placed in the layout this canvas is sampled
+    /// through; touches then carry only their device-surface position.
+    pub device_surfaces: Option<&'a DeviceSurfaceMap>,
 }
 
 /// Per-frame input data passed to the active renderer on every render.
@@ -82,7 +89,8 @@ pub struct FrameInput<'a> {
     /// when no audio source is available.
     pub audio: &'a AudioData,
 
-    /// Host keyboard and mouse state for interactive HTML effects.
+    /// Host keyboard and mouse state, plus touches and buttons on
+    /// driver-owned devices, for interactive HTML effects.
     pub interaction: &'a InteractionData,
 
     /// Latest exact screen publication leased for screen-reactive effects.

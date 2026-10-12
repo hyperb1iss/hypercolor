@@ -201,6 +201,7 @@ impl ZoneRuntime {
         self.projected_scene_layers.clear();
         self.scene_projection_cache.clear();
         self.spatial_engines.clear();
+        self.device_surfaces.clear_zones();
         self.direct_surface_pools.clear();
         self.retained_direct_zone_frames.clear();
         self.retained_materialized_zone_frames.clear();
@@ -504,6 +505,9 @@ impl ZoneRuntime {
         self.retained_direct_zone_frames = retained_direct_zone_frames;
         self.retained_materialized_zone_frames = retained_materialized_zone_frames;
         self.spatial_engines = spatial.engines;
+        let spatial_engines = &self.spatial_engines;
+        self.device_surfaces
+            .retain_zones(|zone_id| spatial_engines.contains_key(zone_id));
         self.combined_led_layout = spatial.combined_layout;
         self.combined_led_spatial_engine = spatial.combined_engine;
         self.reconciled_dependency_key = Some(dependency_key);

@@ -165,12 +165,13 @@ coverage check.
 Composition is GPU-accelerated separately: the SparkleFlinger compositor uses wgpu to blend
 producer surfaces and to import Servo frames.
 
-### 🎨 57 Built-In Effects
+### 🎨 58 Built-In Effects
 
-Hypercolor ships 57 built-in effects (46 authored with the SDK, 11 native Rust, 10 of them
+Hypercolor ships 58 built-in effects (47 authored with the SDK, 11 native Rust, 10 of them
 in builds without the Servo renderer) spanning ambient, audio-reactive, shader, generative,
 and interactive styles, plus 7 display faces for devices with LCD panels. Ambient backgrounds, shader-heavy showpieces, beat-synced
-visualizers, and Keystrike, an interactive effect that lights up under your keystrokes.
+visualizers, Keystrike, an interactive effect that lights up under your keystrokes, and
+Touch Ripple, which throws light from wherever you touch a ROLI Lightpad.
 Every one is open source and built to be forked, and the catalog ships with curated cover
 art and tuned presets.
 

@@ -157,12 +157,60 @@
         degraded: availability.degraded === true,
       };
     };
+    const touchPhase = function(value) {
+      if (value === 'ended' || value === 'cancelled') { return value; }
+      return 'began';
+    };
+    const canvasPoint = function(value) {
+      if (typeof value !== 'object' || value === null) { return null; }
+      const x = Number(value.x);
+      const y = Number(value.y);
+      const nx = Number(value.nx);
+      const ny = Number(value.ny);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(nx) || !Number.isFinite(ny)) { return null; }
+      return { x: x, y: y, nx: nx, ny: ny };
+    };
+    const touchPoint = function(target, value) {
+      target.device = typeof value.device === 'string' ? value.device : '';
+      target.contact = Math.max(0, Math.trunc(finiteNumber(value.contact, 0)));
+      target.x = finiteNumber(value.x, 0);
+      target.y = finiteNumber(value.y, 0);
+      target.pressure = finiteNumber(value.pressure, 0);
+      target.canvas = canvasPoint(value.canvas);
+      return target;
+    };
+    const applyDeviceHolds = function(engine, device) {
+      if (typeof engine.touch !== 'object' || engine.touch === null) { engine.touch = {}; }
+      if (typeof engine.deviceButtons !== 'object' || engine.deviceButtons === null) { engine.deviceButtons = {}; }
+      const touches = [];
+      const rawTouches = Array.isArray(device.touches) ? device.touches : [];
+      for (let index = 0; index < rawTouches.length; index += 1) {
+        const touch = rawTouches[index];
+        if (typeof touch !== 'object' || touch === null) { continue; }
+        touches.push(touchPoint({}, touch));
+      }
+      engine.touch.touches = touches;
+      engine.touch.down = touches.length > 0;
+      const held = [];
+      const names = [];
+      const rawButtons = Array.isArray(device.buttons) ? device.buttons : [];
+      for (let index = 0; index < rawButtons.length; index += 1) {
+        const hold = rawButtons[index];
+        if (typeof hold !== 'object' || hold === null || typeof hold.button !== 'string') { continue; }
+        held.push({ device: typeof hold.device === 'string' ? hold.device : '', button: hold.button });
+        names.push(hold.button);
+      }
+      engine.deviceButtons.held = held;
+      engine.deviceButtons.buttons = trueObject(names);
+    };
     const applyInteraction = function(engine, interaction) {
       if (typeof interaction !== 'object' || interaction === null) { return; }
       if (typeof engine.keyboard !== 'object' || engine.keyboard === null) { engine.keyboard = {}; }
       if (typeof engine.mouse !== 'object' || engine.mouse === null) { engine.mouse = {}; }
       const keyboard = typeof interaction.keyboard === 'object' && interaction.keyboard !== null ? interaction.keyboard : {};
       const mouse = typeof interaction.mouse === 'object' && interaction.mouse !== null ? interaction.mouse : {};
+      const device = typeof interaction.device === 'object' && interaction.device !== null ? interaction.device : {};
+      applyDeviceHolds(engine, device);
       engine.keyboard.keys = trueObject(keyboard.keys);
       engine.keyboard.recent = Array.isArray(keyboard.recent) ? keyboard.recent.slice() : [];
       engine.mouse.x = finiteNumber(mouse.x, 0);
@@ -184,9 +232,24 @@
       const events = Array.isArray(interaction.events) ? interaction.events : [];
       const keyEvents = [];
       const mouseEvents = [];
+      const touchEvents = [];
+      const deviceButtonEvents = [];
       for (let index = 0; index < events.length; index += 1) {
         const event = events[index];
         if (typeof event !== 'object' || event === null) { continue; }
+        if (event.kind === 'touch') {
+          const touch = touchPoint({
+            kind: 'touch',
+            source: typeof event.source === 'string' ? event.source : '',
+            phase: touchPhase(event.phase),
+            atMs: finiteNumber(event.atMs, 0),
+            seq: finiteNumber(event.seq, 0),
+            repeatCount: Math.max(1, Math.trunc(finiteNumber(event.repeatCount, 1))),
+          }, event);
+          if (typeof event.physicalCode === 'string') { touch.physicalCode = event.physicalCode; }
+          touchEvents.push(touch);
+          continue;
+        }
         const entry = {
           kind: typeof event.kind === 'string' ? event.kind : '',
           source: typeof event.source === 'string' ? event.source : '',
@@ -209,10 +272,16 @@
           entry.phase = scrollPhase(event.phase);
           entry.momentumPhase = scrollPhase(event.momentumPhase);
           mouseEvents.push(entry);
+        } else if (entry.kind === 'device_button') {
+          entry.device = typeof event.device === 'string' ? event.device : '';
+          entry.button = typeof event.button === 'string' ? event.button : '';
+          deviceButtonEvents.push(entry);
         }
       }
       engine.keyboard.events = keyEvents;
       engine.mouse.events = mouseEvents;
+      engine.touch.events = touchEvents;
+      engine.deviceButtons.events = deviceButtonEvents;
       engine.inputDropped = finiteNumber(interaction.dropped, 0);
     };
     const applyTimingAndCanvas = function(engine, timing, canvas) {

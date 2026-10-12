@@ -83,12 +83,15 @@ pub(crate) struct ZoneFrameInputs<'a> {
 }
 
 impl<'a> ZoneFrameInputs<'a> {
+    /// Frame-wide sources. Device-surface placement is per zone, so the
+    /// zone runtime fills it in for each zone it renders.
     pub(crate) fn sources(&self) -> FrameDataSources<'a> {
         FrameDataSources {
             input_availability: self.input_availability,
             media: self.media,
             net: self.net,
             lighting: self.lighting,
+            device_surfaces: None,
         }
     }
 }

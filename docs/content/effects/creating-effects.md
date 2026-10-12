@@ -240,8 +240,8 @@ If your draw function reads audio (`audio()`, `ctx.audio`, `getAudioData()`, or
 `engine.audio`) you **must** set `audio: true` in the options object. The build fails
 hard otherwise with an audio-reactivity validation error; this flag is not cosmetic.
 The `--audio` scaffold flag wires it up for you. Reading input
-(`getInputData()`, `engine.keyboard`, or `engine.mouse`) carries the identical rule
-with `input: true`. See [audio reactivity](@/effects/audio.md).
+(`getInputData()`, `engine.keyboard`, `engine.mouse`, `engine.touch`, or
+`engine.deviceButtons`) carries the identical rule with `input: true`. See [audio reactivity](@/effects/audio.md).
 {% </callout> %}
 
 ## Validate

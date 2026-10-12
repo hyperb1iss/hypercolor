@@ -87,7 +87,10 @@ impl BackendManager {
     }
 
     /// Monotonic generation for routing-relevant device mappings.
-    #[doc(hidden)]
+    ///
+    /// Advances whenever a layout-to-device mapping changes, so callers can
+    /// cache anything derived from
+    /// [`layout_device_bindings`](Self::layout_device_bindings).
     #[must_use]
     pub const fn routing_mapping_generation(&self) -> u64 {
         self.routing_mapping_generation

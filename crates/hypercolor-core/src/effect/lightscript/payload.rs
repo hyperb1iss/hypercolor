@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::lighting::LightingState;
 use hypercolor_types::media::MediaState;
 use hypercolor_types::net::NetStats;
@@ -7,7 +8,8 @@ use hypercolor_types::sensor::{SensorReading, SensorUnit};
 use serde::Serialize;
 
 use crate::input::screen::consumer::ScreenBranchPayload;
-use crate::input::{InteractionData, ScreenBranchPublication};
+use crate::input::{DeviceInteractionData, InteractionData, ScreenBranchPublication};
+use crate::spatial::DeviceSurfaceMap;
 use hypercolor_types::canvas::Canvas;
 
 use super::{
@@ -134,14 +136,49 @@ pub(super) struct LightScriptAudioPayload {
 pub(super) struct LightScriptInteractionPayload {
     pub(super) keyboard: LightScriptKeyboardPayload,
     pub(super) mouse: LightScriptMousePayload,
+    #[serde(skip_serializing_if = "LightScriptDevicePayload::is_empty")]
+    pub(super) device: LightScriptDevicePayload,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) events: Vec<LightScriptInputEventPayload>,
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub(super) dropped: u32,
 }
 
+/// The canvas a frame renders into, for placing device-surface points on it.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct TouchCanvas<'a> {
+    pub(super) surfaces: Option<&'a DeviceSurfaceMap>,
+    pub(super) width: u32,
+    pub(super) height: u32,
+}
+
+impl TouchCanvas<'_> {
+    /// Canvas point of a device-surface position, or `None` when the device
+    /// has no single output in the layout this canvas is sampled through.
+    fn point(self, device_id: DeviceId, x: f32, y: f32) -> Option<LightScriptCanvasPointPayload> {
+        let position = self.surfaces?.canvas_position(device_id, x, y)?;
+        // The sampler reads pixel indices with pixel centers on integers;
+        // Canvas 2D puts a pixel's center half a unit further in.
+        let (px, py) = position.to_pixel(self.width, self.height);
+        let (px, py) = (px + 0.5, py + 0.5);
+        [position.x, position.y, px, py]
+            .iter()
+            .all(|value| value.is_finite())
+            .then_some(LightScriptCanvasPointPayload {
+                x: px,
+                y: py,
+                nx: position.x,
+                ny: position.y,
+            })
+    }
+}
+
 impl LightScriptInteractionPayload {
-    pub(super) fn from_interaction(interaction: &InteractionData, delta_secs: f32) -> Self {
+    pub(super) fn from_interaction(
+        interaction: &InteractionData,
+        delta_secs: f32,
+        canvas: TouchCanvas<'_>,
+    ) -> Self {
         let window = interaction.batch.window_secs.max(delta_secs);
         let motion_per_sec = if window > f32::EPSILON {
             interaction.batch.motion.distance / window
@@ -177,11 +214,12 @@ impl LightScriptInteractionPayload {
                     0.0
                 },
             },
+            device: LightScriptDevicePayload::from_held(&interaction.device, canvas),
             events: interaction
                 .batch
                 .events
                 .iter()
-                .filter_map(LightScriptInputEventPayload::from_timed)
+                .filter_map(|timed| LightScriptInputEventPayload::from_timed(timed, canvas))
                 .collect(),
             dropped: interaction.batch.dropped_events,
         }
@@ -205,6 +243,77 @@ pub(super) struct LightScriptMousePayload {
     pub(super) mode: &'static str,
     pub(super) scroll: LightScriptScrollPayload,
     pub(super) velocity: f32,
+}
+
+/// Held input on driver-owned devices.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub(super) struct LightScriptDevicePayload {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) touches: Vec<LightScriptTouchPayload>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) buttons: Vec<LightScriptDeviceButtonPayload>,
+}
+
+impl LightScriptDevicePayload {
+    fn from_held(device: &DeviceInteractionData, canvas: TouchCanvas<'_>) -> Self {
+        Self {
+            touches: device
+                .touches
+                .iter()
+                .map(|touch| LightScriptTouchPayload {
+                    device: touch.device_id,
+                    contact: touch.contact,
+                    x: sanitize_norm(touch.x),
+                    y: sanitize_norm(touch.y),
+                    pressure: sanitize_norm(touch.pressure),
+                    canvas: canvas.point(touch.device_id, touch.x, touch.y),
+                })
+                .collect(),
+            buttons: device
+                .buttons
+                .iter()
+                .map(|hold| LightScriptDeviceButtonPayload {
+                    device: hold.device_id,
+                    button: hold.button.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.touches.is_empty() && self.buttons.is_empty()
+    }
+}
+
+/// One contact on a device touch surface, held or at a begin/end edge.
+///
+/// `x` and `y` are device-surface coordinates; `canvas` is `null` when the
+/// device has no single output in this canvas's layout.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub(super) struct LightScriptTouchPayload {
+    pub(super) device: DeviceId,
+    pub(super) contact: u32,
+    pub(super) x: f32,
+    pub(super) y: f32,
+    pub(super) pressure: f32,
+    pub(super) canvas: Option<LightScriptCanvasPointPayload>,
+}
+
+/// A device-surface point placed on the effect canvas: Canvas 2D drawing
+/// coordinates of the point the LEDs sample, and normalized coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub(super) struct LightScriptCanvasPointPayload {
+    pub(super) x: f32,
+    pub(super) y: f32,
+    pub(super) nx: f32,
+    pub(super) ny: f32,
+}
+
+/// One control button held on a device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct LightScriptDeviceButtonPayload {
+    pub(super) device: DeviceId,
+    pub(super) button: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -238,6 +347,12 @@ pub(super) struct LightScriptInputEventPayload {
     pub(super) phase: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) momentum_phase: Option<&'static str>,
+    /// Device that owns a button edge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) device: Option<DeviceId>,
+    /// A touch edge's contact, flattened in the same shape as a held one.
+    #[serde(flatten)]
+    pub(super) touch: Option<LightScriptTouchPayload>,
     pub(super) at_ms: u64,
     pub(super) seq: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -246,7 +361,10 @@ pub(super) struct LightScriptInputEventPayload {
 }
 
 impl LightScriptInputEventPayload {
-    fn from_timed(timed: &hypercolor_types::event::TimedInputEvent) -> Option<Self> {
+    fn from_timed(
+        timed: &hypercolor_types::event::TimedInputEvent,
+        canvas: TouchCanvas<'_>,
+    ) -> Option<Self> {
         use hypercolor_types::event::InputEvent;
 
         let mut payload = Self {
@@ -260,6 +378,8 @@ impl LightScriptInputEventPayload {
             unit: None,
             phase: None,
             momentum_phase: None,
+            device: None,
+            touch: None,
             at_ms: timed.at_ms,
             seq: timed.seq,
             physical_code: timed.physical_code.clone(),
@@ -292,14 +412,45 @@ impl LightScriptInputEventPayload {
                 payload.phase = Some(pointer_scroll_phase_name(*phase));
                 payload.momentum_phase = Some(pointer_scroll_phase_name(*momentum_phase));
             }
-            // MIDI and device edges stay on the event bus; they are not part
-            // of the effect-facing interaction contract yet.
+            InputEvent::Touch {
+                device_id,
+                contact,
+                phase,
+                x_q16_16,
+                y_q16_16,
+                pressure_q16_16,
+                ..
+            } => {
+                let x = unit_from_q16_16(*x_q16_16);
+                let y = unit_from_q16_16(*y_q16_16);
+                payload.kind = "touch";
+                payload.phase = Some(touch_phase_name(*phase));
+                payload.touch = Some(LightScriptTouchPayload {
+                    device: *device_id,
+                    contact: *contact,
+                    x,
+                    y,
+                    pressure: unit_from_q16_16(*pressure_q16_16),
+                    canvas: canvas.point(*device_id, x, y),
+                });
+            }
+            InputEvent::DeviceButton {
+                device_id,
+                button,
+                state,
+                ..
+            } => {
+                payload.kind = "device_button";
+                payload.device = Some(*device_id);
+                payload.button = Some(button.clone());
+                payload.state = Some(button_state_name(*state));
+            }
+            // MIDI edges stay on the event bus; they are not part of the
+            // effect-facing interaction contract yet.
             InputEvent::MidiNote { .. }
             | InputEvent::MidiControlChange { .. }
             | InputEvent::MidiPitchBend { .. }
-            | InputEvent::MidiRealtime { .. }
-            | InputEvent::Touch { .. }
-            | InputEvent::DeviceButton { .. } => return None,
+            | InputEvent::MidiRealtime { .. } => return None,
         }
 
         Some(payload)
@@ -325,6 +476,25 @@ fn pointer_scroll_phase_name(phase: hypercolor_types::event::PointerScrollPhase)
         PointerScrollPhase::Ended => "ended",
         PointerScrollPhase::Cancelled => "cancelled",
     }
+}
+
+fn touch_phase_name(phase: hypercolor_types::event::TouchPhase) -> &'static str {
+    match phase {
+        hypercolor_types::event::TouchPhase::Began => "began",
+        hypercolor_types::event::TouchPhase::Ended => "ended",
+        hypercolor_types::event::TouchPhase::Cancelled => "cancelled",
+    }
+}
+
+/// A Q16.16 device-surface coordinate as a clamped unit float.
+fn unit_from_q16_16(value: i64) -> f32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::as_conversions,
+        reason = "device-surface coordinates are unit values well inside f32 precision"
+    )]
+    let value = crate::input::q16_16_to_f64(value) as f32;
+    sanitize_norm(value)
 }
 
 fn button_state_name(state: hypercolor_types::event::InputButtonState) -> &'static str {
@@ -644,6 +814,12 @@ fn is_false(value: &bool) -> bool {
 mod tests {
     use super::*;
 
+    pub(super) const NO_CANVAS: TouchCanvas<'static> = TouchCanvas {
+        surfaces: None,
+        width: 320,
+        height: 200,
+    };
+
     fn assert_f32_json_array(value: &serde_json::Value, expected: &[f64]) {
         let values = value.as_array().expect("value should be an array");
         assert_eq!(values.len(), expected.len());
@@ -756,6 +932,7 @@ mod tests {
                     scroll: LightScriptScrollPayload::default(),
                     velocity: 0.5,
                 },
+                device: LightScriptDevicePayload::default(),
                 events: Vec::new(),
                 dropped: 0,
             }),
@@ -838,6 +1015,7 @@ mod tests {
                 ..Default::default()
             },
             1.0 / 30.0,
+            NO_CANVAS,
         );
 
         assert!(payload.keyboard.keys.contains(&"A".to_owned()));
@@ -922,7 +1100,11 @@ mod interaction_payload_v2_tests {
             },
         ];
 
-        let payload = LightScriptInteractionPayload::from_interaction(&interaction, 1.0 / 30.0);
+        let payload = LightScriptInteractionPayload::from_interaction(
+            &interaction,
+            1.0 / 30.0,
+            super::tests::NO_CANVAS,
+        );
         let value = serde_json::to_value(&payload).expect("payload serializes");
 
         assert_eq!(value["mouse"]["nx"], serde_json::json!(0.5));
@@ -954,8 +1136,11 @@ mod interaction_payload_v2_tests {
 
     #[test]
     fn idle_interaction_payload_omits_transient_fields() {
-        let payload =
-            LightScriptInteractionPayload::from_interaction(&InteractionData::default(), 0.0);
+        let payload = LightScriptInteractionPayload::from_interaction(
+            &InteractionData::default(),
+            0.0,
+            super::tests::NO_CANVAS,
+        );
         let value = serde_json::to_value(&payload).expect("payload serializes");
         assert!(value.get("events").is_none());
         assert!(value.get("dropped").is_none());

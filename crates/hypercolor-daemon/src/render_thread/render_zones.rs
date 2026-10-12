@@ -18,6 +18,7 @@ use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::canvas::{
     Canvas, RenderSurfacePool, SurfaceDescriptor, SurfaceResourceError,
 };
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::HypercolorEvent;
 #[cfg(test)]
 use hypercolor_types::event::LayerHealth;
@@ -45,6 +46,7 @@ use super::sparkleflinger::SparkleFlinger;
 use super::sparkleflinger::{CompositionPlan, PreviewSurfaceRequest};
 #[cfg(test)]
 use crate::performance::FullFrameCopyMetrics;
+use device_surfaces::DeviceSurfaceCache;
 use frame_helpers::StaticLayerSurfaceCache;
 #[cfg(all(test, feature = "wgpu"))]
 use frame_helpers::media_mime_prefers_gpu_texture;
@@ -88,6 +90,7 @@ pub(crate) struct ZoneRuntime {
     target_canvases: HashMap<ZoneId, Canvas>,
     scene_projection_cache: HashMap<ZoneId, CachedZoneProjection>,
     spatial_engines: HashMap<ZoneId, SpatialEngine>,
+    device_surfaces: DeviceSurfaceCache,
     direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
     retained_direct_zone_frames: HashMap<ZoneId, RetainedDirectZoneFrame>,
     retained_materialized_zone_frames: HashMap<ZoneId, RetainedMaterializedZoneFrame>,
@@ -193,6 +196,7 @@ impl ZoneRuntime {
             target_canvases: HashMap::new(),
             scene_projection_cache: HashMap::new(),
             spatial_engines: HashMap::new(),
+            device_surfaces: DeviceSurfaceCache::default(),
             direct_surface_pools: HashMap::new(),
             retained_direct_zone_frames: HashMap::new(),
             retained_materialized_zone_frames: HashMap::new(),
@@ -325,8 +329,19 @@ impl ZoneRuntime {
     pub(crate) fn drain_layer_runtime_events(&mut self) -> Vec<HypercolorEvent> {
         self.layer_runtime.drain_events()
     }
+
+    /// Adopt the layout-device bindings the output stage routes LEDs with,
+    /// so touches resolve to the canvas point their device's LEDs sample.
+    pub(crate) fn observe_device_bindings<'a>(
+        &mut self,
+        generation: u64,
+        bindings: impl Iterator<Item = (&'a str, DeviceId)>,
+    ) {
+        self.device_surfaces.observe_bindings(generation, bindings);
+    }
 }
 
+mod device_surfaces;
 mod display_retention;
 mod effect_errors;
 mod frame_helpers;

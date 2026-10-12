@@ -147,4 +147,14 @@ impl BackendManager {
     pub fn mapped_device_count(&self) -> usize {
         self.device_map.len()
     }
+
+    /// Each spatial layout `device_id` with the physical device it routes to.
+    ///
+    /// Anything derived from these bindings stays valid until
+    /// [`routing_mapping_generation`](Self::routing_mapping_generation) moves.
+    pub fn layout_device_bindings(&self) -> impl Iterator<Item = (&str, DeviceId)> + '_ {
+        self.device_map
+            .iter()
+            .map(|(layout_device_id, mapping)| (layout_device_id.as_str(), mapping.device_id))
+    }
 }

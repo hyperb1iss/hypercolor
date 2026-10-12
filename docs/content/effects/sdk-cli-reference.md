@@ -104,7 +104,7 @@ On success each artifact prints a line: a `✓` for canvas and shader effects, a
 ```
 
 {% <callout type="danger"> %}
-**The build enforces correctness: these fail the build, they do not warn.** If your source reads audio (`audio(`, `ctx.audio`, `getAudioData(`, or `engine.audio`) but the effect didn't set `audio: true` in its options, the build throws an audio-validation error. Reading input (`getInputData(`, `engine.keyboard`, or `engine.mouse`) without `input: true` throws the matching input-validation error. Every shader control except `asset` must have a matching `uniform i<Key>` in the GLSL, or the build reports missing control uniforms. And a module that never calls `canvas()`, `effect()`, or `face()` fails metadata extraction with "no effect definitions were registered." Treat a clean build as a real gate, not a formality.
+**The build enforces correctness: these fail the build, they do not warn.** If your source reads audio (`audio(`, `ctx.audio`, `getAudioData(`, or `engine.audio`) but the effect didn't set `audio: true` in its options, the build throws an audio-validation error. Reading input (`getInputData(`, `engine.keyboard`, `engine.mouse`, `engine.touch`, or `engine.deviceButtons`) without `input: true` throws the matching input-validation error. Every shader control except `asset` must have a matching `uniform i<Key>` in the GLSL, or the build reports missing control uniforms. And a module that never calls `canvas()`, `effect()`, or `face()` fails metadata extraction with "no effect definitions were registered." Treat a clean build as a real gate, not a formality.
 {% </callout> %}
 
 ## `validate`

@@ -180,6 +180,124 @@ describe('LightScript input availability bridge', () => {
         expect(input.keyboard.keys).toEqual({ w: true })
     })
 
+    test('carries device touches and buttons through the production adapter', () => {
+        runtime.__hypercolorApplyFramePayload?.({
+            canvas: { height: 200, width: 320 },
+            interaction: {
+                device: {
+                    buttons: [{ button: 'mode', device: 'pad-1' }],
+                    touches: [
+                        {
+                            canvas: { nx: 0.5, ny: 0.25, x: 160, y: 50.25 },
+                            contact: 2,
+                            device: 'pad-1',
+                            pressure: 0.75,
+                            x: 0.4,
+                            y: 0.6,
+                        },
+                        { canvas: null, contact: 0, device: 'loose-pad', pressure: 0.5, x: 0.1, y: 0.9 },
+                    ],
+                },
+                events: [
+                    {
+                        atMs: 3000,
+                        canvas: { nx: 0.5, ny: 0.25, x: 160, y: 50.25 },
+                        contact: 2,
+                        device: 'pad-1',
+                        kind: 'touch',
+                        phase: 'began',
+                        pressure: 0.75,
+                        repeatCount: 1,
+                        seq: 20,
+                        source: 'device:pad-1',
+                        x: 0.4,
+                        y: 0.6,
+                    },
+                    {
+                        atMs: 3001,
+                        button: 'mode',
+                        device: 'pad-1',
+                        kind: 'device_button',
+                        repeatCount: 1,
+                        seq: 21,
+                        source: 'device:pad-1',
+                        state: 'pressed',
+                    },
+                    {
+                        atMs: 3002,
+                        key: 'a',
+                        kind: 'key',
+                        repeatCount: 1,
+                        seq: 22,
+                        source: 'kbd0',
+                        state: 'pressed',
+                    },
+                ],
+                keyboard: { keys: [], recent: [] },
+                mouse: { mode: 'none' },
+            },
+            timing: { deltaSecs: 1 / 60, frameNumber: 10, timeSecs: 3 },
+        })
+
+        const input = getInputData()
+
+        expect(input.touch.down).toBeTrue()
+        expect(input.touch.touches).toEqual([
+            {
+                canvas: { nx: 0.5, ny: 0.25, x: 160, y: 50.25 },
+                contact: 2,
+                device: 'pad-1',
+                pressure: 0.75,
+                x: 0.4,
+                y: 0.6,
+            },
+            { canvas: null, contact: 0, device: 'loose-pad', pressure: 0.5, x: 0.1, y: 0.9 },
+        ])
+        expect(input.touch.events).toEqual([
+            {
+                atMs: 3000,
+                canvas: { nx: 0.5, ny: 0.25, x: 160, y: 50.25 },
+                contact: 2,
+                device: 'pad-1',
+                kind: 'touch',
+                phase: 'began',
+                pressure: 0.75,
+                repeatCount: 1,
+                seq: 20,
+                source: 'device:pad-1',
+                x: 0.4,
+                y: 0.6,
+            },
+        ])
+        expect(input.deviceButtons.buttons).toEqual({ mode: true })
+        expect(input.deviceButtons.held).toEqual([{ button: 'mode', device: 'pad-1' }])
+        expect(input.deviceButtons.events).toEqual([
+            {
+                atMs: 3001,
+                button: 'mode',
+                device: 'pad-1',
+                kind: 'device_button',
+                repeatCount: 1,
+                seq: 21,
+                source: 'device:pad-1',
+                state: 'pressed',
+            },
+        ])
+        expect(input.keyboard.events).toHaveLength(1)
+        expect(input.mouse.events).toEqual([])
+
+        // An interaction payload without device holds releases them.
+        runtime.__hypercolorApplyFramePayload?.({
+            canvas: { height: 200, width: 320 },
+            interaction: { keyboard: { keys: [], recent: [] }, mouse: { mode: 'none' } },
+            timing: { deltaSecs: 1 / 60, frameNumber: 11, timeSecs: 3.1 },
+        })
+
+        const released = getInputData()
+        expect(released.touch).toEqual({ down: false, events: [], touches: [] })
+        expect(released.deviceButtons).toEqual({ buttons: {}, events: [], held: [] })
+    })
+
     test('normalizes malformed bridge values before publishing runtime state', () => {
         runtime.__hypercolorApplyFramePayload?.({
             canvas: {},

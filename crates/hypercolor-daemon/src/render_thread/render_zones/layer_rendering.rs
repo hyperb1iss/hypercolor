@@ -1,7 +1,9 @@
 use anyhow::Result;
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_core::effect::EffectRenderOutput;
+use hypercolor_core::effect::FrameDataSources;
 use hypercolor_core::effect::media::MediaProducer;
+use hypercolor_core::spatial::DeviceSurfaceMap;
 use hypercolor_types::asset::AssetId;
 #[cfg(not(feature = "servo-gpu-import"))]
 use hypercolor_types::canvas::Canvas;
@@ -24,6 +26,12 @@ use crate::render_thread::sparkleflinger::{
 };
 
 impl ZoneRuntime {
+    /// Where device touch surfaces sit on this zone's canvas.
+    pub(super) fn device_surfaces_for(&mut self, zone: &Zone) -> Option<DeviceSurfaceMap> {
+        self.device_surfaces
+            .surfaces_for(zone.id, self.spatial_engines.get(&zone.id))
+    }
+
     pub(super) fn render_zone_frame(
         &mut self,
         zone: &Zone,
@@ -374,6 +382,11 @@ impl ZoneRuntime {
         layer: &SceneLayer,
         context: ZoneFrameContext<'_>,
     ) -> Result<Option<ProducerFrame>> {
+        let device_surfaces = self.device_surfaces_for(zone);
+        let sources = FrameDataSources {
+            device_surfaces: device_surfaces.as_ref(),
+            ..context.inputs.sources()
+        };
         #[cfg(feature = "servo-gpu-import")]
         {
             match self
@@ -386,7 +399,7 @@ impl ZoneRuntime {
                     context.inputs.interaction,
                     context.inputs.screen,
                     context.inputs.sensors,
-                    context.inputs.sources(),
+                    sources,
                 )
                 .map_err(|error| {
                     anyhow::Error::new(render_layer_effect_error(
@@ -414,7 +427,7 @@ impl ZoneRuntime {
                     context.inputs.interaction,
                     context.inputs.screen,
                     context.inputs.sensors,
-                    context.inputs.sources(),
+                    sources,
                     &mut canvas,
                 )
                 .map_err(|error| {
@@ -435,6 +448,11 @@ impl ZoneRuntime {
         layer: &SceneLayer,
         context: ZoneFrameContext<'_>,
     ) -> Result<()> {
+        let device_surfaces = self.device_surfaces_for(zone);
+        let sources = FrameDataSources {
+            device_surfaces: device_surfaces.as_ref(),
+            ..context.inputs.sources()
+        };
         self.effect_pool
             .advance_layer_output(
                 zone,
@@ -444,7 +462,7 @@ impl ZoneRuntime {
                 context.inputs.interaction,
                 context.inputs.screen,
                 context.inputs.sensors,
-                context.inputs.sources(),
+                sources,
             )
             .map_err(|error| {
                 anyhow::Error::new(render_layer_effect_error(

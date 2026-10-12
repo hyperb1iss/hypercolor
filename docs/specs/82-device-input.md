@@ -2,10 +2,12 @@
 
 ## Status
 
-Phase 1 implemented (2026-09-28). Extends Spec 30
-(ROLI Blocks backend), whose event sections were never built, and Spec 71
-(interactive input pipeline), which shipped differently from its text. Read
-`crates/hypercolor-core/src/input/` rather than Spec 71's design sections.
+Phase 1 implemented (2026-09-28, shipped in 0.6.3). Phase 2 implemented
+(2026-10-11, for 0.7.0): effects see touches and device buttons, with
+canvas positions. Extends Spec 30 (ROLI Blocks backend), whose event
+sections were never built, and Spec 71 (interactive input pipeline), which
+shipped differently from its text. Read `crates/hypercolor-core/src/input/`
+rather than Spec 71's design sections.
 
 ## Goal
 
@@ -22,10 +24,11 @@ publishes the same way.
 
 - MIDI note, CC, and pitch-bend input. The `InputEvent::Midi*` variants keep
   waiting for a generic MIDI source (tracked separately in Sibyl).
-- Translating touches to canvas coordinates, and exposing touches to HTML
-  effects through the LightScript payload and SDK. That is phase 2 below.
 - Host capture changes. `[input].enabled` keeps meaning keyboard and pointer
   capture from the host.
+- Canvas positions on the bus. `InputEvent::Touch` and the `input_events`
+  topic keep device-surface coordinates; canvas positions exist only where a
+  canvas does, in the payload an effect receives.
 
 ## Starting point
 
@@ -254,15 +257,99 @@ topic sees further device traffic.
   unreachable. `device_added` payloads are ignored, so schema drift there
   cancels nothing. Dropping the backend aborts the stream.
 
+### 8. Effects (phase 2)
+
+**Payload.** The LightScript interaction payload gains a `device` block,
+omitted while nothing is held, and its ordered `events` list gains two
+kinds beside `key`, `button`, and `scroll`:
+
+```json
+"device": {
+  "touches": [{ "device": "<DeviceId>", "contact": 2, "x": 1.0, "y": 0.5,
+                "pressure": 0.75,
+                "canvas": { "x": 160.5, "y": 150.5, "nx": 0.5, "ny": 0.75 } }],
+  "buttons": [{ "device": "<DeviceId>", "button": "mode" }]
+}
+{ "kind": "touch", "device": "<DeviceId>", "contact": 2, "phase": "began",
+  "x": 1.0, "y": 0.5, "pressure": 0.5, "canvas": { ... }, "source": "...",
+  "atMs": 200, "seq": 7, "repeatCount": 1 }
+{ "kind": "device_button", "device": "<DeviceId>", "button": "mode",
+  "state": "pressed", "source": "...", "atMs": 201, "seq": 9, "repeatCount": 1 }
+```
+
+`x`, `y`, and `pressure` stay in device-surface terms, exactly as the bus
+carries them. Touch phases are `began`, `ended`, and `cancelled`; device
+button states reuse the key states.
+
+**Page API.** The adapter and bootstrap mirror the host pair. `engine.touch`
+follows `engine.mouse`: held `touches` with live positions, `down`, the
+frame's ordered `events`, and `isDown(device?)`. `engine.deviceButtons`
+follows `engine.keyboard`: a `buttons` name map, attributed `held` pairs,
+the frame's `events`, and `isDown(button?, device?)`. The SDK's
+`getInputData()` adds typed `touch` and `deviceButtons` snapshots, and the
+build's input validation counts `engine.touch` and `engine.deviceButtons`
+as input use, so an effect reading them must declare `input: true`.
+
+**Canvas positions.** Every render zone samples its canvas through its own
+spatial layout, so a touch has one canvas point per zone that places its
+device and none elsewhere. `DeviceSurfaceMap`
+(`hypercolor-core::spatial`) places each device that owns exactly one LED
+output in a layout, and maps a surface point through that output's
+position, size, rotation, scale, and edge behavior, with the zone-local
+transform shared with the sampler. A matrix output also applies its start
+corner, because its LED order is the device's own row-major order. The
+result is the canvas point the LED under the finger samples. `canvas.nx`
+and `canvas.ny` are normalized; `canvas.x` and `canvas.y` are Canvas 2D
+drawing coordinates of the sampled pixel's center (`n * (size - 1) + 0.5`),
+so an effect that draws at them lights exactly that point.
+
+The daemon resolves layout outputs to devices through the bindings the
+backend manager routes LEDs with. The output stage hands them to the zone
+runtime whenever the mapping generation moves, and the zone runtime caches
+one map per zone until that zone's layout or the bindings change. Effects
+receive their zone's map through `FrameDataSources::device_surfaces`, and
+the Servo frame queue keeps the newest one with a coalesced batch, so a
+superseded touch edge is mapped with the same placement as the held
+contacts beside it.
+
+**Missing placement.** When the touched device has no LED output in the
+zone's layout, or has several, `canvas` is `null` and the surface
+coordinates still arrive. The platform does not guess between outputs or
+invent a position for an unplaced device; the effect decides what an
+unplaced touch means. That includes a device lit only through the scene's
+unassigned-output fallback: its LEDs show the fallback zone's canvas, but
+no layout places it, so its touches carry no canvas point. Interactive
+previews have no bindings, so their touches always carry `canvas: null`.
+
+**Emission.** A held contact's canvas point can move while the finger
+rests, when the layout or the canvas size changes, so the runtime re-sends
+the interaction payload in that case as well as when the routed generation
+moves. It also re-sends the batch on the frame after one that carried
+edges, so the page never replays a stale edge; that applies to host input
+too.
+
+**Demand and privacy.** Unchanged. The payload carries device input only to
+effects that declare `input: true`, the same declaration that gates
+keyboard and pointer data, and exposing it adds no capture and no demand:
+device input still flows only while interaction is demanded, and
+`[input].enabled` still governs host capture alone. There is no narrower
+declaration, so an effect that only wants touches also receives host keys
+and pointer state whenever host capture is enabled.
+
+**Proof.** `sdk/src/effects/touch-ripple` throws a ripple from each placed
+contact's landing point, lights a pressure-scaled glow under every held
+finger, and steps its palette on device button presses. It skips touches
+whose `canvas` is `null` and deduplicates edges by `seq`.
+
 ## Phasing
 
-1. **Pipeline (this change).** Everything above. Touches and buttons reach
+1. **Pipeline (0.6.3).** Sections 1 through 7. Touches and buttons reach
    `FrameInputs.interaction` and the bus with device attribution, held
    state, and synthetic releases.
-2. **Effects.** LightScript payload, JS adapter, bootstrap, and SDK types
-   expose touches and device buttons. Touches gain canvas coordinates by
-   resolving the device's zone through the active layout. A touch-ripple
-   effect proves the path on a Lightpad.
+2. **Effects (0.7.0).** Section 8. The LightScript payload, JS adapter,
+   bootstrap, and SDK types expose touches and device buttons. Touches gain
+   canvas coordinates by resolving the device's output through each render
+   zone's layout. The Touch Ripple effect proves the path on a Lightpad.
 3. **More producers.** Push 2 pads; a generic MIDI source.
 
 ## Testing
@@ -287,8 +374,26 @@ topic sees further device traffic.
   connection without a sink.
   A unit test holds an aborted stream across a disconnect and reconnect and
   checks it publishes nothing into the new lease.
+- Surfaces (`device_surface_tests.rs`): placement through position, size,
+  rotation, scale, and edge behavior; every LED's sampled point equals the
+  touch over it, for each matrix start corner; unbound, ambiguous, and
+  display-only outputs place nothing; non-finite points; backend bindings
+  and their generation.
+- Payload (`lightscript_interaction_payload_tests.rs`): touches and buttons
+  serialize with surface and canvas positions, an unplaced device carries
+  `canvas: null`, a held touch re-sends when its placement or the canvas
+  size changes, undeclared effects receive nothing, the bootstrap installs
+  the helpers, and the batch is re-sent once after an edge frame.
+- Servo queue: a superseded touch edge maps with the newest placement, and
+  an undemanded queue retains none.
+- Daemon zone runtime: placement resolves through observed bindings, a zone
+  without the device reports none, and rebinding or moving the output moves
+  the touch.
+- SDK: `getInputData()` reads touches and buttons, sanitizes malformed
+  values, and the production adapter carries them end to end.
 - Hardware: touch a Lightpad and LUMI with an interactive effect active and
-  watch `input_events` on the WebSocket.
+  watch `input_events` on the WebSocket; with Touch Ripple active, a ripple
+  should start under the finger.
 
 ## Known limits
 
@@ -298,10 +403,17 @@ topic sees further device traffic.
   streaming updates is unverified on hardware.
 - blocksd releases without button identity make every button on that block
   one control named `button`.
+- Canvas positions are in the zone canvas. A scene layer with a non-default
+  transform (anchor, scale, rotation, or fit) draws its effect canvas into
+  the zone through that transform, and the transform is not inverted, so
+  touches on such a layer land offset.
+- An attachment's LED remap (`led_mapping`) is not inverted, and outputs
+  other than matrices take the surface frame as the output's local frame.
 
 ## Open questions
 
 - LUMI touch `x` spans the keybed. Whether it maps linearly to the 24 key
   LEDs, or needs a key-shaped lookup, waits on a hardware capture.
 - Whether gesture-heavy effects need sampled `TouchMoved` events in addition
-  to held state. Phase 2 decides with a real effect.
+  to held state. Touch Ripple needs only held positions per frame, so moves
+  stay held state until an effect needs a sub-frame path.

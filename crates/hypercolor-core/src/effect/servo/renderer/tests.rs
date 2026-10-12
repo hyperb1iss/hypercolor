@@ -17,6 +17,7 @@ use hypercolor_types::effect::{
 };
 use hypercolor_types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
+    TouchPhase,
 };
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::atomic::Ordering;
@@ -1328,6 +1329,7 @@ fn queued_frames_do_not_retain_undemanded_input_domains() {
         effect_names: vec!["large-lighting-state".to_owned()],
         ..Default::default()
     };
+    let surfaces = pad_surfaces(hypercolor_types::device::DeviceId::new(), 0.5);
     let input = FrameInput {
         time_secs: 1.0,
         delta_secs: 1.0 / 30.0,
@@ -1341,6 +1343,7 @@ fn queued_frames_do_not_retain_undemanded_input_domains() {
             media: Some(&media),
             net: Some(&net),
             lighting: Some(&lighting),
+            device_surfaces: Some(&surfaces),
         },
         canvas_width: 320,
         canvas_height: 200,
@@ -1352,6 +1355,129 @@ fn queued_frames_do_not_retain_undemanded_input_domains() {
 
     let queued = renderer.queued_frame.as_ref().expect("queued frame");
     assert_eq!(queued.retained_input_domains(), [false; 7]);
+    assert!(queued.queued_device_surfaces().is_none());
+}
+
+fn pad_surfaces(
+    device: hypercolor_types::device::DeviceId,
+    x: f32,
+) -> crate::spatial::DeviceSurfaceMap {
+    use hypercolor_types::spatial::{
+        Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+    };
+
+    let layout = SpatialLayout {
+        id: "pad".into(),
+        name: "Pad".into(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![Output {
+            id: "pad".into(),
+            name: "Pad".into(),
+            device_id: "blocks:pad".into(),
+            zone_name: None,
+            position: NormalizedPosition::new(x, 0.5),
+            size: NormalizedPosition::new(0.2, 0.2),
+            rotation: 0.0,
+            scale: 1.0,
+            orientation: None,
+            topology: LedTopology::Matrix {
+                width: 15,
+                height: 15,
+                serpentine: false,
+                start_corner: Corner::TopLeft,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: None,
+            shape_preset: None,
+            display_order: 0,
+            attachment: None,
+            brightness: None,
+        }],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    };
+    crate::spatial::DeviceSurfaceMap::from_layout(&layout, |_| Some(device))
+}
+
+#[test]
+fn queued_frames_map_superseded_touches_with_the_newest_placement() {
+    let pad = hypercolor_types::device::DeviceId::new();
+    let audio = custom_audio(0.0);
+    let mut first_interaction = custom_interaction(&[], &[]);
+    first_interaction.batch.events = vec![TimedInputEvent {
+        event: InputEvent::Touch {
+            source_id: "device:pad".into(),
+            device_id: pad,
+            contact: 0,
+            phase: TouchPhase::Began,
+            x_q16_16: 1 << 15,
+            y_q16_16: 1 << 15,
+            pressure_q16_16: 1 << 15,
+        },
+        at_ms: 5,
+        seq: 1,
+        physical_code: None,
+        repeat_count: 1,
+    }];
+    let second_interaction = custom_interaction(&[], &[]);
+    let old_place = pad_surfaces(pad, 0.25);
+    let new_place = pad_surfaces(pad, 0.75);
+    let mut first = frame_input_with(1.0 / 30.0, 1, &audio, &first_interaction, 320, 200);
+    first.sources.device_surfaces = Some(&old_place);
+    let mut second = frame_input_with(1.0 / 30.0, 2, &audio, &second_interaction, 320, 200);
+    second.sources.device_surfaces = Some(&new_place);
+    let mut renderer = ServoRenderer::new();
+    renderer.include_audio_updates = false;
+    renderer.include_interaction_updates = true;
+
+    renderer.queue_frame(&first);
+    renderer.queue_frame(&second);
+
+    let queued = renderer.queued_frame.as_ref().expect("queued frame");
+    assert_eq!(queued.queued_device_surfaces(), Some(&new_place));
+    let interaction = queued.queued_interaction().expect("demanded interaction");
+    assert_eq!(
+        interaction.batch.events.len(),
+        1,
+        "the superseded touch edge survives"
+    );
+
+    let payload = renderer
+        .runtime
+        .frame_payload_json(
+            &queued.as_frame_input(),
+            &HashMap::new(),
+            crate::effect::lightscript::LightScriptFrameUpdateOptions {
+                include_audio: false,
+                include_screen: false,
+                include_sensors: false,
+                include_interaction: true,
+                include_media: false,
+                include_net: false,
+                include_lighting: false,
+                emit_frame_timing: false,
+                render_host_frame: false,
+                selected_sensor_labels: None,
+            },
+        )
+        .expect("touch edge emits");
+    let payload: serde_json::Value = serde_json::from_str(&payload).expect("valid payload");
+    let touch = &payload["interaction"]["events"][0];
+    assert_eq!(touch["kind"], "touch");
+    assert_eq!(touch["phase"], "began");
+    let nx = touch["canvas"]["nx"]
+        .as_f64()
+        .expect("placed touch has a canvas point");
+    assert!(
+        (nx - 0.75).abs() < 1.0e-6,
+        "mapped with the newest placement, got {nx}"
+    );
 }
 
 #[test]
