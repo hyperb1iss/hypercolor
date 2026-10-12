@@ -93,9 +93,13 @@ pub(crate) struct ReleaseNotifications {
 impl ReleaseNotifications {
     fn open(path: &Path, bus: Arc<HypercolorBus>) -> Result<Self> {
         let saved = match std::fs::read(path) {
-            Ok(bytes) => {
-                serde_json::from_slice(&bytes).context("read release notification preferences")?
-            }
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                tracing::warn!(%error, "Release notification state is unreadable; automatic checks disabled");
+                SavedState {
+                    automatic_checks: false,
+                    ..SavedState::default()
+                }
+            }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => SavedState::default(),
             Err(error) => return Err(error.into()),
         };

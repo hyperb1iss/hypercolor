@@ -84,6 +84,27 @@ fn rejects_drafts_previews_and_untrusted_links() {
 }
 
 #[tokio::test]
+async fn malformed_state_keeps_preferences_available_without_enabling_checks() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("notifications.json");
+    std::fs::write(&path, b"{broken").expect("corrupt state");
+    let service = ReleaseNotifications::open(&path, Arc::new(HypercolorBus::new()))
+        .expect("preferences remain available");
+    assert!(!service.status().await.automatic_checks);
+    assert_eq!(std::fs::read(&path).expect("original state"), b"{broken");
+    service
+        .patch(UpdatePreferencesPatch {
+            automatic_checks: Some(true),
+            ..Default::default()
+        })
+        .await
+        .expect("explicit user opt-in repairs state");
+    let restored = ReleaseNotifications::open(&path, Arc::new(HypercolorBus::new()))
+        .expect("reopen repaired state");
+    assert!(restored.status().await.automatic_checks);
+}
+
+#[tokio::test]
 async fn persists_preferences_and_cached_release_and_emits_events() {
     let directory = tempfile::tempdir().expect("tempdir");
     let path = directory.path().join("notifications.json");
