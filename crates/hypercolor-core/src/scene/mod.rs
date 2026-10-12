@@ -12,6 +12,7 @@
 //! - **Automation** — rule evaluation via [`AutomationEngine`].
 
 pub mod automation;
+mod display_collisions;
 pub mod priority;
 pub mod transition;
 
@@ -446,6 +447,11 @@ impl SceneManager {
     /// The render-zone revision advances even when only an inactive scene
     /// changed, fencing prepared layout publications captured before the
     /// identity rewrite.
+    ///
+    /// When a retargeted display zone lands on a display that already has
+    /// a display zone, the pair collapses to one: the zone carrying layers
+    /// survives, then the one whose layers were assigned most recently,
+    /// then the retargeted zone.
     pub fn remap_device_bindings(
         &mut self,
         layout_device_ids: &HashMap<String, String>,
@@ -453,23 +459,35 @@ impl SceneManager {
     ) -> usize {
         let mut migrated = 0;
         for scene in self.scenes.values_mut() {
-            let scene_migrated = scene
+            let retargeted =
+                display_collisions::retargeted_display_zones(&scene.zones, physical_device_ids);
+            let mut scene_migrated = scene
                 .zones
                 .iter_mut()
                 .map(|zone| {
                     remap_zone_device_bindings(zone, layout_device_ids, physical_device_ids)
                 })
                 .sum::<usize>();
+            scene_migrated +=
+                display_collisions::collapse_retargeted_display_zones(scene, &retargeted);
             if scene_migrated > 0 {
                 bump_zones_revision(scene);
                 migrated += scene_migrated;
             }
         }
+        let retargeted_defaults = display_collisions::retargeted_display_zones(
+            &self.default_display_zones,
+            physical_device_ids,
+        );
         migrated += self
             .default_display_zones
             .iter_mut()
             .map(|zone| remap_zone_device_bindings(zone, layout_device_ids, physical_device_ids))
             .sum::<usize>();
+        migrated += display_collisions::drop_retargeted_default_duplicates(
+            &mut self.default_display_zones,
+            &retargeted_defaults,
+        );
         if migrated > 0 {
             self.refresh_resolved_zones();
             self.invalidate_resolved_zones();
