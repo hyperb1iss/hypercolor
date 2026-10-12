@@ -116,6 +116,9 @@ pub struct LightscriptRuntime {
     last_controls: HashMap<String, ControlValue>,
     last_input_availability: Option<LightScriptInputAvailabilityPayload>,
     last_interaction_generation: Option<u64>,
+    /// Whether the last interaction payload carried a non-empty per-frame
+    /// batch (edges, scroll, motion, or drops) that the page still holds.
+    interaction_batch_delivered: bool,
     last_sensor_readings: Option<Vec<SensorReading>>,
     last_sensor_labels: Option<Vec<String>>,
     last_media: Option<MediaState>,
@@ -137,6 +140,7 @@ impl LightscriptRuntime {
             last_controls: HashMap::new(),
             last_input_availability: None,
             last_interaction_generation: None,
+            interaction_batch_delivered: false,
             last_sensor_readings: None,
             last_sensor_labels: None,
             last_media: None,
@@ -552,13 +556,32 @@ impl LightscriptRuntime {
             .include_interaction
             .then(|| self.changed_input_availability_payload(input.sources.input_availability));
         let input_availability = input_availability.flatten();
+        // The page keeps the last payload's per-frame batch until another
+        // interaction payload replaces it, so the frame after one that
+        // carried edges always sends its own (possibly empty) batch, instead
+        // of letting the page replay those edges on every frame that follows.
         let interaction = (options.include_interaction
-            && input
-                .interaction
-                .is_dirty_against(self.last_interaction_generation))
+            && (self.interaction_batch_delivered
+                || input
+                    .interaction
+                    .is_dirty_against(self.last_interaction_generation)))
         .then(|| {
+            // Without new routed state this payload only restates what the
+            // page holds, and recent keys belong to a batch already delivered.
+            // Reused frame inputs can still carry them, so drop them here.
+            let restated = !input
+                .interaction
+                .is_dirty_against(self.last_interaction_generation);
             self.last_interaction_generation = Some(input.interaction.generation);
-            LightScriptInteractionPayload::from_interaction(input.interaction, input.delta_secs)
+            self.interaction_batch_delivered = !input.interaction.batch.is_empty();
+            let mut payload = LightScriptInteractionPayload::from_interaction(
+                input.interaction,
+                input.delta_secs,
+            );
+            if restated {
+                payload.keyboard.recent.clear();
+            }
+            payload
         });
 
         let should_emit = canvas_changed
