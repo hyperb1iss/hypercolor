@@ -36,7 +36,7 @@ pub enum SessionEvent {
 
 /// Session-awareness configuration loaded from `[session]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct SessionConfig {
     pub enabled: bool,
     pub idle_enabled: bool,

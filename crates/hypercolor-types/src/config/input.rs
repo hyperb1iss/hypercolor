@@ -10,7 +10,6 @@ use super::defaults;
 /// an input device until the user turns it on. Even when enabled, backends
 /// only capture while an active effect declares input reactivity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct InputConfig {
     #[serde(default)]
     pub enabled: bool,
