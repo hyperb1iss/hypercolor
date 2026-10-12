@@ -1755,12 +1755,18 @@ fn installer_tells_the_user_when_the_broker_is_not_running() {
     for step in [
         "if ($$s -and $$s.Status -eq 'Running') { exit 0 }",
         "Pop $R1",
-        "${If} $R1 <> 0",
+        // String compares, so nsExec's "error" is a failure, not a zero.
+        "${If} $R1 != 0",
         "MessageBox MB_OK|MB_ICONEXCLAMATION",
         "its SMBus hardware broker (HypercolorSmBus) is not running",
         r"The setup log is in $INSTDIR\tools\logs.",
         "Start-Service HypercolorSmBus",
         "/SD IDOK",
+        // A broker that runs after a failed PawnIO step is not the whole
+        // story either.
+        "${ElseIf} $R0 != 0",
+        "${AndIf} $R0 != 3010",
+        "part of its hardware access setup failed (exit code $R0)",
     ] {
         assert!(postinstall.contains(step), "postinstall is missing {step}");
     }
@@ -1849,6 +1855,28 @@ fn smbus_service_installer_repairs_its_own_registration() {
     }
 }
 
+/// The broker starts without PawnIO and finds it once it is installed, so a
+/// failed PawnIO step must not leave it unregistered or stopped (the state
+/// issue 396 found). Both steps always run, a needed restart still reaches
+/// the caller as 3010, and any failure ends in a non-zero exit.
+#[test]
+fn hardware_setup_registers_the_broker_even_when_pawnio_fails() {
+    let script = INSTALL_WINDOWS_HARDWARE_SUPPORT_PS1;
+    let position = |needle: &str| {
+        script
+            .find(needle)
+            .unwrap_or_else(|| panic!("hardware setup is missing {needle}"))
+    };
+    let pawnio = position("& $pawnIoInstaller @pawnIoArgs");
+    let pawnio_caught = position("$failures += \"PawnIO setup failed: ");
+    let broker = position("& $serviceInstaller @serviceArgs");
+    let broker_caught = position("$failures += \"SMBus broker setup failed: ");
+    let reboot = position("exit 3010");
+    let failed = position("if ($failures.Count -gt 0) {\n    exit 1\n}");
+    assert!(pawnio < pawnio_caught && pawnio_caught < broker && broker < broker_caught);
+    assert!(broker_caught < reboot && reboot < failed);
+}
+
 /// The hardware setup keeps a transcript beside the broker's own log, which
 /// outlives the installer's details pane and lands in the diagnostics
 /// bundle and `diagnose-windows.ps1`.
@@ -1856,6 +1884,7 @@ fn smbus_service_installer_repairs_its_own_registration() {
 fn hardware_setup_and_diagnostics_keep_the_broker_logs() {
     for step in [
         "$transcriptPath = Join-Path (Split-Path -Parent $BrokerExe) \"logs\\hardware-support.log\"",
+        "Move-Item -LiteralPath $transcriptPath -Destination \"$transcriptPath.1\" -Force",
         "Start-Transcript -LiteralPath $transcriptPath -Append",
         "Stop-Transcript",
     ] {

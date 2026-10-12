@@ -74,11 +74,11 @@ public static class InstallerWizard {
     }
 
     // Answer every message box with No (the PawnIO restart question, which
-    // older installers ask even under /S) or dismiss it (the notice that the
-    // SMBus broker is not running), and when a wizard is given, press its
-    // Next or Finish button once it is enabled. Cancel never means Yes, so
-    // it cannot accept the restart. Posting WM_COMMAND reaches the
-    // installer's windows directly, so nothing depends on keyboard focus.
+    // older installers ask even under /S), then Cancel, which also dismisses
+    // an OK-only notice such as the SMBus broker warning and never means
+    // Yes. When a wizard is given, press its Next or Finish button once it
+    // is enabled. Posting WM_COMMAND reaches the installer's windows
+    // directly, so nothing depends on keyboard focus.
     public static void Step(uint pid, IntPtr wizard) {
         foreach (var dialog in Dialogs(pid)) {
             if (dialog != wizard) {

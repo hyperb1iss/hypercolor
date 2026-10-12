@@ -80,11 +80,18 @@
   ; Hypercolor still drives every USB and network device without it. It
   ; must not be silent either: the details pane closes with the wizard, so
   ; tell the user, and point at the setup log that outlives it. A silent
-  ; install (/S) answers the dialog with OK and keeps going.
-  ${If} $R1 <> 0
+  ; install (/S) answers the dialog with OK and keeps going. The checks
+  ; compare strings, so nsExec's "error" (PowerShell never launched) counts
+  ; as a failure instead of passing as zero.
+  ${If} $R1 != 0
     DetailPrint "  The HypercolorSmBus broker is not running. USB and network"
     DetailPrint "  lighting still work; the setup log is in $INSTDIR\tools\logs."
     MessageBox MB_OK|MB_ICONEXCLAMATION "Hypercolor is installed, but its SMBus hardware broker (HypercolorSmBus) is not running, so motherboard and RAM lighting and CPU temperature are unavailable. USB and network lighting work normally.$\r$\n$\r$\nThe setup log is in $INSTDIR\tools\logs. To try again, open Hypercolor and choose Settings > Device Discovery > Windows SMBus Support > Install support, or run Start-Service HypercolorSmBus in an elevated PowerShell." /SD IDOK
+  ${ElseIf} $R0 != 0
+  ${AndIf} $R0 != 3010
+    DetailPrint "  Hardware access setup did not complete (exit code $R0). USB and"
+    DetailPrint "  network lighting still work; the setup log is in $INSTDIR\tools\logs."
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Hypercolor is installed, but part of its hardware access setup failed (exit code $R0). The SMBus broker is running, but motherboard and RAM lighting and CPU temperature may not work until PawnIO is set up. USB and network lighting work normally.$\r$\n$\r$\nThe setup log is in $INSTDIR\tools\logs. To try again, open Hypercolor and choose Settings > Device Discovery > Windows SMBus Support > Install support." /SD IDOK
   ${EndIf}
 
   ; Windows Firewall — pre-grant the daemon so mDNS discovery and any
