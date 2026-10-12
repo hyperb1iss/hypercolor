@@ -12,7 +12,7 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
-use hypercolor_core::scene::SceneManager;
+use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::SceneTransactionQueue;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
@@ -44,8 +44,13 @@ use hypercolor_types::device::{
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
     DeviceTopologyHint, DriverTransportKind, SegmentInfo,
 };
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::scene::SceneId;
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+use hypercolor_types::portable::{
+    PortableIdentityClaim, ReviewedSerial, SerialNormalization, SerialNormalizerRegistry,
+};
+use hypercolor_types::scene::{DisplayFaceTarget, Scene, SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -1306,6 +1311,310 @@ async fn complete_sweep_connects_device_after_cross_host_binding_migration() {
         lifecycle_manager.lock().await.state(device_id),
         Some(DeviceState::Connected)
     );
+}
+
+static STATIC_PUSH2_DISCOVERY_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "push2",
+    "Static Push 2 Discovery",
+    DriverTransportKind::Usb,
+    true,
+    false,
+);
+
+static STATIC_CORSAIR_DISCOVERY_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "corsair",
+    "Static Corsair Discovery",
+    DriverTransportKind::Usb,
+    true,
+    false,
+);
+
+struct StaticUsbDiscoveryDriver {
+    descriptor: &'static DriverDescriptor,
+    device: DiscoveredDevice,
+}
+
+impl DriverModule for StaticUsbDiscoveryDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        self.descriptor
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DiscoveryCapability for StaticUsbDiscoveryDriver {
+    async fn discover(
+        &self,
+        _host: &dyn DriverHost,
+        _request: &DiscoveryRequest,
+        _config: DriverConfigView<'_>,
+    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+        Ok(vec![self.device.clone()])
+    }
+}
+
+fn driver_scoped_usb_device(
+    driver: &str,
+    name: &str,
+    fingerprint: &str,
+    claim: Option<PortableIdentityClaim>,
+) -> DiscoveredDevice {
+    let fingerprint = DeviceFingerprint::from_persisted(fingerprint.to_owned());
+    let mut info = usb_device_info();
+    info.id = fingerprint.stable_device_id();
+    name.clone_into(&mut info.name);
+    info.family = DeviceFamily::new(driver, name);
+    info.model = None;
+    info.origin = DeviceOrigin::native(driver, "usb", ConnectionType::Usb);
+    DiscoveredDevice {
+        fingerprint,
+        connect_behavior: DiscoveryConnectBehavior::Deferred,
+        info,
+        metadata: HashMap::new(),
+        claim,
+    }
+}
+
+fn stable_device_id(fingerprint: &str) -> DeviceId {
+    DeviceFingerprint::from_persisted(fingerprint.to_owned()).stable_device_id()
+}
+
+fn display_surface_zone(name: &str, device_id: DeviceId, layers: Vec<SceneLayer>) -> Zone {
+    let mut layout = empty_layout();
+    layout.id = format!("zone-{name}");
+    Zone {
+        id: ZoneId::new(),
+        name: name.to_owned(),
+        description: Some(format!("Screen surface for {name}")),
+        layers,
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget::new(device_id)),
+        role: ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 0,
+    }
+}
+
+fn display_zones_targeting(scene: &Scene, device_id: DeviceId) -> Vec<&Zone> {
+    scene
+        .zones
+        .iter()
+        .filter(|zone| {
+            zone.display_target
+                .as_ref()
+                .is_some_and(|target| target.device_id == device_id)
+        })
+        .collect()
+}
+
+async fn run_complete_sweep(runtime: &TestDiscoveryRuntime, targets: Vec<DiscoveryTarget>) {
+    let scan = execute_discovery_scan(
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        Arc::new(HypercolorConfig::default()),
+        targets,
+        Duration::from_millis(50),
+    );
+    tokio::pin!(scan);
+    let renderer = runtime.layout.layout_publication_test_executor();
+    timeout(Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                result = &mut scan => break result,
+                () = tokio::time::sleep(Duration::from_millis(1)) => {
+                    renderer
+                        .execute_next_layout_publication()
+                        .await
+                        .expect("layout publication should succeed");
+                }
+            }
+        }
+    })
+    .await
+    .expect("discovery scan should not deadlock on layout publication");
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture reproduces the whole persisted scene shape it migrates"
+)]
+async fn complete_sweep_moves_display_zones_off_identities_minted_before_driver_scoping() {
+    // Before fingerprints carried a driver segment, these displays hashed
+    // to different physical ids, while their layout ids read the same in
+    // both encodings. The scene below is the shape such a rig was left in:
+    // display zones authored against the old ids, the LCD's carrying its
+    // face, plus empty surfaces minted for the ids discovery reports now.
+    const LEGACY_PUSH2: &str = "usb:2982:1967:001-12";
+    const CURRENT_PUSH2: &str = "usb:push2:2982:1967:001-12";
+    const LEGACY_LCD: &str = "usb:1b1c:0c4e:A6B9T350013K7T";
+    const CURRENT_LCD: &str = "usb:corsair:1b1c:0c4e:A6B9T350013K7T";
+
+    let mut serials = SerialNormalizerRegistry::new();
+    serials.register(
+        0x1b1c,
+        0x0c4e,
+        ReviewedSerial::new(SerialNormalization::TrimmedAscii, "fixture"),
+    );
+    let lcd_claim =
+        PortableIdentityClaim::usb_serial(0x1b1c, 0x0c4e, "A6B9T350013K7T", "1-12", &serials)
+            .expect("fixture LCD serial should be claimable");
+    let mut driver_registry = DriverModuleRegistry::new();
+    driver_registry
+        .register(StaticUsbDiscoveryDriver {
+            descriptor: &STATIC_PUSH2_DISCOVERY_DRIVER,
+            device: driver_scoped_usb_device("push2", "Ableton Push 2", CURRENT_PUSH2, None),
+        })
+        .expect("static Push 2 discovery driver should register");
+    driver_registry
+        .register(StaticUsbDiscoveryDriver {
+            descriptor: &STATIC_CORSAIR_DISCOVERY_DRIVER,
+            device: driver_scoped_usb_device(
+                "corsair",
+                "Corsair iCUE LINK LCD",
+                CURRENT_LCD,
+                Some(lcd_claim),
+            ),
+        })
+        .expect("static Corsair discovery driver should register");
+
+    let face = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        EffectId::new(uuid::Uuid::from_u128(
+            0x15b2_f828_b3f7_4712_9c52_3966_e2e1_9614,
+        )),
+        HashMap::from([(
+            "heroFont".to_owned(),
+            hypercolor_types::control::ControlValue::Enum("Space Grotesk".to_owned()),
+        )]),
+        HashMap::new(),
+        None,
+    );
+    let face_id = face.id;
+    let mut scene = make_scene("Studio Session");
+    scene.zones = vec![
+        display_surface_zone("Ableton Push 2", stable_device_id(LEGACY_PUSH2), Vec::new()),
+        display_surface_zone(
+            "Corsair iCUE LINK LCD",
+            stable_device_id(LEGACY_LCD),
+            vec![face],
+        ),
+        display_surface_zone(
+            "Ableton Push 2",
+            stable_device_id(CURRENT_PUSH2),
+            Vec::new(),
+        ),
+        display_surface_zone(
+            "Corsair iCUE LINK LCD",
+            stable_device_id(CURRENT_LCD),
+            Vec::new(),
+        ),
+    ];
+    let scene_id = scene.id;
+    let face_zone_id = scene.zones[1].id;
+    let mut manager = SceneManager::with_default_layout(empty_layout());
+    manager
+        .create(scene)
+        .expect("fixture scene should be valid");
+    manager
+        .activate(&scene_id, None)
+        .expect("fixture scene should activate");
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let state_dir = temp_dir.path();
+    let mut runtime = make_runtime_with_registry_and_layout(
+        DeviceRegistry::new(),
+        Arc::new(Mutex::new(DeviceLifecycleManager::new())),
+        state_dir.join("layouts.json"),
+        state_dir.join("runtime-state.json"),
+        Some(driver_registry),
+        None,
+        empty_layout(),
+        HashSet::new(),
+    );
+    let scenes = SceneService::with_temporary_store(manager, Arc::clone(&runtime.event_bus))
+        .expect("durable scene store should open");
+    runtime.runtime.layout = LayoutContext::new_test_context(
+        HashMap::new(),
+        state_dir.join("layouts.json"),
+        HashMap::new(),
+        state_dir.join("layout-auto-exclusions.json"),
+        SpatialService::new(SpatialEngine::new(empty_layout())),
+        scenes.clone(),
+        SceneTransactionQueue::default(),
+        state_dir.join("runtime-state.json"),
+    );
+    let journal_path = state_dir.join("device-binding-migration.json");
+    runtime.runtime.binding_migration = Arc::new(DeviceBindingMigrationContext::new(
+        runtime.runtime.layout.clone(),
+        Arc::clone(&runtime.runtime.logical_devices),
+        state_dir.join("logical-devices.json"),
+        Arc::clone(&runtime.runtime.attachment_profiles),
+        runtime.runtime.device_settings.clone(),
+        Arc::new(RwLock::new(
+            DisplayPreferencesStore::new(state_dir.join("display-preferences.json"))
+                .expect("display preference store"),
+        )),
+        journal_path.clone(),
+    ));
+    let targets = vec![
+        DiscoveryTarget::driver("push2"),
+        DiscoveryTarget::driver("corsair"),
+    ];
+    let revision_before = scenes.revision();
+
+    run_complete_sweep(&runtime, targets.clone()).await;
+
+    let migrated = scenes.snapshot().await;
+    let scene = migrated.get(&scene_id).expect("migrated scene");
+    assert!(scene.validate().is_ok(), "{:?}", scene.validate());
+    assert_eq!(
+        scene.zones.len(),
+        2,
+        "one display zone per physical display"
+    );
+    assert!(display_zones_targeting(scene, stable_device_id(LEGACY_PUSH2)).is_empty());
+    assert!(display_zones_targeting(scene, stable_device_id(LEGACY_LCD)).is_empty());
+    let [lcd] = display_zones_targeting(scene, stable_device_id(CURRENT_LCD))[..] else {
+        panic!("the LCD should keep exactly one display zone");
+    };
+    assert_eq!(lcd.id, face_zone_id, "the zone carrying the face survives");
+    assert_eq!(
+        lcd.layers.iter().map(|layer| layer.id).collect::<Vec<_>>(),
+        vec![face_id],
+        "the face moves to the live LCD intact"
+    );
+    assert_eq!(
+        display_zones_targeting(scene, stable_device_id(CURRENT_PUSH2)).len(),
+        1
+    );
+    assert!(scenes.revision() > revision_before);
+    let journal: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&journal_path).expect("migration journal should be written"),
+    )
+    .expect("migration journal should parse");
+    assert!(
+        journal["remaps"].is_null(),
+        "a published migration clears its journal: {journal}"
+    );
+
+    let settled_revision = scenes.revision();
+    let settled = scene.clone();
+    run_complete_sweep(&runtime, targets).await;
+
+    assert_eq!(
+        scenes.revision(),
+        settled_revision,
+        "a second sweep has nothing left to migrate"
+    );
+    assert_eq!(scenes.snapshot().await.get(&scene_id), Some(&settled));
 }
 
 #[tokio::test]
