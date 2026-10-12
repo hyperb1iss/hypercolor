@@ -154,14 +154,14 @@ credentials closes every WebSocket that credential opened with close code
 
 ## The loopback exemption
 
-Requests whose client IP is loopback (`127.0.0.0/8`, `::1`) skip the API-key
-requirement for ordinary lighting control. This is why the CLI, TUI, web UI,
-and a local MCP client all work with no key on a default install. The daemon
-derives the client IP from the peer socket; when the peer is itself loopback (a
-reverse proxy on the same host) it honors `X-Forwarded-For` / `X-Real-IP` so the
-real remote IP is used for auth and allowlisting. Forwarded headers from a
-**non-loopback** peer are ignored, so you cannot spoof your way to a loopback
-exemption.
+Requests that arrive straight from a loopback peer (`127.0.0.0/8`, `::1`) skip
+the API-key requirement for ordinary lighting control. This is why the CLI,
+TUI, web UI, and a local MCP client all work with no key on a default install.
+The daemon judges locality from the peer socket. A request a loopback reverse
+proxy relayed is never local, whatever address it claims (see
+[Behind a reverse proxy](#behind-a-reverse-proxy)), and forwarding headers from
+a **non-loopback** peer are ignored, so neither path spoofs its way to the
+loopback exemption.
 
 Loopback locality is not a user identity. These surfaces require protected
 control authority even when the TCP peer is loopback:
@@ -269,6 +269,32 @@ called out. At startup the daemon logs a warning naming every non-loopback
 address it listens on while no API key or credential authority is configured
 and the network policy admits a remote client of that address's family,
 because any device the policy admits can control it.
+
+## Behind a reverse proxy
+
+A reverse proxy on the same host (Caddy, nginx, Traefik) reaches the daemon
+from a loopback address, so the daemon reads the client from the proxy's
+forwarding headers instead. Any of `X-Forwarded-For`, `X-Real-IP`, or
+`Forwarded` on a loopback connection marks the request as relayed, and a
+relayed request is treated as a network request:
+
+- It never gets the loopback exemption, even when it claims `127.0.0.1`. A
+  local browser that goes through the proxy needs an API key like any other
+  network client; use `http://127.0.0.1:9420` directly to stay keyless.
+- The allowlist judges the address the nearest hop wrote: the **last**
+  `X-Forwarded-For` entry, `X-Real-IP`, and the last `Forwarded` element's
+  `for=`. A proxy appends to `X-Forwarded-For` and passes earlier entries
+  through as the client sent them, so only the last one is the proxy's word.
+- The daemon cannot tell which header your proxy owns, so when several are
+  present, every address they claim must pass the allowlist. A relayed request
+  that names no readable address is refused while an allowlist is active.
+
+Configure the proxy to send `X-Forwarded-For` (Caddy and Traefik do by default;
+nginx needs `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`).
+A proxy that names no client (no forwarding headers, or only
+`X-Forwarded-Host` and `X-Forwarded-Proto`) is indistinguishable from a local
+process: every client it relays gets loopback trust, whether or not an API key
+is set. Don't put one in front of the daemon for remote access.
 
 ## CORS
 
@@ -424,8 +450,9 @@ For a daemon you intend to reach over the network:
 3. Narrow `client_scope` (prefer `local_subnets`) and add explicit
    `allowed_clients` CIDRs for the hosts that should reach the daemon.
 4. List only the exact browser origins you trust in `web.cors_origins`.
-5. Terminate TLS at a reverse proxy on the same host so the daemon sees a
-   loopback peer and reads the real client IP from `X-Forwarded-For`.
+5. Terminate TLS at a reverse proxy on the same host that sends
+   `X-Forwarded-For`, so the daemon judges the real client (see
+   [Behind a reverse proxy](#behind-a-reverse-proxy)).
 
 For the rest of the contract this auth layer guards, see the
 [REST API reference](@/api/rest.md), the

@@ -27,6 +27,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 pub use super::credential_authority::{CredentialAuthority, CredentialGrant, CredentialTier};
+use super::forwarded;
 use crate::domain::DomainError;
 use crate::extensions::{ApiExtension, PublicRateClass};
 use crate::macos_owner::MacosDaemonSessionAttestation;
@@ -147,9 +148,10 @@ enum ProtectedControl {
 /// Where a request came from, as the middleware classified it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RequestLocality {
-    /// A socket peer on another host, or a loopback proxy forwarding one.
+    /// A socket peer on another host, or any request a loopback proxy
+    /// relayed.
     Network,
-    /// A loopback socket peer with no forwarded client.
+    /// A loopback socket peer that relayed nothing.
     Loopback,
     /// The in-process trusted transport.
     InProcess,
@@ -266,12 +268,12 @@ impl RequestAuthContext {
         matches!(self.protected_control, ProtectedControl::Granted)
     }
 
-    /// Whether the request came from a loopback peer.
+    /// Whether the request came straight from a loopback peer.
     ///
-    /// A loopback proxy that forwards a client address makes the request
-    /// the forwarded client's, so this is the classification to trust,
-    /// not the raw socket address. Always `false` on a public route, which
-    /// any web page can reach through a loopback browser.
+    /// A request a loopback proxy relayed is never loopback, whatever
+    /// address its forwarding headers claim, so this is the classification
+    /// to trust, not the raw socket address. Always `false` on a public
+    /// route, which any web page can reach through a loopback browser.
     #[must_use]
     pub const fn is_loopback(self) -> bool {
         matches!(self.locality, RequestLocality::Loopback)
@@ -825,14 +827,26 @@ impl NetworkAccessPolicy {
             return None;
         }
 
-        let Some(client_ip) = client_ip(request) else {
-            return Some(
-                DomainError::forbidden("Client IP is required by network.allowed_clients")
-                    .into_response(),
-            );
+        // A relayed request is judged by every address its headers claim,
+        // because only the header the relay owns is trustworthy and the
+        // daemon cannot tell which one that is. The owned header names
+        // the real client, so a client outside the allowlist fails on it
+        // whatever it writes into the others.
+        let addresses = match client_origin(request) {
+            Some(ClientOrigin::Direct(ip)) => vec![ip],
+            Some(ClientOrigin::Forwarded(claims)) if !claims.is_empty() => {
+                match claims.into_iter().collect::<Option<Vec<_>>>() {
+                    Some(addresses) => addresses,
+                    None => return Some(client_ip_required()),
+                }
+            }
+            Some(ClientOrigin::Forwarded(_)) | None => return Some(client_ip_required()),
         };
-
-        if client_ip.is_loopback() {
+        let remote = addresses
+            .into_iter()
+            .filter(|ip| !ip.is_loopback())
+            .collect::<Vec<_>>();
+        if remote.is_empty() {
             return None;
         }
 
@@ -856,22 +870,25 @@ impl NetworkAccessPolicy {
             );
         }
 
-        if self
-            .allowed_clients
-            .iter()
-            .any(|rule| rule.matches(client_ip))
-        {
-            return None;
-        }
+        let refused = remote.into_iter().find(|client_ip| {
+            !self
+                .allowed_clients
+                .iter()
+                .any(|rule| rule.matches(*client_ip))
+        })?;
 
         Some(
             DomainError::forbidden_details(
                 "Client IP is not allowed by network.allowed_clients",
-                json!({ "client_ip": client_ip.to_string() }),
+                json!({ "client_ip": refused.to_string() }),
             )
             .into_response(),
         )
     }
+}
+
+fn client_ip_required() -> Response {
+    DomainError::forbidden("Client IP is required by network.allowed_clients").into_response()
 }
 
 fn discover_local_subnet_rules() -> Result<Vec<ClientAddressRule>, String> {
@@ -1528,23 +1545,48 @@ fn allows_query_token(request: &Request<Body>) -> bool {
             .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
 }
 
-fn client_identity(request: &Request<Body>) -> String {
-    client_ip(request).map_or_else(|| "unknown".to_owned(), |ip| ip.to_string())
+/// Where a request came from, before authentication.
+enum ClientOrigin {
+    /// The socket peer itself: every connection a loopback proxy did not
+    /// relay. Forwarding headers from any other peer are ignored.
+    Direct(IpAddr),
+    /// A loopback peer relaying a client, with the address each of its
+    /// forwarding headers claims for the nearest hop.
+    Forwarded(Vec<Option<IpAddr>>),
 }
 
-pub(crate) fn request_is_loopback(request: &Request<Body>) -> bool {
-    client_ip(request).is_some_and(|ip| ip.is_loopback())
-}
-
-fn client_ip(request: &Request<Body>) -> Option<IpAddr> {
-    if let Some(socket_addr) = peer_socket_addr(request) {
-        if socket_addr.ip().is_loopback() && forwarded_client_header_present(request) {
-            return forwarded_client_ip(request)?.parse::<IpAddr>().ok();
-        }
-        return Some(socket_addr.ip());
+fn client_origin(request: &Request<Body>) -> Option<ClientOrigin> {
+    let peer = peer_socket_addr(request)?.ip();
+    if peer.is_loopback() && forwarded::forwarding_present(request.headers()) {
+        return Some(ClientOrigin::Forwarded(forwarded::nearest_hop_claims(
+            request.headers(),
+        )));
     }
+    Some(ClientOrigin::Direct(peer))
+}
 
-    None
+/// The rate-limit key for a request: the peer, or for a relayed request
+/// the first address its headers claim. A client can vary a header its
+/// proxy does not own, so a relayed key is best effort.
+fn client_identity(request: &Request<Body>) -> String {
+    match client_origin(request) {
+        Some(ClientOrigin::Direct(ip)) => ip.to_string(),
+        Some(ClientOrigin::Forwarded(claims)) => claims
+            .into_iter()
+            .flatten()
+            .next()
+            .map_or_else(|| "forwarded".to_owned(), |ip| ip.to_string()),
+        None => "unknown".to_owned(),
+    }
+}
+
+/// Whether the request came straight from a loopback peer.
+///
+/// A relayed request is never loopback, whatever address it claims: the
+/// relay may be forwarding a remote client, and a header the relay does
+/// not overwrite is whatever that client wrote.
+pub(crate) fn request_is_loopback(request: &Request<Body>) -> bool {
+    matches!(client_origin(request), Some(ClientOrigin::Direct(ip)) if ip.is_loopback())
 }
 
 fn peer_socket_addr(request: &Request<Body>) -> Option<std::net::SocketAddr> {
@@ -1552,27 +1594,6 @@ fn peer_socket_addr(request: &Request<Body>) -> Option<std::net::SocketAddr> {
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .map(|ConnectInfo(socket_addr)| *socket_addr)
-}
-
-fn forwarded_client_ip(request: &Request<Body>) -> Option<String> {
-    if let Some(forwarded) = request.headers().get("x-forwarded-for") {
-        let value = forwarded.to_str().ok()?;
-        let first = value.split(',').next()?;
-        let trimmed = first.trim();
-        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
-    }
-
-    if let Some(real_ip) = request.headers().get("x-real-ip") {
-        let value = real_ip.to_str().ok()?;
-        let trimmed = value.trim();
-        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
-    }
-
-    None
-}
-
-fn forwarded_client_header_present(request: &Request<Body>) -> bool {
-    request.headers().contains_key("x-forwarded-for") || request.headers().contains_key("x-real-ip")
 }
 
 fn apply_rate_headers(response: &mut Response, decision: &RateDecision) {
@@ -3025,6 +3046,185 @@ mod tests {
         let request = with_connect_info(request, IpAddr::V4(Ipv4Addr::LOCALHOST), 9420);
 
         assert_eq!(super::client_identity(&request), "203.0.113.50");
+    }
+
+    fn relayed_request(uri: &str, headers: &[(&str, &str)]) -> Request<Body> {
+        let mut request = Request::builder().uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        with_connect_info(
+            request
+                .body(Body::empty())
+                .expect("failed to build request"),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            9420,
+        )
+    }
+
+    #[test]
+    fn the_rate_limit_key_is_the_nearest_hop_entry() {
+        let request = relayed_request(
+            "/api/v1/devices",
+            &[("x-forwarded-for", "127.0.0.1, 203.0.113.50")],
+        );
+
+        assert_eq!(super::client_identity(&request), "203.0.113.50");
+    }
+
+    #[tokio::test]
+    async fn a_spoofed_first_forwarded_entry_does_not_claim_loopback() {
+        // An appending proxy keeps whatever the client wrote first, so
+        // `127.0.0.1` at the front of the list is the client's own claim.
+        let response = secured_test_router()
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[("x-forwarded-for", "127.0.0.1, 203.0.113.77")],
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_relayed_request_is_never_loopback_whatever_it_claims() {
+        for headers in [
+            [("x-forwarded-for", "127.0.0.1")],
+            [("x-real-ip", "::1")],
+            [("forwarded", "for=127.0.0.1")],
+            [("forwarded", "proto=https")],
+        ] {
+            let response = secured_test_router()
+                .oneshot(relayed_request("/api/v1/devices", &headers))
+                .await
+                .expect("request failed");
+
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{headers:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dev_proxy_that_names_no_client_keeps_loopback_trust() {
+        // The UI dev server's proxy relays the local browser with only
+        // `X-Forwarded-Host`, which names no client to judge.
+        let response = secured_test_router()
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[("x-forwarded-host", "localhost:9430")],
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_relayed_request_still_authenticates_with_a_key() {
+        let mut request =
+            relayed_request("/api/v1/devices", &[("x-forwarded-for", "203.0.113.77")]);
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            format!("Bearer {READ_KEY}")
+                .parse()
+                .expect("header should parse"),
+        );
+
+        let response = secured_test_router()
+            .oneshot(request)
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_allowlist_judges_the_nearest_hop_entry() {
+        let allowed = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[("x-forwarded-for", "203.0.113.9, 192.168.1.5")],
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(allowed.status(), StatusCode::OK);
+
+        let refused = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[("x-forwarded-for", "192.168.1.5, 203.0.113.9")],
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let json = response_json(refused).await;
+        assert_eq!(json["error"]["details"]["client_ip"], "203.0.113.9");
+    }
+
+    #[tokio::test]
+    async fn the_allowlist_judges_every_forwarding_header() {
+        // A proxy that owns `X-Real-IP` forwards the client's own
+        // `X-Forwarded-For` untouched; the owned header still decides.
+        let refused = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[
+                    ("x-forwarded-for", "192.168.1.5"),
+                    ("x-real-ip", "203.0.113.9"),
+                ],
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let json = response_json(refused).await;
+        assert_eq!(json["error"]["details"]["client_ip"], "203.0.113.9");
+
+        let allowed = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[
+                    ("x-forwarded-for", "192.168.1.5"),
+                    ("x-real-ip", "192.168.1.5"),
+                    ("forwarded", "for=192.168.1.5;proto=https"),
+                ],
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(allowed.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_allowlist_refuses_a_relay_that_names_no_readable_address() {
+        for headers in [
+            [("forwarded", "proto=https")],
+            [("x-forwarded-for", "unknown")],
+            [("forwarded", "for=_hidden")],
+        ] {
+            let response = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+                .oneshot(relayed_request("/api/v1/devices", &headers))
+                .await
+                .expect("request failed");
+
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{headers:?}");
+            let json = response_json(response).await;
+            assert_eq!(
+                json["error"]["message"], "Client IP is required by network.allowed_clients",
+                "{headers:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_allowlist_admits_a_relayed_local_client() {
+        let response = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[("x-forwarded-for", "127.0.0.1")],
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     struct PublicPairExtension;

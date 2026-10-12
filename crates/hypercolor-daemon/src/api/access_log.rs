@@ -25,8 +25,9 @@
 //! `command` messages, which replay through this router carrying the
 //! session's [`AuditCaller`].
 //!
-//! The access log trusts `X-Forwarded-For` / `X-Real-IP` from loopback peers,
-//! for local reverse proxies. The audit trail does not: it records the
+//! The access log names the client a loopback reverse proxy relays, read
+//! from the last `X-Forwarded-For` entry, `X-Real-IP`, or the last
+//! `Forwarded` element. The audit trail does not: it records the
 //! socket peer as `remote` and any forwarded value, verbatim and capped, as
 //! `forwarded_for`, so a local process cannot put another address in the
 //! `remote` field.
@@ -248,35 +249,15 @@ fn client_addr(request: &Request<Body>) -> Option<String> {
 
 fn remote_from(socket_addr: SocketAddr, headers: &HeaderMap) -> String {
     if socket_addr.ip().is_loopback()
-        && let Some(forwarded) = forwarded_ip(headers)
+        && let Some(forwarded) = super::forwarded::nearest_hop_claims(headers)
+            .into_iter()
+            .flatten()
+            .next()
     {
-        return forwarded;
+        return forwarded.to_string();
     }
 
     socket_addr.ip().to_string()
-}
-
-fn forwarded_ip(headers: &HeaderMap) -> Option<String> {
-    if let Some(raw) = headers.get("x-forwarded-for")
-        && let Ok(value) = raw.to_str()
-        && let Some(first) = value.split(',').next()
-    {
-        let trimmed = first.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
-    }
-
-    if let Some(raw) = headers.get("x-real-ip")
-        && let Ok(value) = raw.to_str()
-    {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
-    }
-
-    None
 }
 
 fn redact_sensitive_query(query: &str) -> String {
@@ -468,11 +449,13 @@ mod tests {
     }
 
     #[test]
-    fn client_addr_honors_forwarded_for_when_peer_is_loopback() {
+    fn client_addr_names_the_nearest_hop_when_peer_is_loopback() {
+        // Entries before the last are whatever the client sent, so the
+        // log names the address the proxy itself appended.
         let mut request = request_with_connect_info(IpAddr::V4(Ipv4Addr::LOCALHOST));
         request.headers_mut().insert(
             "x-forwarded-for",
-            "203.0.113.50, 10.0.0.1"
+            "10.0.0.1, 203.0.113.50"
                 .parse()
                 .expect("header value parses"),
         );
