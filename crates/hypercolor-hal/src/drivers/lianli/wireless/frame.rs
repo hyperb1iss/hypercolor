@@ -51,8 +51,6 @@ pub const TX_RESET: [u8; 4] = [USB_CMD_GET_MAC, 0x08, 0x00, 0x00];
 pub const USB_CMD_RESET_PARTNER: u8 = 0x15;
 /// Precomposed partner reset: the command byte and nothing else.
 pub const DONGLE_RESET: [u8; 1] = [USB_CMD_RESET_PARTNER];
-/// Precomposed TX control: enter the streaming ("video") mode.
-pub const TX_VIDEO_START: [u8; 4] = [USB_CMD_GET_MAC, 0x01, 0x00, 0x00];
 /// RX setup the reference driver sends once after discovery starts: two
 /// queries it reads a reply for, then the LCD-mode switch it does not.
 pub const RX_QUERY_34: [u8; 4] = [USB_CMD_SEND_RF, 0x01, 0x04, 0x34];
@@ -87,7 +85,7 @@ pub fn control_packet(prefix: &[u8]) -> Vec<u8> {
     packet
 }
 
-/// TX query: the controller's MAC and firmware, on `channel`.
+/// TX query: select the working RF channel and return the MAC and firmware.
 #[must_use]
 pub fn get_mac_query(channel: u8) -> Vec<u8> {
     control_packet(&[USB_CMD_GET_MAC, channel])
@@ -99,7 +97,7 @@ pub fn get_dev_poll(pages: u8) -> Vec<u8> {
     control_packet(&[USB_CMD_SEND_RF, pages])
 }
 
-/// TX preparation packet sent once per known device after video start.
+/// TX preparation packet sent once per known device after channel selection.
 #[must_use]
 pub fn stream_prep_packet(device_index: u8, channel: u8) -> Vec<u8> {
     control_packet(&[USB_CMD_SEND_RF, device_index, channel, RF_BROADCAST_SLOT])

@@ -57,6 +57,13 @@ impl OutputLane {
         matches!(self, Self::FrameSink { .. })
     }
 
+    fn is_closed(&self) -> bool {
+        match self {
+            Self::FrameSink { frame_sink } => frame_sink.is_closed(),
+            Self::Backend { .. } => false,
+        }
+    }
+
     async fn deliver_colors_shared(
         &self,
         id: DeviceDeliveryId,
@@ -1436,6 +1443,7 @@ impl DeviceStagingBuffer {
 /// atomically and the sender never blocks the render loop.
 pub(super) struct OutputQueue {
     tx: watch::Sender<Option<Arc<FramePayload>>>,
+    lane: OutputLaneHandle,
     io_task: JoinHandle<()>,
     cadence: OutputCadence,
     uses_frame_sink: bool,
@@ -1496,6 +1504,7 @@ impl OutputQueue {
         let active_sequence = Arc::new(AtomicU64::new(0));
         let active_sequence_for_task = Arc::clone(&active_sequence);
         let uses_frame_sink = lane.uses_frame_sink();
+        let queue_lane = Arc::clone(&lane);
         let failure_fence = Arc::new(AsyncWriteFailureFence {
             active: AtomicBool::new(true),
             state: metrics.clone(),
@@ -1656,6 +1665,7 @@ impl OutputQueue {
 
         Self {
             tx,
+            lane: queue_lane,
             io_task,
             cadence,
             uses_frame_sink,
@@ -1781,6 +1791,9 @@ impl OutputQueue {
     }
 
     fn should_suppress_duplicate(&self, colors: &[[u8; 3]]) -> bool {
+        if self.lane.is_closed() {
+            return false;
+        }
         let current = self.tx.borrow();
         let Some(payload) = current.as_ref() else {
             return false;

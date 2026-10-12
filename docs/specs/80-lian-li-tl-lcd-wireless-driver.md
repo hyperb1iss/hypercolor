@@ -598,8 +598,8 @@ Host→dongle packet:
 | 3 | 1 | rx_type | 1–13, `0xFF` | radio endpoint slot; `0xFF` broadcast |
 | 4–63 | 60 | RF data | | 60-byte slice of the RF buffer |
 
-Precomposed control frames (zero-padded to 64): `11 08 00 00` TX reset,
-`11 01 00 00` enter video mode, `10 01 04 34` / `10 01 04 37` RX queries,
+Precomposed control frames (zero-padded to 64): `11 08 00 00` select channel 8
+and query the master, `10 01 04 34` / `10 01 04 37` RX queries,
 `10 01 04 30` RX LCD mode.
 
 The "TX reset" is the reference driver's name for these bytes. The
@@ -610,6 +610,14 @@ should work on, and L-Connect sends it every second and reads the reply. So
 reply, and it does not revive a TX that stopped taking commands. The
 vendor's dongle reset is a separate command, `15` padded to 64, written to
 the *partner* dongle (§6.10).
+
+The reference's `11 01` "video start" is also a master query: it selects
+channel 1. Hypercolor selects the discovered fan channel before its per-cluster
+prep packets. Captures from a V1 controller showed the old preamble left the
+master reporting channel 1 while the fans remained on channel 8. Correcting
+that mismatch does not by itself establish the cause of intermittent delivery
+failures. The channel semantics come from the
+[L-Connect-derived encoder](https://github.com/lewisgibson/FanControl.LianLi/blob/90805c2782fcbb0e9740c9511311b4374fe3a0a9/src/FanControl.LianLi/Protocol/WirelessProtocol.cs#L185-L195).
 
 **Master discovery:** write `{0x11, channel}`, read `{0x11, mac[6], ...}`
 (bytes 11–12 = master firmware, u16 BE, when present). Channel scan order:
@@ -736,9 +744,12 @@ another. Only fan clusters (record type 0) bound to this controller's MAC
 enter the set; receivers bound elsewhere and AIO or case gear heard on the
 channel are ignored, and unbound receivers are paired first (§6.4). A truncated reply (fewer whole records
 than the count byte) keeps the last table. Segment topology is published to
-the daemon only at connect/reconnect, so v1 surfaces membership changes (a
-newly bound fan) after a rescan/reconnect; live topology-change publication
-is a named follow-up, not silently promised.
+the daemon only at connect/reconnect. When a complete, valid table contains
+a bound fan outside the frozen set, the protocol requests a reconnect to
+publish its LED segments. This also recovers a session that connected with
+no fans while their receivers were restarting. Temporary omissions of known
+fans do not request a reconnect, and truncated or invalid membership cannot
+establish a new cluster.
 
 ### 6.6 Group correlation (future)
 
@@ -817,12 +828,12 @@ occasionally spikes RPM.
 4. sends nothing after disconnect/shutdown — fans revert to firmware
    defaults, which is the same behavior as L-Connect exiting; documented, not
    hidden,
-5. arms the radio's streaming mode (video start plus one prep packet per
-   cluster) once per session, from whichever of the first frame or the
-   first upkeep tick comes first, never per tick. Re-arming it every second
-   restarted the stream: on the bench the rings froze for about a second
-   and snapped to the newest frame each tick. The reference arms video
-   mode once as well.
+5. selects the discovered fan channel and sends one prep packet per cluster
+   once per session, from whichever of the first frame or the first upkeep
+   tick comes first. Repeating the old preamble every second produced visible
+   freezes and jumps on the bench. That preamble selected channel 1 rather
+   than the fans' channel (§6.1), so the observation does not establish that
+   a channel query restarts a video stream.
 
 PWM writes can interrupt direct RGB output and briefly expose the receiver's
 onboard rainbow effect. After writing the PWM batch, upkeep immediately
@@ -1061,24 +1072,34 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   time, the timeout doubling to 6 s. A timeout before an echo interval is
   measured keeps slow start's ceiling, since it only proves the guess was
   short. Guessing the interval from the first echo's age timed out fans on
-  a 550 ms cadence half a second after a quick first echo. No send of any
-  kind goes out while 64 are unresolved, which bounds what the TX can hold
-  for a cluster even when the radio stops.
+  a 550 ms cadence half a second after a quick first echo. At most 64
+  sends per cluster are active at once. Timed-out sends leave the active
+  window but keep their tags in a bounded history of 128, so a late echo
+  still counts as delivery and a window full of lost sends cannot block
+  the recovery probe.
 - **Restores after upkeep.** Every fan-speed upkeep leaves each cluster
   owing a restore, paid by the next room in its window.
 - **Unheard fans.** A cluster missing from every table reply for 3 s is sent
   nothing until it answers; then the sends out are given up and the newest
-  frame goes out.
+  frame goes out. A complete table that omits a cluster marks it missing at
+  once, with the same recovery when it returns. A truncated reply, or one
+  whose records lack the validation byte or carry a zero MAC, never counts
+  as absence.
 - **Stall verdict.** A cluster that is heard (in a reply within the last
-  second) but confirms nothing for 5 s is a TX that stopped delivering: the
-  protocol writes the partner reset (§6.10) and sends nothing more. Each
+  second, and not omitted from the latest complete table) but confirms
+  nothing for 5 s, after a recovery probe went out and that first probe's
+  full timeout expired, gets the partner reset (§6.10), and nothing more is
+  sent. Later probes and cached status replies never move that deadline.
+  The first return from a brief omission since the last confirmed frame
+  restarts the probe budget; later brief returns keep the earlier probes
+  and their deadline, and only an absence past 3 s restarts it again. Each
   cluster (by radio MAC) can cause two such resets per process until it
   confirms a frame again. Once they are spent, the stall is taken to be the
   fans': the cluster's RGB rests, then the session ends for a fresh connect,
   on the growing schedule in §6.10, while clusters that still confirm keep
   streaming.
 - **Shutdown.** The final frame the backend sends before shutdown goes out
-  even if the window held it, within the bound on unresolved sends.
+  even if the window held it, within the bound on active sends.
 
 Every 10 s the protocol logs `L-Wireless RGB delivery` at info with the
 offered, sent, and delivered frame rates, coalesced frames, each cluster's

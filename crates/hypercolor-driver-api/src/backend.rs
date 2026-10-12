@@ -399,6 +399,16 @@ impl Default for OutputCadence {
 /// Cloneable hot-path output lane for one connected device.
 #[async_trait::async_trait]
 pub trait DeviceFrameSink: Send + Sync {
+    /// Whether this output lane has permanently closed.
+    ///
+    /// This must be a nonblocking check of cached state, without transport I/O.
+    /// Queues use it to stop suppressing identical payloads after an idle actor
+    /// exits, so the next delivery can report the failure to device lifecycle.
+    /// Sinks without independent actor liveness may keep the default.
+    fn is_closed(&self) -> bool {
+        false
+    }
+
     /// Push shared LED color data to this device's output lane.
     ///
     /// # Errors

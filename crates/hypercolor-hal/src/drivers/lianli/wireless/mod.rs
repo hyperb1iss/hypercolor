@@ -58,9 +58,9 @@ use discovery::{
 };
 use frame::{
     DEFAULT_CHANNEL, Mac, RF_BROADCAST_SLOT, RX_LCD_MODE, RX_QUERY_34, RX_QUERY_37, RfEnvelope,
-    TX_RESET, TX_VIDEO_START, USB_CMD_GET_MAC, USB_CMD_SEND_RF, WallClock, clock_payload,
-    clock_sync_envelope, control_packet, effect_index_for, get_dev_poll, get_mac_query,
-    pwm_envelope, reverse_fan_order, rgb_transfer, save_config_envelope, stream_prep_packet,
+    TX_RESET, USB_CMD_GET_MAC, USB_CMD_SEND_RF, WallClock, clock_payload, clock_sync_envelope,
+    control_packet, effect_index_for, get_dev_poll, get_mac_query, pwm_envelope, reverse_fan_order,
+    rgb_transfer, save_config_envelope, stream_prep_packet,
 };
 use pacing::{DeliveryPacer, DeliveryStats, SendKind, StallVerdict, Tag};
 
@@ -134,6 +134,8 @@ struct WirelessState {
     /// A bind converged; the next upkeep tick writes it to flash.
     save_pending: bool,
     topology_frozen: bool,
+    /// A newly heard bound cluster needs the backend to publish fresh routing.
+    topology_restart: bool,
     streaming_started: bool,
     clock_sent: bool,
     /// The last submitted pixels, including black frames, retained across idle upkeep.
@@ -150,6 +152,7 @@ impl WirelessState {
     /// open, as telemetry only once it is frozen. Either way its records
     /// are the fans' acknowledgements.
     fn adopt_table(&mut self, mut table: DeviceTable, now: Instant) {
+        let complete_membership = table.complete_membership;
         let master = self.master.map(|master| master.mac);
         self.adoptable = table
             .clusters
@@ -165,8 +168,28 @@ impl WirelessState {
         let fresh = std::mem::take(&mut table.clusters);
 
         if self.topology_frozen {
+            if self.save_pending {
+                // Let upkeep commit a converged pairing before ending the
+                // session. A later table can request topology publication;
+                // the actor finishes the upkeep batch before reconnecting.
+                self.topology_restart = false;
+            } else if complete_membership
+                && fresh.iter().any(|record| {
+                    !self
+                        .table
+                        .clusters
+                        .iter()
+                        .any(|known| known.mac == record.mac)
+                })
+            {
+                // Published segments belong to the connect-time table. A
+                // returning fan cannot be added in place, but an empty
+                // published table must not hide it for the whole session.
+                self.topology_restart = true;
+            }
             self.table.motherboard_pwm = table.motherboard_pwm;
             self.table.declared_records = table.declared_records;
+            self.table.complete_membership = complete_membership;
             for cluster in &mut self.table.clusters {
                 if let Some(fresh) = fresh.iter().find(|fresh| fresh.mac == cluster.mac) {
                     cluster.rpm = fresh.rpm;
@@ -184,12 +207,20 @@ impl WirelessState {
                 debug!(
                     known,
                     seen,
+                    restart_requested = self.topology_restart,
                     "wireless cluster membership changed; routing keeps the connect-time set until reconnect"
                 );
             }
         } else {
             table.clusters.clone_from(&fresh);
             self.table = table;
+        }
+        if complete_membership {
+            for (index, cluster) in self.table.clusters.iter().enumerate() {
+                if !fresh.iter().any(|record| record.mac == cluster.mac) {
+                    self.pacer.note_missing(index);
+                }
+            }
         }
         self.observe_echoes(&fresh, now);
     }
@@ -502,15 +533,15 @@ impl WirelessControllerProtocol {
             .map_or(DEFAULT_CHANNEL, |cluster| cluster.channel)
     }
 
-    /// The streaming-mode switch plus one prep packet per driven cluster.
+    /// Select the clusters' RF channel, then prepare each driven cluster.
     ///
     /// Sent once per session, ahead of the first frame or the first upkeep
-    /// tick, whichever comes first. Re-sending it every tick made the radio
-    /// restart its stream once a second, which showed as a freeze and a
-    /// snap on the fans; the reference arms video mode once as well.
+    /// tick, whichever comes first. Command 0x11 selects a channel; its
+    /// argument is not a video-mode flag. Selecting channel 1 here leaves
+    /// the master's channel different from the clusters' channel.
     fn streaming_preamble(state: &WirelessState, commands: &mut Vec<ProtocolCommand>) {
         let channel = Self::channel(state);
-        commands.push(Self::tx_command(control_packet(&TX_VIDEO_START), false));
+        commands.push(Self::tx_command(get_mac_query(channel), false));
         let clusters = u8::try_from(state.table.clusters.len().max(1)).unwrap_or(u8::MAX);
         for index in 0..clusters {
             commands.push(Self::tx_command(stream_prep_packet(index, channel), false));
@@ -955,7 +986,7 @@ impl Protocol for WirelessControllerProtocol {
                     unconfirmed_ms = u64::try_from(unconfirmed_for.as_millis()).unwrap_or(u64::MAX),
                     resends,
                     resets,
-                    "L-Wireless fans are heard but confirmed no frame across every resend; the TX stopped delivering, resetting it through the RX"
+                    "L-Wireless delivery has not recovered after probing the present fans; resetting TX through the RX"
                 );
                 commands.push(Self::tx_reset_command());
                 return;
@@ -994,15 +1025,17 @@ impl Protocol for WirelessControllerProtocol {
         state.pacer.report_if_due(now);
     }
 
-    /// Fans that stopped confirming past their TX resets rest, then ask for
-    /// the whole connect sequence again (see [`pacing`]).
+    /// Republish routing when a bound fan appears outside the frozen set.
+    /// Fans that stopped confirming past their TX resets also request a
+    /// fresh connect after their rest (see [`pacing`]).
     fn session_restart(&self) -> Option<String> {
-        self.state
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pacer
-            .restart_reason()
-            .map(str::to_owned)
+        let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
+        if state.topology_restart {
+            return Some(
+                "L-Wireless bound fans appeared outside the published routing; reconnecting to discover their LED segments".to_owned(),
+            );
+        }
+        state.pacer.restart_reason().map(str::to_owned)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

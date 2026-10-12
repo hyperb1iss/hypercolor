@@ -57,16 +57,20 @@
 //!   out were lost: the window collapses to [`MIN_WINDOW`] and the newest
 //!   frame goes out again, one probe at a time, backing off. Until an echo
 //!   interval is measured the timeout is at least [`ECHO_TIMEOUT_UNKNOWN`],
-//!   and a timeout then leaves slow start's ceiling alone. Nothing is ever
-//!   sent while [`MAX_WINDOW`] sends are unresolved.
+//!   and a timeout then leaves slow start's ceiling alone. Timed-out sends
+//!   retain bounded tag history without occupying the active window.
 //! - Fan-speed upkeep can knock a receiver back to its onboard lighting
 //!   without changing its echo, so every upkeep leaves each cluster owing a
 //!   restore, sent with the next room in its window.
-//! - Fans that are heard but confirm nothing for [`ECHO_STALL`] mean the TX
-//!   stopped delivering: the protocol asks the transport for the vendor
-//!   reset, which ends the session the way a refused write does. At most
-//!   [`MAX_RESETS_WITHOUT_DELIVERY`] resets are asked for on behalf of one
-//!   cluster until it confirms a frame again, across sessions.
+//! - Fans that are present but confirm nothing for [`ECHO_STALL`], including
+//!   a recovery probe given its full observation interval, trigger the vendor
+//!   reset, which ends the session the way a refused write does. A receiver
+//!   that drops out of a complete table restarts that interval on its first
+//!   return without a confirmed frame; later brief omissions keep the failed
+//!   probes as evidence, and only an absence past [`ABSENT_AFTER`] earns a
+//!   fresh interval again. At most [`MAX_RESETS_WITHOUT_DELIVERY`] resets
+//!   are asked for on behalf of one cluster until it confirms a frame
+//!   again, across sessions.
 //! - Past that the stall is the fans', not the TX's: the cluster's RGB
 //!   rests (upkeep goes on, so its fans hold their speed and clock), then
 //!   the session ends so the connect sequence runs again on fresh handles.
@@ -94,12 +98,15 @@ pub type Tag = [u8; 4];
 pub const INITIAL_WINDOW: u32 = 2;
 /// The window never shrinks below this.
 pub const MIN_WINDOW: u32 = 2;
-/// The window never grows past this, and no send of any kind goes out while
-/// this many are unresolved: the most the TX can ever hold for a cluster.
+/// The window never grows past this many active sends. Timed-out sends
+/// retain tag history for late echoes without holding capacity.
 /// Fans have refreshed their status as slowly as once a second, which
 /// needs about 33 frames in flight at 30 fps; this leaves room for a
 /// missed status on top.
 pub const MAX_WINDOW: u32 = 64;
+/// Retain a full timed-out window alongside a full active window, so
+/// recovery probes do not immediately discard the oldest late echo.
+const TAG_HISTORY: usize = 2 * MAX_WINDOW as usize;
 /// Overdue sends at an echo beyond which the TX may be holding a backlog.
 pub const OVERDUE_LIMIT: u64 = 1;
 /// Advancing echoes in a row that must each find a backlog before the
@@ -138,8 +145,8 @@ pub const ECHO_TIMEOUT_MAX: Duration = Duration::from_secs(3);
 pub const ECHO_TIMEOUT_CAP: Duration = Duration::from_secs(6);
 /// No confirmation for this long is logged once as a warning.
 pub const ECHO_STALL_WARN: Duration = Duration::from_secs(2);
-/// No confirmation for this long, with the fans heard, is a TX that stopped
-/// delivering.
+/// Minimum time without confirmation before a failed recovery probe may
+/// escalate to a TX reset.
 pub const ECHO_STALL: Duration = Duration::from_secs(5);
 /// A cluster counts as heard for the stall verdict when it was in a table
 /// reply this recently.
@@ -381,6 +388,12 @@ struct ClusterLink {
     /// after still samples the status cadence.
     resumed_at: Option<Instant>,
     timeouts: u32,
+    /// Actual probes since the last advance or a return that renewed the
+    /// probe budget.
+    probes: u32,
+    /// The first probe's full timeout must expire before reset escalation.
+    /// Further probes and cached status replies never move this deadline.
+    probe_deadline: Option<Instant>,
     /// When the timeout clock last started: the first send after idle, a
     /// progress echo, or a timeout.
     rto_from: Option<Instant>,
@@ -403,6 +416,11 @@ struct ClusterLink {
     rest_until: Option<Instant>,
     stall_warned: bool,
     absent_logged: bool,
+    /// A complete device table explicitly omitted this cluster.
+    missing: bool,
+    /// A return from a brief omission already restarted the probe budget
+    /// since the last confirmed frame.
+    return_grace_spent: bool,
 }
 
 impl Default for ClusterLink {
@@ -429,6 +447,8 @@ impl Default for ClusterLink {
             last_decrease_at: None,
             resumed_at: None,
             timeouts: 0,
+            probes: 0,
+            probe_deadline: None,
             rto_from: None,
             last_progress_at: None,
             last_advance_at: None,
@@ -444,6 +464,8 @@ impl Default for ClusterLink {
             rest_until: None,
             stall_warned: false,
             absent_logged: false,
+            missing: false,
+            return_grace_spent: false,
         }
     }
 }
@@ -478,7 +500,7 @@ impl ClusterLink {
     }
 
     fn has_room(&self) -> bool {
-        self.in_flight() < u64::from(self.window) && self.unresolved() < u64::from(MAX_WINDOW)
+        self.in_flight() < u64::from(self.window)
     }
 
     /// Whether the cluster has something to send: a frame it has not been
@@ -827,7 +849,7 @@ impl DeliveryPacer {
         }
         let link = self.links.get(cluster)?;
         let newest = link.newest?;
-        if link.holding || link.absent(now) || link.unresolved() >= u64::from(MAX_WINDOW) {
+        if link.holding || link.absent(now) || link.in_flight() >= u64::from(MAX_WINDOW) {
             return None;
         }
         if link.timeouts > 0 {
@@ -846,11 +868,11 @@ impl DeliveryPacer {
     }
 
     /// Whether `cluster` may take one more send without passing the bound
-    /// on unresolved sends.
+    /// on active sends. Timed-out tag history does not occupy capacity.
     #[must_use]
     pub fn has_capacity(&self, cluster: usize) -> bool {
         self.links.get(cluster).is_some_and(|link| {
-            !self.silenced() && !link.holding && link.unresolved() < u64::from(MAX_WINDOW)
+            !self.silenced() && !link.holding && link.in_flight() < u64::from(MAX_WINDOW)
         })
     }
 
@@ -885,6 +907,21 @@ impl DeliveryPacer {
         }
         if link.in_flight() == 0 {
             link.rto_from = Some(now);
+        }
+        if kind == SendKind::Resend {
+            link.probes = link.probes.saturating_add(1);
+            let deadline = now + link.timeout();
+            link.probe_deadline.get_or_insert(deadline);
+        }
+        // Only lost entries can precede a full active window. Keep recent
+        // late echoes matchable without letting a dead link grow history.
+        while link.log.len() >= TAG_HISTORY
+            && link
+                .log
+                .front()
+                .is_some_and(|sent| sent.seq <= link.lost_through)
+        {
+            link.log.pop_front();
         }
         let seq = link.next_seq;
         link.next_seq += 1;
@@ -954,20 +991,35 @@ impl DeliveryPacer {
     pub fn observe(&mut self, cluster: usize, echo: Tag, now: Instant) {
         self.ensure_clusters(cluster + 1);
         let link = &mut self.links[cluster];
-        if link.absent_logged {
+        // Judged from the previous sighting before anything is updated: the
+        // actor may have been awaiting this very reply when the threshold
+        // passed, so no pump had the chance to log the absence.
+        let genuine_absence =
+            link.absent_logged || (link.last_seen_at.is_some() && link.absent(now));
+        if link.missing || genuine_absence {
+            // A receiver that was really gone, or the first return since the
+            // last confirmed frame, gets a fresh probe budget. Later brief
+            // omissions keep the failed probes, so a membership that keeps
+            // toggling cannot postpone the reset verdict forever.
+            let renew_budget = genuine_absence || !link.return_grace_spent;
+            link.missing = false;
             link.absent_logged = false;
             info!(
                 cluster,
-                "wireless cluster heard again; resuming its lighting"
+                renew_budget, "wireless cluster heard again; resuming its lighting"
             );
             // Nothing could be confirmed while it was not heard: give up on
             // what was out, and send the newest frame at once.
             link.lost_through = link.next_seq - 1;
             link.sent_content = None;
-            link.timeouts = 0;
             link.rto_from = Some(now);
-            if link.unresolved() > 0 {
-                link.last_progress_at = Some(now);
+            if renew_budget {
+                link.timeouts = 1;
+                link.probes = 0;
+                link.probe_deadline = None;
+                link.return_grace_spent = true;
+            } else {
+                link.timeouts = link.timeouts.max(1);
             }
         }
         link.last_seen_at = Some(now);
@@ -1044,6 +1096,9 @@ impl DeliveryPacer {
         link.log.drain(..=position);
         link.out_after_advance = link.unresolved() > 0;
         link.timeouts = 0;
+        link.probes = 0;
+        link.probe_deadline = None;
+        link.return_grace_spent = false;
         link.rto_from = Some(now);
         link.last_progress_at = Some(now);
         link.next_poll_at = link.out_after_advance.then(|| link.first_poll(now));
@@ -1113,6 +1168,14 @@ impl DeliveryPacer {
         }
     }
 
+    /// Mark a cluster omitted from a complete device table. Partial replies
+    /// cannot establish absence and must only pass through [`Self::observe`].
+    pub fn note_missing(&mut self, cluster: usize) {
+        if let Some(link) = self.links.get_mut(cluster) {
+            link.missing = true;
+        }
+    }
+
     /// Log clusters that dropped out of the table, once each.
     pub fn note_absences(&mut self, now: Instant) {
         for (cluster, link) in self.links.iter_mut().enumerate() {
@@ -1151,7 +1214,11 @@ impl DeliveryPacer {
                 continue;
             };
             let unconfirmed_for = now.saturating_duration_since(since);
-            if unconfirmed_for < ECHO_STALL_WARN || !link.heard_within(now, HEARD_WITHIN) {
+            if unconfirmed_for < ECHO_STALL_WARN
+                || link.missing
+                || link.absent(now)
+                || !link.heard_within(now, HEARD_WITHIN)
+            {
                 continue;
             }
             if !link.stall_warned {
@@ -1164,7 +1231,9 @@ impl DeliveryPacer {
                     "wireless fans have not confirmed a frame; probing with the newest frame as the radio allows"
                 );
             }
-            if unconfirmed_for < ECHO_STALL {
+            if unconfirmed_for < ECHO_STALL
+                || link.probe_deadline.is_none_or(|deadline| now < deadline)
+            {
                 continue;
             }
             let recovery = link.mac.map(recovery_of).unwrap_or_default();
@@ -1174,7 +1243,7 @@ impl DeliveryPacer {
                 return Some(StallVerdict::Reset {
                     cluster,
                     unconfirmed_for,
-                    resends: link.timeouts,
+                    resends: link.probes,
                     resets,
                 });
             }
@@ -1621,6 +1690,9 @@ mod tests {
             let mut pacer = connected(now);
             pacer.fit_clusters(&[mac]);
             send_all(&mut pacer, &[T1], now);
+            let probe_at = now + ECHO_TIMEOUT_UNKNOWN;
+            pacer.tick(probe_at);
+            pacer.note_sent(0, T1, SendKind::Resend, probe_at);
             let stalled = now + ECHO_STALL;
             pacer.links[0].last_seen_at = Some(stalled);
             match pacer.stall_verdict(stalled) {
@@ -1719,14 +1791,14 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_sends_never_pass_the_hard_bound() {
+    fn lost_sends_keep_bounded_history_without_blocking_probes() {
         let now = Instant::now();
         let mut pacer = connected(now);
         let mut at = now;
         let mut index = 0;
         for _ in 0..80 {
-            // The radio is dead: nothing ever echoes. Timeouts keep freeing
-            // window room, but the bound on unresolved sends holds.
+            // No echo ever arrives. Lost sends release active capacity,
+            // while their bounded tag history remains useful for late echoes.
             for _ in 0..8 {
                 index += 1;
                 pacer.submit(0, frame(index));
@@ -1735,15 +1807,14 @@ mod tests {
                 if let Some(kind) = pacer.decide(0, at) {
                     let _ = pacer.note_sent(0, frame(index), kind, at);
                 }
+                assert!(pacer.links[0].in_flight() <= u64::from(MAX_WINDOW));
+                assert!(pacer.links[0].log.len() <= TAG_HISTORY);
             }
             at += ECHO_TIMEOUT_CAP;
         }
-        assert!(pacer.links[0].unresolved() <= u64::from(MAX_WINDOW));
-        assert_eq!(pacer.links[0].unresolved(), u64::from(MAX_WINDOW));
-        assert!(
-            !pacer.has_capacity(0),
-            "not even the shutdown flush sends past the bound"
-        );
+        assert!(pacer.links[0].unresolved() > u64::from(MAX_WINDOW));
+        assert!(pacer.has_capacity(0), "lost sends cannot deadlock recovery");
+        assert_eq!(pacer.totals().frames_delivered, 0);
     }
 
     #[test]

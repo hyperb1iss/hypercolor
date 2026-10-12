@@ -230,7 +230,7 @@ async fn a_reset_the_protocol_asks_for_is_an_undelivered_wedge_that_ends_the_ses
         panic!("a reset TX must be set up again from scratch: {error:?}");
     };
     assert!(
-        detail.contains("L-Wireless TX stopped delivering"),
+        detail.contains("L-Wireless TX delivery remains unconfirmed after recovery probes"),
         "{detail}"
     );
     assert!(detail.contains("reset sent through the RX"), "{detail}");
