@@ -1072,24 +1072,34 @@ confirmed 25.6 to 26.5 fps of 26.6 to 28.3 offered (PR 320, 2026-09-28).
   time, the timeout doubling to 6 s. A timeout before an echo interval is
   measured keeps slow start's ceiling, since it only proves the guess was
   short. Guessing the interval from the first echo's age timed out fans on
-  a 550 ms cadence half a second after a quick first echo. No send of any
-  kind goes out while 64 are unresolved, which bounds what the TX can hold
-  for a cluster even when the radio stops.
+  a 550 ms cadence half a second after a quick first echo. At most 64
+  sends per cluster are active at once. Timed-out sends leave the active
+  window but keep their tags in a bounded history of 128, so a late echo
+  still counts as delivery and a window full of lost sends cannot block
+  the recovery probe.
 - **Restores after upkeep.** Every fan-speed upkeep leaves each cluster
   owing a restore, paid by the next room in its window.
 - **Unheard fans.** A cluster missing from every table reply for 3 s is sent
   nothing until it answers; then the sends out are given up and the newest
-  frame goes out.
+  frame goes out. A complete table that omits a cluster marks it missing at
+  once, with the same recovery when it returns. A truncated reply, or one
+  whose records lack the validation byte or carry a zero MAC, never counts
+  as absence.
 - **Stall verdict.** A cluster that is heard (in a reply within the last
-  second) but confirms nothing for 5 s is a TX that stopped delivering: the
-  protocol writes the partner reset (§6.10) and sends nothing more. Each
+  second, and not omitted from the latest complete table) but confirms
+  nothing for 5 s, after a recovery probe went out and that first probe's
+  full timeout expired, gets the partner reset (§6.10), and nothing more is
+  sent. Later probes and cached status replies never move that deadline.
+  The first return from a brief omission since the last confirmed frame
+  restarts the probe budget; later brief returns keep the earlier probes
+  and their deadline, and only an absence past 3 s restarts it again. Each
   cluster (by radio MAC) can cause two such resets per process until it
   confirms a frame again. Once they are spent, the stall is taken to be the
   fans': the cluster's RGB rests, then the session ends for a fresh connect,
   on the growing schedule in §6.10, while clusters that still confirm keep
   streaming.
 - **Shutdown.** The final frame the backend sends before shutdown goes out
-  even if the window held it, within the bound on unresolved sends.
+  even if the window held it, within the bound on active sends.
 
 Every 10 s the protocol logs `L-Wireless RGB delivery` at info with the
 offered, sent, and delivered frame rates, coalesced frames, each cluster's
