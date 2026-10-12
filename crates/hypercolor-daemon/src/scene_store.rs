@@ -37,6 +37,36 @@ impl SceneStoreDocument {
     }
 }
 
+/// The durable document, serialized from borrowed scenes in id order.
+///
+/// A fresh `HashMap` iterates in a fresh random order, so serializing one
+/// would give the same scenes different bytes on every save and defeat the
+/// persistence layer's identical-bytes check. Sorting by id makes equal
+/// scene sets serialize identically.
+#[derive(Serialize)]
+struct SortedSceneStoreDocument<'a> {
+    schema_version: u32,
+    #[serde(serialize_with = "serialize_scenes_by_id")]
+    scenes: Vec<&'a Scene>,
+}
+
+fn serialize_scenes_by_id<S>(scenes: &[&Scene], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.collect_map(scenes.iter().map(|scene| (scene.id, *scene)))
+}
+
+/// Named-scene snapshot serialized but not yet ordered against other saves.
+///
+/// Serialization needs only the scenes, so callers prepare it before taking
+/// the lock whose order the reservation records.
+#[derive(Debug)]
+pub(crate) struct PreparedSceneStoreSave {
+    scenes: HashMap<SceneId, Scene>,
+    payload: Vec<u8>,
+}
+
 /// Named-scene snapshot reserved at its owning scene-manager boundary.
 #[derive(Debug)]
 pub(crate) struct SceneStoreSave {
@@ -113,18 +143,13 @@ impl SceneStore {
     where
         I: IntoIterator<Item = Scene>,
     {
-        let scenes = named_scenes(scenes);
-        let payload = serialize_json_pretty(&SceneStoreDocument::current(scenes.clone())).map_err(
-            |source| PersistenceError::SerializeSnapshot {
-                subject: "named scenes",
-                source,
-            },
-        )?;
-        Ok(SceneStoreSave {
-            scenes,
-            write: self.writer.reserve(),
-            payload,
-        })
+        Ok(PreparedSceneStoreSave::new(scenes)?.with_reservation(self.writer.reserve()))
+    }
+
+    /// The coordinator for this store's file, so an owner can reserve
+    /// generations under its own lock without taking this store's.
+    pub(crate) fn file_writer(&self) -> AtomicFileWriter {
+        self.writer.clone()
     }
 
     /// Commit a previously reserved snapshot and retain it when it wins.
@@ -307,6 +332,37 @@ fn normalize_scenes(scenes: &mut HashMap<SceneId, Scene>) -> anyhow::Result<()> 
         }
     }
     Ok(())
+}
+
+impl PreparedSceneStoreSave {
+    /// Serialize the named scenes in `scenes`, skipping the default scene.
+    pub(crate) fn new<I>(scenes: I) -> Result<Self, PersistenceError>
+    where
+        I: IntoIterator<Item = Scene>,
+    {
+        let scenes = named_scenes(scenes);
+        let mut sorted = scenes.values().collect::<Vec<_>>();
+        sorted.sort_unstable_by_key(|scene| scene.id.0);
+        let payload = serialize_json_pretty(&SortedSceneStoreDocument {
+            schema_version: SCENE_STORE_SCHEMA_VERSION,
+            scenes: sorted,
+        })
+        .map_err(|source| PersistenceError::SerializeSnapshot {
+            subject: "named scenes",
+            source,
+        })?;
+        Ok(Self { scenes, payload })
+    }
+
+    /// Bind this snapshot to the generation that orders it against every
+    /// other save of the store's file.
+    pub(crate) fn with_reservation(self, write: AtomicWriteReservation) -> SceneStoreSave {
+        SceneStoreSave {
+            scenes: self.scenes,
+            write,
+            payload: self.payload,
+        }
+    }
 }
 
 impl SceneStoreSave {

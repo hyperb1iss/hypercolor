@@ -282,6 +282,8 @@ struct Destination {
     injected_replace_failures: AtomicUsize,
     #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
     injected_directory_sync_failures: AtomicUsize,
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    replacements: AtomicUsize,
 }
 
 #[cfg(windows)]
@@ -465,6 +467,8 @@ impl AtomicFileWriter {
             injected_replace_failures: AtomicUsize::new(0),
             #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
             injected_directory_sync_failures: AtomicUsize::new(0),
+            #[cfg(any(test, feature = "persistence-test-hooks"))]
+            replacements: AtomicUsize::new(0),
         });
 
         #[cfg(windows)]
@@ -618,6 +622,14 @@ impl AtomicFileWriter {
         self.destination
             .injected_replace_failures
             .store(count, Ordering::Release);
+    }
+
+    /// How many times this destination's file has been replaced in this
+    /// process, for tests that pin which writes a workflow performs.
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    #[must_use]
+    pub fn replacement_count(&self) -> usize {
+        self.destination.replacements.load(Ordering::Acquire)
     }
 
     /// Inject post-replacement directory-sync failures for deterministic tests.
@@ -1052,6 +1064,8 @@ fn try_write_stage_aware(
         });
     }
     drop(state);
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    destination.replacements.fetch_add(1, Ordering::AcqRel);
     history::note_replacement(destination, &previous, payload);
 
     #[cfg(unix)]
