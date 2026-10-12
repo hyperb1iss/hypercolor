@@ -393,7 +393,11 @@ impl DriverControlStore for DaemonDriverHost {
         manager.modify(|config| {
             config.drivers.insert(driver_id.to_owned(), entry);
         });
-        manager.save()
+        // The driver-control contract has no slot for a lagging file, so
+        // the values stay live and the diagnose config check reports the
+        // lag until the retry lands.
+        let _persistence = manager.save()?;
+        Ok(())
     }
 }
 
