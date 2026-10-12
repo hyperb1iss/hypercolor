@@ -453,6 +453,23 @@ impl AtomicFileWriter {
         self.destination.state_changed.notify_all();
     }
 
+    /// The latest failure holding this destination's newest snapshot back.
+    ///
+    /// `Some` while an admitted snapshot has failed at least once and has
+    /// not yet landed durably; the retry supervisor keeps trying until it
+    /// does. `None` once that snapshot or a newer one lands, and while a
+    /// first attempt is still in flight.
+    #[must_use]
+    pub fn pending_failure(&self) -> Option<String> {
+        let state = self
+            .destination
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.pending.as_ref()?;
+        state.last_error.clone()
+    }
+
     /// Wait for this destination's newest dirty snapshot to converge.
     ///
     /// # Errors
