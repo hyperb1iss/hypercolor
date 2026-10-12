@@ -211,7 +211,7 @@ config change under `[network]`.
 | `network.client_scope` | enum | `local_subnets` | Which built-in IP scope to trust: `local_subnets`, `private_ranges`, `custom` |
 | `network.remote_access` | bool | `false` | Force remote access on without changing `access_mode` |
 | `network.allowed_clients` | list | `[]` | Extra exact IPs or CIDR rules, e.g. `["192.168.1.0/24", "10.0.0.5"]` |
-| `network.allow_unauthenticated_remote_access` | bool | `false` | Permit remote clients without a key (see warning) |
+| `network.allow_unauthenticated_remote_access` | bool | `false` | Permit remote clients without a key (see warning); implied by `lan_trusted`, ignored by `lan_protected` |
 | `network.mdns_publish` | bool | `true` | Advertise the daemon over mDNS |
 
 How the scopes resolve when remote access is on:
@@ -224,10 +224,19 @@ How the scopes resolve when remote access is on:
 - **`custom`** trusts only the explicit `allowed_clients` you list; no built-in
   scope is added.
 
-`allowed_clients` entries are always layered on top of the resolved scope. A
-non-loopback client whose IP matches no rule gets `403 forbidden` with a detail
-body naming the rejected `client_ip`. Loopback is exempt from the allowlist in
-every mode.
+The `custom` access mode ignores `client_scope` and trusts only
+`allowed_clients`. In the other modes, `allowed_clients` entries are layered
+on top of the resolved scope. A non-loopback client whose IP matches no rule
+gets `403 forbidden` with a detail body naming the rejected `client_ip`.
+Loopback is exempt from the allowlist in every mode.
+
+The allowlist applies only when it holds at least one rule. When the resolved
+scope and `allowed_clients` are both empty, as in `local_only` mode with
+`remote_access` off or with `client_scope = "custom"` and nothing listed, the
+policy admits every client that reaches the daemon, and only an API key, if
+one is set, stands between those clients and the API. An `allowed_clients`
+entry that fails to parse, or a `local_subnets` scope that finds no
+non-loopback subnet, blocks every remote client with `403` instead.
 
 ```toml
 [network]
@@ -251,11 +260,13 @@ The bind address itself is enforced at startup, so a network-reachable daemon
 without auth never comes up by accident. The validation
 (`validate_network_bind_auth` in the daemon) refuses to bind the control API
 to any non-loopback address unless `HYPERCOLOR_API_KEY` is configured, a
-credential authority that can grant control is installed, or
-`network.allow_unauthenticated_remote_access = true` is set; an explicit
-non-loopback bind flag (`--bind`, `--listen`, `--listen-all`) without
-either aborts startup with an error naming those exact remedies. `--port` is
-not a bind flag: it moves the port and leaves the interfaces to config.
+credential authority that can grant control is installed, or the network
+config allows keyless remote access: `access_mode = "lan_trusted"`, or
+`allow_unauthenticated_remote_access = true` under `local_only` or `custom`
+(`lan_protected` ignores that flag). An explicit non-loopback bind flag
+(`--bind`, `--listen`, `--listen-all`) without one of these aborts startup
+with an error. `--port` is not a bind flag: it moves the port and leaves the
+interfaces to config.
 
 A non-loopback target that comes from **config** rather than a flag degrades
 instead of aborting: the daemon falls back to loopback at startup and logs a
@@ -272,10 +283,11 @@ because any device the policy admits can control it.
 
 ## CORS
 
-The daemon sends permissive CORS headers for **loopback origins always**
-(`http://localhost:*`, `http://127.0.0.1:*`, and the IPv6 loopback). Additional
-browser origins are honored only when **API authentication is enabled** and the
-origin is listed in `web.cors_origins`:
+The daemon always sends CORS headers for **loopback origins** (`http` or
+`https` on `localhost` or a `127.0.0.0/8` address, on any port) and for the
+desktop shell's Tauri origins. Additional browser origins are honored
+only when **API authentication is enabled** and the origin is listed in
+`web.cors_origins`:
 
 ```toml
 [web]
@@ -285,9 +297,10 @@ cors_origins = ["https://studio.example.com"]
 Each configured origin must be a bare `scheme://host[:port]` with an `http` or
 `https` scheme and no path; malformed entries are logged and dropped. The
 allowed methods are `GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, `DELETE`,
-and the allowed request headers are `Accept`, `Authorization`, and
-`Content-Type`. When auth is **off**, configured origins are ignored; only
-loopback gets CORS, matching the local-only posture.
+and the allowed request headers are `Accept`, `Authorization`, `Content-Type`,
+and `If-Match`. Responses expose `ETag` to scripts. When auth is **off**,
+configured origins are ignored; only loopback and Tauri origins get CORS,
+matching the local-only posture.
 
 ## Rate limiting
 
@@ -336,8 +349,10 @@ from being allowed to reach the daemon at all. Exempt paths are not rate
 limited, which is deliberate: a single page load pulls more asset requests
 than the read limit allows.
 
-The health route bypasses the security stack entirely so liveness checks work
-regardless of configuration:
+The health route needs no key in any configuration, so liveness checks work
+however authentication is set up. Once startup finishes it passes the network
+access policy like every exempt path; while the daemon is still starting, a
+remote peer gets a bare `503` and only a loopback peer sees startup progress:
 
 - `GET /health`: liveness probe.
 
@@ -379,9 +394,10 @@ another's, so an extension must declare only routes it mounts, and must not
 mount undeclared routes beneath the docs paths, which the exemption covers
 whole.
 
-The MCP server (mounted at `/mcp` when `mcp.enabled` is true) sits outside the
-`/api/v1` middleware stack. MCP is **off by default**; enable it before using
-any agent integration. See [MCP setup](@/api/mcp.md) for the transport and
+The MCP server (mounted at `/mcp` when `mcp.enabled` is true) lives outside
+`/api/v1` but behind the same security layer: it passes the network policy,
+and a remote client of a keyed daemon needs a key. MCP is **off by default**;
+enable it before using any agent integration. See [MCP setup](@/api/mcp.md) for the transport and
 client configuration.
 
 ## WebSocket authentication
@@ -401,10 +417,16 @@ control token in the upgrade URL or a trusted in-process connection. For the
 channel and frame protocol once connected, see
 [WebSocket protocol](@/api/websocket.md).
 
-The upgrade also checks the browser `Origin`. An anonymous upgrade is admitted
-only from loopback origins, the desktop shell's Tauri origins, and, on a keyed
-daemon, the origins in `web.cors_origins`: the allowlist keeps other pages from
-riding the credentialless loopback tier.
+The upgrade also checks the browser `Origin`. An upgrade that sends no
+`Origin` header, as native clients do, skips the check. An anonymous upgrade is
+admitted only from loopback origins, the desktop shell's Tauri origins, and, on
+a keyed daemon, the origins in `web.cors_origins`: the allowlist keeps other
+pages from riding the credentialless loopback tier. A keyed daemon refuses a
+remote upgrade without a credential with `401` before the `Origin` check, so
+`cors_origins` only matters for browsers on the daemon's own machine. On a
+daemon with no API
+key, that means a browser on another machine cannot open the WebSocket, even
+when it loaded the bundled UI from the daemon's own LAN address.
 
 A WebSocket upgrade that presents a valid API key is no longer subject to the
 browser origin allowlist. This is a behavior change for every key holder,

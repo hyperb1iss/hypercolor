@@ -224,7 +224,7 @@ Common causes:
 
 - **Reverse proxy not forwarding WebSocket.** If Hypercolor is behind nginx or Caddy for remote access, the proxy must forward the `Upgrade` header. A misconfigured proxy returns `400 Bad Request` on the handshake, leaving the preview dark while the REST API works.
 
-- **CORS blocking the browser.** Loopback origins (`localhost` and `127.0.0.1`, on any port) are always trusted, so a local UI never hits this. It only bites when you reach the daemon from another host on a daemon that has API auth enabled: the browser refuses the WebSocket upgrade from an untrusted origin. Add that remote origin to `cors_origins` in `~/.config/hypercolor/hypercolor.toml`:
+- **Browser origin refused.** The WebSocket upgrade always admits loopback origins (`localhost` and `127.0.0.1`, on any port), the desktop app, and any upgrade that carries an API key, so a UI opened at `localhost` never hits this and neither does a remote UI you connected with the key. It bites a browser on another host when the daemon has no API key: a keyless daemon refuses every other browser origin, and `cors_origins` does not apply. Set `HYPERCOLOR_API_KEY`, choose `access_mode = "lan_protected"`, and enter the key when the UI asks for its Network API Key. On a keyed daemon, listing an origin in `cors_origins` in `~/.config/hypercolor/hypercolor.toml` lets a page from that origin connect without the key, but only from a browser on the daemon's own machine; a remote browser still needs the key:
 
   ```toml
   [web]
