@@ -5,6 +5,86 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0-rc.1] - 2026-10-12
+
+This release candidate hardens the daemon's network trust model, adds catalog-backed detection of competing RGB software, and opens device touch surfaces to effects. It also vendors Servo's `script` crate to fix two memory leaks that grew unbounded during long render sessions.
+
+### Added
+
+- ✨ Detect **competing RGB software** against a maintained catalog and expose it over `GET /api/v1/system/conflicts` and `POST /api/v1/system/conflicts/scan`, with a `software_conflicts_changed` WebSocket hint (`c9033af`, `b4f3e33`, `1483c62`)
+- ✨ Warn about conflicts in the UI: a dismissible banner on the Devices page, one-line hints on affected device cards, and a Windows SMBus support card driven by the daemon's scan rather than a local guess (`9312f2c`, `eaf8241`, `d706716`)
+- ✨ Expose **device touch and button input to LightScript effects** via `engine.touch` and `engine.deviceButtons`, adding `TouchContact`, `TouchCanvasPoint`, `TouchInputEvent`, and `DeviceButtonInputState` to the SDK (`7fd7fea`, `c1a1c34`, `a89fbdb`)
+- ✨ Add the **Touch Ripple** effect: fingertip glow scaled by pressure plus a ripple thrown across the rig from the touch's canvas position, targeting ROLI Lightpad (`70c7e8c`)
+- ✨ Add a `CredentialAuthority` seam so downstream builds can issue per-client `Read`/`Control` credentials with revocation tokens, without touching `HYPERCOLOR_API_KEY` (`36dce83`)
+- ✨ Add `--port` to move the daemon's port for one launch while leaving the configured `[network]` access mode in charge of interfaces (`ba10898`)
+- ✨ Report whether a config write reached disk: `persisted` and `persistence_error` on the config mutation response, a `config.config_persistence` diagnose check, and a CLI warning when the file lags the live config (`8f9d9bd`, `8784684`, `2d00030`, `04f0947`)
+- ✨ Add a `devices.smbus_broker` diagnose check that distinguishes an installed-but-stopped broker from one that is absent, quoting its exit codes and log path (`6b7de37`)
+- ✨ Add optional GitHub release notifications to OSS builds, with manual checks, per-version skip, and opt-out persisted to `release-notifications.json` (`1f5228b`)
+- ✨ Add a single-pointer `PointerGesture` model for drag surfaces, giving touch and stylus first-class support across Studio, the color wheel, resize handles, and the viewport picker (`8064665`)
+- ✨ Enumerate USB HID top-level collections so the unclaimed-device list reflects what each interface actually drives (`a67b1be`)
+- ✨ Let callers build binary WebSocket frames from a browser `ArrayBuffer` (`4197921`)
+
+### Changed
+
+- 🔄 The desktop app's bundled daemon now **follows the configured network mode** instead of forcing `--bind 127.0.0.1:9420`. See Breaking Changes (`7b9b1c5`)
+- 🔄 Vendor `servo-script 0.6.0` byte-for-byte under `vendor/servo-script/`, patch it in-tree, and guard it with `scripts/check-vendored-patches.sh` plus a CI job that fails when the crate stops resolving to `vendor/` (`63c24cd`, `1cef3fc`, `cff07b2`)
+- 🔄 Warn at startup when the API listens on a non-loopback address with no key and no credential authority, scoped to the address families the active policy actually admits (`89455d7`, `72a601b`, `42f2333`)
+- 🔄 Keep conflict scans ordered so a failed scan reports `scan_failed` while retaining the last successful list, rather than collapsing to "no conflicts found" (`8d4374e`, `10108fc`, `0e135e8`)
+- 🔄 Dismiss popovers on `pointerdown` instead of `mousedown`, so a touch tap closes them on the first press (`08a96c2`)
+- 🔄 Pin `servo-allocator` to `=0.6.0` so jemalloc still links against Servo 0.6 (`87cbb10`)
+
+### Fixed
+
+- 🐛 Release the extra reference to every script private, stopping a `ModuleScript` leak that grew by one per evaluated frame (`5f44e50`)
+- 🐛 Collect garbage after sustained script evaluation: compiled bytecode and source bytes do not count toward SpiderMonkey's GC trigger, so long sessions ran for hours without a major GC (`e0c31a7`, `b904b73`)
+- 🐛 Recover Lian Li wireless fans reliably: keep TX on the discovered RF channel, probe returning receivers before resetting, judge absence from the last sighting, and bound probe-budget renewal so a flapping fan cannot defer the reset verdict forever (`23cbbe7`, `540ebe1`, `5f8a09c`, `d237d6e`)
+- 🐛 Keep the Windows SMBus broker alive and legible: log its lifecycle to `logs\smbus-broker.log`, wait out a squatted or flooded pipe instead of stopping, unquote the broker image path, and report a real stop reason instead of stranding in `START_PENDING` (`4ded5c9`, `7bbfa74`, `7b635c6`, `d3cd2ed`)
+- 🐛 Repair Windows hardware setup: run it in 64-bit PowerShell so existing PawnIO is visible, register the broker even when PawnIO setup fails, tell the user when the broker does not start, and keep the setup log when it cannot be rotated (`775c4cf`, `12643ac`, `0f8ab74`, `18a6c89`)
+- 🐛 Drive the color wheel, panel splitters, Studio layout boxes, and the viewport picker with captured pointer events, ending drags on chorded release and detached capture (`c83db8e`, `c79e89b`, `3016614`, `3b0ff6f`, `15b4d76`)
+- 🐛 Reconcile interactive preview buttons from the `buttons` mask on every move, so a second button pressed mid-drag registers and an intermediate release does not stay held (`4d3bfd2`, `6043d97`)
+- 🐛 Remove Studio and dashboard window listeners on cleanup; Leptos handles leaked one listener per mount, and a stale handler could panic on `Ctrl+Z` after leaving Studio (`665ea7b`)
+- 🐛 Drop USB functions with no lighting-capable interface and hide HID functions carrying only consumer controls, so the unclaimed list stops advertising devices Hypercolor cannot drive (`ed8176a`, `81e3cf6`)
+- 🐛 Keep hotplug arrivals from joining partial HID data (`e96734c`)
+- 🐛 Keep a lagging config file's error until a write lands, and stop a stale retry from overwriting a capture commit (`b3671b6`, `2fa3344`)
+- 🐛 Re-send the LightScript interaction batch after an edge frame (`d81742f`)
+- 🐛 Recover corrupt release-notification preferences with checks disabled, preserving the user's opt-out intent (`ff39a06`)
+
+### Security
+
+- 🔒 **Never grant loopback trust to a relayed request**. A reverse proxy on loopback forwarding `X-Forwarded-For: 127.0.0.1` previously earned anonymous control (`2967271`)
+- 🔒 **Refuse keyless requests that name a foreign host**. Requests riding ambient authority must now name the daemon by IP literal, `localhost`, a machine or mDNS name, or an entry in `web.cors_origins` / `network.allowed_hosts`, closing a DNS-rebinding path. `X-Forwarded-Host` is checked the same way (`e6f923d`, `1694ab4`)
+- 🔒 **Refuse ambient writes from foreign pages on every path**, extending the `Sec-Fetch-Site` and `Origin` CSRF guard to keyless LAN listeners (`402bea4`)
+- 🔒 **Refuse keyless relays unless remote access is open**, so a local proxy in front of a default daemon cannot smuggle remote clients in (`94299c6`)
+- 🔒 Keep public and bearer-exempt paths anonymous end to end: they always report non-loopback locality and carry no `CredentialGrant`, even on replayed WebSocket commands (`dd7bd77`, `db098de`, `d75dba2`)
+- 🔒 Reserve the MCP mount, `/api/v1/docs`, and `/openapi.json` from extension public-route declarations, with segment-aware path matching (`9c158eb`, `9b4e4a3`)
+- 🔒 Close a revoked session with **code 1008** (`credential revoked`) on every exit path, including setup failure, and interrupt its in-flight sends (`38e8798`, `d55a2d1`, `79e608d`)
+- 🔒 Send CORS headers to bracketed IPv6 loopback origins (`7fba4e3`)
+
+### Removed
+
+- 🔥 Retire the desktop app's own conflicting-tool detector, including `ConflictingRgbTool`, the `KNOWN_RGB_CONFLICTS` lists, and the `sc.exe` / `tasklist.exe` probes. The app now reads the daemon's catalog-backed scan, which also stops mislabeling OpenRGB as a conflict (`63c03a1`)
+
+### Breaking Changes
+
+- **A LAN network setting now opens the desktop app's daemon on upgrade.** The app previously hardcoded `--bind 127.0.0.1:9420`, so a configured LAN mode had no effect. The supervisor now passes `--port` and lets `[network].access_mode` choose interfaces.
+  - Upgrade notes: if you selected LAN mode before upgrading and want to stay local, switch to Local before the first launch on 0.7.0. To keep LAN access, choose Protected and set `HYPERCOLOR_API_KEY`; a keyless LAN daemon accepts control from any device on the network and advertises over mDNS.
+- **`web.cors_origins` no longer restricts authenticated WebSocket clients.** A valid key in `?token=` or `Authorization` now admits an upgrade from any `Origin`.
+  - Upgrade notes: use credential scope and revocation to limit key-holders. Origin allowlisting still applies to anonymous upgrades.
+- **Keyless requests are rejected unless they name an allowed host.**
+  - Upgrade notes: if a keyless daemon sits behind a proxy or is reached by a custom DNS name, add that name to `network.allowed_hosts`.
+- **Relayed requests to a keyless daemon are refused by default.**
+  - Upgrade notes: set `network.allow_unauthenticated_remote_access: true` or choose `access_mode: "lan_trusted"` to keep a reverse-proxy deployment working.
+- **Public and bearer-exempt routes always see an anonymous caller.**
+  - Upgrade notes: extensions declaring public routes must not branch on `is_loopback()` or read an optional `CredentialGrant`; both are now stripped before the handler runs.
+
+### Metrics
+
+- Total Commits: 167
+- Files Changed: 1,163 (the newly vendored `servo-script` crate accounts for roughly 925 of them and nearly all insertions)
+- Insertions: +320,972
+- Deletions: -2,817
+<!-- -------------------------------------------------------------- -->
+
 ## [0.6.3] - 2026-10-09
 
 This release opens a **device input** path so driver-owned hardware can feed touch and button events back into effects, adds two new hardware drivers, and reports daemon startup progress to the desktop app. Windows installs now upgrade in place instead of reinstalling.
