@@ -16,7 +16,42 @@ shows every change against the published crate.
 
 ## Patches
 
-None yet.
+### 1. Release the caller's reference to a script private
+
+Files: `modules/script_module.rs` (`set_script_source_private`, used by
+`ModuleTree::create_a_javascript_module_script`) and
+`dom/globalscope/script_execution.rs` (`evaluate_script`).
+
+Upstream hands a fresh `Rc<ModuleScript>` to `SetScriptPrivate` or
+`SetModulePrivate` through `Rc::into_raw` and never reclaims that
+reference. Both calls end in `ScriptSourceObject::setPrivate`
+(`js/src/vm/JSScript.cpp`), which releases the previous private and calls
+the runtime's add-ref hook for the new one. Servo installs that hook pair
+for every JS runtime in `EnsureModuleHooksInitialized`:
+`host_add_ref_top_level_script` clones the `Rc` and forgets the clone, and
+`host_release_top_level_script` drops one reference. `ScriptSourceObject`
+finalization calls `setPrivate(UndefinedValue())`, which releases the
+engine's reference. The engine's reference is therefore balanced on its
+own, and the `into_raw` one leaks one `ModuleScript` per compiled classic
+script or module. Embedders that call `evaluate_javascript` every frame
+compile one classic script per call, so the leak grows without bound. For
+modules the leaked `ModuleScript` also holds a `Trusted<GlobalScope>`,
+which pins that global for the life of the thread.
+
+The patch reclaims the caller's reference right after the engine took its
+own, so the `ModuleScript` lives exactly as long as its script source. If
+no add-ref hook ran (the strong count is still 1), it leaks the reference
+as upstream does instead of leaving the private dangling. Every reader of
+the private (`module_script_from_reference_private` and its callers in
+`module_loading.rs`, `script_module.rs`, and `timers.rs`) borrows it while
+the script or module is rooted or on the stack, and none of them keeps the
+pointer.
+
+Upstream status: Servo `main` at `65406b6507b6` (2026-10-12) still uses
+`Rc::into_raw` in both places, now in
+`components/script/scripting/script_execution.rs`
+(`maybe_associate_with_script`) and
+`components/script/scripting/script_module.rs`.
 
 ## Removal rule
 
