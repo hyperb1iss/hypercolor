@@ -1308,6 +1308,23 @@ pub async fn enforce_security(
         return rate_limited(&state, request, next, class).await;
     }
 
+    // A replay has no socket, so it can never look local again. An
+    // anonymous session that loopback trust admitted, or any client of a
+    // keyless daemon, keeps the standing its upgrade earned instead of
+    // being asked for a key it never needed. Exempt paths and public
+    // routes above have already stripped that standing where it does not
+    // belong, rate limit included.
+    if replayed
+        && request
+            .extensions()
+            .get::<RequestAuthContext>()
+            .is_some_and(|context| {
+                !context.security_enabled() && (context.is_loopback() || !state.security_enabled())
+            })
+    {
+        return next.run(request).await;
+    }
+
     let optional_system_auth = is_optional_system_auth(request.method(), request.uri().path());
 
     if locality == RequestLocality::Loopback {
@@ -3642,6 +3659,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_anonymous_loopback_session_replays_on_a_keyed_daemon() {
+        let replay = |admitted: bool| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .body(Body::empty())
+                .expect("failed to build request");
+            request.extensions_mut().insert(
+                RequestAuthContext::unsecured().with_locality(super::RequestLocality::Loopback),
+            );
+            if admitted {
+                request
+                    .extensions_mut()
+                    .insert(super::AdmittedSessionReplay);
+            }
+            request
+        };
+
+        let admitted = secured_test_router()
+            .oneshot(replay(true))
+            .await
+            .expect("request failed");
+        assert_eq!(admitted.status(), StatusCode::CREATED);
+
+        let unmarked = secured_test_router()
+            .oneshot(replay(false))
+            .await
+            .expect("request failed");
+        assert_eq!(unmarked.status(), StatusCode::UNAUTHORIZED);
+
+        // A keyed daemon admits no anonymous network session, so a replay
+        // claiming one still needs a key.
+        let mut network = replay(true);
+        network
+            .extensions_mut()
+            .insert(RequestAuthContext::unsecured());
+        let network = secured_test_router()
+            .oneshot(network)
+            .await
+            .expect("request failed");
+        assert_eq!(network.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn a_dev_proxy_that_names_no_client_keeps_loopback_trust() {
         // The UI dev server's proxy relays the local browser with only
         // `X-Forwarded-Host`, which names no client to judge.
@@ -3835,6 +3896,70 @@ mod tests {
             .await
             .expect("request should complete");
         assert_eq!(session.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_replay_to_a_public_route_stays_anonymous_and_rate_limited() {
+        let extensions: Vec<std::sync::Arc<dyn crate::extensions::ApiExtension>> =
+            vec![std::sync::Arc::new(PublicPairExtension)];
+        for state in [
+            SecurityState::with_keys(Some(CONTROL_KEY), None),
+            SecurityState::with_keys(None, None),
+        ] {
+            let state = state.with_public_routes(super::PublicRouteTable::from_extensions(
+                &extensions,
+                "/api/v1",
+                &[],
+                &[],
+            ));
+            let app = Router::new()
+                .route(
+                    "/api/v1/ext/pair",
+                    post(
+                        |Extension(context): Extension<RequestAuthContext>| async move {
+                            if context.can_control() || context.is_loopback() {
+                                StatusCode::IM_A_TEAPOT
+                            } else {
+                                StatusCode::OK
+                            }
+                        },
+                    ),
+                )
+                .layer(axum::middleware::from_fn_with_state(
+                    state,
+                    enforce_security,
+                ));
+            let replay = || {
+                let mut request = Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/ext/pair")
+                    .body(Body::empty())
+                    .expect("failed to build request");
+                request.extensions_mut().insert(
+                    RequestAuthContext::unsecured().with_locality(super::RequestLocality::Loopback),
+                );
+                request
+                    .extensions_mut()
+                    .insert(super::AdmittedSessionReplay);
+                request
+            };
+
+            for attempt in 1..=6 {
+                let response = app
+                    .clone()
+                    .oneshot(replay())
+                    .await
+                    .expect("request should complete");
+                assert_eq!(response.status(), StatusCode::OK, "attempt {attempt}");
+                assert!(response.headers().contains_key("x-ratelimit-limit"));
+            }
+            let limited = app
+                .clone()
+                .oneshot(replay())
+                .await
+                .expect("request should complete");
+            assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        }
     }
 
     struct MountProbeExtension;
