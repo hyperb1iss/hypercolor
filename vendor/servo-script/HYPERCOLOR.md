@@ -71,7 +71,8 @@ File: `event_loop/script_thread.rs` (`EvaluationGc`,
 Each `evaluate_javascript` call compiles a new classic script. After it
 runs, most of what it leaves (the `ScriptSource` and its text, bytecode,
 and for sources of 256 characters or more an entry in the runtime's pending
-source compression list, which only a major GC drains) is malloc memory
+source compression list, which only a major GC drains outside SpiderMonkey's
+own tests) is malloc memory
 that SpiderMonkey does not count toward any GC trigger. What it does count
 is small: the `JSScript` and `ScriptSourceObject` cells toward the zone's GC
 heap trigger, which starts at 27 MB times the heap growth factor, and the
@@ -91,8 +92,9 @@ script thread runs `JS_GC` once that traffic has gone on for 60 seconds or
 compiled 16 MiB of source without a major GC in between. Any major GC,
 including one SpiderMonkey starts on its own, restarts the window, and a
 thread that sees no evaluations never collects. Nothing here is reachable
-from page script, and pages that do not receive embedder evaluations behave
-exactly as upstream.
+from page script. A script thread whose pages receive no embedder
+evaluations behaves exactly as upstream; on one that does, `JS_GC` collects
+the whole runtime, including any same-origin page that shares the thread.
 
 Upstream status: Servo `main` at `65406b6507b6` (2026-10-12) still has no
 idle, periodic, or evaluation-driven collection and never calls
@@ -101,8 +103,12 @@ idle, periodic, or evaluation-driven collection and never calls
 through `servointernals` when an embedder exposes it), window suspension,
 `TestUtils.gc()`, and the worklet threads' own heap-size check.
 
-A forced collection discards the page's JIT code, as any SpiderMonkey GC
-does unless the realm asks to keep it, so a JIT-heavy page recompiles hot
+A forced collection discards the page's JIT code. Outside its testing
+hooks, SpiderMonkey keeps JIT code across a GC only when its compartment
+has a frame on the stack, the realm asked to keep it, or the realm reported
+recent animation activity. None of those holds here: the collection runs
+with no script on the stack, and Servo never asks to keep JIT code or
+reports animation activity. A JIT-heavy page therefore recompiles hot
 functions once a minute while evaluation traffic lasts.
 
 ## Removal rule
