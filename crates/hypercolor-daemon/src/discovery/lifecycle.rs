@@ -557,8 +557,7 @@ pub(crate) fn handle_async_write_failures(
     }
 
     let actions = if let Ok(mut lifecycle) = runtime.lifecycle_manager.try_lock() {
-        let failures = claim_current_async_write_failures(failures);
-        async_write_failure_actions(&mut lifecycle, failures, Instant::now())
+        plan_async_write_recovery(&mut lifecycle, failures, Instant::now())
     } else {
         spawn_async_write_failure_worker(runtime.clone(), failures);
         return;
@@ -639,11 +638,33 @@ fn most_severe_per_device<T>(
         .collect()
 }
 
+/// Claim the failures lifecycle can act on and plan their recovery, all
+/// under one hold of the lifecycle lock.
+fn plan_async_write_recovery(
+    lifecycle: &mut DeviceLifecycleManager,
+    failures: Vec<AsyncWriteFailure>,
+    now: Instant,
+) -> Vec<PlannedWriteRecovery> {
+    let failures = claim_current_async_write_failures(lifecycle, failures);
+    async_write_failure_actions(lifecycle, failures, now)
+}
+
 fn claim_current_async_write_failures(
+    lifecycle: &DeviceLifecycleManager,
     failures: Vec<AsyncWriteFailure>,
 ) -> Vec<LifecycleWriteFailure> {
     let classified = failures
         .into_iter()
+        // A tracked device that cannot render yet is mid-connect: the
+        // connect path installs the new session's lanes before lifecycle
+        // marks it connected. Its failure stays unclaimed and is reported
+        // again once lifecycle can recover it. Claiming it now would discard
+        // the only report an idle lane that closed ever makes.
+        .filter(|failure| {
+            lifecycle
+                .state(failure.device_id)
+                .is_none_or(|state| state.is_renderable())
+        })
         .map(|failure| {
             let recovery = WriteFailureRecovery::classify(
                 &failure.error,
@@ -806,8 +827,7 @@ fn spawn_async_write_failure_worker(runtime: DiscoveryRuntime, failures: Vec<Asy
     std::mem::drop(task_spawner.spawn(async move {
         let actions = {
             let mut lifecycle = runtime.lifecycle_manager.lock().await;
-            let failures = claim_current_async_write_failures(failures);
-            async_write_failure_actions(&mut lifecycle, failures, Instant::now())
+            plan_async_write_recovery(&mut lifecycle, failures, Instant::now())
         };
 
         run_async_write_failure_actions(runtime, actions).await;
@@ -1090,7 +1110,20 @@ mod tests {
 
     fn active_lifecycle() -> (DeviceLifecycleManager, DeviceId) {
         let device_id = DeviceId::new();
-        let info = DeviceInfo {
+        let info = fixture_info(device_id);
+        let mut lifecycle = DeviceLifecycleManager::new();
+        lifecycle.on_discovered(device_id, &info, None);
+        lifecycle
+            .on_connected(device_id)
+            .expect("fixture should connect");
+        lifecycle
+            .on_frame_success(device_id)
+            .expect("fixture should become active");
+        (lifecycle, device_id)
+    }
+
+    fn fixture_info(device_id: DeviceId) -> DeviceInfo {
+        DeviceInfo {
             id: device_id,
             name: "Async Output Fixture".to_owned(),
             vendor: "Hypercolor".to_owned(),
@@ -1101,16 +1134,109 @@ mod tests {
             segments: Vec::new(),
             firmware_version: None,
             capabilities: DeviceCapabilities::default(),
-        };
-        let mut lifecycle = DeviceLifecycleManager::new();
-        lifecycle.on_discovered(device_id, &info, None);
+        }
+    }
+
+    /// Frame sink whose actor liveness the test controls.
+    #[derive(Default)]
+    struct ClosableFrameSink {
+        closed: std::sync::atomic::AtomicBool,
+    }
+
+    impl ClosableFrameSink {
+        fn close(&self) {
+            self.closed
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl hypercolor_driver_api::DeviceFrameSink for ClosableFrameSink {
+        fn is_closed(&self) -> bool {
+            self.closed.load(std::sync::atomic::Ordering::Acquire)
+        }
+
+        async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
+            Ok(())
+        }
+    }
+
+    /// The connect path installs the new session's frame sink, then awaits
+    /// metadata and mapping work before lifecycle marks the device
+    /// connected. An actor that exits in that window is reported by the
+    /// render thread while lifecycle cannot act on it yet; the report must
+    /// survive until it can.
+    fn assert_closure_during_connect_is_recovered(
+        mut lifecycle: DeviceLifecycleManager,
+        device_id: DeviceId,
+        connecting_state: DeviceState,
+    ) {
+        assert_eq!(lifecycle.state(device_id), Some(connecting_state.clone()));
+        let mut manager = hypercolor_core::device::BackendManager::new();
+        let sink = Arc::new(ClosableFrameSink::default());
+        manager.set_device_frame_sink("fixture", device_id, Some(sink.clone()));
+        sink.close();
+
+        let planned = plan_async_write_recovery(
+            &mut lifecycle,
+            manager.async_write_failures(),
+            Instant::now(),
+        );
+        assert!(planned.is_empty(), "nothing is recoverable mid-connect");
+        assert_eq!(lifecycle.state(device_id), Some(connecting_state));
+
         lifecycle
             .on_connected(device_id)
-            .expect("fixture should connect");
+            .expect("the connect completes");
+        let planned = plan_async_write_recovery(
+            &mut lifecycle,
+            manager.async_write_failures(),
+            Instant::now(),
+        );
+        assert_eq!(
+            planned.len(),
+            1,
+            "the closure reported mid-connect must still reach recovery"
+        );
+        assert!(
+            planned[0].actions.iter().any(|action| matches!(
+                action,
+                LifecycleAction::SpawnReconnect { device_id: id, .. } if *id == device_id
+            )),
+            "the dead session reconnects: {:?}",
+            planned[0].actions
+        );
+        assert_eq!(lifecycle.state(device_id), Some(DeviceState::Reconnecting));
+        assert!(
+            plan_async_write_recovery(
+                &mut lifecycle,
+                manager.async_write_failures(),
+                Instant::now()
+            )
+            .is_empty(),
+            "a recovered closure is claimed once"
+        );
+    }
+
+    #[test]
+    fn a_closure_during_the_first_connect_is_recovered_once_connected() {
+        let device_id = DeviceId::new();
+        let mut lifecycle = DeviceLifecycleManager::new();
+        lifecycle.on_discovered(device_id, &fixture_info(device_id), None);
+        assert_closure_during_connect_is_recovered(lifecycle, device_id, DeviceState::Known);
+    }
+
+    #[test]
+    fn a_closure_during_a_reconnect_attempt_is_recovered_once_connected() {
+        let (mut lifecycle, device_id) = active_lifecycle();
         lifecycle
-            .on_frame_success(device_id)
-            .expect("fixture should become active");
-        (lifecycle, device_id)
+            .on_comm_error_at(device_id, Instant::now())
+            .expect("the first session fails");
+        assert!(
+            lifecycle.on_reconnect_attempt(device_id).is_some(),
+            "the reconnect task connects again"
+        );
+        assert_closure_during_connect_is_recovered(lifecycle, device_id, DeviceState::Reconnecting);
     }
 
     fn async_failure(device_id: DeviceId, error: DeviceError) -> LifecycleWriteFailure {
