@@ -7172,6 +7172,200 @@ async fn a_command_executing_when_the_session_is_revoked_completes() {
     assert_eq!(probe.executed.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
+fn identified_probe_command(id: &str, path: &str) -> Message {
+    Message::Text(
+        serde_json::json!({
+            "type": "command",
+            "id": id,
+            "method": "POST",
+            "path": path,
+        })
+        .to_string()
+        .into(),
+    )
+}
+
+/// The next text frame of `kind` (`response`, `event`, ...), skipping others.
+async fn next_text_of_kind(
+    socket: &mut crate::api::local::TrustedLocalWebSocket,
+    kind: &str,
+) -> serde_json::Value {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let Some(Message::Text(text)) = socket.recv().await else {
+                continue;
+            };
+            let message: serde_json::Value =
+                serde_json::from_str(&text).expect("server frames are JSON");
+            if message["type"] == kind {
+                return message;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the session should send a {kind} frame"))
+}
+
+#[tokio::test]
+async fn a_session_keeps_delivering_events_while_a_command_runs() {
+    let (state, probe) = revocation_probe_state();
+    let mut socket = spawn_test_granted_local_socket(
+        Arc::clone(&state),
+        &tokio::runtime::Handle::current(),
+        authority_control(),
+        probe_grant(tokio_util::sync::CancellationToken::new()),
+    );
+    let hello = socket.recv().await.expect("test socket should emit hello");
+    assert!(matches!(hello, Message::Text(_)));
+
+    socket
+        .send(identified_probe_command("slow", "/probe/gated"))
+        .await
+        .expect("test socket should queue the slow command");
+    socket
+        .send(identified_probe_command("next", "/probe/count"))
+        .await
+        .expect("test socket should queue the next command");
+    probe.started.notified().await;
+
+    state
+        .event_bus
+        .publish(HypercolorEvent::ExtensionStateChanged {
+            source: "probe".to_owned(),
+            kind: "changed".to_owned(),
+            payload: serde_json::Value::Null,
+        });
+    let event = next_text_of_kind(&mut socket, "event").await;
+    assert_eq!(event["data"]["source"], "probe");
+    assert_eq!(
+        probe.executed.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the next command waits behind the one still running"
+    );
+
+    probe.release.notify_one();
+    let first = next_text_of_kind(&mut socket, "response").await;
+    let second = next_text_of_kind(&mut socket, "response").await;
+    assert_eq!(first["id"], "slow");
+    assert_eq!(second["id"], "next");
+    assert_eq!(probe.executed.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn commands_answer_in_the_order_they_arrived() {
+    let (state, _probe) = revocation_probe_state();
+    let mut socket = spawn_test_granted_local_socket(
+        Arc::clone(&state),
+        &tokio::runtime::Handle::current(),
+        authority_control(),
+        probe_grant(tokio_util::sync::CancellationToken::new()),
+    );
+    let hello = socket.recv().await.expect("test socket should emit hello");
+    assert!(matches!(hello, Message::Text(_)));
+
+    let ids = (0..40)
+        .map(|index| format!("cmd-{index}"))
+        .collect::<Vec<_>>();
+    for id in &ids {
+        socket
+            .send(identified_probe_command(id, "/probe/count"))
+            .await
+            .expect("test socket should queue the command");
+    }
+
+    let mut answered = Vec::new();
+    for _ in &ids {
+        let response = next_text_of_kind(&mut socket, "response").await;
+        answered.push(
+            response["id"]
+                .as_str()
+                .expect("responses carry their id")
+                .to_owned(),
+        );
+    }
+    assert_eq!(answered, ids);
+}
+
+#[tokio::test]
+async fn commands_a_peer_sent_before_closing_still_run() {
+    // The close can reach the session while earlier commands still wait in
+    // its lane or backlog; those were read, so they must still run.
+    for round in 0..16 {
+        let (state, probe) = revocation_probe_state();
+        let mut socket = spawn_test_granted_local_socket(
+            Arc::clone(&state),
+            &tokio::runtime::Handle::current(),
+            authority_control(),
+            probe_grant(tokio_util::sync::CancellationToken::new()),
+        );
+        let hello = socket.recv().await.expect("test socket should emit hello");
+        assert!(matches!(hello, Message::Text(_)));
+
+        for index in 0..6 {
+            socket
+                .send(identified_probe_command(
+                    &format!("before-close-{index}"),
+                    "/probe/count",
+                ))
+                .await
+                .expect("test socket should queue the command");
+        }
+        socket
+            .send(Message::Close(None))
+            .await
+            .expect("test socket should queue the close");
+        while socket.recv().await.is_some() {}
+
+        assert_eq!(
+            probe.executed.load(std::sync::atomic::Ordering::SeqCst),
+            6,
+            "round {round} dropped a command it had read"
+        );
+    }
+}
+
+#[tokio::test]
+async fn revocation_stops_commands_queued_behind_a_running_one() {
+    let (state, probe) = revocation_probe_state();
+    let revocation = tokio_util::sync::CancellationToken::new();
+    let mut socket = spawn_test_granted_local_socket(
+        Arc::clone(&state),
+        &tokio::runtime::Handle::current(),
+        authority_control(),
+        probe_grant(revocation.clone()),
+    );
+    let hello = socket.recv().await.expect("test socket should emit hello");
+    assert!(matches!(hello, Message::Text(_)));
+
+    socket
+        .send(identified_probe_command("slow", "/probe/gated"))
+        .await
+        .expect("test socket should queue the slow command");
+    for index in 0..4 {
+        socket
+            .send(identified_probe_command(
+                &format!("queued-{index}"),
+                "/probe/count",
+            ))
+            .await
+            .expect("test socket should queue the command");
+    }
+    probe.started.notified().await;
+    // Let the session read the queued commands into its lane.
+    for _ in 0..64 {
+        tokio::task::yield_now().await;
+    }
+    revocation.cancel();
+    probe.release.notify_one();
+    while socket.recv().await.is_some() {}
+
+    assert_eq!(
+        probe.executed.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "only the command already running when the session was revoked ran"
+    );
+}
+
 #[tokio::test]
 async fn command_responses_are_stamped_after_the_command_finishes() {
     let (state, probe) = revocation_probe_state();
