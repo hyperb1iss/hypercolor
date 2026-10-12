@@ -5,10 +5,12 @@ use crate::effect::servo::worker::{
     HARD_STALL_TIMEOUT, install_running_shared_worker, reset_shared_servo_worker_state,
     shutdown_shared_servo_worker,
     test_support::{
-        SHARED_WORKER_STATE_TEST_LOCK, spawn_blocking_load_test_worker, spawn_load_test_worker,
-        spawn_render_test_worker, spawn_test_worker, worker_client_from,
+        SHARED_WORKER_STATE_TEST_LOCK, spawn_blocking_load_test_worker,
+        spawn_contended_render_test_worker, spawn_load_test_worker, spawn_render_test_worker,
+        spawn_test_worker, worker_client_from,
     },
 };
+use crate::effect::servo::worker_client::ServoPendingRenderTiming;
 use hypercolor_types::audio::AudioData;
 #[cfg(feature = "servo-gpu-import")]
 use hypercolor_types::config::ServoGpuImportMode;
@@ -249,8 +251,9 @@ fn destroy_clears_renderer_state_without_shutting_down_shared_worker() {
     renderer.runtime_html_path = Some(PathBuf::from("runtime.html"));
     renderer.warned_fallback_frame = true;
     renderer.warned_stalled_frame = true;
+    renderer.warned_queued_render = true;
     renderer.hard_stall = Some(ServoHardStall {
-        pending_age: HARD_STALL_TIMEOUT,
+        executing: HARD_STALL_TIMEOUT,
     });
     renderer.command_queue_saturated = true;
     renderer.include_audio_updates = false;
@@ -285,6 +288,7 @@ fn destroy_clears_renderer_state_without_shutting_down_shared_worker() {
     assert!(!renderer.initialized);
     assert!(!renderer.warned_fallback_frame);
     assert!(!renderer.warned_stalled_frame);
+    assert!(!renderer.warned_queued_render);
     assert!(renderer.hard_stall.is_none());
     assert!(!renderer.command_queue_saturated);
     assert!(renderer.include_audio_updates);
@@ -1059,12 +1063,21 @@ fn poll_in_flight_render_clears_stall_warning_after_completed_frame() {
     assert!(stopped.load(Ordering::SeqCst));
 }
 
+fn executing_render(executing: Duration) -> ServoPendingRenderTiming {
+    ServoPendingRenderTiming {
+        queue_wait: Duration::ZERO,
+        executing: Some(executing),
+    }
+}
+
 #[test]
 fn hard_stalled_render_surfaces_an_error_until_a_frame_completes() {
     let mut renderer = ServoRenderer::new();
     renderer.initialized = true;
     renderer.update_stall_state(
-        Some(HARD_STALL_TIMEOUT + Duration::from_millis(1)),
+        Some(executing_render(
+            HARD_STALL_TIMEOUT + Duration::from_millis(1),
+        )),
         Duration::from_millis(50),
     );
     let mut target = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
@@ -1074,7 +1087,9 @@ fn hard_stalled_render_surfaces_an_error_until_a_frame_completes() {
         .expect_err("hard-stalled renders must reach the effect error seam");
     assert!(error.to_string().contains("hard-stalled after 501ms"));
     renderer.update_stall_state(
-        Some(HARD_STALL_TIMEOUT + Duration::from_millis(300)),
+        Some(executing_render(
+            HARD_STALL_TIMEOUT + Duration::from_millis(300),
+        )),
         Duration::from_millis(50),
     );
     let repeated = renderer
@@ -1099,6 +1114,171 @@ fn hard_stalled_render_surfaces_an_error_until_a_frame_completes() {
             .render_into(&frame_input(1.0 / 60.0), &mut target)
             .is_ok()
     );
+}
+
+#[test]
+fn queue_wait_alone_never_hard_stalls_a_render() {
+    let mut renderer = ServoRenderer::new();
+    renderer.initialized = true;
+    let mut target = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+
+    // The rehearsal that motivated this split: a render queued 1069ms
+    // behind five display faces' page loads, then ran normally.
+    renderer.update_stall_state(
+        Some(ServoPendingRenderTiming {
+            queue_wait: Duration::from_millis(1069),
+            executing: None,
+        }),
+        Duration::from_millis(50),
+    );
+    assert!(renderer.hard_stall.is_none());
+    assert!(renderer.warned_queued_render);
+    assert!(
+        renderer.warned_stalled_frame,
+        "a queued frame is still late"
+    );
+    renderer
+        .render_into(&frame_input(1.0 / 60.0), &mut target)
+        .expect("queue wait must not reach the effect error seam");
+
+    renderer.update_stall_state(
+        Some(ServoPendingRenderTiming {
+            queue_wait: Duration::from_millis(1069),
+            executing: Some(Duration::from_millis(40)),
+        }),
+        Duration::from_millis(50),
+    );
+    assert!(renderer.hard_stall.is_none());
+    renderer
+        .render_into(&frame_input(1.0 / 60.0), &mut target)
+        .expect("a render that started recently is not stalled");
+
+    renderer.update_stall_state(
+        Some(ServoPendingRenderTiming {
+            queue_wait: Duration::from_millis(1069),
+            executing: Some(HARD_STALL_TIMEOUT + Duration::from_millis(1)),
+        }),
+        Duration::from_millis(50),
+    );
+    let error = renderer
+        .render_into(&frame_input(1.0 / 60.0), &mut target)
+        .expect_err("a started render past the budget is hard-stalled");
+    assert!(
+        error.to_string().contains("hard-stalled after 501ms"),
+        "the reported stall excludes queue wait: {error}"
+    );
+}
+
+#[test]
+fn render_queued_behind_a_slow_command_is_not_stalled_until_it_starts() {
+    let contended = spawn_contended_render_test_worker();
+    let mut renderer = ServoRenderer::new();
+    attach_renderer_session(&mut renderer, &contended.worker);
+    renderer.initialized = true;
+    renderer.last_canvas = Some(solid_canvas(
+        DEFAULT_CANVAS_WIDTH,
+        DEFAULT_CANVAS_HEIGHT,
+        20,
+        40,
+        60,
+    ));
+
+    // A second session's page load holds the shared worker.
+    let neighbor_client = worker_client_from(&contended.worker);
+    let neighbor = thread::spawn(move || {
+        let mut session = ServoSessionHandle::new(
+            neighbor_client,
+            SessionConfig {
+                render_width: DEFAULT_CANVAS_WIDTH,
+                render_height: DEFAULT_CANVAS_HEIGHT,
+                inject_engine_globals: false,
+                producer_role: ServoProducerRole::DisplayFaceHtml,
+            },
+        )
+        .expect("neighbor session should initialize");
+        session
+            .load_url("about:blank")
+            .expect("neighbor page should load once released");
+        session
+    });
+    contended
+        .slow_load_started
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the neighbor's page load should occupy the worker");
+
+    renderer
+        .session
+        .as_mut()
+        .expect("attached test session")
+        .request_render_cpu(Vec::new())
+        .expect("render should queue behind the page load");
+    thread::sleep(HARD_STALL_TIMEOUT + Duration::from_millis(100));
+    renderer.poll_in_flight_render();
+
+    let queued = renderer
+        .session
+        .as_ref()
+        .and_then(ServoSessionHandle::pending_render_timing)
+        .expect("the render is still in flight");
+    assert!(queued.executing.is_none(), "the worker never started it");
+    assert!(queued.queue_wait > HARD_STALL_TIMEOUT);
+    assert!(renderer.hard_stall.is_none());
+    assert!(renderer.warned_queued_render);
+    renderer
+        .fail_if_render_degraded()
+        .expect("a render waiting on the worker is not degraded");
+
+    let released_at = Instant::now();
+    contended
+        .release_slow_load
+        .send(())
+        .expect("release the neighbor's page load");
+    let neighbor = neighbor.join().expect("neighbor thread should finish");
+    contended
+        .render_started
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the worker should start the queued render");
+
+    // The render now runs and never finishes: the protection still trips.
+    thread::sleep(HARD_STALL_TIMEOUT + Duration::from_millis(100));
+    renderer.poll_in_flight_render();
+    let error = renderer
+        .fail_if_render_degraded()
+        .expect_err("a started render that stops progressing is hard-stalled");
+    assert!(error.to_string().contains("hard-stalled"));
+    let stall = renderer.hard_stall.expect("hard stall recorded");
+    assert!(stall.executing >= HARD_STALL_TIMEOUT);
+    assert!(
+        stall.executing <= released_at.elapsed(),
+        "the stall clock starts when the worker starts the render, not at submission"
+    );
+
+    contended
+        .render_result
+        .send(Ok(solid_canvas(
+            DEFAULT_CANVAS_WIDTH,
+            DEFAULT_CANVAS_HEIGHT,
+            9,
+            8,
+            7,
+        )))
+        .expect("finish the wedged render");
+    contended
+        .render_delivered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("render result delivery ack");
+    renderer.poll_in_flight_render();
+    assert!(renderer.hard_stall.is_none());
+    assert!(!renderer.warned_queued_render);
+    renderer
+        .fail_if_render_degraded()
+        .expect("a completed frame clears the stall");
+
+    neighbor.close().expect("neighbor session should close");
+    renderer.destroy();
+    let stopped = Arc::clone(&contended.stopped);
+    drop(contended);
+    assert!(stopped.load(Ordering::SeqCst));
 }
 
 #[test]

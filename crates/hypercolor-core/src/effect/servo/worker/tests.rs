@@ -1,4 +1,5 @@
 use super::super::telemetry::servo_telemetry_snapshot;
+use super::super::worker_client::ServoRenderStart;
 use super::*;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::TryRecvError;
@@ -26,6 +27,7 @@ fn queued_render_command_with_role(
             height: 200,
             mode: ServoRenderMode::Cpu,
             submitted_at: Instant::now(),
+            started: ServoRenderStart::default(),
             response_tx,
         },
         response_rx,

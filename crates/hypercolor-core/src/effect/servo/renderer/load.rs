@@ -111,6 +111,7 @@ impl ServoRenderer {
         self.pending_frame_payloads.clear();
         self.warned_fallback_frame = false;
         self.warned_stalled_frame = false;
+        self.warned_queued_render = false;
         self.command_queue_saturated = false;
         self.include_audio_updates = effect_is_audio_reactive(metadata);
         self.include_screen_updates = metadata.screen_reactive;

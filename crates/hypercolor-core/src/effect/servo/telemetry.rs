@@ -218,6 +218,23 @@ pub(super) fn record_servo_render_queue_wait(producer_role: ServoProducerRole, w
     }
 }
 
+/// Raises the queue-wait maxima for a render that is still waiting on the
+/// worker, so one stuck behind a wedged worker shows up before it is ever
+/// dequeued. Counts and totals stay with [`record_servo_render_queue_wait`],
+/// which runs once per render when the worker starts it.
+pub(super) fn record_servo_render_queue_wait_in_progress(
+    producer_role: ServoProducerRole,
+    wait: Duration,
+) {
+    let wait_us = u64::try_from(wait.as_micros()).unwrap_or(u64::MAX);
+    let _ = SERVO_RENDER_QUEUE_WAIT_MAX_US.fetch_max(wait_us, Ordering::Relaxed);
+    let role_max = match producer_role {
+        ServoProducerRole::SceneHtml => &SERVO_RENDER_SCENE_QUEUE_WAIT_MAX_US,
+        ServoProducerRole::DisplayFaceHtml => &SERVO_RENDER_DISPLAY_QUEUE_WAIT_MAX_US,
+    };
+    let _ = role_max.fetch_max(wait_us, Ordering::Relaxed);
+}
+
 pub(super) fn record_servo_render_queue_depth(depth: usize) {
     let depth = u64::try_from(depth).unwrap_or(u64::MAX);
     SERVO_RENDER_QUEUE_DEPTH.store(depth, Ordering::Relaxed);
@@ -564,6 +581,10 @@ mod tests {
         record_servo_render_queue_depth(3);
         record_servo_render_superseded();
         record_servo_pending_render_age(Duration::from_micros(35));
+        record_servo_render_queue_wait_in_progress(
+            ServoProducerRole::DisplayFaceHtml,
+            Duration::from_secs(90),
+        );
 
         let after = servo_telemetry_snapshot();
         assert!(after.renderer_loads_total > before.renderer_loads_total);
@@ -589,6 +610,8 @@ mod tests {
         assert!(after.render_queue_depth <= after.render_queue_depth_max);
         assert!(after.render_superseded_total > before.render_superseded_total);
         assert!(after.render_pending_age_max_us >= 35);
+        assert!(after.render_queue_wait_max_us >= 90_000_000);
+        assert!(after.render_display_queue_wait_max_us >= 90_000_000);
     }
 
     #[cfg(feature = "servo-gpu-import")]
