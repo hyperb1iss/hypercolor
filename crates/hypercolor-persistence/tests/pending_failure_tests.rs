@@ -61,3 +61,33 @@ fn pending_failure_names_the_error_until_the_retry_lands() {
     assert_eq!(writer.pending_failure(), None, "the landed retry clears it");
     assert_eq!(fs::read(&path).expect("read converged file"), b"second");
 }
+
+#[test]
+fn a_newer_admission_keeps_the_failure_until_something_lands() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let directory = root.path().join("store");
+    fs::create_dir_all(&directory).expect("store directory");
+    let path = directory.join("state.json");
+    let writer = AtomicFileWriter::new(&path).expect("writer");
+    writer.write(b"first").expect("first write lands");
+
+    if !lock_directory(&directory) {
+        return;
+    }
+    let failed = writer.write(b"second");
+    let newer = writer.reserve().admit(b"third".to_vec());
+    let failure_while_newer_waits = writer.pending_failure();
+    set_mode(&directory, 0o700);
+
+    failed.expect_err("a read-only directory rejects the write");
+    assert!(
+        failure_while_newer_waits.is_some(),
+        "admitting a newer snapshot does not make the lagging file current"
+    );
+    assert!(
+        newer.commit().is_ok(),
+        "the newer snapshot lands once the directory is writable"
+    );
+    assert_eq!(writer.pending_failure(), None, "the landed write clears it");
+    assert_eq!(fs::read(&path).expect("read converged file"), b"third");
+}
