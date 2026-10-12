@@ -7,12 +7,18 @@ crate, from crates.io. The files are the published package exactly as
 commit `c78d2c206f80a1c8b67eefa97f773bba513205d3` per
 `.cargo_vcs_info.json`), plus this file. The root `Cargo.toml` swaps it in
 through `[patch.crates-io]`, so every other Servo crate still comes from
-crates.io. The crate is excluded from the workspace and keeps its own
-formatting, lints, and MPL-2.0 license headers.
+crates.io. The crate is excluded from the workspace and keeps upstream's
+formatting and MPL-2.0 license headers.
 
 The commit that added this directory carries no source edits. Each patch
 below lands in its own later commit, so `git log -p -- vendor/servo-script`
 shows every change against the published crate.
+
+One build setting differs from the published manifest: `Cargo.toml` ends
+with a `[lints.rust]` table that allows warnings. Cargo caps lints for
+crates.io dependencies but not for path dependencies, so without it every
+workspace build would print upstream's rustc warnings (96 under Rust 1.99).
+Deny-level lints still apply.
 
 ## Patches
 

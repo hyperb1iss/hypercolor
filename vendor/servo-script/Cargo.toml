@@ -686,3 +686,9 @@ optional = true
 level = "warn"
 priority = 0
 check-cfg = ["cfg(crown)"]
+
+# Hypercolor: cargo caps lints for crates.io dependencies but not for path
+# dependencies, so the vendored copy would print upstream's rustc warnings
+# on every workspace build. Keep it as quiet as the registry crate was.
+[lints.rust]
+warnings = { level = "allow", priority = 1 }
