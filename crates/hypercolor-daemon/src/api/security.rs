@@ -165,6 +165,15 @@ enum RequestLocality {
 #[derive(Debug, Clone, Copy)]
 struct TrustedLocalControl;
 
+/// Marks a command replayed from a WebSocket session.
+///
+/// The replay has no socket of its own, but its session's upgrade already
+/// passed the network policy, which is fixed for the life of the process,
+/// so the policy is not asked again. Only daemon code can attach an
+/// extension, so no client can forge the mark.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AdmittedSessionReplay;
+
 impl RequestAuthContext {
     #[must_use]
     pub(crate) const fn unsecured() -> Self {
@@ -1229,7 +1238,11 @@ pub async fn enforce_security(
         return next.run(request).await;
     }
 
-    if let Some(response) = state.network.reject_request(&request) {
+    let replayed = request
+        .extensions_mut()
+        .remove::<AdmittedSessionReplay>()
+        .is_some();
+    if !replayed && let Some(response) = state.network.reject_request(&request) {
         return response;
     }
 
@@ -3500,6 +3513,37 @@ mod tests {
                 .expect("request failed");
             assert_eq!(response.status(), expected, "{peer} {host} {origin:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_replayed_session_command_skips_the_policy_its_upgrade_passed() {
+        let replay = |admitted: bool| {
+            let mut request = Request::builder()
+                .uri("/api/v1/devices")
+                .body(Body::empty())
+                .expect("failed to build request");
+            request
+                .extensions_mut()
+                .insert(RequestAuthContext::unsecured());
+            if admitted {
+                request
+                    .extensions_mut()
+                    .insert(super::AdmittedSessionReplay);
+            }
+            request
+        };
+
+        let refused = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+            .oneshot(replay(false))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        let admitted = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+            .oneshot(replay(true))
+            .await
+            .expect("request failed");
+        assert_eq!(admitted.status(), StatusCode::OK);
     }
 
     #[tokio::test]

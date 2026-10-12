@@ -76,6 +76,9 @@ pub(super) async fn dispatch_command(
         }
     };
     request.extensions_mut().insert(auth_context);
+    request
+        .extensions_mut()
+        .insert(crate::api::security::AdmittedSessionReplay);
     // The credential that opened the session rides along, so a handler
     // sees who called and the middleware refuses it once revoked.
     if let Some(grant) = grant {
