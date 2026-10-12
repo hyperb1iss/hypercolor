@@ -24,7 +24,7 @@
         "capture:promote": "bun scripts/capture-screenshots.ts --promote"
     },
     "devDependencies": {
-        "@biomejs/biome": "2.5.14",
+        "@biomejs/biome": "2.5.15",
         "typescript": "^7.0.2"
     },
     "dependencies": {
