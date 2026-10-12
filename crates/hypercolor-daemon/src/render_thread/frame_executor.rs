@@ -581,6 +581,12 @@ pub(crate) async fn execute_frame(
                 .frame_policy
                 .sleep_throttle_execution(&mut render_loop);
         }
+        // Touches resolve through the same layout-to-device bindings that
+        // route LEDs; the next frame's effects read them.
+        render.render_zone_runtime.observe_device_bindings(
+            manager.routing_mapping_generation(),
+            manager.layout_device_bindings(),
+        );
         let mut unassigned_output_planner = UnassignedOutputPlanner::new(
             &manager,
             &mut render.output_artifacts.unassigned_output_cache,

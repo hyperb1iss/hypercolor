@@ -607,6 +607,7 @@ fn red_gif_bytes() -> Vec<u8> {
     bytes
 }
 
+mod device_surfaces;
 mod invalidation;
 mod layers;
 mod projection;
