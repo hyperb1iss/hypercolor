@@ -35,6 +35,10 @@ updates:
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "gleam"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # The workspace pins servo-allocator to Servo's exact version so
+      # core's use-jemalloc feature lands on the crate Servo links. A bump
+      # on its own adds a second, unused copy and silently drops jemalloc.
+      - dependency-name: "servo-allocator"
 
   - package-ecosystem: "cargo"
     directory: "/crates/hypercolor-ui"
