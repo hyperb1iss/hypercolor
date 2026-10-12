@@ -204,6 +204,76 @@ function Resolve-PawnIoModuleDir {
     return ""
 }
 
+function Get-RegisteredBrokerPath {
+    param([string]$Name)
+
+    $service = Get-CimInstance Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue
+    if (-not $service -or -not $service.PathName) {
+        return ""
+    }
+    return $service.PathName.Trim().Trim('"')
+}
+
+function Get-BrokerLogPath {
+    param([string]$BrokerPath)
+
+    # The broker writes its own log beside its executable; see
+    # crates/hypercolor-windows-pawnio/src/windows/service_log.rs.
+    Join-Path (Split-Path -Parent $BrokerPath) "logs\smbus-broker.log"
+}
+
+function Get-ServiceExitSummary {
+    param([string]$Name)
+
+    $service = Get-CimInstance Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue
+    if (-not $service) {
+        return "the service is not registered"
+    }
+    return "state $($service.State), exit code $($service.ExitCode), service-specific exit code $($service.ServiceSpecificExitCode)"
+}
+
+function Start-SmbusBroker {
+    param(
+        [string]$Name,
+        [string]$BrokerPath
+    )
+
+    # Start-Service waits without a bound while a service reports
+    # START_PENDING, which would hang the installer, so start through the
+    # controller and bound the wait. The broker reports Running before it
+    # touches PawnIO or its pipe, so check again a moment later that it
+    # stayed up.
+    $service = Get-Service -Name $Name -ErrorAction Stop
+    $failure = ""
+    try {
+        $service.Start()
+        $service.WaitForStatus("Running", [TimeSpan]::FromSeconds(20))
+        Start-Sleep -Seconds 2
+        $service.Refresh()
+        if ($service.Status -ne "Running") {
+            $failure = "it reported Running and then stopped"
+        }
+    } catch {
+        $failure = $_.Exception.GetBaseException().Message
+    }
+
+    if (-not $failure) {
+        Write-Host "Started $Name"
+        return
+    }
+
+    Write-Host "Could not start ${Name}: $failure"
+    Write-Host "  Service: $(Get-ServiceExitSummary $Name)"
+    $logPath = Get-BrokerLogPath $BrokerPath
+    if (Test-Path -LiteralPath $logPath) {
+        Write-Host "  Last lines of ${logPath}:"
+        Get-Content -LiteralPath $logPath -Tail 20 | ForEach-Object { Write-Host "    $_" }
+    } else {
+        Write-Host "  The broker wrote no log at $logPath, so its process never reached its own startup."
+    }
+    throw "$Name did not start: $failure"
+}
+
 if (-not (Test-IsAdministrator)) {
     throw "Install must run from an elevated PowerShell session."
 }
@@ -216,15 +286,36 @@ $binaryPath = '"' + $brokerPath + '"'
 
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
-    if (-not $Reinstall) {
-        throw "Service '$ServiceName' already exists. Pass -Reinstall to replace it."
+    # Re-registering the same broker binary is how a stopped or broken
+    # registration gets repaired (the app's Install support button runs
+    # this without -Reinstall), so only a registration that points at a
+    # different binary needs the explicit switch.
+    $registeredPath = Get-RegisteredBrokerPath $ServiceName
+    $sameBroker = $registeredPath -and $registeredPath.Equals($brokerPath, [System.StringComparison]::OrdinalIgnoreCase)
+    if (-not $Reinstall -and -not $sameBroker) {
+        throw "Service '$ServiceName' already exists for '$registeredPath'. Pass -Reinstall to replace it."
     }
 
+    # Stop-Service also waits without a bound, so stop through the
+    # controller and give it twenty seconds, like the installer hooks do.
     if ($existing.Status -ne "Stopped") {
-        Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+        if ($existing.Status -ne "StopPending") {
+            $existing.Stop()
+        }
+        $existing.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(20))
     }
     sc.exe delete $ServiceName | Out-Null
-    Start-Sleep -Milliseconds 500
+
+    # DeleteService only marks the service for deletion while anything
+    # holds a handle to it (an open Services console, a stuck stop), and
+    # New-Service then fails with "marked for deletion". Wait for it to go.
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+        throw "Service '$ServiceName' is still marked for deletion. Close the Services console or anything else holding it open, or restart Windows, then try again."
+    }
 }
 
 New-Service `
@@ -255,19 +346,24 @@ if ($serviceEnvironment.Count -gt 0) {
 }
 
 sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/""/60000 | Out-Null
+# Apply the restart actions when the broker stops itself with an error
+# exit code too, not only when its process crashes.
+sc.exe failureflag $ServiceName 1 | Out-Null
 
 Write-Host "Installed $ServiceName"
 Write-Host "  Binary: $brokerPath"
 Write-Host "  Account: LocalSystem (SMBus broker only)"
 if ($resolvedPawnIoHome) {
     Write-Host "  PawnIO: $resolvedPawnIoHome"
+} else {
+    Write-Host "  PawnIO: not found; the broker searches the PawnIO install location itself"
 }
 if ($resolvedPawnIoModuleDir) {
     Write-Host "  Modules: $resolvedPawnIoModuleDir"
 }
+Write-Host "  Log:    $(Get-BrokerLogPath $brokerPath)"
 Write-Host "  Start:  Start-Service $ServiceName"
 
 if ($Start) {
-    Start-Service -Name $ServiceName
-    Write-Host "Started $ServiceName"
+    Start-SmbusBroker -Name $ServiceName -BrokerPath $brokerPath
 }

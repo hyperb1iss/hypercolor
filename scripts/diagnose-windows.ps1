@@ -81,6 +81,47 @@ foreach ($name in @("HypercolorSmBus", "Hypercolor", "PawnIO", "pawnio", "Signal
     }
 }
 
+Write-Section "SMBus Broker"
+$broker = Get-CimInstance Win32_Service -Filter "Name='HypercolorSmBus'" -ErrorAction SilentlyContinue
+if ($broker) {
+    Write-Check "Registration" $true "$($broker.StartMode), runs as $($broker.StartName)"
+    Write-Host "       binary $($broker.PathName)"
+    # ExitCode 1077 means not started since boot, 0 a clean stop, 1066 the
+    # broker's own code in ServiceSpecificExitCode (1 request loop failed,
+    # 2 runtime failed), 1067 a crash.
+    Write-Check "State" ($broker.State -eq "Running") "$($broker.State), exit code $($broker.ExitCode), service-specific exit code $($broker.ServiceSpecificExitCode)"
+
+    $brokerDir = Split-Path -Parent $broker.PathName.Trim().Trim('"')
+    foreach ($log in @("smbus-broker.log", "hardware-support.log")) {
+        $logPath = Join-Path $brokerDir "logs\$log"
+        if (Test-Path -LiteralPath $logPath) {
+            Write-Check $log $true $logPath
+            Get-Content -LiteralPath $logPath -Tail 30 | ForEach-Object { Write-Host "       $_" }
+        } else {
+            Write-Check $log $false "not found at $logPath"
+        }
+    }
+} else {
+    Write-Check "Registration" $false "HypercolorSmBus is not registered"
+}
+
+try {
+    $events = @(Get-WinEvent -FilterHashtable @{
+            LogName      = "System"
+            ProviderName = "Service Control Manager"
+            StartTime    = (Get-Date).AddDays(-14)
+        } -ErrorAction Stop |
+        Where-Object { $_.Message -match "Hypercolor SMBus Broker|HypercolorSmBus|hypercolor-smbus-service" } |
+        Select-Object -First 20)
+    Write-Check "Service Control Manager events" $true "$($events.Count) in the last 14 days"
+    foreach ($scmEvent in $events) {
+        $line = ($scmEvent.Message -split "`r?`n")[0]
+        Write-Host "       $($scmEvent.TimeCreated.ToString('s')) $($scmEvent.Id) $line"
+    }
+} catch {
+    Write-Check "Service Control Manager events" $false $_.Exception.Message
+}
+
 Write-Section "PawnIO Files"
 $pawnIoDll = "C:\Program Files\PawnIO\PawnIOLib.dll"
 Write-Check "PawnIOLib.dll" (Test-Path -LiteralPath $pawnIoDll) $pawnIoDll

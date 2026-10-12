@@ -55,6 +55,7 @@ public static class InstallerWizard {
 
     const uint WM_COMMAND = 0x0111;
     const int IDOK = 1;
+    const int IDCANCEL = 2;
     const int IDNO = 7;
 
     static List<IntPtr> Dialogs(uint pid) {
@@ -72,15 +73,17 @@ public static class InstallerWizard {
         return found;
     }
 
-    // Answer every message box with No (the PawnIO restart question is the
-    // only one an upgrade asks, and older installers ask it even under /S),
-    // and when a wizard is given, press its Next or Finish button once it is
-    // enabled. Posting WM_COMMAND reaches the installer's windows directly,
-    // so nothing depends on keyboard focus.
+    // Answer every message box with No (the PawnIO restart question, which
+    // older installers ask even under /S) or dismiss it (the notice that the
+    // SMBus broker is not running), and when a wizard is given, press its
+    // Next or Finish button once it is enabled. Cancel never means Yes, so
+    // it cannot accept the restart. Posting WM_COMMAND reaches the
+    // installer's windows directly, so nothing depends on keyboard focus.
     public static void Step(uint pid, IntPtr wizard) {
         foreach (var dialog in Dialogs(pid)) {
             if (dialog != wizard) {
                 PostMessage(dialog, WM_COMMAND, (IntPtr)IDNO, IntPtr.Zero);
+                PostMessage(dialog, WM_COMMAND, (IntPtr)IDCANCEL, IntPtr.Zero);
             }
         }
         if (wizard == IntPtr.Zero) {
@@ -193,6 +196,23 @@ if (-not (Test-Path $appExe)) {
 }
 if (-not (Get-ChildItem -Path (Join-Path $installDir "ui") -File -ErrorAction SilentlyContinue)) {
     $failures += "the UI folder is empty after the upgrade"
+}
+
+# The broker is not part of the upgrade contract above, because a runner
+# may not take the PawnIO driver, but a broker that is not running after
+# an install is exactly what users hit, so put it in the run summary with
+# the setup and broker logs.
+$broker = Get-Service -Name HypercolorSmBus -ErrorAction SilentlyContinue
+if (-not $broker -or $broker.Status -ne "Running") {
+    $brokerState = if ($broker) { "$($broker.Status)" } else { "not registered" }
+    Write-Host "::warning::the HypercolorSmBus broker is $brokerState after the upgrade ($Mode)"
+    foreach ($log in @("hardware-support.log", "smbus-broker.log")) {
+        $logPath = Join-Path $installDir "tools\logs\$log"
+        if (Test-Path -LiteralPath $logPath) {
+            Write-Host "--- $logPath"
+            Get-Content -LiteralPath $logPath -Tail 40 | ForEach-Object { Write-Host $_ }
+        }
+    }
 }
 
 if ($failures) {

@@ -77,42 +77,67 @@ if (-not (Test-IsAdministrator)) {
 $pawnIoInstaller = Join-Path $PSScriptRoot "install-bundled-pawnio.ps1"
 $serviceInstaller = Join-Path $PSScriptRoot "install-windows-smbus-service.ps1"
 
-foreach ($path in @($pawnIoInstaller, $serviceInstaller, $BrokerExe)) {
-    if (-not (Test-Path -LiteralPath $path)) {
-        throw "Required hardware support file was not found: $path"
+# Keep a transcript beside the broker's own log. The installer only shows
+# this script's output in its details pane, which is gone once the wizard
+# closes; the diagnostics bundle collects this directory.
+$transcriptPath = Join-Path (Split-Path -Parent $BrokerExe) "logs\hardware-support.log"
+$transcribing = $false
+try {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $transcriptPath) | Out-Null
+    Start-Transcript -LiteralPath $transcriptPath -Append | Out-Null
+    $transcribing = $true
+} catch {
+    Write-Host "Could not keep a setup log at ${transcriptPath}: $($_.Exception.Message)"
+}
+
+try {
+    Write-Host "Hypercolor hardware support setup, $(Get-Date -Format o), $([IntPtr]::Size * 8)-bit PowerShell"
+
+    foreach ($path in @($pawnIoInstaller, $serviceInstaller, $BrokerExe)) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            throw "Required hardware support file was not found: $path"
+        }
+    }
+
+    # Hashtable splatting, not array splatting. Splatting an array into a
+    # PowerShell script binds every element positionally, so "-AssetRoot"
+    # lands in $AssetRoot as a literal value and switches never bind at all.
+    # Only native executables parse "-Name value" pairs out of a splatted
+    # array.
+    $pawnIoArgs = @{
+        AssetRoot         = $AssetRoot
+        ModuleDestination = $ModuleDestination
+    }
+    if ($ForcePawnIo) {
+        $pawnIoArgs["Force"] = $true
+    }
+    if ($Silent) {
+        $pawnIoArgs["Silent"] = $true
+    }
+    & $pawnIoInstaller @pawnIoArgs
+    $pawnIoExit = $LASTEXITCODE
+
+    $serviceArgs = @{
+        BrokerExe   = $BrokerExe
+        StartupType = "Automatic"
+    }
+    if ($ReinstallService) {
+        $serviceArgs["Reinstall"] = $true
+    }
+    if (-not $NoStartService) {
+        $serviceArgs["Start"] = $true
+    }
+    & $serviceInstaller @serviceArgs
+
+    Write-Host "Hypercolor Windows hardware support is ready"
+} catch {
+    Write-Host "Hypercolor Windows hardware support failed: $($_.Exception.Message)"
+    throw
+} finally {
+    if ($transcribing) {
+        Stop-Transcript | Out-Null
     }
 }
-
-# Hashtable splatting, not array splatting. Splatting an array into a
-# PowerShell script binds every element positionally, so "-AssetRoot" lands
-# in $AssetRoot as a literal value and switches never bind at all. Only
-# native executables parse "-Name value" pairs out of a splatted array.
-$pawnIoArgs = @{
-    AssetRoot         = $AssetRoot
-    ModuleDestination = $ModuleDestination
-}
-if ($ForcePawnIo) {
-    $pawnIoArgs["Force"] = $true
-}
-if ($Silent) {
-    $pawnIoArgs["Silent"] = $true
-}
-& $pawnIoInstaller @pawnIoArgs
-$pawnIoExit = $LASTEXITCODE
-
-$serviceArgs = @{
-    BrokerExe   = $BrokerExe
-    StartupType = "Automatic"
-}
-if ($ReinstallService) {
-    $serviceArgs["Reinstall"] = $true
-}
-if (-not $NoStartService) {
-    $serviceArgs["Start"] = $true
-}
-& $serviceInstaller @serviceArgs
-
-Write-Host "Hypercolor Windows hardware support is ready"
 
 # Propagate PawnIO's reboot-required signal (3010) up to the parent Tauri
 # command so the UI can surface a persistent "Restart Windows" banner
