@@ -85,9 +85,18 @@ $transcriptPath = Join-Path (Split-Path -Parent $BrokerExe) "logs\hardware-suppo
 $transcribing = $false
 try {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $transcriptPath) | Out-Null
+} catch {
+    Write-Host "Could not create the setup log directory: $($_.Exception.Message)"
+}
+try {
     if ((Test-Path -LiteralPath $transcriptPath) -and (Get-Item -LiteralPath $transcriptPath).Length -gt 1MB) {
         Move-Item -LiteralPath $transcriptPath -Destination "$transcriptPath.1" -Force
     }
+} catch {
+    # A log that cannot be rotated just keeps growing; this run still logs.
+    Write-Host "Could not rotate ${transcriptPath}: $($_.Exception.Message)"
+}
+try {
     Start-Transcript -LiteralPath $transcriptPath -Append | Out-Null
     $transcribing = $true
 } catch {
