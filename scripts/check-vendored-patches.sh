@@ -6,7 +6,9 @@
 #
 # The check asks Cargo which package it actually resolves (`cargo pkgid`
 # reads the lockfile and every config-level patch, offline), because
-# Cargo.lock does not record where a path package lives.
+# Cargo.lock does not record where a path package lives. It guards against
+# dependency drift, not deliberate local overrides: Cargo's `paths` config
+# and source replacement are not checked.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,7 +20,7 @@ import sys
 import tomllib
 import urllib.parse
 
-root = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[1]).resolve()
 failures = []
 checked = 0
 
@@ -48,7 +50,7 @@ for manifest_rel in sys.argv[2:]:
             continue
         checked += 1
         vendor_dir = (manifest.parent / spec["path"]).resolve()
-        vendor_rel = vendor_dir.relative_to(root)
+        vendor_rel = vendor_dir.relative_to(root) if vendor_dir.is_relative_to(root) else vendor_dir
         package = tomllib.loads((vendor_dir / "Cargo.toml").read_text())["package"]
         name, version = package["name"], package["version"]
         try:
