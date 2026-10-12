@@ -16,6 +16,11 @@ use windows_sys::Win32::System::Threading::{
 use crate::PawnIoErrorKind;
 
 mod broker;
+mod service_log;
+mod service_status;
+
+pub use service_log::broker_log_path;
+pub use service_status::{BrokerServiceState, BrokerServiceStatus, broker_service_status};
 
 const PAWNIO_INSTALL_ENV: &str = "HYPERCOLOR_PAWNIO_HOME";
 const PAWNIO_MODULE_ENV: &str = "HYPERCOLOR_PAWNIO_MODULE_DIR";

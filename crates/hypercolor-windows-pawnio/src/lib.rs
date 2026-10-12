@@ -1,7 +1,7 @@
 //! Safe wrapper around PawnIO SMBus modules on Windows.
 
 /// Stable error classification preserved across the local broker boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(
     target_os = "windows",
     derive(serde::Serialize, serde::Deserialize),
@@ -20,13 +20,70 @@ pub enum PawnIoErrorKind {
     Io,
 }
 
+/// Service Control Manager name the installer registers the SMBus broker
+/// under.
+pub const BROKER_SERVICE_NAME: &str = "HypercolorSmBus";
+
+/// Service-specific exit code the broker reports when its request loop
+/// failed.
+pub const BROKER_EXIT_SERVE_FAILED: u32 = 1;
+
+/// Service-specific exit code the broker reports when it could not start
+/// its async runtime.
+pub const BROKER_EXIT_RUNTIME_FAILED: u32 = 2;
+
+/// `ERROR_SERVICE_SPECIFIC_ERROR`: the service reported its own exit code.
+pub(crate) const ERROR_SERVICE_SPECIFIC_ERROR: u32 = 1066;
+/// `ERROR_SERVICE_REQUEST_TIMEOUT`.
+const ERROR_SERVICE_REQUEST_TIMEOUT: u32 = 1053;
+/// `ERROR_PROCESS_ABORTED`.
+const ERROR_PROCESS_ABORTED: u32 = 1067;
+/// `ERROR_SERVICE_NEVER_STARTED`.
+const ERROR_SERVICE_NEVER_STARTED: u32 = 1077;
+
+/// Explain a stopped broker's last exit, as the Service Control Manager
+/// recorded it, in words a person can act on.
+///
+/// `win32_exit_code` is `dwWin32ExitCode`; `service_specific_exit_code` is
+/// `dwServiceSpecificExitCode`, which only means something when the Win32
+/// code is 1066.
+#[must_use]
+pub fn describe_broker_exit(win32_exit_code: u32, service_specific_exit_code: u32) -> String {
+    match win32_exit_code {
+        0 => "it last stopped cleanly (exit code 0), so it was stopped on purpose or by a \
+              Windows shutdown and has not been started since"
+            .to_owned(),
+        ERROR_SERVICE_NEVER_STARTED => {
+            "it has not been started since Windows booted (exit code 1077)".to_owned()
+        }
+        ERROR_SERVICE_SPECIFIC_ERROR => match service_specific_exit_code {
+            BROKER_EXIT_SERVE_FAILED => {
+                "its request loop failed (broker exit code 1); its log says why".to_owned()
+            }
+            BROKER_EXIT_RUNTIME_FAILED => {
+                "it could not start its runtime (broker exit code 2); its log says why".to_owned()
+            }
+            code => format!("it stopped with broker exit code {code}"),
+        },
+        ERROR_PROCESS_ABORTED => {
+            "its process ended without reporting a stop (exit code 1067), which is a crash"
+                .to_owned()
+        }
+        ERROR_SERVICE_REQUEST_TIMEOUT => {
+            "it did not answer Windows in time when starting (exit code 1053)".to_owned()
+        }
+        code => format!("it last exited with Windows error {code}"),
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod windows;
 
 #[cfg(target_os = "windows")]
 pub use windows::{
-    CpuTempReader, CpuVendor, PawnIoError, PawnIoResult, SmBusBatchOperation, SmBusBlockData,
-    SmBusDirection, SmBusTransaction, WindowsSmBusBus, WindowsSmBusBusInfo, enumerate_smbus_buses,
+    BrokerServiceState, BrokerServiceStatus, CpuTempReader, CpuVendor, PawnIoError, PawnIoResult,
+    SmBusBatchOperation, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBus,
+    WindowsSmBusBusInfo, broker_log_path, broker_service_status, enumerate_smbus_buses,
     open_smbus_bus, run_smbus_service,
 };
 
