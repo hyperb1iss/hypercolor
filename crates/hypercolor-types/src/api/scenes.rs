@@ -119,6 +119,12 @@ pub struct SnapshotSceneRequest {
 }
 
 /// Whole-document replacement body for `PUT /api/v1/scenes/{id}`.
+///
+/// Accepts the [`SceneDocument`] a `GET` returned, edited in place. The
+/// server-owned fields it echoes are checked rather than written: `id`,
+/// `kind`, and `is_default` must match the stored scene, and `revision`
+/// is an optimistic-concurrency precondition with the same meaning as
+/// `If-Match`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
@@ -131,6 +137,15 @@ pub struct ReplaceSceneRequest {
     pub description: Option<String>,
     #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub kind: SceneKind,
+    /// Echo of the read-only default-scene flag. Must match the stored
+    /// scene when present; it can never be changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_default: Option<bool>,
+    /// The scene `revision` this replacement was built from. When
+    /// present, a stale value is refused with `412 precondition_failed`,
+    /// exactly as a stale `If-Match` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
     #[serde(default)]
     #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub unassigned_behavior: UnassignedBehavior,
@@ -210,6 +225,8 @@ impl From<&SceneDocument> for ReplaceSceneRequest {
             name: document.name.clone(),
             description: document.description.clone(),
             kind: document.kind,
+            is_default: Some(document.is_default),
+            revision: Some(document.revision),
             unassigned_behavior: document.unassigned_behavior.clone(),
             layout_id: document.layout_id.clone(),
             activation_brightness: document.activation_brightness,

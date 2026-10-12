@@ -175,9 +175,7 @@ def test_sync_client_round_trips_complete_stored_scene() -> None:
         assert request.url.path == f"/api/v1/scenes/{scene['id']}"
         if request.method == "PUT":
             assert request.headers["if-match"] == '"12"'
-            assert json.loads(request.content) == {
-                key: value for key, value in scene.items() if key not in {"is_default", "revision"}
-            }
+            assert json.loads(request.content) == scene
         return httpx.Response(
             200,
             content=msgspec.json.encode(

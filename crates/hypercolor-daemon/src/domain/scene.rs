@@ -2392,7 +2392,8 @@ pub struct SnapshotScene {
 pub struct ReplaceScene {
     /// Scene resolved from the route path.
     pub scene_id: SceneId,
-    /// Complete replacement document without server-owned fields.
+    /// Complete replacement document. Server-owned fields it echoes from
+    /// a read are checked against the stored scene, never written.
     pub document: ReplaceSceneRequest,
     /// Optional scene commit generation from `If-Match`.
     pub expected_revision: Option<u64>,
@@ -2519,12 +2520,14 @@ pub async fn snapshot_scene(
 ///
 /// Supplied zone and layer identities must already belong to the scene.
 /// Omitting either identity mints a fresh one. The one scene commit
-/// generation fences the entire replacement.
+/// generation fences the entire replacement, whether it arrives as
+/// `If-Match` or as the `revision` the document was read at.
 ///
 /// # Errors
 ///
 /// [`DomainError::NotFound`] for an unknown scene,
-/// [`DomainError::Validation`] for invalid or foreign identities,
+/// [`DomainError::Validation`] for invalid or foreign identities or a
+/// changed server-owned field,
 /// [`DomainError::PreconditionFailed`] for a stale revision, and
 /// [`DomainError::Conflict`] when a concurrent mutation lands first.
 pub async fn replace_scene(
@@ -2552,7 +2555,11 @@ pub async fn replace_scene(
 
     let default_layout = ctx.layout.current();
     let mut mutation = ctx.scene.begin_mutation().await;
+    // A read-back body echoes the revision it was read at. That echo is a
+    // precondition in its own right, so a request carrying both it and
+    // `If-Match` lands only when each one is current.
     crate::domain::scene_tree::check_scene_revision(&mutation, command.expected_revision)?;
+    crate::domain::scene_tree::check_scene_revision(&mutation, command.document.revision)?;
     let existing = mutation
         .scenes()
         .get(&command.scene_id)
@@ -2563,6 +2570,16 @@ pub async fn replace_scene(
         return Err(DomainError::validation_field(
             "kind",
             "scene kind cannot be changed",
+        ));
+    }
+    if command
+        .document
+        .is_default
+        .is_some_and(|is_default| is_default != existing.id.is_default())
+    {
+        return Err(DomainError::validation_field(
+            "is_default",
+            "is_default is server-owned and cannot be changed",
         ));
     }
     if command.scene_id.is_default() && command.document.name != existing.name {

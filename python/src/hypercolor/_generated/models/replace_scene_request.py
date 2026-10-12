@@ -21,20 +21,31 @@ T = TypeVar("T", bound="ReplaceSceneRequest")
 class ReplaceSceneRequest:
     """Whole-document replacement body for `PUT /api/v1/scenes/{id}`.
 
-    Attributes:
-        enabled (bool):
-        kind (str):
-        name (str):
-        priority (int):
-        transition (ReplaceSceneRequestTransition):
-        activation_brightness (float | None | Unset):
-        description (None | str | Unset):
-        id (None | str | Unset):
-        layout_id (None | str | Unset):
-        metadata (ReplaceSceneRequestMetadata | Unset):
-        mutation_mode (str | Unset):
-        unassigned_behavior (str | Unset):
-        zones (list[ReplaceZoneRequest] | Unset):
+    Accepts the [`SceneDocument`] a `GET` returned, edited in place. The
+    server-owned fields it echoes are checked rather than written: `id`,
+    `kind`, and `is_default` must match the stored scene, and `revision`
+    is an optimistic-concurrency precondition with the same meaning as
+    `If-Match`.
+
+        Attributes:
+            enabled (bool):
+            kind (str):
+            name (str):
+            priority (int):
+            transition (ReplaceSceneRequestTransition):
+            activation_brightness (float | None | Unset):
+            description (None | str | Unset):
+            id (None | str | Unset):
+            is_default (bool | None | Unset): Echo of the read-only default-scene flag. Must match the stored
+                scene when present; it can never be changed.
+            layout_id (None | str | Unset):
+            metadata (ReplaceSceneRequestMetadata | Unset):
+            mutation_mode (str | Unset):
+            revision (int | None | Unset): The scene `revision` this replacement was built from. When
+                present, a stale value is refused with `412 precondition_failed`,
+                exactly as a stale `If-Match` is.
+            unassigned_behavior (str | Unset):
+            zones (list[ReplaceZoneRequest] | Unset):
     """
 
     enabled: bool
@@ -45,9 +56,11 @@ class ReplaceSceneRequest:
     activation_brightness: float | None | Unset = UNSET
     description: None | str | Unset = UNSET
     id: None | str | Unset = UNSET
+    is_default: bool | None | Unset = UNSET
     layout_id: None | str | Unset = UNSET
     metadata: ReplaceSceneRequestMetadata | Unset = UNSET
     mutation_mode: str | Unset = UNSET
+    revision: int | None | Unset = UNSET
     unassigned_behavior: str | Unset = UNSET
     zones: list[ReplaceZoneRequest] | Unset = UNSET
 
@@ -80,6 +93,12 @@ class ReplaceSceneRequest:
         else:
             id = self.id
 
+        is_default: bool | None | Unset
+        if isinstance(self.is_default, Unset):
+            is_default = UNSET
+        else:
+            is_default = self.is_default
+
         layout_id: None | str | Unset
         if isinstance(self.layout_id, Unset):
             layout_id = UNSET
@@ -91,6 +110,12 @@ class ReplaceSceneRequest:
             metadata = self.metadata.to_dict()
 
         mutation_mode = self.mutation_mode
+
+        revision: int | None | Unset
+        if isinstance(self.revision, Unset):
+            revision = UNSET
+        else:
+            revision = self.revision
 
         unassigned_behavior = self.unassigned_behavior
 
@@ -118,12 +143,16 @@ class ReplaceSceneRequest:
             field_dict["description"] = description
         if id is not UNSET:
             field_dict["id"] = id
+        if is_default is not UNSET:
+            field_dict["is_default"] = is_default
         if layout_id is not UNSET:
             field_dict["layout_id"] = layout_id
         if metadata is not UNSET:
             field_dict["metadata"] = metadata
         if mutation_mode is not UNSET:
             field_dict["mutation_mode"] = mutation_mode
+        if revision is not UNSET:
+            field_dict["revision"] = revision
         if unassigned_behavior is not UNSET:
             field_dict["unassigned_behavior"] = unassigned_behavior
         if zones is not UNSET:
@@ -181,6 +210,15 @@ class ReplaceSceneRequest:
 
         id = _parse_id(d.pop("id", UNSET))
 
+        def _parse_is_default(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        is_default = _parse_is_default(d.pop("is_default", UNSET))
+
         def _parse_layout_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -198,6 +236,15 @@ class ReplaceSceneRequest:
             metadata = ReplaceSceneRequestMetadata.from_dict(_metadata)
 
         mutation_mode = d.pop("mutation_mode", UNSET)
+
+        def _parse_revision(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        revision = _parse_revision(d.pop("revision", UNSET))
 
         unassigned_behavior = d.pop("unassigned_behavior", UNSET)
 
@@ -219,9 +266,11 @@ class ReplaceSceneRequest:
             activation_brightness=activation_brightness,
             description=description,
             id=id,
+            is_default=is_default,
             layout_id=layout_id,
             metadata=metadata,
             mutation_mode=mutation_mode,
+            revision=revision,
             unassigned_behavior=unassigned_behavior,
             zones=zones,
         )
