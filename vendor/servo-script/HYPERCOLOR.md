@@ -40,9 +40,12 @@ finalization calls `setPrivate(UndefinedValue())`, which releases the
 engine's reference. The engine's reference is therefore balanced on its
 own, and the `into_raw` one leaks one `ModuleScript` per compiled classic
 script or module. Embedders that call `evaluate_javascript` every frame
-compile one classic script per call, so the leak grows without bound. For
-modules the leaked `ModuleScript` also holds a `Trusted<GlobalScope>`,
-which pins that global for the life of the thread.
+compile one classic script per call, so the leak grows without bound. The
+module path gets the same correction, though it rarely frees anything: a
+module's `ModuleScript` holds a `Trusted<GlobalScope>` that roots its
+global, and that global reaches the module's script source through its
+module map, so the pair stays alive together as it does upstream. Hypercolor's
+built-in effects load classic scripts only.
 
 The patch reclaims the caller's reference right after the engine took its
 own, so the `ModuleScript` lives exactly as long as its script source. If
@@ -69,9 +72,10 @@ Each `evaluate_javascript` call compiles a new classic script. After it
 runs, most of what it leaves (the `ScriptSource` and its text, bytecode,
 and for sources of 256 characters or more an entry in the runtime's pending
 source compression list, which only a major GC drains) is malloc memory
-that SpiderMonkey does not count toward any GC trigger. Only the small GC
-cells behind it (`JSScript`, `ScriptSourceObject`) count toward the zone's
-GC heap trigger, which starts at 27 MB times the heap growth factor. Gecko
+that SpiderMonkey does not count toward any GC trigger. What it does count
+is small: the `JSScript` and `ScriptSourceObject` cells toward the zone's GC
+heap trigger, which starts at 27 MB times the heap growth factor, and the
+script's `PrivateScriptData` toward the malloc trigger. Gecko
 covers this kind of garbage with its own idle and timer-driven GC
 scheduling; Servo 0.6 has none and never calls `JS_MaybeGC`. A page driven
 by one evaluation per frame and little other allocation therefore runs for
@@ -90,11 +94,16 @@ thread that sees no evaluations never collects. Nothing here is reachable
 from page script, and pages that do not receive embedder evaluations behave
 exactly as upstream.
 
-Upstream status: Servo `main` at `65406b6507b6` (2026-10-12) still runs
-only SpiderMonkey's allocation triggers on the script thread. The only
-explicit collection is `ScriptThreadMessage::TriggerGarbageCollection`,
-which page script reaches through `servointernals` when an embedder exposes
-it.
+Upstream status: Servo `main` at `65406b6507b6` (2026-10-12) still has no
+idle, periodic, or evaluation-driven collection and never calls
+`JS_MaybeGC`. Its explicit `JS_GC` calls are
+`ScriptThreadMessage::TriggerGarbageCollection` (which page script reaches
+through `servointernals` when an embedder exposes it), window suspension,
+`TestUtils.gc()`, and the worklet threads' own heap-size check.
+
+A forced collection discards the page's JIT code, as any SpiderMonkey GC
+does unless the realm asks to keep it, so a JIT-heavy page recompiles hot
+functions once a minute while evaluation traffic lasts.
 
 ## Removal rule
 
@@ -104,8 +113,9 @@ carries equivalent fixes. Until then, bumping Servo means re-vendoring
 confirming upstream made it unnecessary) in the same change. A patch entry
 for 0.6.0 does nothing for any other `servo-script` version: Cargo only
 warns that the patch went unused and builds the unpatched crate from
-crates.io. Dependabot ignores `servo-script` and minor `servo` bumps for that
-reason.
+crates.io. Dependabot ignores `servo-script` and `servo` for that reason:
+`servo` pins its script crate exactly, so even a patch release of `servo`
+would bypass the vendored copy.
 
 `[patch]` only applies to builds of this workspace. A `hypercolor-core`
 published to crates.io would build against the unpatched registry crate and
