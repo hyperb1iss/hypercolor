@@ -64,9 +64,13 @@
 //!   restore, sent with the next room in its window.
 //! - Fans that are present but confirm nothing for [`ECHO_STALL`], including
 //!   a recovery probe given its full observation interval, trigger the vendor
-//!   reset, which ends the session the way a refused write does. At most
-//!   [`MAX_RESETS_WITHOUT_DELIVERY`] resets are asked for on behalf of one
-//!   cluster until it confirms a frame again, across sessions.
+//!   reset, which ends the session the way a refused write does. A receiver
+//!   that drops out of a complete table restarts that interval on its first
+//!   return without a confirmed frame; later brief omissions keep the failed
+//!   probes as evidence, and only an absence past [`ABSENT_AFTER`] earns a
+//!   fresh interval again. At most [`MAX_RESETS_WITHOUT_DELIVERY`] resets
+//!   are asked for on behalf of one cluster until it confirms a frame
+//!   again, across sessions.
 //! - Past that the stall is the fans', not the TX's: the cluster's RGB
 //!   rests (upkeep goes on, so its fans hold their speed and clock), then
 //!   the session ends so the connect sequence runs again on fresh handles.
@@ -384,7 +388,8 @@ struct ClusterLink {
     /// after still samples the status cadence.
     resumed_at: Option<Instant>,
     timeouts: u32,
-    /// Actual probes since the last advance or receiver return.
+    /// Actual probes since the last advance or a return that renewed the
+    /// probe budget.
     probes: u32,
     /// The first probe's full timeout must expire before reset escalation.
     /// Further probes and cached status replies never move this deadline.
@@ -413,6 +418,9 @@ struct ClusterLink {
     absent_logged: bool,
     /// A complete device table explicitly omitted this cluster.
     missing: bool,
+    /// A return from a brief omission already restarted the probe budget
+    /// since the last confirmed frame.
+    return_grace_spent: bool,
 }
 
 impl Default for ClusterLink {
@@ -457,6 +465,7 @@ impl Default for ClusterLink {
             stall_warned: false,
             absent_logged: false,
             missing: false,
+            return_grace_spent: false,
         }
     }
 }
@@ -983,20 +992,30 @@ impl DeliveryPacer {
         self.ensure_clusters(cluster + 1);
         let link = &mut self.links[cluster];
         if link.missing || link.absent_logged {
+            // A receiver that was really gone, or the first return since the
+            // last confirmed frame, gets a fresh probe budget. Later brief
+            // omissions keep the failed probes, so a membership that keeps
+            // toggling cannot postpone the reset verdict forever.
+            let renew_budget = link.absent_logged || !link.return_grace_spent;
             link.missing = false;
             link.absent_logged = false;
             info!(
                 cluster,
-                "wireless cluster heard again; resuming its lighting"
+                renew_budget, "wireless cluster heard again; resuming its lighting"
             );
             // Nothing could be confirmed while it was not heard: give up on
             // what was out, and send the newest frame at once.
             link.lost_through = link.next_seq - 1;
             link.sent_content = None;
-            link.timeouts = 1;
-            link.probes = 0;
-            link.probe_deadline = None;
             link.rto_from = Some(now);
+            if renew_budget {
+                link.timeouts = 1;
+                link.probes = 0;
+                link.probe_deadline = None;
+                link.return_grace_spent = true;
+            } else {
+                link.timeouts = link.timeouts.max(1);
+            }
         }
         link.last_seen_at = Some(now);
         link.last_echo = Some(echo);
@@ -1074,6 +1093,7 @@ impl DeliveryPacer {
         link.timeouts = 0;
         link.probes = 0;
         link.probe_deadline = None;
+        link.return_grace_spent = false;
         link.rto_from = Some(now);
         link.last_progress_at = Some(now);
         link.next_poll_at = link.out_after_advance.then(|| link.first_poll(now));

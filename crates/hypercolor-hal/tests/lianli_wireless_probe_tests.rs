@@ -196,3 +196,119 @@ fn timeouts_without_an_emitted_probe_cannot_request_a_reset() {
     assert_eq!(pacer.totals().resends, 0);
     assert!(!pacer.reset_requested());
 }
+
+const TABLE_PERIOD: Duration = Duration::from_millis(100);
+
+/// One complete table reply followed by one frame-pump pass, in the
+/// protocol's order. The table either repeats the cluster's unchanged echo
+/// or omits the cluster, which only a complete table can do.
+fn stalled_step(
+    pacer: &mut DeliveryPacer,
+    content: u32,
+    echo: Option<Tag>,
+    now: Instant,
+) -> Option<StallVerdict> {
+    match echo {
+        Some(echo) => pacer.observe(0, echo, now),
+        None => pacer.note_missing(0),
+    }
+    let verdict = pacer.stall_verdict(now);
+    pacer.note_absences(now);
+    let content = content.to_be_bytes();
+    pacer.submit(0, content);
+    pacer.tick(now);
+    pacer.mark_window_limits(now);
+    if let Some(kind) = pacer.decide(0, now) {
+        pacer.note_sent(0, content, kind, now);
+    }
+    verdict
+}
+
+#[test]
+fn repeated_brief_omissions_cannot_renew_the_probe_budget_forever() {
+    let (mut pacer, start, echo) = warm_window();
+    let delivered = pacer.totals().frames_delivered;
+    let omission_every = Duration::from_secs(5);
+    let mut omissions = 0_u32;
+    let mut first_return = None;
+    let mut reset = None;
+
+    for step in 0..400_u32 {
+        let elapsed = TABLE_PERIOD * step;
+        let now = start + elapsed;
+        let omitted = elapsed.as_millis() % omission_every.as_millis() == 4_900;
+        if omitted {
+            omissions += 1;
+        } else if omissions == 1 && first_return.is_none() {
+            first_return = Some(now);
+        }
+        let verdict = stalled_step(&mut pacer, 10_000 + step, (!omitted).then_some(echo), now);
+        if let Some(verdict) = verdict {
+            reset = Some((now, verdict));
+            break;
+        }
+    }
+
+    let first_return = first_return.expect("the cluster returns after its first omission");
+    let (reset_at, verdict) = reset.expect(
+        "a stalled cluster that keeps reappearing with an unchanged echo must still reach a TX reset",
+    );
+    assert!(
+        omissions >= 2,
+        "the reset must survive a second brief omission, saw {omissions}"
+    );
+    assert!(
+        reset_at <= first_return + ECHO_TIMEOUT_CAP + TABLE_PERIOD,
+        "only the first return may restart the probe budget: reset {:?} after the first return",
+        reset_at.saturating_duration_since(first_return)
+    );
+    assert!(
+        matches!(verdict, StallVerdict::Reset { resends, .. } if resends >= 2),
+        "probes sent before a brief omission remain evidence: {verdict:?}"
+    );
+    assert_eq!(
+        pacer.totals().frames_delivered,
+        delivered,
+        "the echo never advanced"
+    );
+}
+
+#[test]
+fn a_genuine_absence_after_a_brief_omission_still_earns_a_fresh_probe_budget() {
+    let (mut pacer, start, echo) = warm_window();
+    let mut step = 0_u32;
+    let mut now = start;
+    let mut run = |pacer: &mut DeliveryPacer, until: Instant, echo: Option<Tag>| {
+        while now < until {
+            let verdict = stalled_step(pacer, 20_000 + step, echo, now);
+            assert!(verdict.is_none(), "no reset before {until:?}: {verdict:?}");
+            step += 1;
+            now += TABLE_PERIOD;
+        }
+        now
+    };
+
+    let omitted_at = run(&mut pacer, start + Duration::from_millis(4_900), Some(echo));
+    let returned = run(&mut pacer, omitted_at + TABLE_PERIOD, None);
+    let gone_at = run(&mut pacer, returned + Duration::from_secs(2), Some(echo));
+    // The receiver drops out of every complete table for longer than the
+    // absence threshold, then comes back still echoing the old frame.
+    let back_at = run(&mut pacer, gone_at + Duration::from_secs(4), None);
+    let almost_due = run(
+        &mut pacer,
+        back_at + ECHO_TIMEOUT_CAP.saturating_sub(TABLE_PERIOD),
+        Some(echo),
+    );
+
+    assert!(
+        stalled_step(&mut pacer, 29_999, Some(echo), almost_due).is_none(),
+        "a receiver that was really gone gets its full observation interval"
+    );
+    assert!(
+        matches!(
+            stalled_step(&mut pacer, 30_000, Some(echo), back_at + ECHO_TIMEOUT_CAP),
+            Some(StallVerdict::Reset { .. })
+        ),
+        "the returned receiver's probe budget still expires"
+    );
+}
