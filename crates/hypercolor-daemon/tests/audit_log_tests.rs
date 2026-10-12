@@ -107,8 +107,11 @@ fn request(method: &str, uri: &str, body: Option<&str>) -> Request<Body> {
         .header("content-type", "application/json")
         .body(body.map_or_else(Body::empty, |body| Body::from(body.to_owned())))
         .expect("request builds");
+    // A direct LAN peer: its forwarding header is only a claim. From a
+    // loopback peer the same header would make the request a relay, which a
+    // keyless daemon refuses.
     request.extensions_mut().insert(ConnectInfo(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
         50_000,
     )));
     request
@@ -191,7 +194,10 @@ async fn only_mutating_requests_are_audited_and_no_secret_reaches_the_trail() {
     assert_eq!(create.transport, AuditTransport::Http);
     assert_eq!(create.path, "/api/v1/scenes");
     assert_eq!(create.status, 201);
-    assert_eq!(create.remote, "127.0.0.1", "the socket peer, not a header");
+    assert_eq!(
+        create.remote, "192.168.1.20",
+        "the socket peer, not a header"
+    );
     assert_eq!(create.forwarded_for.as_deref(), Some("203.0.113.9"));
     assert_eq!(create.user_agent, "audit-test/1.0");
     assert!(

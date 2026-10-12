@@ -118,6 +118,17 @@ fn default_instance_name() -> String {
         .unwrap_or_else(|| DEFAULT_INSTANCE_NAME.to_owned())
 }
 
+/// Every host name this machine reports, for the names a keyless request
+/// may call the daemon by.
+pub(crate) fn system_host_names() -> Vec<String> {
+    let mut names = env_hostname()
+        .into_iter()
+        .chain(os_hostname())
+        .collect::<Vec<_>>();
+    names.dedup();
+    names
+}
+
 fn env_hostname() -> Option<String> {
     ["HOSTNAME", "COMPUTERNAME"].iter().find_map(|key| {
         std::env::var(key).ok().and_then(|value| {

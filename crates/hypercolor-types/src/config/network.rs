@@ -57,6 +57,12 @@ pub struct NetworkConfig {
     #[serde(default)]
     pub allowed_clients: Vec<String>,
 
+    /// Extra names a request without an API key may use for the daemon
+    /// in its `Host` header, beyond IP addresses, `localhost`, and the
+    /// machine's own names. `"*"` admits any name.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+
     #[serde(default)]
     pub instance_name: Option<String>,
 }
@@ -70,6 +76,7 @@ impl Default for NetworkConfig {
             remote_access: defaults::remote_access(),
             allow_unauthenticated_remote_access: false,
             allowed_clients: Vec::new(),
+            allowed_hosts: Vec::new(),
             instance_name: None,
         }
     }

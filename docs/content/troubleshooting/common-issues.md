@@ -224,7 +224,7 @@ Common causes:
 
 - **Reverse proxy not forwarding WebSocket.** If Hypercolor is behind nginx or Caddy for remote access, the proxy must forward the `Upgrade` header. A misconfigured proxy returns `400 Bad Request` on the handshake, leaving the preview dark while the REST API works.
 
-- **Browser origin refused.** The WebSocket upgrade always admits loopback origins (`localhost` and `127.0.0.1`, on any port), the desktop app, and any upgrade that carries an API key, so a UI opened at `localhost` never hits this and neither does a remote UI you connected with the key. It bites a browser on another host when the daemon has no API key: a keyless daemon refuses every other browser origin, and `cors_origins` does not apply. Set `HYPERCOLOR_API_KEY`, choose `access_mode = "lan_protected"`, and enter the key when the UI asks for its Network API Key. On a keyed daemon, listing an origin in `cors_origins` in `~/.config/hypercolor/hypercolor.toml` lets a page from that origin connect without the key, but only from a browser on the daemon's own machine; a remote browser still needs the key:
+- **Browser origin refused.** The WebSocket upgrade always admits loopback origins (`localhost`, `127.0.0.1`, and `[::1]`, on any port), the desktop app, the daemon's own origin, and any upgrade that carries an API key, so the bundled UI opened at `localhost` or at the daemon's own address never hits this, and neither does a remote UI you connected with the key. It bites a page served from some other origin, such as a UI dev server on another host, when the daemon has no API key: a keyless daemon refuses every other browser origin, and `cors_origins` does not apply. Set `HYPERCOLOR_API_KEY`, choose `access_mode = "lan_protected"`, and enter the key when the UI asks for its Network API Key. On a keyed daemon, listing an origin in `cors_origins` in `~/.config/hypercolor/hypercolor.toml` lets a page from that origin connect without the key, but only from a browser on the daemon's own machine; a remote browser still needs the key:
 
   ```toml
   [web]
@@ -245,6 +245,34 @@ hypercolor service logs --lines 50
 ```
 
 If events arrive in `websocat` but the browser preview is still dark, the problem is on the browser side. Open the developer console and look for WebSocket errors in the Network tab.
+
+---
+
+## 403: "not a name this daemon answers to"
+
+**Symptom:** the web UI loads from a name like `http://hypercolor.home:9420`,
+but every API call fails with `403 forbidden` and a message saying the host is
+not a name the daemon answers to without an API key.
+
+**Cause:** a request without an API key has to call the daemon by an IP
+address, `localhost`, one of the machine's own host names, or the daemon's
+mDNS name. That rule keeps a malicious web page from reaching your daemon
+through DNS rebinding. A name from your router's DNS is none of those.
+
+**Fix:** add the name to `network.allowed_hosts` and restart the daemon:
+
+```toml
+[network]
+allowed_hosts = ["hypercolor.home"]
+```
+
+Or browse to the daemon's IP address instead, or use an API key. See
+[Host names](@/api/auth-and-security.md#host-names).
+
+If the name belongs to a reverse proxy in front of the daemon, give the daemon
+an API key instead: a keyless daemon refuses relayed requests unless you have
+opened keyless remote access on purpose (see
+[Behind a reverse proxy](@/api/auth-and-security.md#behind-a-reverse-proxy)).
 
 ---
 

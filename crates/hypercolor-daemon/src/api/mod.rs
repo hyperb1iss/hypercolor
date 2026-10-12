@@ -17,6 +17,8 @@ pub mod drivers;
 pub mod effects;
 pub mod envelope;
 mod error;
+mod forwarded;
+mod host_names;
 pub mod layouts;
 pub mod library;
 pub mod local;
@@ -147,9 +149,9 @@ pub(crate) fn openapi_document() -> utoipa::openapi::OpenApi {
 ///
 /// This is the one place a serving [`security::SecurityState`] is
 /// minted: the environment keys, the configured network policy (which
-/// enumerates the host's interfaces), the downstream credential
-/// authority, and the macOS session credential are each resolved once
-/// per process. Every other `AppState` is a
+/// enumerates the host's interfaces), the names a keyless request may
+/// call the daemon by, the downstream credential authority, and the
+/// macOS session credential are each resolved once per process. Every other `AppState` is a
 /// worker projection carrying [`security::SecurityState::unserved`],
 /// so a second projection can neither rescan interfaces nor open a
 /// rate-limit budget the enforced state does not know about.
@@ -159,7 +161,14 @@ pub(crate) fn build_state(
     credential_authority: Option<Arc<dyn security::CredentialAuthority>>,
 ) -> AppState {
     let mut state = AppState::from_daemon_state(daemon);
-    let mut security = security::SecurityState::from_config(&daemon.config_manager.get());
+    let config = daemon.config_manager.get();
+    let mut security = security::SecurityState::from_config(&config).with_host_allowlist(
+        host_names::HostAllowlist::for_daemon(
+            &config,
+            &daemon.server_identity,
+            crate::startup::system_host_names(),
+        ),
+    );
     if let Some(authority) = credential_authority {
         security = security.with_credential_authority(authority);
     }
@@ -368,7 +377,7 @@ fn is_http_origin(origin: &str) -> bool {
             .is_none_or(|path| matches!(path.as_str(), "" | "/"))
 }
 
-fn is_loopback_origin(origin: &HeaderValue) -> bool {
+pub(crate) fn is_loopback_origin(origin: &HeaderValue) -> bool {
     let Ok(origin) = origin.to_str() else {
         return false;
     };
@@ -386,6 +395,12 @@ fn is_loopback_origin(origin: &HeaderValue) -> bool {
         return true;
     }
 
+    // `Uri::host()` keeps the brackets on an IPv6 literal (`[::1]`), which
+    // `IpAddr` will not parse.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
     host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
@@ -410,6 +425,14 @@ mod cors_tests {
         ));
         assert!(is_allowed_cors_origin(
             &origin("http://127.0.0.1:9430"),
+            &configured
+        ));
+        assert!(is_allowed_cors_origin(
+            &origin("http://[::1]:9430"),
+            &configured
+        ));
+        assert!(!is_allowed_cors_origin(
+            &origin("http://[2001:db8::1]:9430"),
             &configured
         ));
         for native_origin in [

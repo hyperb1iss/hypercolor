@@ -402,7 +402,9 @@ fn api_security_is_resolved_once_at_router_assembly() {
 
     let api_root = source("api/mod.rs");
     assert!(api_root.contains("pub(crate) fn build_state("));
-    assert!(api_root.contains("SecurityState::from_config(&daemon.config_manager.get())"));
+    assert!(api_root.contains("let config = daemon.config_manager.get();"));
+    assert!(api_root.contains("SecurityState::from_config(&config)"));
+    assert!(api_root.contains("HostAllowlist::for_daemon("));
     assert!(api_root.contains("security.install_macos_daemon_session(attestation)"));
 
     let daemon = source("daemon.rs");
@@ -411,10 +413,15 @@ fn api_security_is_resolved_once_at_router_assembly() {
 
     let minters = sources
         .iter()
-        .filter(|(path, _)| !path.ends_with("api/security.rs") && !path.ends_with("api/mod.rs"))
+        .filter(|(path, _)| {
+            !path.ends_with("api/security.rs")
+                && !path.ends_with("api/mod.rs")
+                && !path.ends_with("api/host_names.rs")
+        })
         .filter(|(_, source)| {
             source.contains("SecurityState::from_config(")
                 || source.contains("SecurityState::from_env(")
+                || source.contains("HostAllowlist::for_daemon(")
         })
         .map(|(path, _)| path.display().to_string())
         .collect::<Vec<_>>();

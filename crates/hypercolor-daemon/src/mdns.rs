@@ -117,6 +117,12 @@ impl MdnsPublisher {
     }
 }
 
+/// The `.local` host name the daemon advertises over mDNS, with its
+/// trailing root dot.
+pub(crate) fn advertised_host_name(identity: &ServerIdentity) -> String {
+    host_name(identity)
+}
+
 fn host_name(identity: &ServerIdentity) -> String {
     let base = sanitize_dns_label(&identity.instance_name);
     let suffix: String = identity.instance_id.chars().take(8).collect();

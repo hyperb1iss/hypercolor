@@ -342,8 +342,11 @@ mdns_publish                      = true            # Advertise daemon over mDNS
 remote_access                     = false           # Legacy: open API to non-loopback clients
 allow_unauthenticated_remote_access = false         # Permit API calls without auth from network
 allowed_clients                   = []              # IP/CIDR allowlist (e.g. ["192.168.1.0/24"])
+allowed_hosts                     = []              # Extra Host names for keyless requests (e.g. ["hypercolor.home"])
 instance_name                     = ""              # mDNS instance name (defaults to hostname)
 ```
+
+A request without an API key must call the daemon by an IP address, `localhost`, one of the machine's own host names, the daemon's mDNS name, or a name in `allowed_hosts`. See [Host names](@/api/auth-and-security.md#host-names).
 
 **Access modes:**
 

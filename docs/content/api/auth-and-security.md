@@ -154,14 +154,14 @@ credentials closes every WebSocket that credential opened with close code
 
 ## The loopback exemption
 
-Requests whose client IP is loopback (`127.0.0.0/8`, `::1`) skip the API-key
-requirement for ordinary lighting control. This is why the CLI, TUI, web UI,
-and a local MCP client all work with no key on a default install. The daemon
-derives the client IP from the peer socket; when the peer is itself loopback (a
-reverse proxy on the same host) it honors `X-Forwarded-For` / `X-Real-IP` so the
-real remote IP is used for auth and allowlisting. Forwarded headers from a
-**non-loopback** peer are ignored, so you cannot spoof your way to a loopback
-exemption.
+Requests that arrive straight from a loopback peer (`127.0.0.0/8`, `::1`) skip
+the API-key requirement for ordinary lighting control. This is why the CLI,
+TUI, web UI, and a local MCP client all work with no key on a default install.
+The daemon judges locality from the peer socket. A request a loopback reverse
+proxy relayed is never local, whatever address it claims (see
+[Behind a reverse proxy](#behind-a-reverse-proxy)), and forwarding headers from
+a **non-loopback** peer are ignored, so neither path spoofs its way to the
+loopback exemption.
 
 Loopback locality is not a user identity. These surfaces require protected
 control authority even when the TCP peer is loopback:
@@ -186,15 +186,18 @@ authentication boundary has succeeded.
 Trusting loopback would let a malicious web page in the user's browser issue
 drive-by writes to `http://localhost:9420`. To block that, **cross-site
 mutating requests to the loopback API are rejected** with `403 forbidden`. The
-daemon keys this on the browser-set `Sec-Fetch-Site: cross-site` header: the
-bundled web UI (same-origin) and non-browser clients (CLI, SDK, which omit the
-header) are unaffected; only a browser explicitly marking the request
-cross-site is denied.
+daemon keys this on the browser-set `Sec-Fetch-Site: cross-site` header and, for
+browsers that send no Fetch Metadata (they send none to a plain-HTTP LAN
+address), on `Origin`: a write whose `Origin` is neither a loopback origin nor
+the daemon's own origin is denied. The bundled web UI (same-origin) and
+non-browser clients (CLI, SDK, which send neither header) are unaffected.
 
 {% <callout type="warning"> %}
 The CSRF guard fires for **any** mutating loopback request marked cross-site,
 even when no API key is configured. A page on another origin cannot `POST` to
-your local daemon to install an effect or change a scene.
+your local daemon to install an effect or change a scene. A keyless LAN
+listener applies the same guard to every client it admits, since it grants
+them the same ambient control.
 {% </callout> %}
 
 ## Network access policy
@@ -211,6 +214,7 @@ config change under `[network]`.
 | `network.client_scope` | enum | `local_subnets` | Which built-in IP scope to trust: `local_subnets`, `private_ranges`, `custom` |
 | `network.remote_access` | bool | `false` | Force remote access on without changing `access_mode` |
 | `network.allowed_clients` | list | `[]` | Extra exact IPs or CIDR rules, e.g. `["192.168.1.0/24", "10.0.0.5"]` |
+| `network.allowed_hosts` | list | `[]` | Extra `Host` names a request without a key may use, e.g. `["hypercolor.home"]` (see [Host names](#host-names)) |
 | `network.allow_unauthenticated_remote_access` | bool | `false` | Permit remote clients without a key (see warning); implied by `lan_trusted`, ignored by `lan_protected` |
 | `network.mdns_publish` | bool | `true` | Advertise the daemon over mDNS |
 
@@ -222,21 +226,23 @@ How the scopes resolve when remote access is on:
   `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `fc00::/7`,
   `fe80::/10`.
 - **`custom`** trusts only the explicit `allowed_clients` you list; no built-in
-  scope is added.
+  scope is added. Listing none blocks every remote client.
 
 The `custom` access mode ignores `client_scope` and trusts only
 `allowed_clients`. In the other modes, `allowed_clients` entries are layered
 on top of the resolved scope. A non-loopback client whose IP matches no rule
 gets `403 forbidden` with a detail body naming the rejected `client_ip`.
-Loopback is exempt from the allowlist in every mode.
+A direct loopback peer is exempt from the allowlist in every mode; a request a
+loopback proxy relays is judged by the address the proxy names.
 
 The allowlist applies only when it holds at least one rule. When the resolved
 scope and `allowed_clients` are both empty, as in `local_only` mode with
-`remote_access` off or with `client_scope = "custom"` and nothing listed, the
+`remote_access` off or the `custom` access mode with nothing listed, the
 policy admits every client that reaches the daemon, and only an API key, if
 one is set, stands between those clients and the API. An `allowed_clients`
-entry that fails to parse, or a `local_subnets` scope that finds no
-non-loopback subnet, blocks every remote client with `403` instead.
+entry that fails to parse, a `local_subnets` scope that finds no non-loopback
+subnet, or a `custom` client scope that lists nothing blocks every remote
+client with `403` instead.
 
 ```toml
 [network]
@@ -281,11 +287,74 @@ address it listens on while no API key or credential authority is configured
 and the network policy admits a remote client of that address's family,
 because any device the policy admits can control it.
 
+## Behind a reverse proxy
+
+A reverse proxy on the same host (Caddy, nginx, Traefik) reaches the daemon
+from a loopback address, so the daemon reads the client from the proxy's
+forwarding headers instead. Any of `X-Forwarded-For`, `X-Real-IP`, or
+`Forwarded` on a loopback connection marks the request as relayed, and a
+relayed request is treated as a network request:
+
+- It never gets the loopback exemption, even when it claims `127.0.0.1`.
+  Without a credential it is refused unless the config opens keyless remote
+  access (`access_mode = "lan_trusted"`, or
+  `allow_unauthenticated_remote_access = true`), the same rule a network
+  listener follows. A local browser that goes through the proxy therefore
+  needs an API key; use `http://127.0.0.1:9420` directly to stay keyless.
+- The allowlist judges the address the nearest hop wrote: the **last**
+  `X-Forwarded-For` entry, `X-Real-IP`, and the last `Forwarded` element's
+  `for=`. A proxy appends to `X-Forwarded-For` and passes earlier entries
+  through as the client sent them, so only the last one is the proxy's word.
+- The daemon cannot tell which header your proxy owns, so when several are
+  present, every address they claim must pass the allowlist. A relayed request
+  that names no readable address is refused while an allowlist is active.
+
+Configure the proxy to send `X-Forwarded-For` (Caddy and Traefik do by default;
+nginx needs `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`).
+A proxy that names no client (no forwarding headers, or only
+`X-Forwarded-Host` and `X-Forwarded-Proto`) is indistinguishable from a local
+process: every client it relays gets loopback trust, whether or not an API key
+is set. Don't put one in front of the daemon for remote access.
+
+## Host names
+
+A request that presents no credential, whether it rides the loopback
+exemption or reaches a keyless LAN listener, must call the daemon by a name an
+attacker cannot point at it. This stops DNS rebinding: a page on
+`rebind.example` can make the browser resolve its own name to `127.0.0.1` or
+the daemon's LAN address, and the browser then treats the daemon as that
+page's origin, so `Origin` and `Sec-Fetch-Site` both look same-origin. The
+`Host` header still says `rebind.example`, and the daemon refuses it with
+`403 forbidden` naming the host.
+
+These names always work:
+
+- Any IP address, such as `127.0.0.1`, `[::1]`, or `192.168.1.10`.
+- `localhost` and any name under `.localhost`.
+- The machine's host names (from `HOSTNAME`, `COMPUTERNAME`, or
+  `/etc/hostname`), each with its `.local` form.
+- The name the daemon advertises over mDNS.
+- The hosts of `web.cors_origins` entries.
+
+Add any other name you use, such as one your router's DNS hands out, to
+`network.allowed_hosts`. Entries match the exact name, ignoring case and port.
+`"*"` turns the check off. On macOS the daemon may not learn the machine's
+host name, so a `.local` name typed into the browser can need an entry.
+
+A proxy that rewrites `Host` and keeps the browser's name in
+`X-Forwarded-Host`, as the UI dev server's proxy does, is checked through that
+header as well: every name listed there must pass.
+
+A request that presents an API key or session credential carries its own
+authority and is not checked, and neither are the exempt paths (`/health`,
+the API docs, and the bundled UI's assets). A request with no `Host` header
+at all comes from no browser and passes.
+
 ## CORS
 
 The daemon always sends CORS headers for **loopback origins** (`http` or
-`https` on `localhost` or a `127.0.0.0/8` address, on any port) and for the
-desktop shell's Tauri origins. Additional browser origins are honored
+`https` on `localhost`, a `127.0.0.0/8` address, or `[::1]`, on any port) and
+for the desktop shell's Tauri origins. Additional browser origins are honored
 only when **API authentication is enabled** and the origin is listed in
 `web.cors_origins`:
 
@@ -419,14 +488,17 @@ channel and frame protocol once connected, see
 
 The upgrade also checks the browser `Origin`. An upgrade that sends no
 `Origin` header, as native clients do, skips the check. An anonymous upgrade is
-admitted only from loopback origins, the desktop shell's Tauri origins, and, on
-a keyed daemon, the origins in `web.cors_origins`: the allowlist keeps other
-pages from riding the credentialless loopback tier. A keyed daemon refuses a
-remote upgrade without a credential with `401` before the `Origin` check, so
-`cors_origins` only matters for browsers on the daemon's own machine. On a
-daemon with no API
-key, that means a browser on another machine cannot open the WebSocket, even
-when it loaded the bundled UI from the daemon's own LAN address.
+admitted only from loopback origins, the desktop shell's Tauri origins, the
+daemon's own origin, and, on a keyed daemon, the origins in
+`web.cors_origins`: the allowlist keeps other pages from riding the
+credentialless loopback tier. A keyed daemon refuses a remote upgrade without a
+credential with `401` before the `Origin` check, so `cors_origins` only
+matters for browsers on the daemon's own machine.
+
+The daemon's own origin is the one the upgrade was sent to (its `Origin`
+matches its `Host`), so the bundled UI opened at a keyless daemon's LAN
+address goes live. A rebinding page is same-origin too, but its `Host` is not
+one of the daemon's names, so [the Host check](#host-names) refuses it first.
 
 A WebSocket upgrade that presents a valid API key is no longer subject to the
 browser origin allowlist. This is a behavior change for every key holder,
@@ -446,8 +518,9 @@ For a daemon you intend to reach over the network:
 3. Narrow `client_scope` (prefer `local_subnets`) and add explicit
    `allowed_clients` CIDRs for the hosts that should reach the daemon.
 4. List only the exact browser origins you trust in `web.cors_origins`.
-5. Terminate TLS at a reverse proxy on the same host so the daemon sees a
-   loopback peer and reads the real client IP from `X-Forwarded-For`.
+5. Terminate TLS at a reverse proxy on the same host that sends
+   `X-Forwarded-For`, so the daemon judges the real client (see
+   [Behind a reverse proxy](#behind-a-reverse-proxy)).
 
 For the rest of the contract this auth layer guards, see the
 [REST API reference](@/api/rest.md), the

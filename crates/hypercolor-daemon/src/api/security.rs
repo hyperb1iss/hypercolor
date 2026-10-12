@@ -27,6 +27,8 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 pub use super::credential_authority::{CredentialAuthority, CredentialGrant, CredentialTier};
+use super::forwarded;
+use super::host_names::HostAllowlist;
 use crate::domain::DomainError;
 use crate::extensions::{ApiExtension, PublicRateClass};
 use crate::macos_owner::MacosDaemonSessionAttestation;
@@ -43,6 +45,11 @@ const READ_LIMIT_PER_MIN: u32 = 120;
 const WRITE_LIMIT_PER_MIN: u32 = 60;
 const DISCOVERY_LIMIT_PER_MIN: u32 = 2;
 const PAIRING_LIMIT_PER_MIN: u32 = 6;
+
+const X_FORWARDED_HOST: &str = "x-forwarded-host";
+
+/// The longest `Host` value a refusal repeats back.
+const MAX_REFUSED_HOST_CHARS: usize = 260;
 
 const TRUSTED_TAURI_ORIGINS: &[&str] = &[
     "tauri://localhost",
@@ -73,6 +80,7 @@ pub struct SecurityState {
     rate_limiter: Arc<Mutex<RateLimiter>>,
     static_assets: StaticAssetSurface,
     public_routes: PublicRouteTable,
+    hosts: HostAllowlist,
 }
 
 /// The paths the bundled web UI is served from.
@@ -147,9 +155,10 @@ enum ProtectedControl {
 /// Where a request came from, as the middleware classified it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RequestLocality {
-    /// A socket peer on another host, or a loopback proxy forwarding one.
+    /// A socket peer on another host, or any request a loopback proxy
+    /// relayed.
     Network,
-    /// A loopback socket peer with no forwarded client.
+    /// A loopback socket peer that relayed nothing.
     Loopback,
     /// The in-process trusted transport.
     InProcess,
@@ -157,6 +166,15 @@ enum RequestLocality {
 
 #[derive(Debug, Clone, Copy)]
 struct TrustedLocalControl;
+
+/// Marks a command replayed from a WebSocket session.
+///
+/// The replay has no socket of its own, but its session's upgrade already
+/// passed the network policy, which is fixed for the life of the process,
+/// so the policy is not asked again. Only daemon code can attach an
+/// extension, so no client can forge the mark.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AdmittedSessionReplay;
 
 impl RequestAuthContext {
     #[must_use]
@@ -266,12 +284,12 @@ impl RequestAuthContext {
         matches!(self.protected_control, ProtectedControl::Granted)
     }
 
-    /// Whether the request came from a loopback peer.
+    /// Whether the request came straight from a loopback peer.
     ///
-    /// A loopback proxy that forwards a client address makes the request
-    /// the forwarded client's, so this is the classification to trust,
-    /// not the raw socket address. Always `false` on a public route, which
-    /// any web page can reach through a loopback browser.
+    /// A request a loopback proxy relayed is never loopback, whatever
+    /// address its forwarding headers claim, so this is the classification
+    /// to trust, not the raw socket address. Always `false` on a public
+    /// route, which any web page can reach through a loopback browser.
     #[must_use]
     pub const fn is_loopback(self) -> bool {
         matches!(self.locality, RequestLocality::Loopback)
@@ -315,6 +333,7 @@ impl SecurityState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
             public_routes: PublicRouteTable::default(),
+            hosts: HostAllowlist::default(),
         }
     }
 
@@ -338,6 +357,7 @@ impl SecurityState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
             public_routes: PublicRouteTable::default(),
+            hosts: HostAllowlist::default(),
         }
     }
 
@@ -356,6 +376,65 @@ impl SecurityState {
     pub fn with_static_assets(mut self, static_assets: StaticAssetSurface) -> Self {
         self.static_assets = static_assets;
         self
+    }
+
+    /// Declare the names a request without a credential may call the
+    /// daemon by. Called once where the serving state is minted.
+    #[must_use]
+    pub(crate) fn with_host_allowlist(mut self, hosts: HostAllowlist) -> Self {
+        self.hosts = hosts;
+        self
+    }
+
+    /// Refuse a request riding ambient authority that names the daemon
+    /// by a foreign host: the mark of a DNS-rebinding page. A request
+    /// without any `Host` header comes from no browser and passes.
+    ///
+    /// A proxy that rewrites `Host`, as the UI dev server's does, keeps
+    /// the browser's name in `X-Forwarded-Host`, so every entry there must
+    /// pass too. A client can only refuse itself by writing one.
+    fn refuse_foreign_host(&self, request: &Request<Body>) -> Option<Response> {
+        let headers = request.headers();
+        let named = headers
+            .get_all(header::HOST)
+            .iter()
+            .map(|value| value.to_str().ok())
+            .chain(
+                request
+                    .uri()
+                    .authority()
+                    .map(|authority| Some(authority.as_str())),
+            )
+            .chain(headers.get_all(X_FORWARDED_HOST).iter().flat_map(
+                |value| match value.to_str() {
+                    Ok(list) => list.split(',').map(Some).collect::<Vec<_>>(),
+                    Err(_) => vec![None],
+                },
+            ));
+        for host in named {
+            if host.is_some_and(|host| self.hosts.admits(host)) {
+                continue;
+            }
+            // The name is the caller's, so it is capped (a DNS name never
+            // exceeds 253 bytes) before it reaches the log or the reply.
+            let host = host
+                .unwrap_or("(unreadable)")
+                .chars()
+                .take(MAX_REFUSED_HOST_CHARS)
+                .collect::<String>();
+            self.hosts.log_refusal(&host);
+            return Some(
+                DomainError::forbidden_details(
+                    format!(
+                        "Host '{host}' is not a name this daemon answers to without an API key. \
+                         Use its IP address or localhost, or add the name to network.allowed_hosts."
+                    ),
+                    json!({ "host": host, "setting": "network.allowed_hosts" }),
+                )
+                .into_response(),
+            );
+        }
+        None
     }
 
     /// Install the downstream credential authority.
@@ -698,6 +777,7 @@ impl SecurityState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
             public_routes: PublicRouteTable::default(),
+            hosts: HostAllowlist::default(),
         }
     }
 
@@ -711,6 +791,7 @@ impl SecurityState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
             public_routes: PublicRouteTable::default(),
+            hosts: HostAllowlist::default(),
         }
     }
 
@@ -730,6 +811,7 @@ impl SecurityState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
             public_routes: PublicRouteTable::default(),
+            hosts: HostAllowlist::default(),
         }
     }
 }
@@ -745,6 +827,10 @@ struct NetworkAccessPolicy {
     allowed_clients: Vec<ClientAddressRule>,
     invalid_rules: Vec<String>,
     scope_errors: Vec<String>,
+    /// Whether config opens keyless control to remote clients, the rule
+    /// a network bind follows. A relayed request is held to it too,
+    /// since a proxy is a network bind the daemon never saw.
+    unauthenticated_remote: bool,
 }
 
 impl NetworkAccessPolicy {
@@ -786,10 +872,23 @@ impl NetworkAccessPolicy {
             }
         }
 
+        // A custom scope trusts only the clients it lists. Listing none
+        // would otherwise leave the policy empty, and an empty policy
+        // admits every client.
+        if config.remote_access_enabled()
+            && config.access_mode != NetworkAccessMode::Custom
+            && config.client_scope == NetworkClientScope::Custom
+            && allowed_clients.is_empty()
+            && invalid_rules.is_empty()
+        {
+            scope_errors.push("client_scope \"custom\" lists no allowed_clients".to_owned());
+        }
+
         Self {
             allowed_clients,
             invalid_rules,
             scope_errors,
+            unauthenticated_remote: config.unauthenticated_remote_access_allowed(),
         }
     }
 
@@ -825,14 +924,26 @@ impl NetworkAccessPolicy {
             return None;
         }
 
-        let Some(client_ip) = client_ip(request) else {
-            return Some(
-                DomainError::forbidden("Client IP is required by network.allowed_clients")
-                    .into_response(),
-            );
+        // A relayed request is judged by every address its headers claim,
+        // because only the header the relay owns is trustworthy and the
+        // daemon cannot tell which one that is. The owned header names
+        // the real client, so a client outside the allowlist fails on it
+        // whatever it writes into the others.
+        let addresses = match client_origin(request) {
+            Some(ClientOrigin::Direct(ip)) => vec![ip],
+            Some(ClientOrigin::Forwarded(claims)) if !claims.is_empty() => {
+                match claims.into_iter().collect::<Option<Vec<_>>>() {
+                    Some(addresses) => addresses,
+                    None => return Some(client_ip_required()),
+                }
+            }
+            Some(ClientOrigin::Forwarded(_)) | None => return Some(client_ip_required()),
         };
-
-        if client_ip.is_loopback() {
+        let remote = addresses
+            .into_iter()
+            .filter(|ip| !ip.is_loopback())
+            .collect::<Vec<_>>();
+        if remote.is_empty() {
             return None;
         }
 
@@ -856,22 +967,25 @@ impl NetworkAccessPolicy {
             );
         }
 
-        if self
-            .allowed_clients
-            .iter()
-            .any(|rule| rule.matches(client_ip))
-        {
-            return None;
-        }
+        let refused = remote.into_iter().find(|client_ip| {
+            !self
+                .allowed_clients
+                .iter()
+                .any(|rule| rule.matches(*client_ip))
+        })?;
 
         Some(
             DomainError::forbidden_details(
                 "Client IP is not allowed by network.allowed_clients",
-                json!({ "client_ip": client_ip.to_string() }),
+                json!({ "client_ip": refused.to_string() }),
             )
             .into_response(),
         )
     }
+}
+
+fn client_ip_required() -> Response {
+    DomainError::forbidden("Client IP is required by network.allowed_clients").into_response()
 }
 
 fn discover_local_subnet_rules() -> Result<Vec<ClientAddressRule>, String> {
@@ -1141,7 +1255,11 @@ pub async fn enforce_security(
         return next.run(request).await;
     }
 
-    if let Some(response) = state.network.reject_request(&request) {
+    let replayed = request
+        .extensions_mut()
+        .remove::<AdmittedSessionReplay>()
+        .is_some();
+    if !replayed && let Some(response) = state.network.reject_request(&request) {
         return response;
     }
 
@@ -1190,13 +1308,27 @@ pub async fn enforce_security(
         return rate_limited(&state, request, next, class).await;
     }
 
+    // A replay has no socket, so it can never look local again. An
+    // anonymous session that loopback trust admitted, or any client of a
+    // keyless daemon, keeps the standing its upgrade earned instead of
+    // being asked for a key it never needed. Exempt paths and public
+    // routes above have already stripped that standing where it does not
+    // belong, rate limit included.
+    if replayed
+        && request
+            .extensions()
+            .get::<RequestAuthContext>()
+            .is_some_and(|context| {
+                !context.security_enabled() && (context.is_loopback() || !state.security_enabled())
+            })
+    {
+        return next.run(request).await;
+    }
+
     let optional_system_auth = is_optional_system_auth(request.method(), request.uri().path());
 
     if locality == RequestLocality::Loopback {
-        if is_mutating_request(request.method())
-            && is_cross_site_request(&request)
-            && !has_trusted_tauri_session(&state, &request)
-        {
+        if is_foreign_page_write(&request) && !has_trusted_tauri_session(&state, &request) {
             return DomainError::forbidden(
                 "Cross-site mutating requests to the loopback API are blocked to prevent CSRF.",
             )
@@ -1210,6 +1342,9 @@ pub async fn enforce_security(
                 return DomainError::unauthorized("Invalid API key").into_response();
             }
             Some(None) | None => {
+                if let Some(response) = state.refuse_foreign_host(&request) {
+                    return response;
+                }
                 request
                     .extensions_mut()
                     .insert(RequestAuthContext::unsecured().with_locality(locality));
@@ -1223,6 +1358,30 @@ pub async fn enforce_security(
             return DomainError::unauthorized("Invalid API key").into_response();
         }
         if request.extensions().get::<RequestAuthContext>().is_none() {
+            if let Some(response) = state.refuse_foreign_host(&request) {
+                return response;
+            }
+            // A keyless listener grants every admitted client control, so
+            // a cross-site page in a LAN browser would ride it exactly as
+            // it would ride loopback trust.
+            if is_foreign_page_write(&request) && !has_trusted_tauri_session(&state, &request) {
+                return DomainError::forbidden(
+                    "Cross-site mutating requests without an API key are blocked to prevent CSRF.",
+                )
+                .into_response();
+            }
+            // A local proxy relays remote clients to a daemon bound to
+            // loopback, so without this every client it relays would hold
+            // keyless control the config never opened to the network.
+            if request_is_relayed(&request) && !state.network.unauthenticated_remote {
+                return DomainError::forbidden_details(
+                    "Requests relayed by a reverse proxy need an API key: this daemon does not \
+                     allow unauthenticated remote access. Set HYPERCOLOR_API_KEY, or choose \
+                     access_mode = \"lan_trusted\" to open keyless access deliberately.",
+                    json!({ "setting": "network.access_mode" }),
+                )
+                .into_response();
+            }
             request
                 .extensions_mut()
                 .insert(RequestAuthContext::unsecured().with_locality(locality));
@@ -1387,6 +1546,44 @@ fn is_cross_site_request(request: &Request<Body>) -> bool {
         .is_some_and(|site| site == "cross-site")
 }
 
+/// Whether a mutating request comes from a page on another origin.
+///
+/// Fetch Metadata answers that where the browser sends it, but browsers
+/// send it only to secure and loopback origins, never to a plain-HTTP LAN
+/// address. `Origin` covers the rest: browsers attach it to every
+/// cross-origin write, form posts included, so one that is neither a
+/// loopback origin nor the daemon's own marks a foreign page. Native
+/// clients send neither header and pass.
+fn is_foreign_page_write(request: &Request<Body>) -> bool {
+    is_mutating_request(request.method())
+        && (is_cross_site_request(request)
+            || request.headers().get(header::ORIGIN).is_some_and(|origin| {
+                !super::is_loopback_origin(origin) && !is_own_origin(origin, request.headers())
+            }))
+}
+
+/// Whether `origin` is the authority the request was sent to, which makes
+/// the page one this daemon served.
+///
+/// A DNS-rebinding page is same-origin too, under its own name, but the
+/// Host check refuses a keyless request that names the daemon by a
+/// foreign host before anything consults this.
+pub(crate) fn is_own_origin(origin: &HeaderValue, headers: &axum::http::HeaderMap) -> bool {
+    let (Ok(origin), Some(Ok(host))) = (
+        origin.to_str(),
+        headers.get(header::HOST).map(HeaderValue::to_str),
+    ) else {
+        return false;
+    };
+    let Ok(uri) = origin.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    matches!(uri.scheme_str(), Some("http" | "https"))
+        && uri
+            .authority()
+            .is_some_and(|authority| authority.as_str().eq_ignore_ascii_case(host.trim()))
+}
+
 /// Compare a presented token against a configured key without leaking
 /// how far the two agreed.
 ///
@@ -1528,23 +1725,52 @@ fn allows_query_token(request: &Request<Body>) -> bool {
             .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
 }
 
-fn client_identity(request: &Request<Body>) -> String {
-    client_ip(request).map_or_else(|| "unknown".to_owned(), |ip| ip.to_string())
+/// Where a request came from, before authentication.
+enum ClientOrigin {
+    /// The socket peer itself: every connection a loopback proxy did not
+    /// relay. Forwarding headers from any other peer are ignored.
+    Direct(IpAddr),
+    /// A loopback peer relaying a client, with the address each of its
+    /// forwarding headers claims for the nearest hop.
+    Forwarded(Vec<Option<IpAddr>>),
 }
 
-pub(crate) fn request_is_loopback(request: &Request<Body>) -> bool {
-    client_ip(request).is_some_and(|ip| ip.is_loopback())
-}
-
-fn client_ip(request: &Request<Body>) -> Option<IpAddr> {
-    if let Some(socket_addr) = peer_socket_addr(request) {
-        if socket_addr.ip().is_loopback() && forwarded_client_header_present(request) {
-            return forwarded_client_ip(request)?.parse::<IpAddr>().ok();
-        }
-        return Some(socket_addr.ip());
+fn client_origin(request: &Request<Body>) -> Option<ClientOrigin> {
+    let peer = peer_socket_addr(request)?.ip();
+    if peer.is_loopback() && forwarded::forwarding_present(request.headers()) {
+        return Some(ClientOrigin::Forwarded(forwarded::nearest_hop_claims(
+            request.headers(),
+        )));
     }
+    Some(ClientOrigin::Direct(peer))
+}
 
-    None
+/// The rate-limit key for a request: the peer, or for a relayed request
+/// the first address its headers claim. A client can vary a header its
+/// proxy does not own, so a relayed key is best effort.
+fn client_identity(request: &Request<Body>) -> String {
+    match client_origin(request) {
+        Some(ClientOrigin::Direct(ip)) => ip.to_string(),
+        Some(ClientOrigin::Forwarded(claims)) => claims
+            .into_iter()
+            .flatten()
+            .next()
+            .map_or_else(|| "forwarded".to_owned(), |ip| ip.to_string()),
+        None => "unknown".to_owned(),
+    }
+}
+
+/// Whether the request came straight from a loopback peer.
+///
+/// A relayed request is never loopback, whatever address it claims: the
+/// relay may be forwarding a remote client, and a header the relay does
+/// not overwrite is whatever that client wrote.
+pub(crate) fn request_is_loopback(request: &Request<Body>) -> bool {
+    matches!(client_origin(request), Some(ClientOrigin::Direct(ip)) if ip.is_loopback())
+}
+
+fn request_is_relayed(request: &Request<Body>) -> bool {
+    matches!(client_origin(request), Some(ClientOrigin::Forwarded(_)))
 }
 
 fn peer_socket_addr(request: &Request<Body>) -> Option<std::net::SocketAddr> {
@@ -1552,27 +1778,6 @@ fn peer_socket_addr(request: &Request<Body>) -> Option<std::net::SocketAddr> {
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
         .map(|ConnectInfo(socket_addr)| *socket_addr)
-}
-
-fn forwarded_client_ip(request: &Request<Body>) -> Option<String> {
-    if let Some(forwarded) = request.headers().get("x-forwarded-for") {
-        let value = forwarded.to_str().ok()?;
-        let first = value.split(',').next()?;
-        let trimmed = first.trim();
-        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
-    }
-
-    if let Some(real_ip) = request.headers().get("x-real-ip") {
-        let value = real_ip.to_str().ok()?;
-        let trimmed = value.trim();
-        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
-    }
-
-    None
-}
-
-fn forwarded_client_header_present(request: &Request<Body>) -> bool {
-    request.headers().contains_key("x-forwarded-for") || request.headers().contains_key("x-real-ip")
 }
 
 fn apply_rate_headers(response: &mut Response, decision: &RateDecision) {
@@ -1740,6 +1945,16 @@ mod tests {
     fn allowlist_test_router(allowed_clients: Vec<String>) -> Router {
         router_with_security_state(SecurityState::with_network_config(NetworkConfig {
             allowed_clients,
+            ..NetworkConfig::default()
+        }))
+    }
+
+    /// A keyless daemon whose config opens remote access, so a relayed
+    /// request reaches the allowlist instead of the relay refusal.
+    fn relay_allowlist_router(allowed: &str) -> Router {
+        router_with_security_state(SecurityState::with_network_config(NetworkConfig {
+            allowed_clients: vec![allowed.to_owned()],
+            allow_unauthenticated_remote_access: true,
             ..NetworkConfig::default()
         }))
     }
@@ -3027,6 +3242,589 @@ mod tests {
         assert_eq!(super::client_identity(&request), "203.0.113.50");
     }
 
+    fn relayed_request(uri: &str, headers: &[(&str, &str)]) -> Request<Body> {
+        let mut request = Request::builder().uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        with_connect_info(
+            request
+                .body(Body::empty())
+                .expect("failed to build request"),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            9420,
+        )
+    }
+
+    #[test]
+    fn the_rate_limit_key_is_the_nearest_hop_entry() {
+        let request = relayed_request(
+            "/api/v1/devices",
+            &[("x-forwarded-for", "127.0.0.1, 203.0.113.50")],
+        );
+
+        assert_eq!(super::client_identity(&request), "203.0.113.50");
+    }
+
+    #[tokio::test]
+    async fn a_spoofed_first_forwarded_entry_does_not_claim_loopback() {
+        // An appending proxy keeps whatever the client wrote first, so
+        // `127.0.0.1` at the front of the list is the client's own claim.
+        let response = secured_test_router()
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[("x-forwarded-for", "127.0.0.1, 203.0.113.77")],
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_relayed_request_is_never_loopback_whatever_it_claims() {
+        for headers in [
+            [("x-forwarded-for", "127.0.0.1")],
+            [("x-real-ip", "::1")],
+            [("forwarded", "for=127.0.0.1")],
+            [("forwarded", "proto=https")],
+        ] {
+            let response = secured_test_router()
+                .oneshot(relayed_request("/api/v1/devices", &headers))
+                .await
+                .expect("request failed");
+
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{headers:?}");
+        }
+    }
+
+    fn request_naming(peer: IpAddr, uri: &str, host: Option<&str>) -> Request<Body> {
+        let mut request = Request::builder().uri(uri);
+        if let Some(host) = host {
+            request = request.header(http::header::HOST, host);
+        }
+        with_connect_info(
+            request
+                .body(Body::empty())
+                .expect("failed to build request"),
+            peer,
+            40_000,
+        )
+    }
+
+    const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    const LAN_CLIENT: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+
+    #[tokio::test]
+    async fn a_keyless_loopback_request_must_name_the_daemon() {
+        let refused = secured_test_router()
+            .oneshot(request_naming(
+                LOOPBACK,
+                "/api/v1/devices",
+                Some("rebind.example:9420"),
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let json = response_json(refused).await;
+        assert_eq!(json["error"]["details"]["host"], "rebind.example:9420");
+        assert_eq!(json["error"]["details"]["setting"], "network.allowed_hosts");
+
+        for host in [
+            Some("localhost:9420"),
+            Some("127.0.0.1:9420"),
+            Some("[::1]:9420"),
+            Some("ui.localhost:9430"),
+            None,
+        ] {
+            let response = secured_test_router()
+                .oneshot(request_naming(LOOPBACK, "/api/v1/devices", host))
+                .await
+                .expect("request failed");
+            assert_eq!(response.status(), StatusCode::OK, "{host:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_credential_needs_no_particular_host() {
+        let mut request = request_naming(LOOPBACK, "/api/v1/devices", Some("rebind.example"));
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            format!("Bearer {READ_KEY}")
+                .parse()
+                .expect("header should parse"),
+        );
+
+        let response = secured_test_router()
+            .oneshot(request)
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_keyless_network_listener_checks_the_host_too() {
+        let keyless = || router_with_security_state(SecurityState::with_keys(None, None));
+        let refused = keyless()
+            .oneshot(request_naming(
+                LAN_CLIENT,
+                "/api/v1/devices",
+                Some("rebind.example:9420"),
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        let admitted = keyless()
+            .oneshot(request_naming(
+                LAN_CLIENT,
+                "/api/v1/devices",
+                Some("192.168.1.10:9420"),
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(admitted.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn configured_host_names_are_admitted() {
+        let state = SecurityState::with_keys(None, None)
+            .with_host_allowlist(super::HostAllowlist::new(["hypercolor.home".to_owned()]));
+        let response = router_with_security_state(state)
+            .oneshot(request_naming(
+                LAN_CLIENT,
+                "/api/v1/devices",
+                Some("hypercolor.home:9420"),
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_host_check_covers_upgrades_but_not_exempt_paths() {
+        let mut upgrade = request_naming(LOOPBACK, "/api/v1/ws", Some("rebind.example"));
+        upgrade.headers_mut().insert(
+            http::header::UPGRADE,
+            "websocket".parse().expect("header should parse"),
+        );
+        let refused = secured_test_router()
+            .oneshot(upgrade)
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let json = response_json(refused).await;
+        assert_eq!(json["error"]["details"]["host"], "rebind.example");
+
+        let health = secured_test_router()
+            .oneshot(request_naming(LOOPBACK, "/health", Some("rebind.example")))
+            .await
+            .expect("request failed");
+        assert_eq!(health.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_proxy_rewritten_host_is_checked_through_x_forwarded_host() {
+        // The UI dev server's proxy sends `Host: 127.0.0.1` and keeps the
+        // browser's name in `X-Forwarded-Host`.
+        let through_proxy = |forwarded_host: &str| {
+            let mut request = request_naming(LOOPBACK, "/api/v1/devices", Some("127.0.0.1"));
+            request.headers_mut().insert(
+                "x-forwarded-host",
+                forwarded_host.parse().expect("header should parse"),
+            );
+            request
+        };
+
+        let refused = secured_test_router()
+            .oneshot(through_proxy("rebind.example:9430"))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let json = response_json(refused).await;
+        assert_eq!(json["error"]["details"]["host"], "rebind.example:9430");
+
+        for admitted in ["localhost:9430", "localhost:9430, 127.0.0.1"] {
+            let response = secured_test_router()
+                .oneshot(through_proxy(admitted))
+                .await
+                .expect("request failed");
+            assert_eq!(response.status(), StatusCode::OK, "{admitted}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_http2_authority_is_checked_like_a_host_header() {
+        let request = with_connect_info(
+            Request::builder()
+                .uri("http://rebind.example:9420/api/v1/devices")
+                .body(Body::empty())
+                .expect("failed to build request"),
+            LOOPBACK,
+            40_000,
+        );
+
+        let response = secured_test_router()
+            .oneshot(request)
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_custom_scope_that_lists_no_clients_admits_no_remote_client() {
+        let config = NetworkConfig {
+            access_mode: NetworkAccessMode::LanTrusted,
+            client_scope: NetworkClientScope::Custom,
+            ..NetworkConfig::default()
+        };
+        assert_eq!(
+            SecurityState::with_network_policy(
+                NetworkAccessPolicy::from_config_with_local_subnets(&config, Ok(Vec::new()),)
+            )
+            .keyless_remote_client_families(),
+            RemoteClientFamilies::NONE
+        );
+
+        let remote = network_policy_test_router(&config, Vec::new())
+            .oneshot(request_naming(LAN_CLIENT, "/api/v1/devices", None))
+            .await
+            .expect("request failed");
+        assert_eq!(remote.status(), StatusCode::FORBIDDEN);
+        let json = response_json(remote).await;
+        assert_eq!(
+            json["error"]["details"]["scope_errors"][0],
+            "client_scope \"custom\" lists no allowed_clients"
+        );
+
+        let local = network_policy_test_router(&config, Vec::new())
+            .oneshot(request_naming(LOOPBACK, "/api/v1/devices", None))
+            .await
+            .expect("request failed");
+        assert_eq!(local.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_keyless_network_listener_refuses_cross_site_writes() {
+        let keyless = || router_with_security_state(SecurityState::with_keys(None, None));
+        let write = |site: &str| {
+            with_connect_info(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/scenes")
+                    .header("sec-fetch-site", site)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                LAN_CLIENT,
+                40_000,
+            )
+        };
+
+        let refused = keyless()
+            .oneshot(write("cross-site"))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        let admitted = keyless()
+            .oneshot(write("same-origin"))
+            .await
+            .expect("request failed");
+        assert_eq!(admitted.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn a_foreign_origin_write_is_refused_without_fetch_metadata() {
+        // Browsers send no Fetch Metadata to a plain-HTTP LAN address, so
+        // `Origin` is what marks the foreign page there.
+        let write = |peer: IpAddr, host: &str, origin: Option<&str>| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header(http::header::HOST, host);
+            if let Some(origin) = origin {
+                request = request.header(http::header::ORIGIN, origin);
+            }
+            with_connect_info(
+                request
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                peer,
+                40_000,
+            )
+        };
+        let keyless = || router_with_security_state(SecurityState::with_keys(None, None));
+
+        for (peer, host, origin, expected) in [
+            (
+                LAN_CLIENT,
+                "192.168.1.10:9420",
+                Some("http://evil.example"),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                LAN_CLIENT,
+                "192.168.1.10:9420",
+                Some("null"),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                LAN_CLIENT,
+                "192.168.1.10:9420",
+                Some("http://192.168.1.10:9420"),
+                StatusCode::CREATED,
+            ),
+            (
+                LAN_CLIENT,
+                "192.168.1.10:9420",
+                Some("http://localhost:9430"),
+                StatusCode::CREATED,
+            ),
+            (LAN_CLIENT, "192.168.1.10:9420", None, StatusCode::CREATED),
+            (
+                LOOPBACK,
+                "localhost:9420",
+                Some("http://evil.example"),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                LOOPBACK,
+                "localhost:9420",
+                Some("http://localhost:9420"),
+                StatusCode::CREATED,
+            ),
+        ] {
+            let response = keyless()
+                .oneshot(write(peer, host, origin))
+                .await
+                .expect("request failed");
+            assert_eq!(response.status(), expected, "{peer} {host} {origin:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_replayed_session_command_skips_the_policy_its_upgrade_passed() {
+        let replay = |admitted: bool| {
+            let mut request = Request::builder()
+                .uri("/api/v1/devices")
+                .body(Body::empty())
+                .expect("failed to build request");
+            request
+                .extensions_mut()
+                .insert(RequestAuthContext::unsecured());
+            if admitted {
+                request
+                    .extensions_mut()
+                    .insert(super::AdmittedSessionReplay);
+            }
+            request
+        };
+
+        let refused = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+            .oneshot(replay(false))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        let admitted = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+            .oneshot(replay(true))
+            .await
+            .expect("request failed");
+        assert_eq!(admitted.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_keyless_daemon_refuses_relays_unless_remote_access_is_open() {
+        let relayed = || relayed_request("/api/v1/devices", &[("x-forwarded-for", "203.0.113.77")]);
+
+        let closed = router_with_security_state(SecurityState::with_keys(None, None))
+            .oneshot(relayed())
+            .await
+            .expect("request failed");
+        assert_eq!(closed.status(), StatusCode::FORBIDDEN);
+        let json = response_json(closed).await;
+        assert_eq!(json["error"]["details"]["setting"], "network.access_mode");
+
+        let open = router_with_security_state(SecurityState::with_network_config(NetworkConfig {
+            allow_unauthenticated_remote_access: true,
+            ..NetworkConfig::default()
+        }))
+        .oneshot(relayed())
+        .await
+        .expect("request failed");
+        assert_eq!(open.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_loopback_session_replays_on_a_keyed_daemon() {
+        let replay = |admitted: bool| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .body(Body::empty())
+                .expect("failed to build request");
+            request.extensions_mut().insert(
+                RequestAuthContext::unsecured().with_locality(super::RequestLocality::Loopback),
+            );
+            if admitted {
+                request
+                    .extensions_mut()
+                    .insert(super::AdmittedSessionReplay);
+            }
+            request
+        };
+
+        let admitted = secured_test_router()
+            .oneshot(replay(true))
+            .await
+            .expect("request failed");
+        assert_eq!(admitted.status(), StatusCode::CREATED);
+
+        let unmarked = secured_test_router()
+            .oneshot(replay(false))
+            .await
+            .expect("request failed");
+        assert_eq!(unmarked.status(), StatusCode::UNAUTHORIZED);
+
+        // A keyed daemon admits no anonymous network session, so a replay
+        // claiming one still needs a key.
+        let mut network = replay(true);
+        network
+            .extensions_mut()
+            .insert(RequestAuthContext::unsecured());
+        let network = secured_test_router()
+            .oneshot(network)
+            .await
+            .expect("request failed");
+        assert_eq!(network.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_dev_proxy_that_names_no_client_keeps_loopback_trust() {
+        // The UI dev server's proxy relays the local browser with only
+        // `X-Forwarded-Host`, which names no client to judge.
+        let response = secured_test_router()
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[("x-forwarded-host", "localhost:9430")],
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_relayed_request_still_authenticates_with_a_key() {
+        let mut request =
+            relayed_request("/api/v1/devices", &[("x-forwarded-for", "203.0.113.77")]);
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            format!("Bearer {READ_KEY}")
+                .parse()
+                .expect("header should parse"),
+        );
+
+        let response = secured_test_router()
+            .oneshot(request)
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_allowlist_judges_the_nearest_hop_entry() {
+        let allowed = relay_allowlist_router("192.168.1.0/24")
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[("x-forwarded-for", "203.0.113.9, 192.168.1.5")],
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(allowed.status(), StatusCode::OK);
+
+        let refused = relay_allowlist_router("192.168.1.0/24")
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[("x-forwarded-for", "192.168.1.5, 203.0.113.9")],
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let json = response_json(refused).await;
+        assert_eq!(json["error"]["details"]["client_ip"], "203.0.113.9");
+    }
+
+    #[tokio::test]
+    async fn the_allowlist_judges_every_forwarding_header() {
+        // A proxy that owns `X-Real-IP` forwards the client's own
+        // `X-Forwarded-For` untouched; the owned header still decides.
+        let refused = relay_allowlist_router("192.168.1.0/24")
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[
+                    ("x-forwarded-for", "192.168.1.5"),
+                    ("x-real-ip", "203.0.113.9"),
+                ],
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let json = response_json(refused).await;
+        assert_eq!(json["error"]["details"]["client_ip"], "203.0.113.9");
+
+        let allowed = relay_allowlist_router("192.168.1.0/24")
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[
+                    ("x-forwarded-for", "192.168.1.5"),
+                    ("x-real-ip", "192.168.1.5"),
+                    ("forwarded", "for=192.168.1.5;proto=https"),
+                ],
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(allowed.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_allowlist_refuses_a_relay_that_names_no_readable_address() {
+        for headers in [
+            [("forwarded", "proto=https")],
+            [("x-forwarded-for", "unknown")],
+            [("forwarded", "for=_hidden")],
+        ] {
+            let response = relay_allowlist_router("192.168.1.0/24")
+                .oneshot(relayed_request("/api/v1/devices", &headers))
+                .await
+                .expect("request failed");
+
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{headers:?}");
+            let json = response_json(response).await;
+            assert_eq!(
+                json["error"]["message"], "Client IP is required by network.allowed_clients",
+                "{headers:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_allowlist_admits_a_relayed_local_client() {
+        let response = relay_allowlist_router("192.168.1.0/24")
+            .oneshot(relayed_request(
+                "/api/v1/devices",
+                &[("x-forwarded-for", "127.0.0.1")],
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     struct PublicPairExtension;
 
     impl crate::extensions::ApiExtension for PublicPairExtension {
@@ -3098,6 +3896,70 @@ mod tests {
             .await
             .expect("request should complete");
         assert_eq!(session.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_replay_to_a_public_route_stays_anonymous_and_rate_limited() {
+        let extensions: Vec<std::sync::Arc<dyn crate::extensions::ApiExtension>> =
+            vec![std::sync::Arc::new(PublicPairExtension)];
+        for state in [
+            SecurityState::with_keys(Some(CONTROL_KEY), None),
+            SecurityState::with_keys(None, None),
+        ] {
+            let state = state.with_public_routes(super::PublicRouteTable::from_extensions(
+                &extensions,
+                "/api/v1",
+                &[],
+                &[],
+            ));
+            let app = Router::new()
+                .route(
+                    "/api/v1/ext/pair",
+                    post(
+                        |Extension(context): Extension<RequestAuthContext>| async move {
+                            if context.can_control() || context.is_loopback() {
+                                StatusCode::IM_A_TEAPOT
+                            } else {
+                                StatusCode::OK
+                            }
+                        },
+                    ),
+                )
+                .layer(axum::middleware::from_fn_with_state(
+                    state,
+                    enforce_security,
+                ));
+            let replay = || {
+                let mut request = Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/ext/pair")
+                    .body(Body::empty())
+                    .expect("failed to build request");
+                request.extensions_mut().insert(
+                    RequestAuthContext::unsecured().with_locality(super::RequestLocality::Loopback),
+                );
+                request
+                    .extensions_mut()
+                    .insert(super::AdmittedSessionReplay);
+                request
+            };
+
+            for attempt in 1..=6 {
+                let response = app
+                    .clone()
+                    .oneshot(replay())
+                    .await
+                    .expect("request should complete");
+                assert_eq!(response.status(), StatusCode::OK, "attempt {attempt}");
+                assert!(response.headers().contains_key("x-ratelimit-limit"));
+            }
+            let limited = app
+                .clone()
+                .oneshot(replay())
+                .await
+                .expect("request should complete");
+            assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        }
     }
 
     struct MountProbeExtension;

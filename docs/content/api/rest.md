@@ -1097,15 +1097,16 @@ and it is refused before power moves, so a rejected patch changes nothing.
 
 ## Screen capture
 
-The four protected capture operations below only accept local requests. A
-remote client receives `403 Forbidden` even when it presents a valid control
-key. The locality decision uses the socket peer and only trusts forwarded
-addresses from a loopback proxy.
+The four protected capture operations below require protected control: the
+control-tier `HYPERCOLOR_API_KEY`, the desktop app's session credential, or a
+trusted in-process connection. Every other caller receives `403 Forbidden`,
+including a keyless loopback client, a read key, and a credential from a
+downstream credential authority. Where the request comes from plays no part.
 
-The system status response keeps the selected session source identifier for a
-local request. Any remote response replaces application and window selection
-identifiers with `session_scoped`; stable display UUIDs remain available for
-diagnostics.
+The system status response keeps the selected session source identifier only
+for a caller with protected control. Every other response replaces application
+and window selection identifiers with `session_scoped`; stable display UUIDs
+remain available for diagnostics.
 
 {% <api_endpoint method="POST" path="/api/v1/input/authorize"> %}
 Request Input Monitoring authorization from the process that owns host keyboard
