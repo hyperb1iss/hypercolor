@@ -11,7 +11,7 @@ async fn mdns_browser_discovers_registered_service_with_txt() -> TestResult {
     let publisher = ServiceDaemon::new()?;
     let txt = [("id", "demo"), ("kind", "test")];
     let service_info = ServiceInfo::new(
-        "_wled._tcp.local.",
+        "_hypercolor-test._tcp.local.",
         "mdns-browser-test",
         "mdns-browser.local.",
         "",
@@ -26,7 +26,7 @@ async fn mdns_browser_discovers_registered_service_with_txt() -> TestResult {
 
     let browser = MdnsBrowser::new()?;
     let services = browser
-        .browse("_wled._tcp.local.", Duration::from_secs(2))
+        .browse("_hypercolor-test._tcp.local.", Duration::from_secs(2))
         .await?;
     let discovered = services
         .into_iter()
