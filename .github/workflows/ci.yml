@@ -139,6 +139,7 @@ jobs:
               - 'scripts/cargo-cache-cargo-shim.sh'
               - 'scripts/cargo-target-gc.sh'
               - 'scripts/check-macos-gpu-only.sh'
+              - 'scripts/check-vendored-patches.sh'
               - 'scripts/tests/cargo-cache-build-tests.sh'
               - 'scripts/tests/cargo-cache-mode-tests.ps1'
               - 'scripts/tests/cargo-target-gc-tests.sh'
@@ -170,6 +171,8 @@ jobs:
               # Without this the Rust half of the cross-language color fence
               # skips a pull request that only edits the shared table.
               - 'sdk/shared/color-vectors.json'
+              # Patched Servo source the daemon builds through [patch.crates-io].
+              - 'vendor/servo-script/**'
             python:
               - 'python/**'
               - 'protocol/**'
@@ -336,6 +339,9 @@ jobs:
 
       - name: Refuse new raw HTML sinks
         run: ./scripts/check-ui-html-sinks.sh
+
+      - name: Keep vendored crates patched in
+        run: ./scripts/check-vendored-patches.sh
 
       - name: Test local build fabric
         run: |

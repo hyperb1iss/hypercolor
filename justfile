@@ -86,6 +86,10 @@ api-doc-route-check:
 macos-gpu-only-check:
     ./scripts/check-macos-gpu-only.sh
 
+# Fail when a vendored [patch.crates-io] crate no longer resolves to vendor/
+vendored-patches-check:
+    ./scripts/check-vendored-patches.sh
+
 # Build the workspace with the daemon's full feature set
 [unix]
 build *args='':

@@ -39,6 +39,15 @@ updates:
       # core's use-jemalloc feature lands on the crate Servo links. A bump
       # on its own adds a second, unused copy and silently drops jemalloc.
       - dependency-name: "servo-allocator"
+      # vendor/servo-script replaces servo-script 0.6.0 through
+      # [patch.crates-io]. servo pins its script crate exactly, so any servo
+      # bump, even a patch release, pulls in another servo-script version,
+      # leaves the patch unused behind a single cargo warning, and would
+      # ship the unpatched crate (scripts/check-vendored-patches.sh fails CI
+      # on that). Move servo and servo-script by hand, re-vendoring or
+      # dropping the patch as vendor/servo-script/HYPERCOLOR.md says.
+      - dependency-name: "servo-script"
+      - dependency-name: "servo"
 
   - package-ecosystem: "cargo"
     directory: "/crates/hypercolor-ui"
