@@ -287,8 +287,8 @@ impl SessionTransport {
 /// The allowlist keeps a foreign page from riding ambient authority: the
 /// anonymous control a loopback caller holds, or an unsecured daemon. An
 /// upgrade that presented its own credential carries nothing ambient, so
-/// it is admitted from any origin, including the daemon's own LAN origin
-/// when the page was served from it.
+/// it is admitted from any origin. So is a page the daemon served itself,
+/// such as the bundled UI opened at the daemon's LAN address.
 fn ws_origin_allowed(
     state: &AppState,
     headers: &HeaderMap,
@@ -302,7 +302,10 @@ fn ws_origin_allowed(
         return true;
     }
 
-    if is_loopback_origin(origin) || crate::api::security::is_trusted_tauri_origin(origin) {
+    if is_loopback_origin(origin)
+        || crate::api::security::is_trusted_tauri_origin(origin)
+        || crate::api::security::is_own_origin(origin, headers)
+    {
         return true;
     }
 
@@ -2206,6 +2209,23 @@ mod origin_tests {
                 RequestAuthContext::unsecured()
             ));
         }
+    }
+
+    #[test]
+    fn a_keyless_daemon_admits_the_pages_it_served_itself() {
+        let state = AppState::new();
+        let upgrade = |origin: &'static str, host: &'static str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::ORIGIN, HeaderValue::from_static(origin));
+            headers.insert(header::HOST, HeaderValue::from_static(host));
+            ws_origin_allowed(&state, &headers, RequestAuthContext::unsecured())
+        };
+
+        assert!(upgrade("http://192.168.1.10:9420", "192.168.1.10:9420"));
+        assert!(upgrade("https://Hypercolor.Home", "hypercolor.home"));
+        assert!(!upgrade("http://192.168.1.10:9420", "192.168.1.10:9421"));
+        assert!(!upgrade("http://evil.example", "192.168.1.10:9420"));
+        assert!(!upgrade("file://192.168.1.10:9420", "192.168.1.10:9420"));
     }
 
     #[test]

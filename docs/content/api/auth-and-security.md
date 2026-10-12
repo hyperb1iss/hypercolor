@@ -462,9 +462,13 @@ channel and frame protocol once connected, see
 [WebSocket protocol](@/api/websocket.md).
 
 The upgrade also checks the browser `Origin`. An anonymous upgrade is admitted
-only from loopback origins, the desktop shell's Tauri origins, and, on a keyed
-daemon, the origins in `web.cors_origins`: the allowlist keeps other pages from
-riding the credentialless loopback tier.
+only from loopback origins, the desktop shell's Tauri origins, the daemon's own
+origin, and, on a keyed daemon, the origins in `web.cors_origins`: the
+allowlist keeps other pages from riding the credentialless loopback tier. The
+daemon's own origin is the one the upgrade was sent to (its `Origin` matches
+its `Host`), so the bundled UI opened at a keyless daemon's LAN address goes
+live. A rebinding page is same-origin too, but its `Host` is not one of the
+daemon's names, so [the Host check](#host-names) refuses it first.
 
 A WebSocket upgrade that presents a valid API key is no longer subject to the
 browser origin allowlist. This is a behavior change for every key holder,
