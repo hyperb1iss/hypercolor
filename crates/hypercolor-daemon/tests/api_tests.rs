@@ -8473,6 +8473,7 @@ async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
     let cleanup = InjectedWriterCleanup::new(writer);
     let app = test_app_with_state(Arc::clone(&state));
     let failure_writer = cleanup.writer().clone();
+    let paused_state = Arc::clone(&state);
 
     let (response, _) = request_with_layout_ack_and_hook(
         app,
@@ -8484,8 +8485,16 @@ async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
         &state,
         move || {
             let writer = failure_writer.clone();
+            let state = Arc::clone(&paused_state);
             async move {
                 writer.set_injected_replace_failures(1_000);
+                // The precommit already wrote this layout. Change another
+                // projected field so convergence has bytes left to write,
+                // rather than landing on the identical durable payload.
+                state
+                    .output_power
+                    .set_manual_pause(&state.event_bus, true, [0, 0, 0])
+                    .await;
             }
         },
     )

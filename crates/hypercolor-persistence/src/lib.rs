@@ -23,6 +23,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use serde::Serialize;
+use sha2::{Digest as _, Sha256};
 
 use tempfile::NamedTempFile;
 
@@ -241,6 +242,12 @@ impl PersistenceFlushReport {
 }
 
 /// Generation coordinator for one stable destination.
+///
+/// While any writer keeps the destination alive, it remembers a digest of
+/// the bytes it last made durable and the identity of the file they landed
+/// as. A payload with the same digest lands as written without touching the
+/// filesystem, as long as a stat shows nothing else has replaced or edited
+/// the file since.
 #[derive(Debug, Clone)]
 pub struct AtomicFileWriter {
     destination: Arc<Destination>,
@@ -297,6 +304,72 @@ struct DestinationState {
     /// Unlike `last_error`, a newer admission does not clear it, because
     /// the file still lags until some attempt lands.
     lag_error: Option<String>,
+    /// The bytes this process last made durable here.
+    ///
+    /// An attempt whose payload matches them has nothing to replace, so it
+    /// lands without touching the filesystem. `None` until the first durable
+    /// write, and from the moment a replacement starts until its durability
+    /// barrier completes, because the file's durable content is unknown in
+    /// that window.
+    durable: Option<DurableBytes>,
+}
+
+/// What a destination's file durably held after one of this process's
+/// writes: the payload's digest, and the identity of the file it landed as.
+///
+/// Other code can replace the same path without this coordinator (a
+/// directly staged replacement, or a hand edit), so the digest only
+/// describes the file while a fresh stat still matches that identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DurableBytes {
+    digest: PayloadDigest,
+    identity: FileIdentity,
+}
+
+type PayloadDigest = [u8; 32];
+
+fn payload_digest(payload: &[u8]) -> PayloadDigest {
+    Sha256::digest(payload).into()
+}
+
+/// The parts of a file's metadata any replacement or in-place edit moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl FileIdentity {
+    fn of(path: &Path) -> Option<Self> {
+        fs::metadata(path)
+            .ok()
+            .map(|metadata| Self::from_metadata(&metadata))
+    }
+
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt as _;
+
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+        }
+    }
+}
+
+impl DurableBytes {
+    /// Whether the destination file is still the one these bytes landed as.
+    fn still_current(&self, path: &Path) -> bool {
+        FileIdentity::of(path) == Some(self.identity)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -473,6 +546,29 @@ impl AtomicFileWriter {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.pending.as_ref()?;
         state.lag_error.clone()
+    }
+
+    /// Stop trusting what this destination last made durable, after code
+    /// replaced its file without this coordinator. The next write of any
+    /// payload then replaces the file.
+    pub fn forget_durable_bytes(&self) {
+        self.destination
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .durable = None;
+    }
+
+    /// Whether the file still holds, untouched, the bytes this process last
+    /// made durable here.
+    #[must_use]
+    pub fn holds_durable_bytes(&self) -> bool {
+        self.destination
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .durable
+            .is_some_and(|durable| durable.still_current(&self.destination.path))
     }
 
     /// Wait for this destination's newest dirty snapshot to converge.
@@ -847,6 +943,31 @@ fn try_write_stage_aware(
     generation: u64,
     payload: &[u8],
 ) -> AtomicWriteCommitResult {
+    let digest = payload_digest(payload);
+    let holds_known_bytes = {
+        let state = destination
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The newest admitted generation only grows, so a payload that is
+        // already behind it would lose the check before replacement too.
+        if generation != state.latest_admitted_generation {
+            return AtomicWriteCommitResult::Superseded;
+        }
+        // Only one attempt per destination runs at a time, so nothing this
+        // coordinator owns can change the file between this check and the
+        // outcome; the stat catches anything that replaced it from outside.
+        match state.durable {
+            Some(durable) if durable.still_current(&destination.path) => {
+                if durable.digest == digest {
+                    return AtomicWriteCommitResult::DurableWritten;
+                }
+                true
+            }
+            _ => false,
+        }
+    };
+
     let mut temporary = match NamedTempFile::new_in(&destination.parent) {
         Ok(temporary) => temporary,
         Err(source) => {
@@ -886,10 +1007,11 @@ fn try_write_stage_aware(
     // generation), so the file cannot change between this read and the
     // replacement below. The copy into history is durable before the
     // replacement starts.
-    let previous = history::previous_content(destination);
-    history::rotate_before_replace(destination, &previous, payload);
+    let rotation_due = history::rotation_due(destination);
+    let previous = history::previous_content(destination, holds_known_bytes, rotation_due);
+    history::rotate_before_replace(destination, &previous, payload, rotation_due);
 
-    let state = destination
+    let mut state = destination
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -911,7 +1033,18 @@ fn try_write_stage_aware(
         });
     }
 
+    // The identity comes from the staged file itself: a rename keeps its
+    // inode, length, and mtime, and reading it here cannot pick up a file
+    // something else renames over the destination after ours lands.
+    let identity = temporary
+        .as_file()
+        .metadata()
+        .ok()
+        .map(|metadata| FileIdentity::from_metadata(&metadata));
     let temporary_path = temporary.into_temp_path();
+    // From here until the durability barrier completes, nothing proves what
+    // the file durably holds, so no later attempt may be skipped against it.
+    state.durable = None;
     if let Err(source) = hypercolor_platform_fs::replace_file(&temporary_path, &destination.path) {
         return AtomicWriteCommitResult::FailedBeforeReplacement(PersistenceError::Replace {
             path: destination.path.clone(),
@@ -942,6 +1075,11 @@ fn try_write_stage_aware(
             return AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error);
         }
     }
+    destination
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .durable = identity.map(|identity| DurableBytes { digest, identity });
     AtomicWriteCommitResult::DurableWritten
 }
 
@@ -1062,4 +1200,34 @@ fn sync_parent_directory(parent: &Path) -> Result<(), PersistenceError> {
             path: parent.to_path_buf(),
             source,
         })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_replacement_that_never_proved_durable_is_not_trusted() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("store.json");
+        let writer = AtomicFileWriter::new(&path).expect("writer");
+        writer.write(b"first").expect("first write lands");
+
+        // The rename lands but the directory barrier fails, so the file
+        // visibly holds bytes nothing has proven durable.
+        writer.set_injected_directory_sync_failures(1);
+        assert!(writer.write(b"second").is_err());
+        assert_eq!(fs::read(&path).expect("store"), b"second");
+
+        // Asking for the first bytes again must replace the file, not trust
+        // the digest recorded before the unproven replacement.
+        assert_eq!(
+            writer.write(b"first").expect("revert lands"),
+            AtomicWriteOutcome::Written
+        );
+        assert_eq!(fs::read(&path).expect("store"), b"first");
+        writer
+            .flush(Duration::from_secs(5))
+            .expect("nothing is left pending");
+    }
 }
