@@ -82,8 +82,14 @@ const PIPE_NAME: &str = r"\\.\pipe\hypercolor-smbus-v1";
 /// Pause between attempts to create the next pipe instance.
 const PIPE_CREATE_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Consecutive pipe creation failures (ten seconds of retries) after which
-/// the request loop fails and the broker stops with exit code 1.
+/// the request loop fails and the broker stops with exit code 1. Busy
+/// instances never count.
 const PIPE_CREATE_ATTEMPTS: u32 = 40;
+/// How long a connected client has to send its request before the broker
+/// drops it and frees the pipe instance.
+const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// `ERROR_PIPE_BUSY`: every instance of the pipe is in use.
+const ERROR_PIPE_BUSY: i32 = 231;
 const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)";
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_BATCH_DELAY_MS: u64 = 1_000;
@@ -526,13 +532,29 @@ async fn serve_until_shutdown(mut shutdown: watch::Receiver<Option<StopReason>>)
     let state = Arc::new(BrokerState::default());
     info!(pipe = PIPE_NAME, "Hypercolor SMBus broker listening");
     let mut create_failures = 0_u32;
+    let mut busy_instances = RepeatGate::default();
     let mut connect_failures = RepeatGate::default();
 
     while shutdown.borrow().is_none() {
         let server = match create_server_pipe() {
             Ok(server) => {
                 create_failures = 0;
+                busy_instances.reset();
                 server
+            }
+            Err(error) if pipe_instances_busy(&error) => {
+                // Every instance is held by a connected client. That is load
+                // (or a user holding connections open), not a broken pipe:
+                // it clears as clients finish or hit CLIENT_REQUEST_TIMEOUT,
+                // so it never counts toward stopping the broker, which any
+                // interactive user could otherwise force.
+                if busy_instances.first() {
+                    warn!(
+                        "all SMBus broker pipe instances are busy; waiting for clients to finish"
+                    );
+                }
+                tokio::time::sleep(PIPE_CREATE_RETRY_DELAY).await;
+                continue;
             }
             Err(error) => {
                 create_failures += 1;
@@ -607,7 +629,17 @@ impl RepeatGate {
 
 async fn handle_connected_client(mut server: NamedPipeServer, state: Arc<BrokerState>) {
     let result = async {
-        let request = read_frame(&mut server).await?;
+        // Clients write their request as soon as they connect. One that
+        // connects and sends nothing would hold a pipe instance forever, and
+        // enough of them would leave no instance for anyone else.
+        let request = tokio::time::timeout(CLIENT_REQUEST_TIMEOUT, read_frame(&mut server))
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "client sent no request within {} seconds",
+                    CLIENT_REQUEST_TIMEOUT.as_secs()
+                )
+            })??;
         let response = match serde_json::from_slice::<BrokerRequest>(&request) {
             Ok(request) => {
                 let operation = request.operation();
@@ -630,6 +662,13 @@ async fn handle_connected_client(mut server: NamedPipeServer, state: Arc<BrokerS
     if let Err(error) = result {
         trace!(error = %format_args!("{error:#}"), "SMBus broker client request failed");
     }
+}
+
+fn pipe_instances_busy(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .and_then(std::io::Error::raw_os_error)
+        == Some(ERROR_PIPE_BUSY)
 }
 
 fn create_server_pipe() -> Result<NamedPipeServer> {
