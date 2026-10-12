@@ -65,8 +65,17 @@ Windows only, via `[target.'cfg(target_os = "windows")'.dependencies]`).
 **Service entry point**
 
 - `run_smbus_service() -> anyhow::Result<()>` — Windows Service entry point
-  called by the `hypercolor-smbus-service` binary. This is the only broker
-  API consumers need; the broker's IPC protocol is internal.
+  called by the `hypercolor-smbus-service` binary. The broker's IPC protocol
+  is internal. As a service it logs to `logs\smbus-broker.log` beside its
+  executable (`broker_log_path`): the PawnIO runtime and modules it found,
+  every state it reports, why it stopped, panics, and the first request
+  failure of each kind.
+- `broker_service_status() -> PawnIoResult<BrokerServiceStatus>` — what the
+  Service Control Manager reports for `HypercolorSmBus` (state, Win32 and
+  service-specific exit codes, start type, executable, log path) plus a
+  liveness ping when it runs. `describe_broker_exit` turns the exit codes
+  into words; `hypercolor-windows-telemetry` maps the result into the
+  neutral report behind the daemon's `devices.smbus_broker` diagnose check.
 
 **Errors**
 

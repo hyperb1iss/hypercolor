@@ -55,19 +55,43 @@
   ; ("reboot required") when the kernel driver needs a restart to finish
   ; binding to SCM. We stash that into $R0 so we can prompt the user to
   ; restart at the end of postinstall.
+  ;
+  ; The installer is a 32-bit process, so a bare powershell.exe resolves
+  ; through WOW64 to the 32-bit PowerShell, where $env:ProgramFiles names
+  ; "Program Files (x86)" and the 64-bit PawnIO install is invisible.
+  ; Turning file system redirection off for these calls runs the native
+  ; 64-bit PowerShell instead, the same one the app's Install support
+  ; button and a manual elevated run use.
   DetailPrint "Installing Hypercolor hardware access (this may take a moment)..."
+  ${DisableX64FSRedirection}
   nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-windows-hardware-support.ps1" -AssetRoot "$INSTDIR\tools\pawnio" -BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe" -ModuleDestination "$INSTDIR\tools\pawnio\modules" -Silent -ReinstallService'
   Pop $R0
   DetailPrint "  Hardware access exit code: $R0"
 
-  ; A failed hardware-access pass must not fail the install — Hypercolor
-  ; still drives every USB and network device without it. Say so plainly
-  ; in the details log so a support request has something to quote.
-  ${If} $R0 <> 0
-  ${AndIf} $R0 <> 3010
-    DetailPrint "  Hardware access setup did not complete. USB and network"
-    DetailPrint "  lighting still work; motherboard SMBus lighting and CPU"
-    DetailPrint "  temperature need Settings > Discovery > Hardware Support."
+  ; Whatever the exit code says, the broker either runs now or it does
+  ; not, and only a running broker lights SMBus devices. Ask the service
+  ; manager directly so every failure path (PawnIO setup, registration,
+  ; a broker that starts and stops) lands here.
+  nsExec::ExecToLog `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$$s = Get-Service -Name HypercolorSmBus -ErrorAction SilentlyContinue; if ($$s -and $$s.Status -eq 'Running') { exit 0 }; if ($$s) { Write-Output ('HypercolorSmBus is ' + $$s.Status) } else { Write-Output 'HypercolorSmBus is not registered' }; exit 1"`
+  Pop $R1
+  ${EnableX64FSRedirection}
+
+  ; A failed hardware-access pass must not fail the install, since
+  ; Hypercolor still drives every USB and network device without it. It
+  ; must not be silent either: the details pane closes with the wizard, so
+  ; tell the user, and point at the setup log that outlives it. A silent
+  ; install (/S) answers the dialog with OK and keeps going. The checks
+  ; compare strings, so nsExec's "error" (PowerShell never launched) counts
+  ; as a failure instead of passing as zero.
+  ${If} $R1 != 0
+    DetailPrint "  The HypercolorSmBus broker is not running. USB and network"
+    DetailPrint "  lighting still work; the setup log is in $INSTDIR\tools\logs."
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Hypercolor is installed, but its SMBus hardware broker (HypercolorSmBus) is not running, so motherboard and RAM lighting and CPU temperature are unavailable. USB and network lighting work normally.$\r$\n$\r$\nThe setup log is in $INSTDIR\tools\logs. To try again, open Hypercolor and choose Settings > Device Discovery > Windows SMBus Support > Install support, or run Start-Service HypercolorSmBus in an elevated PowerShell." /SD IDOK
+  ${ElseIf} $R0 != 0
+  ${AndIf} $R0 != 3010
+    DetailPrint "  Hardware access setup did not complete (exit code $R0). USB and"
+    DetailPrint "  network lighting still work; the setup log is in $INSTDIR\tools\logs."
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Hypercolor is installed, but part of its hardware access setup failed (exit code $R0). The SMBus broker is running, but motherboard and RAM lighting and CPU temperature may not work until PawnIO is set up. USB and network lighting work normally.$\r$\n$\r$\nThe setup log is in $INSTDIR\tools\logs. To try again, open Hypercolor and choose Settings > Device Discovery > Windows SMBus Support > Install support." /SD IDOK
   ${EndIf}
 
   ; Windows Firewall — pre-grant the daemon so mDNS discovery and any
@@ -107,12 +131,14 @@
 ; LocalSystem service runs from $INSTDIR\tools and holds its exe and the
 ; app-local VC++ runtime beside it open, so files can only be replaced or
 ; deleted once the process is gone. `sc.exe stop` returns as soon as the
-; stop is requested, which races the file operations that follow. The
-; wait is bounded and never fails the installer: an absent service is
-; the normal state on a first install.
+; stop is requested, which races the file operations that follow, and
+; Stop-Service waits without a bound while the service is stopping, so
+; the stop goes through the controller with a bounded wait. The wait
+; never fails the installer: an absent service is the normal state on a
+; first install.
 !macro HYPERCOLOR_STOP_BROKER
   DetailPrint "Stopping HypercolorSmBus service"
-  nsExec::ExecToLog `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$$service = Get-Service -Name HypercolorSmBus -ErrorAction SilentlyContinue; if ($$service -and $$service.Status -ne 'Stopped') { Stop-Service -Name HypercolorSmBus -Force -ErrorAction SilentlyContinue; try { $$service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20)) } catch { Write-Output 'HypercolorSmBus did not stop within 20 seconds' } }"`
+  nsExec::ExecToLog `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$$service = Get-Service -Name HypercolorSmBus -ErrorAction SilentlyContinue; if ($$service -and $$service.Status -ne 'Stopped') { try { if ($$service.Status -ne 'StopPending') { $$service.Stop() }; $$service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20)) } catch { Write-Output ('HypercolorSmBus did not stop: ' + $$_.Exception.GetBaseException().Message) } }"`
   Pop $0
 !macroend
 
@@ -166,6 +192,10 @@
   DetailPrint "Removing HypercolorSmBus service registration"
   nsExec::ExecToLog 'sc.exe delete HypercolorSmBus'
   Pop $0
+
+  ; The broker and the hardware support setup write their logs here, so
+  ; the uninstaller never listed them. The broker is stopped by now.
+  RMDir /r "$INSTDIR\tools\logs"
 
   ; Drop Windows Firewall exceptions so an uninstall doesn't leave
   ; rules pointing at a path that no longer exists.

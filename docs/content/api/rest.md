@@ -1231,8 +1231,10 @@ affordances from this table.
 Run system diagnostics: device connectivity, audio capture, effect-engine
 health, memory, and configuration validity. Memory failures are reported as the
 named `memory` check in the same response. The `conflicts` check scans for
-competing RGB software before it reports, as `devices.competing_software`. The `diagnose` CLI command and MCP
-tool use this exact check vocabulary.
+competing RGB software before it reports, as `devices.competing_software`. On
+Windows the `devices` checks include `devices.smbus_broker`, which fails when
+the `HypercolorSmBus` broker is installed but not running. The `diagnose` CLI
+command and MCP tool use this exact check vocabulary.
 {% </api_endpoint> %}
 
 ## Assets

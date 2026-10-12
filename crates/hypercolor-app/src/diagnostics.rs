@@ -80,7 +80,23 @@ fn copy_log_files(stage_root: &Path) -> Result<()> {
         }
     }
 
+    // The SMBus broker service and the hardware support setup log beside
+    // the broker, in tools\logs under the install directory.
+    if let Some(tool_logs) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(tool_logs_dir))
+        .filter(|dir| dir.is_dir())
+    {
+        copy_dir_recent(&tool_logs, &logs_dir, 10)?;
+    }
+
     Ok(())
+}
+
+/// Where the broker and the hardware support setup write their logs,
+/// relative to the directory holding the app executable.
+fn tool_logs_dir(app_dir: &Path) -> PathBuf {
+    app_dir.join("tools").join("logs")
 }
 
 /// Copy the N most-recently-modified files from `src` into `dst`.

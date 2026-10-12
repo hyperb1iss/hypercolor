@@ -37,6 +37,7 @@ pub use device_binding::DeviceBindingMigrationContext;
 pub mod diagnostics;
 pub mod display;
 pub mod effect;
+pub mod hardware_broker_diagnostics;
 pub mod input_status;
 pub mod layer;
 pub mod layout;

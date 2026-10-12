@@ -1697,8 +1697,10 @@ fn nsis_macro_body<'a>(name: &str) -> &'a str {
 #[test]
 fn installer_hooks_stop_the_broker_before_files_change() {
     let stop = nsis_macro_body("HYPERCOLOR_STOP_BROKER");
-    assert!(stop.contains("Stop-Service -Name HypercolorSmBus"));
-    assert!(stop.contains("WaitForStatus('Stopped'"));
+    assert!(stop.contains("$$service.Stop()"));
+    assert!(stop.contains("WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))"));
+    // Stop-Service waits without a bound while the broker is stopping.
+    assert!(!stop.contains("Stop-Service"));
     for hook in ["NSIS_HOOK_PREINSTALL", "NSIS_HOOK_PREUNINSTALL"] {
         assert!(
             nsis_macro_body(hook).contains("!insertmacro HYPERCOLOR_STOP_BROKER"),
@@ -1709,7 +1711,198 @@ fn installer_hooks_stop_the_broker_before_files_change() {
 
 #[test]
 fn installer_hook_cleans_up_the_broker_on_uninstall() {
-    assert!(nsis_macro_body("NSIS_HOOK_PREUNINSTALL").contains("sc.exe delete HypercolorSmBus"));
+    let uninstall = nsis_macro_body("NSIS_HOOK_PREUNINSTALL");
+    assert!(uninstall.contains("sc.exe delete HypercolorSmBus"));
+    let stopped = uninstall
+        .find("!insertmacro HYPERCOLOR_STOP_BROKER")
+        .expect("uninstall stops the broker");
+    let logs_removed = uninstall
+        .find(r#"RMDir /r "$INSTDIR\tools\logs""#)
+        .expect("uninstall removes the logs the broker and setup wrote");
+    assert!(
+        stopped < logs_removed,
+        "the broker holds its log open until it stops"
+    );
+}
+
+/// The installer is a 32-bit process, so a bare `powershell.exe` resolves
+/// through WOW64 to 32-bit PowerShell, where `$env:ProgramFiles` names
+/// "Program Files (x86)" and the 64-bit PawnIO install is invisible. The
+/// hardware step therefore runs with file system redirection off, which
+/// starts the native 64-bit PowerShell, and turns it back on afterwards.
+#[test]
+fn installer_runs_hardware_setup_in_native_powershell() {
+    let postinstall = nsis_macro_body("NSIS_HOOK_POSTINSTALL");
+    let position = |needle: &str| {
+        postinstall
+            .find(needle)
+            .unwrap_or_else(|| panic!("postinstall is missing {needle}"))
+    };
+    let disabled = position("${DisableX64FSRedirection}");
+    let setup = position("install-windows-hardware-support.ps1");
+    let broker_check = position("Get-Service -Name HypercolorSmBus");
+    let enabled = position("${EnableX64FSRedirection}");
+    assert!(disabled < setup && setup < broker_check && broker_check < enabled);
+}
+
+/// The details pane closes with the wizard, so a broker that is not running
+/// after setup has to reach the user some other way: the installer asks the
+/// service manager itself, whatever the setup's exit code, and says so in a
+/// dialog that a silent install answers on its own.
+#[test]
+fn installer_tells_the_user_when_the_broker_is_not_running() {
+    let postinstall = nsis_macro_body("NSIS_HOOK_POSTINSTALL");
+    for step in [
+        "if ($$s -and $$s.Status -eq 'Running') { exit 0 }",
+        "Pop $R1",
+        // String compares, so nsExec's "error" is a failure, not a zero.
+        "${If} $R1 != 0",
+        "MessageBox MB_OK|MB_ICONEXCLAMATION",
+        "its SMBus hardware broker (HypercolorSmBus) is not running",
+        r"The setup log is in $INSTDIR\tools\logs.",
+        "Start-Service HypercolorSmBus",
+        "/SD IDOK",
+        // A broker that runs after a failed PawnIO step is not the whole
+        // story either.
+        "${ElseIf} $R0 != 0",
+        "${AndIf} $R0 != 3010",
+        "part of its hardware access setup failed (exit code $R0)",
+    ] {
+        assert!(postinstall.contains(step), "postinstall is missing {step}");
+    }
+    let notice = postinstall
+        .find("MessageBox MB_OK|MB_ICONEXCLAMATION")
+        .expect("broker notice");
+    let reboot = postinstall
+        .find("MessageBox MB_YESNO")
+        .expect("reboot prompt");
+    assert!(
+        notice < reboot,
+        "the broker notice comes before the restart prompt"
+    );
+}
+
+/// PawnIO is a 64-bit install. Both scripts that look for it consult the
+/// 64-bit uninstall key and `ProgramW6432`, so they find it from 32-bit
+/// PowerShell too instead of rerunning PawnIO's driver setup every install.
+#[test]
+fn pawnio_lookups_see_the_64_bit_install_from_any_powershell() {
+    for (name, script) in [
+        ("install-bundled-pawnio.ps1", INSTALL_BUNDLED_PAWNIO_PS1),
+        (
+            "install-windows-smbus-service.ps1",
+            INSTALL_WINDOWS_SMBUS_SERVICE_PS1,
+        ),
+    ] {
+        for needle in [
+            "[Microsoft.Win32.RegistryView]::Registry64",
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO",
+            "$env:ProgramW6432",
+        ] {
+            assert!(script.contains(needle), "{name} is missing {needle}");
+        }
+    }
+}
+
+/// `Start-Service` and `Stop-Service` wait without a bound while a service
+/// is pending, which would hang the installer. The broker installer bounds
+/// every wait, checks the broker stayed up, and on failure prints the
+/// service manager's exit codes and the broker's own log before failing.
+#[test]
+fn smbus_service_installer_bounds_waits_and_explains_a_failed_start() {
+    let code: Vec<&str> = INSTALL_WINDOWS_SMBUS_SERVICE_PS1
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    for avoided in ["Start-Service -Name", "Stop-Service -Name"] {
+        assert!(
+            !code.iter().any(|line| line.contains(avoided)),
+            "the broker installer must not call {avoided}"
+        );
+    }
+    for step in [
+        "$service.WaitForStatus(\"Running\", [TimeSpan]::FromSeconds(20))",
+        "$existing.WaitForStatus(\"Stopped\", [TimeSpan]::FromSeconds(20))",
+        "$failure = \"it reported Running and then stopped\"",
+        "$failure = $_.Exception.GetBaseException().Message",
+        "Write-Host \"  Service: $(Get-ServiceExitSummary $Name)\"",
+        "Get-Content -LiteralPath $logPath -Tail 20",
+        "throw \"$Name did not start: $failure\"",
+        "Join-Path (Split-Path -Parent $BrokerPath) \"logs\\smbus-broker.log\"",
+        "sc.exe failureflag $ServiceName 1",
+        "is still marked for deletion",
+    ] {
+        assert!(
+            INSTALL_WINDOWS_SMBUS_SERVICE_PS1.contains(step),
+            "the broker installer is missing {step}"
+        );
+    }
+}
+
+/// The app's Install support button runs the hardware setup without
+/// -ReinstallService, so re-registering the same broker binary must repair
+/// a stopped registration instead of refusing because one exists.
+#[test]
+fn smbus_service_installer_repairs_its_own_registration() {
+    for step in [
+        "$registeredPath = Get-RegisteredBrokerPath $ServiceName",
+        "if (-not $Reinstall -and -not $sameBroker) {",
+    ] {
+        assert!(
+            INSTALL_WINDOWS_SMBUS_SERVICE_PS1.contains(step),
+            "the broker installer is missing {step}"
+        );
+    }
+}
+
+/// The broker starts without PawnIO and finds it once it is installed, so a
+/// failed PawnIO step must not leave it unregistered or stopped (the state
+/// issue 396 found). Both steps always run, a needed restart still reaches
+/// the caller as 3010, and any failure ends in a non-zero exit.
+#[test]
+fn hardware_setup_registers_the_broker_even_when_pawnio_fails() {
+    let script = INSTALL_WINDOWS_HARDWARE_SUPPORT_PS1;
+    let position = |needle: &str| {
+        script
+            .find(needle)
+            .unwrap_or_else(|| panic!("hardware setup is missing {needle}"))
+    };
+    let pawnio = position("& $pawnIoInstaller @pawnIoArgs");
+    let pawnio_caught = position("$failures += \"PawnIO setup failed: ");
+    let broker = position("& $serviceInstaller @serviceArgs");
+    let broker_caught = position("$failures += \"SMBus broker setup failed: ");
+    let reboot = position("exit 3010");
+    let failed = position("if ($failures.Count -gt 0) {\n    exit 1\n}");
+    assert!(pawnio < pawnio_caught && pawnio_caught < broker && broker < broker_caught);
+    assert!(broker_caught < reboot && reboot < failed);
+}
+
+/// The hardware setup keeps a transcript beside the broker's own log, which
+/// outlives the installer's details pane and lands in the diagnostics
+/// bundle and `diagnose-windows.ps1`.
+#[test]
+fn hardware_setup_and_diagnostics_keep_the_broker_logs() {
+    for step in [
+        "$transcriptPath = Join-Path (Split-Path -Parent $BrokerExe) \"logs\\hardware-support.log\"",
+        "Move-Item -LiteralPath $transcriptPath -Destination \"$transcriptPath.1\" -Force",
+        "Start-Transcript -LiteralPath $transcriptPath -Append",
+        "Stop-Transcript",
+    ] {
+        assert!(
+            INSTALL_WINDOWS_HARDWARE_SUPPORT_PS1.contains(step),
+            "hardware setup is missing {step}"
+        );
+    }
+    for step in [
+        "foreach ($log in @(\"smbus-broker.log\", \"hardware-support.log\"))",
+        "service-specific exit code $($broker.ServiceSpecificExitCode)",
+        "ProviderName = \"Service Control Manager\"",
+    ] {
+        assert!(
+            DIAGNOSE_WINDOWS_PS1.contains(step),
+            "diagnose-windows.ps1 is missing {step}"
+        );
+    }
 }
 
 /// Upgrades only overwrite files, and the UI and bundled effects change file
@@ -1892,12 +2085,20 @@ fn release_lane_proves_windows_upgrades_in_place() {
         "the autostart Run value did not survive the upgrade",
         "the upgrade recreated the desktop shortcut the user had removed",
         "a previous release's file survived the upgrade",
+        "::warning::the HypercolorSmBus broker is $brokerState after the upgrade ($Mode)",
     ] {
         assert!(
             WINDOWS_UPGRADE_TEST_PS1.contains(check),
             "upgrade check is missing: {check}"
         );
     }
+    // The broker notice is an OK box; Cancel dismisses it and can never
+    // answer Yes to the restart prompt.
+    assert!(
+        WINDOWS_UPGRADE_TEST_PS1
+            .contains("PostMessage(dialog, WM_COMMAND, (IntPtr)IDCANCEL, IntPtr.Zero);")
+    );
+    assert!(!WINDOWS_UPGRADE_TEST_PS1.contains("PostMessage(dialog, WM_COMMAND, (IntPtr)IDOK"));
 }
 
 fn nsis_function_body<'a>(name: &str) -> &'a str {

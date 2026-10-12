@@ -222,7 +222,10 @@ impl DiagnosticsContext {
             match check.as_str() {
                 "daemon" => checks.push(daemon_check()),
                 "render" => checks.extend(render_checks(&inputs)),
-                "devices" => checks.extend(device_checks(&inputs, &snapshot)),
+                "devices" => {
+                    checks.extend(device_checks(&inputs, &snapshot));
+                    checks.extend(super::hardware_broker_diagnostics::smbus_broker_check().await);
+                }
                 "conflicts" => checks.push(self.conflicts_check().await),
                 "config" => checks.extend(config_checks(&inputs)),
                 "input" => checks.extend(input_checks(&snapshot.input)),

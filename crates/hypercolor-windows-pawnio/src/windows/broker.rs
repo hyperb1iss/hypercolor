@@ -18,12 +18,20 @@
 //!   `PawnIoError::BrokerUnavailable` and translate to `TransportError`
 //!   at the HAL boundary. Upstream consumers decide whether to retry or
 //!   degrade.
+//! - **Every start and stop is on record.** As a service the broker logs
+//!   to `logs\smbus-broker.log` beside its executable: the PawnIO runtime
+//!   and modules it found, each state it reports, why it stopped (Stop,
+//!   system shutdown, or a failure with its exit code), any panic, and
+//!   the first request failure of each kind. Failures after the control
+//!   handler registers report `SERVICE_STOPPED` with a service-specific
+//!   exit code instead of leaving the service in `START_PENDING`.
 //!
-//! There is intentionally **no user-facing repair affordance**. If the
-//! broker ever ends up in a state SCM recovery can't fix, that's a bug
-//! to fix in the broker, not a button to expose.
+//! A broker that SCM recovery cannot bring back is still a bug to fix in
+//! the broker, but it must never be silent: `hypercolor diagnose` reads
+//! [`super::broker_service_status`] and names a registered broker that is
+//! not running, with the remedy and the log path.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsString, c_void};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
@@ -53,6 +61,7 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
+use super::service_log::{broker_log_path, open_broker_log};
 use super::{
     CpuVendor, IOCTL_READ_MSR, IOCTL_READ_SMN, PAWNIO_MODULE_AMD_FAMILY_17,
     PAWNIO_MODULE_INTEL_MSR, PawnIoError, PawnIoHandle, PawnIoResult, PawnIoRuntime,
@@ -62,11 +71,25 @@ use super::{
 };
 use crate::PawnIoErrorKind;
 
-const SERVICE_NAME: &str = "HypercolorSmBus";
+pub(super) const SERVICE_NAME: &str = crate::BROKER_SERVICE_NAME;
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 const SERVICE_START_WAIT_HINT: Duration = Duration::from_secs(15);
 const SERVICE_STOP_WAIT_HINT: Duration = Duration::from_secs(10);
+/// How long a stopping broker waits for in-flight requests before its
+/// runtime is torn down regardless. Kept under the stop wait hint.
+const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const PIPE_NAME: &str = r"\\.\pipe\hypercolor-smbus-v1";
+/// Pause between attempts to create the next pipe instance.
+const PIPE_CREATE_RETRY_DELAY: Duration = Duration::from_millis(250);
+/// Consecutive pipe creation failures (ten seconds of retries) after which
+/// the request loop fails and the broker stops with exit code 1. A busy
+/// pipe, or a name another process holds, never counts.
+const PIPE_CREATE_ATTEMPTS: u32 = 40;
+/// How long a connected client has to send its request before the broker
+/// drops it and frees the pipe instance.
+const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// `ERROR_PIPE_BUSY`: every instance of the pipe is in use.
+const ERROR_PIPE_BUSY: i32 = 231;
 const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)";
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_BATCH_DELAY_MS: u64 = 1_000;
@@ -152,6 +175,19 @@ pub(super) fn read_smn(addr: u32) -> PawnIoResult<u32> {
     Ok(value)
 }
 
+/// Ask the broker to answer without touching PawnIO or any bus. `Ok`
+/// carries the broker's version. A [`PawnIoError::BrokerCall`] means a
+/// broker from before this request answered it, which still proves the
+/// pipe is served; only [`PawnIoError::BrokerUnavailable`] means nobody is
+/// listening.
+pub(super) fn ping() -> PawnIoResult<String> {
+    let response = send_request(BrokerRequest::Ping, "ping")?;
+    let BrokerResponse::Pong { version } = response else {
+        return Err(unexpected_response("ping"));
+    };
+    Ok(version)
+}
+
 pub(super) fn smbus_xfer_batch(
     path: &str,
     address: u8,
@@ -209,58 +245,133 @@ pub(super) fn run_smbus_service() -> Result<()> {
         return Ok(());
     }
 
-    init_tracing();
-
     if std::env::args_os().any(|arg| arg == "--console") {
+        init_console_tracing();
+        install_panic_logger();
         return run_console();
     }
 
-    service_dispatcher::start(SERVICE_NAME, ffi_service_main)
-        .context("failed to start Hypercolor SMBus broker service dispatcher")
+    let log_path = init_service_tracing();
+    install_panic_logger();
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        pid = std::process::id(),
+        log = ?log_path,
+        "Hypercolor SMBus broker process started"
+    );
+
+    // StartServiceCtrlDispatcher only succeeds when the Service Control
+    // Manager launched this process. Anything else (a double-click, a
+    // script running the exe directly) lands here, and the log says so.
+    let result = service_dispatcher::start(SERVICE_NAME, ffi_service_main).context(
+        "could not connect to the Service Control Manager; the broker runs as the \
+         HypercolorSmBus service, or in a terminal with --console",
+    );
+    match &result {
+        Ok(()) => info!("Hypercolor SMBus broker process exiting"),
+        Err(error) => {
+            error!(error = %format_args!("{error:#}"), "Hypercolor SMBus broker could not start")
+        }
+    }
+    result
 }
 
 fn print_help() {
     println!(
-        "Hypercolor SMBus broker\n\nUSAGE:\n    hypercolor-smbus-service.exe [--console]\n\nRuns the narrow PawnIO SMBus broker used by the regular Hypercolor daemon."
+        "Hypercolor SMBus broker\n\nUSAGE:\n    hypercolor-smbus-service.exe [--console]\n\nRuns the narrow PawnIO SMBus broker used by the regular Hypercolor daemon.\nAs a service it logs to logs\\smbus-broker.log beside this executable."
     );
 }
 
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("hypercolor_windows_pawnio=info,info"));
+fn broker_env_filter() -> EnvFilter {
+    EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("hypercolor_windows_pawnio=info,info"))
+}
+
+fn init_console_tracing() {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
+        .with_env_filter(broker_env_filter())
         .with_target(true)
         .try_init();
 }
 
+/// Route tracing to the broker log beside the executable. A service has no
+/// console, so without this every message, failures included, is dropped.
+/// Falls back to console output when the log cannot be opened, which keeps
+/// a misconfigured install from also losing the broker itself.
+fn init_service_tracing() -> Option<PathBuf> {
+    let path = std::env::current_exe()
+        .ok()
+        .and_then(|exe| broker_log_path(&exe))?;
+    match open_broker_log(&path) {
+        Ok(file) => {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(broker_env_filter())
+                .with_target(true)
+                .with_ansi(false)
+                .with_writer(Mutex::new(file))
+                .try_init();
+            Some(path)
+        }
+        Err(_) => {
+            init_console_tracing();
+            None
+        }
+    }
+}
+
+/// Record a panic in the broker log before the default hook runs. Release
+/// builds abort on panic, so this line is the only trace a panic leaves.
+fn install_panic_logger() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        error!(panic = %info, "Hypercolor SMBus broker panicked");
+        previous(info);
+    }));
+}
+
 fn run_console() -> Result<()> {
+    log_pawnio_self_check();
     let runtime = build_runtime()?;
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = watch::channel(None);
     runtime.spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
-            let _ = shutdown_tx.send(true);
+            let _ = shutdown_tx.send(Some(StopReason::ConsoleInterrupt));
         }
     });
 
     runtime.block_on(serve_until_shutdown(shutdown_rx))
 }
 
+/// Why the broker left its serve loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopReason {
+    /// The Service Control Manager sent Stop (Stop-Service, sc.exe stop,
+    /// the installer stopping it before replacing files).
+    StopRequested,
+    /// Windows is shutting down.
+    SystemShutdown,
+    /// Ctrl+C in `--console` mode.
+    ConsoleInterrupt,
+}
+
 fn service_main(_arguments: Vec<OsString>) {
-    init_tracing();
     if let Err(error) = run_service() {
         error!(error = %format_args!("{error:#}"), "Hypercolor SMBus broker service failed");
     }
 }
 
 fn run_service() -> Result<()> {
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = watch::channel(None);
 
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
         match control_event {
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-            ServiceControl::Stop | ServiceControl::Shutdown => {
-                let _ = shutdown_tx.send(true);
+            ServiceControl::Stop => {
+                let _ = shutdown_tx.send(Some(StopReason::StopRequested));
+                ServiceControlHandlerResult::NoError
+            }
+            ServiceControl::Shutdown => {
+                let _ = shutdown_tx.send(Some(StopReason::SystemShutdown));
                 ServiceControlHandlerResult::NoError
             }
             _ => ServiceControlHandlerResult::NotImplemented,
@@ -273,30 +384,105 @@ fn run_service() -> Result<()> {
         &status_handle,
         ServiceState::StartPending,
         ServiceControlAccept::empty(),
-        0,
+        ServiceExitCode::NO_ERROR,
         SERVICE_START_WAIT_HINT,
     )?;
+    log_pawnio_self_check();
 
-    let runtime = build_runtime()?;
+    // Every failure past this point, short of SetServiceStatus itself
+    // failing, reports SERVICE_STOPPED with a service-specific exit code,
+    // which the Service Control Manager records as Win32 code 1066 plus that
+    // value. Returning without it would strand the service in START_PENDING
+    // until the Service Control Manager gives up on it, with nothing
+    // recorded about why.
+    let runtime = match build_runtime() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            error!(error = %format_args!("{error:#}"), "Hypercolor SMBus broker could not start its runtime");
+            report_stopped(
+                &status_handle,
+                ServiceExitCode::ServiceSpecific(crate::BROKER_EXIT_RUNTIME_FAILED),
+            );
+            return Err(error);
+        }
+    };
     report_status(
         &status_handle,
         ServiceState::Running,
         ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-        0,
+        ServiceExitCode::NO_ERROR,
         Duration::ZERO,
     )?;
+    info!(pipe = PIPE_NAME, "Hypercolor SMBus broker is running");
 
-    let run_result = runtime.block_on(serve_until_shutdown(shutdown_rx));
-    let exit_code = u32::from(run_result.is_err());
+    let run_result = runtime.block_on(serve_until_shutdown(shutdown_rx.clone()));
+    let reason = *shutdown_rx.borrow();
+    match (&run_result, reason) {
+        (Err(error), _) => {
+            error!(error = %format_args!("{error:#}"), "Hypercolor SMBus broker serve loop failed");
+        }
+        (Ok(()), Some(reason)) => info!(?reason, "Hypercolor SMBus broker stopping"),
+        (Ok(()), None) => warn!("Hypercolor SMBus broker control handler closed; stopping"),
+    }
+
+    // Tear the runtime down before reporting SERVICE_STOPPED: once Stopped
+    // is reported the process exits, and the installer treats Stopped as
+    // permission to replace the files this process holds open.
     report_status(
         &status_handle,
-        ServiceState::Stopped,
+        ServiceState::StopPending,
         ServiceControlAccept::empty(),
-        exit_code,
+        ServiceExitCode::NO_ERROR,
         SERVICE_STOP_WAIT_HINT,
     )?;
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+
+    let exit_code = if run_result.is_err() {
+        ServiceExitCode::ServiceSpecific(crate::BROKER_EXIT_SERVE_FAILED)
+    } else {
+        ServiceExitCode::NO_ERROR
+    };
+    info!(?exit_code, "Hypercolor SMBus broker stopped");
+    report_stopped(&status_handle, exit_code);
 
     run_result
+}
+
+/// Log where PawnIO and its modules resolve from, so the broker log answers
+/// "was PawnIO there when the broker started" without a second tool. The
+/// broker loads neither here: PawnIO stays lazy until the first request.
+fn log_pawnio_self_check() {
+    match super::resolve_pawnio_library_path() {
+        Ok(path) => info!(path = %path.display(), "PawnIO runtime found"),
+        Err(error) => warn!(
+            %error,
+            searched = ?super::pawnio_install_dirs(),
+            "PawnIO runtime not found; SMBus and CPU temperature requests will fail until it is installed"
+        ),
+    }
+
+    let mut found = Vec::new();
+    let mut missing = Vec::new();
+    let modules = super::SMBUS_MODULES
+        .iter()
+        .map(|spec| spec.module_name)
+        .chain([PAWNIO_MODULE_INTEL_MSR, PAWNIO_MODULE_AMD_FAMILY_17]);
+    for module in modules {
+        match resolve_module_path(module) {
+            Ok(path) => found.push(path.display().to_string()),
+            Err(_) => missing.push(module),
+        }
+    }
+    if missing.is_empty() {
+        info!(modules = ?found, "PawnIO modules found");
+    } else {
+        warn!(
+            found = ?found,
+            missing = ?missing,
+            searched = ?super::pawnio_module_dirs(),
+            "PawnIO modules missing; requests that need them will fail"
+        );
+    }
 }
 
 fn build_runtime() -> Result<tokio::runtime::Runtime> {
@@ -312,7 +498,7 @@ fn report_status(
     status_handle: &ServiceStatusHandle,
     state: ServiceState,
     controls_accepted: ServiceControlAccept,
-    exit_code: u32,
+    exit_code: ServiceExitCode,
     wait_hint: Duration,
 ) -> Result<()> {
     status_handle
@@ -320,7 +506,7 @@ fn report_status(
             service_type: SERVICE_TYPE,
             current_state: state,
             controls_accepted,
-            exit_code: ServiceExitCode::Win32(exit_code),
+            exit_code,
             checkpoint: 0,
             wait_hint,
             process_id: None,
@@ -328,19 +514,70 @@ fn report_status(
         .context("failed to update Hypercolor SMBus broker service status")
 }
 
-async fn serve_until_shutdown(mut shutdown: watch::Receiver<bool>) -> Result<()> {
+/// Report `SERVICE_STOPPED`, logging rather than propagating a failure:
+/// callers are already on their way out with a more useful error.
+fn report_stopped(status_handle: &ServiceStatusHandle, exit_code: ServiceExitCode) {
+    if let Err(error) = report_status(
+        status_handle,
+        ServiceState::Stopped,
+        ServiceControlAccept::empty(),
+        exit_code,
+        Duration::ZERO,
+    ) {
+        error!(error = %format_args!("{error:#}"), "failed to report the broker stopped");
+    }
+}
+
+async fn serve_until_shutdown(mut shutdown: watch::Receiver<Option<StopReason>>) -> Result<()> {
     let state = Arc::new(BrokerState::default());
     info!(pipe = PIPE_NAME, "Hypercolor SMBus broker listening");
+    let mut create_failures = 0_u32;
+    let mut busy_instances = RepeatGate::default();
+    let mut connect_failures = RepeatGate::default();
 
-    while !*shutdown.borrow() {
+    while shutdown.borrow().is_none() {
         let server = match create_server_pipe() {
-            Ok(server) => server,
+            Ok(server) => {
+                create_failures = 0;
+                busy_instances.reset();
+                server
+            }
+            Err(error) if pipe_held_elsewhere(&error) => {
+                // Every instance is busy, or another process holds the pipe
+                // name. That is load or interference, not a broken broker: it
+                // clears as clients finish (or hit CLIENT_REQUEST_TIMEOUT) or
+                // the other process lets go, so it never counts toward
+                // stopping the broker, which any interactive user could
+                // otherwise force.
+                if busy_instances.first() {
+                    warn!(
+                        error = %format_args!("{error:#}"),
+                        "SMBus broker pipe is busy or held by another process; waiting"
+                    );
+                }
+                tokio::time::sleep(PIPE_CREATE_RETRY_DELAY).await;
+                continue;
+            }
             Err(error) => {
-                warn!(
-                    error = %format_args!("{error:#}"),
-                    "failed to create SMBus broker pipe; retrying"
-                );
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                create_failures += 1;
+                // A pipe that cannot be created for this long is not a
+                // hiccup. Fail the loop so the broker stops with exit code 1,
+                // where SCM recovery and diagnose see it, instead of
+                // reporting Running while no client can reach it.
+                if create_failures >= PIPE_CREATE_ATTEMPTS {
+                    return Err(error.context(format!(
+                        "could not create the SMBus broker pipe {PIPE_CREATE_ATTEMPTS} times in a row"
+                    )));
+                }
+                if create_failures == 1 {
+                    warn!(
+                        error = %format_args!("{error:#}"),
+                        "failed to create SMBus broker pipe; retrying"
+                    );
+                } else {
+                    debug!(error = %format_args!("{error:#}"), "SMBus broker pipe still unavailable");
+                }
+                tokio::time::sleep(PIPE_CREATE_RETRY_DELAY).await;
                 continue;
             }
         };
@@ -348,10 +585,15 @@ async fn serve_until_shutdown(mut shutdown: watch::Receiver<bool>) -> Result<()>
             connect_result = server.connect() => {
                 match connect_result {
                     Ok(()) => {
+                        connect_failures.reset();
                         tokio::spawn(handle_connected_client(server, Arc::clone(&state)));
                     }
                     Err(error) => {
-                        warn!(%error, "SMBus broker pipe connection failed; accepting next client");
+                        if connect_failures.first() {
+                            warn!(%error, "SMBus broker pipe connection failed; accepting next client");
+                        } else {
+                            debug!(%error, "SMBus broker pipe connection failed again");
+                        }
                         tokio::time::sleep(Duration::from_millis(25)).await;
                     }
                 }
@@ -364,15 +606,51 @@ async fn serve_until_shutdown(mut shutdown: watch::Receiver<bool>) -> Result<()>
         }
     }
 
-    info!("Hypercolor SMBus broker stopped");
+    debug!("Hypercolor SMBus broker serve loop ended");
     Ok(())
+}
+
+/// Lets the first of a run of identical failures through at `warn` and
+/// sends the rest to `debug`, so a failure that repeats every few
+/// milliseconds cannot fill the broker log.
+#[derive(Default)]
+struct RepeatGate {
+    seen: bool,
+}
+
+impl RepeatGate {
+    /// True for the first failure since the last success.
+    fn first(&mut self) -> bool {
+        !std::mem::replace(&mut self.seen, true)
+    }
+
+    fn reset(&mut self) {
+        self.seen = false;
+    }
 }
 
 async fn handle_connected_client(mut server: NamedPipeServer, state: Arc<BrokerState>) {
     let result = async {
-        let request = read_frame(&mut server).await?;
+        // Clients write their request as soon as they connect. One that
+        // connects and sends nothing would hold a pipe instance forever, and
+        // enough of them would leave no instance for anyone else.
+        let request = tokio::time::timeout(CLIENT_REQUEST_TIMEOUT, read_frame(&mut server))
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "client sent no request within {} seconds",
+                    CLIENT_REQUEST_TIMEOUT.as_secs()
+                )
+            })??;
         let response = match serde_json::from_slice::<BrokerRequest>(&request) {
-            Ok(request) => BrokerEnvelope::ok(state.handle_request(request)),
+            Ok(request) => {
+                let operation = request.operation();
+                let result = state.handle_request(request);
+                if let Err(error) = &result {
+                    state.log_failure(operation, error);
+                }
+                BrokerEnvelope::ok(result)
+            }
             Err(error) => BrokerEnvelope::error(PawnIoError::InvalidInput {
                 detail: format!("invalid broker request: {error}"),
             }),
@@ -386,6 +664,17 @@ async fn handle_connected_client(mut server: NamedPipeServer, state: Arc<BrokerS
     if let Err(error) = result {
         trace!(error = %format_args!("{error:#}"), "SMBus broker client request failed");
     }
+}
+
+/// True when pipe creation failed because every instance is busy or because
+/// another process created the name with a DACL that refuses the broker.
+fn pipe_held_elsewhere(error: &anyhow::Error) -> bool {
+    matches!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error),
+        Some(ERROR_PIPE_BUSY | super::ERROR_ACCESS_DENIED)
+    )
 }
 
 fn create_server_pipe() -> Result<NamedPipeServer> {
@@ -520,11 +809,38 @@ struct BrokerState {
     /// only ever one CPU vendor per box, so one handle covers all
     /// callers.
     cpu_module: Mutex<Option<CpuTempModule>>,
+    /// Failure classes already written to the broker log at `warn`.
+    /// Clients retry every frame, so each operation and error kind is
+    /// logged prominently once and at `debug` after that.
+    logged_failures: Mutex<HashSet<(&'static str, PawnIoErrorKind)>>,
 }
 
 impl BrokerState {
+    fn log_failure(&self, operation: &'static str, error: &PawnIoError) {
+        // A transaction the bus rejected (no device at a probed address, a
+        // NACK) is an answer, not a broker problem; discovery probes cause
+        // plenty of them.
+        if matches!(error, PawnIoError::SmBusIo { .. }) {
+            debug!(operation, %error, "SMBus transaction failed");
+            return;
+        }
+        let first = self
+            .logged_failures
+            .lock()
+            .map(|mut logged| logged.insert((operation, error.kind())))
+            .unwrap_or(false);
+        if first {
+            warn!(operation, kind = ?error.kind(), %error, "SMBus broker request failed");
+        } else {
+            debug!(operation, %error, "SMBus broker request failed");
+        }
+    }
+
     fn handle_request(&self, request: BrokerRequest) -> PawnIoResult<BrokerResponse> {
         match request {
+            BrokerRequest::Ping => Ok(BrokerResponse::Pong {
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+            }),
             BrokerRequest::EnumerateBuses => Ok(BrokerResponse::Buses {
                 buses: direct_enumerate_smbus_buses()?
                     .iter()
@@ -720,6 +1036,10 @@ fn lock_poisoned() -> PawnIoError {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BrokerRequest {
+    /// Liveness probe that touches neither PawnIO nor any bus. Brokers
+    /// older than this request answer it with an invalid-request error,
+    /// which still proves the pipe is served.
+    Ping,
     EnumerateBuses,
     OpenBus {
         path: String,
@@ -748,9 +1068,26 @@ enum BrokerRequest {
     },
 }
 
+impl BrokerRequest {
+    const fn operation(&self) -> &'static str {
+        match self {
+            Self::Ping => "ping",
+            Self::EnumerateBuses => "enumerate_buses",
+            Self::OpenBus { .. } => "open_bus",
+            Self::SmBusXfer { .. } => "smbus_xfer",
+            Self::SmBusXferBatch { .. } => "smbus_xfer_batch",
+            Self::ReadMsr { .. } => "read_msr",
+            Self::ReadSmn { .. } => "read_smn",
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BrokerResponse {
+    Pong {
+        version: String,
+    },
     Buses {
         buses: Vec<BrokerBusInfo>,
     },

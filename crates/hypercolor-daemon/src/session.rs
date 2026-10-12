@@ -12,7 +12,7 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::session::{SessionMonitor, SessionWatcher, SleepPolicy};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::event::HypercolorEvent;
-use hypercolor_types::host_software::HostInventory;
+use hypercolor_types::host_software::{HardwareBrokerReport, HostInventory};
 use hypercolor_types::session::{OffOutputBehavior, SessionEvent, SleepAction, WakeAction};
 
 use crate::discovery::{self, DiscoveryRuntime, DiscoveryTarget};
@@ -151,6 +151,21 @@ pub(crate) fn host_inventory() -> HostInventory {
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         HostInventory::Unsupported
+    }
+}
+
+/// The privileged broker this host reaches hardware buses through, for the
+/// diagnostics check. Platforms where the daemon opens its buses directly
+/// have none. Blocks on the service manager and the broker's channel.
+pub(crate) fn hardware_broker_report() -> Option<HardwareBrokerReport> {
+    #[cfg(target_os = "windows")]
+    {
+        hypercolor_windows_telemetry::hardware_broker_report()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
     }
 }
 

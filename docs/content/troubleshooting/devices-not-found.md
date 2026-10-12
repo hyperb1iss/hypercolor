@@ -306,10 +306,14 @@ Windows, check two things:
   `hypercolor openrgb start` is not a conflict.
 - **SMBus hardware support (motherboard and DRAM RGB).** SMBus devices need the
   PawnIO modules and the `HypercolorSmBus` broker service that the installer
-  sets up. Confirm the broker is running with `Get-Service HypercolorSmBus`,
-  and re-run the setup from Settings → Device Discovery → Hardware Support if
-  it is missing. The tray's Export Diagnostics bundle includes a PawnIO/SMBus
-  probe report.
+  sets up. `hypercolor diagnose` reports the broker as `devices.smbus_broker`:
+  it fails when the broker is installed but not running, says why it last
+  stopped, and names the remedy. Start it with `Start-Service HypercolorSmBus`
+  in an elevated PowerShell, or re-run the setup from Settings → Device
+  Discovery → Windows SMBus Support → Install support. The broker logs every
+  start and stop to `tools\logs\smbus-broker.log` under the install directory,
+  next to `hardware-support.log` from the last setup run, and the tray's Export
+  Diagnostics bundle includes both.
 
 ## macOS
 

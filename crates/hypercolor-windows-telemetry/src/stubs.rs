@@ -1,6 +1,6 @@
 //! Off-platform stand-ins: no WMI, no PawnIO, nothing to report.
 
-use crate::{HostSoftwareSnapshot, MotherboardInfo, SystemSnapshot};
+use crate::{HardwareBrokerReport, HostSoftwareSnapshot, MotherboardInfo, SystemSnapshot};
 
 /// Motherboard identity is only probed on Windows.
 #[must_use]
@@ -26,5 +26,11 @@ impl SensorExtras {
 /// The software inventory is only taken on Windows by this crate.
 #[must_use]
 pub const fn running_software() -> Option<HostSoftwareSnapshot> {
+    None
+}
+
+/// Only Windows reaches hardware through a privileged broker service.
+#[must_use]
+pub const fn hardware_broker_report() -> Option<HardwareBrokerReport> {
     None
 }

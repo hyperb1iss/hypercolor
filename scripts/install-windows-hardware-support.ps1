@@ -77,47 +77,108 @@ if (-not (Test-IsAdministrator)) {
 $pawnIoInstaller = Join-Path $PSScriptRoot "install-bundled-pawnio.ps1"
 $serviceInstaller = Join-Path $PSScriptRoot "install-windows-smbus-service.ps1"
 
-foreach ($path in @($pawnIoInstaller, $serviceInstaller, $BrokerExe)) {
-    if (-not (Test-Path -LiteralPath $path)) {
-        throw "Required hardware support file was not found: $path"
+# Keep a transcript beside the broker's own log. The installer only shows
+# this script's output in its details pane, which is gone once the wizard
+# closes; the diagnostics bundle collects this directory. The previous run
+# is kept once the log passes a megabyte.
+$transcriptPath = Join-Path (Split-Path -Parent $BrokerExe) "logs\hardware-support.log"
+$transcribing = $false
+try {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $transcriptPath) | Out-Null
+} catch {
+    Write-Host "Could not create the setup log directory: $($_.Exception.Message)"
+}
+try {
+    if ((Test-Path -LiteralPath $transcriptPath) -and (Get-Item -LiteralPath $transcriptPath).Length -gt 1MB) {
+        Move-Item -LiteralPath $transcriptPath -Destination "$transcriptPath.1" -Force
+    }
+} catch {
+    # A log that cannot be rotated just keeps growing; this run still logs.
+    Write-Host "Could not rotate ${transcriptPath}: $($_.Exception.Message)"
+}
+try {
+    Start-Transcript -LiteralPath $transcriptPath -Append | Out-Null
+    $transcribing = $true
+} catch {
+    Write-Host "Could not keep a setup log at ${transcriptPath}: $($_.Exception.Message)"
+}
+
+$pawnIoExit = 0
+$failures = @()
+try {
+    Write-Host "Hypercolor hardware support setup, $(Get-Date -Format o), $([IntPtr]::Size * 8)-bit PowerShell"
+
+    foreach ($path in @($pawnIoInstaller, $serviceInstaller, $BrokerExe)) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            throw "Required hardware support file was not found: $path"
+        }
+    }
+
+    # Hashtable splatting, not array splatting. Splatting an array into a
+    # PowerShell script binds every element positionally, so "-AssetRoot"
+    # lands in $AssetRoot as a literal value and switches never bind at all.
+    # Only native executables parse "-Name value" pairs out of a splatted
+    # array.
+    $pawnIoArgs = @{
+        AssetRoot         = $AssetRoot
+        ModuleDestination = $ModuleDestination
+    }
+    if ($ForcePawnIo) {
+        $pawnIoArgs["Force"] = $true
+    }
+    if ($Silent) {
+        $pawnIoArgs["Silent"] = $true
+    }
+
+    # The broker step runs whatever happened to PawnIO. The broker starts
+    # without PawnIO and finds it once it is installed, while a broker left
+    # unregistered or stopped by a failed PawnIO step stays dark until
+    # someone repairs it by hand.
+    try {
+        & $pawnIoInstaller @pawnIoArgs
+        $pawnIoExit = $LASTEXITCODE
+    } catch {
+        $failures += "PawnIO setup failed: $($_.Exception.Message)"
+        Write-Host $failures[-1]
+    }
+
+    $serviceArgs = @{
+        BrokerExe   = $BrokerExe
+        StartupType = "Automatic"
+    }
+    if ($ReinstallService) {
+        $serviceArgs["Reinstall"] = $true
+    }
+    if (-not $NoStartService) {
+        $serviceArgs["Start"] = $true
+    }
+    try {
+        & $serviceInstaller @serviceArgs
+    } catch {
+        $failures += "SMBus broker setup failed: $($_.Exception.Message)"
+        Write-Host $failures[-1]
+    }
+} catch {
+    $failures += "Hypercolor Windows hardware support failed: $($_.Exception.Message)"
+    Write-Host $failures[-1]
+} finally {
+    if ($failures.Count -eq 0) {
+        Write-Host "Hypercolor Windows hardware support is ready"
+    }
+    if ($transcribing) {
+        Stop-Transcript | Out-Null
     }
 }
 
-# Hashtable splatting, not array splatting. Splatting an array into a
-# PowerShell script binds every element positionally, so "-AssetRoot" lands
-# in $AssetRoot as a literal value and switches never bind at all. Only
-# native executables parse "-Name value" pairs out of a splatted array.
-$pawnIoArgs = @{
-    AssetRoot         = $AssetRoot
-    ModuleDestination = $ModuleDestination
-}
-if ($ForcePawnIo) {
-    $pawnIoArgs["Force"] = $true
-}
-if ($Silent) {
-    $pawnIoArgs["Silent"] = $true
-}
-& $pawnIoInstaller @pawnIoArgs
-$pawnIoExit = $LASTEXITCODE
-
-$serviceArgs = @{
-    BrokerExe   = $BrokerExe
-    StartupType = "Automatic"
-}
-if ($ReinstallService) {
-    $serviceArgs["Reinstall"] = $true
-}
-if (-not $NoStartService) {
-    $serviceArgs["Start"] = $true
-}
-& $serviceInstaller @serviceArgs
-
-Write-Host "Hypercolor Windows hardware support is ready"
-
 # Propagate PawnIO's reboot-required signal (3010) up to the parent Tauri
 # command so the UI can surface a persistent "Restart Windows" banner
-# instead of silently pretending the install is fully live.
+# instead of silently pretending the install is fully live. It wins over a
+# failure because the restart is what finishes the driver; the installer
+# checks the broker on its own either way.
 if ($pawnIoExit -eq 3010) {
     Write-Host "Restart required: PawnIO driver activation needs a reboot to finish."
     exit 3010
+}
+if ($failures.Count -gt 0) {
+    exit 1
 }

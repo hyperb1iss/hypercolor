@@ -30,12 +30,38 @@ function Test-IsAdministrator {
     $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Resolve-PawnIoHome {
-    $programRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) |
-        Where-Object { $_ }
+function Get-PawnIoRegisteredHome {
+    # PawnIO records its install directory in the 64-bit uninstall key. A
+    # 32-bit PowerShell reading HKLM:\SOFTWARE sees the WOW6432Node copy
+    # instead, so open the 64-bit registry view explicitly.
+    try {
+        $hklm = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            [Microsoft.Win32.RegistryView]::Registry64)
+        $key = $hklm.OpenSubKey("SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO")
+        if ($key) {
+            return ([string]$key.GetValue("InstallLocation")).Trim('"')
+        }
+    } catch {
+        return ""
+    }
+    return ""
+}
 
-    foreach ($root in $programRoots) {
-        $candidate = Join-Path $root "PawnIO"
+function Resolve-PawnIoHome {
+    # The Windows installer is a 32-bit process. In a 32-bit PowerShell
+    # ProgramFiles names "Program Files (x86)", where a 64-bit PawnIO never
+    # lives, so a lookup by ProgramFiles alone missed it, reran PawnIO's
+    # driver setup on every install, and skipped the shared module copy.
+    # ProgramW6432 names the 64-bit directory from either bitness.
+    $candidates = @(
+        (Get-PawnIoRegisteredHome),
+        $(if ($env:ProgramW6432) { Join-Path $env:ProgramW6432 "PawnIO" }),
+        $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles "PawnIO" }),
+        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} "PawnIO" })
+    ) | Where-Object { $_ }
+
+    foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath (Join-Path $candidate "PawnIOLib.dll")) {
             return (Resolve-Path -LiteralPath $candidate).Path
         }
