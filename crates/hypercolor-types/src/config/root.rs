@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::session::SessionConfig;
 
@@ -72,6 +73,50 @@ pub struct HypercolorConfig {
 
 /// Current schema version for newly created configurations.
 pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+
+impl HypercolorConfig {
+    /// Decode a config document from an authoritative source, refusing any
+    /// key this build does not model.
+    ///
+    /// Clients decode the daemon's config payload with the plain
+    /// `Deserialize` impl, which skips fields it does not know so an older
+    /// UI can still read a newer daemon. The config file, startup overlays,
+    /// and REST writes must not skip anything: a skipped key vanishes on the
+    /// next whole-file rewrite, and a misspelled one silently does nothing.
+    /// This decode collects every key the derive skipped and refuses the
+    /// document, naming each by its dotted path. Root extension sections and
+    /// driver entries are open maps, so their keys are captured rather than
+    /// skipped and stay accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns the deserializer's own error when the document does not fit
+    /// the schema, and an error naming every unknown key when it fits but
+    /// carries keys this build does not read.
+    pub fn deserialize_strict<'de, D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut unknown = Vec::new();
+        let config: Self =
+            serde_ignored::deserialize(deserializer, |path| unknown.push(path.to_string()))?;
+        if unknown.is_empty() {
+            Ok(config)
+        } else {
+            Err(D::Error::custom(unknown_keys_message(&unknown)))
+        }
+    }
+}
+
+fn unknown_keys_message(keys: &[String]) -> String {
+    let listed = keys
+        .iter()
+        .map(|key| format!("`{key}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let noun = if keys.len() == 1 { "key" } else { "keys" };
+    format!("unknown config {noun} {listed}")
+}
 
 impl Default for HypercolorConfig {
     fn default() -> Self {

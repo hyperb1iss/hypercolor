@@ -286,7 +286,10 @@ async fn write_config_key(
             .into_response();
     }
 
-    let updated: HypercolorConfig = match serde_json::from_value(root) {
+    // Writes decode strictly: the plain decode skips unknown keys for
+    // clients reading a newer daemon, but here a skipped key would be a
+    // client typo that answers 200 and changes nothing.
+    let updated = match HypercolorConfig::deserialize_strict(root) {
         Ok(cfg) => cfg,
         Err(error) => {
             return rejected_value(&key, "type validation", &error.to_string()).into_response();
@@ -370,7 +373,7 @@ async fn write_config_key(
                     "Invalid config key path: {key}"
                 )));
             }
-            let candidate: HypercolorConfig = serde_json::from_value(root)
+            let candidate = HypercolorConfig::deserialize_strict(root)
                 .map_err(|error| rejected_value(&key, "type validation", &error.to_string()))?;
             validate_driver_config_scope(state, Some(&key), &candidate)
                 .map_err(|error| rejected_value(&error.key, "driver validation", &error.detail))?;
