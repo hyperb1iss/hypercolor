@@ -554,6 +554,9 @@ impl ConfigManager {
         }
         #[cfg(test)]
         self.persistence_checkpoint(ConfigPersistenceStage::Replace)?;
+        // Read before the replacement: a retry that lands the older
+        // snapshot after it would clear the failure and hide the overwrite.
+        let older_snapshot_pending = self.persistence.pending_failure().is_some();
         staged.file.durable_replace(&self.config_path)?;
         let candidate = Arc::clone(&staged.candidate);
         let mut installed = false;
@@ -580,7 +583,35 @@ impl ConfigManager {
             "runtime commit did not install staged capture config"
         );
         self.note_persisted(&mut writer, &candidate);
+        if older_snapshot_pending {
+            self.supersede_pending_snapshot(&candidate);
+        }
         Ok(Some((candidate, committed)))
+    }
+
+    /// Readmit `config` through the flush registry so an older snapshot
+    /// still retrying there cannot overwrite the file the staged capture
+    /// path just replaced directly.
+    ///
+    /// Infallible by design: a failed attempt leaves `config` as the
+    /// pending snapshot, which the registry retries and
+    /// [`persistence_status`](Self::persistence_status) reports.
+    fn supersede_pending_snapshot(&self, config: &HypercolorConfig) {
+        match toml::to_string_pretty(config) {
+            Ok(toml) => {
+                let _outcome = self
+                    .persistence
+                    .reserve()
+                    .admit(toml.into_bytes())
+                    .commit_stage_aware();
+            }
+            Err(error) => warn!(
+                path = %self.config_path.display(),
+                %error,
+                "Could not readmit the committed capture config; an older pending \
+                 snapshot may overwrite it when its retry lands"
+            ),
+        }
     }
 
     /// Persist a source-resolved capture identity only for the active source epoch.
@@ -770,8 +801,8 @@ impl ConfigManager {
     /// Whether the config file has caught up with the live config.
     ///
     /// Reports [`ConfigPersistence::Lagging`] from the first failed write
-    /// until a retry lands the newest admitted document, whichever path
-    /// wrote it. A first attempt still in flight reads as durable.
+    /// until a write lands durably, whichever path wrote it; a newer write
+    /// admitted in the meantime does not clear it.
     pub fn persistence_status(&self) -> ConfigPersistence {
         self.persistence
             .pending_failure()
@@ -1334,6 +1365,49 @@ mod persistence_tests {
                 .port,
             UPDATED_PORT
         );
+    }
+
+    #[test]
+    fn staged_capture_commit_supersedes_an_older_failed_snapshot() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (manager, path) = manager_with_persisted_default(dir.as_ref(), "capture-supersede");
+        manager
+            .persistence
+            .set_injected_replace_failures(usize::MAX);
+        manager.modify(|config| config.daemon.port = UPDATED_PORT);
+        assert!(
+            !manager
+                .save()
+                .expect("the failed write stays authoritative")
+                .is_durable()
+        );
+        let expected = manager.get().clone();
+        let mut capture = expected.capture.clone();
+        capture.enabled = !capture.enabled;
+        let staged = manager
+            .stage_capture_config(&expected, capture.clone())
+            .expect("capture staging should succeed")
+            .expect("expected pointer should remain current");
+
+        manager
+            .commit_staged_capture_if_current(&expected, None, staged, |install_live| {
+                install_live();
+            })
+            .expect("durable replacement should succeed")
+            .expect("expected pointer should commit");
+        manager.persistence.set_injected_replace_failures(0);
+        manager
+            .persistence
+            .flush(std::time::Duration::from_secs(5))
+            .expect("the retry converges");
+
+        let on_disk = ConfigManager::load(&path).expect("converged config should read");
+        assert_eq!(
+            on_disk.capture, capture,
+            "the older snapshot's retry must not overwrite the capture commit"
+        );
+        assert_eq!(on_disk.daemon.port, UPDATED_PORT);
+        assert!(manager.persistence_status().is_durable());
     }
 
     #[test]
