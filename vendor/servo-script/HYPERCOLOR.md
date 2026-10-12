@@ -122,7 +122,8 @@ warns that the patch went unused and builds the unpatched crate from
 crates.io. `servo` pins its script crate exactly, so even a patch release
 of `servo` would bypass the vendored copy. Dependabot ignores `servo-script`
 and `servo` for that reason, and `scripts/check-vendored-patches.sh` fails
-CI when the lockfile resolves `servo-script` anywhere but this directory.
+CI when Cargo resolves `servo-script` anywhere but this directory, whether
+through a version bump or a config-level patch override.
 
 `[patch]` only applies to builds of this workspace. A `hypercolor-core`
 published to crates.io would build against the unpatched registry crate and
