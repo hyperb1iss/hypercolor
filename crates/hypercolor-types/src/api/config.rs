@@ -53,6 +53,7 @@ pub struct ConfigMutationResponse {
     /// lands loads the older file. A response without the field reads as
     /// persisted.
     #[serde(default = "persisted_default")]
+    #[cfg_attr(feature = "schema", schema(default = true))]
     pub persisted: bool,
     /// Why `path` lags the live config, present only when `persisted` is
     /// false.

@@ -1189,6 +1189,12 @@ response reports `"persisted": false` with the failure in `persistence_error`.
 A restart before a retry lands loads the older file. The `config` diagnose
 check reports the same lag until it clears. The reset routes report it the
 same way.
+
+Writes that rebuild the live screen-capture source are the exception: a key
+in the `capture` section, or a whole-config reset, with live apply on. They
+stage the new file before touching the running source, so a config directory
+that refuses the staged file fails the request with `500` and leaves the live
+value unchanged.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PATCH" path="/api/v1/config/keys/{key}"> %}
