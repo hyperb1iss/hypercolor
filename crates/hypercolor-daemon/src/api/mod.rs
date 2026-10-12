@@ -395,6 +395,12 @@ fn is_loopback_origin(origin: &HeaderValue) -> bool {
         return true;
     }
 
+    // `Uri::host()` keeps the brackets on an IPv6 literal (`[::1]`), which
+    // `IpAddr` will not parse.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
     host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
@@ -419,6 +425,14 @@ mod cors_tests {
         ));
         assert!(is_allowed_cors_origin(
             &origin("http://127.0.0.1:9430"),
+            &configured
+        ));
+        assert!(is_allowed_cors_origin(
+            &origin("http://[::1]:9430"),
+            &configured
+        ));
+        assert!(!is_allowed_cors_origin(
+            &origin("http://[2001:db8::1]:9430"),
             &configured
         ));
         for native_origin in [
