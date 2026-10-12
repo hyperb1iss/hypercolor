@@ -80,7 +80,7 @@ interface CanvasFnOptions {
     author?: string
     audio?: boolean      // required when you read audio (enforced at build time)
     screen?: boolean     // opt into screen-zone sampling
-    input?: boolean      // required when you read keyboard/mouse (enforced at build time)
+    input?: boolean      // required when you read keyboard, mouse, touch, or device buttons (enforced at build time)
     category?: string
     builtinId?: string
     designBasis?: DesignBasis  // author against a fixed grid, scale automatically
@@ -92,9 +92,9 @@ interface CanvasFnOptions {
 `audio: true` is not cosmetic. If your source touches `audio(`, `ctx.audio`,
 `getAudioData(`, or `engine.audio` without it, the build **fails** with an audio
 reactivity validation error. `input: true` carries the same contract: reading
-`getInputData(`, `engine.keyboard`, or `engine.mouse` without it fails the build
-with "effect uses input helpers but is missing input: true". Both apply to
-`effect()` shaders too.
+`getInputData(`, `engine.keyboard`, `engine.mouse`, `engine.touch`, or
+`engine.deviceButtons` without it fails the build with "effect uses input
+helpers but is missing input: true". Both apply to `effect()` shaders too.
 {% </callout> %}
 
 ### effect
@@ -293,9 +293,11 @@ channel. For encoded bytes, see [Color](#color) below.
 
 ## Input
 
-Interactive keyboard and mouse input. Capture and per-frame aggregation happen in
-the Rust daemon; the runtime injects state plus ordered, capture-timestamped
-events into `engine.keyboard` / `engine.mouse` when the effect declares
+Interactive keyboard and mouse input, plus touches and buttons on hardware
+Hypercolor drives, such as a ROLI Lightpad. Capture and per-frame aggregation
+happen in the Rust daemon; the runtime injects state plus ordered,
+capture-timestamped events into `engine.keyboard`, `engine.mouse`,
+`engine.touch`, and `engine.deviceButtons` when the effect declares
 `input: true` in its options. Without the declaration no input is routed. The
 browser preview can inject input on its own, so an effect can look interactive
 in the preview without the host ever granting it input; the lifecycle fields
@@ -315,8 +317,14 @@ availability, empty keyboard, idle mouse). The snapshot carries:
 - `mouse: MouseInputState`: `x`/`y` in platform pixels, `nx`/`ny` normalized to
   `[0, 1]`, `down`, `buttons`, exact two-axis `scroll` totals, `velocity`,
   `mode`, `available`, and ordered `events` (`MouseInputEvent`s).
+- `touch: TouchInputState`: held `touches` (`TouchContact`s with live
+  positions), `down`, and ordered `events` (`TouchInputEvent`s).
+- `deviceButtons: DeviceButtonInputState`: held `buttons` keyed by name from
+  any device, attributed `held` pairs (`DeviceButtonHold`), and ordered
+  `events` (`DeviceButtonInputEvent`s).
 - Lifecycle fields from `InputAvailability`: `declared`, `routed`, `healthy`,
-  `fresh`, and `degraded`.
+  `fresh`, and `degraded`. These describe host keyboard and pointer capture;
+  device touches can arrive while they read unrouted.
 - `dropped`: count of input events dropped this frame due to overflow.
 
 Events carry a monotonic capture timestamp (`atMs`), a strictly increasing
@@ -331,7 +339,47 @@ Events carry a monotonic capture timestamp (`atMs`), a strictly increasing
 `EngineKeyboard` and `EngineMouse` describe the injected globals themselves,
 including the helper methods the runtime pre-installs: `isKeyDown(key)`,
 `wasKeyPressed(key)`, `consumePressedKeys()` on the keyboard, and
-`isDown(button?)` on the mouse.
+`isDown(button?)` on the mouse. `EngineTouch` adds `isDown(device?)` and
+`EngineDeviceButtons` adds `isDown(button?, device?)`.
+
+### Touch surfaces
+
+A `TouchContact` names the touched `device` (its Hypercolor device id) and a
+`contact` id that stays stable from landing to lift on that device. `x` and
+`y` are device-surface coordinates in `[0, 1]` from the surface's top left,
+and `pressure` is in `[0, 1]`. `canvas` places the contact on your canvas:
+`nx`/`ny` are normalized canvas coordinates and `x`/`y` are Canvas 2D
+drawing coordinates (`nx * (width - 1) + 0.5`) of the point the LED under the
+finger samples, resolved through the device's position, size, and rotation
+in the layout. The point is in the canvas the zone samples, so an effect on a
+scene layer with a non-default transform sees it offset. `canvas` is `null`
+when the device has no output in the layout this canvas is sampled through,
+or has more than one, which includes a pad that only lights through the
+unassigned-output fallback. Surface coordinates stay valid either way, so
+decide explicitly what an unplaced touch should do; place the device in the
+layout to give its touches a canvas point.
+
+`TouchInputEvent` adds `phase` (`TouchPhase`: `'began' | 'ended' |
+'cancelled'`) to a contact, plus the shared `source`, `atMs`, `seq`,
+`repeatCount`, and optional `physicalCode`. Movement is not an event: read
+`touches` every frame for live positions. A `cancelled` contact was lost
+without a lift, so treat it like `ended` without the lift gesture.
+`DeviceButtonInputEvent` carries `device`, `button` (the driver's name, such
+as `mode`), and `state` (`KeyEventState`).
+
+```typescript
+const input = getInputData()
+for (const event of input.touch.events) {
+    if (event.phase === 'began' && event.canvas) spawnRipple(event.canvas.x, event.canvas.y, event.pressure)
+}
+for (const touch of input.touch.touches) {
+    if (touch.canvas) glow(touch.canvas.x, touch.canvas.y, touch.pressure)
+}
+```
+
+Deduplicate edges by `seq` if your effect can draw more than once per host
+frame. The built-in Touch Ripple effect (`sdk/src/effects/touch-ripple`) is
+a complete example.
 
 ### Input helpers
 
@@ -360,10 +408,13 @@ keyToGridPosition(key: string): { x: number; y: number } | null
 ```
 
 Exported input types: `InputData`, `EngineKeyboard`, `EngineMouse`,
-`KeyboardInputState`, `MouseInputState`, `MouseMode`, `KeyInputEvent`,
+`EngineTouch`, `EngineDeviceButtons`, `KeyboardInputState`, `MouseInputState`,
+`TouchInputState`, `DeviceButtonInputState`, `MouseMode`, `KeyInputEvent`,
 `MouseInputEvent`, `MouseButtonInputEvent`, `MouseScrollInputEvent`,
 `MouseScrollPhase`, `MouseScrollState`, `MouseScrollUnit`, `KeyEventState`,
-`PressEnvelopeOptions`, `TypingRateOptions`.
+`TouchContact`, `TouchCanvasPoint`, `TouchInputEvent`, `TouchPhase`,
+`DeviceButtonHold`, `DeviceButtonInputEvent`, `PressEnvelopeOptions`,
+`TypingRateOptions`.
 
 ## Palettes
 

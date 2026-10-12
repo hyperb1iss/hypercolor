@@ -58,7 +58,7 @@ These are **warnings**: the effect still installs, but clean them up before shar
 Treat `--strict` as your publish bar. `bunx hypercolor validate dist/*.html --strict` exits non-zero on any warning, so a clean strict pass means the artifact has full metadata, no external references, and consistent presets. That is the standard for an effect you intend to share.
 {% </callout> %}
 
-Three more checks run at build time, before validation even sees the file, and all three fail the build hard. If your source reads audio (`audio()`, `ctx.audio`, `getAudioData()`, or `engine.audio`) but the effect options omit `audio: true`, the build throws. The same goes for input: reading `getInputData()`, `engine.keyboard`, or `engine.mouse` without `input: true` fails with "effect uses input helpers but is missing input: true". And in a GLSL effect, every control must have a matching `i<Key>` uniform in the shader, or the build reports the missing uniforms. See [effect troubleshooting](@/effects/troubleshooting.md) for the full error catalog.
+Three more checks run at build time, before validation even sees the file, and all three fail the build hard. If your source reads audio (`audio()`, `ctx.audio`, `getAudioData()`, or `engine.audio`) but the effect options omit `audio: true`, the build throws. The same goes for input: reading `getInputData()`, `engine.keyboard`, `engine.mouse`, `engine.touch`, or `engine.deviceButtons` without `input: true` fails with "effect uses input helpers but is missing input: true". And in a GLSL effect, every control must have a matching `i<Key>` uniform in the shader, or the build reports the missing uniforms. See [effect troubleshooting](@/effects/troubleshooting.md) for the full error catalog.
 
 ## The effect-ID rule
 
@@ -128,7 +128,7 @@ Once installed, the effect is a first-class catalog entry. The catalog is the so
 hypercolor effects list
 ```
 
-Your effect appears alongside the built-ins. The repository ships roughly 46 SDK-authored HTML effects plus the compiled-in native renderers, and that set grows, so browse the catalog instead of memorizing a count. You can also open the effects browser in the web UI to see your effect with its controls and presets wired up.
+Your effect appears alongside the built-ins. The repository ships roughly 47 SDK-authored HTML effects plus the compiled-in native renderers, and that set grows, so browse the catalog instead of memorizing a count. You can also open the effects browser in the web UI to see your effect with its controls and presets wired up.
 
 {{< img path="img/ui/effects.webp" alt="The Hypercolor effects browser" />}}
 
