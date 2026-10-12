@@ -226,7 +226,7 @@ How the scopes resolve when remote access is on:
   `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `fc00::/7`,
   `fe80::/10`.
 - **`custom`** trusts only the explicit `allowed_clients` you list; no built-in
-  scope is added.
+  scope is added. Listing none blocks every remote client.
 
 `allowed_clients` entries are always layered on top of the resolved scope. A
 non-loopback client whose IP matches no rule gets `403 forbidden` with a detail

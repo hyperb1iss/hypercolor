@@ -847,6 +847,18 @@ impl NetworkAccessPolicy {
             }
         }
 
+        // A custom scope trusts only the clients it lists. Listing none
+        // would otherwise leave the policy empty, and an empty policy
+        // admits every client.
+        if config.remote_access_enabled()
+            && config.access_mode != NetworkAccessMode::Custom
+            && config.client_scope == NetworkClientScope::Custom
+            && allowed_clients.is_empty()
+            && invalid_rules.is_empty()
+        {
+            scope_errors.push("client_scope \"custom\" lists no allowed_clients".to_owned());
+        }
+
         Self {
             allowed_clients,
             invalid_rules,
@@ -3357,6 +3369,39 @@ mod tests {
             .expect("request failed");
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_custom_scope_that_lists_no_clients_admits_no_remote_client() {
+        let config = NetworkConfig {
+            access_mode: NetworkAccessMode::LanTrusted,
+            client_scope: NetworkClientScope::Custom,
+            ..NetworkConfig::default()
+        };
+        assert_eq!(
+            SecurityState::with_network_policy(
+                NetworkAccessPolicy::from_config_with_local_subnets(&config, Ok(Vec::new()),)
+            )
+            .keyless_remote_client_families(),
+            RemoteClientFamilies::NONE
+        );
+
+        let remote = network_policy_test_router(&config, Vec::new())
+            .oneshot(request_naming(LAN_CLIENT, "/api/v1/devices", None))
+            .await
+            .expect("request failed");
+        assert_eq!(remote.status(), StatusCode::FORBIDDEN);
+        let json = response_json(remote).await;
+        assert_eq!(
+            json["error"]["details"]["scope_errors"][0],
+            "client_scope \"custom\" lists no allowed_clients"
+        );
+
+        let local = network_policy_test_router(&config, Vec::new())
+            .oneshot(request_naming(LOOPBACK, "/api/v1/devices", None))
+            .await
+            .expect("request failed");
+        assert_eq!(local.status(), StatusCode::OK);
     }
 
     #[tokio::test]
