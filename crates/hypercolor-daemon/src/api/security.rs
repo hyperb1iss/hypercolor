@@ -815,6 +815,10 @@ struct NetworkAccessPolicy {
     allowed_clients: Vec<ClientAddressRule>,
     invalid_rules: Vec<String>,
     scope_errors: Vec<String>,
+    /// Whether config opens keyless control to remote clients, the rule
+    /// a network bind follows. A relayed request is held to it too,
+    /// since a proxy is a network bind the daemon never saw.
+    unauthenticated_remote: bool,
 }
 
 impl NetworkAccessPolicy {
@@ -872,6 +876,7 @@ impl NetworkAccessPolicy {
             allowed_clients,
             invalid_rules,
             scope_errors,
+            unauthenticated_remote: config.unauthenticated_remote_access_allowed(),
         }
     }
 
@@ -1336,6 +1341,18 @@ pub async fn enforce_security(
                 )
                 .into_response();
             }
+            // A local proxy relays remote clients to a daemon bound to
+            // loopback, so without this every client it relays would hold
+            // keyless control the config never opened to the network.
+            if request_is_relayed(&request) && !state.network.unauthenticated_remote {
+                return DomainError::forbidden_details(
+                    "Requests relayed by a reverse proxy need an API key: this daemon does not \
+                     allow unauthenticated remote access. Set HYPERCOLOR_API_KEY, or choose \
+                     access_mode = \"lan_trusted\" to open keyless access deliberately.",
+                    json!({ "setting": "network.access_mode" }),
+                )
+                .into_response();
+            }
             request
                 .extensions_mut()
                 .insert(RequestAuthContext::unsecured().with_locality(locality));
@@ -1723,6 +1740,10 @@ pub(crate) fn request_is_loopback(request: &Request<Body>) -> bool {
     matches!(client_origin(request), Some(ClientOrigin::Direct(ip)) if ip.is_loopback())
 }
 
+fn request_is_relayed(request: &Request<Body>) -> bool {
+    matches!(client_origin(request), Some(ClientOrigin::Forwarded(_)))
+}
+
 fn peer_socket_addr(request: &Request<Body>) -> Option<std::net::SocketAddr> {
     request
         .extensions()
@@ -1895,6 +1916,16 @@ mod tests {
     fn allowlist_test_router(allowed_clients: Vec<String>) -> Router {
         router_with_security_state(SecurityState::with_network_config(NetworkConfig {
             allowed_clients,
+            ..NetworkConfig::default()
+        }))
+    }
+
+    /// A keyless daemon whose config opens remote access, so a relayed
+    /// request reaches the allowlist instead of the relay refusal.
+    fn relay_allowlist_router(allowed: &str) -> Router {
+        router_with_security_state(SecurityState::with_network_config(NetworkConfig {
+            allowed_clients: vec![allowed.to_owned()],
+            allow_unauthenticated_remote_access: true,
             ..NetworkConfig::default()
         }))
     }
@@ -3547,6 +3578,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_keyless_daemon_refuses_relays_unless_remote_access_is_open() {
+        let relayed = || relayed_request("/api/v1/devices", &[("x-forwarded-for", "203.0.113.77")]);
+
+        let closed = router_with_security_state(SecurityState::with_keys(None, None))
+            .oneshot(relayed())
+            .await
+            .expect("request failed");
+        assert_eq!(closed.status(), StatusCode::FORBIDDEN);
+        let json = response_json(closed).await;
+        assert_eq!(json["error"]["details"]["setting"], "network.access_mode");
+
+        let open = router_with_security_state(SecurityState::with_network_config(NetworkConfig {
+            allow_unauthenticated_remote_access: true,
+            ..NetworkConfig::default()
+        }))
+        .oneshot(relayed())
+        .await
+        .expect("request failed");
+        assert_eq!(open.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn a_dev_proxy_that_names_no_client_keeps_loopback_trust() {
         // The UI dev server's proxy relays the local browser with only
         // `X-Forwarded-Host`, which names no client to judge.
@@ -3582,7 +3635,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_allowlist_judges_the_nearest_hop_entry() {
-        let allowed = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+        let allowed = relay_allowlist_router("192.168.1.0/24")
             .oneshot(relayed_request(
                 "/api/v1/devices",
                 &[("x-forwarded-for", "203.0.113.9, 192.168.1.5")],
@@ -3591,7 +3644,7 @@ mod tests {
             .expect("request failed");
         assert_eq!(allowed.status(), StatusCode::OK);
 
-        let refused = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+        let refused = relay_allowlist_router("192.168.1.0/24")
             .oneshot(relayed_request(
                 "/api/v1/devices",
                 &[("x-forwarded-for", "192.168.1.5, 203.0.113.9")],
@@ -3607,7 +3660,7 @@ mod tests {
     async fn the_allowlist_judges_every_forwarding_header() {
         // A proxy that owns `X-Real-IP` forwards the client's own
         // `X-Forwarded-For` untouched; the owned header still decides.
-        let refused = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+        let refused = relay_allowlist_router("192.168.1.0/24")
             .oneshot(relayed_request(
                 "/api/v1/devices",
                 &[
@@ -3621,7 +3674,7 @@ mod tests {
         let json = response_json(refused).await;
         assert_eq!(json["error"]["details"]["client_ip"], "203.0.113.9");
 
-        let allowed = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+        let allowed = relay_allowlist_router("192.168.1.0/24")
             .oneshot(relayed_request(
                 "/api/v1/devices",
                 &[
@@ -3642,7 +3695,7 @@ mod tests {
             [("x-forwarded-for", "unknown")],
             [("forwarded", "for=_hidden")],
         ] {
-            let response = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+            let response = relay_allowlist_router("192.168.1.0/24")
                 .oneshot(relayed_request("/api/v1/devices", &headers))
                 .await
                 .expect("request failed");
@@ -3658,7 +3711,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_allowlist_admits_a_relayed_local_client() {
-        let response = allowlist_test_router(vec!["192.168.1.0/24".to_owned()])
+        let response = relay_allowlist_router("192.168.1.0/24")
             .oneshot(relayed_request(
                 "/api/v1/devices",
                 &[("x-forwarded-for", "127.0.0.1")],

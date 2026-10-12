@@ -257,8 +257,7 @@ not a name the daemon answers to without an API key.
 **Cause:** a request without an API key has to call the daemon by an IP
 address, `localhost`, one of the machine's own host names, or the daemon's
 mDNS name. That rule keeps a malicious web page from reaching your daemon
-through DNS rebinding. A name from your router's DNS, or one a reverse proxy
-passes through, is none of those.
+through DNS rebinding. A name from your router's DNS is none of those.
 
 **Fix:** add the name to `network.allowed_hosts` and restart the daemon:
 
@@ -269,6 +268,11 @@ allowed_hosts = ["hypercolor.home"]
 
 Or browse to the daemon's IP address instead, or use an API key. See
 [Host names](@/api/auth-and-security.md#host-names).
+
+If the name belongs to a reverse proxy in front of the daemon, give the daemon
+an API key instead: a keyless daemon refuses relayed requests unless you have
+opened keyless remote access on purpose (see
+[Behind a reverse proxy](@/api/auth-and-security.md#behind-a-reverse-proxy)).
 
 ---
 

@@ -25,12 +25,14 @@
 //! `command` messages, which replay through this router carrying the
 //! session's [`AuditCaller`].
 //!
-//! The access log names the client a loopback reverse proxy relays, read
-//! from the last `X-Forwarded-For` entry, `X-Real-IP`, or the last
-//! `Forwarded` element. The audit trail does not: it records the
-//! socket peer as `remote` and any forwarded value, verbatim and capped, as
-//! `forwarded_for`, so a local process cannot put another address in the
-//! `remote` field.
+//! The access log names the client a loopback reverse proxy relays: the
+//! first readable claim among the last `X-Forwarded-For` entry,
+//! `X-Real-IP`, and the last `Forwarded` element. Behind a proxy that owns
+//! only a later header in that order, the name can be one the client
+//! wrote, so it is a hint, not evidence. The audit trail trusts none of
+//! it: it records the socket peer as `remote` and any forwarded value,
+//! verbatim and capped, as `forwarded_for`, so a local process cannot put
+//! another address in the `remote` field.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

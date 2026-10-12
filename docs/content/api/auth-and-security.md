@@ -282,9 +282,12 @@ forwarding headers instead. Any of `X-Forwarded-For`, `X-Real-IP`, or
 `Forwarded` on a loopback connection marks the request as relayed, and a
 relayed request is treated as a network request:
 
-- It never gets the loopback exemption, even when it claims `127.0.0.1`. A
-  local browser that goes through the proxy needs an API key like any other
-  network client; use `http://127.0.0.1:9420` directly to stay keyless.
+- It never gets the loopback exemption, even when it claims `127.0.0.1`.
+  Without a credential it is refused unless the config opens keyless remote
+  access (`access_mode = "lan_trusted"`, or
+  `allow_unauthenticated_remote_access = true`), the same rule a network
+  listener follows. A local browser that goes through the proxy therefore
+  needs an API key; use `http://127.0.0.1:9420` directly to stay keyless.
 - The allowlist judges the address the nearest hop wrote: the **last**
   `X-Forwarded-For` entry, `X-Real-IP`, and the last `Forwarded` element's
   `for=`. A proxy appends to `X-Forwarded-For` and passes earlier entries
