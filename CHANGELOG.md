@@ -102,7 +102,7 @@ This release fixes the Windows startup stall that made 0.6.1 unusable on fresh i
   - Existing Intel installs should be removed with `brew uninstall --cask hypercolor-app` or `brew uninstall hypercolor`, or by deleting the app from `/Applications`. Do not reinstall 0.3.2 or older builds from the releases page.
 - **CLI crate renamed from `hypercolor-cli` to `hypercolor`.**
   - The rename prepares for a crates.io publish that has not happened yet, so `cargo install hypercolor` does not work. Release packages and installers still ship the `hypercolor` CLI.
-  - Downstream crates depending on the library should set `hypercolor-cli = { package = "hypercolor", version = "0.6.2" }`; `use hypercolor_cli::` paths are unchanged.
+  - Downstream crates that depend on the library through a git or path entry add `package = "hypercolor"` to it; `use hypercolor_cli::` paths are unchanged. A version-only entry needs the crates.io publish.
 - **Bundled data paths moved** out of the top-level `data/` directory into `crates/hypercolor-core/attachments/` and `crates/hypercolor-openrgb-host/data/`. Build tooling that referenced the old paths needs updating.
 
 ### Metrics
@@ -390,7 +390,7 @@ macOS becomes a first-class capture and input platform, the REST surface collaps
 - 🔥 Remove singleton live-effect routes, `/scenes/active`, `/scenes/deactivate`, the nested `/scenes/{id}/zones/*` mutation tree, and `/library/presets/{id}/apply`
 - 🔥 Remove logical-device, binding, rebind, device metrics/debug, sensor-item, memory-diagnostics, screenshot-mount, and attachment catalog/category/vendor REST routes
 - 🔥 Remove the unimplemented multi-room model: `SpaceDefinition`, `RoomDimensions`, `RoomAdjacency`, `Wall`, and `SpatialLayout.spaces`
-- 🔥 Remove the platform-mirrored contracts `InputSourcePlatformStatus`, `MacosInputTelemetry`, `MacosArchitecture`, `MacosAuthorizationState`, and `MacosProtectedSourceState`; read the neutral `InputSourceStatus` and the typed `DriverTransportDescriptor` instead
+- 🔥 Remove the platform-mirrored contracts `InputSourcePlatformStatus`, `MacosInputTelemetry`, `MacosArchitecture`, `MacosAuthorizationState`, and `MacosProtectedSourceState`
 
 ### Breaking Changes
 
@@ -406,7 +406,7 @@ macOS becomes a first-class capture and input platform, the REST surface collaps
 - **Device fingerprints and portable driver identities gained namespaces.** Hardware may appear once under its new identity and require re-adoption. `device-aliases.json` schema version 1 is no longer loaded: back it up, remove it, then rescan to rebuild the schema version 2 overlay.
 - **Python: `discover_devices()` takes `targets` instead of `backends`**, honors `wait`, and returns the status-tagged union of `DiscoveryScanningResponse` and `DiscoveryCompletedResponse`.
 - **Python: `get_audio_spectrum()` is typed `NoReturn`.** It always raised; spectrum snapshots exist only on the WebSocket stream.
-- **Python: the `Layout` alias and handwritten resource mirrors are removed.** Import `SpatialLayout` from the shared spatial contract and the generated types from `hypercolor.models` (`Device` -> `DeviceSummary`, `Driver` -> `DriverSummary`, `ControlSurface` -> `ControlSurfaceDocument`, `Preset` -> `EffectPreset`, `OutputState` -> `OutputResource`, and so on).
+- **Python: the `Layout` alias and handwritten resource mirrors are removed.** Import `SpatialLayout` from the shared spatial contract and the generated types from `hypercolor.models` (`Device` -> `DeviceSummary`, `Driver` -> `DriverSummary`, `ControlSurface` -> `ControlSurfaceDocument`, `Preset` -> `EffectPreset`, `OutputState` -> `OutputResource`, and so on). `get_state()` and the `Device.enabled` convenience property are gone with them.
 - **SDK: `InputData.available` and the `dev` CLI command are removed.** Read `routed` and `healthy`; use the Bun workspace `dev` script for package watch builds.
 
 Upgrade notes:
