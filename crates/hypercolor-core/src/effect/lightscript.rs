@@ -16,11 +16,12 @@ use hypercolor_types::sensor::{SensorReading, SystemSnapshot};
 mod payload;
 
 use super::traits::{FrameInput, InputSourceAvailability};
+use crate::spatial::DeviceSurfaceMap;
 use payload::{
     LightScriptAudioPayload, LightScriptCanvasPayload, LightScriptFramePayload,
     LightScriptInputAvailabilityPayload, LightScriptInteractionPayload, LightScriptLightingPayload,
     LightScriptMediaPayload, LightScriptNetPayload, LightScriptScreenPayload,
-    LightScriptSensorPayload, LightScriptTimingPayload, sanitize_f32, sanitize_f64,
+    LightScriptSensorPayload, LightScriptTimingPayload, TouchCanvas, sanitize_f32, sanitize_f64,
 };
 
 const LEVEL_FLOOR_DB: f32 = -100.0;
@@ -119,6 +120,8 @@ pub struct LightscriptRuntime {
     /// Whether the last interaction payload carried a non-empty per-frame
     /// batch (edges, scroll, motion, or drops) that the page still holds.
     interaction_batch_delivered: bool,
+    /// Device-surface placement the last interaction payload was mapped with.
+    last_device_surfaces: Option<DeviceSurfaceMap>,
     last_sensor_readings: Option<Vec<SensorReading>>,
     last_sensor_labels: Option<Vec<String>>,
     last_media: Option<MediaState>,
@@ -141,6 +144,7 @@ impl LightscriptRuntime {
             last_input_availability: None,
             last_interaction_generation: None,
             interaction_batch_delivered: false,
+            last_device_surfaces: None,
             last_sensor_readings: None,
             last_sensor_labels: None,
             last_media: None,
@@ -439,6 +443,62 @@ impl LightscriptRuntime {
         script.push_str("    };\n");
         script.push_str("  }\n");
 
+        // Touch and device-button stubs for effects that play driver-owned
+        // hardware, such as a ROLI Lightpad.
+        script.push_str(
+            "  if (typeof window.engine.touch !== 'object' || window.engine.touch === null) { window.engine.touch = {}; }\n",
+        );
+        script.push_str(
+            "  if (!Array.isArray(window.engine.touch.touches)) { window.engine.touch.touches = []; }\n",
+        );
+        script.push_str(
+            "  if (!Array.isArray(window.engine.touch.events)) { window.engine.touch.events = []; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.touch.down !== 'boolean') { window.engine.touch.down = false; }\n",
+        );
+        script.push_str("  if (typeof window.engine.touch.isDown !== 'function') {\n");
+        script.push_str("    window.engine.touch.isDown = function(device) {\n");
+        script.push_str(
+            "      const touches = Array.isArray(window.engine.touch.touches) ? window.engine.touch.touches : [];\n",
+        );
+        script.push_str(
+            "      if (typeof device !== 'string' || device.length === 0) { return touches.length > 0; }\n",
+        );
+        script.push_str(
+            "      return touches.some(function(touch) { return !!touch && touch.device === device; });\n",
+        );
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+        script.push_str(
+            "  if (typeof window.engine.deviceButtons !== 'object' || window.engine.deviceButtons === null) { window.engine.deviceButtons = {}; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.deviceButtons.buttons !== 'object' || window.engine.deviceButtons.buttons === null) { window.engine.deviceButtons.buttons = {}; }\n",
+        );
+        script.push_str(
+            "  if (!Array.isArray(window.engine.deviceButtons.held)) { window.engine.deviceButtons.held = []; }\n",
+        );
+        script.push_str(
+            "  if (!Array.isArray(window.engine.deviceButtons.events)) { window.engine.deviceButtons.events = []; }\n",
+        );
+        script.push_str("  if (typeof window.engine.deviceButtons.isDown !== 'function') {\n");
+        script.push_str("    window.engine.deviceButtons.isDown = function(button, device) {\n");
+        script.push_str(
+            "      const held = Array.isArray(window.engine.deviceButtons.held) ? window.engine.deviceButtons.held : [];\n",
+        );
+        script.push_str(
+            "      const anyButton = typeof button !== 'string' || button.length === 0;\n",
+        );
+        script.push_str(
+            "      const anyDevice = typeof device !== 'string' || device.length === 0;\n",
+        );
+        script.push_str(
+            "      return held.some(function(hold) { return !!hold && (anyButton || hold.button === button) && (anyDevice || hold.device === device); });\n",
+        );
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+
         // Tap/game integration hooks used by HTML effects.
         script.push_str("  if (typeof window.engine.onCanvasTapped !== 'function') {\n");
         script.push_str("    window.engine.onCanvasTapped = function(x, y) {\n");
@@ -556,12 +616,18 @@ impl LightscriptRuntime {
             .include_interaction
             .then(|| self.changed_input_availability_payload(input.sources.input_availability));
         let input_availability = input_availability.flatten();
+        // A held contact's canvas point moves when its device's placement or
+        // the canvas size does, even while the finger rests.
+        let held_touches_moved = !input.interaction.device.touches.is_empty()
+            && (canvas_changed
+                || self.last_device_surfaces.as_ref() != input.sources.device_surfaces);
         // The page keeps the last payload's per-frame batch until another
         // interaction payload replaces it, so the frame after one that
         // carried edges always sends its own (possibly empty) batch, instead
         // of letting the page replay those edges on every frame that follows.
         let interaction = (options.include_interaction
             && (self.interaction_batch_delivered
+                || held_touches_moved
                 || input
                     .interaction
                     .is_dirty_against(self.last_interaction_generation)))
@@ -574,9 +640,15 @@ impl LightscriptRuntime {
                 .is_dirty_against(self.last_interaction_generation);
             self.last_interaction_generation = Some(input.interaction.generation);
             self.interaction_batch_delivered = !input.interaction.batch.is_empty();
+            self.last_device_surfaces = input.sources.device_surfaces.cloned();
             let mut payload = LightScriptInteractionPayload::from_interaction(
                 input.interaction,
                 input.delta_secs,
+                TouchCanvas {
+                    surfaces: input.sources.device_surfaces,
+                    width: self.width,
+                    height: self.height,
+                },
             );
             if restated {
                 payload.keyboard.recent.clear();
