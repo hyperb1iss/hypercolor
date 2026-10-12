@@ -141,11 +141,26 @@ pub async fn execute(args: &OpenRgbArgs, client: &DaemonClient, ctx: &OutputCont
                 .await?;
             if ctx.format == OutputFormat::Json {
                 ctx.print_json(&response)?;
-            } else if response.live {
-                ctx.success("Saved zone size and applied the bridge configuration");
-            } else if !response.requires_restart {
-                ctx.success(
-                    "Saved zone size; the bridge applies changed settings during reconciliation",
+            } else if response.live || !response.requires_restart {
+                let summary = if response.live {
+                    "Saved zone size and applied the bridge configuration"
+                } else {
+                    "Saved zone size; the bridge applies changed settings during reconciliation"
+                };
+                match super::config::unsaved_config_warning("Zone size is live", &response) {
+                    Some(warning) => ctx.warning(&warning),
+                    None => ctx.success(summary),
+                }
+            } else if !response.persisted {
+                bail!(
+                    "Zone size was not saved to {} ({}) and live apply did not run; the \
+                     daemon keeps retrying the file, so restart only after \
+                     `hypercolor diagnose` shows it caught up",
+                    response.path,
+                    response
+                        .persistence_error
+                        .as_deref()
+                        .unwrap_or("no error reported")
                 );
             } else {
                 bail!(

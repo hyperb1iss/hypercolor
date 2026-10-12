@@ -166,7 +166,12 @@ fn resolved_windows_capture_source_survives_daemon_restart() {
     let path = directory.path().join("hypercolor.toml");
     let manager = Arc::new(ConfigManager::new(path.clone()).expect("config manager opens"));
     manager.modify(|config| config.capture.source = "monitor:1".to_owned());
-    manager.save().expect("legacy source is persisted");
+    assert!(
+        manager
+            .save()
+            .expect("legacy source is persisted")
+            .is_durable()
+    );
 
     let (persistence, _) = persistence_gate(&manager, true);
     windows_capture_source_sink(persistence)(ResolvedCaptureSource {
@@ -186,7 +191,12 @@ fn resolved_windows_capture_source_does_not_overwrite_a_newer_selection() {
     let path = directory.path().join("hypercolor.toml");
     let manager = Arc::new(ConfigManager::new(path.clone()).expect("config manager opens"));
     manager.modify(|config| config.capture.source = "monitor:new-choice".to_owned());
-    manager.save().expect("new source is persisted");
+    assert!(
+        manager
+            .save()
+            .expect("new source is persisted")
+            .is_durable()
+    );
 
     let (persistence, _) = persistence_gate(&manager, true);
     windows_capture_source_sink(persistence)(ResolvedCaptureSource {

@@ -660,7 +660,7 @@ mod change_stream {
         let (manager, mut events, _tempdir) = attached_manager();
 
         manager.modify(|config| config.daemon.target_fps = 45);
-        manager.save().expect("save should succeed");
+        assert!(manager.save().expect("save should succeed").is_durable());
 
         assert_eq!(
             drain_config_changes(&mut events),
@@ -676,7 +676,7 @@ mod change_stream {
             config.daemon.target_fps = 45;
             config.daemon.port = 9421;
         });
-        manager.save().expect("save should succeed");
+        assert!(manager.save().expect("save should succeed").is_durable());
         assert_eq!(
             drain_config_changes(&mut events),
             vec![("daemon".to_owned(), None, Value::Null)]
@@ -686,7 +686,7 @@ mod change_stream {
             config.daemon.target_fps = 60;
             config.audio.device = "microphone".to_owned();
         });
-        manager.save().expect("save should succeed");
+        assert!(manager.save().expect("save should succeed").is_durable());
         assert_eq!(
             drain_config_changes(&mut events),
             vec![(String::new(), None, Value::Null)],
@@ -698,10 +698,25 @@ mod change_stream {
     fn unchanged_saves_publish_nothing() {
         let (manager, mut events, _tempdir) = attached_manager();
 
-        manager.save().expect("first save should succeed");
+        assert!(
+            manager
+                .save()
+                .expect("first save should succeed")
+                .is_durable()
+        );
         manager.modify(|config| config.daemon.target_fps = 45);
-        manager.save().expect("second save should succeed");
-        manager.save().expect("third save should succeed");
+        assert!(
+            manager
+                .save()
+                .expect("second save should succeed")
+                .is_durable()
+        );
+        assert!(
+            manager
+                .save()
+                .expect("third save should succeed")
+                .is_durable()
+        );
 
         assert_eq!(
             drain_config_changes(&mut events).len(),
@@ -719,7 +734,7 @@ mod change_stream {
                 .extensions
                 .insert("cloud".to_owned(), json!({ "token": "sk-live-first" }));
         });
-        manager.save().expect("save should succeed");
+        assert!(manager.save().expect("save should succeed").is_durable());
         assert_eq!(
             drain_config_changes(&mut events),
             vec![("cloud".to_owned(), None, json!({ "redacted": true }))],
@@ -731,7 +746,7 @@ mod change_stream {
                 .extensions
                 .insert("cloud".to_owned(), json!({ "token": "sk-live-second" }));
         });
-        manager.save().expect("save should succeed");
+        assert!(manager.save().expect("save should succeed").is_durable());
         assert_eq!(
             drain_config_changes(&mut events),
             vec![(
@@ -842,7 +857,7 @@ mod change_stream {
         let mut events = bus.subscribe_all();
 
         manager.modify(|config| config.daemon.target_fps = 45);
-        manager.save().expect("save should succeed");
+        assert!(manager.save().expect("save should succeed").is_durable());
 
         assert!(drain_config_changes(&mut events).is_empty());
     }

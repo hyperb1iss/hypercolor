@@ -1,8 +1,10 @@
 //! Transport-independent daemon diagnostics.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use hypercolor_core::config::ConfigPersistence;
 use hypercolor_core::device::{UsbActorMetricsSnapshot, usb_actor_metrics_snapshot};
 use hypercolor_core::input::InputManager;
 use hypercolor_types::api::diagnose::{
@@ -146,6 +148,7 @@ struct DiagnosticsInputs {
     input: InputStatus,
     tracked_devices: usize,
     config_available: bool,
+    config_persistence: Option<(PathBuf, ConfigPersistence)>,
 }
 
 impl DiagnosticsInputs {
@@ -221,7 +224,7 @@ impl DiagnosticsContext {
                 "render" => checks.extend(render_checks(&inputs)),
                 "devices" => checks.extend(device_checks(&inputs, &snapshot)),
                 "conflicts" => checks.push(self.conflicts_check().await),
-                "config" => checks.push(config_check(&inputs)),
+                "config" => checks.extend(config_checks(&inputs)),
                 "input" => checks.extend(input_checks(&snapshot.input)),
                 "memory" => checks.push(servo_memory_check().await),
                 "openrgb" => checks.push(self.openrgb_check().await),
@@ -332,6 +335,7 @@ impl DiagnosticsContext {
             input: input_status_snapshot(&self.authorities.platform),
             tracked_devices: self.authorities.devices.device_registry().len().await,
             config_available: self.authorities.platform.config_available(),
+            config_persistence: self.authorities.platform.config_persistence(),
         }
     }
 }
@@ -519,9 +523,9 @@ fn conflicts_check(status: &SoftwareConflictsStatus) -> DiagnoseCheck {
     }
 }
 
-fn config_check(inputs: &DiagnosticsInputs) -> DiagnoseCheck {
+fn config_checks(inputs: &DiagnosticsInputs) -> Vec<DiagnoseCheck> {
     let has_manager = inputs.config_available;
-    DiagnoseCheck {
+    let mut checks = vec![DiagnoseCheck {
         category: "config".to_owned(),
         name: "config_manager".to_owned(),
         status: if has_manager { "pass" } else { "warning" }.to_owned(),
@@ -530,6 +534,39 @@ fn config_check(inputs: &DiagnosticsInputs) -> DiagnoseCheck {
         } else {
             "using defaults/test state".to_owned()
         },
+    }];
+    if let Some((path, persistence)) = &inputs.config_persistence {
+        checks.push(config_persistence_check(path, persistence));
+    }
+    checks
+}
+
+/// Warn while the config file lags the live config.
+///
+/// A config write the file system refuses stays live, and the flush
+/// registry retries the file in the background. Until a retry lands, a
+/// restart loads the older file, so the check names the file and the
+/// failure that left it behind, and passes again once the retry lands.
+fn config_persistence_check(
+    path: &std::path::Path,
+    persistence: &ConfigPersistence,
+) -> DiagnoseCheck {
+    let (status, detail) = match persistence {
+        ConfigPersistence::Durable => ("pass", format!("{} holds the live config", path.display())),
+        ConfigPersistence::Lagging { path, error } => (
+            "warning",
+            format!(
+                "live config is ahead of {}; the daemon keeps retrying the write, and a restart \
+                 before it lands loads the older file. Last error: {error}",
+                path.display()
+            ),
+        ),
+    };
+    DiagnoseCheck {
+        category: "config".to_owned(),
+        name: "config_persistence".to_owned(),
+        status: status.to_owned(),
+        detail,
     }
 }
 

@@ -56,6 +56,35 @@ impl std::ops::Deref for LiveConfigSnapshot {
     }
 }
 
+/// Whether the config file has caught up with the live config.
+///
+/// A write the file system refuses after admission still publishes: the
+/// live config is authoritative and the flush registry keeps retrying the
+/// file. This is how callers learn the file is behind, so they can say so
+/// instead of reporting the change as saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "a lagging config file loses the live config on restart"]
+pub enum ConfigPersistence {
+    /// The file durably holds the live config.
+    Durable,
+    /// The live config is ahead of the file. Until a retry lands, a
+    /// restart loads the older file.
+    Lagging {
+        /// The config file that lags.
+        path: PathBuf,
+        /// The most recent write failure.
+        error: String,
+    },
+}
+
+impl ConfigPersistence {
+    /// Whether the file durably holds the live config.
+    #[must_use]
+    pub const fn is_durable(&self) -> bool {
+        matches!(self, Self::Durable)
+    }
+}
+
 /// Manages the live Hypercolor configuration with lock-free reads and reload.
 ///
 /// Configuration is stored behind an [`ArcSwap`] so readers never block and
@@ -331,14 +360,20 @@ impl ConfigManager {
 
     /// Persist and publish a mutation only while `expected` is current.
     ///
-    /// The candidate reaches the native durability boundary before it becomes
-    /// visible to lock-free readers. A failure never publishes the candidate.
-    /// Replacement uncertainty is safe to replay because the file is either
-    /// the previous complete snapshot or the complete candidate.
+    /// The candidate is attempted against the file before it becomes visible
+    /// to lock-free readers. A serialization failure never publishes it. A
+    /// file write that fails after admission still publishes it, because the
+    /// flush registry owns the retry; [`persistence_status`] reports the lag
+    /// until a retry lands. Replacement uncertainty is safe to replay because
+    /// the file is either the previous complete snapshot or the complete
+    /// candidate.
+    ///
+    /// [`persistence_status`]: Self::persistence_status
     ///
     /// # Errors
     ///
-    /// Returns an error if serialization, file replacement, or durable sync fails.
+    /// Returns an error if serialization fails or a newer write supersedes
+    /// this one before it is published.
     pub fn modify_and_save_if_current(
         &self,
         expected: &Arc<HypercolorConfig>,
@@ -351,9 +386,13 @@ impl ConfigManager {
     /// Persist and publish a mutation only while `expected` is current, returning
     /// the exact immutable snapshot installed by the successful mutation.
     ///
+    /// A file that lags the installed snapshot shows up in
+    /// [`persistence_status`](Self::persistence_status).
+    ///
     /// # Errors
     ///
-    /// Returns an error if serialization, file replacement, or durable sync fails.
+    /// Returns an error if serialization fails or a newer write supersedes
+    /// this one before it is published.
     pub fn modify_and_save_if_current_snapshot(
         &self,
         expected: &Arc<HypercolorConfig>,
@@ -370,7 +409,8 @@ impl ConfigManager {
         let mut candidate = (*current).clone();
         mutate(&mut candidate);
         let candidate = Arc::new(normalize_config(candidate));
-        self.persist(&candidate)?;
+        // A lagging file stays visible through `persistence_status`.
+        let _persistence = self.persist(&candidate)?;
         self.publish_config(&mut writer, &current, Arc::clone(&candidate));
         self.note_persisted(&mut writer, &candidate);
         Ok(Some(candidate))
@@ -428,7 +468,9 @@ impl ConfigManager {
     ///
     /// # Errors
     ///
-    /// Returns an error if serialization or the atomic file replacement fails.
+    /// Returns an error if serialization fails or a newer write supersedes
+    /// this one. A file write that fails after admission is not an error;
+    /// [`persistence_status`](Self::persistence_status) reports the lag.
     pub fn save_capture_and_activate_if_current(
         &self,
         expected: &Arc<HypercolorConfig>,
@@ -449,9 +491,8 @@ impl ConfigManager {
         let mut candidate = (*current).clone();
         candidate.capture = capture;
         let candidate = Arc::new(normalize_config(candidate));
-        if let Err(error) = self.persist(&candidate) {
-            return Err(error);
-        }
+        // A lagging file stays visible through `persistence_status`.
+        let _persistence = self.persist(&candidate)?;
         writer.capture_persistence_authority = Some(CapturePersistenceAuthority {
             epoch,
             config: Arc::clone(&candidate),
@@ -513,6 +554,9 @@ impl ConfigManager {
         }
         #[cfg(test)]
         self.persistence_checkpoint(ConfigPersistenceStage::Replace)?;
+        // Read before the replacement: a retry that lands the older
+        // snapshot after it would clear the failure and hide the overwrite.
+        let older_snapshot_pending = self.persistence.pending_failure().is_some();
         staged.file.durable_replace(&self.config_path)?;
         let candidate = Arc::clone(&staged.candidate);
         let mut installed = false;
@@ -539,14 +583,51 @@ impl ConfigManager {
             "runtime commit did not install staged capture config"
         );
         self.note_persisted(&mut writer, &candidate);
+        if older_snapshot_pending {
+            self.supersede_pending_snapshot(&candidate);
+        }
         Ok(Some((candidate, committed)))
+    }
+
+    /// Readmit `config` through the flush registry so an older snapshot
+    /// still retrying there cannot overwrite the file the staged capture
+    /// path just replaced directly.
+    ///
+    /// Infallible by design: a failed attempt leaves `config` as the
+    /// pending snapshot, which the registry retries and
+    /// [`persistence_status`](Self::persistence_status) reports.
+    fn supersede_pending_snapshot(&self, config: &HypercolorConfig) {
+        match toml::to_string_pretty(config) {
+            Ok(toml) => match self
+                .persistence
+                .reserve()
+                .admit(toml.into_bytes())
+                .commit_stage_aware()
+            {
+                AtomicWriteCommitResult::DurableWritten | AtomicWriteCommitResult::Superseded => {}
+                AtomicWriteCommitResult::FailedBeforeReplacement(error)
+                | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => warn!(
+                    path = %self.config_path.display(),
+                    %error,
+                    "Committed capture config is authoritative and persistence will retry"
+                ),
+            },
+            Err(error) => warn!(
+                path = %self.config_path.display(),
+                %error,
+                "Could not readmit the committed capture config; an older pending \
+                 snapshot may overwrite it when its retry lands"
+            ),
+        }
     }
 
     /// Persist a source-resolved capture identity only for the active source epoch.
     ///
     /// # Errors
     ///
-    /// Returns an error if serialization or the atomic file replacement fails.
+    /// Returns an error if serialization fails or a newer write supersedes
+    /// this one. A file write that fails after admission is not an error;
+    /// [`persistence_status`](Self::persistence_status) reports the lag.
     pub fn modify_capture_if_authorized(
         &self,
         epoch: CapturePersistenceEpoch,
@@ -573,7 +654,8 @@ impl ConfigManager {
         let mut candidate = (*current).clone();
         mutate(&mut candidate.capture);
         let candidate = Arc::new(normalize_config(candidate));
-        self.persist(&candidate)?;
+        // A lagging file stays visible through `persistence_status`.
+        let _persistence = self.persist(&candidate)?;
         let authority = writer
             .capture_persistence_authority
             .as_mut()
@@ -596,8 +678,9 @@ impl ConfigManager {
     ///
     /// # Errors
     ///
-    /// Returns the underlying persistence error when writing the candidate
-    /// config fails.
+    /// Returns an error if serialization fails or a newer write supersedes
+    /// this one. A file write that fails after admission is not an error;
+    /// [`persistence_status`](Self::persistence_status) reports the lag.
     pub fn modify_capture_if_epoch_current(
         &self,
         epoch: CapturePersistenceEpoch,
@@ -617,7 +700,8 @@ impl ConfigManager {
         let mut candidate = (*current).clone();
         mutate(&mut candidate.capture);
         let candidate = Arc::new(normalize_config(candidate));
-        self.persist(&candidate)?;
+        // A lagging file stays visible through `persistence_status`.
+        let _persistence = self.persist(&candidate)?;
         let authority = writer
             .capture_persistence_authority
             .as_mut()
@@ -701,18 +785,40 @@ impl ConfigManager {
     /// (or a crash mid-write) never observes a torn config file; the write
     /// lock keeps concurrent savers from interleaving.
     ///
+    /// A file the system refuses after admission is not an error: the live
+    /// config stays authoritative, the flush registry retries the file, and
+    /// the returned [`ConfigPersistence::Lagging`] carries the failure so
+    /// the caller can report the change as live but unsaved.
+    ///
     /// # Errors
     ///
-    /// Returns an error if serialization fails or the file cannot be written.
-    pub fn save(&self) -> Result<()> {
+    /// Returns an error if serialization fails or a newer write supersedes
+    /// this one before it is published.
+    pub fn save(&self) -> Result<ConfigPersistence> {
         let mut writer = self
             .write_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let snapshot = self.config.load_full();
-        self.persist(&snapshot)?;
+        let persistence = self.persist(&snapshot)?;
         self.note_persisted(&mut writer, &snapshot);
-        Ok(())
+        Ok(persistence)
+    }
+
+    /// Whether the config file has caught up with the live config.
+    ///
+    /// Reports [`ConfigPersistence::Lagging`] from the first failed write
+    /// until a write lands durably, whichever path wrote it; a newer write
+    /// admitted in the meantime does not clear it.
+    pub fn persistence_status(&self) -> ConfigPersistence {
+        self.persistence
+            .pending_failure()
+            .map_or(ConfigPersistence::Durable, |error| {
+                ConfigPersistence::Lagging {
+                    path: self.config_path.clone(),
+                    error,
+                }
+            })
     }
 
     /// Publish every persisted config change on `bus`.
@@ -738,10 +844,9 @@ impl ConfigManager {
     ///
     /// Every persisting path calls this under the writer lock after the
     /// live pointer is installed, so a subscriber that reads the manager
-    /// on receipt already sees the document the event describes. The
-    /// soft persistence failures `persist` reports as `Ok` count too:
-    /// the mutation is authoritative and the flush registry retries the
-    /// file.
+    /// on receipt already sees the document the event describes. A write
+    /// `persist` reports as [`ConfigPersistence::Lagging`] counts too: the
+    /// mutation is authoritative and the flush registry retries the file.
     fn note_persisted(&self, writer: &mut ConfigWriterState, persisted: &Arc<HypercolorConfig>) {
         let Some(bus) = self.change_stream.load_full() else {
             return;
@@ -757,7 +862,7 @@ impl ConfigManager {
         }
     }
 
-    fn persist(&self, config: &HypercolorConfig) -> Result<()> {
+    fn persist(&self, config: &HypercolorConfig) -> Result<ConfigPersistence> {
         #[cfg(test)]
         self.persistence_checkpoint(ConfigPersistenceStage::Serialize)?;
         let toml = toml::to_string_pretty(config).context("failed to serialize config")?;
@@ -767,7 +872,7 @@ impl ConfigManager {
             .admit(toml.into_bytes())
             .commit_stage_aware()
         {
-            AtomicWriteCommitResult::DurableWritten => Ok(()),
+            AtomicWriteCommitResult::DurableWritten => Ok(ConfigPersistence::Durable),
             AtomicWriteCommitResult::Superseded => {
                 bail!("config persistence was superseded before publication")
             }
@@ -778,7 +883,10 @@ impl ConfigManager {
                     %error,
                     "Config mutation is authoritative and persistence will retry"
                 );
-                Ok(())
+                Ok(ConfigPersistence::Lagging {
+                    path: self.config_path.clone(),
+                    error: error.to_string(),
+                })
             }
         }
     }
@@ -1089,7 +1197,7 @@ mod persistence_tests {
     fn manager_with_persisted_default(dir: &Path, name: &str) -> (ConfigManager, PathBuf) {
         let path = dir.join(name).join("config.toml");
         let manager = ConfigManager::new(path.clone()).expect("config manager");
-        manager.save().expect("persist default");
+        assert!(manager.save().expect("persist default").is_durable());
         (manager, path)
     }
 
@@ -1165,7 +1273,12 @@ mod persistence_tests {
         assert!(manager.save().is_err());
         assert!(config_changed_keys(&mut events).is_empty());
 
-        manager.save().expect("the next save should land");
+        assert!(
+            manager
+                .save()
+                .expect("the next save should land")
+                .is_durable()
+        );
         assert_eq!(
             config_changed_keys(&mut events),
             vec!["daemon.port".to_owned()],
@@ -1205,6 +1318,14 @@ mod persistence_tests {
                 .port,
             original_port
         );
+        assert!(
+            matches!(
+                manager.persistence_status(),
+                ConfigPersistence::Lagging { ref path, ref error }
+                    if path == &manager.config_path && error.contains("injected")
+            ),
+            "the lag stays visible while the retry fails"
+        );
 
         manager.persistence.set_injected_replace_failures(0);
         let report = crate::persistence::flush_all(std::time::Duration::from_secs(5));
@@ -1217,6 +1338,83 @@ mod persistence_tests {
                 .port,
             UPDATED_PORT
         );
+        assert!(manager.persistence_status().is_durable());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsynced_replacement_reports_lagging_until_the_retry_syncs() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (manager, path) = manager_with_persisted_default(dir.as_ref(), "unsynced");
+        manager.modify(|config| config.daemon.port = UPDATED_PORT);
+        manager.persistence.set_injected_directory_sync_failures(1);
+
+        let persistence = manager.save().expect("the replacement is authoritative");
+
+        let ConfigPersistence::Lagging {
+            path: lagging,
+            error,
+        } = persistence
+        else {
+            panic!("an unsynced replacement is not durable");
+        };
+        assert_eq!(lagging, path);
+        assert!(error.contains("directory sync"), "{error}");
+        manager
+            .persistence
+            .flush(std::time::Duration::from_secs(5))
+            .expect("the retry syncs the directory");
+        assert!(manager.persistence_status().is_durable());
+        assert_eq!(
+            ConfigManager::load(&path)
+                .expect("synced config should read")
+                .daemon
+                .port,
+            UPDATED_PORT
+        );
+    }
+
+    #[test]
+    fn staged_capture_commit_supersedes_an_older_failed_snapshot() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (manager, path) = manager_with_persisted_default(dir.as_ref(), "capture-supersede");
+        manager
+            .persistence
+            .set_injected_replace_failures(usize::MAX);
+        manager.modify(|config| config.daemon.port = UPDATED_PORT);
+        assert!(
+            !manager
+                .save()
+                .expect("the failed write stays authoritative")
+                .is_durable()
+        );
+        let expected = manager.get().clone();
+        let mut capture = expected.capture.clone();
+        capture.enabled = !capture.enabled;
+        let staged = manager
+            .stage_capture_config(&expected, capture.clone())
+            .expect("capture staging should succeed")
+            .expect("expected pointer should remain current");
+
+        manager
+            .commit_staged_capture_if_current(&expected, None, staged, |install_live| {
+                install_live();
+            })
+            .expect("durable replacement should succeed")
+            .expect("expected pointer should commit");
+        manager.persistence.set_injected_replace_failures(0);
+        manager
+            .persistence
+            .flush(std::time::Duration::from_secs(5))
+            .expect("the retry converges");
+
+        let on_disk = ConfigManager::load(&path).expect("converged config should read");
+        assert_eq!(
+            on_disk.capture, capture,
+            "the older snapshot's retry must not overwrite the capture commit"
+        );
+        assert_eq!(on_disk.daemon.port, UPDATED_PORT);
+        assert!(manager.persistence_status().is_durable());
     }
 
     #[test]

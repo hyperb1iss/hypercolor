@@ -256,7 +256,11 @@ async fn execute_set(
             } else {
                 ""
             };
-            ctx.success(&format!("{}: {}{applied}", args.key, args.value));
+            let summary = format!("{}: {}{applied}", args.key, args.value);
+            match unsaved_config_warning(&summary, &response) {
+                Some(warning) => ctx.warning(&warning),
+                None => ctx.success(&summary),
+            }
         }
     }
 
@@ -285,15 +289,39 @@ async fn execute_reset(
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            if let Some(key) = &args.key {
-                ctx.success(&format!("Reset {key} to default"));
-            } else {
-                ctx.success("Config reset to defaults");
+            let summary = match &args.key {
+                Some(key) => format!("Reset {key} to default"),
+                None => "Config reset to defaults".to_owned(),
+            };
+            match unsaved_config_warning(&summary, &response) {
+                Some(warning) => ctx.warning(&warning),
+                None => ctx.success(&summary),
             }
         }
     }
 
     Ok(())
+}
+
+/// The warning to print in place of a success line when a config write is
+/// live in the daemon but never reached its file, or `None` once it did.
+pub(crate) fn unsaved_config_warning(
+    summary: &str,
+    response: &ConfigMutationResponse,
+) -> Option<String> {
+    if response.persisted {
+        return None;
+    }
+    let reason = response
+        .persistence_error
+        .as_deref()
+        .unwrap_or("the daemon reported no error");
+    Some(format!(
+        "{summary}, but saving {} failed: {reason}. The daemon keeps retrying; \
+         restart only after `hypercolor diagnose` shows the file caught up, or the \
+         change is lost.",
+        response.path
+    ))
 }
 
 fn execute_path(ctx: &OutputContext) -> Result<()> {
@@ -518,9 +546,12 @@ fn profile_default(args: &ProfileDefaultArgs, ctx: &OutputContext) -> Result<()>
 mod tests {
     use std::path::Path;
 
+    use hypercolor_types::api::config::ConfigMutationResponse;
+
     use super::{
         ConfigSetArgs, DAEMON_CONFIG_FILE_NAME, config_file_path, config_key_path,
         config_key_path_with_live, parse_cli_value, resolve_daemon_config_path,
+        unsaved_config_warning,
     };
 
     #[test]
@@ -571,6 +602,41 @@ mod tests {
             parse_cli_value("microphone"),
             serde_json::json!("microphone")
         );
+    }
+
+    fn mutation(persisted: bool, persistence_error: Option<&str>) -> ConfigMutationResponse {
+        ConfigMutationResponse {
+            key: Some("audio.device".to_owned()),
+            value: Some(serde_json::json!("microphone")),
+            live: true,
+            requires_restart: false,
+            pending_restart: Vec::new(),
+            path: "/etc/hypercolor/hypercolor.toml".to_owned(),
+            persisted,
+            persistence_error: persistence_error.map(ToOwned::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_saved_write_prints_its_success_line() {
+        assert_eq!(
+            unsaved_config_warning("audio.device: microphone", &mutation(true, None)),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unsaved_write_warns_with_the_file_and_the_error() {
+        let warning = unsaved_config_warning(
+            "audio.device: microphone",
+            &mutation(false, Some("Permission denied (os error 13)")),
+        )
+        .expect("an unsaved write warns");
+
+        assert!(warning.starts_with("audio.device: microphone, but saving"));
+        assert!(warning.contains("/etc/hypercolor/hypercolor.toml"));
+        assert!(warning.contains("Permission denied (os error 13)"));
+        assert!(warning.contains("hypercolor diagnose"));
     }
 
     #[test]

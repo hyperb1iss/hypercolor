@@ -18,12 +18,19 @@ class ConfigMutationResponse:
 
     Attributes:
         live (bool): Whether the daemon re-applied the change to a running subsystem.
-        path (str): The config file the write landed in.
+        path (str): The config file the write targets.
         pending_restart (list[str]): Restart-classified roots whose persisted value now differs from
             the one the daemon booted with.
         requires_restart (bool): Whether the registry classifies this key as boot-frozen, so the
             persisted value only takes effect at the next daemon start.
         key (None | str | Unset): The mutated key, or null for a whole-config reset.
+        persisted (bool | Unset): Whether `path` holds the live config after this request. False
+            means the change is live in the running daemon but the file write
+            failed: the daemon keeps retrying it, and a restart before a retry
+            lands loads the older file. A response without the field reads as
+            persisted, so treat only an explicit `false` as unsaved. Default: True.
+        persistence_error (None | str | Unset): Why `path` lags the live config, present only when `persisted` is
+            false.
         value (Any | Unset): The effective value after the write, rendered like any read.
             Null for a whole-config reset, whose payload spans every key.
     """
@@ -33,6 +40,8 @@ class ConfigMutationResponse:
     pending_restart: list[str]
     requires_restart: bool
     key: None | str | Unset = UNSET
+    persisted: bool | Unset = True
+    persistence_error: None | str | Unset = UNSET
     value: Any | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -51,6 +60,14 @@ class ConfigMutationResponse:
         else:
             key = self.key
 
+        persisted = self.persisted
+
+        persistence_error: None | str | Unset
+        if isinstance(self.persistence_error, Unset):
+            persistence_error = UNSET
+        else:
+            persistence_error = self.persistence_error
+
         value = self.value
 
         field_dict: dict[str, Any] = {}
@@ -65,6 +82,10 @@ class ConfigMutationResponse:
         )
         if key is not UNSET:
             field_dict["key"] = key
+        if persisted is not UNSET:
+            field_dict["persisted"] = persisted
+        if persistence_error is not UNSET:
+            field_dict["persistence_error"] = persistence_error
         if value is not UNSET:
             field_dict["value"] = value
 
@@ -90,6 +111,17 @@ class ConfigMutationResponse:
 
         key = _parse_key(d.pop("key", UNSET))
 
+        persisted = d.pop("persisted", UNSET)
+
+        def _parse_persistence_error(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        persistence_error = _parse_persistence_error(d.pop("persistence_error", UNSET))
+
         value = d.pop("value", UNSET)
 
         config_mutation_response = cls(
@@ -98,6 +130,8 @@ class ConfigMutationResponse:
             pending_restart=pending_restart,
             requires_restart=requires_restart,
             key=key,
+            persisted=persisted,
+            persistence_error=persistence_error,
             value=value,
         )
 

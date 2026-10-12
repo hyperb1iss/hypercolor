@@ -293,6 +293,10 @@ struct DestinationState {
     foreground_generation: Option<u64>,
     last_outcome: Option<AtomicWriteOutcome>,
     last_error: Option<String>,
+    /// The latest failure since the destination last landed durably.
+    /// Unlike `last_error`, a newer admission does not clear it, because
+    /// the file still lags until some attempt lands.
+    lag_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -453,6 +457,24 @@ impl AtomicFileWriter {
         self.destination.state_changed.notify_all();
     }
 
+    /// The latest failure holding this destination's file behind its
+    /// newest admitted snapshot.
+    ///
+    /// `Some` from the first failed attempt until an attempt lands durably;
+    /// the retry supervisor keeps trying until one does, and admitting a
+    /// newer snapshot does not clear it. `None` while the file is current,
+    /// including while a first attempt after a durable write is in flight.
+    #[must_use]
+    pub fn pending_failure(&self) -> Option<String> {
+        let state = self
+            .destination
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.pending.as_ref()?;
+        state.lag_error.clone()
+    }
+
     /// Wait for this destination's newest dirty snapshot to converge.
     ///
     /// # Errors
@@ -579,13 +601,16 @@ impl Destination {
                     }
                     state.last_outcome = retry_attempt.then_some(AtomicWriteOutcome::Written);
                     state.last_error = None;
+                    state.lag_error = None;
                 }
                 AtomicWriteCommitResult::Superseded => {
                     state.last_outcome = retry_attempt.then_some(AtomicWriteOutcome::Superseded);
                 }
                 AtomicWriteCommitResult::FailedBeforeReplacement(error)
                 | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
-                    state.last_error = Some(error.to_string());
+                    let error = error.to_string();
+                    state.lag_error = Some(error.clone());
+                    state.last_error = Some(error);
                 }
             }
             self.state_changed.notify_all();
