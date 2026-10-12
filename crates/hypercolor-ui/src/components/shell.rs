@@ -113,14 +113,15 @@ pub fn Shell(children: Children) -> impl IntoView {
 
     view! {
         <div
-            class="fixed inset-0 flex min-h-0 bg-surface-base text-fg-primary overflow-hidden noise-overlay"
+            class="fixed inset-0 flex min-h-0 bg-surface-base text-fg-primary overflow-clip noise-overlay"
             on:keydown=keydown_handler
             tabindex="-1"
         >
             <Sidebar />
-            <main class="flex-1 min-h-0 min-w-0 overflow-auto
+            <main class="flex flex-col flex-1 min-h-0 min-w-0 overflow-clip
                          max-md:pb-[calc(3.5rem+env(safe-area-inset-bottom))]">
-                {children()}
+                <crate::components::release_notifications::ReleaseNotice />
+                <div class="flex-1 min-h-0 overflow-auto">{children()}</div>
             </main>
             <MobileNav />
 

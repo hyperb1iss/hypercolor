@@ -43,6 +43,7 @@ pub mod network;
 pub mod output_power;
 pub mod path_migration;
 pub mod performance;
+pub mod release_notifications;
 pub use hypercolor_core::persistence;
 pub mod playlist_runtime;
 pub mod preview_runtime;

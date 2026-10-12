@@ -307,6 +307,12 @@ async fn system_status_with_privacy(
         capabilities: MULTI_ZONE_CAPABILITIES
             .iter()
             .map(|capability| (*capability).to_owned())
+            .chain(
+                state
+                    .extensions
+                    .contains::<crate::release_notifications::ReleaseNotifications>()
+                    .then(|| "oss-release-notifications".to_owned()),
+            )
             .collect(),
     }
 }

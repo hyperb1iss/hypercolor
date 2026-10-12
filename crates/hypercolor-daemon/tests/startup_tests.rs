@@ -2515,6 +2515,7 @@ async fn event_bus_receives_startup_event() {
         ),
         "first event should be DaemonStarted"
     );
+    state.shutdown().await.expect("shutdown should succeed");
 }
 
 #[test]

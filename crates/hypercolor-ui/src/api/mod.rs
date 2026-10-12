@@ -29,6 +29,7 @@ pub mod library;
 pub mod output;
 pub mod scenes;
 pub mod system;
+pub mod updates;
 pub mod zones;
 
 // ── Shared Envelope ─────────────────────────────────────────────────────────

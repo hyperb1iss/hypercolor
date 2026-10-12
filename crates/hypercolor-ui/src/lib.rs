@@ -46,6 +46,7 @@ pub mod pages;
 pub mod pointer_gesture;
 pub mod preferences;
 pub mod preview_telemetry;
+pub mod release_notifications;
 pub mod remote_bridge;
 pub mod remote_preview;
 pub mod render_canvas;

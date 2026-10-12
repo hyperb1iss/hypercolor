@@ -627,6 +627,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     provide_context(CapabilitiesContext {
         capabilities: capabilities.into(),
     });
+    crate::release_notifications::provide_release_notifications();
 
     // The daemon's config key registry. Fetched once per connection —
     // the table is fixed per daemon build — so every settings control

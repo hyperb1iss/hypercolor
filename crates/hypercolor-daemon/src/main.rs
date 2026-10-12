@@ -7,5 +7,7 @@
 use anyhow::Result;
 
 fn main() -> Result<()> {
-    hypercolor_daemon::process::run(&[])
+    hypercolor_daemon::process::run(&[
+        &hypercolor_daemon::release_notifications::OssUpdateInstaller,
+    ])
 }
