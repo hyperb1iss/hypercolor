@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use hypercolor_hal::drivers::lianli::wireless::pacing::{
-    DeliveryPacer, ECHO_TIMEOUT_CAP, MAX_WINDOW, SendKind, StallVerdict, Tag,
+    ABSENT_AFTER, DeliveryPacer, ECHO_TIMEOUT_CAP, MAX_WINDOW, SendKind, StallVerdict, Tag,
 };
 
 const FRAME_PERIOD: Duration = Duration::from_millis(33);
@@ -310,5 +310,67 @@ fn a_genuine_absence_after_a_brief_omission_still_earns_a_fresh_probe_budget() {
             Some(StallVerdict::Reset { .. })
         ),
         "the returned receiver's probe budget still expires"
+    );
+}
+
+/// The actor can be awaiting a table read while a missing receiver crosses
+/// the absence threshold, so no pump logs the absence before the reply
+/// that brings it back. The return must still count as a genuine absence.
+#[test]
+fn a_return_that_crosses_the_absence_threshold_unlogged_earns_a_fresh_budget() {
+    let (mut pacer, start, echo) = warm_window();
+    let mut step = 0_u32;
+    let mut at = |pacer: &mut DeliveryPacer, now: Instant, echo: Option<Tag>| {
+        step += 1;
+        stalled_step(pacer, 40_000 + step, echo, now)
+    };
+
+    // A brief omission spends the return grace; its probe deadline is due
+    // six seconds after the return.
+    let mut now = start;
+    while now < start + Duration::from_millis(8_100) {
+        let omitted = now == start + Duration::from_millis(4_900);
+        assert!(at(&mut pacer, now, (!omitted).then_some(echo)).is_none());
+        now += TABLE_PERIOD;
+    }
+    let last_seen = now
+        .checked_sub(TABLE_PERIOD)
+        .expect("the receiver was seen this run");
+
+    // The receiver drops out of every complete table. The last pump before
+    // the threshold runs just short of it; the next reply lands past it,
+    // after that probe deadline has expired.
+    while now < last_seen + ABSENT_AFTER {
+        assert!(at(&mut pacer, now, None).is_none());
+        now += TABLE_PERIOD;
+    }
+    let returned = last_seen + ABSENT_AFTER + Duration::from_millis(50);
+    let resends = pacer.totals().resends;
+    let verdict = at(&mut pacer, returned, Some(echo));
+    assert!(
+        verdict.is_none(),
+        "a genuine absence earns a fresh probe before any reset: {verdict:?}"
+    );
+    assert_eq!(
+        pacer.totals().resends,
+        resends + 1,
+        "the returning receiver is probed at once"
+    );
+
+    let mut now = returned + TABLE_PERIOD;
+    while now < returned + ECHO_TIMEOUT_CAP {
+        let verdict = at(&mut pacer, now, Some(echo));
+        assert!(
+            verdict.is_none(),
+            "the fresh probe keeps its full observation interval: {verdict:?}"
+        );
+        now += TABLE_PERIOD;
+    }
+    assert!(
+        matches!(
+            at(&mut pacer, returned + ECHO_TIMEOUT_CAP, Some(echo)),
+            Some(StallVerdict::Reset { .. })
+        ),
+        "the fresh probe's budget still expires"
     );
 }

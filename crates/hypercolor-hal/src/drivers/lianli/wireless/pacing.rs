@@ -991,12 +991,17 @@ impl DeliveryPacer {
     pub fn observe(&mut self, cluster: usize, echo: Tag, now: Instant) {
         self.ensure_clusters(cluster + 1);
         let link = &mut self.links[cluster];
-        if link.missing || link.absent_logged {
+        // Judged from the previous sighting before anything is updated: the
+        // actor may have been awaiting this very reply when the threshold
+        // passed, so no pump had the chance to log the absence.
+        let genuine_absence =
+            link.absent_logged || (link.last_seen_at.is_some() && link.absent(now));
+        if link.missing || genuine_absence {
             // A receiver that was really gone, or the first return since the
             // last confirmed frame, gets a fresh probe budget. Later brief
             // omissions keep the failed probes, so a membership that keeps
             // toggling cannot postpone the reset verdict forever.
-            let renew_budget = link.absent_logged || !link.return_grace_spent;
+            let renew_budget = genuine_absence || !link.return_grace_spent;
             link.missing = false;
             link.absent_logged = false;
             info!(
