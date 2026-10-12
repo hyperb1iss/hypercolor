@@ -73,10 +73,10 @@ The biggest gap is still hardware coverage. Prioritized work:
 
 - **NZXT**: spec written, covers seven distinct protocol families (Smart Device 3, HUE 3, Kraken fans/LCD, lighting controller variants). Needs USB captures for final gaps.
 - **Cooler Master**: large researched catalog (20 devices), needs a clean-room driver.
-- **Logitech**: 9 researched devices, USB analysis work underway.
+- **Logitech**: 9 known devices, USB analysis work underway.
 - **Aqua Computer**: HID status reports and fixed-channel fan RGB, spec complete.
 - **Wooting**: analog keyboards with per-key RGB, spec in progress.
-- **Roccat**: 14 researched devices, protocol under review.
+- **Roccat**: 14 known devices, protocol under review.
 - **Remaining Razer SKUs**: 38 researched devices, most share existing protocol variants.
 
 If you own hardware in the `researched` column of the [compatibility matrix](docs/content/hardware/compatibility.md), your USB captures and testing are the fastest path to a working driver.
@@ -113,7 +113,7 @@ Things we want but haven't committed to a shape for yet.
 - **ROLI Blocks**: the `DeviceBackend` bridges to `blocksd` over a Unix socket. Capability-aware discovery exposes Lightpad 15×15 grids and LUMI 24-key strips, with separate binary and key-frame transports. ROLI devices are not counted in the HAL compatibility database. Touch and button input reaches the daemon as of 0.6.3, and Spec 82 phase 2, planned for 0.7.0, carries it to effects. Full scene-compositor and musical-input acceptance remain separate hardware checks.
 - **X11 screen capture**: Linux capture is Wayland-portal-only today; an XShm path would cover legacy sessions.
 - **SMBus / I2C on more silicon**: motherboard and DRAM RGB beyond ASUS Aura (MSI Mystic Light and friends). The Windows PawnIO path and the Linux i2c-dev path both exist; each new controller family needs a hardened probe model.
-- **Wired / wireless headset RGB**: most headset protocols are closed; community reverse-engineering is the prerequisite.
+- **Wired / wireless headset RGB**: the Razer Kraken Ultimate is supported as of 0.6.3. Most other headset protocols are closed, and community reverse-engineering is the prerequisite.
 
 ---
 
