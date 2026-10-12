@@ -28,7 +28,7 @@ class ConfigMutationResponse:
             means the change is live in the running daemon but the file write
             failed: the daemon keeps retrying it, and a restart before a retry
             lands loads the older file. A response without the field reads as
-            persisted. Default: True.
+            persisted, so treat only an explicit `false` as unsaved. Default: True.
         persistence_error (None | str | Unset): Why `path` lags the live config, present only when `persisted` is
             false.
         value (Any | Unset): The effective value after the write, rendered like any read.

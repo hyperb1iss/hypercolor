@@ -598,13 +598,20 @@ impl ConfigManager {
     /// [`persistence_status`](Self::persistence_status) reports.
     fn supersede_pending_snapshot(&self, config: &HypercolorConfig) {
         match toml::to_string_pretty(config) {
-            Ok(toml) => {
-                let _outcome = self
-                    .persistence
-                    .reserve()
-                    .admit(toml.into_bytes())
-                    .commit_stage_aware();
-            }
+            Ok(toml) => match self
+                .persistence
+                .reserve()
+                .admit(toml.into_bytes())
+                .commit_stage_aware()
+            {
+                AtomicWriteCommitResult::DurableWritten | AtomicWriteCommitResult::Superseded => {}
+                AtomicWriteCommitResult::FailedBeforeReplacement(error)
+                | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => warn!(
+                    path = %self.config_path.display(),
+                    %error,
+                    "Committed capture config is authoritative and persistence will retry"
+                ),
+            },
             Err(error) => warn!(
                 path = %self.config_path.display(),
                 %error,

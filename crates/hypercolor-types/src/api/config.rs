@@ -51,7 +51,7 @@ pub struct ConfigMutationResponse {
     /// means the change is live in the running daemon but the file write
     /// failed: the daemon keeps retrying it, and a restart before a retry
     /// lands loads the older file. A response without the field reads as
-    /// persisted.
+    /// persisted, so treat only an explicit `false` as unsaved.
     #[serde(default = "persisted_default")]
     #[cfg_attr(feature = "schema", schema(default = true))]
     pub persisted: bool,
