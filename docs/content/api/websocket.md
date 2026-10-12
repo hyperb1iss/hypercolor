@@ -45,10 +45,11 @@ Loopback clients on the default unsecured daemon need no key at all.
 
 {% <callout type="warning"> %}
 Browser origin is enforced on the upgrade. Requests with no `Origin` header
-(native and CLI clients) and loopback origins are always allowed. A non-loopback
-browser origin is rejected unless it appears in the daemon's `web.cors_origins`
-allowlist and auth is enabled. A blocked upgrade returns `403 Forbidden` before
-the socket opens.
+(native and CLI clients), loopback origins, and the desktop shell's Tauri
+origins are always allowed, and so is an upgrade that presents a credential the
+daemon accepts. Any other browser origin is rejected unless it appears in the
+daemon's `web.cors_origins` allowlist and auth is enabled. A blocked upgrade
+returns `403 Forbidden` before the socket opens.
 {% </callout> %}
 
 ### Quick test
