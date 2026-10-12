@@ -70,7 +70,7 @@ This release fixes the Windows startup stall that made 0.6.1 unusable on fresh i
 
 ### Changed
 
-- ♻️ Publish the CLI package as **`hypercolor`** instead of `hypercolor-cli`; install it with `cargo install hypercolor`. The directory stays `crates/hypercolor-cli/` and the lib target remains `hypercolor_cli` (0c1872f)
+- ♻️ Rename the CLI package from `hypercolor-cli` to **`hypercolor`** so a future crates.io release carries the product name. Nothing is published to crates.io yet, so `cargo install hypercolor` does not work. The directory stays `crates/hypercolor-cli/` and the lib target remains `hypercolor_cli` (0c1872f)
 - 🔨 Make the workspace publishable on crates.io: internal path dependencies now carry explicit versions, and `hypercolor-daemon`, `hypercolor-app`, and `hypercolor-windows-helper` are marked `publish = false` (61661fe)
 - 🔨 Move bundled data inside the crates that ship it: builtin attachments to `crates/hypercolor-core/attachments/`, OpenRGB detectors to `crates/hypercolor-openrgb-host/data/detectors.toml`. `build.rs` now fails loudly when the attachment set is missing (32432ef)
 - 👷 Key the Windows target archive by dependency set instead of per-commit, cutting repeated ~19.5 GB cache saves on every main run (a0d256f)
@@ -101,7 +101,7 @@ This release fixes the Windows startup stall that made 0.6.1 unusable on fresh i
   - Homebrew refuses the install at pre-flight; curl installers error out before downloading.
   - Existing Intel installs should be removed with `brew uninstall --cask hypercolor-app` or `brew uninstall hypercolor`, or by deleting the app from `/Applications`. Do not reinstall 0.3.2 or older builds from the releases page.
 - **CLI crate renamed from `hypercolor-cli` to `hypercolor`.**
-  - Use `cargo install hypercolor`.
+  - The rename prepares for a crates.io publish that has not happened yet, so `cargo install hypercolor` does not work. Release packages and installers still ship the `hypercolor` CLI.
   - Downstream crates depending on the library should set `hypercolor-cli = { package = "hypercolor", version = "0.6.2" }`; `use hypercolor_cli::` paths are unchanged.
 - **Bundled data paths moved** out of the top-level `data/` directory into `crates/hypercolor-core/attachments/` and `crates/hypercolor-openrgb-host/data/`. Build tooling that referenced the old paths needs updating.
 
