@@ -82,8 +82,8 @@ const PIPE_NAME: &str = r"\\.\pipe\hypercolor-smbus-v1";
 /// Pause between attempts to create the next pipe instance.
 const PIPE_CREATE_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Consecutive pipe creation failures (ten seconds of retries) after which
-/// the request loop fails and the broker stops with exit code 1. Busy
-/// instances never count.
+/// the request loop fails and the broker stops with exit code 1. A busy
+/// pipe, or a name another process holds, never counts.
 const PIPE_CREATE_ATTEMPTS: u32 = 40;
 /// How long a connected client has to send its request before the broker
 /// drops it and frees the pipe instance.
@@ -542,15 +542,17 @@ async fn serve_until_shutdown(mut shutdown: watch::Receiver<Option<StopReason>>)
                 busy_instances.reset();
                 server
             }
-            Err(error) if pipe_instances_busy(&error) => {
-                // Every instance is held by a connected client. That is load
-                // (or a user holding connections open), not a broken pipe:
-                // it clears as clients finish or hit CLIENT_REQUEST_TIMEOUT,
-                // so it never counts toward stopping the broker, which any
-                // interactive user could otherwise force.
+            Err(error) if pipe_held_elsewhere(&error) => {
+                // Every instance is busy, or another process holds the pipe
+                // name. That is load or interference, not a broken broker: it
+                // clears as clients finish (or hit CLIENT_REQUEST_TIMEOUT) or
+                // the other process lets go, so it never counts toward
+                // stopping the broker, which any interactive user could
+                // otherwise force.
                 if busy_instances.first() {
                     warn!(
-                        "all SMBus broker pipe instances are busy; waiting for clients to finish"
+                        error = %format_args!("{error:#}"),
+                        "SMBus broker pipe is busy or held by another process; waiting"
                     );
                 }
                 tokio::time::sleep(PIPE_CREATE_RETRY_DELAY).await;
@@ -664,11 +666,15 @@ async fn handle_connected_client(mut server: NamedPipeServer, state: Arc<BrokerS
     }
 }
 
-fn pipe_instances_busy(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<std::io::Error>()
-        .and_then(std::io::Error::raw_os_error)
-        == Some(ERROR_PIPE_BUSY)
+/// True when pipe creation failed because every instance is busy or because
+/// another process created the name with a DACL that refuses the broker.
+fn pipe_held_elsewhere(error: &anyhow::Error) -> bool {
+    matches!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error),
+        Some(ERROR_PIPE_BUSY | super::ERROR_ACCESS_DENIED)
+    )
 }
 
 fn create_server_pipe() -> Result<NamedPipeServer> {
