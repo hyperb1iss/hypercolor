@@ -1269,10 +1269,7 @@ pub async fn enforce_security(
     let optional_system_auth = is_optional_system_auth(request.method(), request.uri().path());
 
     if locality == RequestLocality::Loopback {
-        if is_mutating_request(request.method())
-            && is_cross_site_request(&request)
-            && !has_trusted_tauri_session(&state, &request)
-        {
+        if is_foreign_page_write(&request) && !has_trusted_tauri_session(&state, &request) {
             return DomainError::forbidden(
                 "Cross-site mutating requests to the loopback API are blocked to prevent CSRF.",
             )
@@ -1304,6 +1301,15 @@ pub async fn enforce_security(
         if request.extensions().get::<RequestAuthContext>().is_none() {
             if let Some(response) = state.refuse_foreign_host(&request) {
                 return response;
+            }
+            // A keyless listener grants every admitted client control, so
+            // a cross-site page in a LAN browser would ride it exactly as
+            // it would ride loopback trust.
+            if is_foreign_page_write(&request) && !has_trusted_tauri_session(&state, &request) {
+                return DomainError::forbidden(
+                    "Cross-site mutating requests without an API key are blocked to prevent CSRF.",
+                )
+                .into_response();
             }
             request
                 .extensions_mut()
@@ -1467,6 +1473,44 @@ fn is_cross_site_request(request: &Request<Body>) -> bool {
         .get("sec-fetch-site")
         .and_then(|value| value.to_str().ok())
         .is_some_and(|site| site == "cross-site")
+}
+
+/// Whether a mutating request comes from a page on another origin.
+///
+/// Fetch Metadata answers that where the browser sends it, but browsers
+/// send it only to secure and loopback origins, never to a plain-HTTP LAN
+/// address. `Origin` covers the rest: browsers attach it to every
+/// cross-origin write, form posts included, so one that is neither a
+/// loopback origin nor the daemon's own marks a foreign page. Native
+/// clients send neither header and pass.
+fn is_foreign_page_write(request: &Request<Body>) -> bool {
+    is_mutating_request(request.method())
+        && (is_cross_site_request(request)
+            || request.headers().get(header::ORIGIN).is_some_and(|origin| {
+                !super::is_loopback_origin(origin) && !is_own_origin(origin, request.headers())
+            }))
+}
+
+/// Whether `origin` is the authority the request was sent to, which makes
+/// the page one this daemon served.
+///
+/// A DNS-rebinding page is same-origin too, under its own name, but the
+/// Host check refuses a keyless request that names the daemon by a
+/// foreign host before anything consults this.
+pub(crate) fn is_own_origin(origin: &HeaderValue, headers: &axum::http::HeaderMap) -> bool {
+    let (Ok(origin), Some(Ok(host))) = (
+        origin.to_str(),
+        headers.get(header::HOST).map(HeaderValue::to_str),
+    ) else {
+        return false;
+    };
+    let Ok(uri) = origin.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    matches!(uri.scheme_str(), Some("http" | "https"))
+        && uri
+            .authority()
+            .is_some_and(|authority| authority.as_str().eq_ignore_ascii_case(host.trim()))
 }
 
 /// Compare a presented token against a configured key without leaking
@@ -3313,6 +3357,104 @@ mod tests {
             .expect("request failed");
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_keyless_network_listener_refuses_cross_site_writes() {
+        let keyless = || router_with_security_state(SecurityState::with_keys(None, None));
+        let write = |site: &str| {
+            with_connect_info(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/scenes")
+                    .header("sec-fetch-site", site)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                LAN_CLIENT,
+                40_000,
+            )
+        };
+
+        let refused = keyless()
+            .oneshot(write("cross-site"))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        let admitted = keyless()
+            .oneshot(write("same-origin"))
+            .await
+            .expect("request failed");
+        assert_eq!(admitted.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn a_foreign_origin_write_is_refused_without_fetch_metadata() {
+        // Browsers send no Fetch Metadata to a plain-HTTP LAN address, so
+        // `Origin` is what marks the foreign page there.
+        let write = |peer: IpAddr, host: &str, origin: Option<&str>| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header(http::header::HOST, host);
+            if let Some(origin) = origin {
+                request = request.header(http::header::ORIGIN, origin);
+            }
+            with_connect_info(
+                request
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                peer,
+                40_000,
+            )
+        };
+        let keyless = || router_with_security_state(SecurityState::with_keys(None, None));
+
+        for (peer, host, origin, expected) in [
+            (
+                LAN_CLIENT,
+                "192.168.1.10:9420",
+                Some("http://evil.example"),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                LAN_CLIENT,
+                "192.168.1.10:9420",
+                Some("null"),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                LAN_CLIENT,
+                "192.168.1.10:9420",
+                Some("http://192.168.1.10:9420"),
+                StatusCode::CREATED,
+            ),
+            (
+                LAN_CLIENT,
+                "192.168.1.10:9420",
+                Some("http://localhost:9430"),
+                StatusCode::CREATED,
+            ),
+            (LAN_CLIENT, "192.168.1.10:9420", None, StatusCode::CREATED),
+            (
+                LOOPBACK,
+                "localhost:9420",
+                Some("http://evil.example"),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                LOOPBACK,
+                "localhost:9420",
+                Some("http://localhost:9420"),
+                StatusCode::CREATED,
+            ),
+        ] {
+            let response = keyless()
+                .oneshot(write(peer, host, origin))
+                .await
+                .expect("request failed");
+            assert_eq!(response.status(), expected, "{peer} {host} {origin:?}");
+        }
     }
 
     #[tokio::test]

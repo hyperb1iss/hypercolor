@@ -186,15 +186,18 @@ authentication boundary has succeeded.
 Trusting loopback would let a malicious web page in the user's browser issue
 drive-by writes to `http://localhost:9420`. To block that, **cross-site
 mutating requests to the loopback API are rejected** with `403 forbidden`. The
-daemon keys this on the browser-set `Sec-Fetch-Site: cross-site` header: the
-bundled web UI (same-origin) and non-browser clients (CLI, SDK, which omit the
-header) are unaffected; only a browser explicitly marking the request
-cross-site is denied.
+daemon keys this on the browser-set `Sec-Fetch-Site: cross-site` header and, for
+browsers that send no Fetch Metadata (they send none to a plain-HTTP LAN
+address), on `Origin`: a write whose `Origin` is neither a loopback origin nor
+the daemon's own origin is denied. The bundled web UI (same-origin) and
+non-browser clients (CLI, SDK, which send neither header) are unaffected.
 
 {% <callout type="warning"> %}
 The CSRF guard fires for **any** mutating loopback request marked cross-site,
 even when no API key is configured. A page on another origin cannot `POST` to
-your local daemon to install an effect or change a scene.
+your local daemon to install an effect or change a scene. A keyless LAN
+listener applies the same guard to every client it admits, since it grants
+them the same ambient control.
 {% </callout> %}
 
 ## Network access policy

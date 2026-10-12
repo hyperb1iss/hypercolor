@@ -377,7 +377,7 @@ fn is_http_origin(origin: &str) -> bool {
             .is_none_or(|path| matches!(path.as_str(), "" | "/"))
 }
 
-fn is_loopback_origin(origin: &HeaderValue) -> bool {
+pub(crate) fn is_loopback_origin(origin: &HeaderValue) -> bool {
     let Ok(origin) = origin.to_str() else {
         return false;
     };
