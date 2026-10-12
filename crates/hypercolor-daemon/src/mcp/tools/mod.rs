@@ -16,6 +16,7 @@ use crate::app_state::AppState;
 use crate::domain::DomainError;
 use crate::mcp::selector::SelectorError;
 
+mod canvas;
 mod devices;
 mod displays;
 mod effects;
@@ -51,6 +52,36 @@ pub struct ToolDefinition {
     pub idempotent: bool,
 }
 
+/// One image a tool returns beside its structured payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolImage {
+    /// Base64-encoded image bytes.
+    pub data: String,
+    /// MIME type of the decoded bytes.
+    pub mime_type: &'static str,
+}
+
+/// A tool's complete result: the structured payload every tool returns, plus
+/// images for the tools that produce something to look at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolResponse {
+    /// Structured payload, validated against the tool's output schema.
+    pub payload: Value,
+    /// Images in the order the client should show them.
+    pub images: Vec<ToolImage>,
+}
+
+impl ToolResponse {
+    /// A payload-only response.
+    #[must_use]
+    pub const fn structured(payload: Value) -> Self {
+        Self {
+            payload,
+            images: Vec::new(),
+        }
+    }
+}
+
 /// Build all MCP tool definitions.
 pub fn build_tool_definitions() -> Vec<ToolDefinition> {
     vec![
@@ -72,6 +103,7 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         system::build_get_layout(),
         system::build_diagnose(),
         system::build_openrgb_status(),
+        canvas::build_capture_canvas(),
     ]
 }
 
@@ -443,38 +475,62 @@ fn close_typed_objects(schema: &mut Value) {
     }
 }
 
-/// Execute a tool with live daemon state access.
+/// Execute a tool with live daemon state access, keeping only its
+/// structured payload.
 pub async fn execute_tool_with_state(
     name: &str,
     params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
+    execute_tool_response_with_state(name, params, state)
+        .await
+        .map(|response| response.payload)
+}
+
+/// Execute a tool with live daemon state access, returning its payload and
+/// any images it produced.
+pub async fn execute_tool_response_with_state(
+    name: &str,
+    params: &Value,
+    state: &AppState,
+) -> Result<ToolResponse, ToolError> {
     let params = validate_params(name, params)?;
-    let result = match name {
-        "set_effect" => effects::handle_set_effect_with_state(&params, state).await,
-        "list_effects" => effects::handle_list_effects_with_state(&params, state).await,
-        "set_output_power" => system::handle_set_output_power_with_state(&params, state).await,
-        "clear_zone" => scenes::handle_clear_zone_with_state(&params, state).await,
-        "adjust_controls" => scenes::handle_adjust_controls_with_state(&params, state).await,
-        "set_color" => effects::handle_set_color_with_state(&params, state).await,
-        "get_devices" => devices::handle_get_devices_with_state(&params, state).await,
-        "set_brightness" => devices::handle_set_brightness_with_state(&params, state).await,
+    let response = match name {
+        "capture_canvas" => canvas::handle_capture_canvas_with_state(&params, state).await?,
+        _ => ToolResponse::structured(execute_structured_tool(name, &params, state).await?),
+    };
+    validate_result(name, &response.payload)?;
+    Ok(response)
+}
+
+async fn execute_structured_tool(
+    name: &str,
+    params: &Value,
+    state: &AppState,
+) -> Result<Value, ToolError> {
+    match name {
+        "set_effect" => effects::handle_set_effect_with_state(params, state).await,
+        "list_effects" => effects::handle_list_effects_with_state(params, state).await,
+        "set_output_power" => system::handle_set_output_power_with_state(params, state).await,
+        "clear_zone" => scenes::handle_clear_zone_with_state(params, state).await,
+        "adjust_controls" => scenes::handle_adjust_controls_with_state(params, state).await,
+        "set_color" => effects::handle_set_color_with_state(params, state).await,
+        "get_devices" => devices::handle_get_devices_with_state(params, state).await,
+        "set_brightness" => devices::handle_set_brightness_with_state(params, state).await,
         "get_status" => system::handle_get_status_with_state(state).await,
-        "activate_scene" => scenes::handle_activate_scene_with_state(&params, state).await,
-        "list_scenes" => scenes::handle_list_scenes_with_state(&params, state).await,
-        "create_scene" => scenes::handle_create_scene_with_state(&params, state).await,
+        "activate_scene" => scenes::handle_activate_scene_with_state(params, state).await,
+        "list_scenes" => scenes::handle_list_scenes_with_state(params, state).await,
+        "create_scene" => scenes::handle_create_scene_with_state(params, state).await,
         "get_audio_state" => system::handle_get_audio_state_with_state(state),
-        "get_sensor_data" => system::handle_get_sensor_data_with_state(&params, state),
-        "set_display_face" => displays::handle_set_display_face_with_state(&params, state).await,
+        "get_sensor_data" => system::handle_get_sensor_data_with_state(params, state),
+        "set_display_face" => displays::handle_set_display_face_with_state(params, state).await,
         "get_layout" => system::handle_get_layout_with_state(state).await,
-        "diagnose" => system::handle_diagnose_with_state(&params, state).await,
+        "diagnose" => system::handle_diagnose_with_state(params, state).await,
         "openrgb_status" => serialize_result(
             crate::domain::openrgb_setup::openrgb_status(&state.domains.devices).await,
         ),
         _ => Err(ToolError::NotFound(name.to_owned())),
-    }?;
-    validate_result(name, &result)?;
-    Ok(result)
+    }
 }
 
 fn validate_result(name: &str, result: &Value) -> Result<(), ToolError> {

@@ -125,7 +125,7 @@ Not everything on the wire is enveloped, and the exceptions are contract:
 | Surface | Shape |
 | --- | --- |
 | `GET /health` | Bare probe object (§4) |
-| Binary routes (`/effects/{id}/cover`, `/assets/{id}/blob`, `/displays/{id}/frame`) | Raw bytes |
+| Binary routes (`/effects/{id}/cover`, `/assets/{id}/blob`, `/displays/{id}/frame`, `/canvas/frame`) | Raw bytes |
 | Axum's own rejections (malformed JSON, body-limit 413) | Plain text, no envelope |
 
 Axum's own rejections are the only errors that bypass the envelope, because

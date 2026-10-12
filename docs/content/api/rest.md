@@ -1099,6 +1099,37 @@ A brightness outside `0.0` to `1.0` returns `422` naming the offending field,
 and it is refused before power moves, so a rejected patch changes nothing.
 {% </api_endpoint> %}
 
+## Canvas
+
+The canvas is the composed image every effect layer draws into before the
+spatial sampler maps it onto LEDs. It is rendered at full brightness, so it
+shows what an effect looks like rather than how bright the hardware is set.
+
+{% <api_endpoint method="GET" path="/api/v1/canvas/frame"> %}
+Capture one still of the composed canvas. The request waits up to 1.5 seconds
+for a frame rendered after it arrives, so the image reflects the scene as it
+is now, then returns the raw image bytes rather than a JSON envelope.
+
+**Query parameters:**
+
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `format` | `jpeg` | `jpeg`, or `png` for exact pixel values |
+| `width` | canvas width | Output width; set one side alone to keep the aspect ratio |
+| `height` | canvas height | Output height, same rules as `width` |
+
+Captures never upscale past the canvas size. The response carries
+`X-Canvas-Frame-Number`, `X-Canvas-Timestamp-Ms`, `X-Canvas-Width`,
+`X-Canvas-Height`, `X-Canvas-Source-Width`, and `X-Canvas-Source-Height`.
+`X-Canvas-Fresh: 0` means nothing rendered during the wait and the image is
+the last frame published before rendering went quiet. A daemon that has not
+rendered a frame since it started answers `503`.
+
+```bash
+curl -s 'http://127.0.0.1:9420/api/v1/canvas/frame?format=png&width=320' -o canvas.png
+```
+{% </api_endpoint> %}
+
 ## Screen capture
 
 The four protected capture operations below require protected control: the
