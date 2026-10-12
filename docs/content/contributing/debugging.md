@@ -77,7 +77,7 @@ line at the end counts totals across all checks.
 | `daemon` | system | Daemon is running and returns its version |
 | `render` | render | Render loop state, frame liveness (stale > 2 s → warning, > 10 s → fail), LED freshness |
 | `devices` | devices | Registry count, output queue health, USB actor display lane, display output encoder |
-| `config` | config | Config manager availability |
+| `config` | config | Config manager availability, and whether the config file holds the live config (`config_persistence` warns with the file and the last write error while a failed write is still retrying) |
 | `input` | input | Input-source lifecycle and data freshness: a demanded source that is failed, unavailable, stopped, degraded, or stale |
 | `memory` | memory | Servo memory-profiler summary (warning on Windows and on builds without the `servo` feature) |
 

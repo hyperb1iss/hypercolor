@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::config::ConfigManager;
+use hypercolor_core::config::{ConfigManager, ConfigPersistence};
 use hypercolor_core::device::DeviceRegistry;
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
@@ -172,6 +172,15 @@ impl PlatformContext {
     #[must_use]
     pub(crate) fn config_available(&self) -> bool {
         self.config_manager.is_some()
+    }
+
+    /// The config file path and whether it has caught up with the live
+    /// config, when a configuration manager backs this projection.
+    #[must_use]
+    pub(crate) fn config_persistence(&self) -> Option<(PathBuf, ConfigPersistence)> {
+        self.config_manager
+            .as_ref()
+            .map(|manager| (manager.path().to_path_buf(), manager.persistence_status()))
     }
 
     #[must_use]
