@@ -71,6 +71,24 @@ function Resolve-SmbusBroker {
     throw "Could not find hypercolor-smbus-service.exe. Build it first with `just windows-smbus-service-build`, or pass -BrokerExe."
 }
 
+function Get-PawnIoRegisteredHome {
+    # PawnIO records its install directory in the 64-bit uninstall key. A
+    # 32-bit PowerShell reading HKLM:\SOFTWARE sees the WOW6432Node copy
+    # instead, so open the 64-bit registry view explicitly.
+    try {
+        $hklm = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            [Microsoft.Win32.RegistryView]::Registry64)
+        $key = $hklm.OpenSubKey("SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO")
+        if ($key) {
+            return ([string]$key.GetValue("InstallLocation")).Trim('"')
+        }
+    } catch {
+        return ""
+    }
+    return ""
+}
+
 function Resolve-PawnIoHome {
     param([string]$ExplicitPath)
 
@@ -80,13 +98,27 @@ function Resolve-PawnIoHome {
         return $resolved
     }
 
-    $programRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) |
-        Where-Object { $_ }
+    # In a 32-bit PowerShell ProgramFiles names "Program Files (x86)",
+    # where a 64-bit PawnIO never lives. ProgramW6432 names the 64-bit
+    # directory from either bitness.
+    $candidates = @(
+        (Get-PawnIoRegisteredHome),
+        $(if ($env:ProgramW6432) { Join-Path $env:ProgramW6432 "PawnIO" }),
+        $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles "PawnIO" }),
+        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} "PawnIO" })
+    ) | Where-Object { $_ }
 
-    foreach ($root in $programRoots) {
-        $candidate = Join-Path $root "PawnIO"
+    foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath (Join-Path $candidate "PawnIOLib.dll")) {
-            return (Resolve-Path -LiteralPath $candidate).Path
+            $resolved = (Resolve-Path -LiteralPath $candidate).Path
+            # The broker loads PawnIOLib.dll from this directory as
+            # LocalSystem, so a user-writable candidate is skipped, not used.
+            try {
+                Assert-ServicePawnIoPath $resolved
+                return $resolved
+            } catch {
+                Write-Host "Ignoring PawnIO at ${resolved}: $($_.Exception.Message)"
+            }
         }
     }
 

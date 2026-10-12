@@ -55,9 +55,18 @@
   ; ("reboot required") when the kernel driver needs a restart to finish
   ; binding to SCM. We stash that into $R0 so we can prompt the user to
   ; restart at the end of postinstall.
+  ;
+  ; The installer is a 32-bit process, so a bare powershell.exe resolves
+  ; through WOW64 to the 32-bit PowerShell, where $env:ProgramFiles names
+  ; "Program Files (x86)" and the 64-bit PawnIO install is invisible.
+  ; Turning file system redirection off for these calls runs the native
+  ; 64-bit PowerShell instead, the same one the app's Install support
+  ; button and a manual elevated run use.
   DetailPrint "Installing Hypercolor hardware access (this may take a moment)..."
+  ${DisableX64FSRedirection}
   nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\tools\install-windows-hardware-support.ps1" -AssetRoot "$INSTDIR\tools\pawnio" -BrokerExe "$INSTDIR\tools\hypercolor-smbus-service.exe" -ModuleDestination "$INSTDIR\tools\pawnio\modules" -Silent -ReinstallService'
   Pop $R0
+  ${EnableX64FSRedirection}
   DetailPrint "  Hardware access exit code: $R0"
 
   ; A failed hardware-access pass must not fail the install — Hypercolor

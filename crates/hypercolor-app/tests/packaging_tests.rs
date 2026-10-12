@@ -1712,6 +1712,47 @@ fn installer_hook_cleans_up_the_broker_on_uninstall() {
     assert!(nsis_macro_body("NSIS_HOOK_PREUNINSTALL").contains("sc.exe delete HypercolorSmBus"));
 }
 
+/// The installer is a 32-bit process, so a bare `powershell.exe` resolves
+/// through WOW64 to 32-bit PowerShell, where `$env:ProgramFiles` names
+/// "Program Files (x86)" and the 64-bit PawnIO install is invisible. The
+/// hardware step therefore runs with file system redirection off, which
+/// starts the native 64-bit PowerShell, and turns it back on afterwards.
+#[test]
+fn installer_runs_hardware_setup_in_native_powershell() {
+    let postinstall = nsis_macro_body("NSIS_HOOK_POSTINSTALL");
+    let position = |needle: &str| {
+        postinstall
+            .find(needle)
+            .unwrap_or_else(|| panic!("postinstall is missing {needle}"))
+    };
+    let disabled = position("${DisableX64FSRedirection}");
+    let setup = position("install-windows-hardware-support.ps1");
+    let enabled = position("${EnableX64FSRedirection}");
+    assert!(disabled < setup && setup < enabled);
+}
+
+/// PawnIO is a 64-bit install. Both scripts that look for it consult the
+/// 64-bit uninstall key and `ProgramW6432`, so they find it from 32-bit
+/// PowerShell too instead of rerunning PawnIO's driver setup every install.
+#[test]
+fn pawnio_lookups_see_the_64_bit_install_from_any_powershell() {
+    for (name, script) in [
+        ("install-bundled-pawnio.ps1", INSTALL_BUNDLED_PAWNIO_PS1),
+        (
+            "install-windows-smbus-service.ps1",
+            INSTALL_WINDOWS_SMBUS_SERVICE_PS1,
+        ),
+    ] {
+        for needle in [
+            "[Microsoft.Win32.RegistryView]::Registry64",
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\PawnIO",
+            "$env:ProgramW6432",
+        ] {
+            assert!(script.contains(needle), "{name} is missing {needle}");
+        }
+    }
+}
+
 /// Upgrades only overwrite files, and the UI and bundled effects change file
 /// names between releases, so both folders are cleared first. That has to
 /// wait until the app is closed and happen before any file is copied.
