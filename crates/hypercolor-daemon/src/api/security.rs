@@ -46,6 +46,8 @@ const WRITE_LIMIT_PER_MIN: u32 = 60;
 const DISCOVERY_LIMIT_PER_MIN: u32 = 2;
 const PAIRING_LIMIT_PER_MIN: u32 = 6;
 
+const X_FORWARDED_HOST: &str = "x-forwarded-host";
+
 /// The longest `Host` value a refusal repeats back.
 const MAX_REFUSED_HOST_CHARS: usize = 260;
 
@@ -387,9 +389,13 @@ impl SecurityState {
     /// Refuse a request riding ambient authority that names the daemon
     /// by a foreign host: the mark of a DNS-rebinding page. A request
     /// without any `Host` header comes from no browser and passes.
+    ///
+    /// A proxy that rewrites `Host`, as the UI dev server's does, keeps
+    /// the browser's name in `X-Forwarded-Host`, so every entry there must
+    /// pass too. A client can only refuse itself by writing one.
     fn refuse_foreign_host(&self, request: &Request<Body>) -> Option<Response> {
-        let named = request
-            .headers()
+        let headers = request.headers();
+        let named = headers
             .get_all(header::HOST)
             .iter()
             .map(|value| value.to_str().ok())
@@ -398,7 +404,13 @@ impl SecurityState {
                     .uri()
                     .authority()
                     .map(|authority| Some(authority.as_str())),
-            );
+            )
+            .chain(headers.get_all(X_FORWARDED_HOST).iter().flat_map(
+                |value| match value.to_str() {
+                    Ok(list) => list.split(',').map(Some).collect::<Vec<_>>(),
+                    Err(_) => vec![None],
+                },
+            ));
         for host in named {
             if host.is_some_and(|host| self.hosts.admits(host)) {
                 continue;
@@ -3394,6 +3406,36 @@ mod tests {
             .await
             .expect("request failed");
         assert_eq!(health.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_proxy_rewritten_host_is_checked_through_x_forwarded_host() {
+        // The UI dev server's proxy sends `Host: 127.0.0.1` and keeps the
+        // browser's name in `X-Forwarded-Host`.
+        let through_proxy = |forwarded_host: &str| {
+            let mut request = request_naming(LOOPBACK, "/api/v1/devices", Some("127.0.0.1"));
+            request.headers_mut().insert(
+                "x-forwarded-host",
+                forwarded_host.parse().expect("header should parse"),
+            );
+            request
+        };
+
+        let refused = secured_test_router()
+            .oneshot(through_proxy("rebind.example:9430"))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let json = response_json(refused).await;
+        assert_eq!(json["error"]["details"]["host"], "rebind.example:9430");
+
+        for admitted in ["localhost:9430", "localhost:9430, 127.0.0.1"] {
+            let response = secured_test_router()
+                .oneshot(through_proxy(admitted))
+                .await
+                .expect("request failed");
+            assert_eq!(response.status(), StatusCode::OK, "{admitted}");
+        }
     }
 
     #[tokio::test]

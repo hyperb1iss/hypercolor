@@ -328,6 +328,10 @@ Add any other name you use, such as one your router's DNS hands out, to
 `"*"` turns the check off. On macOS the daemon may not learn the machine's
 host name, so a `.local` name typed into the browser can need an entry.
 
+A proxy that rewrites `Host` and keeps the browser's name in
+`X-Forwarded-Host`, as the UI dev server's proxy does, is checked through that
+header as well: every name listed there must pass.
+
 A request that presents an API key or session credential carries its own
 authority and is not checked, and neither are the exempt paths (`/health`,
 the API docs, and the bundled UI's assets). A request with no `Host` header
