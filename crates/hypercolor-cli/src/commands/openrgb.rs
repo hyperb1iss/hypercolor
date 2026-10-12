@@ -153,7 +153,9 @@ pub async fn execute(args: &OpenRgbArgs, client: &DaemonClient, ctx: &OutputCont
                 }
             } else if !response.persisted {
                 bail!(
-                    "Zone size was not saved to {} ({}) and live apply did not run",
+                    "Zone size was not saved to {} ({}) and live apply did not run; the \
+                     daemon keeps retrying the file, so restart only after \
+                     `hypercolor diagnose` shows it caught up",
                     response.path,
                     response
                         .persistence_error

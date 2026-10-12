@@ -318,8 +318,8 @@ pub(crate) fn unsaved_config_warning(
         .unwrap_or("the daemon reported no error");
     Some(format!(
         "{summary}, but saving {} failed: {reason}. The daemon keeps retrying; \
-         a restart before a retry lands reverts the change. Run `hypercolor diagnose` \
-         to see when it lands.",
+         restart only after `hypercolor diagnose` shows the file caught up, or the \
+         change is lost.",
         response.path
     ))
 }
