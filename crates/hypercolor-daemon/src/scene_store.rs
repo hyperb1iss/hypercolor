@@ -157,7 +157,19 @@ impl SceneStore {
         &mut self,
         pending: SceneStoreSave,
     ) -> anyhow::Result<AtomicWriteOutcome> {
-        match self.save_reserved_stage_aware(pending) {
+        self.commit_admitted(pending.admit())
+    }
+
+    /// Commit an already admitted snapshot and retain it when it wins.
+    ///
+    /// Admitting first lets a caller hand the blocking commit to another
+    /// thread: if that commit never runs, the admitted payload's drop still
+    /// leaves it with the retry supervisor.
+    pub(crate) fn commit_admitted(
+        &mut self,
+        admitted: AdmittedSceneStoreSave,
+    ) -> anyhow::Result<AtomicWriteOutcome> {
+        match self.commit_admitted_stage_aware(admitted) {
             AtomicWriteCommitResult::Superseded => Ok(AtomicWriteOutcome::Superseded),
             AtomicWriteCommitResult::DurableWritten => Ok(AtomicWriteOutcome::Written),
             AtomicWriteCommitResult::FailedBeforeReplacement(error)
@@ -172,7 +184,14 @@ impl SceneStore {
         &mut self,
         pending: SceneStoreSave,
     ) -> AtomicWriteCommitResult {
-        let AdmittedSceneStoreSave { scenes, write } = pending.admit();
+        self.commit_admitted_stage_aware(pending.admit())
+    }
+
+    fn commit_admitted_stage_aware(
+        &mut self,
+        admitted: AdmittedSceneStoreSave,
+    ) -> AtomicWriteCommitResult {
+        let AdmittedSceneStoreSave { scenes, write } = admitted;
         let previous = std::mem::replace(&mut self.scenes, scenes);
         let outcome = write.commit_stage_aware();
         if matches!(outcome, AtomicWriteCommitResult::Superseded) {

@@ -368,8 +368,9 @@ impl RuntimeSessionProjection {
             .await
             .map_err(RuntimeSessionPersistenceError::BeforeAdmission)?;
         update(&mut save.snapshot);
-        save.commit().map_err(|error| match error {
-            error @ runtime_state::RuntimeSessionError::Persist { .. } => {
+        save.commit().await.map_err(|error| match error {
+            error @ (runtime_state::RuntimeSessionError::Persist { .. }
+            | runtime_state::RuntimeSessionError::WriteTask { .. }) => {
                 RuntimeSessionPersistenceError::RetryArmed(error)
             }
             error => RuntimeSessionPersistenceError::BeforeAdmission(error),
@@ -397,13 +398,14 @@ impl RuntimeSessionProjection {
             }
         };
         update(&mut save.snapshot);
-        let (projection, result) = save.commit_observed();
+        let (projection, result) = save.commit_observed().await;
         let durability = match result {
             Ok(AtomicWriteOutcome::Written) => ProjectionDurability::Written,
             Ok(AtomicWriteOutcome::Superseded) => ProjectionDurability::Superseded,
-            Err(error @ runtime_state::RuntimeSessionError::Persist { .. }) => {
-                ProjectionDurability::Retrying(error.to_string())
-            }
+            Err(
+                error @ (runtime_state::RuntimeSessionError::Persist { .. }
+                | runtime_state::RuntimeSessionError::WriteTask { .. }),
+            ) => ProjectionDurability::Retrying(error.to_string()),
             Err(error) => ProjectionDurability::BeforeAdmission(error.to_string()),
         };
         ProjectionWriteEvidence {
@@ -584,7 +586,7 @@ impl RuntimeSessionService {
             Err(error) => return RuntimeSessionSaveOutcome::BeforeAdmission { error },
         };
         let scene_store = self.save_scene_store_snapshot().await;
-        let (projection, snapshot) = save.commit_observed();
+        let (projection, snapshot) = save.commit_observed().await;
         RuntimeSessionSaveOutcome::Attempted {
             scene_store,
             projection,
@@ -622,11 +624,14 @@ impl RuntimeSessionService {
 }
 
 impl RuntimeSessionSave {
-    fn commit(self) -> Result<AtomicWriteOutcome, runtime_state::RuntimeSessionError> {
-        self.commit_observed().1
+    async fn commit(self) -> Result<AtomicWriteOutcome, runtime_state::RuntimeSessionError> {
+        self.commit_observed().await.1
     }
 
-    fn commit_observed(
+    /// Serialize and admit on this task, then run the durable replacement
+    /// on the blocking pool. The publication guard is held until the
+    /// attempt finishes, as when it ran inline.
+    async fn commit_observed(
         self,
     ) -> (
         RuntimeSessionSnapshot,
@@ -637,8 +642,23 @@ impl RuntimeSessionSave {
             snapshot,
             publication_guard,
         } = self;
-        let outcome = runtime_state::save_reserved(pending, &snapshot);
-        drop(publication_guard);
+        let admitted = match runtime_state::admit_reserved(pending, &snapshot) {
+            Ok(admitted) => admitted,
+            Err(error) => return (snapshot, Err(error)),
+        };
+        let path = admitted.path().to_path_buf();
+        let outcome = crate::audit_log::run_blocking_attributed(move || {
+            let outcome = admitted.commit();
+            drop(publication_guard);
+            outcome
+        })
+        .await
+        .unwrap_or_else(|error| {
+            Err(runtime_state::RuntimeSessionError::WriteTask {
+                path,
+                detail: error.to_string(),
+            })
+        });
         (snapshot, outcome)
     }
 }

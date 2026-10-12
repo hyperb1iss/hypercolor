@@ -277,6 +277,27 @@ where
     })
 }
 
+/// Run blocking `operation` on the blocking pool and wait for it, with its
+/// store writes attributed to the request that started it.
+///
+/// A panic in `operation` resumes on the caller, as if it had run inline.
+///
+/// # Errors
+///
+/// Returns the join error only when the runtime shuts down before the
+/// operation can finish.
+pub async fn run_blocking_attributed<F, R>(operation: F) -> Result<R, tokio::task::JoinError>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let scope = current_change_scope();
+    match tokio::task::spawn_blocking(move || with_change_scope(scope, operation)).await {
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        result => result,
+    }
+}
+
 /// Run a WebSocket session with `peer` as the sender of its commands.
 pub async fn with_ws_peer<F: Future>(peer: AuditPeer, future: F) -> F::Output {
     WS_PEER.scope(Arc::new(peer), future).await

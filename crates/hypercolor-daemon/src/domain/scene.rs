@@ -651,7 +651,7 @@ impl SceneService {
             .expect("persistent scene commit must retain its owning store");
         #[cfg(all(test, feature = "persistence-test-hooks"))]
         self.pause_before_persistence_for_test().await;
-        let outcome = store.write().await.save_reserved(pending);
+        let outcome = save_store_reserved(store, pending).await;
         match outcome {
             Ok(AtomicWriteOutcome::Written) => {
                 self.note_store_durable(generation, store_epoch);
@@ -729,7 +729,7 @@ impl SceneService {
             (revision, scenes, writer.reserve(), self.store_epoch())
         };
         let pending = PreparedSceneStoreSave::new(scenes)?.with_reservation(reservation);
-        let outcome = store.write().await.save_reserved(pending)?;
+        let outcome = save_store_reserved(store, pending).await?;
         if outcome == AtomicWriteOutcome::Written {
             self.note_store_durable(revision, store_epoch);
         }
@@ -869,6 +869,29 @@ impl SceneService {
 
         publish_renderer_state(candidate_spatial_engine)
     }
+}
+
+/// Commit a reserved store save on the blocking pool.
+///
+/// The store write lock is held until the attempt finishes, exactly as when
+/// this ran inline. Admission and replacement under that one lock are what
+/// keep a commit from admitting while the commit ahead of it is mid-write;
+/// releasing it before the durability barrier would let the newer
+/// admission supersede the older write at its final check, and a
+/// superseded commit discards its events. The owned guard rides into the
+/// blocking task, so a caller cancelled mid-write can neither release the
+/// lock early nor skip the store's superseded rollback. The payload is
+/// admitted before the hand-off, so a write task the runtime never starts
+/// still leaves it with the retry supervisor, as the error reports.
+async fn save_store_reserved(
+    store: &Arc<RwLock<SceneStore>>,
+    pending: SceneStoreSave,
+) -> anyhow::Result<AtomicWriteOutcome> {
+    let mut store = Arc::clone(store).write_owned().await;
+    let admitted = pending.admit();
+    crate::audit_log::run_blocking_attributed(move || store.commit_admitted(admitted))
+        .await
+        .map_err(|error| anyhow::anyhow!("scene store write task failed: {error}"))?
 }
 
 #[cfg(all(test, feature = "persistence-test-hooks"))]
