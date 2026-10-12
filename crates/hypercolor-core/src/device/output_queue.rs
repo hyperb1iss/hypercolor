@@ -32,6 +32,14 @@ pub(super) fn next_queue_generation() -> u64 {
         .expect("device output queue generation space exhausted")
 }
 
+/// The generation the next output lane will draw. Every queue, frame sink
+/// monitor, and display lane created after this read carries this
+/// generation or a later one, so it separates what a connect is about to
+/// install from everything installed before it.
+pub(crate) fn output_generation_watermark() -> u64 {
+    NEXT_QUEUE_GENERATION.load(Ordering::Relaxed)
+}
+
 pub(super) type OutputLaneHandle = Arc<OutputLane>;
 
 pub(super) enum OutputLane {

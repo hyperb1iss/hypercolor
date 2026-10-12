@@ -1309,3 +1309,77 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         &vec![expected; 4]
     );
 }
+
+/// Frame sink that reports a closed actor, so the manager records one
+/// closure failure carrying the sink's output generation.
+struct ClosedFrameSink;
+
+#[async_trait::async_trait]
+impl hypercolor_driver_api::DeviceFrameSink for ClosedFrameSink {
+    fn is_closed(&self) -> bool {
+        true
+    }
+
+    async fn write_colors_shared(&self, _colors: Arc<Vec<[u8; 3]>>) -> Result<(), DeviceError> {
+        Ok(())
+    }
+}
+
+/// Output generation of a frame sink installed now.
+fn installed_sink_generation(device_id: DeviceId) -> u64 {
+    let mut manager = BackendManager::new();
+    manager.set_device_frame_sink("mock", device_id, Some(Arc::new(ClosedFrameSink)));
+    manager
+        .async_write_failures()
+        .first()
+        .expect("a closed sink reports its closure")
+        .delivery_id
+        .queue_generation
+}
+
+#[test]
+fn connect_attempts_bound_the_output_generations_their_sessions_install() {
+    let device_id = DeviceId::new();
+    let mut lifecycle = DeviceLifecycleManager::new();
+    assert_eq!(lifecycle.connect_output_floor(device_id), None);
+
+    lifecycle.on_discovered(device_id, &device_info(device_id, "Floor Strip"), None);
+    let first_floor = lifecycle
+        .connect_output_floor(device_id)
+        .expect("the first connect is in flight");
+    let first_session = installed_sink_generation(device_id);
+    assert!(
+        first_session >= first_floor,
+        "a lane the connect installs is at or above its floor"
+    );
+
+    lifecycle
+        .on_connected(device_id)
+        .expect("the first connect completes");
+    assert_eq!(lifecycle.connect_output_floor(device_id), None);
+    assert_eq!(lifecycle.session_output_floor(device_id), Some(first_floor));
+
+    lifecycle
+        .on_comm_error_at(device_id, Instant::now())
+        .expect("the first session fails");
+    assert_eq!(
+        lifecycle.connect_output_floor(device_id),
+        None,
+        "reconnect backoff has no connect in flight"
+    );
+    assert!(lifecycle.on_reconnect_attempt(device_id).is_some());
+    let reconnect_floor = lifecycle
+        .connect_output_floor(device_id)
+        .expect("the reconnect attempt is in flight");
+    assert!(
+        reconnect_floor > first_session,
+        "the earlier session's lanes fall below the reconnect's floor"
+    );
+
+    lifecycle.on_device_vanished(device_id);
+    assert_eq!(
+        lifecycle.connect_output_floor(device_id),
+        None,
+        "an unplug ends the attempt"
+    );
+}

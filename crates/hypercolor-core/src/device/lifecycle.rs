@@ -12,6 +12,7 @@ use hypercolor_types::device::{
     DeviceState,
 };
 
+use super::output_queue::output_generation_watermark;
 use super::state_machine::{DeviceStateMachine, FlapEscalation, ReconnectPolicy};
 
 const DEFAULT_MAX_RECONNECT_ATTEMPTS: u32 = 6;
@@ -59,6 +60,16 @@ struct ManagedDevice {
     layout_device_id: String,
     identifier: DeviceIdentifier,
     connect_behavior: DiscoveryConnectBehavior,
+    /// Output generation floor of the attempt that produced the current
+    /// session, when a tracked attempt did.
+    session_output_floor: Option<u64>,
+}
+
+/// A connect action lifecycle emitted and has not seen finish.
+struct ConnectAttempt {
+    started_at: Instant,
+    /// Output generations the attempt's session can carry start here.
+    output_floor: u64,
 }
 
 /// Pure lifecycle coordinator for discovered devices.
@@ -67,7 +78,7 @@ struct ManagedDevice {
 /// async executors. This keeps the manager deterministic and easy to unit test.
 pub struct DeviceLifecycleManager {
     devices: HashMap<DeviceId, ManagedDevice>,
-    connect_in_flight: HashMap<DeviceId, Instant>,
+    connect_in_flight: HashMap<DeviceId, ConnectAttempt>,
     reconnect_scheduled: HashSet<DeviceId>,
     reconnect_policy: ReconnectPolicy,
     connect_in_flight_stale_after: Duration,
@@ -202,6 +213,7 @@ impl DeviceLifecycleManager {
                     layout_device_id: layout_device_id.clone(),
                     identifier,
                     connect_behavior,
+                    session_output_floor: None,
                 }
             });
 
@@ -256,8 +268,8 @@ impl DeviceLifecycleManager {
     #[must_use]
     pub fn retry_stale_known_connect(&mut self, device_id: DeviceId) -> Option<LifecycleAction> {
         let action = {
-            let started_at = self.connect_in_flight.get(&device_id)?;
-            if started_at.elapsed() < self.connect_in_flight_stale_after {
+            let attempt = self.connect_in_flight.get(&device_id)?;
+            if attempt.started_at.elapsed() < self.connect_in_flight_stale_after {
                 return None;
             }
 
@@ -276,7 +288,34 @@ impl DeviceLifecycleManager {
     }
 
     fn mark_connect_in_flight(&mut self, device_id: DeviceId) {
-        self.connect_in_flight.insert(device_id, Instant::now());
+        self.connect_in_flight.insert(
+            device_id,
+            ConnectAttempt {
+                started_at: Instant::now(),
+                output_floor: output_generation_watermark(),
+            },
+        );
+    }
+
+    /// Lowest output generation the connect in flight for `device_id` can
+    /// install. Queues, frame sink monitors, and display lanes that connect
+    /// creates carry this generation or a later one; anything older belongs
+    /// to an earlier session. `None` when no connect is in flight.
+    #[must_use]
+    pub fn connect_output_floor(&self, device_id: DeviceId) -> Option<u64> {
+        self.connect_in_flight
+            .get(&device_id)
+            .map(|attempt| attempt.output_floor)
+    }
+
+    /// Lowest output generation of the session lifecycle last marked
+    /// connected for `device_id`. Lanes below it belong to an earlier
+    /// session. `None` when the session did not come from a tracked attempt.
+    #[must_use]
+    pub fn session_output_floor(&self, device_id: DeviceId) -> Option<u64> {
+        self.devices
+            .get(&device_id)
+            .and_then(|managed| managed.session_output_floor)
     }
 
     #[must_use]
@@ -289,12 +328,13 @@ impl DeviceLifecycleManager {
         &mut self,
         device_id: DeviceId,
     ) -> Result<Vec<LifecycleAction>, DeviceError> {
-        self.connect_in_flight.remove(&device_id);
+        let attempt = self.connect_in_flight.remove(&device_id);
         let reconnect_canceled = self.reconnect_scheduled.remove(&device_id);
         let managed = self.managed_mut(device_id)?;
 
         let handle = DeviceHandle::new(managed.identifier.clone(), managed.backend_id.clone());
         managed.state_machine.on_connected(handle)?;
+        managed.session_output_floor = attempt.map(|attempt| attempt.output_floor);
 
         let mut actions = Vec::new();
         if reconnect_canceled {
