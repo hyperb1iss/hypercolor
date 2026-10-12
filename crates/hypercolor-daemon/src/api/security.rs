@@ -28,6 +28,7 @@ use tracing::warn;
 
 pub use super::credential_authority::{CredentialAuthority, CredentialGrant, CredentialTier};
 use super::forwarded;
+use super::host_names::HostAllowlist;
 use crate::domain::DomainError;
 use crate::extensions::{ApiExtension, PublicRateClass};
 use crate::macos_owner::MacosDaemonSessionAttestation;
@@ -44,6 +45,9 @@ const READ_LIMIT_PER_MIN: u32 = 120;
 const WRITE_LIMIT_PER_MIN: u32 = 60;
 const DISCOVERY_LIMIT_PER_MIN: u32 = 2;
 const PAIRING_LIMIT_PER_MIN: u32 = 6;
+
+/// The longest `Host` value a refusal repeats back.
+const MAX_REFUSED_HOST_CHARS: usize = 260;
 
 const TRUSTED_TAURI_ORIGINS: &[&str] = &[
     "tauri://localhost",
@@ -74,6 +78,7 @@ pub struct SecurityState {
     rate_limiter: Arc<Mutex<RateLimiter>>,
     static_assets: StaticAssetSurface,
     public_routes: PublicRouteTable,
+    hosts: HostAllowlist,
 }
 
 /// The paths the bundled web UI is served from.
@@ -317,6 +322,7 @@ impl SecurityState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
             public_routes: PublicRouteTable::default(),
+            hosts: HostAllowlist::default(),
         }
     }
 
@@ -340,6 +346,7 @@ impl SecurityState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
             public_routes: PublicRouteTable::default(),
+            hosts: HostAllowlist::default(),
         }
     }
 
@@ -358,6 +365,55 @@ impl SecurityState {
     pub fn with_static_assets(mut self, static_assets: StaticAssetSurface) -> Self {
         self.static_assets = static_assets;
         self
+    }
+
+    /// Declare the names a request without a credential may call the
+    /// daemon by. Called once where the serving state is minted.
+    #[must_use]
+    pub(crate) fn with_host_allowlist(mut self, hosts: HostAllowlist) -> Self {
+        self.hosts = hosts;
+        self
+    }
+
+    /// Refuse a request riding ambient authority that names the daemon
+    /// by a foreign host: the mark of a DNS-rebinding page. A request
+    /// without any `Host` header comes from no browser and passes.
+    fn refuse_foreign_host(&self, request: &Request<Body>) -> Option<Response> {
+        let named = request
+            .headers()
+            .get_all(header::HOST)
+            .iter()
+            .map(|value| value.to_str().ok())
+            .chain(
+                request
+                    .uri()
+                    .authority()
+                    .map(|authority| Some(authority.as_str())),
+            );
+        for host in named {
+            if host.is_some_and(|host| self.hosts.admits(host)) {
+                continue;
+            }
+            // The name is the caller's, so it is capped (a DNS name never
+            // exceeds 253 bytes) before it reaches the log or the reply.
+            let host = host
+                .unwrap_or("(unreadable)")
+                .chars()
+                .take(MAX_REFUSED_HOST_CHARS)
+                .collect::<String>();
+            self.hosts.log_refusal(&host);
+            return Some(
+                DomainError::forbidden_details(
+                    format!(
+                        "Host '{host}' is not a name this daemon answers to without an API key. \
+                         Use its IP address or localhost, or add the name to network.allowed_hosts."
+                    ),
+                    json!({ "host": host, "setting": "network.allowed_hosts" }),
+                )
+                .into_response(),
+            );
+        }
+        None
     }
 
     /// Install the downstream credential authority.
@@ -700,6 +756,7 @@ impl SecurityState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
             public_routes: PublicRouteTable::default(),
+            hosts: HostAllowlist::default(),
         }
     }
 
@@ -713,6 +770,7 @@ impl SecurityState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
             public_routes: PublicRouteTable::default(),
+            hosts: HostAllowlist::default(),
         }
     }
 
@@ -732,6 +790,7 @@ impl SecurityState {
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
             public_routes: PublicRouteTable::default(),
+            hosts: HostAllowlist::default(),
         }
     }
 }
@@ -1227,6 +1286,9 @@ pub async fn enforce_security(
                 return DomainError::unauthorized("Invalid API key").into_response();
             }
             Some(None) | None => {
+                if let Some(response) = state.refuse_foreign_host(&request) {
+                    return response;
+                }
                 request
                     .extensions_mut()
                     .insert(RequestAuthContext::unsecured().with_locality(locality));
@@ -1240,6 +1302,9 @@ pub async fn enforce_security(
             return DomainError::unauthorized("Invalid API key").into_response();
         }
         if request.extensions().get::<RequestAuthContext>().is_none() {
+            if let Some(response) = state.refuse_foreign_host(&request) {
+                return response;
+            }
             request
                 .extensions_mut()
                 .insert(RequestAuthContext::unsecured().with_locality(locality));
@@ -3102,6 +3167,152 @@ mod tests {
 
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{headers:?}");
         }
+    }
+
+    fn request_naming(peer: IpAddr, uri: &str, host: Option<&str>) -> Request<Body> {
+        let mut request = Request::builder().uri(uri);
+        if let Some(host) = host {
+            request = request.header(http::header::HOST, host);
+        }
+        with_connect_info(
+            request
+                .body(Body::empty())
+                .expect("failed to build request"),
+            peer,
+            40_000,
+        )
+    }
+
+    const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    const LAN_CLIENT: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+
+    #[tokio::test]
+    async fn a_keyless_loopback_request_must_name_the_daemon() {
+        let refused = secured_test_router()
+            .oneshot(request_naming(
+                LOOPBACK,
+                "/api/v1/devices",
+                Some("rebind.example:9420"),
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let json = response_json(refused).await;
+        assert_eq!(json["error"]["details"]["host"], "rebind.example:9420");
+        assert_eq!(json["error"]["details"]["setting"], "network.allowed_hosts");
+
+        for host in [
+            Some("localhost:9420"),
+            Some("127.0.0.1:9420"),
+            Some("[::1]:9420"),
+            Some("ui.localhost:9430"),
+            None,
+        ] {
+            let response = secured_test_router()
+                .oneshot(request_naming(LOOPBACK, "/api/v1/devices", host))
+                .await
+                .expect("request failed");
+            assert_eq!(response.status(), StatusCode::OK, "{host:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_credential_needs_no_particular_host() {
+        let mut request = request_naming(LOOPBACK, "/api/v1/devices", Some("rebind.example"));
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            format!("Bearer {READ_KEY}")
+                .parse()
+                .expect("header should parse"),
+        );
+
+        let response = secured_test_router()
+            .oneshot(request)
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_keyless_network_listener_checks_the_host_too() {
+        let keyless = || router_with_security_state(SecurityState::with_keys(None, None));
+        let refused = keyless()
+            .oneshot(request_naming(
+                LAN_CLIENT,
+                "/api/v1/devices",
+                Some("rebind.example:9420"),
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+        let admitted = keyless()
+            .oneshot(request_naming(
+                LAN_CLIENT,
+                "/api/v1/devices",
+                Some("192.168.1.10:9420"),
+            ))
+            .await
+            .expect("request failed");
+        assert_eq!(admitted.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn configured_host_names_are_admitted() {
+        let state = SecurityState::with_keys(None, None)
+            .with_host_allowlist(super::HostAllowlist::new(["hypercolor.home".to_owned()]));
+        let response = router_with_security_state(state)
+            .oneshot(request_naming(
+                LAN_CLIENT,
+                "/api/v1/devices",
+                Some("hypercolor.home:9420"),
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_host_check_covers_upgrades_but_not_exempt_paths() {
+        let mut upgrade = request_naming(LOOPBACK, "/api/v1/ws", Some("rebind.example"));
+        upgrade.headers_mut().insert(
+            http::header::UPGRADE,
+            "websocket".parse().expect("header should parse"),
+        );
+        let refused = secured_test_router()
+            .oneshot(upgrade)
+            .await
+            .expect("request failed");
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let json = response_json(refused).await;
+        assert_eq!(json["error"]["details"]["host"], "rebind.example");
+
+        let health = secured_test_router()
+            .oneshot(request_naming(LOOPBACK, "/health", Some("rebind.example")))
+            .await
+            .expect("request failed");
+        assert_eq!(health.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn an_http2_authority_is_checked_like_a_host_header() {
+        let request = with_connect_info(
+            Request::builder()
+                .uri("http://rebind.example:9420/api/v1/devices")
+                .body(Body::empty())
+                .expect("failed to build request"),
+            LOOPBACK,
+            40_000,
+        );
+
+        let response = secured_test_router()
+            .oneshot(request)
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

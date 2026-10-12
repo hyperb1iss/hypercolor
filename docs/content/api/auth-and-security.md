@@ -211,6 +211,7 @@ config change under `[network]`.
 | `network.client_scope` | enum | `local_subnets` | Which built-in IP scope to trust: `local_subnets`, `private_ranges`, `custom` |
 | `network.remote_access` | bool | `false` | Force remote access on without changing `access_mode` |
 | `network.allowed_clients` | list | `[]` | Extra exact IPs or CIDR rules, e.g. `["192.168.1.0/24", "10.0.0.5"]` |
+| `network.allowed_hosts` | list | `[]` | Extra `Host` names a request without a key may use, e.g. `["hypercolor.home"]` (see [Host names](#host-names)) |
 | `network.allow_unauthenticated_remote_access` | bool | `false` | Permit remote clients without a key (see warning) |
 | `network.mdns_publish` | bool | `true` | Advertise the daemon over mDNS |
 
@@ -295,6 +296,36 @@ A proxy that names no client (no forwarding headers, or only
 `X-Forwarded-Host` and `X-Forwarded-Proto`) is indistinguishable from a local
 process: every client it relays gets loopback trust, whether or not an API key
 is set. Don't put one in front of the daemon for remote access.
+
+## Host names
+
+A request that presents no credential, whether it rides the loopback
+exemption or reaches a keyless LAN listener, must call the daemon by a name an
+attacker cannot point at it. This stops DNS rebinding: a page on
+`rebind.example` can make the browser resolve its own name to `127.0.0.1` or
+the daemon's LAN address, and the browser then treats the daemon as that
+page's origin, so `Origin` and `Sec-Fetch-Site` both look same-origin. The
+`Host` header still says `rebind.example`, and the daemon refuses it with
+`403 forbidden` naming the host.
+
+These names always work:
+
+- Any IP address, such as `127.0.0.1`, `[::1]`, or `192.168.1.10`.
+- `localhost` and any name under `.localhost`.
+- The machine's host names (from `HOSTNAME`, `COMPUTERNAME`, or
+  `/etc/hostname`), each with its `.local` form.
+- The name the daemon advertises over mDNS.
+- The hosts of `web.cors_origins` entries.
+
+Add any other name you use, such as one your router's DNS hands out, to
+`network.allowed_hosts`. Entries match the exact name, ignoring case and port.
+`"*"` turns the check off. On macOS the daemon may not learn the machine's
+host name, so a `.local` name typed into the browser can need an entry.
+
+A request that presents an API key or session credential carries its own
+authority and is not checked, and neither are the exempt paths (`/health`,
+the API docs, and the bundled UI's assets). A request with no `Host` header
+at all comes from no browser and passes.
 
 ## CORS
 

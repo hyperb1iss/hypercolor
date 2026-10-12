@@ -18,6 +18,7 @@ pub mod effects;
 pub mod envelope;
 mod error;
 mod forwarded;
+mod host_names;
 pub mod layouts;
 pub mod library;
 pub mod local;
@@ -148,9 +149,9 @@ pub(crate) fn openapi_document() -> utoipa::openapi::OpenApi {
 ///
 /// This is the one place a serving [`security::SecurityState`] is
 /// minted: the environment keys, the configured network policy (which
-/// enumerates the host's interfaces), the downstream credential
-/// authority, and the macOS session credential are each resolved once
-/// per process. Every other `AppState` is a
+/// enumerates the host's interfaces), the names a keyless request may
+/// call the daemon by, the downstream credential authority, and the
+/// macOS session credential are each resolved once per process. Every other `AppState` is a
 /// worker projection carrying [`security::SecurityState::unserved`],
 /// so a second projection can neither rescan interfaces nor open a
 /// rate-limit budget the enforced state does not know about.
@@ -160,7 +161,14 @@ pub(crate) fn build_state(
     credential_authority: Option<Arc<dyn security::CredentialAuthority>>,
 ) -> AppState {
     let mut state = AppState::from_daemon_state(daemon);
-    let mut security = security::SecurityState::from_config(&daemon.config_manager.get());
+    let config = daemon.config_manager.get();
+    let mut security = security::SecurityState::from_config(&config).with_host_allowlist(
+        host_names::HostAllowlist::for_daemon(
+            &config,
+            &daemon.server_identity,
+            crate::startup::system_host_names(),
+        ),
+    );
     if let Some(authority) = credential_authority {
         security = security.with_credential_authority(authority);
     }

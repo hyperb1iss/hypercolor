@@ -248,6 +248,30 @@ If events arrive in `websocat` but the browser preview is still dark, the proble
 
 ---
 
+## 403: "not a name this daemon answers to"
+
+**Symptom:** the web UI loads from a name like `http://hypercolor.home:9420`,
+but every API call fails with `403 forbidden` and a message saying the host is
+not a name the daemon answers to without an API key.
+
+**Cause:** a request without an API key has to call the daemon by an IP
+address, `localhost`, one of the machine's own host names, or the daemon's
+mDNS name. That rule keeps a malicious web page from reaching your daemon
+through DNS rebinding. A name from your router's DNS, or one a reverse proxy
+passes through, is none of those.
+
+**Fix:** add the name to `network.allowed_hosts` and restart the daemon:
+
+```toml
+[network]
+allowed_hosts = ["hypercolor.home"]
+```
+
+Or browse to the daemon's IP address instead, or use an API key. See
+[Host names](@/api/auth-and-security.md#host-names).
+
+---
+
 ## Undoing an unwanted change
 
 **Symptom:** Your lights changed, or a scene, layout, or device setting is not what you left it, and you did not change it.
