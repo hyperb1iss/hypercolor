@@ -58,3 +58,52 @@ pub enum HostInventory {
     /// what is running.
     Failed,
 }
+
+/// The privileged broker an unprivileged daemon goes through to reach
+/// hardware buses (`SMBus` controllers, CPU sensor registers), as the host
+/// service manager reports it. Platforms without such a broker report
+/// none at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardwareBrokerReport {
+    /// Service-manager name of the broker.
+    pub service_name: String,
+    /// What the service manager says the broker is doing.
+    pub state: HardwareBrokerState,
+    /// Where the broker writes its own log, when the platform knows.
+    pub log_path: Option<String>,
+    /// How to bring a missing or stopped broker back, in the platform's
+    /// own terms.
+    pub remedy: String,
+}
+
+/// Broker lifecycle in platform-neutral terms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HardwareBrokerState {
+    /// The daemon reaches the hardware itself, so no broker is needed.
+    NotNeeded,
+    /// No broker is registered with the service manager.
+    NotInstalled,
+    /// Registered and running. `answering` says whether it replied on its
+    /// local channel when asked just now.
+    Running {
+        /// Whether the broker replied to a liveness probe.
+        answering: bool,
+    },
+    /// Registered and starting, stopping, or paused.
+    Transitioning {
+        /// The service manager's word for the state.
+        state: String,
+    },
+    /// Registered but not running.
+    Stopped {
+        /// What the service manager recorded about the last exit.
+        exit: String,
+        /// Whether the service manager starts the broker at boot.
+        starts_at_boot: Option<bool>,
+    },
+    /// The service manager could not be asked.
+    Unknown {
+        /// Why the query failed.
+        detail: String,
+    },
+}

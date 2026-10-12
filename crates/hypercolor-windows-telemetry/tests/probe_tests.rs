@@ -1,5 +1,6 @@
 use hypercolor_windows_telemetry::{
-    SensorExtras, SystemSnapshot, motherboard_info, running_software,
+    HardwareBrokerState, SensorExtras, SystemSnapshot, hardware_broker_report, motherboard_info,
+    running_software,
 };
 
 #[test]
@@ -41,5 +42,29 @@ fn software_inventory_lists_this_process_on_windows_only() {
         );
     } else {
         assert!(snapshot.is_none());
+    }
+}
+
+#[test]
+fn smbus_broker_is_reported_on_windows_only() {
+    let report = hardware_broker_report();
+    if cfg!(target_os = "windows") {
+        let report = report.expect("Windows always reports the SMBus broker");
+        assert_eq!(report.service_name, "HypercolorSmBus");
+        match report.state {
+            HardwareBrokerState::NotInstalled => {
+                assert!(
+                    report.remedy.contains("Install support"),
+                    "{}",
+                    report.remedy
+                );
+            }
+            HardwareBrokerState::Stopped { .. } => {
+                assert!(report.remedy.contains("Start-Service HypercolorSmBus"));
+            }
+            _ => {}
+        }
+    } else {
+        assert!(report.is_none());
     }
 }
