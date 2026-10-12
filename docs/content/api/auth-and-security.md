@@ -284,8 +284,8 @@ because any device the policy admits can control it.
 ## CORS
 
 The daemon always sends CORS headers for **loopback origins** (`http` or
-`https` on `localhost`, a `127.0.0.0/8` address, or `[::1]`, on any port) and
-for the desktop shell's Tauri origins. Additional browser origins are honored
+`https` on `localhost` or a `127.0.0.0/8` address, on any port) and for the
+desktop shell's Tauri origins. Additional browser origins are honored
 only when **API authentication is enabled** and the origin is listed in
 `web.cors_origins`:
 
@@ -350,8 +350,9 @@ limited, which is deliberate: a single page load pulls more asset requests
 than the read limit allows.
 
 The health route needs no key in any configuration, so liveness checks work
-however authentication is set up. Like every exempt path, it still passes the
-network access policy:
+however authentication is set up. Once startup finishes it passes the network
+access policy like every exempt path; while the daemon is still starting, a
+remote peer gets a bare `503` and only a loopback peer sees startup progress:
 
 - `GET /health`: liveness probe.
 
@@ -393,9 +394,10 @@ another's, so an extension must declare only routes it mounts, and must not
 mount undeclared routes beneath the docs paths, which the exemption covers
 whole.
 
-The MCP server (mounted at `/mcp` when `mcp.enabled` is true) sits outside the
-`/api/v1` middleware stack. MCP is **off by default**; enable it before using
-any agent integration. See [MCP setup](@/api/mcp.md) for the transport and
+The MCP server (mounted at `/mcp` when `mcp.enabled` is true) lives outside
+`/api/v1` but behind the same security layer: it passes the network policy,
+and a remote client of a keyed daemon needs a key. MCP is **off by default**;
+enable it before using any agent integration. See [MCP setup](@/api/mcp.md) for the transport and
 client configuration.
 
 ## WebSocket authentication
@@ -419,7 +421,10 @@ The upgrade also checks the browser `Origin`. An upgrade that sends no
 `Origin` header, as native clients do, skips the check. An anonymous upgrade is
 admitted only from loopback origins, the desktop shell's Tauri origins, and, on
 a keyed daemon, the origins in `web.cors_origins`: the allowlist keeps other
-pages from riding the credentialless loopback tier. On a daemon with no API
+pages from riding the credentialless loopback tier. A keyed daemon refuses a
+remote upgrade without a credential with `401` before the `Origin` check, so
+`cors_origins` only matters for browsers on the daemon's own machine. On a
+daemon with no API
 key, that means a browser on another machine cannot open the WebSocket, even
 when it loaded the bundled UI from the daemon's own LAN address.
 

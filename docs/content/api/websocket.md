@@ -49,7 +49,9 @@ Browser origin is enforced on the upgrade. Requests with no `Origin` header
 origins are always allowed, and so is an upgrade that presents a credential the
 daemon accepts. Any other browser origin is rejected unless it appears in the
 daemon's `web.cors_origins` allowlist and auth is enabled. A blocked upgrade
-returns `403 Forbidden` before the socket opens.
+returns `403 Forbidden` before the socket opens. On a keyed daemon, a remote
+upgrade without a credential gets `401` before the origin check runs, so
+`cors_origins` only matters for browsers on the daemon's own machine.
 {% </callout> %}
 
 ### Quick test

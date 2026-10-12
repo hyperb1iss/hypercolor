@@ -354,7 +354,7 @@ instance_name                     = ""              # mDNS instance name (defaul
 | `lan_protected` | All interfaces | Yes (API key required)                                                    |
 | `custom`        | See below      | Controlled by `allow_unauthenticated_remote_access` and `allowed_clients` |
 
-The `custom` mode binds `daemon.listen_address`, which is loopback by default, or every interface when `remote_access = true` and that address is loopback.
+The binding column assumes the default `daemon.listen_address` of `127.0.0.1`, which is also what the `custom` mode binds. In every mode, `remote_access = true` with a loopback `daemon.listen_address` opens every interface, `local_only` included. A non-loopback `daemon.listen_address` is bound as-is instead of every interface, except in `local_only` with `remote_access` off, which always binds loopback.
 
 {% <callout type="warning"> %}
 `lan_trusted` exposes full control to anyone on your network with no authentication. Use `lan_protected` and set `HYPERCOLOR_API_KEY` if you need LAN access with some protection.
