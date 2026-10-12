@@ -70,7 +70,7 @@ This release fixes the Windows startup stall that made 0.6.1 unusable on fresh i
 
 ### Changed
 
-- ♻️ Publish the CLI package as **`hypercolor`** instead of `hypercolor-cli`; install it with `cargo install hypercolor`. The directory stays `crates/hypercolor-cli/` and the lib target remains `hypercolor_cli` (0c1872f)
+- ♻️ Rename the CLI package from `hypercolor-cli` to **`hypercolor`** so a future crates.io release carries the product name. Nothing is published to crates.io yet, so `cargo install hypercolor` does not work. The directory stays `crates/hypercolor-cli/` and the lib target remains `hypercolor_cli` (0c1872f)
 - 🔨 Make the workspace publishable on crates.io: internal path dependencies now carry explicit versions, and `hypercolor-daemon`, `hypercolor-app`, and `hypercolor-windows-helper` are marked `publish = false` (61661fe)
 - 🔨 Move bundled data inside the crates that ship it: builtin attachments to `crates/hypercolor-core/attachments/`, OpenRGB detectors to `crates/hypercolor-openrgb-host/data/detectors.toml`. `build.rs` now fails loudly when the attachment set is missing (32432ef)
 - 👷 Key the Windows target archive by dependency set instead of per-commit, cutting repeated ~19.5 GB cache saves on every main run (a0d256f)
@@ -101,8 +101,8 @@ This release fixes the Windows startup stall that made 0.6.1 unusable on fresh i
   - Homebrew refuses the install at pre-flight; curl installers error out before downloading.
   - Existing Intel installs should be removed with `brew uninstall --cask hypercolor-app` or `brew uninstall hypercolor`, or by deleting the app from `/Applications`. Do not reinstall 0.3.2 or older builds from the releases page.
 - **CLI crate renamed from `hypercolor-cli` to `hypercolor`.**
-  - Use `cargo install hypercolor`.
-  - Downstream crates depending on the library should set `hypercolor-cli = { package = "hypercolor", version = "0.6.2" }`; `use hypercolor_cli::` paths are unchanged.
+  - The rename prepares for a crates.io publish that has not happened yet, so `cargo install hypercolor` does not work. Release packages and installers still ship the `hypercolor` CLI.
+  - Downstream crates that depend on the library through a git or path entry add `package = "hypercolor"` to it; `use hypercolor_cli::` paths are unchanged. A version-only entry needs the crates.io publish.
 - **Bundled data paths moved** out of the top-level `data/` directory into `crates/hypercolor-core/attachments/` and `crates/hypercolor-openrgb-host/data/`. Build tooling that referenced the old paths needs updating.
 
 ### Metrics
@@ -358,6 +358,7 @@ macOS becomes a first-class capture and input platform, the REST surface collaps
 
 - 🔄 Split the daemon HTTP surface into `api/routes/*` with a single typed error path (`api/error.rs`, `api/envelope.rs`) and merge discovery plus runtime telemetry into `GET /api/v1/system`, replacing `GET /api/v1/server` and `GET /api/v1/status`
 - 🔄 Make `/api/v1/scene` the single owner of live render state, fold power and brightness into `GET`/`PATCH /api/v1/output`, and add `POST /api/v1/scenes/snapshot` so saved lighting snapshots are scenes (`daemon.start_scene` replaces `daemon.start_profile` in config schema version 5)
+- 🔄 Report layout and brightness outcomes from `POST /api/v1/scenes/{id}/activate` alongside the activated scene
 - 🔄 Rename device LED regions to **segments** across REST responses, identify paths, and internal vocabulary; scene render zones keep their existing names
 - ♻️ Rename the renderer's `render_groups` module to `render_zones` and split it into projection, reconcile, retention, scene assembly, and render-pass units
 - 🔄 Split the monolithic config type into `hypercolor-types/src/config/*` (root plus per-section modules) with an `extensions` flatten catch-all that preserves unmodeled top-level sections verbatim across saves
@@ -394,6 +395,9 @@ macOS becomes a first-class capture and input platform, the REST surface collaps
 ### Breaking Changes
 
 - **Live render state is the `/api/v1/scene` tree.** Read real zone and layer ids from `GET /api/v1/scene`, patch through `/scene/zones/{zone}/layers/{layer}/controls`, stop with `POST /scene/clear`, and return to the default scene with `POST /scene/deactivate`. Structural mutations may use the scene `revision` as `If-Match`; control patches never do. Never synthesize a layer id from a zone id.
+- **`GET /api/v1/system` replaces `GET /api/v1/server` and `GET /api/v1/status`.** Read runtime fields under `data.status` and public daemon identity under `data.identity`. Anonymous remote clients still receive the identity; the status block needs read authority.
+- **Preset apply is effect-scoped only.** Use `POST /api/v1/effects/{effect}/presets/{preset}/apply`; library preset routes provide storage and CRUD only.
+- **Effect error fallback and runtime snapshots use zone names.** The fallback value is `clear_zones`, and runtime session snapshots store default scene content under `default_scene_zones`. Schema version 4 config migrates the old `clear_groups` value once; schema version 5 config and unversioned runtime snapshots reject the retired group-named spellings.
 - **Route renames.** `GET /api/v1/audio/devices` becomes `GET /api/v1/system/audio-devices`; display preview becomes `/displays/{id}/frame`; capture picker becomes `PUT /capture/source`; playlist stop becomes `POST /library/playlists/deactivate`. Retired paths answer 404 (79f08cb)
 - **Power and brightness are one resource.** `GET`/`PATCH /api/v1/output` carries `{power, brightness}`, replacing `/output/power`, `/settings/brightness`, and `/effects/pause`|`resume`. `{"power":"paused"}` preserves the live tree and holds outputs at the off frame.
 - **Attachment dry-runs fold into `PUT /devices/{id}/attachments` with `validate_only`**, and profiles embed through `GET /devices?include=attachments`.
@@ -402,7 +406,7 @@ macOS becomes a first-class capture and input platform, the REST surface collaps
 - **Device fingerprints and portable driver identities gained namespaces.** Hardware may appear once under its new identity and require re-adoption. `device-aliases.json` schema version 1 is no longer loaded: back it up, remove it, then rescan to rebuild the schema version 2 overlay.
 - **Python: `discover_devices()` takes `targets` instead of `backends`**, honors `wait`, and returns the status-tagged union of `DiscoveryScanningResponse` and `DiscoveryCompletedResponse`.
 - **Python: `get_audio_spectrum()` is typed `NoReturn`.** It always raised; spectrum snapshots exist only on the WebSocket stream.
-- **Python: the `Layout` alias and handwritten resource mirrors are removed.** Import `SpatialLayout` from the shared spatial contract and the generated types from `hypercolor.models` (`Device` -> `DeviceSummary`, `Driver` -> `DriverSummary`, `ControlSurface` -> `ControlSurfaceDocument`, `Preset` -> `EffectPreset`, `OutputState` -> `OutputResource`, and so on).
+- **Python: the `Layout` alias and handwritten resource mirrors are removed.** Import `SpatialLayout` from the shared spatial contract and the generated types from `hypercolor.models` (`Device` -> `DeviceSummary`, `Driver` -> `DriverSummary`, `ControlSurface` -> `ControlSurfaceDocument`, `Preset` -> `EffectPreset`, `OutputState` -> `OutputResource`, and so on). `get_state()` and the `Device.enabled` convenience property are gone with them.
 - **SDK: `InputData.available` and the `dev` CLI command are removed.** Read `routed` and `healthy`; use the Bun workspace `dev` script for package watch builds.
 
 Upgrade notes:
@@ -418,161 +422,6 @@ Upgrade notes:
 - Insertions: +405,648
 - Deletions: -173,520
 <!-- -------------------------------------------------------------- -->
-
-## [Unreleased]
-
-### Changed
-
-- Merge daemon discovery and runtime telemetry into `GET /api/v1/system`.
-  Public identity remains available to anonymous remote clients, while the
-  status block follows read authority and redacts protected selections without
-  control authority.
-- Rename device LED regions to segments across the API and internal device
-  vocabulary. Display images move to `/displays/{id}/frame`, capture selection
-  becomes `PUT /capture/source`, and playlist stop becomes `deactivate`.
-- Fold attachment dry-runs into `PUT /devices/{id}/attachments` with
-  `validate_only`, and embed attachment profiles through
-  `GET /devices?include=attachments`.
-- Fold saved lighting snapshots into scenes. `POST /api/v1/scenes/snapshot`
-  captures the live scene, scene activation reports layout and brightness
-  outcomes, and `daemon.start_scene` replaces `daemon.start_profile` in config
-  schema version 5.
-- Import legacy `profiles.json` entries into scenes on first startup, then
-  retire the source only after the scene write is durable.
-- Decode every Python client response through the generated OpenAPI models.
-  The handwritten msgspec mirrors are gone, so a field the daemon stops
-  sending now fails the decode instead of silently arriving as `None`.
-
-### Removed
-- Remove singleton live-effect routes, `/scenes/active`,
-  `/scenes/deactivate`, the nested `/scenes/{id}/zones/*` mutation tree, and
-  `/library/presets/{id}/apply`; live state and fine-grained writes now have one
-  owner under `/api/v1/scene`, while preset apply remains effect-scoped
-- Remove effect layout association routes and the `effect-layouts.json` store;
-  scene `layout_id` is the deliberate successor
-- Remove `GET`/`PUT /api/v1/output/power`, `PUT /api/v1/settings/brightness`,
-  `POST /api/v1/effects/pause`, and `POST /api/v1/effects/resume`, and move
-  `GET /api/v1/audio/devices` to `GET /api/v1/system/audio-devices`; all five
-  retired paths answer 404 (79f08cb5b)
-- Remove the MCP `stop_effect` tool; clear a zone with `clear_zone` and patch
-  live layer controls with `adjust_controls` (#218)
-
-- Remove logical-device, binding, rebind, device metrics/debug, sensor-item,
-  memory-diagnostics, screenshot-mount, attachment catalog-item, category, and
-  vendor REST routes. Diagnostics and attachment writes retain the surviving
-  behavior through canonical resources.
-- Remove the profile REST routes, CLI commands, shared types, WebSocket fields
-  and events, MCP `set_profile` tool, and `hypercolor://profiles` resource.
-- Remove the `[dbus]`, `[tui]`, and `[features]` config sections and the
-  top-level `include` key. None of the four reached a consumer: `[dbus]` named
-  a service the daemon never published (its D-Bus use is client-side, for
-  MPRIS and session events, and is unchanged), the TUI reads its theme from
-  its own `tui.toml`, no feature flag gated any code, and `include` never
-  merged a file. Existing config files keep loading, and the retired keys are
-  preserved verbatim through the extension catch-all rather than deleted on
-  the next save.
-- Remove the unimplemented multi-room layout model: `SpaceDefinition`,
-  `RoomDimensions`, `RoomAdjacency`, `Wall`, and the `spaces` field on
-  `SpatialLayout`. Nothing ever read the hierarchy; layouts stay flat.
-
-### Breaking Changes
-- **Live render state is now the `/api/v1/scene` tree.** Read real zone and
-  layer ids from `GET /api/v1/scene`, patch controls through
-  `/scene/zones/{zone}/layers/{layer}/controls`, stop through
-  `POST /scene/clear`, and return to the default scene through
-  `POST /scene/deactivate`. Structural mutations may use the one scene
-  `revision` as `If-Match`; control patches never use it.
-- **Preset apply is effect-scoped only.** Use
-  `POST /api/v1/effects/{effect}/presets/{preset}/apply`; library preset routes
-  now provide storage and CRUD only.
-- **Power and brightness are one resource.** `GET`/`PATCH /api/v1/output`
-  carries `{power, brightness}`, replacing `/output/power`,
-  `/settings/brightness`, and the `/effects/pause`|`resume` pair. Pause is no
-  longer a stop: `{"power":"paused"}` preserves the live tree and holds outputs
-  at the off frame. Use `POST /api/v1/scene/clear` to empty the scene.
-- **Platform-mirrored contracts are retired.** `InputSourcePlatformStatus`,
-  `MacosInputTelemetry`, `MacosArchitecture`, `MacosAuthorizationState`, and
-  `MacosProtectedSourceState` are gone from `hypercolor-types::api::system` and
-  from the generated Python client; read the neutral `InputSourceStatus` and the
-  typed `DriverTransportDescriptor` instead. Tray supervision moved into
-  `hypercolor-app`; the `hypercolor-tray` crate no longer exists (#220)
-
-- Replace `GET /api/v1/server` and `GET /api/v1/status` with
-  `GET /api/v1/system`. Read runtime fields under `data.status`; public daemon
-  identity lives under `data.identity`.
-- Replace device response fields and identify paths named `zones` with
-  `segments`. Scene render zones keep their existing vocabulary.
-- Replace display preview, capture picker, and playlist stop calls with
-  `/displays/{id}/frame`, `PUT /capture/source`, and
-  `POST /library/playlists/deactivate` respectively.
-- Device fingerprints now include a canonical namespace and driver qualifier.
-  Existing hardware may appear once under its new identity and require
-  re-adoption plus reapplying device-local settings. Hypercolor preserves old
-  persisted records and does not silently reset or delete them.
-- Portable driver identities now carry a generic driver-owned namespace.
-  `device-aliases.json` schema version 1 remains untouched but is no longer
-  loaded. Back up and remove that file, then rescan devices to rebuild the
-  schema version 2 alias overlay from the unchanged portable keys.
-- **SDK: `InputData.available` is removed.** The deprecation in 0.3.1 named
-  SDK 0.4.0 as the removal point; it happens here instead. Read `routed` and
-  `healthy`, the two authoritative lifecycle facts the runtime wire already
-  carried. `mouse.coordinatesAvailable` is unrelated and stays.
-- **SDK: the `dev` CLI command is removed.** It had already been reduced to a
-  message saying it was gone, so the help surface disagreed with the commands
-  that worked. Use the Bun workspace `dev` script for package watch builds.
-- **Python: the `Layout` alias is removed.** Layout endpoints have always
-  returned `SpatialLayout`; import that name from the shared spatial contract.
-- **Python: handwritten resource mirrors are removed.** `get_state`, the legacy
-  device properties, the handwritten `Scene`, `Zone`, and `Effect` models, and
-  the `surface.id` alias are gone. Both facades build requests and decode
-  responses with the generated OpenAPI types, and filter names and response
-  shapes now match the daemon exactly.
-- `SpatialLayout` no longer carries `spaces`, and the `SpaceDefinition`,
-  `RoomDimensions`, `RoomAdjacency`, and `Wall` schemas are gone from the API
-  and the generated clients. Stored layouts that still carry a `spaces` key
-  load unchanged; the key is ignored.
-- Effect error fallback now uses `clear_zones`, and runtime session snapshots
-  store default scene content under `default_scene_zones`. Schema version 4
-  config migrates the old fallback value once; schema version 5 config and
-  unversioned runtime snapshots reject the retired group-named spellings.
-- **Python client models are the generated OpenAPI types.** The handwritten
-  mirrors under `hypercolor.models.*` are deleted; import from
-  `hypercolor.models` instead of its former submodules. Return types
-  change accordingly: `Device` becomes `DeviceSummary`, `Driver` becomes
-  `DriverSummary`, `ControlSurface` becomes `ControlSurfaceDocument`,
-  `ControlApplyResult` becomes `ApplyControlChangesResponse`, `Preset`
-  becomes `EffectPreset`, `Playlist` becomes `EffectPlaylist`, `Favorite`
-  becomes `FavoriteSummary`, `OutputState` becomes `OutputResource`,
-  `IdentifyResult` becomes `IdentifyDeviceResponse`, `ConfigMutationResult`
-  becomes `ConfigMutationResponse`, `DisplaySummary` becomes
-  `DisplaySummaryListItem`, `DisplayFaceAssignment` becomes
-  `DisplayFaceResponse`, and `apply_layout()` returns `ApplyLayoutResponse`
-  rather than the grab-bag `MutationResult`. The convenience properties on
-  the retired mirrors (`Device.enabled`, `OutputState.paused`,
-  `OutputState.brightness_percent`) are gone; read `status`, `power`, and
-  `brightness` directly.
-- **`discover_devices()` sends the canonical `targets` field.** The keyword
-  argument is renamed from `backends` to `targets` and a `wait` argument now
-  reaches the daemon's synchronous mode. The return value is the
-  status-tagged union of `DiscoveryScanningResponse` and
-  `DiscoveryCompletedResponse`, so a completed scan exposes the full
-  `DiscoveryScanResult` the client used to discard.
-- **`get_audio_spectrum()` is typed `NoReturn`.** It always raised; spectrum
-  snapshots only exist on the WebSocket stream.
-
-Upgrade notes:
-
-- Replace singleton effect and stored-scene subtree calls with the live scene
-  routes above. Never synthesize a layer id from a zone id; use the id returned
-  by `GET /scene` or an effect-apply response.
-- Existing `effect-layouts.json` files are deliberately left orphaned and are
-  not migrated. Set `scene.layout_id` explicitly for scenes that should select
-  a named layout.
-- Point pause/resume integrations at `PATCH /api/v1/output` with
-  `{"power":"paused"}` or `{"power":"running"}`, and read status from
-  `GET /api/v1/output`.
-- Regenerate OpenAPI-derived clients after the canonical schema wave so they
-  consume `SceneDocument`, `ZoneResource`, real layer ids, and `OutputState`.
 
 ## [0.3.2] - 2026-08-15
 
@@ -811,7 +660,12 @@ First public release of Hypercolor, a cross-platform RGB LED orchestration daemo
 - Insertions: +720,254
 - Deletions: -2,397
 
-[Unreleased]: https://github.com/hyperb1iss/hypercolor/compare/v0.4.0...HEAD
+[0.6.3]: https://github.com/hyperb1iss/hypercolor/compare/v0.6.2...v0.6.3
+[0.6.2]: https://github.com/hyperb1iss/hypercolor/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/hyperb1iss/hypercolor/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/hyperb1iss/hypercolor/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/hyperb1iss/hypercolor/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/hyperb1iss/hypercolor/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/hyperb1iss/hypercolor/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/hyperb1iss/hypercolor/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/hyperb1iss/hypercolor/compare/v0.2.1...v0.3.1
