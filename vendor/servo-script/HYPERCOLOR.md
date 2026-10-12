@@ -53,6 +53,43 @@ Upstream status: Servo `main` at `65406b6507b6` (2026-10-12) still uses
 (`maybe_associate_with_script`) and
 `components/script/scripting/script_module.rs`.
 
+### 2. Collect after sustained embedder script evaluation
+
+File: `event_loop/script_thread.rs` (`EvaluationGc`,
+`ScriptThread::maybe_collect_after_evaluations`, and one line in
+`handle_evaluate_javascript`).
+
+Each `evaluate_javascript` call compiles a new classic script. After it
+runs, most of what it leaves (the `ScriptSource` and its text, bytecode,
+and for sources of 256 characters or more an entry in the runtime's pending
+source compression list, which only a major GC drains) is malloc memory
+that SpiderMonkey does not count toward any GC trigger. Only the small GC
+cells behind it (`JSScript`, `ScriptSourceObject`) count toward the zone's
+GC heap trigger, which starts at 27 MB times the heap growth factor. Gecko
+covers this kind of garbage with its own idle and timer-driven GC
+scheduling; Servo 0.6 has none and never calls `JS_MaybeGC`. A page driven
+by one evaluation per frame and little other allocation therefore runs for
+a long time without a major GC while its garbage grows. SpiderMonkey's
+public accounting hook, `JS::AddAssociatedMemory`, needs the owning object,
+and the owners here (`ScriptSourceObject` and `JSScript`) are engine
+internals with no public accessor, so this crate cannot hand the memory to
+the engine's own heuristics.
+
+The patch counts embedder evaluations and the source bytes they compile.
+At the end of each `handle_msgs` batch, after the rendering update, the
+script thread runs `JS_GC` once that traffic has gone on for 60 seconds or
+compiled 16 MiB of source without a major GC in between. Any major GC,
+including one SpiderMonkey starts on its own, restarts the window, and a
+thread that sees no evaluations never collects. Nothing here is reachable
+from page script, and pages that do not receive embedder evaluations behave
+exactly as upstream.
+
+Upstream status: Servo `main` at `65406b6507b6` (2026-10-12) still runs
+only SpiderMonkey's allocation triggers on the script thread. The only
+explicit collection is `ScriptThreadMessage::TriggerGarbageCollection`,
+which page script reaches through `servointernals` when an embedder exposes
+it.
+
 ## Removal rule
 
 Drop this directory and the `[patch.crates-io]` entry once a Servo release

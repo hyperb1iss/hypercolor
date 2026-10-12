@@ -54,10 +54,10 @@ use hyper_serde::Serde;
 use ipc_channel::router::ROUTER;
 use js::context::{JSContext, NoGC};
 use js::glue::GetWindowProxyClass;
-use js::jsapi::{GCReason, JSContext as UnsafeJSContext};
+use js::jsapi::{GCReason, JSContext as UnsafeJSContext, JSGCParamKey};
 use js::jsval::UndefinedValue;
 use js::rust::ParentRuntime;
-use js::rust::wrappers2::{JS_AddInterruptCallback, JS_GC, SetWindowProxyClass};
+use js::rust::wrappers2::{JS_AddInterruptCallback, JS_GC, JS_GetGCParameter, SetWindowProxyClass};
 use layout_api::{LayoutConfig, LayoutFactory, RestyleReason, ScriptThreadFactory};
 use media::WindowGLContext;
 use metrics::MAX_TASK_NS;
@@ -209,6 +209,56 @@ impl ScriptUserInteractingGuard {
 impl Drop for ScriptUserInteractingGuard {
     fn drop(&mut self) {
         self.user_interaction_cell.set(self.was_interacting)
+    }
+}
+
+/// While embedder evaluations keep compiling scripts, the longest the script
+/// thread goes without a major GC.
+const EVALUATION_GC_INTERVAL: Duration = Duration::from_secs(60);
+
+/// While embedder evaluations keep compiling scripts, the most source text
+/// they compile between major GCs.
+const EVALUATION_GC_SOURCE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Bookkeeping for [`ScriptThread::maybe_collect_after_evaluations`].
+///
+/// Every `evaluate_javascript` call from the embedder compiles a new classic
+/// script. Once that script has run, most of what it leaves behind (the
+/// script source with its text, the bytecode, and for longer sources an entry
+/// in the runtime's pending source compression list) is malloc memory that
+/// SpiderMonkey does not count toward its GC triggers, while the GC cells
+/// that keep it alive are small. An embedder that evaluates a script every
+/// frame therefore grows for a long time before the GC heap reaches its
+/// allocation threshold, and Servo runs no idle or periodic collection that
+/// would cover the gap. This lets the script thread collect on its own once
+/// that traffic has gone on long enough.
+#[derive(Default)]
+struct EvaluationGc {
+    /// Embedder evaluations since the last major GC this thread saw.
+    evaluations: Cell<usize>,
+    /// Source bytes those evaluations compiled.
+    source_bytes: Cell<usize>,
+    /// The major GC number when this window of evaluation traffic started,
+    /// and when it started.
+    window: Cell<Option<(u32, Instant)>>,
+}
+
+impl EvaluationGc {
+    fn note_evaluation(&self, source_len: usize) {
+        if self.evaluations.get() == 0 {
+            // Traffic is (re)starting, so time it from here rather than from
+            // whenever the previous collection happened.
+            self.window.set(None);
+        }
+        self.evaluations.set(self.evaluations.get() + 1);
+        self.source_bytes
+            .set(self.source_bytes.get().saturating_add(source_len));
+    }
+
+    fn reset(&self) {
+        self.evaluations.set(0);
+        self.source_bytes.set(0);
+        self.window.set(None);
     }
 }
 
@@ -411,6 +461,10 @@ pub struct ScriptThread {
     privileged_urls: Vec<ServoUrl>,
 
     devtools_state: DevtoolsState,
+
+    /// Collection scheduling for the scripts that embedder evaluations compile.
+    #[no_trace]
+    evaluation_gc: EvaluationGc,
 }
 
 struct BHMExitSignal {
@@ -973,6 +1027,7 @@ impl ScriptThread {
                     privileged_urls: state.privileged_urls,
                     this: weak_script_thread.clone(),
                     devtools_state: Default::default(),
+                    evaluation_gc: Default::default(),
                 }
             }),
             cx,
@@ -1499,7 +1554,56 @@ impl ScriptThread {
             built_any_display_lists,
         );
 
+        // After the rendering update, so a collection never delays the frame this batch of
+        // messages produced.
+        self.maybe_collect_after_evaluations(cx);
+
         true
+    }
+
+    /// Run a full GC once embedder evaluations have compiled scripts for
+    /// [`EVALUATION_GC_INTERVAL`], or compiled [`EVALUATION_GC_SOURCE_BYTES`] of source,
+    /// without a major GC in between. See [`EvaluationGc`] for why SpiderMonkey's own
+    /// triggers miss this garbage.
+    #[expect(unsafe_code)]
+    fn maybe_collect_after_evaluations(&self, cx: &mut js::context::JSContext) {
+        let gc = &self.evaluation_gc;
+        if gc.evaluations.get() == 0 {
+            return;
+        }
+
+        let major_gc_number = unsafe { JS_GetGCParameter(cx, JSGCParamKey::JSGC_MAJOR_GC_NUMBER) };
+        let now = Instant::now();
+        match gc.window.get() {
+            None => {
+                gc.window.set(Some((major_gc_number, now)));
+                return;
+            },
+            Some((window_gc_number, _)) if window_gc_number != major_gc_number => {
+                // SpiderMonkey collected on its own, which swept what these evaluations left.
+                gc.reset();
+                return;
+            },
+            Some((_, window_start)) => {
+                if now.duration_since(window_start) < EVALUATION_GC_INTERVAL &&
+                    gc.source_bytes.get() < EVALUATION_GC_SOURCE_BYTES
+                {
+                    return;
+                }
+            },
+        }
+
+        let gc_bytes_before = unsafe { JS_GetGCParameter(cx, JSGCParamKey::JSGC_BYTES) };
+        unsafe { JS_GC(cx, GCReason::FULL_GC_TIMER) };
+        debug!(
+            "GC after {} evaluations ({} source bytes): heap {} -> {} bytes in {:?}",
+            gc.evaluations.get(),
+            gc.source_bytes.get(),
+            gc_bytes_before,
+            unsafe { JS_GetGCParameter(cx, JSGCParamKey::JSGC_BYTES) },
+            now.elapsed(),
+        );
+        gc.reset();
     }
 
     fn categorize_msg(&self, msg: &MixedMessage) -> ScriptThreadEventCategory {
@@ -4476,6 +4580,7 @@ impl ScriptThread {
         let mut realm = enter_auto_realm(cx, global_scope);
         let cx = &mut realm.current_realm();
 
+        self.evaluation_gc.note_evaluation(script.len());
         rooted!(&in(cx) let mut return_value = UndefinedValue());
         if let Err(err) = global_scope.evaluate_js_on_global(
             cx,
