@@ -36,40 +36,69 @@ use resample::{
 
 // ── Coordinate transforms ──────────────────────────────────────────────────
 
+/// The affine part of an output's placement on the canvas.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::spatial) struct OutputPlacement {
+    position: NormalizedPosition,
+    size: NormalizedPosition,
+    rotation: f32,
+    scale: f32,
+}
+
+impl OutputPlacement {
+    pub(in crate::spatial) const fn of(zone: &Output) -> Self {
+        Self {
+            position: zone.position,
+            size: zone.size,
+            rotation: zone.rotation,
+            scale: zone.scale,
+        }
+    }
+
+    /// Transform a zone-local position to a normalized canvas position.
+    ///
+    /// Applies the full affine chain: center at origin, scale by zone
+    /// dimensions, rotate by the zone rotation, then translate to the zone
+    /// position. The result is in normalized `[0.0, 1.0]` canvas space, with
+    /// edge behavior applied for out-of-bounds coordinates.
+    #[must_use]
+    pub(in crate::spatial) fn local_to_canvas(
+        self,
+        local: NormalizedPosition,
+        edge: EdgeBehavior,
+    ) -> NormalizedPosition {
+        let s = self.scale;
+
+        // Step 1: Center at origin and scale to zone dimensions
+        let sx = (local.x - 0.5) * self.size.x * s;
+        let sy = (local.y - 0.5) * self.size.y * s;
+
+        // Step 2: Rotate around zone center
+        let cos_t = self.rotation.cos();
+        let sin_t = self.rotation.sin();
+        let rx = sx.mul_add(cos_t, -sy * sin_t);
+        let ry = sx.mul_add(sin_t, sy * cos_t);
+
+        // Step 3: Translate to zone position (still normalized canvas space)
+        let cx = self.position.x + rx;
+        let cy = self.position.y + ry;
+
+        // Step 4: Apply edge behavior
+        let nx = apply_edge_normalized(cx, edge);
+        let ny = apply_edge_normalized(cy, edge);
+
+        NormalizedPosition::new(nx, ny)
+    }
+}
+
 /// Transform a zone-local LED position to a normalized canvas position.
-///
-/// Applies the full affine chain: center at origin, scale by zone dimensions,
-/// rotate by `zone.rotation`, then translate to `zone.position`.
-///
-/// The result is a position in the normalized `[0.0, 1.0]` canvas space,
-/// with edge behavior applied for out-of-bounds coordinates.
 #[must_use]
 fn zone_local_to_canvas(
     local: NormalizedPosition,
     zone: &Output,
     edge: EdgeBehavior,
 ) -> NormalizedPosition {
-    let s = zone.scale;
-
-    // Step 1: Center at origin and scale to zone dimensions
-    let sx = (local.x - 0.5) * zone.size.x * s;
-    let sy = (local.y - 0.5) * zone.size.y * s;
-
-    // Step 2: Rotate around zone center
-    let cos_t = zone.rotation.cos();
-    let sin_t = zone.rotation.sin();
-    let rx = sx.mul_add(cos_t, -sy * sin_t);
-    let ry = sx.mul_add(sin_t, sy * cos_t);
-
-    // Step 3: Translate to zone position (still normalized canvas space)
-    let cx = zone.position.x + rx;
-    let cy = zone.position.y + ry;
-
-    // Step 4: Apply edge behavior
-    let nx = apply_edge_normalized(cx, edge);
-    let ny = apply_edge_normalized(cy, edge);
-
-    NormalizedPosition::new(nx, ny)
+    OutputPlacement::of(zone).local_to_canvas(local, edge)
 }
 
 /// Apply edge behavior to a single normalized coordinate.
@@ -99,7 +128,10 @@ fn resolve_sampling_mode(zone: &Output, layout: &SpatialLayout) -> SamplingMode 
 }
 
 /// Resolve the effective edge behavior for a zone, falling back to the layout default.
-fn resolve_edge_behavior(zone: &Output, layout: &SpatialLayout) -> EdgeBehavior {
+pub(in crate::spatial) fn resolve_edge_behavior(
+    zone: &Output,
+    layout: &SpatialLayout,
+) -> EdgeBehavior {
     zone.edge_behavior.unwrap_or(layout.default_edge_behavior)
 }
 

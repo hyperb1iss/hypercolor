@@ -20,11 +20,13 @@
 //!                     └──────────────────┘
 //! ```
 
+mod device_surface;
 mod plan;
 mod sampler;
 mod topology;
 mod viewport;
 
+pub use device_surface::DeviceSurfaceMap;
 pub use plan::{
     PreparedAreaSample, PreparedBilinearSample, PreparedNearestSample, PreparedZonePlan,
     PreparedZoneSamples,
