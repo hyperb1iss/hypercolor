@@ -3,8 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::device::{DeviceLifecycleManager, DeviceRegistry};
 use hypercolor_core::scene::{SceneManager, default_primary_zone, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::attachment::DeviceComponentProfile;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{
@@ -12,13 +14,13 @@ use hypercolor_types::device::{
     DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::layer::BlendMode;
-use hypercolor_types::scene::{DisplayFaceTarget, ZoneRole};
+use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
+use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use super::{
     BindingClass, CurrentBinding, DeviceBindingMigrationContext, DeviceBindingRemaps,
@@ -498,9 +500,156 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
         build_binding_remaps(
             &restart_evidence,
             &[current_binding(canonical_physical_id)],
+            &[],
             &HashSet::from([CANONICAL_FINGERPRINT.to_owned()]),
         )
         .layout_device_ids
         .is_empty()
+    );
+}
+
+fn display_zone(name: &str, device_id: DeviceId, layers: Vec<SceneLayer>) -> Zone {
+    Zone {
+        id: ZoneId::new(),
+        name: name.to_owned(),
+        description: None,
+        layers,
+        layout: layout(&format!("zone-{name}"), None),
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: Some(DisplayFaceTarget::new(device_id)),
+        role: ZoneRole::Display,
+        controls_version: 0,
+        layers_version: 0,
+    }
+}
+
+#[tokio::test]
+async fn unscoped_display_target_remap_persists_one_zone_per_display() {
+    const LEGACY_LCD: &str = "usb:1b1c:0c4e:A6B9T350013K7T";
+    const CURRENT_LCD: &str = "usb:corsair:1b1c:0c4e:A6B9T350013K7T";
+    let temp = tempfile::tempdir().expect("device binding state directory");
+    let scenes_path = temp.path().join("scenes.json");
+    let runtime_path = temp.path().join("runtime-state.json");
+    let journal_path = temp.path().join("device-binding-migration.json");
+
+    let legacy_physical_id = DeviceFingerprint::from_persisted(LEGACY_LCD).stable_device_id();
+    let current_fingerprint = DeviceFingerprint::from_persisted(CURRENT_LCD);
+    let current_physical_id = current_fingerprint.stable_device_id();
+    let face = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        EffectId::new(uuid::Uuid::from_u128(1)),
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    );
+    let face_id = face.id;
+    let empty = layout("default", None);
+    let mut manager = SceneManager::with_default_layout(empty.clone());
+    let mut scene = make_scene("Studio Session");
+    scene.zones = vec![
+        display_zone("Corsair iCUE LINK LCD", legacy_physical_id, vec![face]),
+        display_zone("Corsair iCUE LINK LCD", current_physical_id, Vec::new()),
+    ];
+    let scene_id = scene.id;
+    manager
+        .create(scene)
+        .expect("fixture scene should be valid");
+    manager
+        .activate(&scene_id, None)
+        .expect("fixture scene should activate");
+
+    let event_bus = Arc::new(HypercolorBus::new());
+    let scenes = SceneService::new(
+        manager,
+        Arc::clone(&event_bus),
+        crate::scene_store::load_for_test(&scenes_path).expect("scene store"),
+        Arc::new(ZoneLayoutPreviewStore::default()),
+    );
+    let layout_context = LayoutContext::new_test_context(
+        HashMap::new(),
+        temp.path().join("layouts.json"),
+        HashMap::new(),
+        temp.path().join("layout-auto-exclusions.json"),
+        SpatialService::new(SpatialEngine::new(empty)),
+        scenes.clone(),
+        SceneTransactionQueue::default(),
+        runtime_path,
+    );
+    let settings = OutputPower::new(DeviceSettingsStore::new(
+        temp.path().join("device-settings.json"),
+    ))
+    .device_settings();
+    let context = DeviceBindingMigrationContext::new(
+        layout_context,
+        Arc::new(RwLock::new(HashMap::new())),
+        temp.path().join("logical-devices.json"),
+        Arc::new(RwLock::new(ComponentProfileStore::new(
+            temp.path().join("attachment-profiles.json"),
+        ))),
+        settings,
+        Arc::new(RwLock::new(
+            DisplayPreferencesStore::new(temp.path().join("display-preferences.json"))
+                .expect("display preferences"),
+        )),
+        journal_path,
+    );
+
+    let registry = DeviceRegistry::new();
+    let mut info = current_binding(current_physical_id).device_info;
+    info.origin = DeviceOrigin::native("corsair", "usb", ConnectionType::Usb);
+    let device_id = registry
+        .add_discovered(DiscoveredDevice {
+            fingerprint: current_fingerprint,
+            connect_behavior: DiscoveryConnectBehavior::Deferred,
+            info,
+            metadata: HashMap::new(),
+            claim: None,
+        })
+        .await;
+    assert_eq!(device_id, current_physical_id);
+    let lifecycle = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    let seen = HashSet::from([device_id]);
+
+    let report = context
+        .reconcile_complete_sweep(&registry, &lifecycle, &seen)
+        .await
+        .expect("display target migration");
+    assert_eq!(report.mappings, 1);
+    assert!(context.journal.load().expect("reload journal").is_none());
+
+    let stored = crate::scene_store::load(&scenes_path).expect("reload scenes");
+    let stored_scene = stored
+        .list()
+        .find(|scene| scene.id == scene_id)
+        .expect("stored scene");
+    let [zone] = stored_scene.zones.as_slice() else {
+        panic!("the stored scene should keep one display zone per display");
+    };
+    assert_eq!(
+        zone.display_target
+            .as_ref()
+            .expect("stored display target")
+            .device_id,
+        current_physical_id
+    );
+    assert_eq!(
+        zone.layers.iter().map(|layer| layer.id).collect::<Vec<_>>(),
+        vec![face_id]
+    );
+
+    let settled = std::fs::read(&scenes_path).expect("read settled scenes");
+    let revision = scenes.revision();
+    let report = context
+        .reconcile_complete_sweep(&registry, &lifecycle, &seen)
+        .await
+        .expect("settled sweep");
+    assert_eq!(report, super::DeviceBindingMigrationReport::default());
+    assert_eq!(scenes.revision(), revision);
+    assert_eq!(
+        std::fs::read(&scenes_path).expect("reread settled scenes"),
+        settled,
+        "a settled sweep must not rewrite the scene store"
     );
 }

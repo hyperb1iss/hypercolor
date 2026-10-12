@@ -473,10 +473,12 @@ impl LayoutContext {
         for scene in scenes.list() {
             for zone in &scene.zones {
                 evidence.observe_layout(&zone.layout);
+                evidence.observe_display_target(zone);
             }
         }
         for zone in scenes.default_display_zones() {
             evidence.observe_layout(&zone.layout);
+            evidence.observe_display_target(zone);
         }
         evidence
     }

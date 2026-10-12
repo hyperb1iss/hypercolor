@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use hypercolor_core::device::{DeviceLifecycleManager, DeviceRegistry};
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DriverTransportKind};
+use hypercolor_types::scene::Zone;
 use hypercolor_types::spatial::{Output, SpatialLayout};
 use tokio::sync::{Mutex, RwLock};
 use tracing::info;
@@ -105,6 +106,18 @@ impl MigrationPersistence {
 }
 
 impl DeviceBindingRemaps {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.layout_device_ids.is_empty()
+            && self.physical_device_ids.is_empty()
+            && self.persisted_setting_keys.is_empty()
+    }
+
+    /// Identity rewrites carried by this migration, counting layout and
+    /// physical identities separately.
+    pub(crate) fn mapping_count(&self) -> usize {
+        self.layout_device_ids.len() + self.physical_device_ids.len()
+    }
+
     pub(crate) fn remap_layout(&self, layout: &mut SpatialLayout) -> usize {
         layout
             .zones
@@ -168,13 +181,55 @@ pub(super) struct CurrentBinding {
     display_surface_shapes: HashSet<SegmentShape>,
 }
 
+/// A present device's physical identity as discovery reports it now.
+#[derive(Debug, Clone)]
+pub(super) struct CurrentIdentity {
+    physical_device_id: DeviceId,
+    fingerprint: DeviceFingerprint,
+    driver_id: String,
+}
+
+impl CurrentIdentity {
+    pub(super) fn new(
+        physical_device_id: DeviceId,
+        fingerprint: DeviceFingerprint,
+        driver_id: &str,
+    ) -> Self {
+        Self {
+            physical_device_id,
+            fingerprint,
+            driver_id: driver_id.trim().to_ascii_lowercase(),
+        }
+    }
+
+    /// The fingerprint this device carried before fingerprints were scoped
+    /// by driver: `{namespace}:{driver}:{key}` was once `{namespace}:{key}`.
+    fn unscoped_legacy_fingerprint(&self) -> Option<String> {
+        let (namespace, rest) = self.fingerprint.as_str().split_once(':')?;
+        if !matches!(namespace, "usb" | "smbus" | "net" | "bridge") {
+            return None;
+        }
+        let (driver, key) = rest.split_once(':')?;
+        (!key.is_empty() && !self.driver_id.is_empty() && driver == self.driver_id)
+            .then(|| format!("{namespace}:{key}"))
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct PersistedBindingEvidence {
     shapes: HashMap<String, Vec<Vec<SegmentShape>>>,
     descriptor_tokens: HashMap<String, Vec<Vec<String>>>,
+    display_target_ids: HashSet<DeviceId>,
 }
 
 impl PersistedBindingEvidence {
+    /// Record the physical display a persisted display zone targets.
+    pub(super) fn observe_display_target(&mut self, zone: &Zone) {
+        if let Some(target) = zone.display_target.as_ref() {
+            self.display_target_ids.insert(target.device_id);
+        }
+    }
+
     pub(super) fn observe_layout(&mut self, layout: &SpatialLayout) {
         let mut outputs_by_device = HashMap::<&str, Vec<&Output>>::new();
         for output in &layout.zones {
@@ -303,12 +358,12 @@ impl DeviceBindingMigrationContext {
     ) -> anyhow::Result<DeviceBindingMigrationReport> {
         let remaps = if let Some(remaps) = self.journal.load()? {
             anyhow::ensure!(
-                !remaps.layout_device_ids.is_empty(),
-                "active device binding migration journal contains no layout remaps"
+                !remaps.is_empty(),
+                "active device binding migration journal contains no remaps"
             );
             info!(
                 path = %self.journal.path.display(),
-                mappings = remaps.layout_device_ids.len(),
+                mappings = remaps.mapping_count(),
                 "Replaying durable device binding migration intent"
             );
             remaps
@@ -316,8 +371,13 @@ impl DeviceBindingMigrationContext {
             let evidence = self.layout.collect_binding_evidence().await;
             let current = collect_current_bindings(registry, lifecycle, seen_ids).await;
             let persisted_binding_keys = self.device_settings.persisted_binding_keys().await;
-            let remaps = build_binding_remaps(&evidence, &current, &persisted_binding_keys);
-            if remaps.layout_device_ids.is_empty() {
+            let remaps = build_binding_remaps(
+                &evidence,
+                &current.bindings,
+                &current.identities,
+                &persisted_binding_keys,
+            );
+            if remaps.is_empty() {
                 return Ok(DeviceBindingMigrationReport::default());
             }
             self.journal.persist_active(&remaps)?;
@@ -370,7 +430,7 @@ impl DeviceBindingMigrationContext {
             let references = publication.publish(self);
             self.journal.clear()?;
             return Ok(DeviceBindingMigrationReport {
-                mappings: remaps.layout_device_ids.len(),
+                mappings: remaps.mapping_count(),
                 references,
             });
         }
@@ -569,11 +629,16 @@ impl DeviceBindingPublication {
     }
 }
 
+struct CurrentDevices {
+    bindings: Vec<CurrentBinding>,
+    identities: Vec<CurrentIdentity>,
+}
+
 async fn collect_current_bindings(
     registry: &DeviceRegistry,
     lifecycle: &Arc<Mutex<DeviceLifecycleManager>>,
     seen_ids: &HashSet<DeviceId>,
-) -> Vec<CurrentBinding> {
+) -> CurrentDevices {
     let tracked = registry.list().await;
     let lifecycle_ids = {
         let lifecycle = lifecycle.lock().await;
@@ -590,6 +655,7 @@ async fn collect_current_bindings(
             .collect::<HashMap<_, _>>()
     };
     let mut current = Vec::new();
+    let mut identities = Vec::new();
     for tracked in tracked {
         if !seen_ids.contains(&tracked.info.id) {
             continue;
@@ -597,6 +663,11 @@ async fn collect_current_bindings(
         let Some(fingerprint) = registry.fingerprint_for_id(&tracked.info.id).await else {
             continue;
         };
+        identities.push(CurrentIdentity::new(
+            tracked.info.id,
+            fingerprint.clone(),
+            tracked.info.driver_id(),
+        ));
         let layout_device_id = lifecycle_ids
             .get(&tracked.info.id)
             .and_then(Clone::clone)
@@ -616,12 +687,16 @@ async fn collect_current_bindings(
             current.push(binding);
         }
     }
-    current
+    CurrentDevices {
+        bindings: current,
+        identities,
+    }
 }
 
 fn build_binding_remaps(
     evidence: &PersistedBindingEvidence,
     current: &[CurrentBinding],
+    identities: &[CurrentIdentity],
     persisted_binding_keys: &HashSet<String>,
 ) -> DeviceBindingRemaps {
     let layout_device_ids = plan_layout_device_id_remaps(evidence, current);
@@ -654,11 +729,63 @@ fn build_binding_remaps(
             binding.physical_device_id.to_string(),
         );
     }
+    for (legacy_physical_id, physical_device_id) in
+        plan_unscoped_display_target_remaps(evidence, identities)
+    {
+        physical_device_ids
+            .entry(legacy_physical_id)
+            .or_insert(physical_device_id);
+    }
     DeviceBindingRemaps {
         layout_device_ids,
         physical_device_ids,
         persisted_setting_keys,
     }
+}
+
+/// Map display targets still naming a physical id minted before
+/// fingerprints carried a driver segment.
+///
+/// That id is a pure function of the device's current fingerprint, so the
+/// mapping needs no shape evidence, and the layout id often reads the same
+/// in both encodings, which hides the device from layout reconciliation.
+/// Only ids a persisted display zone still targets are mapped, so a
+/// settled state plans nothing. An id derived by two present devices, or
+/// one a present device still owns, stays untouched.
+fn plan_unscoped_display_target_remaps(
+    evidence: &PersistedBindingEvidence,
+    identities: &[CurrentIdentity],
+) -> HashMap<DeviceId, DeviceId> {
+    let present = identities
+        .iter()
+        .map(|identity| identity.physical_device_id)
+        .collect::<HashSet<_>>();
+    let mut claimants = HashMap::<DeviceId, Vec<DeviceId>>::new();
+    for identity in identities {
+        let Some(legacy_fingerprint) = identity.unscoped_legacy_fingerprint() else {
+            continue;
+        };
+        let legacy_physical_id =
+            DeviceFingerprint::from_persisted(legacy_fingerprint).stable_device_id();
+        if present.contains(&legacy_physical_id)
+            || !evidence.display_target_ids.contains(&legacy_physical_id)
+        {
+            continue;
+        }
+        claimants
+            .entry(legacy_physical_id)
+            .or_default()
+            .push(identity.physical_device_id);
+    }
+    claimants
+        .into_iter()
+        .filter_map(
+            |(legacy_physical_id, claimants)| match claimants.as_slice() {
+                [physical_device_id] => Some((legacy_physical_id, *physical_device_id)),
+                _ => None,
+            },
+        )
+        .collect()
 }
 
 fn exact_fingerprint_evidence_matches(
@@ -953,8 +1080,9 @@ mod tests {
     use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 
     use super::{
-        BindingClass, CurrentBinding, MigrationPersistence, PersistedBindingEvidence, SegmentShape,
-        build_binding_remaps, migration_was_superseded, output_shape, plan_layout_device_id_remaps,
+        BindingClass, CurrentBinding, CurrentIdentity, MigrationPersistence,
+        PersistedBindingEvidence, SegmentShape, build_binding_remaps, migration_was_superseded,
+        output_shape, plan_layout_device_id_remaps,
     };
 
     fn persisted_output(id: &str) -> Output {
@@ -1028,6 +1156,7 @@ mod tests {
                 })
                 .collect::<HashMap<_, _>>(),
             descriptor_tokens: HashMap::new(),
+            display_target_ids: HashSet::new(),
         }
     }
 
@@ -1119,6 +1248,7 @@ mod tests {
         let remaps = build_binding_remaps(
             &evidence,
             &current,
+            &[],
             &HashSet::from([legacy_fingerprint.to_owned()]),
         );
         let legacy_physical_id =
@@ -1132,7 +1262,7 @@ mod tests {
             Some(&current[0].fingerprint.as_str().to_owned())
         );
 
-        let without_settings = build_binding_remaps(&evidence, &current, &HashSet::new());
+        let without_settings = build_binding_remaps(&evidence, &current, &[], &HashSet::new());
         assert_eq!(
             without_settings.layout_device_ids,
             HashMap::from([(
@@ -1146,6 +1276,7 @@ mod tests {
         let ambiguous = build_binding_remaps(
             &evidence,
             &current,
+            &[],
             &HashSet::from([
                 legacy_fingerprint.to_owned(),
                 "usb:razer:1532:0099:001/6/4/4".to_owned(),
@@ -1294,6 +1425,7 @@ mod tests {
             let remaps = build_binding_remaps(
                 &evidence,
                 &current,
+                &[],
                 &HashSet::from([legacy_fingerprint.to_owned()]),
             );
             let legacy_physical_id =
@@ -1313,6 +1445,87 @@ mod tests {
             vec![vec!["asus".to_owned(), "aura".to_owned(), "gpu".to_owned()]],
         );
         assert!(plan_layout_device_id_remaps(&evidence, &current).is_empty());
+    }
+
+    fn identity(fingerprint: &str, driver_id: &str) -> CurrentIdentity {
+        let fingerprint = DeviceFingerprint::from_persisted(fingerprint);
+        CurrentIdentity::new(fingerprint.stable_device_id(), fingerprint, driver_id)
+    }
+
+    fn stable_id(fingerprint: &str) -> DeviceId {
+        DeviceFingerprint::from_persisted(fingerprint).stable_device_id()
+    }
+
+    fn display_target_evidence(targets: &[&str]) -> PersistedBindingEvidence {
+        let mut evidence = PersistedBindingEvidence::default();
+        evidence
+            .display_target_ids
+            .extend(targets.iter().map(|fingerprint| stable_id(fingerprint)));
+        evidence
+    }
+
+    #[test]
+    fn display_targets_minted_before_driver_scoping_follow_the_present_device() {
+        let identities = [
+            identity("usb:push2:2982:1967:001-12", "push2"),
+            identity("usb:corsair:1b1c:0c4e:A6B9T350013K7T", "Corsair"),
+        ];
+        let evidence =
+            display_target_evidence(&["usb:2982:1967:001-12", "usb:1b1c:0c4e:A6B9T350013K7T"]);
+
+        let remaps = build_binding_remaps(&evidence, &[], &identities, &HashSet::new());
+
+        assert!(remaps.layout_device_ids.is_empty());
+        assert!(remaps.persisted_setting_keys.is_empty());
+        assert_eq!(
+            remaps.physical_device_ids,
+            HashMap::from([
+                (
+                    stable_id("usb:2982:1967:001-12"),
+                    stable_id("usb:push2:2982:1967:001-12"),
+                ),
+                (
+                    stable_id("usb:1b1c:0c4e:A6B9T350013K7T"),
+                    stable_id("usb:corsair:1b1c:0c4e:A6B9T350013K7T"),
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn settled_display_targets_plan_no_driver_scoping_remap() {
+        let identities = [identity("usb:push2:2982:1967:001-12", "push2")];
+        let evidence = display_target_evidence(&["usb:push2:2982:1967:001-12"]);
+
+        assert!(build_binding_remaps(&evidence, &[], &identities, &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn driver_scoping_remap_requires_one_unambiguous_driver_segment() {
+        let legacy = "usb:2982:1967:001-12";
+        let evidence = display_target_evidence(&[legacy]);
+
+        let foreign_segment = [identity("usb:push2:2982:1967:001-12", "ableton")];
+        assert!(build_binding_remaps(&evidence, &[], &foreign_segment, &HashSet::new()).is_empty());
+
+        let cloud = [identity("cloud:push2:2982:1967:001-12", "push2")];
+        assert!(build_binding_remaps(&evidence, &[], &cloud, &HashSet::new()).is_empty());
+
+        let two_claimants = [
+            identity("usb:push2:2982:1967:001-12", "push2"),
+            identity("usb:midi:2982:1967:001-12", "midi"),
+        ];
+        assert!(build_binding_remaps(&evidence, &[], &two_claimants, &HashSet::new()).is_empty());
+
+        let still_present = [
+            identity("usb:push2:2982:1967:001-12", "push2"),
+            CurrentIdentity::new(
+                stable_id(legacy),
+                DeviceFingerprint::from_persisted(legacy),
+                "push2",
+            ),
+        ];
+        assert!(build_binding_remaps(&evidence, &[], &still_present, &HashSet::new()).is_empty());
     }
 }
 
