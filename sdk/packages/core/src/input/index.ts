@@ -9,8 +9,13 @@ export {
     wasdVector,
 } from './helpers'
 export type {
+    DeviceButtonHold,
+    DeviceButtonInputEvent,
+    DeviceButtonInputState,
+    EngineDeviceButtons,
     EngineKeyboard,
     EngineMouse,
+    EngineTouch,
     InputData,
     KeyboardInputState,
     KeyEventState,
@@ -23,4 +28,9 @@ export type {
     MouseScrollPhase,
     MouseScrollState,
     MouseScrollUnit,
+    TouchCanvasPoint,
+    TouchContact,
+    TouchInputEvent,
+    TouchInputState,
+    TouchPhase,
 } from './types'

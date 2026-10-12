@@ -2,14 +2,19 @@
  * Input data access — thin wrapper around the Hypercolor runtime.
  *
  * Capture and per-frame aggregation happen in the Rust daemon. Effects just
- * read the injected `engine.keyboard` / `engine.mouse` globals. This module
- * provides typed access and silent fallbacks when running outside the daemon.
+ * read the injected `engine.keyboard`, `engine.mouse`, `engine.touch`, and
+ * `engine.deviceButtons` globals. This module provides typed access and
+ * silent fallbacks when running outside the daemon.
  */
 
 import {
+    DeviceButtonHold,
+    DeviceButtonInputEvent,
+    DeviceButtonInputState,
     InputAvailability,
     InputData,
     KeyboardInputState,
+    KeyEventState,
     KeyInputEvent,
     MouseInputEvent,
     MouseInputState,
@@ -17,6 +22,11 @@ import {
     MouseScrollPhase,
     MouseScrollState,
     MouseScrollUnit,
+    TouchCanvasPoint,
+    TouchContact,
+    TouchInputEvent,
+    TouchInputState,
+    TouchPhase,
 } from './types'
 
 /**
@@ -32,10 +42,106 @@ export function getInputData(): InputData {
 
     return {
         ...availability,
+        deviceButtons: readDeviceButtons(raw?.deviceButtons),
         dropped: finiteNumber(raw?.inputDropped, 0),
         keyboard,
         mouse,
+        touch: readTouch(raw?.touch),
     }
+}
+
+function readTouch(raw: any): TouchInputState {
+    if (typeof raw !== 'object' || raw === null) {
+        return { down: false, events: [], touches: [] }
+    }
+
+    const touches: TouchContact[] = []
+    if (Array.isArray(raw.touches)) {
+        for (const entry of raw.touches as unknown[]) {
+            if (typeof entry === 'object' && entry !== null) touches.push(readTouchContact(entry))
+        }
+    }
+
+    const events: TouchInputEvent[] = []
+    if (Array.isArray(raw.events)) {
+        for (const entry of raw.events as any[]) {
+            if (typeof entry !== 'object' || entry === null || entry.kind !== 'touch') continue
+            const event: TouchInputEvent = {
+                ...readTouchContact(entry),
+                atMs: finiteNumber(entry.atMs, 0),
+                kind: 'touch',
+                phase: readTouchPhase(entry.phase),
+                repeatCount: positiveInteger(entry.repeatCount, 1),
+                seq: finiteNumber(entry.seq, 0),
+                source: typeof entry.source === 'string' ? entry.source : '',
+            }
+            if (typeof entry.physicalCode === 'string') event.physicalCode = entry.physicalCode
+            events.push(event)
+        }
+    }
+
+    return { down: touches.length > 0, events, touches }
+}
+
+function readTouchContact(raw: any): TouchContact {
+    return {
+        canvas: readCanvasPoint(raw.canvas),
+        contact: Math.max(0, Math.trunc(finiteNumber(raw.contact, 0))),
+        device: typeof raw.device === 'string' ? raw.device : '',
+        pressure: clamp01(finiteNumber(raw.pressure, 0)),
+        x: clamp01(finiteNumber(raw.x, 0)),
+        y: clamp01(finiteNumber(raw.y, 0)),
+    }
+}
+
+function readCanvasPoint(raw: any): TouchCanvasPoint | null {
+    if (typeof raw !== 'object' || raw === null) return null
+    const { nx, ny, x, y } = raw
+    if (![nx, ny, x, y].every((value) => typeof value === 'number' && Number.isFinite(value))) return null
+    return { nx, ny, x, y }
+}
+
+function readTouchPhase(raw: unknown): TouchPhase {
+    return raw === 'ended' || raw === 'cancelled' ? raw : 'began'
+}
+
+function readDeviceButtons(raw: any): DeviceButtonInputState {
+    if (typeof raw !== 'object' || raw === null) {
+        return { buttons: {}, events: [], held: [] }
+    }
+
+    const held: DeviceButtonHold[] = []
+    if (Array.isArray(raw.held)) {
+        for (const entry of raw.held as any[]) {
+            if (typeof entry !== 'object' || entry === null || typeof entry.button !== 'string') continue
+            held.push({ button: entry.button, device: typeof entry.device === 'string' ? entry.device : '' })
+        }
+    }
+
+    const events: DeviceButtonInputEvent[] = []
+    if (Array.isArray(raw.events)) {
+        for (const entry of raw.events as any[]) {
+            if (typeof entry !== 'object' || entry === null || entry.kind !== 'device_button') continue
+            const event: DeviceButtonInputEvent = {
+                atMs: finiteNumber(entry.atMs, 0),
+                button: typeof entry.button === 'string' ? entry.button : '',
+                device: typeof entry.device === 'string' ? entry.device : '',
+                kind: 'device_button',
+                repeatCount: positiveInteger(entry.repeatCount, 1),
+                seq: finiteNumber(entry.seq, 0),
+                source: typeof entry.source === 'string' ? entry.source : '',
+                state: readButtonState(entry.state),
+            }
+            if (typeof entry.physicalCode === 'string') event.physicalCode = entry.physicalCode
+            events.push(event)
+        }
+    }
+
+    return { buttons: heldMap(raw.buttons), events, held }
+}
+
+function readButtonState(raw: unknown): KeyEventState {
+    return raw === 'released' || raw === 'repeated' ? raw : 'pressed'
 }
 
 function readAvailability(raw: any): InputAvailability {

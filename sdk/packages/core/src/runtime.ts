@@ -7,7 +7,7 @@
  */
 
 import type { AudioData } from './audio/types'
-import type { EngineKeyboard, EngineMouse, InputAvailability } from './input/types'
+import type { EngineDeviceButtons, EngineKeyboard, EngineMouse, EngineTouch, InputAvailability } from './input/types'
 
 /**
  * Audio analysis data from the Hypercolor audio pipeline.
@@ -96,6 +96,10 @@ interface HypercolorEngine {
     keyboard?: EngineKeyboard
     /** Mouse/pointer state and ordered button/scroll events. */
     mouse?: EngineMouse
+    /** Held contacts and ordered touch edges on driver-owned touch surfaces. */
+    touch?: EngineTouch
+    /** Held control buttons and ordered button edges on driver-owned devices. */
+    deviceButtons?: EngineDeviceButtons
     /** Count of input events dropped this frame due to overflow. */
     inputDropped?: number
     /** Declared capability and lifecycle state for the routed input source. */

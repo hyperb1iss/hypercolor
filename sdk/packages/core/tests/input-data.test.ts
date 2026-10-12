@@ -30,6 +30,8 @@ describe('input data contract', () => {
         expect(input.mouse.ny).toBe(0)
         expect(input.mouse.scroll).toEqual({ line120X: 0, line120Y: 0, pixelX: 0, pixelY: 0 })
         expect(input.mouse.velocity).toBe(0)
+        expect(input.touch).toEqual({ down: false, events: [], touches: [] })
+        expect(input.deviceButtons).toEqual({ buttons: {}, events: [], held: [] })
     })
 
     test('maps injected engine state into the typed snapshot', () => {
@@ -221,6 +223,160 @@ describe('input data contract', () => {
         expect(input.degraded).toBeTrue()
         expect(input.keyboard.events).toHaveLength(1)
         expect(input.mouse.available).toBeTrue()
+    })
+
+    test('maps device touches and buttons with canvas positions', () => {
+        ;(globalThis as { engine?: unknown }).engine = {
+            deviceButtons: {
+                buttons: { ghost: false, mode: true },
+                events: [
+                    {
+                        atMs: 2002,
+                        button: 'mode',
+                        device: 'pad-1',
+                        kind: 'device_button',
+                        seq: 12,
+                        source: 'device:pad-1',
+                        state: 'pressed',
+                    },
+                    { atMs: 2003, button: 'left', kind: 'button', seq: 13, source: 'mouse0', state: 'pressed' },
+                ],
+                held: [{ button: 'mode', device: 'pad-1' }, { device: 'pad-2' }],
+            },
+            touch: {
+                down: true,
+                events: [
+                    {
+                        atMs: 2000,
+                        canvas: { nx: 0.25, ny: 0.5, x: 80, y: 100 },
+                        contact: 3,
+                        device: 'pad-1',
+                        kind: 'touch',
+                        phase: 'began',
+                        pressure: 0.6,
+                        seq: 10,
+                        source: 'device:pad-1',
+                        x: 0.1,
+                        y: 0.2,
+                    },
+                    {
+                        atMs: 2001,
+                        canvas: null,
+                        contact: 0,
+                        device: 'loose-pad',
+                        kind: 'touch',
+                        phase: 'cancelled',
+                        pressure: 0,
+                        seq: 11,
+                        source: 'device:loose-pad',
+                        x: 0.9,
+                        y: 0.9,
+                    },
+                ],
+                touches: [
+                    {
+                        canvas: { nx: 0.3, ny: 0.55, x: 96, y: 110 },
+                        contact: 3,
+                        device: 'pad-1',
+                        pressure: 0.7,
+                        x: 0.15,
+                        y: 0.25,
+                    },
+                    { canvas: null, contact: 1, device: 'loose-pad', pressure: 0.4, x: 0.5, y: 0.5 },
+                ],
+            },
+        }
+
+        const input = getInputData()
+
+        expect(input.touch.down).toBeTrue()
+        expect(input.touch.touches).toEqual([
+            {
+                canvas: { nx: 0.3, ny: 0.55, x: 96, y: 110 },
+                contact: 3,
+                device: 'pad-1',
+                pressure: 0.7,
+                x: 0.15,
+                y: 0.25,
+            },
+            { canvas: null, contact: 1, device: 'loose-pad', pressure: 0.4, x: 0.5, y: 0.5 },
+        ])
+        expect(input.touch.events).toEqual([
+            {
+                atMs: 2000,
+                canvas: { nx: 0.25, ny: 0.5, x: 80, y: 100 },
+                contact: 3,
+                device: 'pad-1',
+                kind: 'touch',
+                phase: 'began',
+                pressure: 0.6,
+                repeatCount: 1,
+                seq: 10,
+                source: 'device:pad-1',
+                x: 0.1,
+                y: 0.2,
+            },
+            {
+                atMs: 2001,
+                canvas: null,
+                contact: 0,
+                device: 'loose-pad',
+                kind: 'touch',
+                phase: 'cancelled',
+                pressure: 0,
+                repeatCount: 1,
+                seq: 11,
+                source: 'device:loose-pad',
+                x: 0.9,
+                y: 0.9,
+            },
+        ])
+        expect(input.deviceButtons.buttons).toEqual({ mode: true })
+        expect(input.deviceButtons.held).toEqual([{ button: 'mode', device: 'pad-1' }])
+        expect(input.deviceButtons.events).toEqual([
+            {
+                atMs: 2002,
+                button: 'mode',
+                device: 'pad-1',
+                kind: 'device_button',
+                repeatCount: 1,
+                seq: 12,
+                source: 'device:pad-1',
+                state: 'pressed',
+            },
+        ])
+    })
+
+    test('sanitizes malformed device input', () => {
+        ;(globalThis as { engine?: unknown }).engine = {
+            deviceButtons: { buttons: 'mode', events: {}, held: 'mode' },
+            touch: {
+                events: [{ canvas: { nx: Number.NaN, ny: 0, x: 0, y: 0 }, kind: 'touch', phase: 'wobble', x: 4 }],
+                touches: [null, { canvas: { nx: 0.5 }, contact: -2.5, pressure: 3, x: -1, y: 'top' }],
+            },
+        }
+
+        const input = getInputData()
+
+        expect(input.touch.touches).toEqual([{ canvas: null, contact: 0, device: '', pressure: 1, x: 0, y: 0 }])
+        expect(input.touch.down).toBeTrue()
+        expect(input.touch.events).toEqual([
+            {
+                atMs: 0,
+                canvas: null,
+                contact: 0,
+                device: '',
+                kind: 'touch',
+                phase: 'began',
+                pressure: 0,
+                repeatCount: 1,
+                seq: 0,
+                source: '',
+                x: 1,
+                y: 0,
+            },
+        ])
+        expect(input.deviceButtons).toEqual({ buttons: {}, events: [], held: [] })
     })
 
     test('sanitizes malformed engine data', () => {

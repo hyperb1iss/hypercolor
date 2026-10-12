@@ -127,8 +127,13 @@ export {
 // ── Input ───────────────────────────────────────────────────────────────
 
 export type {
+    DeviceButtonHold,
+    DeviceButtonInputEvent,
+    DeviceButtonInputState,
+    EngineDeviceButtons,
     EngineKeyboard,
     EngineMouse,
+    EngineTouch,
     InputData,
     KeyboardInputState,
     KeyEventState,
@@ -142,6 +147,11 @@ export type {
     MouseScrollState,
     MouseScrollUnit,
     PressEnvelopeOptions,
+    TouchCanvasPoint,
+    TouchContact,
+    TouchInputEvent,
+    TouchInputState,
+    TouchPhase,
     TypingRateOptions,
 } from './input'
 export {

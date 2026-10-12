@@ -4,7 +4,13 @@ import type { ArtifactKind, BuildControlDef, ExtractedArtifactMetadata, Register
 
 const BUILTIN_UNIFORMS = new Set(['iTime', 'iResolution', 'iMouse', 'iMouseDown', 'iWheel'])
 const AUDIO_USAGE_PATTERNS = [/\baudio\s*\(/, /\bctx\.audio\b/, /\bgetAudioData\s*\(/, /\bengine\.audio\b/]
-const INPUT_USAGE_PATTERNS = [/\bgetInputData\s*\(/, /\bengine\.keyboard\b/, /\bengine\.mouse\b/]
+const INPUT_USAGE_PATTERNS = [
+    /\bgetInputData\s*\(/,
+    /\bengine\.keyboard\b/,
+    /\bengine\.mouse\b/,
+    /\bengine\.touch\b/,
+    /\bengine\.deviceButtons\b/,
+]
 
 function toBuildControls(def: RegisteredArtifactDef): BuildControlDef[] {
     return def.resolvedControls.map((ctrl) => {
