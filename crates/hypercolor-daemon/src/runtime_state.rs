@@ -88,6 +88,10 @@ pub enum RuntimeSessionError {
         #[source]
         source: PersistenceError,
     },
+    /// The admitted write's task stopped with the runtime before it
+    /// finished; the retry supervisor still holds the admitted payload.
+    #[error("runtime snapshot write for {path} stopped before it finished: {detail}")]
+    WriteTask { path: PathBuf, detail: String },
 }
 
 #[must_use]
@@ -235,14 +239,43 @@ pub fn save_reserved(
     pending: RuntimeSnapshotSave,
     snapshot: &RuntimeSessionSnapshot,
 ) -> Result<AtomicWriteOutcome, RuntimeSessionError> {
+    admit_reserved(pending, snapshot)?.commit()
+}
+
+/// A serialized runtime snapshot admitted as the newest durable intent,
+/// whose replacement can run on whichever thread the caller picks.
+#[derive(Debug)]
+pub(crate) struct AdmittedRuntimeSnapshotWrite {
+    path: PathBuf,
+    write: AdmittedAtomicWrite,
+}
+
+/// Serialize and admit a reserved runtime snapshot without writing it.
+pub(crate) fn admit_reserved(
+    pending: RuntimeSnapshotSave,
+    snapshot: &RuntimeSessionSnapshot,
+) -> Result<AdmittedRuntimeSnapshotWrite, RuntimeSessionError> {
     let path = pending.path.clone();
     let prepared = prepare_reserved(pending, snapshot)?;
-    let outcome = prepared
-        .admit()
-        .write
-        .commit()
-        .map_err(|source| RuntimeSessionError::Persist { path, source })?;
-    Ok(outcome)
+    Ok(AdmittedRuntimeSnapshotWrite {
+        path,
+        write: prepared.admit().write,
+    })
+}
+
+impl AdmittedRuntimeSnapshotWrite {
+    /// The destination this write replaces.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Attempt the admitted replacement. This blocks on file I/O.
+    pub(crate) fn commit(self) -> Result<AtomicWriteOutcome, RuntimeSessionError> {
+        let Self { path, write } = self;
+        write
+            .commit()
+            .map_err(|source| RuntimeSessionError::Persist { path, source })
+    }
 }
 
 pub(crate) fn prepare_reserved(
