@@ -19,6 +19,7 @@ mod topics;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use preview_encode::{CanvasStillFormat, encode_canvas_still};
 pub(crate) use protocol::MAX_WS_MESSAGE_BYTES;
 pub(crate) use session::{spawn_trusted_local_socket, ws_handler};
 

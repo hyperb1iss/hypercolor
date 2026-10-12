@@ -157,6 +157,7 @@ from .binding_source_type_3 import BindingSourceType3
 from .binding_source_type_3_kind import BindingSourceType3Kind
 from .blend_mode import BlendMode
 from .bridge_device_summary import BridgeDeviceSummary
+from .canvas_image_format import CanvasImageFormat
 from .capture_authorization_response import CaptureAuthorizationResponse
 from .capture_monitor import CaptureMonitor
 from .capture_monitor_list_item import CaptureMonitorListItem
@@ -789,6 +790,7 @@ __all__ = (
     "BindingSourceType3Kind",
     "BlendMode",
     "BridgeDeviceSummary",
+    "CanvasImageFormat",
     "CaptureAuthorizationResponse",
     "CaptureMonitor",
     "CaptureMonitorListItem",

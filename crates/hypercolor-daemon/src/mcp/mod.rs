@@ -177,7 +177,7 @@ impl ServerHandler for HypercolorMcpServer {
                     .with_website_url("https://github.com/hyperb1iss/hypercolor"),
             )
             .with_instructions(
-                "You are controlling Hypercolor, an RGB lighting system. Start with get_status or the hypercolor://state resource before making changes. Use list_effects to discover the effect catalog before applying visuals. Prefer structured tool arguments and resource reads over guessing current state.",
+                "You are controlling Hypercolor, an RGB lighting system. Start with get_status or the hypercolor://state resource before making changes. Use list_effects to discover the effect catalog before applying visuals. Use capture_canvas to see what is rendering after a change instead of assuming it looks right. Prefer structured tool arguments and resource reads over guessing current state.",
             )
     }
 
@@ -210,7 +210,7 @@ impl ServerHandler for HypercolorMcpServer {
         async move {
             let tool = request.name.to_string();
             let arguments = Value::Object(request.arguments.unwrap_or_default());
-            let execute = tools::execute_tool_with_state(&tool, &arguments, &self.state);
+            let execute = tools::execute_tool_response_with_state(&tool, &arguments, &self.state);
             let result = if self.mutates(&tool) {
                 let audit = self.tool_call_audit(&tool, &context);
                 let result = audit.run(execute).await;
@@ -220,7 +220,16 @@ impl ServerHandler for HypercolorMcpServer {
                 execute.await
             };
             match result {
-                Ok(payload) => Ok(CallToolResult::structured(payload).into()),
+                Ok(response) => {
+                    let mut result = CallToolResult::structured(response.payload);
+                    result.content.extend(
+                        response
+                            .images
+                            .into_iter()
+                            .map(|image| ContentBlock::image(image.data, image.mime_type)),
+                    );
+                    Ok(result.into())
+                }
                 Err(error) => {
                     Ok(CallToolResult::structured_error(tool_error_payload(&error)).into())
                 }
