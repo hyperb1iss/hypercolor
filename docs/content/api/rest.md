@@ -1181,6 +1181,14 @@ daemon; the default re-applies every live-classified key.
 The response carries the effective value, whether the daemon applied it live,
 whether the key is boot-frozen (`requires_restart`), and which sections are
 currently waiting on a restart (`pending_restart`).
+
+The response also says whether the config file holds the change. When the
+file write fails (a read-only config directory, a full disk), the change still
+takes effect in the running daemon, which keeps retrying the file, and the
+response reports `"persisted": false` with the failure in `persistence_error`.
+A restart before a retry lands loads the older file. The `config` diagnose
+check reports the same lag until it clears. The reset routes report it the
+same way.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PATCH" path="/api/v1/config/keys/{key}"> %}

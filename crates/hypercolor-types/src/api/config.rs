@@ -45,8 +45,23 @@ pub struct ConfigMutationResponse {
     /// Restart-classified roots whose persisted value now differs from
     /// the one the daemon booted with.
     pub pending_restart: Vec<String>,
-    /// The config file the write landed in.
+    /// The config file the write targets.
     pub path: String,
+    /// Whether `path` holds the live config after this request. False
+    /// means the change is live in the running daemon but the file write
+    /// failed: the daemon keeps retrying it, and a restart before a retry
+    /// lands loads the older file. A response without the field reads as
+    /// persisted.
+    #[serde(default = "persisted_default")]
+    pub persisted: bool,
+    /// Why `path` lags the live config, present only when `persisted` is
+    /// false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistence_error: Option<String>,
+}
+
+const fn persisted_default() -> bool {
+    true
 }
 
 /// Query parameters shared by every config mutation route.

@@ -7,7 +7,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use tracing::info;
 
-use hypercolor_core::config::canonical_audio_device_id;
+use hypercolor_core::config::{ConfigManager, ConfigPersistence, canonical_audio_device_id};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::config_registry;
 
@@ -279,6 +279,7 @@ async fn write_config_key(
             Some(key.clone()),
             Some(redact_key(&key, parsed_value)),
             false,
+            &manager.persistence_status(),
         ));
     }
 
@@ -327,6 +328,7 @@ async fn write_config_key(
                     Some(key.clone()),
                     Some(redact_key(&key, effective_value)),
                     true,
+                    &manager.persistence_status(),
                 ));
             }
             Err(CaptureConfigTransactionError::Conflict) => {
@@ -388,9 +390,12 @@ async fn write_config_key(
     if let Some(error) = rejected {
         return error.into_response();
     }
-    if let Err(e) = manager.save() {
-        return internal_config_error(format!("Failed to persist config: {e}")).into_response();
-    }
+    let persistence = match manager.save() {
+        Ok(persistence) => persistence,
+        Err(e) => {
+            return internal_config_error(format!("Failed to persist config: {e}")).into_response();
+        }
+    };
     let effective_config = manager.get();
     let effective_root = match serde_json::to_value(&**effective_config) {
         Ok(value) => value,
@@ -418,6 +423,7 @@ async fn write_config_key(
         Some(key.clone()),
         Some(redact_key(&key, effective_value)),
         live_applied,
+        &persistence,
     ))
 }
 
@@ -425,14 +431,22 @@ async fn write_config_key(
 ///
 /// `requires_restart` reports the registry's classification of the
 /// mutated key; a whole-config reset spans every section, including the
-/// boot-frozen ones, so it always reports true.
+/// boot-frozen ones, so it always reports true. `persistence` is the
+/// write's own outcome where the handler saved, and the manager's
+/// current status where it did not, so a request never reports a file
+/// that lags the live config as saved.
 fn mutation_result(
-    manager: &Arc<hypercolor_core::config::ConfigManager>,
+    manager: &Arc<ConfigManager>,
     key: Option<String>,
     value: Option<serde_json::Value>,
     live: bool,
+    persistence: &ConfigPersistence,
 ) -> ConfigMutationResponse {
     let requires_restart = key.as_deref().is_none_or(config_registry::requires_restart);
+    let persistence_error = match persistence {
+        ConfigPersistence::Durable => None,
+        ConfigPersistence::Lagging { error, .. } => Some(error.clone()),
+    };
     ConfigMutationResponse {
         key,
         value,
@@ -440,6 +454,8 @@ fn mutation_result(
         requires_restart,
         pending_restart: manager.pending_restart(),
         path: manager.path().display().to_string(),
+        persisted: persistence_error.is_none(),
+        persistence_error,
     }
 }
 
@@ -574,6 +590,7 @@ async fn reset_config_state(
             Some(key.to_owned()),
             effective_value,
             true,
+            &manager.persistence_status(),
         ));
     }
 
@@ -597,9 +614,12 @@ async fn reset_config_state(
             });
         *config = reapplied.unwrap_or(updated);
     });
-    if let Err(e) = manager.save() {
-        return internal_config_error(format!("Failed to persist config: {e}")).into_response();
-    }
+    let persistence = match manager.save() {
+        Ok(persistence) => persistence,
+        Err(e) => {
+            return internal_config_error(format!("Failed to persist config: {e}")).into_response();
+        }
+    };
 
     let live_applied =
         apply_live_sections(state, sections, requested_key.as_deref(), live_requested).await
@@ -621,6 +641,7 @@ async fn reset_config_state(
         requested_key,
         new_value,
         live_applied,
+        &persistence,
     ))
 }
 
