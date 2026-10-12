@@ -32,6 +32,10 @@ Sources referenced for protocol knowledge:
 
 Vendored Dependencies
 
+- servo-script (vendor/servo-script/): Servo's script crate 0.6.0, vendored to
+  carry fixes for memory growth under per-frame JavaScript evaluation
+  Original: https://github.com/servo/servo
+  License: MPL-2.0
 - tachys (vendor/tachys/) — Leptos DOM renderer, patched so the web UI runs
   under a Trusted Types content security policy
   Original: https://github.com/leptos-rs/leptos

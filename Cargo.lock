@@ -11468,8 +11468,6 @@ dependencies = [
 [[package]]
 name = "servo-script"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c08de23e00326c3f698ebe2a39bc4d51fbf7507af128c8cbb295b1ae6ae2f13c"
 dependencies = [
  "app_units",
  "arrayvec",
