@@ -40,12 +40,12 @@ updates:
       # on its own adds a second, unused copy and silently drops jemalloc.
       - dependency-name: "servo-allocator"
       # vendor/servo-script replaces servo-script 0.6.0 through
-      # [patch.crates-io]. Any other servo-script version, whether a
-      # lockfile-only 0.6.x update or the one any servo bump pulls in (servo
-      # pins its script crate exactly, so even a patch release counts),
-      # leaves the patch unused behind a single cargo warning and ships the
-      # unpatched crate. Move servo and servo-script by hand, re-vendoring
-      # or dropping the patch as vendor/servo-script/HYPERCOLOR.md says.
+      # [patch.crates-io]. servo pins its script crate exactly, so any servo
+      # bump, even a patch release, pulls in another servo-script version,
+      # leaves the patch unused behind a single cargo warning, and would
+      # ship the unpatched crate (scripts/check-vendored-patches.sh fails CI
+      # on that). Move servo and servo-script by hand, re-vendoring or
+      # dropping the patch as vendor/servo-script/HYPERCOLOR.md says.
       - dependency-name: "servo-script"
       - dependency-name: "servo"
 

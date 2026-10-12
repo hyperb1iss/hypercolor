@@ -260,8 +260,9 @@ stats_alloc = "0.1.10"
 # Servo's script crate, vendored with Hypercolor's patches applied on top of
 # the published 0.6.0 source. vendor/servo-script/HYPERCOLOR.md lists each
 # patch and when to drop the vendor. The patch matches servo-script 0.6.0
-# only: bumping servo leaves it unused with nothing but a cargo warning, so
-# re-vendor or drop it in the same change.
+# only: bumping servo leaves it unused behind a single cargo warning, which
+# scripts/check-vendored-patches.sh turns into a CI failure, so re-vendor or
+# drop it in the same change.
 [patch.crates-io]
 servo-script = { path = "vendor/servo-script" }
 

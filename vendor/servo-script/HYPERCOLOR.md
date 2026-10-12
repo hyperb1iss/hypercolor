@@ -119,9 +119,10 @@ carries equivalent fixes. Until then, bumping Servo means re-vendoring
 confirming upstream made it unnecessary) in the same change. A patch entry
 for 0.6.0 does nothing for any other `servo-script` version: Cargo only
 warns that the patch went unused and builds the unpatched crate from
-crates.io. Dependabot ignores `servo-script` and `servo` for that reason:
-`servo` pins its script crate exactly, so even a patch release of `servo`
-would bypass the vendored copy.
+crates.io. `servo` pins its script crate exactly, so even a patch release
+of `servo` would bypass the vendored copy. Dependabot ignores `servo-script`
+and `servo` for that reason, and `scripts/check-vendored-patches.sh` fails
+CI when the lockfile resolves `servo-script` anywhere but this directory.
 
 `[patch]` only applies to builds of this workspace. A `hypercolor-core`
 published to crates.io would build against the unpatched registry crate and
