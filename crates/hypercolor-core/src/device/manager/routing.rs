@@ -314,14 +314,15 @@ impl BackendManager {
     /// Whether existing queued outputs can be reused for the active layout.
     ///
     /// Returns `true` when every active physical target already has an output
-    /// queue, so a retained frame can skip re-routing and reuse the latest
-    /// queued payloads.
+    /// queue whose lane is still open, so a retained frame can skip
+    /// re-routing and reuse the latest queued payloads. A closed lane sends
+    /// the frame through routing again, where its delivery fails visibly.
     #[must_use]
     pub fn can_reuse_routed_frame_outputs(&mut self, layout: &SpatialLayout) -> bool {
         let plan = self.routing_plan(layout);
         plan.active_target_keys
             .iter()
-            .all(|key| self.is_direct_control_active_key(key) || self.output.has_queue(key))
+            .all(|key| self.is_direct_control_active_key(key) || self.output.has_open_queue(key))
     }
 
     /// Stable identity for the active routed-output lane.

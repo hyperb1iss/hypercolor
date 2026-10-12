@@ -9,7 +9,9 @@ use super::{
     BackendDeviceKey, BackendHandle, DeviceFrameSinkHandle, DisplayDeliveryAuthority,
     DisplayOutputLane,
 };
-use crate::device::output_queue::{DeviceStagingBuffer, OutputLane, OutputQueue};
+use crate::device::output_queue::{
+    AsyncWriteFailure, DeviceStagingBuffer, FrameSinkClosureMonitor, OutputLane, OutputQueue,
+};
 
 #[derive(Debug, Default)]
 struct DirectControlRegistry {
@@ -64,7 +66,7 @@ impl Drop for DirectControlGuard {
 #[derive(Default)]
 pub(super) struct DeviceOutputCoordinator {
     queues: HashMap<BackendDeviceKey, OutputQueue>,
-    frame_sinks: HashMap<BackendDeviceKey, DeviceFrameSinkHandle>,
+    frame_sinks: HashMap<BackendDeviceKey, FrameSinkClosureMonitor>,
     display_lanes: HashMap<BackendDeviceKey, DisplayOutputLane>,
     display_delivery_gates: HashMap<BackendDeviceKey, Weak<Mutex<()>>>,
     display_delivery_authority: Arc<DisplayDeliveryAuthority>,
@@ -167,7 +169,10 @@ impl DeviceOutputCoordinator {
         let key = (backend_id.to_owned(), device_id);
         self.queues.remove(&key);
         if let Some(frame_sink) = frame_sink {
-            self.frame_sinks.insert(key, frame_sink);
+            self.frame_sinks.insert(
+                key,
+                FrameSinkClosureMonitor::new(backend_id.to_owned(), device_id, frame_sink),
+            );
         } else {
             self.frame_sinks.remove(&key);
         }
@@ -307,6 +312,24 @@ impl DeviceOutputCoordinator {
             .is_some_and(|queue| !queue.worker_finished())
     }
 
+    /// Whether `key` has a live queue whose lane is still open, so a
+    /// retained frame can keep relying on its latest payload.
+    pub(super) fn has_open_queue(&self, key: &BackendDeviceKey) -> bool {
+        self.queues
+            .get(key)
+            .is_some_and(|queue| !queue.worker_finished() && !queue.lane_closed())
+    }
+
+    /// Closures of cached frame sinks that lifecycle has not claimed yet,
+    /// whether or not anything is still being written to them.
+    pub(super) fn frame_sink_closure_failures(
+        &self,
+    ) -> impl Iterator<Item = AsyncWriteFailure> + '_ {
+        self.frame_sinks
+            .values()
+            .filter_map(FrameSinkClosureMonitor::pending_failure)
+    }
+
     pub(super) fn queue_mut(&mut self, key: &BackendDeviceKey) -> Option<&mut OutputQueue> {
         self.queues.get_mut(key)
     }
@@ -317,7 +340,10 @@ impl DeviceOutputCoordinator {
         backend: Option<BackendHandle>,
         values: Vec<[u8; 3]>,
     ) -> bool {
-        let frame_sink = self.frame_sinks.get(key).cloned();
+        let frame_sink = self
+            .frame_sinks
+            .get(key)
+            .map(|monitor| Arc::clone(monitor.sink()));
         let lane_changed = self
             .queues
             .get(key)

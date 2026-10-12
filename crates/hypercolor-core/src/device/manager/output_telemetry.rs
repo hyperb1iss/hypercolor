@@ -17,6 +17,7 @@ impl BackendManager {
             })
             .collect::<Vec<_>>();
         failures.extend(self.output.display_delivery_authority().pending_failures());
+        failures.extend(self.output.frame_sink_closure_failures());
 
         failures.sort_by(|left, right| {
             failure_priority(&left.error)

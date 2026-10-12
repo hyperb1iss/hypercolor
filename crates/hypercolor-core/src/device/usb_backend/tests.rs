@@ -16,8 +16,10 @@ use hypercolor_types::device::{
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio::time::timeout;
 
+use hypercolor_types::event::ZoneColors;
+
 use super::*;
-use crate::device::BackendManager;
+use crate::device::{AsyncWriteFailure, BackendManager, DeviceOutputStatistics};
 
 static USB_ACTOR_METRICS_TEST_LOCK: LazyLock<AsyncMutex<()>> =
     LazyLock::new(|| AsyncMutex::new(()));
@@ -2308,6 +2310,309 @@ async fn a_closed_empty_wireless_actor_reports_failure_through_duplicate_output(
         queue
             .async_write_failure(USB_OUTPUT_BACKEND_ID.to_owned(), device_id)
             .is_some()
+    );
+}
+
+const LIANLI_LAYOUT_ID: &str = "usb:lianli-wireless-test";
+const RENDER_FRAME: Duration = Duration::from_millis(33);
+
+/// A Lian Li controller connected through the USB backend, its actor
+/// driving `pair`. Discovery finished before any fan answered, so its
+/// published routing is empty until the first upkeep finds the fan.
+fn backend_with_empty_lianli_actor(
+    device_id: DeviceId,
+    master: [u8; 6],
+    pair: Arc<EchoingWirelessPair>,
+) -> (
+    Arc<UsbBackend>,
+    Arc<hypercolor_hal::drivers::lianli::WirelessControllerProtocol>,
+) {
+    let protocol = paced_wireless_protocol(master);
+    let mut empty_table = vec![0_u8; 448];
+    empty_table[..4].copy_from_slice(&[0x10, 0, 0x80, 0]);
+    protocol
+        .parse_response(&empty_table)
+        .expect("discovery can finish before any fan answers");
+
+    let backend = Arc::new(UsbBackend::new());
+    let mut info = temporary_control_test_device(true, 0);
+    info.id = device_id;
+    let actor_protocol: Arc<dyn Protocol> = protocol.clone();
+    let transport: Arc<dyn Transport> = pair;
+    let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
+    let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
+    let active = Arc::new(AtomicBool::new(true));
+    let lifecycle_gate = Arc::new(Mutex::new(()));
+    let last_async_error = Arc::new(Mutex::new(None));
+    let actor_task = UsbBackend::spawn_device_actor(
+        device_id,
+        "lianli-lifecycle-test-device",
+        Arc::clone(&actor_protocol),
+        transport,
+        Arc::clone(&active),
+        Arc::clone(&lifecycle_gate),
+        frame_tx.clone(),
+        frame_rx,
+        display_tx.clone(),
+        display_rx,
+        command_rx,
+        Arc::clone(&last_async_error),
+    );
+    let device = UsbDevice {
+        protocol: Arc::clone(&actor_protocol),
+        transport_name: "echoing-lianli-test",
+        target_fps: None,
+        resolved_led_count: 0,
+        frame_tx,
+        display_tx,
+        command_tx,
+        actor_task: Some(actor_task),
+        active,
+        lifecycle_gate,
+        last_async_error,
+        info_template: info.clone(),
+        frame_diagnostics_emitted: false,
+        non_black_frame_diagnostics_emitted: false,
+    };
+    let frame_sink = device.frame_sink(device_id);
+    let display_sink = Some(device.display_sink(device_id));
+    backend
+        .connected
+        .write()
+        .expect("connected device map should remain available")
+        .insert(
+            device_id,
+            Arc::new(ConnectedUsbDevice {
+                device: tokio::sync::Mutex::new(device),
+                info_template: info,
+                protocol: actor_protocol,
+                target_fps: None,
+                frame_sink,
+                display_sink,
+            }),
+        );
+    (backend, protocol)
+}
+
+/// The manager state a lifecycle connect leaves behind: the backend's
+/// cached frame sink and the layout mapping.
+fn lianli_manager(backend: &Arc<UsbBackend>, device_id: DeviceId) -> BackendManager {
+    let mut manager = BackendManager::new();
+    manager.register_backend(backend.clone());
+    manager.set_device_frame_sink(
+        USB_OUTPUT_BACKEND_ID,
+        device_id,
+        backend.frame_sink(&device_id),
+    );
+    manager.map_device(LIANLI_LAYOUT_ID, USB_OUTPUT_BACKEND_ID, device_id);
+    manager
+}
+
+fn lianli_layout(
+    zones: Vec<hypercolor_types::spatial::Output>,
+) -> hypercolor_types::spatial::SpatialLayout {
+    use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+
+    SpatialLayout {
+        id: "lianli-lifecycle-layout".into(),
+        name: "Lian Li lifecycle layout".into(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones,
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    }
+}
+
+fn lianli_fan_zone(led_count: u32) -> hypercolor_types::spatial::Output {
+    use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
+
+    Output {
+        id: "fans".into(),
+        name: "fans".into(),
+        device_id: LIANLI_LAYOUT_ID.into(),
+        zone_name: None,
+        position: NormalizedPosition { x: 0.5, y: 0.5 },
+        size: NormalizedPosition { x: 1.0, y: 1.0 },
+        rotation: 0.0,
+        scale: 1.0,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: led_count,
+            direction: StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        display_order: 0,
+        attachment: None,
+        brightness: None,
+    }
+}
+
+fn device_failure(manager: &BackendManager, device_id: DeviceId) -> Option<AsyncWriteFailure> {
+    manager
+        .async_write_failures()
+        .into_iter()
+        .find(|failure| failure.device_id == device_id)
+}
+
+fn device_statistics(manager: &BackendManager, device_id: DeviceId) -> DeviceOutputStatistics {
+    manager
+        .device_output_statistics()
+        .into_iter()
+        .find(|statistics| statistics.device_id == device_id)
+        .expect("the device has an output queue")
+}
+
+/// What the daemon's lifecycle does with a claimed write failure: a
+/// reconnectable error on a renderable device schedules a reconnect.
+fn assert_lifecycle_reconnects(failure: &AsyncWriteFailure, device_id: DeviceId) {
+    use crate::device::{DeviceLifecycleManager, LifecycleAction};
+    use hypercolor_types::device::ErrorRecoverability;
+
+    let mut info = temporary_control_test_device(true, 0);
+    info.id = device_id;
+    let mut lifecycle = DeviceLifecycleManager::new();
+    lifecycle.on_discovered(device_id, &info, None);
+    lifecycle
+        .on_connected(device_id)
+        .expect("the controller connected");
+
+    assert!(matches!(failure.error, DeviceError::Disconnected { .. }));
+    assert_eq!(
+        failure.error.recoverability(),
+        ErrorRecoverability::Reconnect
+    );
+    assert!(
+        !failure.transient,
+        "a closed actor is not a transient fault"
+    );
+    assert!(failure.try_acknowledge(), "lifecycle claims the closure");
+    let actions = lifecycle
+        .on_comm_error_at(device_id, std::time::Instant::now())
+        .expect("a connected device accepts a comm error");
+    assert!(
+        actions.iter().any(|action| matches!(
+            action,
+            LifecycleAction::SpawnReconnect { device_id: id, .. } if *id == device_id
+        )),
+        "the closure schedules a reconnect: {actions:?}"
+    );
+}
+
+/// A static scene reuses routed outputs instead of submitting frames, so
+/// an actor that ends between deliveries is never written to again. Its
+/// closure must still reach lifecycle, and reuse must stop trusting the
+/// closed lane.
+#[tokio::test(start_paused = true)]
+async fn a_static_scene_reports_an_idle_lianli_actor_closure_to_lifecycle() {
+    let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x09];
+    let device_id = DeviceId::new();
+    let pair = Arc::new(EchoingWirelessPair::new(master, Duration::ZERO));
+    let (backend, protocol) = backend_with_empty_lianli_actor(device_id, master, Arc::clone(&pair));
+    let mut manager = lianli_manager(&backend, device_id);
+    // A saved layout still targets the fans from an earlier session.
+    let layout = lianli_layout(vec![lianli_fan_zone(26)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "fans".into(),
+        colors: vec![[40, 10, 80]; 26],
+    }];
+
+    let stats = manager.write_frame(&zone_colors, &layout);
+    assert_eq!(stats.devices_written, 1);
+    for _ in 0..100 {
+        if device_statistics(&manager, device_id).frames_sent == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let delivered = device_statistics(&manager, device_id);
+    assert_eq!(delivered.frames_sent, 1, "the scene's frame was delivered");
+    assert_eq!(delivered.transport_failed, 0);
+    assert_eq!(pair.state().clock, 0, "upkeep has not found the fan yet");
+
+    let mut failure = None;
+    for _ in 0..90 {
+        if manager.can_reuse_routed_frame_outputs(&layout) {
+            let _ = manager.reuse_routed_frame_outputs(&layout);
+        } else {
+            let _ = manager.write_frame(&zone_colors, &layout);
+        }
+        failure = device_failure(&manager, device_id);
+        if failure.is_some() {
+            break;
+        }
+        tokio::time::sleep(RENDER_FRAME).await;
+    }
+
+    assert!(protocol.session_restart().is_some(), "upkeep found the fan");
+    assert!(
+        backend
+            .frame_sink(&device_id)
+            .is_some_and(|sink| sink.is_closed()),
+        "the actor ended for a topology reconnect"
+    );
+    let failure =
+        failure.expect("an idle actor closure must reach lifecycle while the scene is static");
+    assert!(
+        !manager.can_reuse_routed_frame_outputs(&layout),
+        "a closed lane cannot satisfy routed reuse"
+    );
+    assert_lifecycle_reconnects(&failure, device_id);
+}
+
+/// A controller with no LEDs and no layout zone gets no output queue at
+/// all, so no frame can ever carry its actor's closure. Lifecycle must
+/// hear about it anyway, exactly once.
+#[tokio::test(start_paused = true)]
+async fn an_unrouted_lianli_actor_closure_reaches_lifecycle_without_a_queue() {
+    let master = [0xA0, 0x71, 0xAE, 0x72, 0xC0, 0x0A];
+    let device_id = DeviceId::new();
+    let pair = Arc::new(EchoingWirelessPair::new(master, Duration::ZERO));
+    let (backend, protocol) = backend_with_empty_lianli_actor(device_id, master, Arc::clone(&pair));
+    let mut manager = lianli_manager(&backend, device_id);
+    let layout = lianli_layout(Vec::new());
+    assert!(
+        manager.unassigned_output_zones(&layout).is_empty(),
+        "unassigned routing skips a controller with no LEDs"
+    );
+
+    let mut failure = None;
+    for _ in 0..90 {
+        let stats = manager.write_frame(&[], &layout);
+        assert_eq!(stats.devices_written, 0);
+        failure = device_failure(&manager, device_id);
+        if failure.is_some() {
+            break;
+        }
+        tokio::time::sleep(RENDER_FRAME).await;
+    }
+
+    assert!(protocol.session_restart().is_some(), "upkeep found the fan");
+    assert!(
+        backend
+            .frame_sink(&device_id)
+            .is_some_and(|sink| sink.is_closed()),
+        "the actor ended for a topology reconnect"
+    );
+    assert_eq!(
+        manager.routing_snapshot().queue_count,
+        0,
+        "the controller never had an output queue"
+    );
+    let failure = failure.expect("lifecycle must learn the actor closed although no queue exists");
+    assert_eq!(pair.state().transfers.len(), 0, "no LED frame was sent");
+    assert_lifecycle_reconnects(&failure, device_id);
+    assert!(
+        device_failure(&manager, device_id).is_none(),
+        "a claimed closure is reported once"
     );
 }
 

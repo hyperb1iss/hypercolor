@@ -1306,6 +1306,60 @@ impl Drop for AsyncWriteFailureTracker {
     }
 }
 
+/// A cached frame sink plus the failure that reports its permanent
+/// closure.
+///
+/// An actor can end while nothing is being written to it: a static scene
+/// only reuses routed outputs, and a device without LEDs in the layout has
+/// no output queue at all. Neither submits a frame that could fail, so the
+/// closure is reported here instead, once per sink, as a disconnect that
+/// lifecycle claims like any other async write failure.
+pub(super) struct FrameSinkClosureMonitor {
+    sink: DeviceFrameSinkHandle,
+    device_id: DeviceId,
+    tracker: AsyncWriteFailureTracker,
+    recorded: AtomicBool,
+}
+
+impl FrameSinkClosureMonitor {
+    pub(super) fn new(
+        backend_id: String,
+        device_id: DeviceId,
+        sink: DeviceFrameSinkHandle,
+    ) -> Self {
+        Self {
+            sink,
+            device_id,
+            tracker: AsyncWriteFailureTracker::new(backend_id, device_id, next_queue_generation()),
+            recorded: AtomicBool::new(false),
+        }
+    }
+
+    pub(super) fn sink(&self) -> &DeviceFrameSinkHandle {
+        &self.sink
+    }
+
+    /// The sink's closure, while lifecycle has not claimed it. The first
+    /// call after the sink closes records it; once claimed it stays claimed
+    /// until a fresh connect replaces this monitor.
+    pub(super) fn pending_failure(&self) -> Option<AsyncWriteFailure> {
+        if !self.sink.is_closed() {
+            return None;
+        }
+        if !self.recorded.swap(true, Ordering::AcqRel) {
+            let id = self.tracker.begin_delivery();
+            self.tracker.record_failure(
+                id,
+                DeviceError::Disconnected {
+                    device: self.device_id.to_string(),
+                },
+                false,
+            );
+        }
+        self.tracker.pending_failure()
+    }
+}
+
 impl DeliverySequence {
     const fn new(generation: u64, next_sequence: u64) -> Self {
         Self {
@@ -1717,6 +1771,11 @@ impl OutputQueue {
 
     pub(super) fn uses_frame_sink(&self) -> bool {
         self.uses_frame_sink
+    }
+
+    /// Whether this queue's lane has permanently closed.
+    pub(super) fn lane_closed(&self) -> bool {
+        self.lane.is_closed()
     }
 
     /// Push the latest payload for this device.
