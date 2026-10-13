@@ -194,8 +194,9 @@ collection routes do not, and the exceptions are
 contract: `GET /displays`, `/capture/monitors`, `/simulators/displays`, and
 `/config/schema` put a bare JSON array in `data` (they register through
 `OperationDoc::get_vec`), and `GET /control-surfaces` answers
-`{ surfaces: [...] }`. Check the generated OpenAPI document before assuming a
-collection is paged. Diagnostic telemetry (system status internals,
+`{ surfaces: [...] }`. `GET /effects/console` is a cursor window over a log,
+`{ entries, next_seq, truncated }`, not a collection. Check the generated
+OpenAPI document before assuming a collection is paged. Diagnostic telemetry (system status internals,
 metrics) deliberately stays daemon-local; clients consume tolerant subsets.
 When adding or changing an endpoint in a shared domain, change the type in
 `hypercolor-types::api`, never a hand-mirrored copy.

@@ -185,6 +185,10 @@ still carry the standard envelope, so `meta` is unchanged and only `data`
 deviates, but a client cannot read `data.items` or `data.total` on any of
 them.
 
+`GET /api/v1/effects/console` is a cursor window over a bounded log rather than
+a collection: `{"entries": [ ], "next_seq": 42, "truncated": false}`. Clients
+pass `next_seq` back as `after` to read only newer messages.
+
 `GET /api/v1/effects` is the one row that reads its query string (Spec 78
 wave 78.0a). It honors `category`, `audio_reactive`, `screen_reactive`,
 `input_reactive`, `source`, and `q`, all narrowing the catalog server-side, plus

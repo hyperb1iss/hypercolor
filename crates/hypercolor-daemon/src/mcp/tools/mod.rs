@@ -16,6 +16,7 @@ use crate::app_state::AppState;
 use crate::domain::DomainError;
 use crate::mcp::selector::SelectorError;
 
+mod authoring;
 mod canvas;
 mod devices;
 mod displays;
@@ -104,6 +105,8 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         system::build_diagnose(),
         system::build_openrgb_status(),
         canvas::build_capture_canvas(),
+        authoring::build_install_effect(),
+        authoring::build_get_effect_console(),
     ]
 }
 
@@ -526,6 +529,10 @@ async fn execute_structured_tool(
         "set_display_face" => displays::handle_set_display_face_with_state(params, state).await,
         "get_layout" => system::handle_get_layout_with_state(state).await,
         "diagnose" => system::handle_diagnose_with_state(params, state).await,
+        "install_effect" => authoring::handle_install_effect_with_state(params, state).await,
+        "get_effect_console" => {
+            authoring::handle_get_effect_console_with_state(params, state).await
+        }
         "openrgb_status" => serialize_result(
             crate::domain::openrgb_setup::openrgb_status(&state.domains.devices).await,
         ),

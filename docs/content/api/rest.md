@@ -436,7 +436,50 @@ the daemon. Call this after shipping an effect from the SDK.
 
 {% <api_endpoint method="POST" path="/api/v1/effects/install"> %}
 Install an effect from an uploaded file via multipart form upload, so a freshly
-built HTML bundle reaches the library without a manual file copy.
+built HTML bundle reaches the library without a manual file copy. Uploading a
+file name that is already installed replaces that effect in place and keeps its
+id, so a scene already running it reloads the new page on its next frame.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="GET" path="/api/v1/effects/console"> %}
+Read what HTML effect pages printed: `console.*` output and uncaught script
+errors, oldest first. Locations in an effect's own page point at the author's
+source file and line, not the engine's runtime copy with its injected
+preamble. The daemon keeps the most recent 512 messages.
+
+**Query parameters:**
+
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `after` | `0` | Return only messages after this cursor |
+| `limit` | `100` | At most this many messages, `1` to `500` |
+| `effect` | none | Effect id or name to narrow to |
+| `level` | `debug` | Lowest severity: `debug`, `log`, `warn`, or `error` |
+
+**Response:**
+
+```json
+{
+  "entries": [
+    {
+      "seq": 42,
+      "timestamp_ms": 1760300000000,
+      "level": "error",
+      "message": "TypeError: ctx is null at file:///home/me/fx/ember.html:57:9",
+      "effect_name": "Ember",
+      "effect_id": "0199c1f2-3a4b-7c5d-8e6f-0a1b2c3d4e5f",
+      "source_file": "ember.html",
+      "line": 57
+    }
+  ],
+  "next_seq": 42,
+  "truncated": false
+}
+```
+
+This is a cursor window, not a paged list. Pass `next_seq` back as `after` to
+read only newer output. `truncated: true` means messages after your cursor
+were evicted before the read.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="GET" path="/api/v1/effects/{id}/cover"> %}
