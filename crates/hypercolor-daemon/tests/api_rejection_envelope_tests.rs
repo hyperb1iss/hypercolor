@@ -2,9 +2,12 @@
 //!
 //! The API extractors refuse malformed requests before a handler runs.
 //! These tests pin that every such refusal carries `{ error, meta }` with
-//! a stable code, the decoder's full diagnostic, and the offending field
-//! path, and that a WebSocket `command` replaying the same request reports
-//! the same status and the same error object a REST caller gets.
+//! a stable code, that a malformed request also carries the decoder's full
+//! diagnostic and the offending field path, and that a WebSocket `command`
+//! replaying the same request reports the same status and the same error
+//! object a REST caller gets. A missing request extension, a daemon defect
+//! rather than a client mistake, answers the generic internal-error
+//! message instead.
 
 use std::sync::Arc;
 use std::time::Duration;

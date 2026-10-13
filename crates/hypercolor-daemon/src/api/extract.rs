@@ -6,8 +6,11 @@
 //! [`DomainError`]. Each wrapper here delegates to the stock extractor
 //! and converts its typed rejection into the `DomainError` it describes,
 //! so the refusal renders as the canonical error envelope with a stable
-//! code, the framework's full diagnostic as the message, and the
-//! offending field path when the decoder reports one.
+//! code. A malformed request also carries the framework's full diagnostic
+//! as the message and the offending field path when the decoder reports
+//! one. A missing request extension is the exception: it is a daemon
+//! wiring defect, not a client mistake, so it answers `500 internal_error`
+//! with the generic message and keeps the diagnostic in the log.
 //!
 //! The wrappers cover the six extractor families the daemon's handlers
 //! use: JSON bodies, path parameters, query strings, multipart uploads,
