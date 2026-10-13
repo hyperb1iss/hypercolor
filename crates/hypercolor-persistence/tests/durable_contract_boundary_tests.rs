@@ -1,9 +1,15 @@
-//! A rewrite that lands between a write's rename and its durability
-//! barrier is never certified as the write's bytes.
+//! The edge of the durability contract: a writer active during a call.
 //!
-//! The replacement observer runs inside that window, which gives this test
-//! a deterministic seam. The observer is process-wide, so this suite has a
-//! binary of its own.
+//! A write's guarantee covers outside edits that completed before the call.
+//! A writer that rewrites the destination while the call is in flight can
+//! leave other bytes behind after the call reports success, as it can for
+//! any rename-based write. What the contract does promise is that once that
+//! writer has finished, nothing trusts the stale result: the next check or
+//! save reads the file, finds the difference, and repairs it.
+//!
+//! The replacement observer runs between a write's rename and its directory
+//! barrier, which gives this suite a deterministic seam inside the call. The
+//! observer is process-wide, so the suite has a binary of its own.
 
 #![cfg(unix)]
 
@@ -28,24 +34,26 @@ fn rewrite_in_place_once(path: &Path) {
 }
 
 #[test]
-fn a_rewrite_inside_the_landing_window_is_not_certified() {
+fn a_rewrite_during_the_call_is_repaired_by_the_next_save() {
     assert!(set_replacement_observer(rewrite_in_place_once));
     let root = tempfile::tempdir().expect("tempdir");
     let path = root.path().join("state.json");
     let writer = AtomicFileWriter::new(&path).expect("writer");
     writer.write(b"seed").expect("seed write lands");
 
-    // Write A; after its rename and before its barrier, something rewrites
-    // that same inode with B.
+    // Write A while something rewrites that same inode with B after the
+    // rename and before the barrier. That writer is active during the call,
+    // so the call is outside the contract and may report success.
     *REWRITE_ON_LANDING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) =
         Some(fs::canonicalize(&path).expect("canonical destination"));
     writer.write(b"AAAA").expect("write lands");
     assert_eq!(fs::read(&path).expect("read destination"), b"BBBB");
-    assert!(!writer.holds_durable_bytes());
 
-    // Saving A again must really write it.
+    // That writer has finished, so from here the contract holds: nothing
+    // trusts the stale result, and the next save of A really writes it.
+    assert!(!writer.holds_durable_bytes());
     let before = fs::metadata(&path).expect("metadata").ino();
     assert_eq!(
         writer.write(b"AAAA").expect("save lands"),
