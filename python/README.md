@@ -173,7 +173,8 @@ microseconds on the daemon's monotonic clock, beside the wall-clock
 `timestamp`. Order and time messages with `mono_us`: it never moves backwards
 when the host clock steps. `stream.hello.clock_epoch` names the clock, and a
 reconnect that reports a different epoch means the daemon restarted and old
-stamps no longer line up.
+stamps no longer line up. Command responses carry `mono_us` too, read
+after the command finished, so it falls inside each request's round trip.
 
 ## Development
 

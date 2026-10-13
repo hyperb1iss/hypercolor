@@ -20,6 +20,7 @@ from hypercolor.websocket import (
     ActiveSubscription,
     BinaryMessage,
     CanvasData,
+    CommandResponse,
     DisplayPreviewData,
     EventMessage,
     FrameData,
@@ -372,6 +373,20 @@ def test_decode_stamped_messages_read_mono_us() -> None:
     assert sensors.event == "sensors"
     assert sensors.mono_us == 12346000
     assert isinstance(legacy, EventMessage)
+    assert legacy.mono_us is None
+
+
+def test_decode_command_response_reads_the_round_trip_stamp() -> None:
+    stamped = HypercolorEventStream._decode_json(
+        '{"type":"response","id":"rt-1","status":200,"mono_us":81250000,"data":{}}'
+    )
+    legacy = HypercolorEventStream._decode_json(
+        '{"type":"response","id":"rt-2","status":200,"data":{}}'
+    )
+
+    assert isinstance(stamped, CommandResponse)
+    assert stamped.mono_us == 81250000
+    assert isinstance(legacy, CommandResponse)
     assert legacy.mono_us is None
 
 
