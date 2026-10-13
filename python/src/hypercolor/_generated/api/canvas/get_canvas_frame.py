@@ -118,7 +118,7 @@ def sync_detailed(
     width: int | Unset = UNSET,
     height: int | Unset = UNSET,
 ) -> Response[ApiErrorBody | File]:
-    """Capture the composed canvas
+    """Capture the composed canvas (JPEG, or PNG with format=png)
 
     Args:
         format_ (CanvasImageFormat | Unset): Image encoding for a canvas capture.
@@ -153,7 +153,7 @@ def sync(
     width: int | Unset = UNSET,
     height: int | Unset = UNSET,
 ) -> ApiErrorBody | File | None:
-    """Capture the composed canvas
+    """Capture the composed canvas (JPEG, or PNG with format=png)
 
     Args:
         format_ (CanvasImageFormat | Unset): Image encoding for a canvas capture.
@@ -183,7 +183,7 @@ async def asyncio_detailed(
     width: int | Unset = UNSET,
     height: int | Unset = UNSET,
 ) -> Response[ApiErrorBody | File]:
-    """Capture the composed canvas
+    """Capture the composed canvas (JPEG, or PNG with format=png)
 
     Args:
         format_ (CanvasImageFormat | Unset): Image encoding for a canvas capture.
@@ -216,7 +216,7 @@ async def asyncio(
     width: int | Unset = UNSET,
     height: int | Unset = UNSET,
 ) -> ApiErrorBody | File | None:
-    """Capture the composed canvas
+    """Capture the composed canvas (JPEG, or PNG with format=png)
 
     Args:
         format_ (CanvasImageFormat | Unset): Image encoding for a canvas capture.
