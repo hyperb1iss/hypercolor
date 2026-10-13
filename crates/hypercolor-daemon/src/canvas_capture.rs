@@ -163,6 +163,10 @@ pub async fn capture_canvas(
         width: 0,
         height: 0,
     });
+    // Everything published before the capture began is stale. Marking once,
+    // rather than before each wait, keeps a frame the renderer published
+    // during a burst's interval sleep counted as fresh.
+    drop(receiver.borrow_and_update());
 
     let mut captured = Vec::with_capacity(usize::try_from(request.frames).unwrap_or(1));
     for index in 0..request.frames {
@@ -183,10 +187,10 @@ pub async fn capture_canvas(
     Ok(captured)
 }
 
-/// Wait for the next frame published after this call, falling back to the
-/// latest published frame when none arrives in time.
+/// Take the next frame the receiver has not seen yet, waiting for one when
+/// necessary, and fall back to the latest published frame when none arrives
+/// in time.
 async fn next_frame(receiver: &mut PreviewFrameReceiver) -> (CanvasFrame, bool) {
-    drop(receiver.borrow_and_update());
     let fresh = matches!(
         tokio::time::timeout(FRESH_FRAME_TIMEOUT, receiver.changed()).await,
         Ok(Ok(()))

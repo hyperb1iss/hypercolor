@@ -149,6 +149,49 @@ async fn capture_bursts_return_distinct_frames_in_order() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn burst_counts_a_frame_published_during_the_interval_as_fresh() {
+    let (bus, runtime) = runtime();
+    let runtime = Arc::new(runtime);
+    let publisher = {
+        let runtime = Arc::clone(&runtime);
+        let bus = Arc::clone(&bus);
+        tokio::spawn(async move {
+            while runtime.tracked_canvas_receiver_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+            bus.canvas_lane()
+                .send_replace(solid_frame(4, 4, MAGENTA, 1));
+            // One more frame lands mid-interval, then the renderer goes quiet.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            bus.canvas_lane()
+                .send_replace(solid_frame(4, 4, MAGENTA, 2));
+        })
+    };
+
+    let frames = capture_canvas(
+        &runtime,
+        CanvasCaptureRequest {
+            frames: 3,
+            interval: Duration::from_millis(100),
+            ..CanvasCaptureRequest::single(CanvasImageFormat::Jpeg)
+        },
+    )
+    .await
+    .expect("burst capture should succeed");
+    publisher.await.expect("publisher should finish");
+
+    let summary: Vec<(u32, bool)> = frames
+        .iter()
+        .map(|frame| (frame.frame_number, frame.fresh))
+        .collect();
+    assert_eq!(
+        summary,
+        [(1, true), (2, true), (2, false)],
+        "the frame published during the sleep is fresh; the quiet one after is not"
+    );
+}
+
 #[tokio::test]
 async fn capture_holds_canvas_demand_only_while_it_runs() {
     let (bus, runtime) = runtime();
