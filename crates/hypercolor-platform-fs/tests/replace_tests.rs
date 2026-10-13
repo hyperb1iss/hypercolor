@@ -385,3 +385,27 @@ fn a_final_symlink_is_refused_for_sync() {
 
     open_regular_no_follow_for_sync(&link).expect_err("a final symlink is never followed");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_is_refused_for_sync_without_waiting_for_a_writer() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+    let fifo = directory.path().join("state.json");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("run mkfifo");
+    assert!(made.success(), "mkfifo should create the FIFO");
+
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(open_regular_no_follow_for_sync(&fifo).is_err());
+    });
+    let refused = finished
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("opening a FIFO must not wait for a writer");
+    assert!(refused, "a FIFO is not a regular file");
+}

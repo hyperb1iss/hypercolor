@@ -112,8 +112,9 @@ pub fn open_no_follow(path: &Path) -> io::Result<File> {
 /// Open an existing regular file so it can be synced, without following a
 /// final symlink or Windows reparse point.
 ///
-/// Unix opens read-only, which is enough to sync. Windows opens with write
-/// access, since it flushes only through such a handle.
+/// Unix opens read-only, which is enough to sync, and non-blocking, so a
+/// FIFO at the path is refused instead of waiting for a writer. Windows
+/// opens with write access, since it flushes only through such a handle.
 ///
 /// # Errors
 ///
@@ -122,7 +123,7 @@ pub fn open_no_follow(path: &Path) -> io::Result<File> {
 /// a regular file.
 pub fn open_regular_no_follow_for_sync(path: &Path) -> io::Result<File> {
     #[cfg(unix)]
-    let file = unix::open_no_follow(path)?;
+    let file = unix::open_no_follow_nonblocking(path)?;
 
     #[cfg(target_os = "windows")]
     let file = windows::open_no_follow_with_write(path, true)?;
