@@ -16,6 +16,6 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
         )
         .query::<canvas::CanvasFrameQuery>()
         .component::<crate::canvas_capture::CanvasImageFormat>()
-        .binary("image/jpeg")],
+        .binary(&["image/jpeg", "image/png"])],
     ))
 }

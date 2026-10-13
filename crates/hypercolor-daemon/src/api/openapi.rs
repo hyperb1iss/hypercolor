@@ -105,7 +105,8 @@ fn generic_schema_name<T>(suffix: &str) -> std::borrow::Cow<'static, str> {
 pub(crate) enum ResponseShape {
     Enveloped(SchemaName),
     Json(SchemaName),
-    Binary(&'static str),
+    /// Raw bytes in any of these media types.
+    Binary(&'static [&'static str]),
     Empty,
 }
 
@@ -220,8 +221,8 @@ impl OperationDoc {
         self
     }
 
-    pub(crate) fn binary(mut self, content_type: &'static str) -> Self {
-        self.success = ResponseShape::Binary(content_type);
+    pub(crate) fn binary(mut self, content_types: &'static [&'static str]) -> Self {
+        self.success = ResponseShape::Binary(content_types);
         self
     }
 
@@ -379,15 +380,18 @@ fn success_response(summary: &str, shape: ResponseShape) -> Response {
                 Content::new(Some(Ref::from_schema_name(schema()))),
             )
             .build(),
-        ResponseShape::Binary(content_type) => response
-            .content(
-                content_type,
-                Content::new(Some(ObjectBuilder::new().schema_type(Type::String).format(
-                    Some(utoipa::openapi::SchemaFormat::KnownFormat(
-                        utoipa::openapi::KnownFormat::Binary,
-                    )),
-                ))),
-            )
+        ResponseShape::Binary(content_types) => content_types
+            .iter()
+            .fold(response, |response, content_type| {
+                response.content(
+                    *content_type,
+                    Content::new(Some(ObjectBuilder::new().schema_type(Type::String).format(
+                        Some(utoipa::openapi::SchemaFormat::KnownFormat(
+                            utoipa::openapi::KnownFormat::Binary,
+                        )),
+                    ))),
+                )
+            })
             .build(),
         ResponseShape::Empty => response.build(),
     }

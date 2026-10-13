@@ -422,7 +422,7 @@ The page needs a `<title>`, a render surface (`<canvas id="exCanvas">`, or `<div
 }
 ```
 
-Reusing a `file_name` replaces that effect in place and keeps its ID, which is what makes the tool idempotent. A layer already running the effect reloads the new page on its own. A first install only adds the effect to the catalog, so call [`set_effect`](#set-effect) once to put it on a layer. The tool is destructive because a reused file name overwrites the page that was installed under it.
+Reusing a `file_name` replaces that effect in place and keeps its ID, so a layer already running the effect reloads the new page on its own. That reload is why the tool is not idempotent: repeating an identical call restarts the running page and returns a new console cursor, so do not retry it blindly. A first install only adds the effect to the catalog, so call [`set_effect`](#set-effect) once to put it on a layer. The tool is destructive because a reused file name overwrites the page that was installed under it.
 
 ```json
 {
