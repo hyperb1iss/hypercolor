@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "protocol": "hypercolor.websocket",
   "version": "1.0",
   "subprotocol": "hypercolor-v1",

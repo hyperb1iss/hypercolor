@@ -46,7 +46,11 @@ pub const PROTOCOL_VERSION: &str = HYPERCOLOR_WS_VERSION;
 /// Sec-WebSocket-Protocol value clients negotiate.
 pub const SUBPROTOCOL: &str = HYPERCOLOR_WS_PROTOCOL;
 /// Manifest schema version, bumped when the manifest's own shape moves.
-pub const SCHEMA_VERSION: u64 = 2;
+///
+/// Version 3 added the top-level `clock` block. Nothing in this file or
+/// its consumers defines a new block as compatible, so a new block counts
+/// as a shape change.
+pub const SCHEMA_VERSION: u64 = 3;
 
 /// Build the manifest.
 ///
