@@ -185,10 +185,13 @@ fn inject_runtime_head_block(html: &str, block: &str) -> (String, RuntimeLineShi
 
     if let Some(insert_at) = insert_at {
         let (before, after) = html.split_at(insert_at);
+        // The leading newline ends the author's line before the block, unless
+        // that line already ended in a lone carriage return: the two then
+        // read as one CRLF break.
+        let leading_break = usize::from(!before.ends_with('\r'));
         let shift = RuntimeLineShift {
             insert_line: line_breaks(before) + 1,
-            // The leading newline ends the author's line before the block.
-            inserted_lines: block_lines + 1,
+            inserted_lines: block_lines + leading_break,
         };
         return (format!("{before}\n{block}{after}"), shift);
     }
@@ -449,6 +452,20 @@ mod tests {
             let (_, shift) = inject_runtime_head_block(html, block);
             assert_eq!(shift.insert_line, 3, "{html:?}");
         }
+        // A lone carriage return right before the insertion point fuses with
+        // the injected newline into one CRLF break.
+        let html = "line0\rline1\r<script>run()</script>\rtail\r";
+        let (runtime, shift) = inject_runtime_head_block(html, block);
+        let runtime_lines: Vec<&str> = runtime
+            .split(['\r', '\n'])
+            .filter(|line| !line.is_empty())
+            .collect();
+        let tail_runtime_line = runtime_lines
+            .iter()
+            .position(|line| *line == "tail")
+            .expect("tail survives")
+            + 1;
+        assert_eq!(shift.original_line(tail_runtime_line), Some(4));
     }
 
     #[test]

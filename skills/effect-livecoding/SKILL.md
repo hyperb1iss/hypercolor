@@ -76,10 +76,10 @@ Without MCP or the CLI, the REST equivalents are `POST /api/v1/effects/install`
 The validator rejects a page missing any of these, and lists every problem at
 once: a `<title>` (the catalog name), a render surface, and at least one inline
 `<script>`. For an LED effect the render surface is `<canvas id="exCanvas">`; the
-parser looks for that id, so a plain `<canvas>` fails. Keep everything inline: a rig without network
-access cannot fetch an outside script, and the SDK validator flags one.
-`references/starter.html` is a complete page that follows every rule below; copy
-it rather than starting blank.
+parser looks for that id, so a plain `<canvas>` fails. Keep everything inline:
+a rig without network access cannot fetch an outside script, and the SDK
+validator flags one. `references/starter.html` is a complete page that follows
+every rule below; copy it rather than starting blank.
 
 - **Size the canvas from the window.** The engine renders at 640x480 by default
   and the user can change it. Set `canvas.width = innerWidth` and
