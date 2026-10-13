@@ -718,12 +718,22 @@ impl SceneService {
         #[cfg(all(test, feature = "persistence-test-hooks"))]
         self.pause_before_persistence_for_test().await;
         let _snapshot_save_guard = Arc::clone(&self.0.snapshot_save_gate).read_owned().await;
+        // The marker says the file should already hold the current revision.
+        // Confirming that reads, compares, and syncs the file, so it runs on
+        // the blocking pool with no scene lock held; anything short of a
+        // confirmation falls through to a real save.
+        if self.store_holds(self.0.commits.revision()) {
+            let writer = writer.clone();
+            if tokio::task::spawn_blocking(move || writer.holds_durable_bytes())
+                .await
+                .unwrap_or(false)
+            {
+                return Ok(Some(AtomicWriteOutcome::Written));
+            }
+        }
         let (revision, scenes, reservation, store_epoch) = {
             let manager = self.0.manager.read().await;
             let revision = self.0.commits.revision();
-            if self.store_holds(revision) && writer.holds_durable_bytes() {
-                return Ok(Some(AtomicWriteOutcome::Written));
-            }
             // Commits reserve under the write lock, so reserving under this
             // read lock gives the snapshot a generation no older state can
             // follow. Only the named scenes are copied out of the lock.
