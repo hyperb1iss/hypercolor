@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::effect::{ControlDefinition, EffectId};
+use hypercolor_types::effect::ControlDefinition;
 use hypercolor_types::layer::{BlendMode, LayerAdjust, LayerSource, LayerTransform};
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
 use crate::api;
+use crate::components::layer_panel::source::remembered_effect_layer_source;
 use crate::preferences::EffectPreferences;
 use crate::toasts;
 use crate::ws::EffectErrorHint;
@@ -29,7 +30,7 @@ pub(super) async fn apply_effect_to_current_led_zones(ctx: &EffectsContext, effe
     // primary-zone apply path — an all-zones apply should start every
     // zone in the user's saved state, not at defaults.
     let prefs = ctx.preferences.get(&effect_id);
-    let Some(source) = effect_layer_source(&effect_id, prefs.as_ref()) else {
+    let Ok(source) = remembered_effect_layer_source(&effect_id, prefs.as_ref()) else {
         toasts::toast_error("That effect has an invalid identifier");
         return;
     };
@@ -106,21 +107,6 @@ async fn apply_effect_layer(zone_id: &str, source: &LayerSource) -> api::ApiResu
             format!("Layer stack changed at revision {current}"),
         )),
     }
-}
-
-fn effect_layer_source(effect_id: &str, prefs: Option<&EffectPreferences>) -> Option<LayerSource> {
-    let uuid = uuid::Uuid::parse_str(effect_id.trim()).ok()?;
-    Some(LayerSource::Effect {
-        effect_id: EffectId::new(uuid),
-        controls: prefs
-            .map(|prefs| prefs.control_values.clone())
-            .unwrap_or_default(),
-        control_bindings: HashMap::new(),
-        preset_id: prefs
-            .and_then(|prefs| prefs.preset_id.as_deref())
-            .and_then(|raw| uuid::Uuid::parse_str(raw.trim()).ok())
-            .map(hypercolor_types::library::PresetId),
-    })
 }
 
 pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::PrimaryEffectView) {

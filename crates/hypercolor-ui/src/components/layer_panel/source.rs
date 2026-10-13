@@ -7,12 +7,15 @@
 
 use std::collections::HashMap;
 
+use hypercolor_types::api::scene::CreateLayerRequest;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::effect::{EffectCategory, EffectId};
-use hypercolor_types::layer::{BlendMode, LayerSource, MediaPlayback};
+use hypercolor_types::layer::{BlendMode, LayerAdjust, LayerSource, LayerTransform, MediaPlayback};
+use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::ZoneRole;
 
 use crate::api::ZoneResource;
+use crate::preferences::EffectPreferences;
 use hypercolor_types::viewport::FitMode;
 use uuid::Uuid;
 
@@ -215,6 +218,53 @@ pub fn effect_layer_source(effect_id: &str) -> Result<LayerSource, String> {
         control_bindings: HashMap::new(),
         preset_id: None,
     })
+}
+
+/// Build an effect layer source that starts in the user's remembered state
+/// for that effect: its saved preset and control values, when there are
+/// any, so that state rides in the one request that creates the layer
+/// instead of being patched on afterwards. A saved preset id that no
+/// longer parses is dropped; the saved controls still apply.
+pub fn remembered_effect_layer_source(
+    effect_id: &str,
+    prefs: Option<&EffectPreferences>,
+) -> Result<LayerSource, String> {
+    let mut source = effect_layer_source(effect_id)?;
+    if let Some(prefs) = prefs
+        && let LayerSource::Effect {
+            controls,
+            preset_id,
+            ..
+        } = &mut source
+    {
+        controls.clone_from(&prefs.control_values);
+        *preset_id = prefs
+            .preset_id
+            .as_deref()
+            .and_then(|raw| Uuid::parse_str(raw.trim()).ok())
+            .map(PresetId);
+    }
+    Ok(source)
+}
+
+/// The request the layer panel sends to add one picked layer to a surface.
+#[must_use]
+pub fn add_layer_request(
+    name: Option<String>,
+    source: LayerSource,
+    existing_layer_count: usize,
+) -> CreateLayerRequest {
+    let blend = default_blend_for_added_layer(&source, existing_layer_count);
+    CreateLayerRequest {
+        name,
+        source,
+        blend: Some(blend),
+        opacity: Some(1.0),
+        transform: Some(LayerTransform::default()),
+        adjust: Some(LayerAdjust::default()),
+        bindings: None,
+        enabled: None,
+    }
 }
 
 /// Build a media layer source from an asset id string.
