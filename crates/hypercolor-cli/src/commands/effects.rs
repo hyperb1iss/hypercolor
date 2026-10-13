@@ -17,6 +17,7 @@ use hypercolor_types::effect::{ControlDefinition, EffectCategory};
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 
+use super::effect_authoring::{self, EffectCaptureArgs, EffectConsoleArgs, EffectInstallArgs};
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat, urlencoded};
 
@@ -48,6 +49,12 @@ pub enum EffectCommand {
     Reset,
     /// Rescan the effect library for new or changed effects.
     Rescan,
+    /// Save the composed canvas as an image, to see what is rendering.
+    Capture(EffectCaptureArgs),
+    /// Show console output and script errors from HTML effects.
+    Console(EffectConsoleArgs),
+    /// Install or update an HTML effect file.
+    Install(EffectInstallArgs),
 }
 
 /// Arguments for `effects list`.
@@ -135,6 +142,15 @@ pub async fn execute(args: &EffectsArgs, client: &DaemonClient, ctx: &OutputCont
         EffectCommand::Patch(patch_args) => execute_patch(patch_args, client, ctx).await,
         EffectCommand::Reset => execute_reset(client, ctx).await,
         EffectCommand::Rescan => execute_rescan(client, ctx).await,
+        EffectCommand::Capture(capture_args) => {
+            effect_authoring::execute_capture(capture_args, client, ctx).await
+        }
+        EffectCommand::Console(console_args) => {
+            effect_authoring::execute_console(console_args, client, ctx).await
+        }
+        EffectCommand::Install(install_args) => {
+            effect_authoring::execute_install(install_args, client, ctx).await
+        }
     }
 }
 

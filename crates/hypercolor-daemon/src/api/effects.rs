@@ -411,6 +411,7 @@ pub async fn install_effect(
         return DomainError::malformed("Uploaded effect must be valid UTF-8 HTML.").into_response();
     };
 
+    let console_after = domain::effect::console::console_cursor(EffectConsoleJournal::global());
     match install_html_effect(state.as_ref(), file_name.as_deref(), &html).await {
         Ok(installed) => envelope::created(InstalledEffectResponse {
             id: installed.metadata.id.to_string(),
@@ -418,6 +419,7 @@ pub async fn install_effect(
             path: installed.source_path.display().to_string(),
             controls: installed.metadata.controls.len(),
             presets: installed.metadata.presets.len(),
+            console_after,
         }),
         Err(error) => DomainError::from(error).into_response(),
     }

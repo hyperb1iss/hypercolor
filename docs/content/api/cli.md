@@ -81,11 +81,15 @@ hypercolor
 │   ├── list
 │   ├── activate
 │   ├── stop
+│   ├── pause
+│   ├── resume
 │   ├── info
 │   ├── patch
 │   ├── reset
 │   ├── rescan
-│   └── layout {show | set | clear}
+│   ├── capture
+│   ├── console
+│   └── install
 ├── brightness        {get | set}
 ├── scenes            {list | active | create | snapshot | activate | deactivate | delete | info}
 ├── devices           Discovery, pairing, hardware control
@@ -223,6 +227,50 @@ default values, and `effects stop` calls `POST /api/v1/scene/clear`.
 Run `hypercolor effects rescan` after dropping a freshly built HTML effect into
 the effects directory so the daemon picks it up. Spatial layout selection lives
 on scenes through `scene.layout_id`; effects do not carry layout associations.
+
+#### Writing effects
+
+Three subcommands cover the loop of writing an HTML effect against a running
+daemon: install the page, read what it printed, and look at what it drew.
+
+```bash
+hypercolor effects install ember.html --activate   # Install, then apply it
+hypercolor effects console --after 41 --level warn # Script errors since then
+hypercolor effects capture -o ember.png --width 320
+hypercolor effects capture -o ember.png --frames 4 --interval-ms 200
+```
+
+`effects install` uploads the file through `POST /api/v1/effects/install`.
+Installing the same file name again replaces that effect in place and keeps
+its id, so a scene already running it reloads the new page. The command prints
+the console cursor taken before the install; pass it to `effects console
+--after` to see only what the new version printed.
+
+`effects console` reads `GET /api/v1/effects/console`. Locations in an effect's
+own page point at your source file and line rather than the engine's runtime
+copy. Each run ends by printing the cursor for the next one.
+
+| Flag | Purpose |
+| --- | --- |
+| `--after <SEQ>` | Only messages after this cursor. |
+| `--effect <ID-OR-NAME>` | One effect's output. |
+| `--level <LEVEL>` | Lowest severity: `debug`, `log`, `warn`, or `error`. |
+| `--limit <N>` | At most this many messages (default 100). |
+
+`effects capture` saves the composed canvas through `GET /api/v1/canvas/frame`.
+The canvas is what effects draw at full brightness, before the spatial sampler
+maps it onto LEDs.
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `-o`, `--output <PATH>` | `canvas-<frame>.png` | File to write. A burst adds `-1`, `-2`, and so on. |
+| `--image-format <png\|jpeg>` | `png` | Image encoding. |
+| `--width <PX>` | canvas width | Output width; the height keeps the aspect ratio. |
+| `--frames <1-8>` | `1` | Capture a burst to judge motion. |
+| `--interval-ms <MS>` | `250` | Pause between burst frames. |
+
+A burst stops early when nothing is rendering, since every further frame would
+repeat the last one.
 
 {{< img path="img/ui/effects.webp" alt="The effects gallery in the Hypercolor web UI" />}}
 

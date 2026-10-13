@@ -99,6 +99,79 @@ impl DaemonClient {
         parse_api_response(response, path).await
     }
 
+    /// Send a GET request to a route that answers raw bytes rather than a
+    /// JSON envelope, such as an image.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the daemon is unreachable or answers with a
+    /// non-success status, rendered from its error envelope when it sent one.
+    pub async fn get_binary(&self, path: &str) -> Result<BinaryResponse> {
+        let url = format!("{}/api/v1{path}", self.base_url);
+        let response = self
+            .with_auth(self.http.get(&url))
+            .send()
+            .await
+            .with_context(|| {
+                format!("Failed to connect to daemon at {url}. Is the daemon running?")
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("{}", describe_error_body(status, &body));
+        }
+        let headers = response.headers().clone();
+        let bytes = response
+            .bytes()
+            .await
+            .with_context(|| format!("Failed to read the daemon response for {path}"))?;
+        Ok(BinaryResponse {
+            bytes: bytes.to_vec(),
+            headers,
+        })
+    }
+
+    /// Upload one file as the `file` field of a multipart form and decode
+    /// the enveloped payload as `T`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the daemon is unreachable, refuses the upload, or
+    /// answers with a payload that does not match `T`.
+    pub async fn post_file<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        file_name: &str,
+        content_type: &str,
+        contents: &[u8],
+    ) -> Result<T> {
+        let url = format!("{}/api/v1{path}", self.base_url);
+        let boundary = multipart_boundary(contents);
+        // Built by hand so the workspace reqwest dependency does not need
+        // its multipart feature, which every crate would then compile.
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\nContent-Type: {content_type}\r\n\r\n",
+            file_name.replace(['"', '\r', '\n'], "_")
+        )
+        .into_bytes();
+        body.extend_from_slice(contents);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+        let response = self
+            .with_auth(self.http.post(&url))
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .send()
+            .await
+            .with_context(|| {
+                format!("Failed to connect to daemon at {url}. Is the daemon running?")
+            })?;
+        parse_api_response(response, path).await
+    }
+
     /// Fetch every page of a list route, following `page.has_more` until the
     /// daemon reports the listing complete.
     ///
@@ -272,6 +345,38 @@ impl DaemonClient {
         } else {
             request
         }
+    }
+}
+
+/// A raw response body and the headers that describe it.
+#[derive(Debug, Clone)]
+pub struct BinaryResponse {
+    /// Response body.
+    pub bytes: Vec<u8>,
+    /// Response headers.
+    pub headers: reqwest::header::HeaderMap,
+}
+
+impl BinaryResponse {
+    /// A header value as text, when present and printable.
+    #[must_use]
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).and_then(|value| value.to_str().ok())
+    }
+}
+
+/// A multipart boundary that does not occur in `contents`.
+fn multipart_boundary(contents: &[u8]) -> String {
+    let mut attempt = 0_u32;
+    loop {
+        let boundary = format!("hypercolor-cli-upload-{attempt:08x}");
+        if !contents
+            .windows(boundary.len())
+            .any(|window| window == boundary.as_bytes())
+        {
+            return boundary;
+        }
+        attempt += 1;
     }
 }
 
