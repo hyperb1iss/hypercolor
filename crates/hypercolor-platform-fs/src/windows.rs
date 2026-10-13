@@ -11,11 +11,12 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_CASE_SENSITIVE_INFO,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileAttributeTagInfo,
-    FileCaseSensitiveInfo, FileIdInfo, GetFileInformationByHandleEx, MOVEFILE_REPLACE_EXISTING,
-    MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_EXISTING,
+    CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO,
+    FILE_CASE_SENSITIVE_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FileAttributeTagInfo, FileBasicInfo, FileCaseSensitiveInfo, FileIdInfo,
+    GetFileInformationByHandleEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    OPEN_EXISTING,
 };
 
 const REPLACE_FLAGS: u32 = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
@@ -190,6 +191,55 @@ pub(super) fn write_secret(path: &Path, contents: &[u8]) -> io::Result<()> {
         return Err(error);
     }
     Ok(())
+}
+
+pub(super) fn file_change_stamp(file: &File) -> io::Result<crate::FileChangeStamp> {
+    let mut identity = FILE_ID_INFO::default();
+    // SAFETY: The handle is live for the call and `identity` points to
+    // writable storage matching the requested information class.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            std::ptr::addr_of_mut!(identity).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let mut basic = FILE_BASIC_INFO::default();
+    // SAFETY: The handle is live for the call and `basic` points to writable
+    // storage matching the requested information class.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            std::ptr::addr_of_mut!(basic).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(crate::FileChangeStamp {
+        volume: identity.VolumeSerialNumber,
+        file_id: u128::from_le_bytes(identity.FileId.Identifier),
+        len: file.metadata()?.len(),
+        changed: i128::from(basic.ChangeTime),
+        modified: i128::from(basic.LastWriteTime),
+        mode: basic.FileAttributes,
+    })
+}
+
+pub(super) fn path_change_stamp(path: &Path) -> io::Result<crate::FileChangeStamp> {
+    // Attributes are all a stamp reads, so the open never conflicts with a
+    // writer or blocks a rename over the path.
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path)?;
+    file_change_stamp(&file)
 }
 
 pub(super) fn open_no_follow(path: &Path) -> io::Result<File> {

@@ -244,10 +244,10 @@ impl PersistenceFlushReport {
 /// Generation coordinator for one stable destination.
 ///
 /// While any writer keeps the destination alive, it remembers a digest of
-/// the bytes it last made durable and the identity of the file they landed
-/// as. A payload with the same digest lands as written without touching the
-/// filesystem, as long as a stat shows nothing else has replaced or edited
-/// the file since.
+/// the bytes it last made durable and the change stamp of the file they
+/// landed as. A payload with the same digest lands as written without
+/// touching the filesystem, as long as the file's change stamp shows nothing
+/// has replaced, rewritten, or re-permissioned it since.
 #[derive(Debug, Clone)]
 pub struct AtomicFileWriter {
     destination: Arc<Destination>,
@@ -317,15 +317,18 @@ struct DestinationState {
 }
 
 /// What a destination's file durably held after one of this process's
-/// writes: the payload's digest, and the identity of the file it landed as.
+/// writes: the payload's digest, and the change stamp of the file it landed
+/// as.
 ///
-/// Other code can replace the same path without this coordinator (a
-/// directly staged replacement, or a hand edit), so the digest only
-/// describes the file while a fresh stat still matches that identity.
+/// Other code can replace or rewrite the same path without this coordinator
+/// (a directly staged replacement, a hand edit, a timestamp-preserving
+/// restore), and any of those moves the change stamp, so the digest only
+/// describes the file while a fresh stamp still matches. A platform with no
+/// change stamp never records one, and every write there replaces the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DurableBytes {
     digest: PayloadDigest,
-    identity: FileIdentity,
+    stamp: hypercolor_platform_fs::FileChangeStamp,
 }
 
 type PayloadDigest = [u8; 32];
@@ -334,43 +337,14 @@ fn payload_digest(payload: &[u8]) -> PayloadDigest {
     Sha256::digest(payload).into()
 }
 
-/// The parts of a file's metadata any replacement or in-place edit moves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileIdentity {
-    len: u64,
-    modified: Option<std::time::SystemTime>,
-    #[cfg(unix)]
-    device: u64,
-    #[cfg(unix)]
-    inode: u64,
-}
-
-impl FileIdentity {
-    fn of(path: &Path) -> Option<Self> {
-        fs::metadata(path)
-            .ok()
-            .map(|metadata| Self::from_metadata(&metadata))
-    }
-
-    fn from_metadata(metadata: &fs::Metadata) -> Self {
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt as _;
-
-        Self {
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
-            #[cfg(unix)]
-            device: metadata.dev(),
-            #[cfg(unix)]
-            inode: metadata.ino(),
-        }
-    }
-}
-
 impl DurableBytes {
-    /// Whether the destination file is still the one these bytes landed as.
-    fn still_current(&self, path: &Path) -> bool {
-        FileIdentity::of(path) == Some(self.identity)
+    /// Whether the destination file is still exactly the one these bytes
+    /// landed as.
+    fn still_current(&self, destination: &Destination) -> bool {
+        hypercolor_platform_fs::path_change_stamp(&destination.path)
+            .ok()
+            .flatten()
+            == Some(self.stamp)
     }
 }
 
@@ -572,7 +546,7 @@ impl AtomicFileWriter {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .durable
-            .is_some_and(|durable| durable.still_current(&self.destination.path))
+            .is_some_and(|durable| durable.still_current(&self.destination))
     }
 
     /// Wait for this destination's newest dirty snapshot to converge.
@@ -968,9 +942,9 @@ fn try_write_stage_aware(
         }
         // Only one attempt per destination runs at a time, so nothing this
         // coordinator owns can change the file between this check and the
-        // outcome; the stat catches anything that replaced it from outside.
+        // outcome; the change stamp catches anything that did from outside.
         match state.durable {
-            Some(durable) if durable.still_current(&destination.path) => {
+            Some(durable) if durable.still_current(destination) => {
                 if durable.digest == digest {
                     return AtomicWriteCommitResult::DurableWritten;
                 }
@@ -1045,14 +1019,13 @@ fn try_write_stage_aware(
         });
     }
 
-    // The identity comes from the staged file itself: a rename keeps its
-    // inode, length, and mtime, and reading it here cannot pick up a file
-    // something else renames over the destination after ours lands.
-    let identity = temporary
-        .as_file()
-        .metadata()
+    // Which file is ours, read from the staged file itself. A rename keeps
+    // that identity but moves the change stamp, so the stamp to record is
+    // read from the destination after the barrier, and only kept when it
+    // still names this file.
+    let staged = hypercolor_platform_fs::file_change_stamp(temporary.as_file())
         .ok()
-        .map(|metadata| FileIdentity::from_metadata(&metadata));
+        .flatten();
     let temporary_path = temporary.into_temp_path();
     // From here until the durability barrier completes, nothing proves what
     // the file durably holds, so no later attempt may be skipped against it.
@@ -1089,11 +1062,15 @@ fn try_write_stage_aware(
             return AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error);
         }
     }
+    let landed = hypercolor_platform_fs::path_change_stamp(&destination.path)
+        .ok()
+        .flatten()
+        .filter(|landed| staged.is_some_and(|staged| staged.same_file(landed)));
     destination
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .durable = identity.map(|identity| DurableBytes { digest, identity });
+        .durable = landed.map(|stamp| DurableBytes { digest, stamp });
     AtomicWriteCommitResult::DurableWritten
 }
 
