@@ -149,6 +149,83 @@ async fn forgetting_absent_controller_prunes_default_and_saved_scenes_and_layout
     );
 }
 
+/// Device removal is a whole-session save: it checks the scene store file
+/// itself, so an outside edit is rewritten even when the scene service's
+/// receipts already cover the store and the removal changes no named scene.
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn forgetting_a_default_scene_device_rewrites_an_outside_store_edit() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let state = Arc::new(AppState::new_with_data_dir(dir.path().to_path_buf()));
+    let target = "nollie:16d5:1f01:default-only";
+    let mut mutation = state.domains.scene.begin_mutation().await;
+    let mut default = mutation
+        .scenes()
+        .list()
+        .into_iter()
+        .find(|scene| scene.id.is_default())
+        .expect("default scene")
+        .clone();
+    let mut named = default.clone();
+    default.zones[0].layout.zones = vec![output("old", target), output("keep", "other")];
+    mutation
+        .update_scene(default)
+        .expect("bind the device in the default scene");
+    named.id = SceneId::new();
+    named.kind = SceneKind::Named;
+    named.name = "Untouched".to_owned();
+    named.zones[0].layout.zones = vec![output("keep", "other")];
+    mutation.create_scene(named).expect("create named scene");
+    state
+        .domains
+        .scene
+        .commit(mutation)
+        .await
+        .expect("seed scenes");
+
+    // The commit's own durable write leaves receipts covering the store.
+    let path = dir.path().join("scenes.json");
+    let durable = std::fs::read(&path).expect("read scene store");
+    let modified = std::fs::metadata(&path)
+        .and_then(|metadata| metadata.modified())
+        .expect("store mtime");
+    let mut edited = durable.clone();
+    let digit = edited
+        .iter()
+        .position(u8::is_ascii_digit)
+        .expect("the store holds a digit");
+    edited[digit] = if edited[digit] == b'9' {
+        b'0'
+    } else {
+        edited[digit] + 1
+    };
+    std::fs::write(&path, &edited).expect("edit the store in place");
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .and_then(|file| file.set_modified(modified))
+        .expect("restore the mtime");
+    let writer =
+        hypercolor_daemon::persistence::AtomicFileWriter::new(&path).expect("scene store writer");
+    writer.set_injected_stale_stamps(true);
+
+    let response = forget_device(
+        State(Arc::clone(&state)),
+        ApiJson(ForgetDeviceRequest {
+            layout_device_id: target.to_owned(),
+        }),
+    )
+    .await;
+    writer.set_injected_stale_stamps(false);
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        std::fs::read(&path).expect("read scene store"),
+        durable,
+        "the removal rewrote the store from memory"
+    );
+}
+
 #[tokio::test]
 async fn forgetting_unknown_or_empty_binding_does_not_mutate_scenes() {
     let dir = tempfile::tempdir().expect("temporary directory");
