@@ -560,7 +560,8 @@ fn write_generation(
     #[cfg(unix)]
     crate::apply_file_mode(destination, temporary.as_file()).map_err(io_error)?;
     let temporary = temporary.into_temp_path();
-    hypercolor_platform_fs::replace_file(&temporary, &target).map_err(io_error)?;
+    // The rename alone; the history directory's own barrier follows.
+    hypercolor_platform_fs::rename_replacing(&temporary, &target).map_err(io_error)?;
     // Only the rename consumed the temporary; nothing is left to delete.
     let _ = temporary.keep();
     #[cfg(unix)]

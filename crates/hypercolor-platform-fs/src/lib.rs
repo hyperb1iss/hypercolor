@@ -193,6 +193,37 @@ pub fn path_change_stamp(path: &Path) -> io::Result<Option<FileChangeStamp>> {
     }
 }
 
+/// Atomically rename `source` over `destination`, leaving the directory
+/// durability barrier to the caller.
+///
+/// On Unix the replacement is visible once this returns but not durable
+/// until the caller syncs the destination's parent directory, so a caller
+/// that owns that barrier itself does not pay for a second one. Windows
+/// requests write-through from the operating system, exactly as
+/// [`durable_replace`] does.
+///
+/// # Errors
+///
+/// Returns the platform filesystem error when the rename fails, in which
+/// case the destination is unchanged.
+pub fn rename_replacing(source: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        unix::rename_replacing(source, destination)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        windows::durable_replace(source, destination)
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = (source, destination);
+        Err(unsupported("file replacement"))
+    }
+}
+
 /// Atomically replace `destination` with `source` and make the replacement
 /// durable.
 ///

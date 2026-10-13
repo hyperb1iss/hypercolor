@@ -2,7 +2,7 @@ use std::fs;
 
 #[cfg(unix)]
 use hypercolor_platform_fs::ExclusiveDirectory;
-use hypercolor_platform_fs::{durable_replace, replace_file};
+use hypercolor_platform_fs::{durable_replace, rename_replacing, replace_file};
 
 #[cfg(unix)]
 fn acquire(directory: &std::path::Path) -> ExclusiveDirectory {
@@ -39,6 +39,38 @@ fn failed_replacement_preserves_existing_destination() {
     fs::write(&destination, b"old").expect("write destination");
 
     durable_replace(&source, &destination).expect_err("missing source must fail");
+
+    assert_eq!(fs::read(&destination).expect("read destination"), b"old");
+}
+
+#[test]
+fn rename_replacing_swaps_the_destination_and_consumes_the_source() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+    let source = directory.path().join("source.tmp");
+    let destination = directory.path().join("state.json");
+    fs::write(&source, b"new").expect("write source");
+    fs::write(&destination, b"old").expect("write destination");
+
+    rename_replacing(&source, &destination).expect("rename over destination");
+
+    assert_eq!(fs::read(&destination).expect("read destination"), b"new");
+    assert!(!source.exists());
+}
+
+#[test]
+fn a_failed_rename_replacing_leaves_the_destination_alone() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+    let destination = directory.path().join("state.json");
+    fs::write(&destination, b"old").expect("write destination");
+
+    rename_replacing(&directory.path().join("missing.tmp"), &destination)
+        .expect_err("missing source must fail");
 
     assert_eq!(fs::read(&destination).expect("read destination"), b"old");
 }

@@ -285,6 +285,8 @@ struct Destination {
     injected_directory_sync_failures: AtomicUsize,
     #[cfg(any(test, feature = "persistence-test-hooks"))]
     replacements: AtomicUsize,
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    directory_syncs: AtomicUsize,
 }
 
 #[cfg(windows)]
@@ -460,6 +462,8 @@ impl AtomicFileWriter {
             injected_directory_sync_failures: AtomicUsize::new(0),
             #[cfg(any(test, feature = "persistence-test-hooks"))]
             replacements: AtomicUsize::new(0),
+            #[cfg(any(test, feature = "persistence-test-hooks"))]
+            directory_syncs: AtomicUsize::new(0),
         });
 
         #[cfg(windows)]
@@ -621,6 +625,15 @@ impl AtomicFileWriter {
     #[must_use]
     pub fn replacement_count(&self) -> usize {
         self.destination.replacements.load(Ordering::Acquire)
+    }
+
+    /// How many directory durability barriers this destination's writes have
+    /// run in this process: exactly one per replacement on Unix, none on
+    /// Windows, where the replacement itself is write-through.
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    #[must_use]
+    pub fn directory_sync_count(&self) -> usize {
+        self.destination.directory_syncs.load(Ordering::Acquire)
     }
 
     /// Inject post-replacement directory-sync failures for deterministic tests.
@@ -1048,7 +1061,11 @@ fn try_write_stage_aware(
     // From here until the durability barrier completes, nothing proves what
     // the file durably holds, so no later attempt may be skipped against it.
     state.durable = None;
-    if let Err(source) = hypercolor_platform_fs::replace_file(&temporary_path, &destination.path) {
+    // The rename alone: this function owns the one directory barrier below,
+    // and the stamp it records is read after that barrier.
+    if let Err(source) =
+        hypercolor_platform_fs::rename_replacing(&temporary_path, &destination.path)
+    {
         return AtomicWriteCommitResult::FailedBeforeReplacement(PersistenceError::Replace {
             path: destination.path.clone(),
             source,
@@ -1076,6 +1093,8 @@ fn try_write_stage_aware(
                 },
             );
         }
+        #[cfg(any(test, feature = "persistence-test-hooks"))]
+        destination.directory_syncs.fetch_add(1, Ordering::AcqRel);
         if let Err(error) = sync_parent_directory(&destination.parent) {
             return AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error);
         }
@@ -1214,6 +1233,26 @@ fn sync_parent_directory(parent: &Path) -> Result<(), PersistenceError> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_durable_write_runs_exactly_one_directory_barrier() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("store.json");
+        let writer = AtomicFileWriter::new(&path).expect("writer");
+
+        writer.write(b"first").expect("first write lands");
+        assert_eq!(writer.replacement_count(), 1);
+        assert_eq!(writer.directory_sync_count(), 1);
+
+        writer.write(b"second").expect("second write lands");
+        assert_eq!(writer.replacement_count(), 2);
+        assert_eq!(writer.directory_sync_count(), 2);
+
+        // Bytes already durable need neither a replacement nor a barrier.
+        writer.write(b"second").expect("identical write lands");
+        assert_eq!(writer.replacement_count(), 2);
+        assert_eq!(writer.directory_sync_count(), 2);
+    }
 
     #[test]
     fn a_replacement_that_never_proved_durable_is_not_trusted() {
