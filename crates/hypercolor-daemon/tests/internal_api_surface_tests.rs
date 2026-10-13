@@ -1051,7 +1051,7 @@ fn registry_refreshes_share_the_effect_domain_identity_authority() {
     };
     let effect_api = source("api/effects.rs");
     assert!(effect_api.contains("state.domains.effects.rescan_registry().await"));
-    assert!(effect_api.contains(".install_registry_file(&installed_path, &html)"));
+    assert!(effect_api.contains(".install_registry_file(&installed_path, html)"));
     assert!(!effect_api.contains("EffectRegistryUpdated"));
     assert!(!effect_api.contains("domains.effects.rescan()"));
     assert!(!effect_api.contains("domains.effects.register("));
