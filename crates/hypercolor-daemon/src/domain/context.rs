@@ -632,6 +632,22 @@ impl RuntimeSessionService {
             .await
     }
 
+    /// Persist the runtime pointer as a whole-session save.
+    ///
+    /// The scene store file is verified against memory first, and rewritten
+    /// when it differs, so an outside edit never outlives this save even when
+    /// the scene service's receipts cover the store. A store failure is
+    /// logged, as [`Self::save`] logs it, and the pointer's own outcome is
+    /// returned with its usual errors and supersession.
+    pub(crate) async fn persist_snapshot_verifying_store(
+        &self,
+    ) -> Result<AtomicWriteOutcome, RuntimeSessionPersistenceError> {
+        if let Err(error) = self.save_scene_store_snapshot().await {
+            tracing::warn!(%error, "Failed to persist scene store before runtime snapshot save");
+        }
+        self.persist_snapshot().await
+    }
+
     async fn save_scene_store_snapshot(&self) -> anyhow::Result<Option<AtomicWriteOutcome>> {
         self.projection.scenes.persist_snapshot().await
     }
@@ -941,7 +957,7 @@ impl SceneContext {
         self.layout.prune_targets(targets, reference).await?;
         let outcome = self
             .runtime_session
-            .persist_snapshot()
+            .persist_snapshot_verifying_store()
             .await
             .map_err(|error| DomainError::Internal(anyhow::anyhow!(error)))?;
         if outcome == AtomicWriteOutcome::Superseded {
