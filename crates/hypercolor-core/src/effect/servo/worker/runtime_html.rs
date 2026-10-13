@@ -9,6 +9,7 @@ use hypercolor_types::effect::{EffectCategory, EffectMetadata};
 use reqwest::Url;
 use tracing::debug;
 
+use crate::effect::console::RuntimeLineShift;
 use crate::effect::lightscript::control_js_literal;
 
 /// Whether an effect should receive `engine.audio.*` updates each frame.
@@ -27,6 +28,18 @@ pub(in crate::effect::servo) fn effect_is_audio_reactive(metadata: &EffectMetada
         .any(|tag| tag.eq_ignore_ascii_case("audio") || tag.eq_ignore_ascii_case("audio-reactive"))
 }
 
+/// An effect page ready for Servo to load.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::effect::servo) struct RuntimeHtmlSource {
+    /// File Servo should load.
+    pub(in crate::effect::servo) path: PathBuf,
+    /// Temporary runtime copy to delete once the page is done with, if one
+    /// was written.
+    pub(in crate::effect::servo) cleanup_path: Option<PathBuf>,
+    /// How the runtime copy shifts the author's lines, when it differs.
+    pub(in crate::effect::servo) line_shift: Option<RuntimeLineShift>,
+}
+
 /// Prepare an HTML file with a runtime control preamble injected into `<head>`.
 ///
 /// A session that did not ask for engine globals loads its page verbatim, so
@@ -37,9 +50,13 @@ pub(in crate::effect::servo) fn prepare_runtime_html_source(
     host_driven_animation: bool,
     display_descriptor: Option<&DisplayDescriptor>,
     inject_engine_globals: bool,
-) -> Result<(PathBuf, Option<PathBuf>)> {
+) -> Result<RuntimeHtmlSource> {
     if !inject_engine_globals {
-        return Ok((original_path.to_path_buf(), None));
+        return Ok(RuntimeHtmlSource {
+            path: original_path.to_path_buf(),
+            cleanup_path: None,
+            line_shift: None,
+        });
     }
 
     let html = std::fs::read_to_string(original_path).with_context(|| {
@@ -56,7 +73,7 @@ pub(in crate::effect::servo) fn prepare_runtime_html_source(
         .and_then(|parent| Url::from_directory_path(parent).ok())
         .map_or_else(String::new, |url| format!("<base href=\"{url}\">\n"));
     let injected_block = format!("{base_tag}<script>\n{preamble}\n</script>\n");
-    let runtime_html = inject_runtime_head_block(&html, &injected_block);
+    let (runtime_html, line_shift) = inject_runtime_head_block(&html, &injected_block);
 
     let cache_root = crate::config::paths::servo_runtime_cache_dir();
     std::fs::create_dir_all(&cache_root).with_context(|| {
@@ -74,7 +91,11 @@ pub(in crate::effect::servo) fn prepare_runtime_html_source(
         )
     })?;
 
-    Ok((runtime_path.clone(), Some(runtime_path)))
+    Ok(RuntimeHtmlSource {
+        path: runtime_path.clone(),
+        cleanup_path: Some(runtime_path),
+        line_shift: Some(line_shift),
+    })
 }
 
 /// Remove a temporary runtime HTML file once its page is done with.
@@ -131,23 +152,55 @@ fn build_control_preamble_script(
     Ok(script)
 }
 
-fn inject_runtime_head_block(html: &str, block: &str) -> String {
+/// Line breaks as the HTML tokenizer counts them: `\r\n`, a lone `\r`, or a
+/// lone `\n`.
+fn line_breaks(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    bytes
+        .iter()
+        .enumerate()
+        .filter(|(index, byte)| {
+            **byte == b'\n' || (**byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
+        })
+        .count()
+}
+
+/// Splice `block` into `html` after the `<head>` tag, before the first
+/// `<script>` when there is no head, or ahead of everything otherwise.
+///
+/// Also reports where the block landed so console locations in the result
+/// can be mapped back to `html`.
+fn inject_runtime_head_block(html: &str, block: &str) -> (String, RuntimeLineShift) {
     let lowered = html.to_ascii_lowercase();
+    let block_lines = block.matches('\n').count();
 
-    if let Some(head_start) = lowered.find("<head")
-        && let Some(head_close_offset) = lowered[head_start..].find('>')
-    {
-        let insert_at = head_start + head_close_offset + 1;
+    let insert_at = lowered
+        .find("<head")
+        .and_then(|head_start| {
+            lowered[head_start..]
+                .find('>')
+                .map(|head_close_offset| head_start + head_close_offset + 1)
+        })
+        .or_else(|| lowered.find("<script"));
+
+    if let Some(insert_at) = insert_at {
         let (before, after) = html.split_at(insert_at);
-        return format!("{before}\n{block}{after}");
+        // The leading newline ends the author's line before the block, unless
+        // that line already ended in a lone carriage return: the two then
+        // read as one CRLF break.
+        let leading_break = usize::from(!before.ends_with('\r'));
+        let shift = RuntimeLineShift {
+            insert_line: line_breaks(before) + 1,
+            inserted_lines: block_lines + leading_break,
+        };
+        return (format!("{before}\n{block}{after}"), shift);
     }
 
-    if let Some(script_start) = lowered.find("<script") {
-        let (before, after) = html.split_at(script_start);
-        return format!("{before}\n{block}{after}");
-    }
-
-    format!("{block}{html}")
+    let shift = RuntimeLineShift {
+        insert_line: 0,
+        inserted_lines: block_lines,
+    };
+    (format!("{block}{html}"), shift)
 }
 
 #[cfg(test)]
@@ -213,7 +266,7 @@ mod tests {
         let html = "<html><head><title>x</title></head><body><script>run()</script></body></html>";
         let block = "<script>bootstrap()</script>\n";
 
-        let injected = inject_runtime_head_block(html, block);
+        let (injected, _) = inject_runtime_head_block(html, block);
         let expected = "<html><head>\n<script>bootstrap()</script>\n<title>x</title></head>";
         assert!(injected.contains(expected));
     }
@@ -223,7 +276,7 @@ mod tests {
         let html = "<body><script>run()</script></body>";
         let block = "<script>bootstrap()</script>\n";
 
-        let injected = inject_runtime_head_block(html, block);
+        let (injected, _) = inject_runtime_head_block(html, block);
         assert!(injected.starts_with("<body>\n<script>bootstrap()</script>"));
     }
 
@@ -238,12 +291,16 @@ mod tests {
         .expect("html write should work");
 
         let controls = HashMap::new();
-        let (runtime_path, runtime_html_path) =
-            prepare_runtime_html_source(&html_path, &controls, true, None, true)
-                .expect("runtime html should build");
+        let prepared = prepare_runtime_html_source(&html_path, &controls, true, None, true)
+            .expect("runtime html should build");
+        let runtime_path = prepared.path;
 
         assert_ne!(runtime_path, html_path);
-        assert_eq!(runtime_html_path.as_deref(), Some(runtime_path.as_path()));
+        assert_eq!(
+            prepared.cleanup_path.as_deref(),
+            Some(runtime_path.as_path())
+        );
+        assert!(prepared.line_shift.is_some());
 
         let runtime_html =
             std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
@@ -275,9 +332,10 @@ mod tests {
             hypercolor_types::display::DisplayPixelFormat::Rgb,
         );
         let controls = HashMap::new();
-        let (runtime_path, _) =
+        let runtime_path =
             prepare_runtime_html_source(&html_path, &controls, true, Some(&descriptor), true)
-                .expect("runtime html should build");
+                .expect("runtime html should build")
+                .path;
 
         let runtime_html =
             std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
@@ -302,9 +360,9 @@ mod tests {
             .expect("html write should work");
 
         let controls = HashMap::new();
-        let (runtime_path, _) =
-            prepare_runtime_html_source(&html_path, &controls, false, None, true)
-                .expect("runtime html should build");
+        let runtime_path = prepare_runtime_html_source(&html_path, &controls, false, None, true)
+            .expect("runtime html should build")
+            .path;
 
         let runtime_html =
             std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
@@ -320,19 +378,108 @@ mod tests {
 
         let mut controls = HashMap::new();
         controls.insert("speed".to_owned(), ControlValue::Float(0.5));
-        let (runtime_path, cleanup_path) =
-            prepare_runtime_html_source(&html_path, &controls, true, None, false)
-                .expect("verbatim load should succeed");
+        let prepared = prepare_runtime_html_source(&html_path, &controls, true, None, false)
+            .expect("verbatim load should succeed");
+        let runtime_path = prepared.path;
 
         assert_eq!(runtime_path, html_path);
         assert!(
-            cleanup_path.is_none(),
+            prepared.cleanup_path.is_none(),
             "a verbatim load writes no temporary runtime file"
+        );
+        assert!(
+            prepared.line_shift.is_none(),
+            "verbatim pages keep their lines"
         );
         assert_eq!(
             std::fs::read_to_string(&runtime_path).expect("source should be readable"),
             source
         );
+    }
+
+    /// Every author line the runtime copy still contains must map back to
+    /// itself, and every injected line must map to nothing.
+    fn assert_line_shift_round_trips(html: &str, block: &str) {
+        let (runtime, shift) = inject_runtime_head_block(html, block);
+        let author_lines: Vec<&str> = html.lines().collect();
+        let runtime_lines: Vec<&str> = runtime.lines().collect();
+        let mut mapped = 0;
+        for (index, runtime_line) in runtime_lines.iter().enumerate() {
+            let runtime_number = index + 1;
+            match shift.original_line(runtime_number) {
+                Some(author_number) if author_number == shift.insert_line => {
+                    // The author's insertion line is split around the block.
+                    assert!(author_lines[author_number - 1].contains(runtime_line.trim()));
+                }
+                Some(author_number) => {
+                    assert_eq!(
+                        *runtime_line,
+                        author_lines[author_number - 1],
+                        "runtime line {runtime_number} should be author line {author_number}"
+                    );
+                    mapped += 1;
+                }
+                None => assert!(
+                    block.lines().any(|line| line == *runtime_line) || runtime_line.is_empty(),
+                    "unmapped runtime line {runtime_number} should come from the block: {runtime_line:?}"
+                ),
+            }
+        }
+        assert!(mapped > 0, "some author lines should survive unchanged");
+    }
+
+    #[test]
+    fn line_shift_maps_runtime_lines_after_head_back_to_the_author() {
+        let html = "<!doctype html>\n<html>\n<head><title>x</title>\n</head>\n<body>\n<script>\nthrow new Error('line 7');\n</script>\n</body>\n</html>\n";
+        let block = "<base href=\"file:///fx/\">\n<script>\n(function(){\n  globalThis.speed = 1;\n})();\n</script>\n";
+        assert_line_shift_round_trips(html, block);
+
+        let (_, shift) = inject_runtime_head_block(html, block);
+        assert_eq!(shift.insert_line, 3);
+        assert_eq!(shift.original_line(1), Some(1));
+        assert_eq!(shift.original_line(4), None, "first injected line");
+        let throw_runtime_line = 7 + shift.inserted_lines;
+        assert_eq!(shift.original_line(throw_runtime_line), Some(7));
+    }
+
+    #[test]
+    fn line_shift_counts_carriage_return_line_breaks() {
+        let block = "<script>\nboot();\n</script>\n";
+        for html in [
+            "<!doctype html>\r\n<html>\r\n<head>\r\n<title>x</title>\r\n</head>\r\n",
+            "<!doctype html>\r<html>\r<head>\r<title>x</title>\r</head>\r",
+        ] {
+            let (_, shift) = inject_runtime_head_block(html, block);
+            assert_eq!(shift.insert_line, 3, "{html:?}");
+        }
+        // A lone carriage return right before the insertion point fuses with
+        // the injected newline into one CRLF break.
+        let html = "line0\rline1\r<script>run()</script>\rtail\r";
+        let (runtime, shift) = inject_runtime_head_block(html, block);
+        let runtime_lines: Vec<&str> = runtime
+            .split(['\r', '\n'])
+            .filter(|line| !line.is_empty())
+            .collect();
+        let tail_runtime_line = runtime_lines
+            .iter()
+            .position(|line| *line == "tail")
+            .expect("tail survives")
+            + 1;
+        assert_eq!(shift.original_line(tail_runtime_line), Some(4));
+    }
+
+    #[test]
+    fn line_shift_handles_script_and_prefix_insertions() {
+        let block = "<script>\nboot();\n</script>\n";
+        assert_line_shift_round_trips(
+            "<body>\n<p>hi</p>\n<script>run()</script>\n</body>\n",
+            block,
+        );
+
+        let (_, prefix) = inject_runtime_head_block("plain\ntext\n", block);
+        assert_eq!(prefix.insert_line, 0);
+        assert_eq!(prefix.original_line(3), None, "the block's last line");
+        assert_eq!(prefix.original_line(4), Some(1));
     }
 
     #[test]

@@ -370,6 +370,7 @@ fn load_servo_session(
 
     let page_load_started = Instant::now();
     let (runtime_source, runtime_html_path) = match session.load_effect_html(
+        effect_name,
         &resolved,
         controls,
         host_driven_animation,

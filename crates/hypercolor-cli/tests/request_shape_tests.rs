@@ -1924,3 +1924,306 @@ async fn openrgb_verbose_json_keeps_diagnostics_on_stderr() -> Result<()> {
     );
     Ok(())
 }
+
+// ── effects capture / console / install ─────────────────────────────────
+
+async fn canvas_frame(State(uris): State<SharedUris>, uri: Uri) -> axum::response::Response {
+    canvas_frame_response(uris, uri, "1").await
+}
+
+async fn stale_canvas_frame(State(uris): State<SharedUris>, uri: Uri) -> axum::response::Response {
+    canvas_frame_response(uris, uri, "0").await
+}
+
+async fn canvas_frame_response(
+    uris: SharedUris,
+    uri: Uri,
+    fresh: &'static str,
+) -> axum::response::Response {
+    let mut uris = uris.lock().await;
+    uris.push(uri.to_string());
+    let frame_number = uris.len().to_string();
+    axum::response::IntoResponse::into_response((
+        [
+            ("content-type", "image/png".to_owned()),
+            ("x-canvas-frame-number", frame_number),
+            ("x-canvas-timestamp-ms", "480".to_owned()),
+            ("x-canvas-width", "160".to_owned()),
+            ("x-canvas-height", "120".to_owned()),
+            ("x-canvas-source-width", "640".to_owned()),
+            ("x-canvas-source-height", "480".to_owned()),
+            ("x-canvas-fresh", fresh.to_owned()),
+        ],
+        b"fake-png-bytes".to_vec(),
+    ))
+}
+
+#[tokio::test]
+async fn effects_capture_writes_numbered_frames_and_reports_headers() -> Result<()> {
+    let uris: SharedUris = Arc::new(Mutex::new(Vec::new()));
+    let router = Router::new()
+        .route("/api/v1/canvas/frame", get(canvas_frame))
+        .with_state(Arc::clone(&uris));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+    let dir = tempfile::tempdir()?;
+    let output_path = dir.path().join("shot.png");
+
+    let output = run_hyper_output(
+        port,
+        &[
+            "effects",
+            "capture",
+            "--output",
+            output_path.to_str().context("utf-8 temp path")?,
+            "--width",
+            "160",
+            "--frames",
+            "2",
+            "--interval-ms",
+            "0",
+        ],
+    )
+    .await;
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    let output = output?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requested = uris.lock().await.clone();
+    assert_eq!(requested.len(), 2);
+    assert!(
+        requested
+            .iter()
+            .all(|uri| uri == "/api/v1/canvas/frame?format=png&width=160")
+    );
+    for name in ["shot-1.png", "shot-2.png"] {
+        assert_eq!(std::fs::read(dir.path().join(name))?, b"fake-png-bytes");
+    }
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(report[0]["frame_number"], 1);
+    assert_eq!(report[0]["width"], 160);
+    assert_eq!(report[0]["source_width"], 640);
+    assert_eq!(report[1]["fresh"], true);
+    Ok(())
+}
+
+#[tokio::test]
+async fn effects_capture_stops_a_burst_when_nothing_renders() -> Result<()> {
+    let uris: SharedUris = Arc::new(Mutex::new(Vec::new()));
+    let router = Router::new()
+        .route("/api/v1/canvas/frame", get(stale_canvas_frame))
+        .with_state(Arc::clone(&uris));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+    let dir = tempfile::tempdir()?;
+    let output_path = dir.path().join("quiet.jpg");
+
+    let output = run_hyper_output(
+        port,
+        &[
+            "effects",
+            "capture",
+            "--image-format",
+            "jpeg",
+            "--output",
+            output_path.to_str().context("utf-8 temp path")?,
+            "--frames",
+            "3",
+            "--interval-ms",
+            "0",
+        ],
+    )
+    .await;
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    assert!(output?.status.success());
+
+    assert_eq!(
+        uris.lock().await.as_slice(),
+        ["/api/v1/canvas/frame?format=jpeg"]
+    );
+    assert!(dir.path().join("quiet-1.jpg").exists());
+    assert!(!dir.path().join("quiet-2.jpg").exists());
+    Ok(())
+}
+
+async fn effect_console_window(
+    State(captured_uri): State<SharedUri>,
+    uri: Uri,
+) -> Json<serde_json::Value> {
+    *captured_uri.lock().await = Some(uri.to_string());
+    Json(serde_json::json!({
+        "data": {
+            "entries": [{
+                "seq": 7,
+                "timestamp_ms": 1_760_300_000_000_u64,
+                "level": "error",
+                "message": "TypeError: ctx is null",
+                "effect_name": "Ember Glow",
+                "source_file": "ember-glow.html",
+                "line": 42
+            }],
+            "next_seq": 9,
+            "truncated": false
+        }
+    }))
+}
+
+#[tokio::test]
+async fn effects_console_sends_cursor_and_filters() -> Result<()> {
+    let captured_uri: SharedUri = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route("/api/v1/effects/console", get(effect_console_window))
+        .with_state(Arc::clone(&captured_uri));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let output = run_hyper_output(
+        port,
+        &[
+            "effects",
+            "console",
+            "--after",
+            "4",
+            "--effect",
+            "Ember Glow",
+            "--level",
+            "warn",
+            "--limit",
+            "20",
+        ],
+    )
+    .await;
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    let output = output?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let uri = captured_uri
+        .lock()
+        .await
+        .clone()
+        .context("server did not see the console request")?;
+    assert_eq!(
+        uri,
+        "/api/v1/effects/console?limit=20&after=4&effect=Ember%20Glow&level=warn"
+    );
+    let window: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(window["next_seq"], 9);
+    assert_eq!(window["entries"][0]["line"], 42);
+    Ok(())
+}
+
+type SharedUpload = Arc<Mutex<Option<(String, String)>>>;
+
+async fn capture_effect_install(
+    State((upload, _)): State<(SharedUpload, SharedBody)>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    let content_type = headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    *upload.lock().await = Some((content_type, String::from_utf8_lossy(&body).into_owned()));
+    (
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::json!({
+            "data": {
+                "id": "00000000-0000-0000-0000-000000000012",
+                "name": "Ember Glow",
+                "path": "/data/effects/user/ember-glow.html",
+                "controls": 2,
+                "presets": 0,
+                "console_after": 12
+            }
+        })),
+    )
+}
+
+async fn capture_install_apply(
+    Path(effect): Path<String>,
+    State((_, applied)): State<(SharedUpload, SharedBody)>,
+    Json(_body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    *applied.lock().await = Some(serde_json::Value::String(effect));
+    Json(serde_json::json!({
+        "data": {
+            "zone": zone_resource_fixture(
+                "00000000-0000-0000-0000-000000000010",
+                "00000000-0000-0000-0000-000000000011",
+                "00000000-0000-0000-0000-000000000012",
+            ),
+            "transition": { "type": "cut" },
+            "output": { "applied": true },
+        },
+    }))
+}
+
+#[tokio::test]
+async fn effects_install_uploads_the_file_and_applies_it_by_id() -> Result<()> {
+    let upload: SharedUpload = Arc::new(Mutex::new(None));
+    let applied: SharedBody = Arc::new(Mutex::new(None));
+    let router = Router::new()
+        .route("/api/v1/effects/install", post(capture_effect_install))
+        .route(
+            "/api/v1/effects/{effect}/apply",
+            post(capture_install_apply),
+        )
+        .with_state((Arc::clone(&upload), Arc::clone(&applied)));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+    let dir = tempfile::tempdir()?;
+    let effect_path = dir.path().join("ember-glow.html");
+    let html = "<!DOCTYPE html><title>Ember Glow</title><canvas></canvas><script>1</script>";
+    std::fs::write(&effect_path, html)?;
+
+    let output = run_hyper_output(
+        port,
+        &[
+            "effects",
+            "install",
+            effect_path.to_str().context("utf-8 temp path")?,
+            "--activate",
+        ],
+    )
+    .await;
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    let output = output?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let (content_type, body) = upload
+        .lock()
+        .await
+        .clone()
+        .context("server did not see the upload")?;
+    let boundary = content_type
+        .strip_prefix("multipart/form-data; boundary=")
+        .context("upload should be multipart")?;
+    assert!(body.starts_with(&format!("--{boundary}\r\n")));
+    assert!(body.contains(r#"name="file"; filename="ember-glow.html""#));
+    assert!(body.contains(html));
+    assert!(body.ends_with(&format!("\r\n--{boundary}--\r\n")));
+    assert_eq!(
+        applied.lock().await.clone(),
+        Some(serde_json::Value::String(
+            "00000000-0000-0000-0000-000000000012".to_owned()
+        ))
+    );
+
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(report["installed"]["console_after"], 12);
+    assert!(report["activated"].is_object());
+    Ok(())
+}

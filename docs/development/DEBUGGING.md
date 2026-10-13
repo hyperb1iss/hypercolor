@@ -517,30 +517,34 @@ echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"fps":2}}]}' | 
 
 **Source:** `crates/hypercolor-daemon/src/mcp/tools/`
 
-Hypercolor exposes 17 MCP tools for AI assistant integration. These give agents
+Hypercolor exposes 21 MCP tools for AI assistant integration. These give agents
 programmatic control over the lighting system.
 
 ### Tool Inventory
 
-| Tool               | Read-Only | Description                                                     |
-| ------------------ | --------- | --------------------------------------------------------------- |
-| `set_effect`       | no        | Apply a deterministically selected lighting effect              |
-| `list_effects`     | yes       | Browse the effect library with category/audio filters           |
-| `set_color`        | no        | Set a static color on devices                                   |
-| `set_output_power` | no        | Pause or resume output without discarding scene state           |
-| `clear_zone`       | no        | Clear one or every non-display zone                             |
-| `adjust_controls`  | no        | Patch typed controls and clear bindings on one live layer       |
-| `get_devices`      | yes       | List connected devices                                          |
-| `set_brightness`   | no        | Set brightness (0-100)                                          |
-| `get_status`       | yes       | Current daemon state snapshot                                   |
-| `activate_scene`   | no        | Activate a saved scene                                          |
-| `list_scenes`      | yes       | List available scenes                                           |
-| `create_scene`     | no        | Create a new scene with a seeded Primary zone                   |
-| `get_audio_state`  | yes       | Audio input and spectrum data                                   |
-| `get_layout`       | yes       | Current layout mapping                                          |
-| `get_sensor_data`  | yes       | System telemetry snapshot (CPU, GPU, memory, temperatures)      |
-| `set_display_face` | no        | Assign or clear an HTML display-face effect on a display device |
-| **`diagnose`**     | **yes**   | **Canonical safe system diagnostics**                           |
+| Tool                 | Read-Only | Description                                                     |
+| -------------------- | --------- | --------------------------------------------------------------- |
+| `set_effect`         | no        | Apply a deterministically selected lighting effect              |
+| `list_effects`       | yes       | Browse the effect library with category/audio filters           |
+| `set_color`          | no        | Set a static color on devices                                   |
+| `set_output_power`   | no        | Pause or resume output without discarding scene state           |
+| `clear_zone`         | no        | Clear one or every non-display zone                             |
+| `adjust_controls`    | no        | Patch typed controls and clear bindings on one live layer       |
+| `get_devices`        | yes       | List connected devices                                          |
+| `set_brightness`     | no        | Set brightness (0-100)                                          |
+| `get_status`         | yes       | Current daemon state snapshot                                   |
+| `activate_scene`     | no        | Activate a saved scene                                          |
+| `list_scenes`        | yes       | List available scenes                                           |
+| `create_scene`       | no        | Create a new scene with a seeded Primary zone                   |
+| `get_audio_state`    | yes       | Audio input and spectrum data                                   |
+| `get_layout`         | yes       | Current layout mapping                                          |
+| `get_sensor_data`    | yes       | System telemetry snapshot (CPU, GPU, memory, temperatures)      |
+| `set_display_face`   | no        | Assign or clear an HTML display-face effect on a display device |
+| `openrgb_status`     | yes       | OpenRGB host install, SDK probes, and bridge coverage           |
+| `capture_canvas`     | yes       | Composed canvas as images, one per frame, plus frame metadata   |
+| `install_effect`     | no        | Install or hot swap an HTML effect from its page source         |
+| `get_effect_console` | yes       | Effect console output and script errors at the author's line    |
+| **`diagnose`**       | **yes**   | **Canonical safe system diagnostics**                           |
 
 ### `diagnose` Tool (Detail)
 

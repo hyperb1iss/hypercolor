@@ -269,7 +269,7 @@ Key rules:
   deserializes the same ones.
 - **WebSocket:** `/api/v1/ws` carries real-time events, state, preview frames,
   metrics, and spectrum data.
-- **MCP:** The daemon exposes seventeen tools, five resources, and three prompt
+- **MCP:** The daemon exposes twenty-one tools, five resources, and four prompt
   templates for AI-assisted control.
 - **CLI/TUI:** The `hypercolor` CLI and Ratatui TUI use daemon APIs rather than
   a private local IPC channel.

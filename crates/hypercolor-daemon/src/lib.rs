@@ -10,6 +10,7 @@ pub mod api;
 pub mod app_state;
 pub mod attachment_profiles;
 pub mod audit_log;
+pub mod canvas_capture;
 pub mod daemon;
 pub(crate) mod deadline;
 pub mod device_aliases;

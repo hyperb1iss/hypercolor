@@ -7,6 +7,8 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from typing_extensions import Self
 
+from ..types import UNSET, Unset
+
 T = TypeVar("T", bound="InstalledEffectResponse")
 
 
@@ -20,6 +22,9 @@ class InstalledEffectResponse:
         name (str):
         path (str):
         presets (int):
+        console_after (int | Unset): Effect console cursor taken just before the install. Pass it as
+            `after` to `GET /api/v1/effects/console` to read only what the new
+            page prints.
     """
 
     controls: int
@@ -27,6 +32,7 @@ class InstalledEffectResponse:
     name: str
     path: str
     presets: int
+    console_after: int | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -40,6 +46,8 @@ class InstalledEffectResponse:
 
         presets = self.presets
 
+        console_after = self.console_after
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -51,6 +59,8 @@ class InstalledEffectResponse:
                 "presets": presets,
             }
         )
+        if console_after is not UNSET:
+            field_dict["console_after"] = console_after
 
         return field_dict
 
@@ -67,12 +77,15 @@ class InstalledEffectResponse:
 
         presets = d.pop("presets")
 
+        console_after = d.pop("console_after", UNSET)
+
         installed_effect_response = cls(
             controls=controls,
             id=id,
             name=name,
             path=path,
             presets=presets,
+            console_after=console_after,
         )
 
         installed_effect_response.additional_properties = d

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="hypercolor-version" content="1" />
+    <title>Starter Glow</title>
+    <meta description="A drifting glow over a dark floor, sized to whatever canvas the engine uses." />
+    <meta publisher="You" />
+    <meta property="speed" label="Speed" type="number" min="0.1" max="4" step="0.1" default="1" />
+    <meta property="hue" label="Hue" type="hue" min="0" max="360" default="280" />
+    <meta property="trails" label="Trails" type="boolean" default="true" />
+  </head>
+  <body style="margin:0;overflow:hidden;background:#000;">
+    <canvas id="exCanvas" style="display:block;width:100vw;height:100vh;"></canvas>
+    <script>
+      const canvas = document.getElementById("exCanvas");
+      const ctx = canvas.getContext("2d");
+
+      // The engine picks the canvas size (640x480 by default, configurable).
+      // Track the window instead of hardcoding width and height attributes.
+      function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      let last = performance.now();
+      let phase = 0;
+
+      function frame(now) {
+        // Frame rate shifts between 10 and 60 fps with load, so animate on
+        // elapsed time, and clamp the step after a stall.
+        const dt = Math.min((now - last) / 1000, 0.1);
+        last = now;
+
+        // Read controls every frame: patches arrive by reassigning these
+        // globals, so a value cached at load time never changes.
+        const speed = window.speed ?? 1;
+        const hue = window.hue ?? 280;
+        const trails = window.trails ?? true;
+        phase += dt * speed;
+
+        const { width, height } = canvas;
+        ctx.fillStyle = trails ? "rgba(0, 0, 0, 0.15)" : "#000";
+        ctx.fillRect(0, 0, width, height);
+
+        const x = (Math.sin(phase) * 0.5 + 0.5) * width;
+        const radius = Math.max(width, height) * 0.35;
+        const glow = ctx.createRadialGradient(x, height / 2, 0, x, height / 2, radius);
+        glow.addColorStop(0, `hsl(${hue}, 100%, 50%)`);
+        glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = glow;
+        ctx.fillRect(0, 0, width, height);
+
+        requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

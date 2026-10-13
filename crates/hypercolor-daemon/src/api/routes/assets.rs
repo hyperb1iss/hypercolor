@@ -60,7 +60,7 @@ pub(super) fn router(asset_upload_body_limit: usize) -> OpenApiRouter<Arc<AppSta
                 "assets",
                 "Download media asset bytes",
             )
-            .binary("application/octet-stream")],
+            .binary(&["application/octet-stream"])],
         ))
         .routes(openapi::documented_route(
             "/assets/{id}/thumbnail",
@@ -70,6 +70,6 @@ pub(super) fn router(asset_upload_body_limit: usize) -> OpenApiRouter<Arc<AppSta
                 "assets",
                 "Get a media asset thumbnail",
             )
-            .binary("image/webp")],
+            .binary(&["image/webp"])],
         ))
 }

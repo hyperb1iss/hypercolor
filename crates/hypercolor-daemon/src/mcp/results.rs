@@ -28,6 +28,45 @@ pub(crate) struct EffectCatalogItem {
     pub(crate) summary: EffectSummary,
 }
 
+/// Result of `install_effect`.
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct InstalledEffectResult {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    /// Where the page was installed.
+    pub(crate) path: String,
+    /// Controls the page declares.
+    pub(crate) controls: usize,
+    /// Presets the page bundles.
+    pub(crate) presets: usize,
+    /// Whether an effect with this file name was replaced in place.
+    pub(crate) replaced_existing: bool,
+    /// Console cursor taken just before the install; pass it to
+    /// `get_effect_console` as `after` to read only the new page's output.
+    pub(crate) console_after: u64,
+}
+
+/// Metadata for the images `capture_canvas` returns, in the same order.
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct CanvasCaptureResult {
+    pub(crate) frames: Vec<CanvasCaptureFrameResult>,
+    /// Canvas width the frames were rendered at.
+    pub(crate) source_width: u32,
+    /// Canvas height the frames were rendered at.
+    pub(crate) source_height: u32,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct CanvasCaptureFrameResult {
+    pub(crate) frame_number: u32,
+    pub(crate) timestamp_ms: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    /// False when the render thread published nothing new during the capture.
+    pub(crate) fresh: bool,
+    pub(crate) mime_type: String,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct OutputPowerResult {
     pub(crate) state: hypercolor_types::api::output::OutputPowerMode,

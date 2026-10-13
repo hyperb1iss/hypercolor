@@ -53,6 +53,7 @@ use super::worker_client::{
     ServoFramePayload, ServoProducerRole, ServoRenderMode, ServoSessionId,
     ServoWorkerClientSharedState, WORKER_READY_TIMEOUT, WorkerCommand,
 };
+use crate::effect::console::EffectConsoleSource;
 use crate::effect::servo_bootstrap::{ServoPlatformHost, ServoRenderingContextHandle};
 use crate::effect::traits::EffectRenderOutput;
 #[cfg(feature = "servo-gpu-import")]
@@ -67,6 +68,7 @@ mod scheduler;
 mod shared;
 mod wake;
 
+pub(super) use console::remap_console_message;
 use console::{
     find_initialization_failure_message, format_console_message, summarize_console_messages,
 };
@@ -447,11 +449,12 @@ impl ServoWorkerRuntime {
                 ScheduledServoWork::Command(WorkerCommand::Load {
                     session_id,
                     html_path,
+                    console,
                     width,
                     height,
                     response_tx,
                 }) => {
-                    let result = self.load_effect(session_id, &html_path, width, height);
+                    let result = self.load_effect(session_id, &html_path, console, width, height);
                     let _ = response_tx.send(result);
                 }
                 ScheduledServoWork::Command(WorkerCommand::LoadUrl {
@@ -695,12 +698,15 @@ impl ServoWorkerRuntime {
         &mut self,
         session_id: ServoSessionId,
         html_path: &Path,
+        console: Option<EffectConsoleSource>,
         width: u32,
         height: u32,
     ) -> Result<()> {
         self.resize_if_needed(session_id, width, height)?;
         let url = file_url_for_path(html_path)?;
-        self.session_mut(session_id)?.loaded_html_path = Some(html_path.to_path_buf());
+        let session = self.session_mut(session_id)?;
+        session.loaded_html_path = Some(html_path.to_path_buf());
+        session.delegate.set_console_source(console);
         debug!(
             ?session_id,
             url = %url,
@@ -747,7 +753,11 @@ impl ServoWorkerRuntime {
     ) -> Result<()> {
         self.resize_if_needed(session_id, width, height)?;
         let parsed_url = Url::parse(url).with_context(|| format!("failed to parse URL '{url}'"))?;
-        self.session_mut(session_id)?.loaded_html_path = None;
+        let session = self.session_mut(session_id)?;
+        session.loaded_html_path = None;
+        // Arbitrary web pages are not effects; their console stays out of
+        // the effect journal.
+        session.delegate.set_console_source(None);
         debug!(url = %parsed_url, "Loading Servo URL");
         self.navigate_webview(session_id, parsed_url.clone(), URL_LOAD_TIMEOUT)
             .context("failed to load Servo URL")?;

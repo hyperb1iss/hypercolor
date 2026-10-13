@@ -224,16 +224,15 @@ In short: `server` queries the connected daemon, `servers` finds daemons on the 
 
 The `hypercolor` binary documented here is the Rust daemon CLI. Inside an SDK effect-authoring workspace there is a **second, separate** CLI invoked as `bunx hypercolor` that builds, validates, and installs HTML effects. They are not the same tool: one drives a running daemon over REST, the other is a Bun-based authoring toolchain.
 
-An agent that builds an effect and then applies it crosses both. Build and install with the SDK CLI, then use the daemon CLI to make the new effect visible and apply it. MCP has no install or rescan tool, so this step is CLI-only.
+An agent that builds an effect and then applies it crosses both. Build with the SDK CLI, then install and apply with the daemon CLI. The install route adds the effect to the catalog immediately, so no rescan is needed. To install and iterate on a single page over MCP instead, use `install_effect`, as shown in the [live authoring workflow](@/agents/workflows.md#workflow-c-write-an-effect-live).
 
 ```bash
-# In the SDK workspace: build, validate, and install the effect
+# In the SDK workspace: build and validate the effect
 bunx hypercolor build --all
-bunx hypercolor install dist/aurora.html --daemon
+bunx hypercolor validate dist/aurora.html
 
-# Back on the daemon CLI: pick up the new effect and apply it
-hypercolor effects rescan
-hypercolor effects activate aurora
+# On the daemon CLI: install it and apply it in one step
+hypercolor effects install dist/aurora.html --activate
 ```
 
 `bunx hypercolor` resolves the workspace's `hypercolor` dependency: the npm release by default, or a local `file:` build in engine-development workspaces. See [effects setup](@/effects/setup.md) for the authoring side.
@@ -241,7 +240,7 @@ hypercolor effects activate aurora
 ## Where to go next
 
 - [MCP setup](@/agents/mcp-setup.md): the typed, schema-validated alternative to shell scripting.
-- [Tools reference](@/agents/tools-reference.md): all 18 MCP tools with arguments and return shapes.
+- [Tools reference](@/agents/tools-reference.md): all 21 MCP tools with arguments and return shapes.
 - [Prompt templates](@/agents/prompt-templates.md): the four shipped prompts agents can invoke.
 - [CLI reference](@/api/cli.md): the complete command tree, human-facing.
 - [REST API reference](@/api/rest.md): the daemon contract the CLI sits on top of.
