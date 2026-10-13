@@ -5,7 +5,6 @@ use std::{path::Path, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use axum::{
-    Json,
     extract::State,
     response::{IntoResponse, Response},
 };
@@ -23,6 +22,7 @@ use utoipa_axum::router::OpenApiRouter;
 use crate::{
     api::{
         envelope,
+        extract::ApiJson,
         openapi::{self, OperationDoc},
     },
     app_state::AppState,
@@ -349,7 +349,7 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Response {
 }
 async fn patch_preferences(
     State(state): State<Arc<AppState>>,
-    Json(patch): Json<UpdatePreferencesPatch>,
+    ApiJson(patch): ApiJson<UpdatePreferencesPatch>,
 ) -> Response {
     match service(&state) {
         Ok(service) => match service.patch(patch).await {
