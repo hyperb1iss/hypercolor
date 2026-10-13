@@ -633,9 +633,9 @@ The wall clock follows NTP slews and manual steps, so two `timestamp` values
 can run backwards or stretch. `mono_us` never moves backwards and does not jump
 when the wall clock is stepped, and its microsecond resolution leaves room to
 measure jitter inside a 16.7 ms frame. It is not guaranteed a steady rate: on
-Linux it reads `CLOCK_MONOTONIC`, which follows NTP frequency corrections, so
-its rate can differ from a client's clock by up to a few hundred parts per
-million. A long session should repeat the round-trip calibration below rather
+Linux it reads `CLOCK_MONOTONIC`, which follows NTP frequency corrections, and
+the protocol sets no limit on how far its rate can differ from a client's
+clock. A long session should repeat the round-trip calibration below rather
 than assume a fixed rate.
 
 Events are stamped when they are published on the daemon's internal bus,
