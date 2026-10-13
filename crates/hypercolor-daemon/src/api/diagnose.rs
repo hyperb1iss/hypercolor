@@ -7,7 +7,7 @@ use axum::response::Response;
 
 use crate::api::capture::protected_control_rejection;
 use crate::api::envelope;
-use crate::api::extract::{ApiExtension, ApiJson};
+use crate::api::extract::{ApiJson, ApiRequestExtension};
 use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::domain::diagnostics::default_safe_checks;
@@ -18,7 +18,7 @@ pub(crate) use hypercolor_types::api::diagnose::DiagnoseResponse;
 /// `POST /api/v1/diagnose` runs lightweight daemon diagnostics.
 pub(crate) async fn run_diagnostics(
     State(state): State<Arc<AppState>>,
-    ApiExtension(auth_context): ApiExtension<RequestAuthContext>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
     body: Option<ApiJson<DiagnoseRequest>>,
 ) -> Response {
     let requested = body

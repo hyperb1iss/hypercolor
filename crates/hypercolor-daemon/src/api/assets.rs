@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
+use axum::extract::State;
 use axum::extract::multipart::MultipartError;
-use axum::extract::{Multipart, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::asset::{
@@ -59,7 +59,7 @@ pub async fn get_asset(
 pub async fn upload_asset(
     State(state): State<Arc<AppState>>,
     ApiQuery(query): ApiQuery<AssetUploadQuery>,
-    ApiMultipart(multipart): ApiMultipart,
+    multipart: ApiMultipart,
 ) -> Response {
     let parsed = match parse_upload(multipart, query.r#type.as_deref()).await {
         Ok(parsed) => parsed,
@@ -182,7 +182,7 @@ pub async fn get_asset_thumbnail(
 }
 
 async fn parse_upload(
-    mut multipart: Multipart,
+    mut multipart: ApiMultipart,
     query_type_hint: Option<&str>,
 ) -> Result<ParsedUpload, DomainError> {
     let mut file_bytes = None;

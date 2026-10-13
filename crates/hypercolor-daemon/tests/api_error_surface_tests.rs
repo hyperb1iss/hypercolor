@@ -263,124 +263,85 @@ fn the_deleted_error_machinery_stays_deleted() {
     );
 }
 
-/// Test modules call handlers directly and may build any extractor.
-fn is_test_source(relative: &str) -> bool {
-    relative.ends_with("tests.rs") || relative.contains("/tests/")
+// ── Stock extractor fence ────────────────────────────────────────────────
+
+/// The seven stock extractor types the daemon's `clippy.toml` must
+/// disallow: the six families `api::extract` wraps, plus `axum::Form`,
+/// which no handler takes.
+///
+/// Clippy resolves each spelled type to its definition, so renames, globs,
+/// groups, re-exports (`axum::extract::path::Path`), and qualified paths
+/// all trip the lint in every router the crate builds; `clippy -D
+/// warnings` (`just lint`, CI) enforces it. It does not see inferred
+/// closure patterns (`|axum::Json(value)| ...`), and it does not name the
+/// rarer rejecting extractors no handler uses (`Bytes`, `String`,
+/// `RawForm`, `RawPathParams`, `NestedPath`, a required `MatchedPath`);
+/// `api_rejection_sweep_tests` covers documented operations by behavior
+/// instead. That `clippy.toml` is live, and that each entry resolves, is
+/// proven by the expectations in `api::extract`, which fail the lint if
+/// their uses stop matching.
+const DISALLOWED_EXTRACTORS: [&str; 7] = [
+    "axum::Json",
+    "axum::Form",
+    "axum::Extension",
+    "axum::extract::Path",
+    "axum::extract::Query",
+    "axum::extract::Multipart",
+    "axum::extract::ws::WebSocketUpgrade",
+];
+
+fn clippy_config(path: &Path) -> toml::Value {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("{} reads: {error}", path.display()));
+    toml::from_str(&text).unwrap_or_else(|error| panic!("{} parses: {error}", path.display()))
 }
 
-/// Every name a `use <prefix>{...};` group imports, in a flattened source.
-fn grouped_imports(flat: &str, prefix: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut rest = flat;
-    while let Some(offset) = rest.find(prefix) {
-        let after = &rest[offset + prefix.len()..];
-        let Some(close) = after.find('}') else {
-            break;
-        };
-        names.extend(
-            after[..close]
-                .split(',')
-                .map(|name| name.trim().to_owned())
-                .filter(|name| !name.is_empty()),
-        );
-        rest = &after[close..];
-    }
-    names
-}
-
-/// The stock Axum decoders a route module names, as offending spellings.
-fn stock_extractor_sightings(flat: &str) -> Vec<String> {
-    const STOCK: [&str; 4] = ["Json", "Path", "Query", "Form"];
-    let mut sightings = Vec::new();
-    for stock in STOCK {
-        for spelling in [
-            format!("use axum::{stock};"),
-            format!("use axum::extract::{stock};"),
-            format!("axum::{stock}<"),
-            format!("axum::extract::{stock}<"),
-            format!("axum::extract::{stock}("),
-        ] {
-            if flat.contains(&spelling) {
-                sightings.push(spelling);
-            }
-        }
-    }
-    for prefix in ["use axum::{", "use axum::extract::{"] {
-        for name in grouped_imports(flat, prefix) {
-            if STOCK.contains(&name.as_str()) {
-                sightings.push(format!("{prefix}{name}}}"));
-            }
-        }
-    }
-    sightings
-}
-
-/// Route modules extract through `api::extract`, whose rejections are
-/// `DomainError`s. Axum's stock body and URL decoders answer a bad request
-/// with a plain-text body instead, so naming one in a route module reopens
-/// the gap those wrappers close. Responders such as `axum::Json(body)` are
-/// expressions, not extractor types, and stay legal.
 #[test]
-fn routes_extract_through_the_api_extractors() {
-    let mut offenders: Vec<String> = Vec::new();
-    for (relative, source) in daemon_sources() {
-        if !relative.starts_with("api/")
-            || relative == "api/extract.rs"
-            || is_test_source(&relative)
-        {
-            continue;
-        }
-        for sighting in stock_extractor_sightings(&flattened(&source)) {
-            offenders.push(format!("{relative}: {sighting}"));
-        }
+fn clippy_disallows_the_seven_stock_extractor_families() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let config = clippy_config(&manifest.join("clippy.toml"));
+    let listed: Vec<&str> = config
+        .get("disallowed-types")
+        .and_then(toml::Value::as_array)
+        .expect("clippy.toml lists disallowed-types")
+        .iter()
+        .filter_map(|entry| entry.get("path").and_then(toml::Value::as_str))
+        .collect();
+    for path in DISALLOWED_EXTRACTORS {
+        assert!(listed.contains(&path), "clippy.toml must disallow `{path}`");
     }
+
+    // Clippy reads only the nearest clippy.toml and never merges parents,
+    // so the crate's file has to carry the workspace settings itself.
+    let workspace = clippy_config(&manifest.join("../../clippy.toml"));
+    assert_eq!(
+        config.get("msrv"),
+        workspace.get("msrv"),
+        "the daemon clippy.toml must restate the workspace msrv"
+    );
+}
+
+#[test]
+fn only_the_extract_module_silences_the_extractor_fence() {
+    let offenders: Vec<String> = daemon_sources()
+        .into_iter()
+        .filter(|(relative, source)| {
+            relative != "api/extract.rs" && source.contains("disallowed_types")
+        })
+        .map(|(relative, _)| relative)
+        .collect();
 
     assert!(
         offenders.is_empty(),
-        "route modules must extract through crate::api::extract (ApiJson, \
-         ApiPath, ApiQuery, ...):\n{}",
+        "only api::extract may name the stock extractors; extract through its \
+         wrappers instead of allowing clippy::disallowed_types:\n{}",
         offenders.join("\n")
     );
 }
 
 #[cfg(test)]
 mod scan_self_tests {
-    use super::{
-        flattened, is_response_type, result_error_types, stock_extractor_sightings,
-        strip_comments_and_strings,
-    };
-
-    #[test]
-    fn every_import_of_a_stock_decoder_is_caught() {
-        for source in [
-            "use axum::Json;",
-            "use axum::{Extension, Json};",
-            "use axum::extract::{Path, State};",
-            "use axum::extract::{\n    Query,\n    State,\n};",
-            "fn h(axum::extract::Query(q): axum::extract::Query<Q>) {}",
-            "fn h(body: axum::Json<Body>) {}",
-        ] {
-            assert!(
-                !stock_extractor_sightings(&flattened(source)).is_empty(),
-                "`{source}` names a stock decoder and must be caught"
-            );
-        }
-    }
-
-    #[test]
-    fn responders_and_api_extractors_are_left_alone() {
-        for source in [
-            "(status, axum::Json(body)).into_response()",
-            "use crate::api::extract::{ApiJson, ApiPath, ApiQuery};",
-            "use axum::extract::{State, OriginalUri};",
-            "use std::path::Path;",
-        ] {
-            assert!(
-                stock_extractor_sightings(&flattened(source)).is_empty(),
-                "`{source}` is not a stock decoder"
-            );
-        }
-    }
+    use super::{is_response_type, result_error_types, strip_comments_and_strings};
 
     #[test]
     fn every_spelling_of_an_axum_response_error_type_is_caught() {

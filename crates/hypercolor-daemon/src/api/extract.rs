@@ -9,9 +9,27 @@
 //! code, the framework's full diagnostic as the message, and the
 //! offending field path when the decoder reports one.
 //!
-//! Every built-in handler extracts through these. Extension routes can
-//! opt in by naming them in place of the Axum types; nothing intercepts a
-//! route that does not.
+//! The wrappers cover the six extractor families the daemon's handlers
+//! use: JSON bodies, path parameters, query strings, multipart uploads,
+//! request extensions, and WebSocket upgrades. Every handler the daemon
+//! mounts extracts through them, and extension routes can opt in by naming
+//! them in place of the Axum types; nothing intercepts a route that does
+//! not.
+//!
+//! Two guards hold that line. The crate's `clippy.toml` disallows those six
+//! stock types, plus `axum::Form` (no handler takes a form, and one would
+//! need a wrapper first), everywhere but here, which catches any spelled type
+//! (renamed, grouped, globbed, re-exported, or qualified) but not an
+//! inferred closure pattern such as `|axum::Json(value)| ...`. The
+//! `api_rejection_sweep_tests` suite closes that gap by sending malformed
+//! input to every documented operation, however its handler is written.
+//! Other Axum extractors can also reject (`Bytes`, `String`, `RawForm`,
+//! `RawPathParams`, `NestedPath`, and a required `MatchedPath`); no
+//! handler extracts them today and neither guard names them.
+#![expect(
+    clippy::disallowed_types,
+    reason = "the wrappers delegate to the stock extractors they replace"
+)]
 
 use std::error::Error as StdError;
 use std::ops::{Deref, DerefMut};
@@ -23,7 +41,8 @@ use axum::extract::rejection::{
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
 use axum::extract::{
-    Extension, FromRequest, FromRequestParts, Multipart, OptionalFromRequest, Path, Query, Request,
+    Extension, FromRequest, FromRequestParts, Multipart, OptionalFromRequest,
+    OptionalFromRequestParts, Path, Query, Request,
 };
 use axum::http::StatusCode;
 use axum::http::request::Parts;
@@ -146,9 +165,9 @@ where
 /// A request extension the daemon's own middleware installs. Its absence
 /// is a wiring defect, so it renders as `500 internal_error`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ApiExtension<T>(pub T);
+pub struct ApiRequestExtension<T>(pub T);
 
-impl<T, S> FromRequestParts<S> for ApiExtension<T>
+impl<T, S> FromRequestParts<S> for ApiRequestExtension<T>
 where
     T: Clone + Send + Sync + 'static,
     S: Send + Sync,
@@ -160,6 +179,23 @@ where
             .await
             .map(|Extension(value)| Self(value))
             .map_err(extension_rejection)
+    }
+}
+
+impl<T, S> OptionalFromRequestParts<S> for ApiRequestExtension<T>
+where
+    T: Clone + Send + Sync + 'static,
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        <Extension<T> as OptionalFromRequestParts<S>>::from_request_parts(parts, state)
+            .await
+            .map(|extension| extension.map(|Extension(value)| Self(value)))
     }
 }
 
@@ -202,7 +238,23 @@ macro_rules! deref_to_inner {
     )+};
 }
 
-deref_to_inner!(ApiJson, ApiPath, ApiQuery, ApiExtension);
+deref_to_inner!(ApiJson, ApiPath, ApiQuery, ApiRequestExtension);
+
+/// Field-by-field reading for upload handlers and their parsing helpers,
+/// which take the wrapper rather than naming Axum's type.
+impl Deref for ApiMultipart {
+    type Target = Multipart;
+
+    fn deref(&self) -> &Multipart {
+        &self.0
+    }
+}
+
+impl DerefMut for ApiMultipart {
+    fn deref_mut(&mut self) -> &mut Multipart {
+        &mut self.0
+    }
+}
 
 fn json_rejection(rejection: JsonRejection) -> DomainError {
     match rejection {
@@ -287,4 +339,28 @@ where
         current = error.source();
     }
     None
+}
+
+/// One deliberate use of each disallowed family, each expecting the lint.
+///
+/// The module-wide expectation above only proves the configuration loaded.
+/// These prove every `clippy.toml` entry still resolves to the type it
+/// names: if one stopped resolving, its expectation would go unfulfilled
+/// and `clippy --all-targets -D warnings` would fail.
+#[cfg(test)]
+mod disallowed_entries_resolve {
+    #[expect(dead_code, clippy::disallowed_types, reason = "axum::Json entry")]
+    type Json = axum::Json<()>;
+    #[expect(dead_code, clippy::disallowed_types, reason = "axum::Form entry")]
+    type Form = axum::Form<()>;
+    #[expect(dead_code, clippy::disallowed_types, reason = "axum::Extension entry")]
+    type Extension = axum::Extension<()>;
+    #[expect(dead_code, clippy::disallowed_types, reason = "Path entry")]
+    type Path = axum::extract::Path<()>;
+    #[expect(dead_code, clippy::disallowed_types, reason = "Query entry")]
+    type Query = axum::extract::Query<()>;
+    #[expect(dead_code, clippy::disallowed_types, reason = "Multipart entry")]
+    type Multipart = axum::extract::Multipart;
+    #[expect(dead_code, clippy::disallowed_types, reason = "WebSocketUpgrade entry")]
+    type Upgrade = axum::extract::ws::WebSocketUpgrade;
 }

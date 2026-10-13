@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
-use axum::extract::{Multipart, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
@@ -349,7 +349,7 @@ pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
 /// `POST /api/v1/effects/install` — Validate and install a user HTML effect.
 pub async fn install_effect(
     State(state): State<Arc<AppState>>,
-    ApiMultipart(mut multipart): ApiMultipart,
+    mut multipart: ApiMultipart,
 ) -> Response {
     let (file_name, file_bytes) = match next_uploaded_html_field(&mut multipart).await {
         Ok(upload) => upload,
@@ -614,7 +614,7 @@ struct ValidatedUploadedHtml {
 }
 
 async fn next_uploaded_html_field(
-    multipart: &mut Multipart,
+    multipart: &mut ApiMultipart,
 ) -> Result<(Option<String>, Vec<u8>), DomainError> {
     while let Some(field) = multipart.next_field().await.map_err(|error| {
         DomainError::malformed(format!("Failed to read multipart upload: {error}"))

@@ -12,7 +12,7 @@ use hypercolor_types::config_registry;
 
 use crate::api::capture::protected_control_rejection;
 use crate::api::envelope;
-use crate::api::extract::{ApiExtension, ApiJson, ApiPath, ApiQuery};
+use crate::api::extract::{ApiJson, ApiPath, ApiQuery, ApiRequestExtension};
 use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
@@ -116,7 +116,7 @@ pub(crate) async fn put_config_key(
     State(state): State<Arc<AppState>>,
     ApiPath(key): ApiPath<String>,
     ApiQuery(apply): ApiQuery<ConfigApplyQuery>,
-    ApiExtension(auth_context): ApiExtension<RequestAuthContext>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
     ApiJson(value): ApiJson<serde_json::Value>,
 ) -> Response {
     if !config_registry::is_valid_key(&key) {
@@ -136,7 +136,7 @@ pub(crate) async fn patch_config_key(
     State(state): State<Arc<AppState>>,
     ApiPath(key): ApiPath<String>,
     ApiQuery(apply): ApiQuery<ConfigApplyQuery>,
-    ApiExtension(auth_context): ApiExtension<RequestAuthContext>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
     ApiJson(value): ApiJson<serde_json::Value>,
 ) -> Response {
     if !config_registry::is_valid_key(&key) {
@@ -203,7 +203,7 @@ pub(crate) async fn delete_config_key(
     State(state): State<Arc<AppState>>,
     ApiPath(key): ApiPath<String>,
     ApiQuery(apply): ApiQuery<ConfigApplyQuery>,
-    ApiExtension(auth_context): ApiExtension<RequestAuthContext>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
 ) -> Response {
     if key != CAPTURE_CALIBRATION_RESET_KEY && !config_registry::is_valid_key(&key) {
         return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
@@ -224,7 +224,7 @@ pub(crate) async fn delete_config_key(
 pub(crate) async fn reset_config(
     State(state): State<Arc<AppState>>,
     ApiQuery(apply): ApiQuery<ConfigApplyQuery>,
-    ApiExtension(auth_context): ApiExtension<RequestAuthContext>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
 ) -> Response {
     if let Some(rejection) = protected_control_rejection(auth_context) {
         return rejection;

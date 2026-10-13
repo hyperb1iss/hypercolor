@@ -1,0 +1,21 @@
+# Clippy reads the nearest clippy.toml and does not merge parents, so this
+# file restates the workspace msrv from the root clippy.toml.
+msrv = "1.95"
+
+# These Axum extractors reject a request with a text/plain body: the six
+# families crate::api::extract wraps, plus Form, which no handler takes and
+# which would need a wrapper first. Handlers extract through the wrappers,
+# whose rejections render as the canonical error envelope; only that module
+# may name these types. This fence reads spelled types, not inferred closure
+# patterns, and it does not cover every rejecting extractor (Bytes, String,
+# RawForm, RawPathParams, NestedPath, MatchedPath); the
+# api_rejection_sweep_tests suite checks documented operations by behavior.
+disallowed-types = [
+    { path = "axum::Json", reason = "extract with api::extract::ApiJson; respond with api::envelope" },
+    { path = "axum::Form", reason = "add an api::extract wrapper before accepting forms" },
+    { path = "axum::Extension", reason = "extract with api::extract::ApiExtension" },
+    { path = "axum::extract::Path", reason = "extract with api::extract::ApiPath" },
+    { path = "axum::extract::Query", reason = "extract with api::extract::ApiQuery" },
+    { path = "axum::extract::Multipart", reason = "extract with api::extract::ApiMultipart" },
+    { path = "axum::extract::ws::WebSocketUpgrade", reason = "extract with api::extract::ApiWebSocketUpgrade" },
+]

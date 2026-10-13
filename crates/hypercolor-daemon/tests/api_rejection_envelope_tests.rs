@@ -357,8 +357,8 @@ async fn an_oversized_body_is_payload_too_large_without_a_guessed_limit() {
 }
 
 /// An extension route that opts into `ApiJson` under its own ceiling.
-async fn echo(ApiJson(value): ApiJson<Value>) -> axum::Json<Value> {
-    axum::Json(value)
+async fn echo(ApiJson(value): ApiJson<Value>) -> axum::response::Response {
+    axum::response::IntoResponse::into_response(axum::Json(value))
 }
 
 #[tokio::test]

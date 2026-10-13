@@ -6765,13 +6765,13 @@ impl crate::extensions::ApiExtension for RevocationProbe {
             .route(
                 "/probe/public",
                 axum::routing::get(
-                    |axum::Extension(context): axum::Extension<RequestAuthContext>,
-                     grant: Option<axum::Extension<crate::api::security::CredentialGrant>>| async move {
+                    |crate::api::extract::ApiRequestExtension(context): crate::api::extract::ApiRequestExtension<RequestAuthContext>,
+                     grant: Option<crate::api::extract::ApiRequestExtension<crate::api::security::CredentialGrant>>| async move {
                         axum::Json(serde_json::json!({
                             "can_control": context.can_control(),
                             "is_loopback": context.is_loopback(),
                             "credential_id": grant
-                                .map(|axum::Extension(grant)| grant.credential_id().to_owned()),
+                                .map(|crate::api::extract::ApiRequestExtension(grant)| grant.credential_id().to_owned()),
                         }))
                     },
                 ),
@@ -6779,10 +6779,10 @@ impl crate::extensions::ApiExtension for RevocationProbe {
             .route(
                 "/probe/whoami",
                 axum::routing::get(
-                    |grant: Option<axum::Extension<crate::api::security::CredentialGrant>>| async move {
+                    |grant: Option<crate::api::extract::ApiRequestExtension<crate::api::security::CredentialGrant>>| async move {
                         axum::Json(serde_json::json!({
                             "credential_id": grant
-                                .map(|axum::Extension(grant)| grant.credential_id().to_owned()),
+                                .map(|crate::api::extract::ApiRequestExtension(grant)| grant.credential_id().to_owned()),
                         }))
                     },
                 ),

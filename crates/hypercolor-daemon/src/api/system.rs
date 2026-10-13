@@ -37,7 +37,7 @@ use metrics::{
     render_acceleration_status, round_1, round_2,
 };
 
-use crate::api::extract::{ApiExtension, ApiPath, ApiQuery};
+use crate::api::extract::{ApiPath, ApiQuery, ApiRequestExtension};
 #[cfg(test)]
 use crate::domain::input_status::input_source_status;
 #[cfg(test)]
@@ -321,7 +321,7 @@ async fn system_status_with_privacy(
 /// `GET /api/v1/system` -- Public identity with authorized daemon status.
 pub(crate) async fn get_system(
     State(state): State<Arc<AppState>>,
-    ApiExtension(auth_context): ApiExtension<RequestAuthContext>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
 ) -> Response {
     let identity = server_info(&state).await;
     let status = if auth_context.can_read_system_status() {

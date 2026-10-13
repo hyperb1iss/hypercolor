@@ -5,7 +5,7 @@ use super::{
     effect_health_status, get_sensors, get_status, get_system, input_source_status,
     macos_daemon_ownership,
 };
-use crate::api::extract::ApiExtension;
+use crate::api::extract::ApiRequestExtension;
 use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::macos_owner::{
@@ -56,7 +56,7 @@ async fn public_system_identity_exposes_only_the_attested_session_id() {
 
     let response = get_system(
         State(Arc::new(state)),
-        ApiExtension(RequestAuthContext::preflight()),
+        ApiRequestExtension(RequestAuthContext::preflight()),
     )
     .await;
     let bytes = to_bytes(response.into_body(), usize::MAX)

@@ -635,7 +635,9 @@ async fn unchanged_disabled_capture_repairs_stale_runtime_source() {
         axum::extract::State(Arc::clone(&state)),
         crate::api::extract::ApiPath("capture.enabled".to_owned()),
         crate::api::extract::ApiQuery(ConfigApplyQuery { live: true }),
-        crate::api::extract::ApiExtension(crate::api::security::RequestAuthContext::control()),
+        crate::api::extract::ApiRequestExtension(
+            crate::api::security::RequestAuthContext::control(),
+        ),
         crate::api::extract::ApiJson(serde_json::json!(false)),
     )
     .await;

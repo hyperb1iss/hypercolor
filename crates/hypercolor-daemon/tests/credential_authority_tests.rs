@@ -5,13 +5,14 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
-use axum::Json;
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Extension};
+use axum::extract::ConnectInfo;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use http::{Method, Request, StatusCode, header};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api;
+use hypercolor_daemon::api::extract::ApiRequestExtension;
 use hypercolor_daemon::api::security::{
     CredentialAuthority, CredentialGrant, CredentialTier, RequestAuthContext, SecurityState,
 };
@@ -83,15 +84,16 @@ impl CredentialAuthority for TestAuthority {
 struct TestExtension;
 
 async fn whoami(
-    Extension(context): Extension<RequestAuthContext>,
-    grant: Option<Extension<CredentialGrant>>,
-) -> Json<Value> {
-    Json(json!({
+    ApiRequestExtension(context): ApiRequestExtension<RequestAuthContext>,
+    grant: Option<ApiRequestExtension<CredentialGrant>>,
+) -> Response {
+    axum::Json(json!({
         "can_control": context.can_control(),
         "can_protected_control": context.can_protected_control(),
         "is_loopback": context.is_loopback(),
-        "credential_id": grant.map(|Extension(grant)| grant.credential_id().to_owned()),
+        "credential_id": grant.map(|ApiRequestExtension(grant)| grant.credential_id().to_owned()),
     }))
+    .into_response()
 }
 
 impl ApiExtension for TestExtension {
