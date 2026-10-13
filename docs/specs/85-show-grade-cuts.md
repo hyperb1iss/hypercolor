@@ -10,7 +10,7 @@
 > Preparing effects ahead of time (zone cues) builds on this and is
 > specified separately once this lands and its costs are measured (§10).
 
-**Status:** DRAFT rev 5
+**Status:** rev 5. Phase 1 is ready for implementation; Phase 2 has open contract decisions (§9.1).
 **Crates:** `hypercolor-core` (effect pool, renderers, readiness, device output), `hypercolor-daemon` (render zones, sampling, display lane, scene domain, API, WebSocket), `hypercolor-types` (health, readiness, receipt contracts), `hypercolor-driver-api` (delivery outcomes), `sdk` (preparation handshake)
 **Amends:** LayerHealth semantics; the effect-error fallback policy; Spec 78 Appendix A (one route)
 **Author:** Nova
@@ -614,6 +614,61 @@ to 3, §6, §7, without holding. Acceptance:
   frame over budget on capture, reconcile, or swap frames at the
   configured FPS.
 
+### 9.1 Open for Phase 2
+
+Review of rev 5 found Phase 1 fully specified and left these Phase 2
+contracts to decide, ideally with Phase 1's code and measurements in
+hand:
+
+1. **Operation lifecycle.** What completes an operation that creates no
+   cut: a control PATCH on a presenting layer (`domain/scene_tree.rs:502`),
+   a brightness change that bypasses the scene commit
+   (`domain/output.rs:311`), a no-op, and a whole-scene clear that pauses
+   rendering and publishes static black (`domain/output.rs:158`). Also how
+   one operation's obligations split across zones when a later commit
+   supersedes it in only some of them, since the render thread reads only
+   the latest plan (`scene_snapshot.rs:251`).
+2. **Display blending.** Activation must blend each graph's complete
+   display contribution (scene background, face, face blend and opacity,
+   its own geometry) and then apply target brightness and encoding once;
+   blending raw faces loses the backgrounds (`display_finalize.wgsl:331`,
+   `display_output/encode.rs:159`). Interruption stills must retain those
+   complete contributions.
+3. **LED interruption holds.** A sampled-color still cannot follow a
+   geometry change (`frame_sampling.rs:366`). Decide between reprojectable
+   source holds (retained immutable source canvases) and physical sample
+   holds that end on a geometry change, and how repeated interruptions
+   flatten without retaining graphs.
+4. **Preparation deadlines by source class and load state.** One frame
+   interval suits synchronous redraws only; a web viewport URL change
+   debounces 250 ms before navigating (`web_viewport.rs:23`, `:289`) and
+   media controls can replace the producer (`media_player.rs:55`). Define
+   budgets per class and when preparation timing starts during an
+   outstanding load.
+5. **Dispatch eligibility.** Composition precedes sampling, which can
+   defer (`frame_sampling.rs:672`), display finalization can stay pending
+   (`display_lane.rs:278`), and an in-flight transport blocks the next
+   dispatch (`output_queue.rs:1580`). Either stage target-ready output
+   before declaring the swap or state the scheduling and capacity
+   contract that makes the next-slot bound hold, and say whether the
+   service-time bound is a percentile or per delivery.
+
+Implementation notes from the same review, for Phase 2's tests: keep an
+active transport's ownership through final route removal
+(`output_queue.rs:1909`); track the byte ranges that survive physical
+aggregation rather than a union of contributions
+(`device/manager/output_color.rs:163`); update the display payload cache
+only after a successful write (`display_output/worker.rs:703`); and give
+authored render-zone brightness (`hypercolor-types/src/scene.rs:96`) an
+explicit post-capture render stage, distinct from spatial-output
+brightness.
+
+A pre-existing conflict with this spec's doctrine also needs its own
+fix: live media admission refuses a sixth video regardless of capacity
+(hard counts of four videos and two streams, `domain/scene.rs:2088`,
+`:2259`) and downshifts the render tier from an estimated cost before any
+measured budget miss (`domain/context.rs:948`).
+
 ## 10. Follow-up: zone cues
 
 Preparing an effect before a request and going live on the next frame
@@ -735,3 +790,8 @@ the starting text) settled these requirements for that spec:
   frame number join requests to receipts, with `OperationSuperseded` for
   operations no swap presents (r4-7); dispatch and transport completion
   have separate per-target bounds tested at adverse phase (r4-8).
+- **rev 5 review (round 5):** closed 4 of round 4's 8 findings and
+  reopened display blending. It judged Phase 1 ready to implement and
+  left five Phase 2 contracts open, now listed in §9.1 with the review's
+  implementation notes, rather than iterating further in prose before
+  Phase 1 exists to measure.
