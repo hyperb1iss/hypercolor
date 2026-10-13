@@ -192,6 +192,8 @@ async fn a_named_scene_control_patch_replaces_only_the_scene_store() {
     patch_speed(&fixture, 0.5).await;
     let before = files.replacements();
     let barriers_before = files.scenes.directory_sync_count();
+    let syncs_before = files.scenes.file_sync_count();
+    let reads_before = files.scenes.verification_read_count();
 
     patch_speed(&fixture, 0.75).await;
 
@@ -211,6 +213,16 @@ async fn a_named_scene_control_patch_replaces_only_the_scene_store() {
             "the scene-store write runs one directory barrier"
         );
     }
+    assert_eq!(
+        files.scenes.file_sync_count(),
+        syncs_before + 1,
+        "no fsync of scenes.json beyond the write's own"
+    );
+    assert_eq!(
+        files.scenes.verification_read_count(),
+        reads_before,
+        "the runtime save trusts the commit's receipt instead of the file"
+    );
 }
 
 #[tokio::test]
@@ -219,6 +231,8 @@ async fn a_default_scene_control_patch_replaces_only_the_runtime_projection() {
     let files = Files::of(&fixture.state);
     patch_speed(&fixture, 0.5).await;
     let before = files.replacements();
+    let scene_syncs_before = files.scenes.file_sync_count();
+    let scene_reads_before = files.scenes.verification_read_count();
 
     patch_speed(&fixture, 0.75).await;
 
@@ -231,6 +245,55 @@ async fn a_default_scene_control_patch_replaces_only_the_runtime_projection() {
         "the default scene lives in the runtime projection, so the named \
          scene store has nothing new to write"
     );
+    assert_eq!(
+        files.scenes.verification_read_count(),
+        scene_reads_before,
+        "an unchanged store the receipts cover is never read"
+    );
+    assert_eq!(files.scenes.file_sync_count(), scene_syncs_before);
+}
+
+#[tokio::test]
+async fn a_whole_session_save_rewrites_a_store_edited_from_outside() {
+    let fixture = fixture(SceneKind::Named).await;
+    let files = Files::of(&fixture.state);
+    patch_speed(&fixture, 0.5).await;
+    let path = fixture.state.data_dir.join("scenes.json");
+    let durable = std::fs::read(&path).expect("read scene store");
+    let modified = std::fs::metadata(&path)
+        .and_then(|metadata| metadata.modified())
+        .expect("store mtime");
+
+    // A same-length edit in place with the mtime put back, behind a stamp
+    // that misses it.
+    let mut edited = durable.clone();
+    let digit = edited
+        .iter()
+        .position(u8::is_ascii_digit)
+        .expect("the store holds a digit");
+    edited[digit] = if edited[digit] == b'9' {
+        b'0'
+    } else {
+        edited[digit] + 1
+    };
+    std::fs::write(&path, &edited).expect("edit the store in place");
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .and_then(|file| file.set_modified(modified))
+        .expect("restore the mtime");
+    files.scenes.set_injected_stale_stamps(true);
+    let before = files.replacements();
+
+    // A per-commit save trusts the receipts and leaves the edit alone.
+    fixture.state.domains.scene.save_runtime_session().await;
+    assert_eq!(std::fs::read(&path).expect("read scene store"), edited);
+
+    // A whole-session save verifies the file and puts memory back.
+    fixture.state.domains.runtime_session.save().await;
+    assert_eq!(std::fs::read(&path).expect("read scene store"), durable);
+    assert_eq!(files.replacements().scenes, before.scenes + 1);
+    files.scenes.set_injected_stale_stamps(false);
 }
 
 #[tokio::test]

@@ -291,6 +291,10 @@ struct Destination {
     injected_stale_stamps: std::sync::atomic::AtomicBool,
     #[cfg(any(test, feature = "persistence-test-hooks"))]
     verified_skips: AtomicUsize,
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    verification_reads: AtomicUsize,
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    file_syncs: AtomicUsize,
 }
 
 #[cfg(windows)]
@@ -404,6 +408,10 @@ fn verify_destination_file(
     {
         return Ok(false);
     }
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    destination
+        .verification_reads
+        .fetch_add(1, Ordering::AcqRel);
     let mut bytes = Vec::with_capacity(usize::try_from(opened.byte_len()).unwrap_or(0));
     file.read_to_end(&mut bytes)?;
     let matches = match expected {
@@ -413,6 +421,8 @@ fn verify_destination_file(
     if !matches {
         return Ok(false);
     }
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    destination.file_syncs.fetch_add(1, Ordering::AcqRel);
     file.sync_all()?;
     Ok(true)
 }
@@ -547,6 +557,10 @@ impl AtomicFileWriter {
             injected_stale_stamps: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "persistence-test-hooks"))]
             verified_skips: AtomicUsize::new(0),
+            #[cfg(any(test, feature = "persistence-test-hooks"))]
+            verification_reads: AtomicUsize::new(0),
+            #[cfg(any(test, feature = "persistence-test-hooks"))]
+            file_syncs: AtomicUsize::new(0),
         });
 
         #[cfg(windows)]
@@ -731,6 +745,23 @@ impl AtomicFileWriter {
     #[must_use]
     pub fn verified_skip_count(&self) -> usize {
         self.destination.verified_skips.load(Ordering::Acquire)
+    }
+
+    /// How many times this destination's file was opened and read to
+    /// verify its bytes.
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    #[must_use]
+    pub fn verification_read_count(&self) -> usize {
+        self.destination.verification_reads.load(Ordering::Acquire)
+    }
+
+    /// How many file syncs this destination's writes and verifications ran:
+    /// the staged file's before each replacement, and the destination's at
+    /// each successful verification. Directory barriers are counted apart.
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    #[must_use]
+    pub fn file_sync_count(&self) -> usize {
+        self.destination.file_syncs.load(Ordering::Acquire)
     }
 
     /// Make the change-stamp fast reject report no change, as on a
@@ -1116,6 +1147,8 @@ fn try_write_stage_aware(
             },
         );
     }
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    destination.file_syncs.fetch_add(1, Ordering::AcqRel);
     if let Err(source) = temporary.as_file().sync_all() {
         return AtomicWriteCommitResult::FailedBeforeReplacement(PersistenceError::SyncTemporary {
             path: destination.path.clone(),
