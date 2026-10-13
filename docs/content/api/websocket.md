@@ -630,16 +630,22 @@ Every server message that reports when it was published (`event`, `metrics`,
 | `mono_us` | Daemon monotonic clock, microseconds | Ordering, intervals, latency, and frame pacing |
 
 The wall clock follows NTP slews and manual steps, so two `timestamp` values
-can run backwards or stretch. `mono_us` never moves backwards and ignores those
-adjustments, and its microsecond resolution leaves room to measure jitter
-inside a 16.7 ms frame.
+can run backwards or stretch. `mono_us` never moves backwards and does not jump
+when the wall clock is stepped, and its microsecond resolution leaves room to
+measure jitter inside a 16.7 ms frame. It is not guaranteed a steady rate: on
+Linux it reads `CLOCK_MONOTONIC`, which follows NTP frequency corrections, so
+its rate can differ from a client's clock by up to a few hundred parts per
+million. A long session should repeat the round-trip calibration below rather
+than assume a fixed rate.
 
 Events are stamped when they are published on the daemon's internal bus,
 before any relay queueing, so `frame_rendered` stamps on the `frame_events`
 topic follow the render thread rather than socket delivery. The snapshot
 topics stamp a message when the daemon assembles it. Events from different
-producers are stamped independently and can arrive slightly out of stamp
-order; sort by `mono_us` when order matters.
+producers are stamped independently and can arrive out of stamp order, with
+no fixed bound on how far, and a resync notice is stamped when it is built,
+so it can arrive ahead of retained events that carry older stamps. Sort by
+`mono_us` when order matters.
 
 Stamps are comparable only within one `clock_epoch`. The `hello` announces the
 epoch and the clock's current reading, which lets a client estimate the offset
