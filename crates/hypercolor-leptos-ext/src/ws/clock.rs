@@ -9,9 +9,13 @@
 //! monotonic clock and knows to discard the alignment when the epoch
 //! changes.
 //!
-//! Both types decode from the whole message object: serde ignores the
-//! fields around them, so a client reads the stamps without modeling the
-//! rest of the message.
+//! Command `response` messages carry `mono_us` alone: the clock's reading
+//! after the command finished, which falls inside the client's round trip
+//! and bounds the offset between the two clocks.
+//!
+//! Every type here decodes from the whole message object: serde ignores
+//! the fields around it, so a client reads the stamps without modeling
+//! the rest of the message.
 
 use serde::{Deserialize, Serialize};
 
@@ -38,4 +42,19 @@ pub struct HelloClock {
     /// The monotonic clock's reading, in microseconds, when the daemon
     /// built the `hello`.
     pub mono_us: u64,
+}
+
+/// When the daemon finished one WebSocket command, carried on its
+/// `response`.
+///
+/// A client that sent the command at its own monotonic time `t0` and
+/// received the response at `t1` knows `t0 - mono_us <= offset <=
+/// t1 - mono_us`, where `offset` is client time minus daemon time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResponseStamp {
+    /// The monotonic clock's reading, in microseconds, taken after the
+    /// command finished and immediately before the daemon wrote the
+    /// `response` to the socket. `None` from daemons that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mono_us: Option<u64>,
 }
