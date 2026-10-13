@@ -129,7 +129,7 @@ When zones are removed, the daemon calls `retain_zone_canvases` to drop stale se
 
 ## Bus lifecycle
 
-`HypercolorBus` is constructed once at daemon startup and shared via clone (each clone shares the same underlying channel state via `Arc`). The bus starts its publication clock at construction time, so one daemon run has one monotonic origin and one epoch id. `HypercolorBus::with_clock` accepts a clock with an injected wall half, which is how tests step the wall clock and confirm `mono_us` does not follow.
+`HypercolorBus` is constructed once at daemon startup and shared via clone (each clone shares the same underlying channel state via `Arc`). The bus starts its publication clock at construction time, so one daemon run has one monotonic origin and one epoch id. Tests can build a bus whose clock reads an injected wall clock, which is how they step the wall clock and confirm `mono_us` does not follow.
 
 ```rust
 let bus = HypercolorBus::new();

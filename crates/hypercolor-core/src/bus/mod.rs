@@ -199,7 +199,8 @@ impl PublicationClock {
     ///
     /// The monotonic half still reads the real monotonic clock, which is
     /// what lets a test step the wall clock and observe that `mono_us`
-    /// does not follow it.
+    /// does not follow it. Test-only: production clocks use [`Self::new`].
+    #[doc(hidden)]
     #[must_use]
     pub fn with_wall_clock(wall: fn() -> EventTimestamp) -> Self {
         Self {
@@ -821,6 +822,10 @@ impl HypercolorBus {
     }
 
     /// Create a bus that stamps publications against `clock`.
+    ///
+    /// Test-only: production buses use [`Self::new`], which starts a clock
+    /// on the host wall clock.
+    #[doc(hidden)]
     #[must_use]
     pub fn with_clock(clock: PublicationClock) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
