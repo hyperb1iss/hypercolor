@@ -60,6 +60,6 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                 "displays",
                 "Get simulated display frame",
             )
-            .binary("image/jpeg")],
+            .binary(&["image/jpeg"])],
         ))
 }
