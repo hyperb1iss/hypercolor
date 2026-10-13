@@ -28,11 +28,16 @@ function validateVersion(tags, version) {
     }
     // Registry fixtures model an unpublished version, without network access.
     writeFileSync(path.join(root, 'curl'), '#!/bin/sh\nexit 22\n', { mode: 0o755 });
-    return spawnSync('bash', ['-c', stepScript('Validate release version')], {
+    const outputsPath = path.join(root, 'outputs');
+    const result = spawnSync('bash', ['-c', stepScript('Validate release version')], {
       cwd: root,
       encoding: 'utf8',
-      env: { ...process.env, PATH: `${root}:${process.env.PATH}`, INPUT_VERSION: version, GITHUB_OUTPUT: path.join(root, 'outputs') },
+      env: { ...process.env, PATH: `${root}:${process.env.PATH}`, INPUT_VERSION: version, GITHUB_OUTPUT: outputsPath },
     });
+    const outputs = result.status === 0
+      ? Object.fromEntries(readFileSync(outputsPath, 'utf8').trim().split('\n').map((line) => line.split('=', 2)))
+      : {};
+    return { ...result, outputs };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -47,6 +52,24 @@ test('prereleases cannot follow their already-published stable version', () => {
   const result = validateVersion(['v0.5.2-rc.1', 'v0.5.2'], '0.5.2-rc.2');
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /not above the latest tag v0.5.2\n/);
+});
+
+test('a stable release starts its notes at the previous stable release, not its candidates', () => {
+  const result = validateVersion(['v0.5.1', 'v0.5.2-rc.1', 'v0.5.2-rc.2'], '0.5.2');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.outputs.from_ref, 'v0.5.1');
+});
+
+test('a release candidate starts its notes at the latest tag', () => {
+  const result = validateVersion(['v0.5.1', 'v0.5.2-rc.1'], '0.5.2-rc.2');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.outputs.from_ref, 'v0.5.2-rc.1');
+});
+
+test('a first stable release with only candidates before it starts at the latest candidate', () => {
+  const result = validateVersion(['v0.1.0-rc.1'], '0.1.0');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.outputs.from_ref, 'v0.1.0-rc.1');
 });
 
 test('prerelease sequencing remains numeric and rejects downgrades', () => {
