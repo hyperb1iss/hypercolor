@@ -10,7 +10,7 @@
 > Preparing effects ahead of time (zone cues) builds on this and is
 > specified separately once this lands and its costs are measured (§10).
 
-**Status:** DRAFT rev 4
+**Status:** DRAFT rev 5
 **Crates:** `hypercolor-core` (effect pool, renderers, readiness, device output), `hypercolor-daemon` (render zones, sampling, display lane, scene domain, API, WebSocket), `hypercolor-types` (health, readiness, receipt contracts), `hypercolor-driver-api` (delivery outcomes), `sdk` (preparation handshake)
 **Amends:** LayerHealth semantics; the effect-error fallback policy; Spec 78 Appendix A (one route)
 **Author:** Nova
@@ -120,8 +120,8 @@ placeholder canvas.
 | Servo HTML effect, SDK page | prepared | the handshake's origin frame for the current preparation revision completes | load fails, the session dies, or the first-output deadline passes |
 | Servo HTML effect, page without the handshake | live page | the first completed render after load | as above |
 | `screen_cast` builtin | live capture | it draws from a renderable capture publication for its source (`effect/builtin/screen_cast.rs:46-52` clears and succeeds without one today) | capture is denied or unavailable past the deadline |
-| `media_player` builtin, live stream | live stream | the first decoded sample is drawn (`effect/builtin/media_player.rs:103`) | the source cannot be resolved or opened |
-| `media_player` builtin or Media layer, finite file or image | restartable | the first frame at position zero is drawn | the asset is missing or undecodable |
+| `media_player` builtin or Media layer backed by a live stream (`media/producer.rs:451`) | live stream | the first decoded sample is drawn (`effect/builtin/media_player.rs:103`) | the source cannot be resolved or opened, or no sample arrives by the deadline |
+| `media_player` builtin or Media layer, finite file or image | restartable | the frame at logical playback zero is drawn (§4) | the asset is missing or undecodable |
 | `web_viewport` builtin and the authored WebViewport layer (`effect/pool.rs:842`) | live page | the first completed navigation draws (`effect/builtin/web_viewport.rs:207`) | navigation fails |
 | Other CPU builtins | stateful synchronous | their first `tick` returns | init returns an error |
 | ScreenRegion layer | live capture | the first capture sample for its region arrives (`render_zones/frame_helpers.rs:157` returns nothing today) | capture is denied or unavailable past the deadline |
@@ -146,9 +146,19 @@ whether the machine sleeps or the daemon's idle policy turns output off
 (`session.rs:248`), suspends every deadline owner, not just the outer
 one: session creation, navigation (`servo/worker.rs:1158`), caller
 receive timeouts (`servo/worker_client.rs:524`), handshake waits, and
-production ages (`servo/session.rs:269`). An incarnation created or
-loading before sleep resumes its deadlines on wake and is never failed
-for the time asleep.
+production ages (`servo/session.rs:269`), finite-media waits, and
+stream sample ages. An incarnation created or loading before sleep
+resumes its deadlines on wake and is never failed for the time asleep.
+
+A **preparation deadline** is separate from the load deadline. Each time
+an authored control change bumps an incoming incarnation's preparation
+revision (§3.3), a new deadline starts: three of its own frame intervals
+plus the worker's script round trip for SDK pages, and one frame
+interval for builtins. Timers and acknowledgements carry the revision
+they belong to, so an answer for an obsolete revision is ignored. A
+revision that misses its deadline fails the incarnation with
+`Failed { reason: "prepare_timeout" }`; the barrier then treats it like
+any failed incarnation.
 
 ### 2.4 Health
 
@@ -255,8 +265,15 @@ overlapping zones each keep their own frame (`render_zones/scene_retention.rs:37
 retains only the aggregate and available zone canvases today). The zone
 presents its still, resampled to the new geometry, until every rebuilt
 and new incarnation reaches the barrier. It never presents empty output
-and never samples old content through old geometry. Brightness and
-opacity are not geometry and apply immediately.
+and never samples old content through old geometry.
+
+A hold still freezes composition inside the zone. Output policy applied
+after zone composition (zone brightness, display brightness, geometry)
+still applies to the still immediately, which is why direct display
+holds are taken before finalization. Changes inside the zone (layer
+opacity, blend, and the bindings that drive them,
+`binding_eval.rs:126`) cannot be represented by a flattened still and
+take effect when the hold ends.
 
 ### 3.6 Scene activation
 
@@ -276,14 +293,20 @@ canvas:
 - A target only the outgoing scene feeds fades toward the incoming
   scene's unassigned behavior; a target only the incoming scene feeds
   fades from the outgoing scene's unassigned behavior; a display fed by
-  different face zones in the two scenes blends their finalized pixels.
+  different face zones in the two scenes blends their pre-finalization face
+pixels and finalizes once, so geometry and brightness apply exactly once.
 - The outgoing graph keeps its producers, demand, and routing until the
   transition completes, then is destroyed.
 - **Interruption.** If a newer activation arrives mid-transition, the
   current blended output of every target is captured as a hold still
   (as the planner freezes the last composed frame today,
   `composition_planner.rs:84`), and both contributing graphs are
-  released. The newest target warms behind the still and transitions
+  released. The still is taken before output policy: LED targets keep
+  their blended colors before brightness, and displays keep their
+  blended pre-finalization pixels, because finalization bakes geometry
+  and brightness into pixels irreversibly (`display_lane.rs:237`,
+  `display_finalize.wgsl:263`). Brightness and geometry changes during
+  the hold therefore still apply. The newest target warms behind the still and transitions
   from it when it reaches the barrier. Each further interruption replaces
   the still and releases whatever was warming, so a zone never holds more
   than one still and one incoming graph.
@@ -298,7 +321,7 @@ depends on its class.
 | --- | --- | --- |
 | prepared (SDK pages) | suspended after its origin (Phase 2) | the origin, rendered at effect time zero |
 | stateful synchronous builtins | not advanced once Ready | its first frame; its clock starts at presentation |
-| restartable (finite media, images) | paused at position zero | the frame at position zero |
+| restartable (finite media, images) | paused at logical playback zero | the frame at logical playback zero, honoring the layer's authored `start_offset_secs`, speed, loop, and autoplay (`hypercolor-types/src/layer.rs:273`, `media/producer.rs:314`) |
 | live page (legacy HTML, remote web viewport) | keeps executing (it cannot be suspended) | its latest live frame |
 | live stream, live capture | keeps decoding or capturing (`media/producer.rs:451`, `:918`) | its latest live frame |
 | stateless | nothing to hold | its frame |
@@ -340,63 +363,106 @@ delivered.
 `Active` is health, not proof that the audience saw the cut: health is
 published before final composition (`frame_composer.rs:355`), deferred
 sampling can replace samples (`frame_sampling.rs:481`, `:616`, `:685`),
-and device and display queues coalesce pending frames
-(`device/output_queue.rs:742`, `:1552`, `:1745`;
-`display_output/worker.rs:467`, `:474`).
+device and display queues coalesce and deduplicate pending frames
+(`device/output_queue.rs:742`, `:1552`, `:1733`, `:1745`;
+`display_output/worker.rs:467`, `:474`, `:522`), and several logical
+routes can share one physical payload (`device/manager/output_frame.rs:213`).
 
-**Cut generation and provenance.** Each swap allocates a cut generation
-for its zone and snapshots the zone's **target set**: every logical
-target routed at that moment, identified by its layout output identity
-and, when resolved, its backend and physical device. Frames carry the
-generation plus provenance (source incarnations and the composed frame
-number) through composition, sampling, display finalization, and output.
-A sample or queued frame replaced by a newer frame of the same generation
-passes the generation on with the newer provenance; one reusing colors
-from before the swap carries the earlier generation.
+### 5.1 Operations
 
-**Terminal outcomes.** Every target in the snapshot reaches exactly one:
+Every request that can change what renders gets an **operation id**,
+minted when the HTTP request or WebSocket command arrives, together with
+a monotonic arrival `Instant`. The id and instant travel with the
+request through the session's command queue, synthetic REST dispatch
+(`api/ws/command.rs:78`), the domain mutation's provenance
+(`domain/mod.rs:536`, which carries only a trigger today), and the commit.
+REST responses return the id in their response metadata, and WebSocket
+command responses carry it too (they drop that metadata today,
+`api/ws/command.rs:159`). Latency is always measured from the arrival
+`Instant`, never by subtracting wall-clock stamps (`core/bus/mod.rs:118`
+stamps `SystemTime`).
+
+### 5.2 Cuts and target sets
+
+A **cut** is one change in what a zone presents: a stack swap, a hold
+starting or ending, or an activation transition. Each cut gets a
+generation for its zone, the operation ids whose commits it carries, and
+the composed **swap frame number** (`frame_executor.rs:731`). Activation
+creates one cut per affected zone in both scenes, including zones only
+the outgoing scene has, and owns the targets those zones fed.
+
+At the swap the cut snapshots its **target set**: every logical target
+routed at that moment (and, for activations, the union of outgoing and
+incoming targets, including unassigned-behavior contributions),
+identified by layout output identity and, when resolved, backend and
+physical device. Frames carry **contribution metadata** keyed by scene,
+zone, logical output, and cut generation through sampling, display
+finalization, and physical aggregation, so a payload that combines zone
+A's generation 5 with zone B's generation 9 advances each receipt
+independently.
+
+### 5.3 Terminal outcomes
+
+For each target, a cut's generation is tracked across every attempt that
+carries it, pending or in flight. Each target reaches exactly one
+outcome, decided by these rules in order:
+
+1. An in-flight attempt's acknowledgement is authoritative: transport
+   completion gives `Completed`, a backend decline gives `Suppressed`,
+   an error gives `Failed`.
+2. A host-side decision not to dispatch is terminal as `Suppressed`,
+   recorded with the stage (LED dedupe, display unchanged-frame or
+   zero-brightness skip, direct-control ownership,
+   `device/manager/output_frame.rs:125`) and the provenance of the
+   payload the target keeps showing. Dedupe and direct control keep
+   working as they do today.
+3. `Superseded { by_generation }` applies only when a newer generation
+   replaces the target's last pending attempt for this cut and no
+   attempt for it remains in flight; if one is in flight, its
+   acknowledgement decides.
+4. Disconnection, route removal or remapping after the swap, and a
+   missing physical mapping at the swap give `Disconnected`,
+   `RouteRemoved`, and `Unmapped`; a pending attempt cancelled by them
+   ends there, while an in-flight one still follows rule 1.
+5. A backend whose acknowledgements do not reflect what the device
+   accepted reports `Unverified`. The Blocks backend reports a negative
+   acknowledgement as success today (`device/blocks/connection.rs:143`,
+   `device/blocks/backend.rs:247`), and the display coordinator reduces
+   its acknowledgements to `Result<()>` (`device/manager/display_output.rs:202`);
+   both carry real outcomes once fixed.
 
 ```rust
 pub enum DeliveryOutcome {
-    /// The backend completed transport of a frame of this generation.
     Completed,
-    /// The backend accepted but declined to send it (rate or dedupe policy).
-    Suppressed,
-    /// Every frame of this generation was replaced before transport by a
-    /// newer generation's frame.
+    Suppressed { stage: SuppressionStage, kept: Option<FrameProvenance> },
     Superseded { by_generation: u64 },
     Failed { reason: String },
     Disconnected,
-    /// The route was removed or remapped after the swap.
     RouteRemoved,
-    /// The logical target had no physical mapping at the swap.
     Unmapped,
-    /// The backend does not yet report delivery acknowledgements truthfully.
     Unverified,
 }
 ```
 
-Host-side replacement terminalizes the replaced generation as
-`Superseded`, so a cut overtaken in a slow target's queue still
-completes its receipt. Backends report through the delivery
-acknowledgements the driver API already distinguishes
-(`hypercolor-driver-api/src/backend.rs:164`). A backend whose
-acknowledgements do not reflect what the device accepted reports
-`Unverified` until fixed; the Blocks backend reports a negative
-acknowledgement as success today (`device/blocks/connection.rs:143`,
-`device/blocks/backend.rs:247`). Display coordination reduces its
-acknowledgements to `Result<()>` (`device/manager/display_output.rs:202`)
-and must carry outcomes and provenance through.
+The backend families already expose usable acknowledgements (USB actors,
+SMBus, Hue DTLS, Nanoleaf and WLED UDP, Govee LAN and cloud, OpenRGB
+socket writes). Transport completion means the daemon finished sending;
+for UDP and socket transports it is not proof of what the remote device
+displayed.
 
-When every target has an outcome, the daemon publishes:
+### 5.4 Receipts
+
+When every target in a cut's set has an outcome, the daemon publishes:
 
 ```rust
 CutPresented {
     scene_id: SceneId,
     zone_id: ZoneId,
     cut_generation: u64,
+    operation_ids: Vec<OperationId>,
     incarnations: Vec<ProducerIncarnation>,
-    /// Monotonic, from request arrival to the composition of the swap frame.
+    swap_frame_number: u32,
+    /// Monotonic, from the earliest carried operation's arrival to the swap frame's composition.
     swap_latency_us: u64,
     targets: Vec<TargetDelivery>,
 }
@@ -406,23 +472,24 @@ pub struct TargetDelivery {
     pub backend_id: Option<String>,
     pub device_id: Option<DeviceId>,
     pub outcome: DeliveryOutcome,
-    /// Monotonic, from request arrival to queue acceptance and transport completion.
-    pub accepted_latency_us: Option<u64>,
+    /// Monotonic, from the same arrival: dispatch start and transport completion.
+    pub dispatched_latency_us: Option<u64>,
     pub completed_latency_us: Option<u64>,
-    /// Composed frame number and incarnations of the delivered frame.
+    /// The frame actually delivered, which may be later than the swap frame.
     pub frame: Option<FrameProvenance>,
 }
 ```
 
+An operation whose commit is superseded before any swap presents it
+(§3.4) is reported as `OperationSuperseded { operation_id, by }`, so a
+client can tell a cut it will never see from a receipt it is still
+waiting for. A clear-to-empty cut has no incarnations; its operation ids
+identify it.
+
 The origin guarantee holds at composition: the swap frame composes the
 prepared output. A slow target may deliver a later frame of the same
-generation first, and its receipt says which frame it delivered.
-
-Latencies come from a monotonic `Instant` captured when the HTTP request
-or WebSocket command arrived and carried through the session's command
-queue and dispatch (`api/ws/command.rs:78` request extensions are the
-seam), never from subtracting wall-clock stamps (`core/bus/mod.rs:118`
-stamps `SystemTime`). The vocabulary lives in `hypercolor-types`.
+generation first, and its `frame` says which. The vocabulary lives in
+`hypercolor-types`.
 
 ## 6. Failure fallback
 
@@ -524,16 +591,28 @@ to 3, §6, §7, without holding. Acceptance:
   acceptance, and transport completion. The wall-time requirement is
   that a fresh frame composes at the first composition after its render
   completes.
-- Receipts: every target in the swap snapshot reaches exactly one
-  terminal outcome, including under queue coalescing, disconnects, and
-  remapping; latencies are monotonic.
-- On the rig, the show runner correlates each cut's request with its
-  `CutPresented` and judges each target: a completed delivery lands
-  within that target's own output interval after the swap frame (60 FPS
-  USB targets at the compositor's interval, a 10 FPS Nanoleaf at
-  100 ms), and suppressed, superseded, and failed outcomes are asserted
-  separately, with no frame over budget on swap frames at the configured
-  FPS.
+- Receipts: every target in the cut's snapshot reaches exactly one
+  terminal outcome, including the sequence where one attempt is in
+  flight, another pending, and a newer generation replaces the pending
+  one (the in-flight acknowledgement decides); host dedupe,
+  unchanged-frame and zero-brightness skips, and direct control end in
+  `Suppressed` with their stage; a payload aggregating two zones'
+  generations advances each receipt separately; disconnects and
+  remapping terminalize correctly; latencies are monotonic.
+- Two separate bounds per target, each tested at an adverse phase offset
+  (the swap landing just after the target's previous slot): dispatch of
+  the new generation starts at the target's next output slot, so within
+  one target interval of the swap frame (16.7 ms for 60 FPS USB targets,
+  100 ms for a 10 FPS Nanoleaf); transport completes within that plus the
+  target's measured p99 service time (encoding and transfer), which the
+  receipt reports. Capture and reconcile frames are measured alongside
+  swap frames, since hold-still copies happen before the swap.
+- On the rig, the show runner joins each request's operation id to its
+  `CutPresented` (or `OperationSuperseded`) through the swap frame
+  number, judges completed deliveries against those bounds, asserts
+  suppressed, superseded, and failed outcomes separately, and finds no
+  frame over budget on capture, reconcile, or swap frames at the
+  configured FPS.
 
 ## 10. Follow-up: zone cues
 
@@ -639,3 +718,20 @@ the starting text) settled these requirements for that spec:
   minimal handshake moves to Phase 1 (r3-12); §10 now carries the full
   cue requirements (r3-13); evidence separates client round trips from
   the server audit log and the counts are corrected (r3-14).
+- **rev 5:** Codex round 4 closed 9 of the 14 and left 5 partial, and
+  raised 8 (1 blocking). Dispositions: host-side suppression (dedupe,
+  unchanged or zero-brightness skips, direct control) is a terminal
+  `Suppressed` with its stage and the kept payload (r4-1);
+  `Superseded` requires that no attempt for the generation remain in
+  flight, and outcomes follow a stated precedence (r4-2); hold stills
+  freeze composition inside a zone while post-composition brightness and
+  geometry still apply, and interruption stills are taken before output
+  policy (r4-3); re-preparation gets its own revision-fenced deadline
+  (r4-4); finite media start at logical playback zero honoring authored
+  offset, speed, loop, and autoplay, and stream-backed Media layers are
+  classed as live streams (r4-5); contribution metadata survives
+  physical aggregation, and activation cuts own the union of outgoing
+  and incoming targets (r4-6); operation ids from ingress and the swap
+  frame number join requests to receipts, with `OperationSuperseded` for
+  operations no swap presents (r4-7); dispatch and transport completion
+  have separate per-target bounds tested at adverse phase (r4-8).
