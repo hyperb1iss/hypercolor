@@ -18,6 +18,30 @@ const OPEN_NO_FOLLOW: i32 = 0x0100;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 const OPEN_NO_FOLLOW: i32 = 0x0002_0000;
 
+pub(super) fn file_change_stamp(file: &File) -> io::Result<crate::FileChangeStamp> {
+    file.metadata().map(|metadata| change_stamp(&metadata))
+}
+
+pub(super) fn path_change_stamp(path: &Path) -> io::Result<crate::FileChangeStamp> {
+    fs::metadata(path).map(|metadata| change_stamp(&metadata))
+}
+
+fn change_stamp(metadata: &fs::Metadata) -> crate::FileChangeStamp {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let nanos = |seconds: i64, nanoseconds: i64| {
+        i128::from(seconds) * 1_000_000_000 + i128::from(nanoseconds)
+    };
+    crate::FileChangeStamp {
+        volume: metadata.dev(),
+        file_id: u128::from(metadata.ino()),
+        len: metadata.len(),
+        changed: nanos(metadata.ctime(), metadata.ctime_nsec()),
+        modified: nanos(metadata.mtime(), metadata.mtime_nsec()),
+        mode: metadata.mode(),
+    }
+}
+
 pub(super) fn durable_replace(source: &Path, destination: &Path) -> io::Result<()> {
     durable_replace_with(source, destination, sync_directory)
 }

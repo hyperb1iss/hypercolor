@@ -109,6 +109,90 @@ pub fn open_no_follow(path: &Path) -> io::Result<File> {
     }
 }
 
+/// Which file this is, plus a change stamp that moves whenever it changes.
+///
+/// The stamp is the inode change time on Unix and `ChangeTime` with the file
+/// id on Windows. A write, truncation, rename, or permission change moves it,
+/// and on Unix unprivileged code cannot set it back, so restoring a file's
+/// bytes and modification time still leaves a different stamp. Equal stamps
+/// mean the same file, unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileChangeStamp {
+    volume: u64,
+    file_id: u128,
+    len: u64,
+    changed: i128,
+    modified: i128,
+    mode: u32,
+}
+
+impl FileChangeStamp {
+    /// Whether both stamps describe the same file, changed or not.
+    #[must_use]
+    pub fn same_file(&self, other: &Self) -> bool {
+        self.volume == other.volume && self.file_id == other.file_id
+    }
+
+    /// The Unix permission bits the file carried when stamped.
+    #[cfg(unix)]
+    #[must_use]
+    pub const fn permission_bits(&self) -> u32 {
+        self.mode & 0o7777
+    }
+}
+
+/// Stamp an open file.
+///
+/// Returns `Ok(None)` on platforms that offer no change stamp, where callers
+/// must assume the file may have changed.
+///
+/// # Errors
+///
+/// Returns the platform error when the file's metadata cannot be read.
+pub fn file_change_stamp(file: &File) -> io::Result<Option<FileChangeStamp>> {
+    #[cfg(unix)]
+    {
+        unix::file_change_stamp(file).map(Some)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        windows::file_change_stamp(file).map(Some)
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = file;
+        Ok(None)
+    }
+}
+
+/// Stamp the file at `path`, following a final symlink.
+///
+/// Returns `Ok(None)` on platforms that offer no change stamp.
+///
+/// # Errors
+///
+/// Returns the platform error when the file cannot be opened or its metadata
+/// cannot be read, including when it does not exist.
+pub fn path_change_stamp(path: &Path) -> io::Result<Option<FileChangeStamp>> {
+    #[cfg(unix)]
+    {
+        unix::path_change_stamp(path).map(Some)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        windows::path_change_stamp(path).map(Some)
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
 /// Atomically replace `destination` with `source` and make the replacement
 /// durable.
 ///

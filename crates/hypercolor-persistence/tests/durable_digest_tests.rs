@@ -193,3 +193,32 @@ fn forgotten_durable_bytes_are_written_again() {
     assert_ne!(inode(&path), before, "a forgotten destination is replaced");
     assert!(writer.holds_durable_bytes());
 }
+
+#[test]
+fn a_timestamp_preserving_same_length_restore_is_written_over() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = root.path().join("state.json");
+    let writer = AtomicFileWriter::new(&path).expect("writer");
+    writer.write(b"original").expect("first write lands");
+    let landed = fs::metadata(&path).expect("landed metadata");
+
+    // Different bytes of the same length, written into the same inode, with
+    // the modification time put back: size, mtime, and inode all match.
+    fs::write(&path, b"restored").expect("overwrite in place");
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .expect("reopen destination")
+        .set_modified(landed.modified().expect("landed mtime"))
+        .expect("restore mtime");
+    let restored = fs::metadata(&path).expect("restored metadata");
+    assert_eq!(restored.ino(), landed.ino());
+    assert_eq!(restored.len(), landed.len());
+    assert_eq!(restored.modified().ok(), landed.modified().ok());
+
+    assert_eq!(
+        writer.write(b"original").expect("save lands"),
+        AtomicWriteOutcome::Written
+    );
+    assert_eq!(fs::read(&path).expect("read destination"), b"original");
+}
