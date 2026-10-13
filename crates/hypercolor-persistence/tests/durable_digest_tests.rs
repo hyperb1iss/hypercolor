@@ -222,3 +222,39 @@ fn a_timestamp_preserving_same_length_restore_is_written_over() {
     );
     assert_eq!(fs::read(&path).expect("read destination"), b"original");
 }
+
+#[test]
+fn a_requested_mode_rewrites_identical_bytes() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = root.path().join("state.json");
+    let writer = AtomicFileWriter::new(&path).expect("writer");
+    writer.write(b"secret").expect("first write lands");
+    let landed_mode = fs::metadata(&path).expect("metadata").permissions().mode() & 0o7777;
+    let requested = if landed_mode == 0o640 { 0o600 } else { 0o640 };
+
+    let moded = AtomicFileWriter::with_file_mode(&path, requested).expect("moded writer");
+    moded.write(b"secret").expect("identical save lands");
+    assert_eq!(
+        fs::metadata(&path).expect("metadata").permissions().mode() & 0o7777,
+        requested,
+        "an identical save still applies the requested mode"
+    );
+    assert!(moded.holds_durable_bytes());
+}
+
+#[test]
+fn an_outside_chmod_is_repaired_by_an_identical_save() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = root.path().join("state.json");
+    let writer = AtomicFileWriter::with_file_mode(&path, 0o600).expect("writer");
+    writer.write(b"secret").expect("first write lands");
+
+    set_mode(&path, 0o644);
+    assert!(!writer.holds_durable_bytes());
+    writer.write(b"secret").expect("identical save lands");
+
+    assert_eq!(
+        fs::metadata(&path).expect("metadata").permissions().mode() & 0o7777,
+        0o600
+    );
+}

@@ -247,7 +247,8 @@ impl PersistenceFlushReport {
 /// the bytes it last made durable and the change stamp of the file they
 /// landed as. A payload with the same digest lands as written without
 /// touching the filesystem, as long as the file's change stamp shows nothing
-/// has replaced, rewritten, or re-permissioned it since.
+/// has replaced, rewritten, or re-permissioned it since and it still carries
+/// the requested mode.
 #[derive(Debug, Clone)]
 pub struct AtomicFileWriter {
     destination: Arc<Destination>,
@@ -339,12 +340,28 @@ fn payload_digest(payload: &[u8]) -> PayloadDigest {
 
 impl DurableBytes {
     /// Whether the destination file is still exactly the one these bytes
-    /// landed as.
+    /// landed as, with the permissions the destination asks for.
     fn still_current(&self, destination: &Destination) -> bool {
         hypercolor_platform_fs::path_change_stamp(&destination.path)
             .ok()
             .flatten()
             == Some(self.stamp)
+            && self.has_requested_mode(destination)
+    }
+
+    #[cfg(unix)]
+    fn has_requested_mode(&self, destination: &Destination) -> bool {
+        let requested = destination.file_mode.load(Ordering::Acquire);
+        requested == 0 || self.stamp.permission_bits() == requested & 0o7777
+    }
+
+    #[cfg(not(unix))]
+    #[expect(
+        clippy::unused_self,
+        reason = "Non-Unix platforms carry no requested file mode"
+    )]
+    const fn has_requested_mode(&self, _destination: &Destination) -> bool {
+        true
     }
 }
 
@@ -942,7 +959,8 @@ fn try_write_stage_aware(
         }
         // Only one attempt per destination runs at a time, so nothing this
         // coordinator owns can change the file between this check and the
-        // outcome; the change stamp catches anything that did from outside.
+        // outcome; the change stamp catches anything that did from outside,
+        // and a mode the file no longer carries is written again too.
         match state.durable {
             Some(durable) if durable.still_current(destination) => {
                 if durable.digest == digest {
