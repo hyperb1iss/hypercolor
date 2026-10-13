@@ -168,6 +168,16 @@ jobs:
           prerelease=false
           [[ "${version}" == *-* ]] && prerelease=true
           from_ref="${last_tag}"
+          # A stable release's notes cover everything since the previous
+          # stable release, its own candidates included; starting from its
+          # last candidate would leave them nearly empty.
+          if [[ "${prerelease}" == false ]]; then
+            last_stable="$(git tag --list 'v*' --sort=-v:refname \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+            if [[ -n "${last_stable}" ]]; then
+              from_ref="${last_stable}"
+            fi
+          fi
           if [[ -z "${from_ref}" ]]; then
             from_ref="$(git rev-list --max-parents=0 HEAD | tail -n1)"
           fi
