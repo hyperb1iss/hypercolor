@@ -187,6 +187,14 @@ pub struct DiagnoseDeviceOutputItem {
     pub transport_started: u64,
     pub transport_completed: u64,
     pub transport_failed: u64,
+    /// Delivery attempts the transport delivered and the device declined.
+    /// A declined frame counts as neither completed nor failed. Once none is
+    /// in flight, `transport_started` equals `transport_completed` plus
+    /// `transport_declined` plus the failed attempts that reached the
+    /// transport, since `transport_failed` also counts attempts rejected
+    /// before any I/O. Daemons older than this field omit it.
+    #[serde(default)]
+    pub transport_declined: u64,
     pub completed_payload_bytes: u64,
     pub frames_dropped: u64,
     pub coalesced: u64,

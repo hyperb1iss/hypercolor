@@ -53,6 +53,12 @@ class DiagnoseDeviceOutputItem:
         display_queue_generation (int | None | Unset):
         last_error (None | str | Unset):
         last_sent_ago_ms (int | None | Unset):
+        transport_declined (int | Unset): Delivery attempts the transport delivered and the device declined.
+            A declined frame counts as neither completed nor failed. Once none is
+            in flight, `transport_started` equals `transport_completed` plus
+            `transport_declined` plus the failed attempts that reached the
+            transport, since `transport_failed` also counts attempts rejected
+            before any I/O. Daemons older than this field omit it.
     """
 
     accepted: int
@@ -92,6 +98,7 @@ class DiagnoseDeviceOutputItem:
     display_queue_generation: int | None | Unset = UNSET
     last_error: None | str | Unset = UNSET
     last_sent_ago_ms: int | None | Unset = UNSET
+    transport_declined: int | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -181,6 +188,8 @@ class DiagnoseDeviceOutputItem:
         else:
             last_sent_ago_ms = self.last_sent_ago_ms
 
+        transport_declined = self.transport_declined
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -227,6 +236,8 @@ class DiagnoseDeviceOutputItem:
             field_dict["last_error"] = last_error
         if last_sent_ago_ms is not UNSET:
             field_dict["last_sent_ago_ms"] = last_sent_ago_ms
+        if transport_declined is not UNSET:
+            field_dict["transport_declined"] = transport_declined
 
         return field_dict
 
@@ -330,6 +341,8 @@ class DiagnoseDeviceOutputItem:
 
         last_sent_ago_ms = _parse_last_sent_ago_ms(d.pop("last_sent_ago_ms", UNSET))
 
+        transport_declined = d.pop("transport_declined", UNSET)
+
         diagnose_device_output_item = cls(
             accepted=accepted,
             accepted_fps=accepted_fps,
@@ -368,6 +381,7 @@ class DiagnoseDeviceOutputItem:
             display_queue_generation=display_queue_generation,
             last_error=last_error,
             last_sent_ago_ms=last_sent_ago_ms,
+            transport_declined=transport_declined,
         )
 
         diagnose_device_output_item.additional_properties = d

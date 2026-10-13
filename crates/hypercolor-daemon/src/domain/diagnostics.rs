@@ -822,6 +822,7 @@ fn build_device_output_snapshot(metrics: &DeviceMetricsSnapshot) -> DiagnoseDevi
             transport_started: item.transport_started,
             transport_completed: item.transport_completed,
             transport_failed: item.transport_failed,
+            transport_declined: item.transport_declined,
             completed_payload_bytes: item.completed_payload_bytes,
             frames_dropped: item.frames_dropped,
             coalesced: item.coalesced,
@@ -931,7 +932,12 @@ mod tests {
 
     use hypercolor_types::api::system::{SoftwareConflict, SoftwareConflictsStatus};
 
-    use super::{conflicts_check, render_frame_liveness_status, render_led_freshness_status};
+    use super::{
+        build_device_output_snapshot, conflicts_check, render_frame_liveness_status,
+        render_led_freshness_status,
+    };
+    use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
+    use hypercolor_types::device::DeviceId;
 
     #[cfg(all(feature = "servo", not(target_os = "windows")))]
     use super::servo_memory_failure;
@@ -945,6 +951,49 @@ mod tests {
         assert_eq!(finding.name, "servo_memory");
         assert_eq!(finding.status, "fail");
         assert_eq!(finding.detail, "memory callback failed");
+    }
+
+    #[test]
+    fn device_output_snapshot_reports_declined_deliveries() {
+        let item: DeviceMetrics = serde_json::from_value(serde_json::json!({
+            "id": DeviceId::new(),
+            "backend_id": "blocks",
+            "mapped_layout_ids": ["blocks:pad"],
+            "uses_frame_sink": false,
+            "worker_finished": false,
+            "fps_sent": 25.0,
+            "fps_queued": 25.0,
+            "fps_actual": 25.0,
+            "fps_target": 25,
+            "payload_bps_estimate": 900,
+            "avg_latency_ms": 4,
+            "avg_queue_wait_ms": 1,
+            "avg_write_ms": 3,
+            "frames_received": 5,
+            "frames_sent": 3,
+            "frames_suppressed": 0,
+            "frames_dropped": 0,
+            "errors_total": 0,
+            "write_failure_warnings_total": 0,
+            "last_sequence": 5,
+            "transport_started": 5,
+            "transport_completed": 3,
+            "transport_declined": 2,
+        }))
+        .expect("device metrics fixture decodes");
+
+        let snapshot = build_device_output_snapshot(&DeviceMetricsSnapshot {
+            taken_at_ms: 0,
+            items: vec![item],
+        });
+
+        let item = &snapshot.items[0];
+        assert_eq!(item.transport_declined, 2);
+        assert_eq!(
+            item.transport_started,
+            item.transport_completed + item.transport_failed + item.transport_declined
+        );
+        assert_eq!(snapshot.errors_total, 0, "a decline is not an error");
     }
 
     #[test]

@@ -603,6 +603,11 @@ async fn blocks_output_queue_counts_a_declined_frame_as_declined_not_sent() -> T
     assert_eq!(accepted.transport_declined, 1);
     assert_eq!(accepted.bytes_sent, 12);
     assert_eq!(accepted.transport_failed, 0);
+    assert_eq!(
+        accepted.transport_started,
+        accepted.transport_completed + accepted.transport_failed + accepted.transport_declined,
+        "every Blocks attempt starts transport, so each ends completed, failed, or declined"
+    );
     assert!(manager.async_write_failures().is_empty());
 
     assert_eq!(frame_rx.await?.len(), 2, "both frames share one connection");
