@@ -8,7 +8,9 @@ use anyhow::Result;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceInputSink, DiscoveredDevice};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DeviceInputSink, DeviceWriteOutcome, DiscoveredDevice,
+};
 use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId, DeviceInfo};
 
 use super::connection::{self, BlocksConnection};
@@ -76,6 +78,64 @@ impl BlocksBackend {
     #[must_use]
     pub fn default_socket_path() -> PathBuf {
         connection::default_socket_path()
+    }
+
+    /// Send one frame and report how blocksd acknowledged it.
+    ///
+    /// A negative acknowledgement is a decline, not a failure: blocksd kept
+    /// the connection, so the device stays connected and the next frame goes
+    /// out on the same socket. Only transport and protocol errors drop it.
+    async fn write_frame(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        let mut state = self.state.lock().await;
+        let device = state.devices.get(id).ok_or_else(|| DeviceError::NotFound {
+            device: id.to_string(),
+        })?;
+
+        if !device.connected {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
+        }
+
+        let uid = device.uid;
+        let surface = device.surface;
+
+        let conn = state
+            .connection
+            .as_mut()
+            .ok_or_else(|| DeviceError::Disconnected {
+                device: id.to_string(),
+            })?;
+
+        let result = match surface {
+            BlocksSurface::Grid => conn.write_frame_binary(uid, colors).await,
+            BlocksSurface::Keys => {
+                let keys = colors.try_into().map_err(|_| {
+                    DeviceError::write(id, "LUMI key frames require exactly 24 colors")
+                })?;
+                conn.write_key_frame(uid, keys).await
+            }
+        };
+        match result {
+            Ok(true) => {
+                if let Some(device) = state.devices.get_mut(id) {
+                    device.frames_sent += 1;
+                }
+                Ok(DeviceWriteOutcome::Sent)
+            }
+            Ok(false) => {
+                debug!(%id, uid, "blocksd declined the frame");
+                Ok(DeviceWriteOutcome::Declined)
+            }
+            Err(error) => {
+                state.handle_disconnect();
+                Err(DeviceError::write(id, error))
+            }
+        }
     }
 }
 
@@ -212,54 +272,21 @@ impl DeviceBackend for BlocksBackend {
         Ok(())
     }
 
+    /// Push one frame, folding a blocksd decline into `Ok(())`.
+    ///
+    /// Direct writes such as identify flashes ride out a declined frame the
+    /// way they ride out a suppressed one. The output pipeline goes through
+    /// [`Self::write_colors_shared_outcome`], which reports the decline.
     async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
-        let mut state = self.state.lock().await;
-        let device = state.devices.get(id).ok_or_else(|| DeviceError::NotFound {
-            device: id.to_string(),
-        })?;
+        self.write_frame(id, colors).await.map(|_| ())
+    }
 
-        if !device.connected {
-            return Err(DeviceError::Disconnected {
-                device: id.to_string(),
-            });
-        }
-
-        let uid = device.uid;
-        let surface = device.surface;
-
-        let conn = state
-            .connection
-            .as_mut()
-            .ok_or_else(|| DeviceError::Disconnected {
-                device: id.to_string(),
-            })?;
-
-        let result = match surface {
-            BlocksSurface::Grid => conn.write_frame_binary(uid, colors).await,
-            BlocksSurface::Keys => {
-                let keys = colors.try_into().map_err(|_| {
-                    DeviceError::write(id, "LUMI key frames require exactly 24 colors")
-                })?;
-                conn.write_key_frame(uid, keys).await
-            }
-        };
-        match result {
-            Ok(accepted) => {
-                if accepted {
-                    if let Some(device) = state.devices.get_mut(id) {
-                        device.frames_sent += 1;
-                    }
-                } else {
-                    debug!(%id, uid, "blocks frame deferred by daemon");
-                }
-
-                Ok(())
-            }
-            Err(error) => {
-                state.handle_disconnect();
-                Err(DeviceError::write(id, error))
-            }
-        }
+    async fn write_colors_shared_outcome(
+        &self,
+        id: &DeviceId,
+        colors: Arc<Vec<[u8; 3]>>,
+    ) -> Result<DeviceWriteOutcome, DeviceError> {
+        self.write_frame(id, colors.as_slice()).await
     }
 
     async fn set_brightness(&self, id: &DeviceId, brightness: u8) -> Result<(), DeviceError> {
