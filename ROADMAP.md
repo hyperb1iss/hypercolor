@@ -22,7 +22,7 @@ The foundation works on Linux, Windows, and macOS today.
 - Web UI: effects browser, live canvas preview, Studio multi-zone workspace, viewport designer, spatial layout editor, scene management, mobile-responsive shell
 - Terminal UI (TUI): true-color LED preview, audio spectrum, fullscreen mode
 - Audio pipeline: FFT, beat detection, mel bands, chromagram; cpal on every platform with a native PulseAudio/PipeWire monitor path on Linux
-- REST API + WebSocket (binary preview transport v2) + MCP server (17 tools, 5 resources, 3 prompts) on `:9420`
+- REST API + WebSocket (binary preview transport v2) + MCP server (21 tools, 5 resources, 4 prompts) on `:9420`
 - CLI (`hypercolor`) with shell completions
 - Installers everywhere: Linux tarball/`.deb`/AUR/Homebrew formula, managed Linux installs with probation and rollback, a Nix flake with a NixOS module, per-machine Windows NSIS with PawnIO hardware setup that upgrades in place, signed and notarized macOS DMGs (Apple silicon) + Homebrew cask, and headless Docker images for amd64 and arm64, all published automatically on tag
 - Per-PR CI lanes for Linux, Windows, and macOS (Apple silicon runners), plus a Windows DX12 WARP lane that runs the SparkleFlinger GPU tests

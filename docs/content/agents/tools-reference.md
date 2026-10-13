@@ -1,11 +1,11 @@
 +++
 title = "Tools reference"
-description = "All 18 Hypercolor MCP tools: arguments, defaults, enums, read-only and idempotency flags, and a worked call for each."
+description = "All 21 Hypercolor MCP tools: arguments, defaults, enums, read-only and idempotency flags, and a worked call for each."
 weight = 20
 template = "page.html"
 +++
 
-The Hypercolor MCP server exposes **18 tools**, the verbs an agent uses to read and reshape the lighting state. This page is the authoritative reference: every tool's arguments, defaults, enums, annotations, and a worked call. All facts here are pulled from the daemon source in `crates/hypercolor-daemon/src/mcp/tools/`, not paraphrased.
+The Hypercolor MCP server exposes **21 tools**, the verbs an agent uses to read and reshape the lighting state. This page is the authoritative reference: every tool's arguments, defaults, enums, annotations, and a worked call. All facts here are pulled from the daemon source in `crates/hypercolor-daemon/src/mcp/tools/`, not paraphrased.
 
 {% <callout type="warning"> %}
 The MCP server is **off by default**. Until you enable it in config, `http://127.0.0.1:9420/mcp` returns 404. Turn it on first in [MCP setup](@/agents/mcp-setup.md), then come back here.
@@ -24,12 +24,12 @@ Every tool carries four annotations the daemon reports to MCP clients.
 | `destructive` | The tool overwrites state you cannot get back. Reported per tool, not as a blanket value.                      |
 | `open_world`  | Always `false`; the tool set is closed and known.                                                              |
 
-Of the 18 tools, **9 are read-only**: `get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, `diagnose`, and `openrgb_status`. The other 9 mutate state. Four tools are non-idempotent: `set_effect` and `set_color` mint fresh layer identities, `create_scene` mints a scene, and `set_display_face` replaces an assignment.
+Of the 21 tools, **11 are read-only**: `get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, `diagnose`, `openrgb_status`, `get_effect_console`, and `capture_canvas`. The other 10 mutate state. Five tools are non-idempotent: `set_effect` and `set_color` mint fresh layer identities, `create_scene` mints a scene, `set_display_face` replaces an assignment, and `capture_canvas` returns a new frame on every call even though it changes nothing.
 
-Five of the nine mutating tools are destructive: `set_effect`, `set_color`, `clear_zone`, `activate_scene`, and `set_display_face` each discard state the caller did not supply and cannot recover. The other four are not: `set_brightness` and `set_output_power` are reversible value writes, `adjust_controls` patches named values and bindings, and `create_scene` only adds.
+Six of the ten mutating tools are destructive: `set_effect`, `set_color`, `clear_zone`, `activate_scene`, and `set_display_face` each discard state the caller did not supply and cannot recover, and `install_effect` overwrites any installed page that shares its file name. The other four are not: `set_brightness` and `set_output_power` are reversible value writes, `adjust_controls` patches named values and bindings, and `create_scene` only adds.
 
 {% <callout type="tip"> %}
-Read-then-act is the through-line. The server's own instructions tell every client to call `get_status` or read `hypercolor://state` before making changes, and to call `list_effects` before applying visuals. Follow that order and your calls land predictably.
+Read-then-act is the through-line. The server's own instructions tell every client to call `get_status` or read `hypercolor://state` before making changes, to call `list_effects` before applying visuals, and to call `capture_canvas` after a change instead of assuming it looks right. Follow that order and your calls land predictably.
 {% </callout> %}
 
 ## Errors and the call envelope
@@ -62,7 +62,7 @@ The code maps from the daemon's `ToolError` type:
 | `-32603` | Internal execution error                                |
 
 {% <callout type="info"> %}
-Tool output schemas are intentionally broad right now. The shapes shown below are what the live handlers actually return, read straight from the source, not from the declared output schema, which is a placeholder that will tighten as the surface stabilizes.
+Every tool declares a typed output schema, and the daemon validates each result against it before answering. A handler that produced anything else would return an internal error rather than an unexpected shape, so the shapes below are the contract.
 {% </callout> %}
 
 Named resources use one deterministic selector policy: exact serialized ID, exact case-insensitive name, then a unique case-insensitive name substring. No match and ambiguous substrings return structured candidate details. Candidates are sorted by lowercase name, original name, then ID. Unnamed layers resolve by ID only. The color parser is separate and still accepts CSS forms and natural-language color descriptions.
@@ -401,13 +401,136 @@ To clear a face, pass `"clear": true` and the same `scope`. See [display faces](
 
 ---
 
-## A note on installing effects
+## Effect authoring
 
-There is no MCP tool to install or rescan effects. Agents can apply, browse, tune, and clear effects, but installing a freshly built effect crosses transports: the SDK authoring CLI uploads it, then `hypercolor effects rescan` makes it visible, after which `set_effect` can apply it. That cross-transport pattern is walked end to end in [agent workflows](@/agents/workflows.md) and [CLI scripting for agents](@/agents/cli-scripting.md).
+These three tools let an agent write an HTML effect against a running daemon without leaving MCP: install the page, read what it printed, and look at what it drew. The [live authoring workflow](@/agents/workflows.md#workflow-c-write-an-effect-live) strings them into a loop.
+
+### install_effect
+
+Install or update an HTML effect from its complete page source. Mutates state, destructive, and idempotent. The page lands in the user effects directory and joins the catalog immediately, so no rescan is needed.
+
+- **Required:** `html` (string, at most 1 MiB): the complete HTML document.
+- **Optional:** `file_name` (string, 1-128 characters): the installed file name, such as `ember.html`. Defaults to a slug of the page `<title>`.
+
+The page needs a `<title>`, a render surface (`<canvas id="exCanvas">`, or `<div id="faceContainer">` for a display face), and a `<script>`. Controls are declared with `<meta property=...>` tags, and validation checks those declarations and any bundled presets too. Nothing is written until the page passes, and every failure comes back at once in one invalid-parameter error (`-32602`):
+
+```json
+{
+  "code": -32602,
+  "message": "invalid parameter 'html': effect failed validation: Missing <title> tag; Missing required render surface; Missing <script> tag",
+  "details": { "parameter": "html" }
+}
+```
+
+Reusing a `file_name` replaces that effect in place and keeps its ID, which is what makes the tool idempotent. A layer already running the effect reloads the new page on its own. A first install only adds the effect to the catalog, so call [`set_effect`](#set-effect) once to put it on a layer. The tool is destructive because a reused file name overwrites the page that was installed under it.
+
+```json
+{
+  "name": "install_effect",
+  "arguments": {
+    "html": "<!DOCTYPE html><html><head><title>Livecode Probe</title>...</html>",
+    "file_name": "probe.html"
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "id": "e77d0339-0967-495f-bf5c-b57fcfbc5faf",
+  "name": "Livecode Probe",
+  "path": "/home/you/.local/share/hypercolor/effects/user/probe.html",
+  "controls": 2,
+  "presets": 0,
+  "replaced_existing": false,
+  "console_after": 6
+}
+```
+
+The `controls` and `presets` fields count what the page declares. The `console_after` field is the effect console cursor taken just before the install; pass it to [`get_effect_console`](#get-effect-console) as `after` to read only what the new page printed.
+
+### get_effect_console
+
+Read what HTML effect pages printed: `console.log` output, warnings, and uncaught script errors, oldest first. Read-only, idempotent.
+
+- **Optional:** `after` (integer, default `0`, minimum 0): return only messages recorded after this cursor, where `0` reads everything retained; `limit` (integer, default `100`, range 1-500); `effect` (string): effect ID or name to narrow to; `level` (enum, default `debug`): one of `debug`, `log`, `warn`, `error`.
+
+The `level` argument is a severity floor, not an exact match: `warn` returns warnings and errors, and `error` returns errors only, including uncaught exceptions. The `log` floor covers `console.log`, `info`, and `dir` output, while `debug` adds debug and trace output on top.
+
+```json
+{ "name": "get_effect_console", "arguments": { "after": 6, "level": "warn" } }
+```
+
+Response:
+
+```json
+{
+  "entries": [
+    {
+      "seq": 7,
+      "timestamp_ms": 1791817200123,
+      "level": "error",
+      "message": "Error at file:///home/you/.local/share/hypercolor/effects/user/probe.html:19:5 undefinedFunctionCall is not defined",
+      "effect_name": "Livecode Probe",
+      "effect_id": "e77d0339-0967-495f-bf5c-b57fcfbc5faf",
+      "source_file": "probe.html",
+      "line": 19
+    }
+  ],
+  "next_seq": 7,
+  "truncated": false
+}
+```
+
+The engine loads each effect from a runtime copy with an injected preamble, so raw script locations would point at the wrong file and line. Locations in an effect's own page are mapped back to the author's file, both in the message text and in `source_file` and `line`. The `effect_id` and `line` fields are omitted when the message has no catalog effect or no location. The `timestamp_ms` field is milliseconds since the Unix epoch.
+
+Pass `next_seq` back as `after` to read only newer output. The journal keeps the latest 512 messages process-wide, so a reader that falls behind loses the oldest ones; `truncated: true` reports that output after your cursor was evicted. Web viewport pages are not effects and stay out of the journal.
+
+### capture_canvas
+
+Look at what the engine is rendering right now. Read-only, not destructive, and **not** idempotent: every call samples whatever is on the canvas at that moment, so two identical calls return different images.
+
+- **Optional:** `frames` (integer, default `1`, range 1-8); `interval_ms` (integer, default `250`, range 0-2000): pause between frames in a burst; `width` (integer, default `320`, range 16-4096): output width in pixels; `format` (enum, default `jpeg`): `jpeg` or `png`.
+
+The height follows the canvas aspect ratio, and the capture never upscales: a `width` at or past the canvas width returns the canvas at its own size. JPEG keeps a burst small; PNG keeps exact pixel values for color checks. Use `frames` above 1 with `interval_ms` to judge motion and speed.
+
+The canvas is the composed image effects draw at full brightness, before the spatial sampler maps it onto LEDs. The physical LEDs show a sampled, brightness-scaled version of it, so a capture shows what the effect draws rather than what any one LED emits.
+
+```json
+{ "name": "capture_canvas", "arguments": { "width": 64 } }
+```
+
+Response (structured content):
+
+```json
+{
+  "frames": [
+    {
+      "frame_number": 258,
+      "timestamp_ms": 9036,
+      "width": 64,
+      "height": 48,
+      "fresh": true,
+      "mime_type": "image/jpeg"
+    }
+  ],
+  "source_width": 640,
+  "source_height": 480
+}
+```
+
+The images themselves arrive as MCP `image` content blocks, one per frame, in the same order as `frames`. A frame's `timestamp_ms` counts milliseconds since the daemon started, unlike the console's epoch timestamps. Each frame waits up to 1.5 seconds for a newly rendered canvas. A frame with `fresh: false` is the last one published before rendering went quiet, which usually means nothing is drawing, and a burst stops at the first stale frame, so it can return fewer frames than requested. When no canvas has been rendered at all, the call returns a state conflict (`-32000`) asking you to apply an effect first.
+
+---
+
+## A note on rescanning effects
+
+There is no MCP tool to rescan the effects directory, and the MCP authoring loop does not need one: `install_effect` registers the page as it writes it. Files that reach the effects directory some other way need `hypercolor effects rescan` before `set_effect` can find them. That cross-transport pattern is covered in [CLI scripting for agents](@/agents/cli-scripting.md).
 
 ## Where to go next
 
 - **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources an agent reads to orient itself.
-- **[Prompt templates](@/agents/prompt-templates.md)**: The 3 guided flows that compose these tools.
+- **[Prompt templates](@/agents/prompt-templates.md)**: The 4 guided flows that compose these tools.
 - **[Agent workflows](@/agents/workflows.md)**: Worked playbooks with real call-and-response pairs.
 - **[MCP server reference](@/api/mcp.md)**: Transport, config keys, and the raw protocol surface.
