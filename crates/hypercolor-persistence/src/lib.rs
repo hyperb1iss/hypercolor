@@ -46,6 +46,10 @@ thread_local! {
     static INJECTED_SERIALIZATION_FAILURES: Cell<usize> = const { Cell::new(0) };
 }
 const RETRY_DELAY: Duration = Duration::from_millis(100);
+/// The stored file mode when none was requested. Requested modes keep only
+/// their permission bits, so every one of them, `0o000` included, differs.
+#[cfg(unix)]
+const NO_FILE_MODE: u32 = u32::MAX;
 
 /// The stage at which an atomic persistence operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -476,7 +480,7 @@ fn has_requested_mode(
     stamp: &hypercolor_platform_fs::FileChangeStamp,
 ) -> bool {
     let requested = destination.file_mode.load(Ordering::Acquire);
-    requested == 0 || stamp.permission_bits() == requested & 0o7777
+    requested == NO_FILE_MODE || stamp.permission_bits() == requested
 }
 
 #[cfg(not(unix))]
@@ -575,7 +579,7 @@ impl AtomicFileWriter {
             state_changed: Condvar::new(),
             history: Mutex::new(None),
             #[cfg(unix)]
-            file_mode: AtomicU32::new(0),
+            file_mode: AtomicU32::new(NO_FILE_MODE),
             #[cfg(any(test, feature = "persistence-test-hooks"))]
             injected_replace_failures: AtomicUsize::new(0),
             #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
@@ -609,8 +613,10 @@ impl AtomicFileWriter {
     /// Resolve `path` to a destination whose replacements carry `mode`.
     ///
     /// The mode is a property of the destination, so the newest explicit
-    /// request wins for every writer sharing that path. Non-unix platforms
-    /// ignore it and rely on inherited directory permissions.
+    /// request wins for every writer sharing that path. Only its permission
+    /// bits are kept, and every value is a real request, `0o000` included.
+    /// Non-unix platforms ignore it and rely on inherited directory
+    /// permissions.
     ///
     /// # Errors
     ///
@@ -619,7 +625,10 @@ impl AtomicFileWriter {
     pub fn with_file_mode(path: &Path, mode: u32) -> Result<Self, PersistenceError> {
         let writer = Self::new(path)?;
         #[cfg(unix)]
-        writer.destination.file_mode.store(mode, Ordering::Release);
+        writer
+            .destination
+            .file_mode
+            .store(mode & 0o7777, Ordering::Release);
         #[cfg(not(unix))]
         let _ = mode;
         Ok(writer)
@@ -1412,7 +1421,7 @@ fn apply_file_mode(destination: &Destination, temporary: &fs::File) -> std::io::
     use std::os::unix::fs::PermissionsExt as _;
 
     let mode = destination.file_mode.load(Ordering::Acquire);
-    if mode == 0 {
+    if mode == NO_FILE_MODE {
         return Ok(());
     }
     temporary.set_permissions(fs::Permissions::from_mode(mode))
@@ -1488,6 +1497,28 @@ mod tests {
             fs::metadata(&path).expect("metadata").permissions().mode() & 0o7777,
             0o640
         );
+    }
+
+    #[test]
+    fn an_explicit_0000_mode_is_applied_and_verified() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("store.json");
+        let mode =
+            |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o7777;
+        let writer = AtomicFileWriter::with_file_mode(&path, 0o000).expect("writer");
+        writer.write(b"payload").expect("first write lands");
+        assert_eq!(mode(&path), 0o000, "0000 is a mode, not the absence of one");
+
+        // A readable mode no longer satisfies the request, so an identical
+        // save replaces the file instead of trusting it.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("chmod");
+        writer.set_injected_stale_stamps(true);
+        writer.write(b"payload").expect("save lands");
+        assert_eq!(writer.verified_skip_count(), 0);
+        assert_eq!(writer.replacement_count(), 2);
+        assert_eq!(mode(&path), 0o000);
     }
 
     #[test]
