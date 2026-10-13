@@ -257,8 +257,9 @@ impl PersistenceFlushReport {
 /// without being rewritten. While any writer keeps the destination alive, it
 /// remembers that payload's digest and the change stamp of the file it
 /// landed as. A different stamp means the write goes ahead. An equal stamp
-/// proves nothing on its own, so the skip opens the file, checks it is the
-/// file this process wrote and carries the requested mode, compares its
+/// proves nothing on its own, so the skip opens the destination itself
+/// (never through a final symlink or reparse point), checks it is the
+/// regular file this process wrote and carries the requested mode, compares its
 /// bytes, and syncs the file and, on Unix, its parent directory. That
 /// re-establishes whichever directory entry names the file, so the result
 /// does not depend on the entry being the one this process created.
@@ -353,8 +354,9 @@ struct DestinationState {
 /// different stamp or file identity shows the file changed, and the write
 /// goes ahead without reading anything. An equal stamp establishes nothing,
 /// since timestamp precision varies by filesystem and Windows lets callers
-/// set `ChangeTime`. A skip is reported only after opening the destination,
-/// confirming from that same handle that it is the file this process staged
+/// set `ChangeTime`. A skip is reported only after opening the destination
+/// itself, never through a final symlink or reparse point, and confirming
+/// from that same handle that it is a regular file, the file this process staged
 /// and synced and that it carries the requested mode, reading its bytes and
 /// comparing them with the payload (or the digest), syncing that handle so
 /// the bytes it holds are durable even if something rewrote identical bytes
@@ -458,16 +460,12 @@ fn verify_destination_file(
     Ok(true)
 }
 
-/// Windows flushes only through a handle with write access.
+/// Open the destination itself for verification. A final symlink or
+/// reparse point, or anything but a regular file, is refused: syncing the
+/// file it leads to would leave the link itself unsynced, so the write goes
+/// ahead and replaces it.
 fn open_for_verification(path: &Path) -> std::io::Result<fs::File> {
-    #[cfg(windows)]
-    {
-        fs::OpenOptions::new().read(true).write(true).open(path)
-    }
-    #[cfg(not(windows))]
-    {
-        fs::File::open(path)
-    }
+    hypercolor_platform_fs::open_regular_no_follow_for_sync(path)
 }
 
 #[cfg(unix)]
@@ -1444,6 +1442,32 @@ mod tests {
         assert_eq!(writer.verification_read_count(), 1);
         assert_eq!(writer.file_sync_count(), file_syncs + 1);
         assert_eq!(writer.directory_sync_count(), 3);
+    }
+
+    #[test]
+    fn a_symlink_to_the_identical_payload_is_replaced_not_trusted() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("store.json");
+        let aside = directory.path().join("store.json.aside");
+        let writer = AtomicFileWriter::new(&path).expect("writer");
+        writer.write(b"payload").expect("first write lands");
+
+        // The durable inode moved aside, and a symlink to it put in its
+        // place: identity, mode, and bytes all match through the link.
+        fs::rename(&path, &aside).expect("move the payload aside");
+        std::os::unix::fs::symlink(&aside, &path).expect("link to it");
+        writer.set_injected_stale_stamps(true);
+        assert!(!writer.holds_durable_bytes());
+
+        assert_eq!(
+            writer.write(b"payload").expect("save lands"),
+            AtomicWriteOutcome::Written
+        );
+        assert_eq!(writer.verified_skip_count(), 0);
+        assert_eq!(writer.replacement_count(), 2, "the link was replaced");
+        let landed = fs::symlink_metadata(&path).expect("destination metadata");
+        assert!(landed.file_type().is_file(), "a regular file again");
+        assert_eq!(fs::read(&path).expect("store"), b"payload");
     }
 
     #[test]
