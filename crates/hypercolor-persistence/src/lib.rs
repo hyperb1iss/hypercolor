@@ -315,6 +315,8 @@ struct Destination {
     verification_reads: AtomicUsize,
     #[cfg(any(test, feature = "persistence-test-hooks"))]
     file_syncs: AtomicUsize,
+    #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
+    synced_staged_mode: AtomicU32,
 }
 
 #[cfg(windows)]
@@ -590,6 +592,8 @@ impl AtomicFileWriter {
             verification_reads: AtomicUsize::new(0),
             #[cfg(any(test, feature = "persistence-test-hooks"))]
             file_syncs: AtomicUsize::new(0),
+            #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
+            synced_staged_mode: AtomicU32::new(0),
         });
 
         #[cfg(windows)]
@@ -796,6 +800,14 @@ impl AtomicFileWriter {
     #[must_use]
     pub fn file_sync_count(&self) -> usize {
         self.destination.file_syncs.load(Ordering::Acquire)
+    }
+
+    /// The permission bits the last staged file carried when it was synced,
+    /// so tests can check the requested mode is part of what became durable.
+    #[cfg(all(unix, any(test, feature = "persistence-test-hooks")))]
+    #[must_use]
+    pub fn synced_staged_mode(&self) -> u32 {
+        self.destination.synced_staged_mode.load(Ordering::Acquire)
     }
 
     /// Make the change-stamp fast reject report no change, as on a
@@ -1181,14 +1193,9 @@ fn try_write_stage_aware(
             },
         );
     }
-    #[cfg(any(test, feature = "persistence-test-hooks"))]
-    destination.file_syncs.fetch_add(1, Ordering::AcqRel);
-    if let Err(source) = temporary.as_file().sync_all() {
-        return AtomicWriteCommitResult::FailedBeforeReplacement(PersistenceError::SyncTemporary {
-            path: destination.path.clone(),
-            source,
-        });
-    }
+    // The mode is part of what the sync makes durable: applied after it, a
+    // crash could recover the staged file's default mode under a result
+    // that promised the requested one.
     #[cfg(unix)]
     if let Err(source) = apply_file_mode(destination, temporary.as_file()) {
         return AtomicWriteCommitResult::FailedBeforeReplacement(
@@ -1197,6 +1204,23 @@ fn try_write_stage_aware(
                 source,
             },
         );
+    }
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    {
+        destination.file_syncs.fetch_add(1, Ordering::AcqRel);
+        #[cfg(unix)]
+        if let Ok(metadata) = temporary.as_file().metadata() {
+            use std::os::unix::fs::PermissionsExt as _;
+            destination
+                .synced_staged_mode
+                .store(metadata.permissions().mode() & 0o7777, Ordering::Release);
+        }
+    }
+    if let Err(source) = temporary.as_file().sync_all() {
+        return AtomicWriteCommitResult::FailedBeforeReplacement(PersistenceError::SyncTemporary {
+            path: destination.path.clone(),
+            source,
+        });
     }
 
     // Only one attempt per destination runs at a time (the active
@@ -1442,6 +1466,28 @@ mod tests {
         assert_eq!(writer.verification_read_count(), 1);
         assert_eq!(writer.file_sync_count(), file_syncs + 1);
         assert_eq!(writer.directory_sync_count(), 3);
+    }
+
+    #[test]
+    fn the_requested_mode_is_applied_before_the_staged_file_syncs() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("store.json");
+        let writer = AtomicFileWriter::with_file_mode(&path, 0o640).expect("writer");
+        writer.write(b"payload").expect("first write lands");
+        assert_eq!(writer.synced_staged_mode(), 0o640);
+
+        // An outside chmod, finished before the save: the identical save
+        // must replace the file, and the mode must be in what it synced.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("chmod");
+        writer.write(b"payload").expect("save lands");
+        assert_eq!(writer.replacement_count(), 2);
+        assert_eq!(writer.synced_staged_mode(), 0o640);
+        assert_eq!(
+            fs::metadata(&path).expect("metadata").permissions().mode() & 0o7777,
+            0o640
+        );
     }
 
     #[test]
