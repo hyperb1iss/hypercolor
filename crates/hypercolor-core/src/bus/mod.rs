@@ -162,15 +162,101 @@ impl Serialize for EventTimestamp {
     }
 }
 
+// ── PublicationClock ─────────────────────────────────────────────────────
+
+/// The clock every bus publication is stamped against.
+///
+/// Pairs the wall clock with one monotonic origin taken when the bus is
+/// created and a random identity for that origin. Wall stamps follow the
+/// host clock through steps and slews; monotonic stamps never move
+/// backwards and ignore wall adjustments, but they are comparable only
+/// between readings that share an epoch. A restarted daemon builds a new
+/// bus, so it gets a new origin and a new epoch id.
+#[derive(Clone, Copy, Debug)]
+pub struct PublicationClock {
+    origin: Instant,
+    epoch: uuid::Uuid,
+    wall: fn() -> EventTimestamp,
+}
+
+/// One reading of a [`PublicationClock`], both halves taken together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockStamp {
+    /// Wall-clock time with millisecond precision.
+    pub timestamp: EventTimestamp,
+    /// Microseconds since the clock's monotonic origin.
+    pub mono_us: u64,
+}
+
+impl PublicationClock {
+    /// Start a clock with a fresh origin and epoch, reading the host wall clock.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_wall_clock(EventTimestamp::now)
+    }
+
+    /// Start a clock whose wall half comes from `wall` instead of the host.
+    ///
+    /// The monotonic half still reads the real monotonic clock, which is
+    /// what lets a test step the wall clock and observe that `mono_us`
+    /// does not follow it.
+    #[must_use]
+    pub fn with_wall_clock(wall: fn() -> EventTimestamp) -> Self {
+        Self {
+            origin: Instant::now(),
+            epoch: uuid::Uuid::new_v4(),
+            wall,
+        }
+    }
+
+    /// Identity of this clock's monotonic origin.
+    #[must_use]
+    pub const fn epoch(&self) -> uuid::Uuid {
+        self.epoch
+    }
+
+    /// Microseconds elapsed on the monotonic clock since the origin.
+    #[must_use]
+    pub fn mono_us(&self) -> u64 {
+        u64::try_from(self.origin.elapsed().as_micros()).unwrap_or(u64::MAX)
+    }
+
+    /// Read the wall and monotonic halves together.
+    #[must_use]
+    pub fn stamp(&self) -> ClockStamp {
+        ClockStamp {
+            timestamp: (self.wall)(),
+            mono_us: self.mono_us(),
+        }
+    }
+}
+
+impl Default for PublicationClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TimestampedEvent {
     /// ISO 8601 wall-clock timestamp with millisecond precision.
     pub timestamp: EventTimestamp,
-    /// Monotonic millis since the bus was created (for frame correlation).
-    pub mono_ms: u64,
+    /// Microseconds on the bus's [`PublicationClock`], taken at publish.
+    pub mono_us: u64,
     /// The event payload.
     #[serde(flatten)]
     pub event: HypercolorEvent,
+}
+
+impl TimestampedEvent {
+    /// The publication stamp the bus attached to this event.
+    #[must_use]
+    pub const fn stamp(&self) -> ClockStamp {
+        ClockStamp {
+            timestamp: self.timestamp,
+            mono_us: self.mono_us,
+        }
+    }
 }
 
 /// Raw render canvas payload for WebSocket preview streaming.
@@ -723,14 +809,20 @@ pub struct HypercolorBus {
     /// Display-output-authored final display surface metadata keyed by zone id.
     display_zone_output_routes: Arc<Mutex<DisplayZoneOutputRouteRegistry>>,
 
-    /// Monotonic clock base for `mono_ms` timestamps.
-    start_instant: Instant,
+    /// Clock every event publication is stamped against.
+    clock: PublicationClock,
 }
 
 impl HypercolorBus {
     /// Create a new bus with default channel capacities.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_clock(PublicationClock::new())
+    }
+
+    /// Create a bus that stamps publications against `clock`.
+    #[must_use]
+    pub fn with_clock(clock: PublicationClock) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Self {
             events,
@@ -741,8 +833,18 @@ impl HypercolorBus {
             display_zone_output_routes: Arc::new(Mutex::new(
                 DisplayZoneOutputRouteRegistry::default(),
             )),
-            start_instant: Instant::now(),
+            clock,
         }
+    }
+
+    /// The clock this bus stamps publications against.
+    ///
+    /// Other daemon publishers that are not bus events (periodic
+    /// snapshots, relay-synthesized notices) read it too, so every stamp
+    /// a client sees shares one monotonic origin.
+    #[must_use]
+    pub const fn clock(&self) -> &PublicationClock {
+        &self.clock
     }
 
     // ── Publishing ───────────────────────────────────────────────────
@@ -751,9 +853,10 @@ impl HypercolorBus {
     ///
     /// Non-blocking -- if no subscribers exist, the event is silently dropped.
     pub fn publish(&self, event: HypercolorEvent) {
+        let stamp = self.clock.stamp();
         let timestamped = TimestampedEvent {
-            timestamp: EventTimestamp::now(),
-            mono_ms: self.mono_ms(),
+            timestamp: stamp.timestamp,
+            mono_us: stamp.mono_us,
             event,
         };
         // Ignore send errors -- they mean no subscribers exist.
@@ -1204,17 +1307,6 @@ impl HypercolorBus {
     #[must_use]
     pub fn subscriber_count(&self) -> usize {
         self.events.receiver_count()
-    }
-
-    // ── Internal ─────────────────────────────────────────────────────
-
-    /// Monotonic millis since bus creation.
-    fn mono_ms(&self) -> u64 {
-        let elapsed = self.start_instant.elapsed();
-        // Duration::as_millis() returns u128; bus uptime won't exceed u64.
-        #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let ms = elapsed.as_millis() as u64;
-        ms
     }
 }
 
