@@ -29,12 +29,13 @@ use serde_json::{Map, Value, json};
 
 use hypercolor_leptos_ext::ws::{
     HYPERCOLOR_WS_PROTOCOL, HYPERCOLOR_WS_VERSION, HelloClock, PREVIEW_MIN_MESSAGE_BYTES,
-    PreviewTransportLimits, PublicationStamp, codec_binary_messages, codec_frame_layouts,
+    PreviewTransportLimits, PublicationStamp, ResponseStamp, codec_binary_messages,
+    codec_frame_layouts,
 };
 
 use super::protocol::{
-    PUBLICATION_STAMPED_SERVER_MESSAGES, SubscriptionState, client_message_vocabulary,
-    json_payload_manifest, server_message_vocabulary, ws_capabilities,
+    PUBLICATION_STAMPED_SERVER_MESSAGES, ROUND_TRIP_STAMPED_SERVER_MESSAGES, SubscriptionState,
+    client_message_vocabulary, json_payload_manifest, server_message_vocabulary, ws_capabilities,
 };
 
 /// The authored half of the manifest, as committed.
@@ -132,8 +133,8 @@ fn continuity() -> Value {
 }
 
 /// The publication clock: which server messages carry stamps, the fields
-/// a stamp and the `hello` announcement carry, and the authored contract
-/// for reading them.
+/// a stamp, the `hello` announcement, and a command response carry, and
+/// the authored contract for reading them.
 fn clock(descriptions: &Value) -> anyhow::Result<Value> {
     let mut block = authored(descriptions, "clock")?
         .as_object()
@@ -147,12 +148,18 @@ fn clock(descriptions: &Value) -> anyhow::Result<Value> {
         clock_epoch: String::new(),
         mono_us: 0,
     })?;
+    let round_trip_fields = field_names(&ResponseStamp { mono_us: Some(0) })?;
     block.insert(
         "stamped_messages".to_owned(),
         json!(PUBLICATION_STAMPED_SERVER_MESSAGES),
     );
     block.insert("stamp_fields".to_owned(), json!(stamp_fields));
     block.insert("hello_fields".to_owned(), json!(hello_fields));
+    block.insert(
+        "round_trip_messages".to_owned(),
+        json!(ROUND_TRIP_STAMPED_SERVER_MESSAGES),
+    );
+    block.insert("round_trip_fields".to_owned(), json!(round_trip_fields));
     block.insert("mono_unit".to_owned(), json!("microseconds"));
     Ok(Value::Object(block))
 }

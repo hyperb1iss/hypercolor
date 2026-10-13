@@ -21,7 +21,7 @@ use hypercolor_leptos_ext::ws::topic::{
 };
 use hypercolor_leptos_ext::ws::{
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES, HelloClock, INTERACTIVE_PREVIEW_ID_MAX_BYTES,
-    PublicationStamp,
+    PublicationStamp, ResponseStamp,
 };
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -976,6 +976,8 @@ define_server_messages! {
     Response {
         id: String,
         status: u16,
+        #[serde(flatten)]
+        stamp: ResponseStamp,
         #[serde(skip_serializing_if = "Option::is_none")]
         data: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -988,11 +990,26 @@ define_server_messages! {
 pub(super) const PUBLICATION_STAMPED_SERVER_MESSAGES: [&str; 4] =
     ["event", "metrics", "device_metrics", "sensors"];
 
+/// Server messages that carry a [`ResponseStamp`]: replies whose
+/// `mono_us` falls inside the client's round trip.
+pub(super) const ROUND_TRIP_STAMPED_SERVER_MESSAGES: [&str; 1] = ["response"];
+
 /// Project a daemon clock reading onto the wire.
 pub(super) fn publication_stamp(stamp: ClockStamp) -> PublicationStamp {
     PublicationStamp {
         timestamp: stamp.timestamp.to_string(),
         mono_us: stamp.mono_us,
+    }
+}
+
+/// Stamp a command `response` with the daemon clock, reading it now.
+///
+/// The session calls this after the command has finished and immediately
+/// before it hands the response to the socket, so the reading lies inside
+/// the client's round trip. Other messages pass through untouched.
+pub(super) fn stamp_command_response(message: &mut ServerMessage, clock: &PublicationClock) {
+    if let ServerMessage::Response { stamp, .. } = message {
+        stamp.mono_us = Some(clock.mono_us());
     }
 }
 

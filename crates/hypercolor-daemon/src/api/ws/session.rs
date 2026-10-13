@@ -51,7 +51,8 @@ use super::interactive_preview_relay::spawn_interactive_preview_relay;
 use super::protocol::{
     BrowserInputEdgeWire, ClientMessage, HelloFps, HelloState, MAX_WS_MESSAGE_BYTES, SceneRef,
     ServerMessage, SubscriptionState, TopicSelection, WsProtocolError, hello_clock,
-    parse_selectors, parse_subscriptions, validate_interactive_preview_shape, ws_capabilities,
+    parse_selectors, parse_subscriptions, stamp_command_response,
+    validate_interactive_preview_shape, ws_capabilities,
 };
 use super::relays::{
     PreviewCursorQueue, PreviewOutboundItem, PreviewOutboundSender, PreviewSendCursor,
@@ -1620,8 +1621,12 @@ async fn handle_client_message(
             body,
         } => {
             let grant = socket.grant.clone();
-            let response =
+            let mut response =
                 dispatch_command(state, auth_context, grant, id, method, path, body).await;
+            // The command has finished; nothing but serialization sits between
+            // this reading and the socket, so it falls inside the client's
+            // round trip.
+            stamp_command_response(&mut response, state.event_bus.clock());
             let _ = send_json(socket, &response).await;
         }
         ClientMessage::ZoneLayoutPreview { zone_id, layout } => {

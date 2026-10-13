@@ -30,7 +30,9 @@ use hypercolor_daemon::api;
 use hypercolor_daemon::api::local::{TrustedLocalApi, TrustedLocalWebSocket};
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
-use hypercolor_leptos_ext::ws::{HelloClock, PublicationStamp, TimedInputEventPayload};
+use hypercolor_leptos_ext::ws::{
+    HelloClock, PublicationStamp, ResponseStamp, TimedInputEventPayload,
+};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent};
 use hypercolor_types::library::PresetId;
@@ -442,6 +444,39 @@ async fn hello_announces_one_clock_epoch_per_daemon_run() {
     assert_ne!(
         restarted.clock_epoch, first.clock_epoch,
         "a restarted daemon announces a new clock epoch"
+    );
+}
+
+#[tokio::test]
+async fn command_responses_carry_a_round_trip_stamp() {
+    let state = test_app_state();
+    let clock = *state.event_bus.clock();
+    let addr = spawn_test_daemon_with_state(state).await;
+    let mut stream = ws_connect(addr)
+        .await
+        .expect("ws handshake should complete");
+    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+
+    let sent_us = clock.mono_us();
+    ws_send_text(
+        &mut stream,
+        &json!({ "type": "command", "id": "rt-1", "method": "GET", "path": "/system" }).to_string(),
+    )
+    .await
+    .expect("send command");
+    let response = recv_until_type(&mut stream, "response")
+        .await
+        .expect("command response should arrive");
+    let received_us = clock.mono_us();
+
+    assert_eq!(response["id"], "rt-1");
+    assert_eq!(response["status"], 200);
+    let stamp: ResponseStamp =
+        serde_json::from_value(response).expect("response decodes as the shared stamp");
+    let mono_us = stamp.mono_us.expect("command responses carry mono_us");
+    assert!(
+        (sent_us..=received_us).contains(&mono_us),
+        "the stamp falls inside the round trip: {sent_us} <= {mono_us} <= {received_us}"
     );
 }
 

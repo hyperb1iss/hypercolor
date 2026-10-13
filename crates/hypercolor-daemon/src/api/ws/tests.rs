@@ -37,7 +37,7 @@ use hypercolor_leptos_ext::ws::{
     HelloClock, InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_MIN_MESSAGE_BYTES,
     PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
     PreviewPixelFormat as WirePreviewPixelFormat, PreviewStreamId, PreviewTransportLimits,
-    PublicationStamp, TimedInputEventPayload,
+    PublicationStamp, ResponseStamp, TimedInputEventPayload,
 };
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
@@ -81,11 +81,11 @@ use super::preview_encode::{
 use super::protocol::{
     ActiveFramesConfig, BrowserInputEdgeWire, ClientMessage, FrameZoneSelection,
     InputButtonStateWire, MAX_INPUT_INJECT_EVENTS, MAX_INPUT_NAME_BYTES, MAX_INPUT_SCROLL_Q16_16,
-    PUBLICATION_STAMPED_SERVER_MESSAGES, ServerMessage, SubscriptionState, TopicSelection,
-    WsProtocolError, deserialize_finite_coordinate, event_message_parts, hello_clock,
-    json_payload_manifest, parse_selectors, parse_subscriptions, publication_stamp,
-    server_message_vocabulary, should_relay_event, validate_interactive_preview_id,
-    validate_interactive_preview_shape, ws_capabilities,
+    PUBLICATION_STAMPED_SERVER_MESSAGES, ROUND_TRIP_STAMPED_SERVER_MESSAGES, ServerMessage,
+    SubscriptionState, TopicSelection, WsProtocolError, deserialize_finite_coordinate,
+    event_message_parts, hello_clock, json_payload_manifest, parse_selectors, parse_subscriptions,
+    publication_stamp, server_message_vocabulary, should_relay_event, stamp_command_response,
+    validate_interactive_preview_id, validate_interactive_preview_shape, ws_capabilities,
 };
 
 fn assert_manifested_json_payload(schema: &str, data: &serde_json::Value) {
@@ -3992,6 +3992,7 @@ async fn every_server_message_with_a_wall_timestamp_carries_mono_us() {
     let state = Arc::new(AppState::new());
     let clock = *state.event_bus.clock();
     let mut stamped = Vec::new();
+    let mut round_trip = Vec::new();
 
     for name in server_message_vocabulary() {
         let message = match name.as_str() {
@@ -4044,12 +4045,16 @@ async fn every_server_message_with_a_wall_timestamp_carries_mono_us() {
                 message: "bad request".to_owned(),
                 details: None,
             },
-            "response" => ServerMessage::Response {
-                id: "1".to_owned(),
-                status: 200,
-                data: None,
-                error: None,
-            },
+            "response" => {
+                let response = (
+                    axum::http::StatusCode::OK,
+                    axum::Json(serde_json::json!({ "data": {} })),
+                )
+                    .into_response();
+                let mut message = command_response_from_http("1".to_owned(), response).await;
+                stamp_command_response(&mut message, &clock);
+                message
+            }
             other => panic!(
                 "server message {other} has no sample: decide whether it reports a \
                  publication time, stamp it if so, and add it here"
@@ -4063,6 +4068,9 @@ async fn every_server_message_with_a_wall_timestamp_carries_mono_us() {
                 "{name} reports a wall timestamp without mono_us"
             );
             stamped.push(name.clone());
+        } else if name != "hello" && wire.get("mono_us").is_some() {
+            assert!(wire["mono_us"].is_u64(), "{name} mono_us is a u64");
+            round_trip.push(name.clone());
         }
         if name == "hello" {
             let announced: HelloClock =
@@ -4073,6 +4081,7 @@ async fn every_server_message_with_a_wall_timestamp_carries_mono_us() {
     }
 
     assert_eq!(stamped, PUBLICATION_STAMPED_SERVER_MESSAGES);
+    assert_eq!(round_trip, ROUND_TRIP_STAMPED_SERVER_MESSAGES);
 }
 
 #[tokio::test]
@@ -5280,6 +5289,14 @@ fn websocket_manifest_matches_protocol_constants() {
         manifest["clock"]["hello_fields"],
         serde_json::json!(["clock_epoch", "mono_us"])
     );
+    assert_eq!(
+        manifest["clock"]["round_trip_messages"],
+        serde_json::json!(ROUND_TRIP_STAMPED_SERVER_MESSAGES)
+    );
+    assert_eq!(
+        manifest["clock"]["round_trip_fields"],
+        serde_json::json!(["mono_us"])
+    );
     let default_subscriptions = SubscriptionState::default()
         .live_subscriptions()
         .map(|subscription| subscription.topic.as_str())
@@ -5618,6 +5635,7 @@ async fn command_response_from_http_unwraps_data_envelope() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_test");
             assert_eq!(status, 200);
@@ -5644,6 +5662,7 @@ async fn command_response_from_http_unwraps_error_envelope() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_missing");
             assert_eq!(status, 404);
@@ -5713,6 +5732,7 @@ async fn dispatch_command_keeps_retired_status_route_absent() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_status");
             assert_eq!(status, 404);
@@ -5746,6 +5766,7 @@ async fn dispatch_command_routes_to_system() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_system");
             assert_eq!(status, 200);
@@ -5837,6 +5858,7 @@ async fn dispatch_command_rejects_invalid_method() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_bad_method");
             assert_eq!(status, 400);
@@ -5870,6 +5892,7 @@ async fn dispatch_command_preserves_secured_ws_auth_context() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_system");
             assert_eq!(status, 200);
@@ -7149,6 +7172,57 @@ async fn a_command_executing_when_the_session_is_revoked_completes() {
     while socket.recv().await.is_some() {}
 
     assert_eq!(probe.executed.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn command_responses_are_stamped_after_the_command_finishes() {
+    let (state, probe) = revocation_probe_state();
+    let clock = *state.event_bus.clock();
+    let mut socket = spawn_test_granted_local_socket(
+        Arc::clone(&state),
+        &tokio::runtime::Handle::current(),
+        authority_control(),
+        probe_grant(tokio_util::sync::CancellationToken::new()),
+    );
+    let hello = socket.recv().await.expect("test socket should emit hello");
+    assert!(matches!(hello, Message::Text(_)));
+
+    let sent_us = clock.mono_us();
+    socket
+        .send(probe_command("/probe/gated"))
+        .await
+        .expect("test socket should queue the command");
+    probe.started.notified().await;
+    // The handler is running. Hold it long enough that a stamp taken when
+    // the command arrived would land measurably before this reading.
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    let finishing_us = clock.mono_us();
+    probe.release.notify_one();
+
+    let response = loop {
+        let message = tokio::time::timeout(Duration::from_secs(2), socket.recv())
+            .await
+            .expect("command response should arrive")
+            .expect("session should stay open");
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let wire: serde_json::Value = serde_json::from_str(text.as_str()).expect("JSON");
+        if wire["type"] == "response" {
+            break wire;
+        }
+    };
+    let received_us = clock.mono_us();
+
+    assert_eq!(response["status"], 200);
+    let stamp: ResponseStamp =
+        serde_json::from_value(response).expect("response decodes as the shared stamp");
+    let mono_us = stamp.mono_us.expect("command responses carry mono_us");
+    assert!(sent_us <= mono_us && mono_us <= received_us);
+    assert!(
+        mono_us >= finishing_us,
+        "the stamp is taken after the command finishes, not when it arrives"
+    );
 }
 
 #[tokio::test]
