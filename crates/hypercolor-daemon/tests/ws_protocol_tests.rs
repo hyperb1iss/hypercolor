@@ -30,7 +30,7 @@ use hypercolor_daemon::api;
 use hypercolor_daemon::api::local::{TrustedLocalApi, TrustedLocalWebSocket};
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
-use hypercolor_leptos_ext::ws::TimedInputEventPayload;
+use hypercolor_leptos_ext::ws::{HelloClock, PublicationStamp, TimedInputEventPayload};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent};
 use hypercolor_types::library::PresetId;
@@ -410,6 +410,41 @@ async fn hello_handshake_returns_expected_capability_set() {
     );
 }
 
+async fn hello_clock(addr: std::net::SocketAddr) -> HelloClock {
+    let mut stream = ws_connect(addr)
+        .await
+        .expect("ws handshake should complete");
+    let hello = recv_until_type(&mut stream, "hello")
+        .await
+        .expect("hello message should arrive");
+    serde_json::from_value(hello).expect("hello announces the daemon clock")
+}
+
+#[tokio::test]
+async fn hello_announces_one_clock_epoch_per_daemon_run() {
+    let state = test_app_state();
+    let epoch = state.event_bus.clock().epoch().to_string();
+    let addr = spawn_test_daemon_with_state(state).await;
+
+    let first = hello_clock(addr).await;
+    let reconnect = hello_clock(addr).await;
+    assert_eq!(first.clock_epoch, epoch, "hello names the bus clock");
+    assert_eq!(
+        reconnect.clock_epoch, first.clock_epoch,
+        "every connection to one daemon run shares its clock"
+    );
+    assert!(
+        reconnect.mono_us >= first.mono_us,
+        "the clock keeps running between connections"
+    );
+
+    let restarted = hello_clock(spawn_test_daemon().await).await;
+    assert_ne!(
+        restarted.clock_epoch, first.clock_epoch,
+        "a restarted daemon announces a new clock epoch"
+    );
+}
+
 #[tokio::test]
 async fn hello_handshake_names_the_scene_but_not_its_contents() {
     let state = test_app_state();
@@ -516,7 +551,9 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
     let mut stream = ws_connect(addr)
         .await
         .expect("ws handshake should complete");
-    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+    let hello: HelloClock =
+        serde_json::from_value(recv_until_type(&mut stream, "hello").await.expect("hello"))
+            .expect("hello clock");
 
     ws_send_text(
         &mut stream,
@@ -541,6 +578,12 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
     let message = recv_until_type(&mut stream, "device_metrics")
         .await
         .expect("device_metrics message should arrive");
+    let stamp: PublicationStamp =
+        serde_json::from_value(message.clone()).expect("device_metrics carries both stamps");
+    assert!(
+        stamp.mono_us >= hello.mono_us,
+        "device_metrics is stamped on the clock the hello announced"
+    );
     assert_eq!(message["data"]["taken_at_ms"], 5_678);
     assert_eq!(message["data"]["items"][0]["id"], device_id.to_string());
     assert_eq!(message["data"]["items"][0]["worker_recoveries"], 4);
@@ -583,7 +626,9 @@ async fn sensors_subscription_streams_seeded_snapshot() {
     let mut stream = ws_connect(addr)
         .await
         .expect("ws handshake should complete");
-    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+    let hello: HelloClock =
+        serde_json::from_value(recv_until_type(&mut stream, "hello").await.expect("hello"))
+            .expect("hello clock");
 
     ws_send_text(
         &mut stream,
@@ -607,6 +652,12 @@ async fn sensors_subscription_streams_seeded_snapshot() {
     let message = recv_until_type(&mut stream, "sensors")
         .await
         .expect("sensors message should arrive");
+    let stamp: PublicationStamp =
+        serde_json::from_value(message.clone()).expect("sensors carries both stamps");
+    assert!(
+        stamp.mono_us >= hello.mono_us,
+        "sensors is stamped on the clock the hello announced"
+    );
     assert_eq!(message["data"]["cpu_load_percent"], 37.5);
     assert_eq!(message["data"]["ram_used_percent"], 64.0);
     assert_eq!(message["data"]["polled_at_ms"], 8_901);
@@ -857,9 +908,12 @@ async fn input_event_subscription_receives_canonical_timed_payload() {
     let mut socket = api
         .open_websocket("/api/v1/ws")
         .expect("trusted websocket should open");
-    let _ = recv_trusted_until_type(&mut socket, "hello")
-        .await
-        .expect("hello");
+    let hello: HelloClock = serde_json::from_value(
+        recv_trusted_until_type(&mut socket, "hello")
+            .await
+            .expect("hello"),
+    )
+    .expect("hello clock");
 
     socket
         .send(Message::Text(
@@ -894,6 +948,12 @@ async fn input_event_subscription_receives_canonical_timed_payload() {
         .await
         .expect("timed input event relay");
     assert_eq!(message["event"], "input_event_received");
+    let stamp: PublicationStamp =
+        serde_json::from_value(message.clone()).expect("events carry both stamps");
+    assert!(
+        stamp.mono_us >= hello.mono_us,
+        "the event is stamped on the clock the hello announced"
+    );
     let decoded = TimedInputEventPayload::decode(&message["data"])
         .expect("daemon should emit the shared timed input schema");
     assert_eq!(decoded.at_ms, 5_000);

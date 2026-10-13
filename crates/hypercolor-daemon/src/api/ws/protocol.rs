@@ -12,6 +12,7 @@ use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
+use hypercolor_core::bus::{ClockStamp, PublicationClock};
 use hypercolor_leptos_ext::ws::registry::{
     CanvasConfig, CanvasFormat, FramesConfig, TopicId, TopicSet,
 };
@@ -19,7 +20,8 @@ use hypercolor_leptos_ext::ws::topic::{
     ActiveSubscription, PatchError, SubscriptionTable, TopicSelector, TopicSubscription,
 };
 use hypercolor_leptos_ext::ws::{
-    DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES, INTERACTIVE_PREVIEW_ID_MAX_BYTES,
+    DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES, HelloClock, INTERACTIVE_PREVIEW_ID_MAX_BYTES,
+    PublicationStamp,
 };
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -904,6 +906,8 @@ define_server_messages! {
     Hello {
         version: String,
         server: ServerIdentity,
+        #[serde(flatten)]
+        clock: HelloClock,
         state: HelloState,
         capabilities: Vec<String>,
         subscriptions: Vec<ActiveSubscription>,
@@ -929,22 +933,26 @@ define_server_messages! {
     /// Event relay from the bus.
     Event {
         event: String,
-        timestamp: String,
+        #[serde(flatten)]
+        stamp: PublicationStamp,
         data: serde_json::Value,
     },
     /// Periodic performance metrics snapshot.
     Metrics {
-        timestamp: String,
+        #[serde(flatten)]
+        stamp: PublicationStamp,
         data: MetricsPayload,
     },
     /// Periodic per-device output telemetry snapshot.
     DeviceMetrics {
-        timestamp: String,
+        #[serde(flatten)]
+        stamp: PublicationStamp,
         data: DeviceMetricsSnapshot,
     },
     /// Latest host sensor snapshot.
     Sensors {
-        timestamp: String,
+        #[serde(flatten)]
+        stamp: PublicationStamp,
         data: SystemSnapshot,
     },
     /// Backpressure warning for dropped binary payloads on one topic.
@@ -973,6 +981,27 @@ define_server_messages! {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<serde_json::Value>,
     },
+}
+
+/// Server messages that carry a [`PublicationStamp`]: every one that
+/// reports when it was published.
+pub(super) const PUBLICATION_STAMPED_SERVER_MESSAGES: [&str; 4] =
+    ["event", "metrics", "device_metrics", "sensors"];
+
+/// Project a daemon clock reading onto the wire.
+pub(super) fn publication_stamp(stamp: ClockStamp) -> PublicationStamp {
+    PublicationStamp {
+        timestamp: stamp.timestamp.to_string(),
+        mono_us: stamp.mono_us,
+    }
+}
+
+/// Announce the daemon clock in a `hello`, reading it now.
+pub(super) fn hello_clock(clock: &PublicationClock) -> HelloClock {
+    HelloClock {
+        clock_epoch: clock.epoch().to_string(),
+        mono_us: clock.mono_us(),
+    }
 }
 
 pub(super) fn json_payload_manifest() -> serde_json::Value {
