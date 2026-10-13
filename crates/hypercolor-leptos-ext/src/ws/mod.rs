@@ -1,4 +1,5 @@
 mod backoff;
+mod clock;
 mod codec_manifest;
 mod input_event;
 mod preview;
@@ -11,6 +12,7 @@ pub const HYPERCOLOR_WS_PROTOCOL: &str = "hypercolor-v1";
 pub const HYPERCOLOR_WS_VERSION: &str = "1.0";
 
 pub use backoff::{ExponentialBackoff, Jitter};
+pub use clock::{HelloClock, PublicationStamp};
 pub use codec_manifest::{codec_binary_messages, codec_frame_layouts};
 pub use input_event::{
     INPUT_EVENT_PAYLOAD_SCHEMA, InputEventPayloadDecodeError, TimedInputEventPayload,
