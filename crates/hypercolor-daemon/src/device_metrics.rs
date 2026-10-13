@@ -52,6 +52,8 @@ pub struct DeviceMetrics {
     #[serde(default)]
     pub transport_failed: u64,
     #[serde(default)]
+    pub transport_declined: u64,
+    #[serde(default)]
     pub completed_payload_bytes: u64,
     pub frames_suppressed: u64,
     pub frames_dropped: u64,
@@ -270,6 +272,7 @@ fn build_device_metrics(
         transport_started: stats.transport_started,
         transport_completed: stats.transport_completed,
         transport_failed: stats.transport_failed,
+        transport_declined: stats.transport_declined,
         completed_payload_bytes: stats.completed_payload_bytes,
         frames_suppressed: stats.frames_suppressed,
         frames_dropped: stats.frames_dropped,

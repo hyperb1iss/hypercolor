@@ -48,6 +48,7 @@ fn sample_stats_with_received(
         transport_started: frames_sent.saturating_add(errors_total),
         transport_completed: frames_sent,
         transport_failed: errors_total,
+        transport_declined: 0,
         frames_suppressed: 0,
         cached_payload_reassertions: 0,
         bytes_sent,
