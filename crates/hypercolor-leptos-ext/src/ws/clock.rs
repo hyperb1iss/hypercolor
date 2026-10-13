@@ -27,7 +27,9 @@ pub struct PublicationStamp {
     pub timestamp: String,
     /// Publication time in microseconds on the monotonic clock the
     /// `hello` names. Never moves backwards within one `clock_epoch` and
-    /// ignores wall-clock adjustments.
+    /// does not jump when the wall clock is stepped, but its rate can
+    /// follow NTP frequency corrections, so a long session recalibrates
+    /// against command response stamps instead of assuming a fixed rate.
     pub mono_us: u64,
 }
 
