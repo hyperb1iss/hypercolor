@@ -169,8 +169,10 @@ impl Serialize for EventTimestamp {
 /// Pairs the wall clock with one monotonic origin taken when the bus is
 /// created and a random identity for that origin. Wall stamps follow the
 /// host clock through steps and slews; monotonic stamps never move
-/// backwards and ignore wall adjustments, but they are comparable only
-/// between readings that share an epoch. A restarted daemon builds a new
+/// backwards and do not jump when the wall clock is stepped, though the
+/// platform clock (`CLOCK_MONOTONIC` on Linux) can follow NTP frequency
+/// corrections. They are comparable only between readings that share an
+/// epoch. A restarted daemon builds a new
 /// bus, so it gets a new origin and a new epoch id.
 #[derive(Clone, Copy, Debug)]
 pub struct PublicationClock {
