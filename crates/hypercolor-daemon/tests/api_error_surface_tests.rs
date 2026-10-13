@@ -263,9 +263,124 @@ fn the_deleted_error_machinery_stays_deleted() {
     );
 }
 
+/// Test modules call handlers directly and may build any extractor.
+fn is_test_source(relative: &str) -> bool {
+    relative.ends_with("tests.rs") || relative.contains("/tests/")
+}
+
+/// Every name a `use <prefix>{...};` group imports, in a flattened source.
+fn grouped_imports(flat: &str, prefix: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = flat;
+    while let Some(offset) = rest.find(prefix) {
+        let after = &rest[offset + prefix.len()..];
+        let Some(close) = after.find('}') else {
+            break;
+        };
+        names.extend(
+            after[..close]
+                .split(',')
+                .map(|name| name.trim().to_owned())
+                .filter(|name| !name.is_empty()),
+        );
+        rest = &after[close..];
+    }
+    names
+}
+
+/// The stock Axum decoders a route module names, as offending spellings.
+fn stock_extractor_sightings(flat: &str) -> Vec<String> {
+    const STOCK: [&str; 4] = ["Json", "Path", "Query", "Form"];
+    let mut sightings = Vec::new();
+    for stock in STOCK {
+        for spelling in [
+            format!("use axum::{stock};"),
+            format!("use axum::extract::{stock};"),
+            format!("axum::{stock}<"),
+            format!("axum::extract::{stock}<"),
+            format!("axum::extract::{stock}("),
+        ] {
+            if flat.contains(&spelling) {
+                sightings.push(spelling);
+            }
+        }
+    }
+    for prefix in ["use axum::{", "use axum::extract::{"] {
+        for name in grouped_imports(flat, prefix) {
+            if STOCK.contains(&name.as_str()) {
+                sightings.push(format!("{prefix}{name}}}"));
+            }
+        }
+    }
+    sightings
+}
+
+/// Route modules extract through `api::extract`, whose rejections are
+/// `DomainError`s. Axum's stock body and URL decoders answer a bad request
+/// with a plain-text body instead, so naming one in a route module reopens
+/// the gap those wrappers close. Responders such as `axum::Json(body)` are
+/// expressions, not extractor types, and stay legal.
+#[test]
+fn routes_extract_through_the_api_extractors() {
+    let mut offenders: Vec<String> = Vec::new();
+    for (relative, source) in daemon_sources() {
+        if !relative.starts_with("api/")
+            || relative == "api/extract.rs"
+            || is_test_source(&relative)
+        {
+            continue;
+        }
+        for sighting in stock_extractor_sightings(&flattened(&source)) {
+            offenders.push(format!("{relative}: {sighting}"));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "route modules must extract through crate::api::extract (ApiJson, \
+         ApiPath, ApiQuery, ...):\n{}",
+        offenders.join("\n")
+    );
+}
+
 #[cfg(test)]
 mod scan_self_tests {
-    use super::{is_response_type, result_error_types, strip_comments_and_strings};
+    use super::{
+        flattened, is_response_type, result_error_types, stock_extractor_sightings,
+        strip_comments_and_strings,
+    };
+
+    #[test]
+    fn every_import_of_a_stock_decoder_is_caught() {
+        for source in [
+            "use axum::Json;",
+            "use axum::{Extension, Json};",
+            "use axum::extract::{Path, State};",
+            "use axum::extract::{\n    Query,\n    State,\n};",
+            "fn h(axum::extract::Query(q): axum::extract::Query<Q>) {}",
+            "fn h(body: axum::Json<Body>) {}",
+        ] {
+            assert!(
+                !stock_extractor_sightings(&flattened(source)).is_empty(),
+                "`{source}` names a stock decoder and must be caught"
+            );
+        }
+    }
+
+    #[test]
+    fn responders_and_api_extractors_are_left_alone() {
+        for source in [
+            "(status, axum::Json(body)).into_response()",
+            "use crate::api::extract::{ApiJson, ApiPath, ApiQuery};",
+            "use axum::extract::{State, OriginalUri};",
+            "use std::path::Path;",
+        ] {
+            assert!(
+                stock_extractor_sightings(&flattened(source)).is_empty(),
+                "`{source}` is not a stock decoder"
+            );
+        }
+    }
 
     #[test]
     fn every_spelling_of_an_axum_response_error_type_is_caught() {

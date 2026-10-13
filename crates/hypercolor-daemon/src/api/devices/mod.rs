@@ -13,8 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use tracing::{debug, warn};
 
@@ -28,6 +27,7 @@ use hypercolor_types::device::{
 use hypercolor_types::event::HypercolorEvent;
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::app_state::AppState;
 use crate::discovery as core_discovery;
 use crate::domain::output::brightness_percent;
@@ -92,7 +92,7 @@ impl DeviceListIncludes {
 /// `GET /api/v1/devices` — List all tracked devices.
 pub async fn list_devices(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ListDevicesQuery>,
+    ApiQuery(query): ApiQuery<ListDevicesQuery>,
 ) -> Response {
     let includes = match DeviceListIncludes::parse(query.include.as_deref()) {
         Ok(includes) => includes,
@@ -214,7 +214,10 @@ pub async fn list_devices(
 }
 
 /// `GET /api/v1/devices/{id}` — Get a single device.
-pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn get_device(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<String>,
+) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
         Err(error) => return error.into_response(),
@@ -248,8 +251,8 @@ pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<Strin
 /// `PUT /api/v1/devices/{id}` — Update a device's metadata.
 pub async fn update_device(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(body): Json<UpdateDeviceRequest>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(body): ApiJson<UpdateDeviceRequest>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
@@ -394,7 +397,10 @@ pub async fn update_device(
 }
 
 /// `DELETE /api/v1/devices/{id}` — Remove a device from tracking.
-pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn delete_device(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<String>,
+) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
         Err(error) => return error.into_response(),
@@ -454,8 +460,8 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
 /// `POST /api/v1/devices/{id}/identify` — Flash identification pattern.
 pub async fn identify_device(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    body: Option<Json<IdentifyRequest>>,
+    ApiPath(id): ApiPath<String>,
+    body: Option<ApiJson<IdentifyRequest>>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
@@ -573,8 +579,8 @@ pub async fn identify_device(
 )]
 pub async fn identify_segment(
     State(state): State<Arc<AppState>>,
-    Path((id, segment)): Path<(String, String)>,
-    body: Option<Json<IdentifyRequest>>,
+    ApiPath((id, segment)): ApiPath<(String, String)>,
+    body: Option<ApiJson<IdentifyRequest>>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
@@ -688,8 +694,8 @@ pub async fn identify_segment(
 )]
 pub async fn identify_attachment(
     State(state): State<Arc<AppState>>,
-    Path((id, slot_id)): Path<(String, String)>,
-    body: Option<Json<IdentifyAttachmentRequest>>,
+    ApiPath((id, slot_id)): ApiPath<(String, String)>,
+    body: Option<ApiJson<IdentifyAttachmentRequest>>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,

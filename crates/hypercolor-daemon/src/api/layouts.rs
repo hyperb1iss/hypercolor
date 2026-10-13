@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::app_state::AppState;
 use crate::domain::DomainError;
 use crate::domain::layout::LayoutPersistenceStatus;
@@ -19,7 +19,7 @@ pub use hypercolor_types::api::layouts::{
 
 pub async fn list_layouts(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<LayoutListQuery>,
+    ApiQuery(query): ApiQuery<LayoutListQuery>,
 ) -> Response {
     let limit = query.limit.unwrap_or(50);
     if limit == 0 || limit > 200 {
@@ -37,7 +37,10 @@ pub async fn list_layouts(
     envelope::ok(response)
 }
 
-pub async fn get_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn get_layout(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<String>,
+) -> Response {
     match state.domains.layout.resolve(&id).await {
         Ok(layout) => envelope::ok(layout),
         Err(error) => error.into_response(),
@@ -50,7 +53,7 @@ pub async fn get_active_layout(State(state): State<Arc<AppState>>) -> Response {
 
 pub async fn create_layout(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<CreateLayoutRequest>,
+    ApiJson(body): ApiJson<CreateLayoutRequest>,
 ) -> Response {
     match state.domains.layout.create(body).await {
         Ok(summary) => envelope::created(summary),
@@ -60,8 +63,8 @@ pub async fn create_layout(
 
 pub async fn update_layout(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(body): Json<UpdateLayoutRequest>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(body): ApiJson<UpdateLayoutRequest>,
 ) -> Response {
     match state.domains.layout.update(id, body).await {
         Ok(summary) => envelope::ok(summary),
@@ -69,7 +72,10 @@ pub async fn update_layout(
     }
 }
 
-pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn apply_layout(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<String>,
+) -> Response {
     match state
         .domains
         .layout
@@ -83,7 +89,7 @@ pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<Str
 
 pub async fn preview_layout(
     State(state): State<Arc<AppState>>,
-    Json(layout): Json<SpatialLayout>,
+    ApiJson(layout): ApiJson<SpatialLayout>,
 ) -> Response {
     match state
         .domains
@@ -96,7 +102,10 @@ pub async fn preview_layout(
     }
 }
 
-pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn delete_layout(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<String>,
+) -> Response {
     match state
         .domains
         .layout

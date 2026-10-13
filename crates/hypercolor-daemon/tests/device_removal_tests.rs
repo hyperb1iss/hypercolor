@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::State;
 use http::StatusCode;
 use hypercolor_daemon::api::devices::forget_device;
+use hypercolor_daemon::api::extract::ApiJson;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::api::devices::ForgetDeviceRequest;
 use hypercolor_types::api::layouts::{CreateLayoutRequest, UpdateLayoutRequest};
@@ -107,7 +107,7 @@ async fn forgetting_absent_controller_prunes_default_and_saved_scenes_and_layout
     std::fs::create_dir(&runtime_path).expect("block runtime snapshot destination");
     let failed = forget_device(
         State(Arc::clone(&state)),
-        Json(ForgetDeviceRequest {
+        ApiJson(ForgetDeviceRequest {
             layout_device_id: target.to_owned(),
         }),
     )
@@ -117,7 +117,7 @@ async fn forgetting_absent_controller_prunes_default_and_saved_scenes_and_layout
 
     let response = forget_device(
         State(Arc::clone(&state)),
-        Json(ForgetDeviceRequest {
+        ApiJson(ForgetDeviceRequest {
             layout_device_id: target.to_owned(),
         }),
     )
@@ -160,7 +160,7 @@ async fn forgetting_unknown_or_empty_binding_does_not_mutate_scenes() {
     ] {
         let response = forget_device(
             State(Arc::clone(&state)),
-            Json(ForgetDeviceRequest {
+            ApiJson(ForgetDeviceRequest {
                 layout_device_id: target.to_owned(),
             }),
         )
@@ -218,7 +218,7 @@ async fn forgetting_offline_logical_controller_removes_all_segments_and_profile(
         .update(&physical.to_string(), DeviceComponentProfile::default());
     let response = forget_device(
         State(Arc::clone(&state)),
-        Json(ForgetDeviceRequest {
+        ApiJson(ForgetDeviceRequest {
             layout_device_id: "controller".to_owned(),
         }),
     )
@@ -281,7 +281,7 @@ async fn forgetting_controller_preserves_unsaved_live_layout_outputs() {
     state.spatial_engine.test_fixture().replace(live);
     let removal = forget_device(
         State(Arc::clone(&state)),
-        Json(ForgetDeviceRequest {
+        ApiJson(ForgetDeviceRequest {
             layout_device_id: target.to_owned(),
         }),
     );

@@ -2,12 +2,13 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::drivers::{DriverConfigResponse, DriverListResponse, DriverSummary};
 use hypercolor_types::config::HypercolorConfig;
 
 use crate::api::envelope;
+use crate::api::extract::ApiPath;
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::network;
@@ -67,7 +68,7 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/drivers/{id}/config` — Get one driver module's config entry.
 pub async fn get_driver_config(
     State(state): State<Arc<AppState>>,
-    Path(driver_id): Path<String>,
+    ApiPath(driver_id): ApiPath<String>,
 ) -> Response {
     let Some(driver) = state.driver_registry().get(&driver_id) else {
         return DomainError::not_found(ResourceKind::Driver, &driver_id).into_response();

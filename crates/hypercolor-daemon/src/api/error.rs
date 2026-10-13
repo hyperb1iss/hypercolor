@@ -1,6 +1,5 @@
 //! REST projection for transport-neutral domain failures.
 
-use axum::Json;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::envelope::{ApiErrorBody, ApiErrorDetail};
@@ -143,7 +142,7 @@ impl IntoResponse for DomainError {
             error: detail(&self),
             meta: response_meta(),
         };
-        let mut response = (status, Json(body)).into_response();
+        let mut response = (status, axum::Json(body)).into_response();
         if let Self::PreconditionFailed { current, .. } = &self
             && let Ok(etag) = HeaderValue::from_str(&format!("\"{current}\""))
         {

@@ -103,6 +103,7 @@ hypercolor-openrgb-sdk = { workspace = true, optional = true }
 hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", version = "0.7.0", default-features = false, features = ["ws-core", "axum"] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
+serde_path_to_error = { workspace = true }
 jsonschema = { workspace = true }
 strum = { workspace = true }
 subtle = { workspace = true }

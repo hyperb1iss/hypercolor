@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, close_code};
-use axum::extract::{Extension, State, WebSocketUpgrade};
+use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_leptos_ext::axum::upgrade_handler;
@@ -59,6 +59,7 @@ use super::relays::{
     publish_subscriptions,
 };
 use super::topics::{RelayContext, spawn_relays};
+use crate::api::extract::ApiWebSocketUpgrade;
 use crate::api::local::{
     TrustedLocalSocketTransport, TrustedLocalWebSocket, trusted_local_socket_pair,
 };
@@ -91,7 +92,7 @@ const SENSOR_STREAM_HZ: u32 = 1;
 
 /// `GET /api/v1/ws` — Upgrade to WebSocket.
 pub(crate) async fn ws_handler(
-    ws: WebSocketUpgrade,
+    ApiWebSocketUpgrade(ws): ApiWebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     connect_info: Option<Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,

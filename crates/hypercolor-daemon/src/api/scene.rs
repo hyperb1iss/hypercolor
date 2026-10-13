@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
@@ -30,14 +30,13 @@ use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
 use crate::domain::scene_tree::{
     AssignMembers, ClearScene, PatchLayerControls, PatchScene, ReplaceLayer, TreeWritten,
     ZoneWritten,
 };
 use crate::domain::{DomainError, MutationContext, ResourceKind, scene_tree};
-
-use axum::Json;
 
 // ── Scene document ───────────────────────────────────────────────────────
 
@@ -56,7 +55,7 @@ pub async fn get_scene(State(state): State<Arc<AppState>>) -> Response {
 pub async fn patch_scene(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<ScenePatchRequest>,
+    ApiJson(body): ApiJson<ScenePatchRequest>,
 ) -> Response {
     let expected = match parse_if_match(&headers) {
         Ok(expected) => expected,
@@ -87,13 +86,13 @@ pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
 pub async fn clear_scene(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    body: Option<Json<ClearSceneRequest>>,
+    body: Option<ApiJson<ClearSceneRequest>>,
 ) -> Response {
     let expected = match parse_if_match(&headers) {
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
-    let zone = body.and_then(|Json(body)| body.zone);
+    let zone = body.and_then(|ApiJson(body)| body.zone);
     tree_response(
         scene_tree::clear_scene(
             &state.domains.scene_tree,
@@ -112,7 +111,7 @@ pub async fn clear_scene(
 pub async fn create_zone(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<CreateZoneRequest>,
+    ApiJson(body): ApiJson<CreateZoneRequest>,
 ) -> Response {
     // Primary and Display zones are minted by the engine — a primary
     // when a scene is created, a display when a face is assigned — so
@@ -166,7 +165,10 @@ pub async fn create_zone(
 }
 
 /// `GET /api/v1/scene/zones/{zone}` — one zone resource.
-pub async fn get_zone(State(state): State<Arc<AppState>>, Path(zone): Path<String>) -> Response {
+pub async fn get_zone(
+    State(state): State<Arc<AppState>>,
+    ApiPath(zone): ApiPath<String>,
+) -> Response {
     let zone_id = match parse_zone_id(&zone) {
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
@@ -180,9 +182,9 @@ pub async fn get_zone(State(state): State<Arc<AppState>>, Path(zone): Path<Strin
 /// `PATCH /api/v1/scene/zones/{zone}` — name and structural fields.
 pub async fn patch_zone(
     State(state): State<Arc<AppState>>,
-    Path(zone): Path<String>,
+    ApiPath(zone): ApiPath<String>,
     headers: HeaderMap,
-    Json(body): Json<PatchZoneRequest>,
+    ApiJson(body): ApiJson<PatchZoneRequest>,
 ) -> Response {
     let (zone_id, expected) = match zone_request(&zone, &headers) {
         Ok(parts) => parts,
@@ -212,7 +214,7 @@ pub async fn patch_zone(
 /// `DELETE /api/v1/scene/zones/{zone}` — remove a zone.
 pub async fn delete_zone(
     State(state): State<Arc<AppState>>,
-    Path(zone): Path<String>,
+    ApiPath(zone): ApiPath<String>,
     headers: HeaderMap,
 ) -> Response {
     let (zone_id, expected) = match zone_request(&zone, &headers) {
@@ -237,9 +239,9 @@ pub async fn delete_zone(
 /// `PUT /api/v1/scene/zones/{zone}/layout` — reposition the members.
 pub async fn put_zone_layout(
     State(state): State<Arc<AppState>>,
-    Path(zone): Path<String>,
+    ApiPath(zone): ApiPath<String>,
     headers: HeaderMap,
-    Json(body): Json<ZoneLayoutRequest>,
+    ApiJson(body): ApiJson<ZoneLayoutRequest>,
 ) -> Response {
     let zone_id = match parse_zone_id(&zone) {
         Ok(zone_id) => zone_id,
@@ -264,9 +266,9 @@ pub async fn put_zone_layout(
 /// `POST /api/v1/scene/zones/{zone}/members` — assign device segments.
 pub async fn assign_members(
     State(state): State<Arc<AppState>>,
-    Path(zone): Path<String>,
+    ApiPath(zone): ApiPath<String>,
     headers: HeaderMap,
-    Json(body): Json<AssignMembersRequest>,
+    ApiJson(body): ApiJson<AssignMembersRequest>,
 ) -> Response {
     let zone_id = match parse_zone_id(&zone) {
         Ok(zone_id) => zone_id,
@@ -293,7 +295,7 @@ pub async fn assign_members(
 /// `DELETE /api/v1/scene/zones/{zone}/members/{member}` — unassign one.
 pub async fn unassign_member(
     State(state): State<Arc<AppState>>,
-    Path((zone, member)): Path<(String, String)>,
+    ApiPath((zone, member)): ApiPath<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
     let zone_id = match parse_zone_id(&zone) {
@@ -322,7 +324,7 @@ pub async fn unassign_member(
 pub async fn edit_members(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<hypercolor_types::api::scene::EditMembersRequest>,
+    ApiJson(body): ApiJson<hypercolor_types::api::scene::EditMembersRequest>,
 ) -> Response {
     let expected = match parse_if_match(&headers) {
         Ok(Some(expected)) => expected,
@@ -342,7 +344,10 @@ pub async fn edit_members(
 }
 
 /// `GET /api/v1/scene/zones/{zone}/layers` — the zone's stack.
-pub async fn list_layers(State(state): State<Arc<AppState>>, Path(zone): Path<String>) -> Response {
+pub async fn list_layers(
+    State(state): State<Arc<AppState>>,
+    ApiPath(zone): ApiPath<String>,
+) -> Response {
     let zone_id = match parse_zone_id(&zone) {
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
@@ -366,9 +371,9 @@ pub async fn list_layers(State(state): State<Arc<AppState>>, Path(zone): Path<St
 /// `POST /api/v1/scene/zones/{zone}/layers` — append a layer.
 pub async fn create_layer(
     State(state): State<Arc<AppState>>,
-    Path(zone): Path<String>,
+    ApiPath(zone): ApiPath<String>,
     headers: HeaderMap,
-    Json(body): Json<CreateLayerRequest>,
+    ApiJson(body): ApiJson<CreateLayerRequest>,
 ) -> Response {
     let (zone_id, expected) = match zone_request(&zone, &headers) {
         Ok(parts) => parts,
@@ -402,9 +407,9 @@ pub async fn create_layer(
 /// `PATCH /api/v1/scene/zones/{zone}/layers/order` — reorder the stack.
 pub async fn reorder_layers(
     State(state): State<Arc<AppState>>,
-    Path(zone): Path<String>,
+    ApiPath(zone): ApiPath<String>,
     headers: HeaderMap,
-    Json(body): Json<ReorderLayersRequest>,
+    ApiJson(body): ApiJson<ReorderLayersRequest>,
 ) -> Response {
     let (zone_id, expected) = match zone_request(&zone, &headers) {
         Ok(parts) => parts,
@@ -424,9 +429,9 @@ pub async fn reorder_layers(
 /// has never seen, and the id it addressed is gone (Spec 78 §1.4).
 pub async fn replace_layer(
     State(state): State<Arc<AppState>>,
-    Path((zone, layer)): Path<(String, String)>,
+    ApiPath((zone, layer)): ApiPath<(String, String)>,
     headers: HeaderMap,
-    Json(body): Json<ReplaceLayerRequest>,
+    ApiJson(body): ApiJson<ReplaceLayerRequest>,
 ) -> Response {
     let zone_id = match parse_zone_id(&zone) {
         Ok(zone_id) => zone_id,
@@ -461,7 +466,7 @@ pub async fn replace_layer(
 /// `DELETE /api/v1/scene/zones/{zone}/layers/{layer}` — drop a layer.
 pub async fn delete_layer(
     State(state): State<Arc<AppState>>,
-    Path((zone, layer)): Path<(String, String)>,
+    ApiPath((zone, layer)): ApiPath<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
     let (zone_id, expected) = match zone_request(&zone, &headers) {
@@ -483,8 +488,8 @@ pub async fn delete_layer(
 /// control-patch shape, unguarded by contract (Spec 78 §1.6).
 pub async fn patch_layer_controls(
     State(state): State<Arc<AppState>>,
-    Path((zone, layer)): Path<(String, String)>,
-    Json(body): Json<PatchControlsRequest>,
+    ApiPath((zone, layer)): ApiPath<(String, String)>,
+    ApiJson(body): ApiJson<PatchControlsRequest>,
 ) -> Response {
     let zone_id = match parse_zone_id(&zone) {
         Ok(zone_id) => zone_id,

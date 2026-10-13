@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use axum::body::to_bytes;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use hypercolor_daemon::api::devices::get_device;
+use hypercolor_daemon::api::extract::ApiPath;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceFamily, DeviceId, DeviceInfo, DeviceOrigin,
@@ -53,7 +54,7 @@ async fn device_api_reports_observed_name_after_override_is_cleared() {
                 .await
                 .expect("clear override");
         }
-        let response = get_device(State(Arc::clone(&state)), Path(id.to_string())).await;
+        let response = get_device(State(Arc::clone(&state)), ApiPath(id.to_string())).await;
         assert_eq!(response.status(), http::StatusCode::OK);
         let bytes = to_bytes(response.into_body(), 1024 * 1024)
             .await

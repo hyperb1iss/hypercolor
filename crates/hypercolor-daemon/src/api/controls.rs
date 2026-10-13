@@ -4,13 +4,13 @@ use std::sync::Arc;
 
 use crate::api::devices;
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::app_state::AppState;
 use crate::discovery as core_discovery;
 use crate::domain::{DomainError, ResourceKind};
 use crate::network;
 use anyhow::bail;
-use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use hypercolor_driver_api::{ControlApplyTarget, DriverConfigView, DriverHost, TrackedDeviceCtx};
 use hypercolor_types::api::scene::PatchControlsRequest;
@@ -38,7 +38,7 @@ const DEVICE_ACTION_IDENTIFY: &str = "identify";
 /// `GET /api/v1/control-surfaces` - Return control surfaces for a UI view.
 pub async fn list_control_surfaces(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ControlSurfaceListQuery>,
+    ApiQuery(query): ApiQuery<ControlSurfaceListQuery>,
 ) -> Response {
     let selected_surface = query.device_id.is_some() || query.driver_id.is_some();
     let mut surfaces = Vec::new();
@@ -98,7 +98,7 @@ pub async fn list_control_surfaces(
 /// `GET /api/v1/drivers/{id}/controls` - Return a driver-level control surface.
 pub async fn get_driver_control_surface(
     State(state): State<Arc<AppState>>,
-    Path(driver_id): Path<String>,
+    ApiPath(driver_id): ApiPath<String>,
 ) -> Response {
     match driver_control_surface_document(&state, &driver_id).await {
         Ok(Some(surface)) => envelope::ok(surface),
@@ -113,7 +113,7 @@ pub async fn get_driver_control_surface(
 /// its stable surface ID.
 pub async fn get_control_surface(
     State(state): State<Arc<AppState>>,
-    Path(surface_id): Path<String>,
+    ApiPath(surface_id): ApiPath<String>,
 ) -> Response {
     if let Some((driver_id, device_id)) = parse_driver_device_surface_id(&surface_id) {
         let Some(tracked) = state.device_registry.get(&device_id).await else {
@@ -230,7 +230,7 @@ async fn driver_device_control_surface(
 /// surface for a tracked device.
 pub async fn get_device_control_surface(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Response {
     let device_id = match resolve_device_id(&state, &id).await {
         Ok(Some(id)) => id,
@@ -256,8 +256,8 @@ pub async fn get_device_control_surface(
 /// values to a surface.
 pub async fn apply_control_surface_values(
     State(state): State<Arc<AppState>>,
-    Path(surface_id): Path<String>,
-    Json(body): Json<PatchControlsRequest>,
+    ApiPath(surface_id): ApiPath<String>,
+    ApiJson(body): ApiJson<PatchControlsRequest>,
 ) -> Response {
     if !body.clear_bindings.is_empty() {
         return DomainError::validation_field(
@@ -335,8 +335,8 @@ pub async fn apply_control_surface_values(
 /// typed control-surface action.
 pub async fn invoke_control_surface_action(
     State(state): State<Arc<AppState>>,
-    Path((surface_id, action_id)): Path<(String, String)>,
-    Json(body): Json<InvokeControlActionRequest>,
+    ApiPath((surface_id, action_id)): ApiPath<(String, String)>,
+    ApiJson(body): ApiJson<InvokeControlActionRequest>,
 ) -> Response {
     if let Some((driver_id, device_id)) = parse_driver_device_surface_id(&surface_id) {
         return invoke_driver_device_control_action(
@@ -375,8 +375,8 @@ async fn invoke_host_device_control_action(
     };
     let identify_response = devices::identify_device(
         State(Arc::clone(&state)),
-        Path(device_id.to_string()),
-        Some(Json(request)),
+        ApiPath(device_id.to_string()),
+        Some(ApiJson(request)),
     )
     .await;
     if !identify_response.status().is_success() {

@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use tracing::warn;
 
@@ -16,6 +15,7 @@ use hypercolor_types::pairing::{
 };
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -26,8 +26,8 @@ pub use hypercolor_types::api::devices::{DeletePairingResponse, PairDeviceRespon
 /// `POST /api/v1/devices/{id}/pair` — pair a discovered driver-backed device.
 pub async fn pair_device(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(payload): Json<PairDeviceRequest>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(payload): ApiJson<PairDeviceRequest>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
@@ -43,7 +43,7 @@ pub async fn pair_device(
 /// `DELETE /api/v1/devices/{id}/pair` — forget stored pairing credentials.
 pub async fn delete_pairing(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,

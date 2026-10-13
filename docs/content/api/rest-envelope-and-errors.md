@@ -138,6 +138,35 @@ parse at all. Clients that treat every client-side error as 400 will mis-handle
 validation failures.
 {% </callout> %}
 
+### Requests rejected before a handler runs
+
+A request the daemon cannot decode never reaches a route handler, and it still
+answers with the error envelope. The `message` carries the decoder's full
+diagnostic, and `details.field` names the offending field path whenever the
+decoder reports one (`zones[0].brightness`, `limit`).
+
+| Rejection | `code` | HTTP status |
+| --- | --- | --- |
+| Body is not valid JSON, or a path segment will not parse | `malformed_request` | `400 Bad Request` |
+| JSON body has an unknown field, misses a required one, or has a wrong type | `validation_error` | `422 Unprocessable Entity` |
+| Query parameter has an unknown value or the wrong type | `validation_error` | `422 Unprocessable Entity` |
+| Body sent without `Content-Type: application/json` | `unsupported_media_type` | `415 Unsupported Media Type` |
+| Body larger than the route accepts (2 MiB unless the route documents its own limit) | `payload_too_large` | `413 Payload Too Large` |
+
+For example, a scene replacement carrying a field the contract does not define
+returns:
+
+```json
+{
+  "error": {
+    "code": "validation_error",
+    "message": "Failed to deserialize the JSON body into the target type: frobnicate: unknown field `frobnicate`, expected one of `id`, `name`, ...",
+    "details": { "field": "frobnicate" }
+  },
+  "meta": { "api_version": "1.0", "request_id": "req_...", "timestamp": "..." }
+}
+```
+
 ### Status flow
 
 The same `DomainError` variant drives both the body and the response status.

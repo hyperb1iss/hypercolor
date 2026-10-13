@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use tracing::debug;
 
@@ -16,6 +15,7 @@ use hypercolor_types::attachment::{
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
@@ -39,7 +39,7 @@ pub(super) struct ResolvedComponentBinding {
 /// `GET /api/v1/devices/{id}/attachments` — Get a device attachment profile.
 pub async fn get_attachments(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
@@ -67,8 +67,8 @@ pub async fn get_attachments(
 /// `PUT /api/v1/devices/{id}/attachments` — Save a device attachment profile.
 pub async fn update_attachments(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(body): Json<UpdateAttachmentsRequest>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(body): ApiJson<UpdateAttachmentsRequest>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
@@ -132,7 +132,7 @@ pub async fn update_attachments(
 /// `DELETE /api/v1/devices/{id}/attachments` — Remove a stored attachment profile.
 pub async fn delete_attachments(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,

@@ -4,8 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use tokio::sync::watch;
 use tracing::warn;
@@ -16,6 +15,7 @@ use hypercolor_types::library::{
 };
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::playlist_runtime::ActivePlaylistRuntime;
@@ -47,7 +47,10 @@ pub async fn list_playlists(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// `GET /api/v1/library/playlists/{id}` — fetch one playlist.
-pub async fn get_playlist(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn get_playlist(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<String>,
+) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
@@ -62,7 +65,7 @@ pub async fn get_playlist(State(state): State<Arc<AppState>>, Path(id): Path<Str
 /// `POST /api/v1/library/playlists` — create a new playlist.
 pub async fn create_playlist(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<SavePlaylistRequest>,
+    ApiJson(body): ApiJson<SavePlaylistRequest>,
 ) -> Response {
     if body.name.trim().is_empty() {
         return DomainError::validation("Playlist name must not be empty").into_response();
@@ -105,8 +108,8 @@ pub async fn create_playlist(
 /// `PUT /api/v1/library/playlists/{id}` — update an existing playlist.
 pub async fn update_playlist(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(body): Json<SavePlaylistRequest>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(body): ApiJson<SavePlaylistRequest>,
 ) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
@@ -169,7 +172,7 @@ pub async fn update_playlist(
 /// `DELETE /api/v1/library/playlists/{id}` — remove a playlist.
 pub async fn delete_playlist(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
@@ -213,7 +216,7 @@ pub async fn delete_playlist(
 /// `POST /api/v1/library/playlists/{id}/activate` — start playlist playback.
 pub async fn activate_playlist(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Playlist, &id).into_response();

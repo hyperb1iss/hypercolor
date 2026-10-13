@@ -2,8 +2,7 @@
 
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use tracing::info;
 
@@ -11,10 +10,9 @@ use hypercolor_core::config::{ConfigManager, ConfigPersistence, canonical_audio_
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::config_registry;
 
-use axum::Extension;
-
 use crate::api::capture::protected_control_rejection;
 use crate::api::envelope;
+use crate::api::extract::{ApiExtension, ApiJson, ApiPath, ApiQuery};
 use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
@@ -69,7 +67,7 @@ pub async fn get_config_schema() -> Response {
 /// `GET /api/v1/config/keys/{key}` — read one dotted config key.
 pub async fn get_config_key(
     State(state): State<Arc<AppState>>,
-    Path(key): Path<String>,
+    ApiPath(key): ApiPath<String>,
 ) -> Response {
     if !config_registry::is_valid_key(&key) {
         return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
@@ -116,10 +114,10 @@ pub(crate) const CAPTURE_CALIBRATION_FIELDS: [&str; 4] = [
 /// object and a string writes as a JSON string.
 pub(crate) async fn put_config_key(
     State(state): State<Arc<AppState>>,
-    Path(key): Path<String>,
-    Query(apply): Query<ConfigApplyQuery>,
-    Extension(auth_context): Extension<RequestAuthContext>,
-    Json(value): Json<serde_json::Value>,
+    ApiPath(key): ApiPath<String>,
+    ApiQuery(apply): ApiQuery<ConfigApplyQuery>,
+    ApiExtension(auth_context): ApiExtension<RequestAuthContext>,
+    ApiJson(value): ApiJson<serde_json::Value>,
 ) -> Response {
     if !config_registry::is_valid_key(&key) {
         return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
@@ -136,10 +134,10 @@ pub(crate) async fn put_config_key(
 /// Merge an object patch into a config key without replacing sibling entries.
 pub(crate) async fn patch_config_key(
     State(state): State<Arc<AppState>>,
-    Path(key): Path<String>,
-    Query(apply): Query<ConfigApplyQuery>,
-    Extension(auth_context): Extension<RequestAuthContext>,
-    Json(value): Json<serde_json::Value>,
+    ApiPath(key): ApiPath<String>,
+    ApiQuery(apply): ApiQuery<ConfigApplyQuery>,
+    ApiExtension(auth_context): ApiExtension<RequestAuthContext>,
+    ApiJson(value): ApiJson<serde_json::Value>,
 ) -> Response {
     if !config_registry::is_valid_key(&key) {
         return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
@@ -203,9 +201,9 @@ fn merge_config_object(target: &mut serde_json::Value, patch: &serde_json::Value
 /// `DELETE /api/v1/config/keys/{key}` — restore one key to its default.
 pub(crate) async fn delete_config_key(
     State(state): State<Arc<AppState>>,
-    Path(key): Path<String>,
-    Query(apply): Query<ConfigApplyQuery>,
-    Extension(auth_context): Extension<RequestAuthContext>,
+    ApiPath(key): ApiPath<String>,
+    ApiQuery(apply): ApiQuery<ConfigApplyQuery>,
+    ApiExtension(auth_context): ApiExtension<RequestAuthContext>,
 ) -> Response {
     if key != CAPTURE_CALIBRATION_RESET_KEY && !config_registry::is_valid_key(&key) {
         return DomainError::malformed(format!("Malformed config key: {key}")).into_response();
@@ -225,8 +223,8 @@ pub(crate) async fn delete_config_key(
 /// so it carries the protected-control requirement.
 pub(crate) async fn reset_config(
     State(state): State<Arc<AppState>>,
-    Query(apply): Query<ConfigApplyQuery>,
-    Extension(auth_context): Extension<RequestAuthContext>,
+    ApiQuery(apply): ApiQuery<ConfigApplyQuery>,
+    ApiExtension(auth_context): ApiExtension<RequestAuthContext>,
 ) -> Response {
     if let Some(rejection) = protected_control_rejection(auth_context) {
         return rejection;

@@ -5424,6 +5424,39 @@ async fn command_response_from_http_unwraps_error_envelope() {
 }
 
 #[tokio::test]
+async fn command_response_from_http_keeps_an_unenveloped_rejection_readable() {
+    let rejection = "Failed to deserialize the JSON body into the target type: \
+                     frobnicate: unknown field `frobnicate`";
+    let response = (axum::http::StatusCode::UNPROCESSABLE_ENTITY, rejection).into_response();
+    let message = command_response_from_http("cmd_shape".to_owned(), response).await;
+    let ServerMessage::Response { status, error, .. } = message else {
+        panic!("expected response variant");
+    };
+    assert_eq!(status, 422);
+    assert_eq!(
+        error,
+        Some(serde_json::json!({
+            "code": "validation_error",
+            "message": rejection,
+        }))
+    );
+
+    let response = (axum::http::StatusCode::IM_A_TEAPOT, "short and stout").into_response();
+    let message = command_response_from_http("cmd_teapot".to_owned(), response).await;
+    let ServerMessage::Response { status, error, .. } = message else {
+        panic!("expected response variant");
+    };
+    assert_eq!(status, 418, "the real status is never folded away");
+    assert_eq!(
+        error,
+        Some(serde_json::json!({
+            "code": "internal_error",
+            "message": "short and stout",
+        }))
+    );
+}
+
+#[tokio::test]
 async fn dispatch_command_keeps_retired_status_route_absent() {
     let state = Arc::new(AppState::new());
     let message = dispatch_command(

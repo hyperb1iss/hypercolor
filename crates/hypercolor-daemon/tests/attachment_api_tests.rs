@@ -326,8 +326,10 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
         version: 1,
     };
 
-    let preview =
-        api::layouts::preview_layout(axum::extract::State(Arc::clone(state)), axum::Json(layout));
+    let preview = api::layouts::preview_layout(
+        axum::extract::State(Arc::clone(state)),
+        api::extract::ApiJson(layout),
+    );
     tokio::pin!(preview);
     let response = tokio::time::timeout(Duration::from_secs(2), async {
         loop {

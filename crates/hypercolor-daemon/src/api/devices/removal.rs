@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::devices::{DeleteDeviceResponse, ForgetDeviceRequest};
 use hypercolor_types::device::DeviceId;
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
 use crate::domain::DomainError;
 
 /// Forget a controller addressed by its saved layout binding.
 pub async fn forget_device(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<ForgetDeviceRequest>,
+    ApiJson(body): ApiJson<ForgetDeviceRequest>,
 ) -> Response {
     let target = body.layout_device_id.trim();
     if target.is_empty() {
@@ -42,7 +42,7 @@ pub async fn forget_device(
     if let Some(physical_id) = physical_id
         && state.device_registry.get(&physical_id).await.is_some()
     {
-        return super::delete_device(State(state), Path(physical_id.to_string())).await;
+        return super::delete_device(State(state), ApiPath(physical_id.to_string())).await;
     }
     match forget_saved_content(&state, target, physical_id).await {
         Ok(()) => envelope::ok(DeleteDeviceResponse {

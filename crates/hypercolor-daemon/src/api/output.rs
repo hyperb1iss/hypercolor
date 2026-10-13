@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::output::OutputPatchRequest;
 
 use crate::api::envelope;
+use crate::api::extract::ApiJson;
 use crate::app_state::AppState;
 use crate::domain;
 
@@ -23,7 +23,7 @@ pub async fn get_output(State(state): State<Arc<AppState>>) -> Response {
 /// `PATCH /api/v1/output` — Set power, brightness, or both.
 pub async fn patch_output(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<OutputPatchRequest>,
+    ApiJson(request): ApiJson<OutputPatchRequest>,
 ) -> Response {
     match domain::output::patch_output(&state.domains.output, request).await {
         Ok(outcome) => envelope::ok(outcome.output),

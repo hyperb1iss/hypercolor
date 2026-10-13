@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::multipart::MultipartError;
-use axum::extract::{Multipart, Path, Query, State};
+use axum::extract::{Multipart, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::asset::{
@@ -14,6 +14,7 @@ use hypercolor_types::asset::AssetId;
 use hypercolor_types::event::{AssetChangeKind, HypercolorEvent};
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiMultipart, ApiPath, ApiQuery};
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -44,7 +45,10 @@ pub async fn list_assets(State(state): State<Arc<AppState>>) -> Response {
     })
 }
 
-pub async fn get_asset(State(state): State<Arc<AppState>>, Path(id): Path<AssetId>) -> Response {
+pub async fn get_asset(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<AssetId>,
+) -> Response {
     let library = state.asset_library.read().await;
     let Some(record) = library.get(id).cloned() else {
         return DomainError::not_found(ResourceKind::Asset, id).into_response();
@@ -54,8 +58,8 @@ pub async fn get_asset(State(state): State<Arc<AppState>>, Path(id): Path<AssetI
 
 pub async fn upload_asset(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<AssetUploadQuery>,
-    multipart: Multipart,
+    ApiQuery(query): ApiQuery<AssetUploadQuery>,
+    ApiMultipart(multipart): ApiMultipart,
 ) -> Response {
     let parsed = match parse_upload(multipart, query.r#type.as_deref()).await {
         Ok(parsed) => parsed,
@@ -88,8 +92,8 @@ pub async fn upload_asset(
 
 pub async fn update_asset(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<AssetId>,
-    axum::Json(body): axum::Json<AssetUpdateRequest>,
+    ApiPath(id): ApiPath<AssetId>,
+    ApiJson(body): ApiJson<AssetUpdateRequest>,
 ) -> Response {
     let update = {
         let mut library = state.asset_library.write().await;
@@ -106,7 +110,10 @@ pub async fn update_asset(
     envelope::ok(update.record)
 }
 
-pub async fn delete_asset(State(state): State<Arc<AppState>>, Path(id): Path<AssetId>) -> Response {
+pub async fn delete_asset(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<AssetId>,
+) -> Response {
     let event = {
         let mut library = state.asset_library.write().await;
         match library.remove(id) {
@@ -122,7 +129,7 @@ pub async fn delete_asset(State(state): State<Arc<AppState>>, Path(id): Path<Ass
 
 pub async fn get_asset_blob(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<AssetId>,
+    ApiPath(id): ApiPath<AssetId>,
 ) -> Response {
     let (record, path) = {
         let library = state.asset_library.read().await;
@@ -152,7 +159,7 @@ pub async fn get_asset_blob(
 
 pub async fn get_asset_thumbnail(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<AssetId>,
+    ApiPath(id): ApiPath<AssetId>,
 ) -> Response {
     let path = {
         let library = state.asset_library.read().await;

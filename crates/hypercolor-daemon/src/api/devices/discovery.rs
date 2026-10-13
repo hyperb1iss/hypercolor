@@ -3,13 +3,13 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 
 use hypercolor_types::config::HypercolorConfig;
 
 use crate::api::envelope;
+use crate::api::extract::ApiJson;
 use crate::app_state::AppState;
 use crate::discovery;
 use crate::domain::DomainError;
@@ -19,7 +19,7 @@ pub use hypercolor_types::api::devices::{DiscoverRequest, DiscoverResponse};
 /// `POST /api/v1/devices/discover` — Trigger device discovery.
 pub async fn discover_devices(
     State(state): State<Arc<AppState>>,
-    body: Option<Json<DiscoverRequest>>,
+    body: Option<ApiJson<DiscoverRequest>>,
 ) -> Response {
     let config = state.config_manager.as_ref().map_or_else(
         || Arc::new(HypercolorConfig::default()),

@@ -3,8 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use tokio::sync::RwLockWriteGuard;
 
@@ -16,6 +15,7 @@ use hypercolor_types::attachment::{
 };
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiQuery};
 use crate::app_state::AppState;
 use crate::domain::DomainError;
 
@@ -28,7 +28,7 @@ pub use hypercolor_types::api::attachments::{
 /// `GET /api/v1/attachments/templates`
 pub async fn list_templates(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ListTemplatesQuery>,
+    ApiQuery(query): ApiQuery<ListTemplatesQuery>,
 ) -> Response {
     let limit = query.limit.unwrap_or(50);
     if limit == 0 || limit > 200 {
@@ -66,7 +66,7 @@ pub async fn list_templates(
 /// `POST /api/v1/attachments/templates`
 pub async fn create_template(
     State(state): State<Arc<AppState>>,
-    Json(mut template): Json<ComponentTemplate>,
+    ApiJson(mut template): ApiJson<ComponentTemplate>,
 ) -> Response {
     template.origin = ComponentOrigin::User;
 

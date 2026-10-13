@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use axum::http::{Method, Request, header};
+use axum::http::{Method, Request, StatusCode, header};
 use axum::response::Response;
 use serde_json::json;
 use tower::ServiceExt;
@@ -168,20 +168,49 @@ pub(super) async fn command_response_from_http(id: String, response: Response) -
         };
     }
 
+    // The route's own error object rides through verbatim, so a socket
+    // client reads the same code, message, and details a REST client does.
     let error = parsed
         .and_then(|value| value.get("error").cloned())
-        .or_else(|| {
-            Some(json!({
-                "code": "internal_error",
-                "message": format!("Command failed with status {status}"),
-            }))
-        });
+        .unwrap_or_else(|| unenveloped_error(status, &bytes));
     ServerMessage::Response {
         id,
         status,
         data: None,
-        error,
+        error: Some(error),
     }
+}
+
+/// Project a failure that reached the socket without the canonical
+/// envelope.
+///
+/// Built-in routes always answer with the envelope, so this covers a
+/// route that does not, such as an extension that kept Axum's stock
+/// extractors. The real status already rides on the response, the code
+/// is the one the error table pairs with that status (`internal_error`
+/// when the status names no single code), and the body text survives as
+/// the message.
+fn unenveloped_error(status: u16, body: &[u8]) -> serde_json::Value {
+    let text = String::from_utf8_lossy(body).trim().to_owned();
+    let code = match StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR) {
+        StatusCode::BAD_REQUEST => "malformed_request",
+        StatusCode::UNAUTHORIZED => "unauthorized",
+        StatusCode::FORBIDDEN => "forbidden",
+        StatusCode::CONFLICT => "conflict",
+        StatusCode::PRECONDITION_FAILED => "precondition_failed",
+        StatusCode::PAYLOAD_TOO_LARGE => "payload_too_large",
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => "unsupported_media_type",
+        StatusCode::UNPROCESSABLE_ENTITY => "validation_error",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limited",
+        StatusCode::SERVICE_UNAVAILABLE => "service_unavailable",
+        _ => "internal_error",
+    };
+    let message = if text.is_empty() {
+        format!("Command failed with status {status}")
+    } else {
+        text
+    };
+    json!({ "code": code, "message": message })
 }
 
 fn protocol_error_json(error: WsProtocolError) -> serde_json::Value {

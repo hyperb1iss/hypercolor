@@ -364,8 +364,25 @@ result body:
 Successful commands unwrap the REST response envelope, so `data` is the
 canonical apply result itself: `{ zone, transition, output }`.
 
-On error, `status` reflects the HTTP status and `error` is populated instead of
-`data`. Write commands over a read-only key are rejected the same way the REST
+On error, `status` is the route's real HTTP status and `error` is populated
+instead of `data`. The `error` object is the REST error envelope's `error`
+verbatim (`code`, `message`, and `details` when present), so a socket client
+branches on the same codes a REST client does:
+
+```json
+{
+  "type": "response",
+  "id": "cmd-002",
+  "status": 422,
+  "error": {
+    "code": "validation_error",
+    "message": "Failed to deserialize the JSON body into the target type: frobnicate: unknown field `frobnicate`, expected one of `id`, `name`, ...",
+    "details": { "field": "frobnicate" }
+  }
+}
+```
+
+Write commands over a read-only key are rejected the same way the REST
 layer rejects them. See [the REST reference](@/api/rest.md) for the full route
 surface you can drive this way.
 
