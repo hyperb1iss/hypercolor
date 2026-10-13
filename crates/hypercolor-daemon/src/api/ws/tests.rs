@@ -7192,7 +7192,11 @@ async fn next_text_of_kind(
 ) -> serde_json::Value {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let Some(Message::Text(text)) = socket.recv().await else {
+            let message = socket
+                .recv()
+                .await
+                .unwrap_or_else(|| panic!("the session closed before a {kind} frame"));
+            let Message::Text(text) = message else {
                 continue;
             };
             let message: serde_json::Value =
@@ -7322,6 +7326,103 @@ async fn commands_a_peer_sent_before_closing_still_run() {
             "round {round} dropped a command it had read"
         );
     }
+}
+
+#[tokio::test]
+async fn a_release_read_between_commands_lands_before_the_later_one_on_close() {
+    let (state, probe) = revocation_probe_state();
+    state.preview_runtime.install_interactive_executor(
+        browser_preview_test_executor(state.interaction_routing.clone()).await,
+    );
+    // Interactive previews are protected control, which an authority
+    // credential never carries, so this session holds an operator context.
+    let mut socket = spawn_test_granted_local_socket(
+        Arc::clone(&state),
+        &tokio::runtime::Handle::current(),
+        RequestAuthContext::control(),
+        probe_grant(tokio_util::sync::CancellationToken::new()),
+    );
+    let hello = socket.recv().await.expect("test socket should emit hello");
+    assert!(matches!(hello, Message::Text(_)));
+
+    socket
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "subscribe",
+                "topics": [{
+                    "topic": "interactive_preview",
+                    "key": "main",
+                    "config": interactive_preview_config(),
+                }],
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("test socket should queue the subscribe");
+    next_text_of_kind(&mut socket, "subscribed").await;
+    let preview_message = |kind: &str| {
+        Message::Text(
+            serde_json::json!({"type": kind, "preview_id": "main"})
+                .to_string()
+                .into(),
+        )
+    };
+    socket
+        .send(preview_message("interactive_preview_claim_authoritative"))
+        .await
+        .expect("test socket should queue the claim");
+    next_text_of_kind(&mut socket, "interactive_preview_authoritative_claimed").await;
+    assert!(
+        state
+            .interaction_routing
+            .snapshot()
+            .authoritative_browser
+            .is_some()
+    );
+
+    // A slow command, the release, a second slow command, then the close,
+    // all read before the first command finishes.
+    socket
+        .send(identified_probe_command("first", "/probe/gated"))
+        .await
+        .expect("test socket should queue the first command");
+    socket
+        .send(preview_message("interactive_preview_release_authoritative"))
+        .await
+        .expect("test socket should queue the release");
+    socket
+        .send(identified_probe_command("second", "/probe/gated"))
+        .await
+        .expect("test socket should queue the second command");
+    socket
+        .send(Message::Close(None))
+        .await
+        .expect("test socket should queue the close");
+
+    probe.started.notified().await;
+    assert!(
+        state
+            .interaction_routing
+            .snapshot()
+            .authoritative_browser
+            .is_some(),
+        "the release waits for the command read before it"
+    );
+    probe.release.notify_one();
+    probe.started.notified().await;
+    assert!(
+        state
+            .interaction_routing
+            .snapshot()
+            .authoritative_browser
+            .is_none(),
+        "the release read before the second command lands before it runs"
+    );
+    probe.release.notify_one();
+    while socket.recv().await.is_some() {}
+
+    assert_eq!(probe.executed.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
