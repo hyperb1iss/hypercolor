@@ -344,6 +344,7 @@ result body:
   "type": "response",
   "id": "cmd-001",
   "status": 200,
+  "mono_us": 81250442,
   "data": {
     "zone": {
       "id": "018f5f8f-20f8-7e69-a6a0-5c0fc23e7481",
@@ -369,7 +370,9 @@ result body:
 ```
 
 Successful commands unwrap the REST response envelope, so `data` is the
-canonical apply result itself: `{ zone, transition, output }`.
+canonical apply result itself: `{ zone, transition, output }`. `mono_us` is the
+daemon clock's reading when the command finished; see
+[Clocks and timing](#clocks-and-timing).
 
 On error, `status` is the route's real HTTP status and `error` is populated
 instead of `data`. The `error` object is the REST error envelope's `error`
@@ -645,8 +648,18 @@ hello's one-way delivery delay). A reconnect to the same daemon run sees the
 same `clock_epoch`; a restarted daemon announces a new one, and stamps from the
 previous run no longer line up with the new ones.
 
-The manifest's `clock` block lists the stamped messages and field names for
-generated clients.
+Command `response` messages carry `mono_us` without a wall `timestamp`. The
+daemon reads the clock after the command finishes and immediately before it
+hands the response to the socket, so the reading falls inside the client's
+round trip. A client that sent the command at its own monotonic time `t0` and
+received the response at `t1` (both in microseconds) knows
+`t0 - mono_us <= offset <= t1 - mono_us`, where `offset` is client time minus
+daemon time. Repeating that measurement through a long session, rather than
+relying on the `hello` alone, lets a client track a rate difference between
+the two clocks before it accumulates.
+
+The manifest's `clock` block lists the stamped messages, the round-trip
+messages, and their field names for generated clients.
 
 ### Continuity: events are not replayed
 
