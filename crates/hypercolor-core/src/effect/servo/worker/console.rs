@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use reqwest::Url;
 
 use super::super::delegate::ConsoleMessage;
+use crate::effect::console::EffectConsoleSource;
 
 const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
@@ -41,6 +42,113 @@ pub(super) fn format_console_message(
         }
     }
     formatted
+}
+
+/// Point a console message from a runtime copy at the author's file.
+///
+/// Servo names a location either as `file:///page.html:12:5` or, for inline
+/// scripts, as the page's base directory followed by `, 12`. When that
+/// location is the effect's own page, the URL becomes the author's file and
+/// the line is mapped past the injected preamble. Returns the author line the
+/// message names. Messages about other files pass through unchanged.
+pub(in crate::effect::servo) fn remap_console_message(
+    message: &str,
+    source: &EffectConsoleSource,
+) -> (String, Option<usize>) {
+    let Some(token) = extract_file_url_token(message) else {
+        return (message.to_owned(), None);
+    };
+    let Some(token_path) = file_url_token_to_path(&token) else {
+        return (message.to_owned(), None);
+    };
+    let names_page = token_path == source.runtime_path
+        || token_path == source.source_path
+        || (file_url_token_points_to_directory(&token)
+            && source.source_path.parent() == Some(token_path.as_path()));
+    if !names_page {
+        return (message.to_owned(), None);
+    }
+    let Ok(source_url) = Url::from_file_path(&source.source_path) else {
+        return (message.to_owned(), None);
+    };
+
+    let suffix = trailing_colon_numbers(&token);
+    let (runtime_line, column) = match suffix.as_slice() {
+        [] => (
+            extract_line_after_file_url_token(message, Some(&token)),
+            None,
+        ),
+        [line] => (Some(*line), None),
+        [.., line, column] => (Some(*line), Some(*column)),
+    };
+    let Some(runtime_line) = runtime_line else {
+        return (message.replacen(&token, source_url.as_str(), 1), None);
+    };
+    let Some(author_line) = source.original_line(runtime_line) else {
+        // A location inside the injected preamble has no author line, so the
+        // message keeps pointing at the runtime copy rather than at a wrong
+        // line of the author's file.
+        return (message.to_owned(), None);
+    };
+
+    let rewritten = if suffix.is_empty() {
+        replace_line_after_token(message, &token, author_line).replacen(
+            &token,
+            source_url.as_str(),
+            1,
+        )
+    } else {
+        let location = column.map_or_else(
+            || format!("{source_url}:{author_line}"),
+            |column| format!("{source_url}:{author_line}:{column}"),
+        );
+        message.replacen(&token, &location, 1)
+    };
+    let runtime_base = strip_file_url_line_suffix(&token);
+    let rewritten = if file_url_token_points_to_directory(&token) {
+        rewritten
+    } else {
+        rewritten.replace(runtime_base, source_url.as_str())
+    };
+    (rewritten, Some(author_line))
+}
+
+/// Replace the line number in a `<url>, <line>` location with `line`.
+fn replace_line_after_token(message: &str, token: &str, line: usize) -> String {
+    let Some(token_start) = message.find(token) else {
+        return message.to_owned();
+    };
+    let tail_start = token_start + token.len();
+    let Some(comma) = message[tail_start..].find(',') else {
+        return message.to_owned();
+    };
+    let search_start = tail_start + comma + 1;
+    let Some(digit_offset) = message[search_start..].find(|ch: char| ch.is_ascii_digit()) else {
+        return message.to_owned();
+    };
+    let digits_start = search_start + digit_offset;
+    let digits_len = message[digits_start..]
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .count();
+    format!(
+        "{}{line}{}",
+        &message[..digits_start],
+        &message[digits_start + digits_len..]
+    )
+}
+
+/// Line and column numbers trailing a `file://` token, in reading order:
+/// `file:///x.html:12:5` yields `[12, 5]`.
+fn trailing_colon_numbers(token: &str) -> Vec<usize> {
+    let mut remaining = token;
+    let mut numbers = Vec::new();
+    while let Some((prefix, value)) = split_trailing_colon_number(remaining) {
+        numbers.push(value);
+        remaining = prefix;
+    }
+    numbers.reverse();
+    numbers
 }
 
 /// Scan a batch of recent console messages for an initialization-failure
@@ -215,7 +323,78 @@ pub(super) fn truncate_for_log(input: &str, max_chars: usize) -> String {
 mod tests {
     use std::path::Path;
 
+    use crate::effect::console::RuntimeLineShift;
+
     use super::*;
+
+    fn shifted_source() -> EffectConsoleSource {
+        EffectConsoleSource {
+            effect_name: "Ember".to_owned(),
+            source_path: PathBuf::from("/fx/ember.html"),
+            runtime_path: PathBuf::from("/cache/effect-0001.html"),
+            // Ten preamble lines after author line 3.
+            line_shift: Some(RuntimeLineShift {
+                insert_line: 3,
+                inserted_lines: 10,
+            }),
+        }
+    }
+
+    #[test]
+    fn remap_points_runtime_locations_at_the_author_file() {
+        let (message, line) = remap_console_message(
+            "TypeError: ctx is null at file:///cache/effect-0001.html:52:9",
+            &shifted_source(),
+        );
+        assert_eq!(line, Some(42));
+        assert_eq!(
+            message,
+            "TypeError: ctx is null at file:///fx/ember.html:42:9"
+        );
+    }
+
+    #[test]
+    fn remap_maps_base_directory_locations_for_inline_scripts() {
+        let (message, line) = remap_console_message(
+            r#"Initialization failed (new TypeError("Ge is not a function", "file:///fx/", 25))"#,
+            &shifted_source(),
+        );
+        assert_eq!(line, Some(15));
+        assert_eq!(
+            message,
+            r#"Initialization failed (new TypeError("Ge is not a function", "file:///fx/ember.html", 15))"#
+        );
+    }
+
+    #[test]
+    fn remap_leaves_other_files_and_preamble_lines_alone() {
+        let source = shifted_source();
+        let other = "ReferenceError at file:///fx/lib/noise.js:7:1";
+        assert_eq!(
+            remap_console_message(other, &source),
+            (other.to_owned(), None)
+        );
+
+        let preamble = "SyntaxError at file:///cache/effect-0001.html:6:2";
+        assert_eq!(
+            remap_console_message(preamble, &source),
+            (preamble.to_owned(), None)
+        );
+
+        let plain = "speed changed to 0.4";
+        assert_eq!(
+            remap_console_message(plain, &source),
+            (plain.to_owned(), None)
+        );
+    }
+
+    #[test]
+    fn remap_keeps_verbatim_pages_on_their_own_lines() {
+        let source = EffectConsoleSource::verbatim("Page", "/fx/page.html");
+        let (message, line) = remap_console_message("Error at file:///fx/page.html:12:3", &source);
+        assert_eq!(line, Some(12));
+        assert_eq!(message, "Error at file:///fx/page.html:12:3");
+    }
 
     #[test]
     fn extracts_line_number_from_quoted_file_url_tuple_pattern() {
