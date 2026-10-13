@@ -25,6 +25,9 @@ const BINARY_TYPE_FRAME: u8 = 0x01;
 const BINARY_FRAME_SIZE: usize = 685;
 /// 15 × 15 × 3 bytes (RGB888).
 const PIXEL_DATA_SIZE: usize = 675;
+/// The one-byte replies blocksd writes after each binary frame.
+const BINARY_ACK_ACCEPTED: u8 = 0x01;
+const BINARY_ACK_DECLINED: u8 = 0x00;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -105,7 +108,9 @@ impl BlocksConnection {
 
     /// Write an RGB888 frame using the binary fast path.
     ///
-    /// Returns `Ok(true)` if accepted, `Ok(false)` if rejected by blocksd.
+    /// Returns `Ok(true)` if blocksd accepted the frame and `Ok(false)` if it
+    /// declined it. Any other reply byte means the stream is out of step with
+    /// blocksd, so it fails the write like any other protocol error.
     pub async fn write_frame_binary(&mut self, uid: u64, colors: &[[u8; 3]]) -> Result<bool> {
         self.frame_buf.magic = BINARY_MAGIC;
         self.frame_buf.message_type = BINARY_TYPE_FRAME;
@@ -140,7 +145,11 @@ impl BlocksConnection {
             .context("blocksd frame response timeout")?
             .context("blocksd frame response read failed")?;
 
-        Ok(response[0] == 0x01)
+        match response[0] {
+            BINARY_ACK_ACCEPTED => Ok(true),
+            BINARY_ACK_DECLINED => Ok(false),
+            other => bail!("unexpected blocksd frame acknowledgement byte {other:#04x}"),
+        }
     }
 
     /// Write the 24 LUMI key colors in ascending key order.

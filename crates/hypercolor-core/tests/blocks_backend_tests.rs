@@ -11,7 +11,7 @@ use hypercolor_driver_api::{
     DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
     DeviceDeliveryStatus, DeviceWriteOutcome,
 };
-use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceId};
+use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -192,6 +192,53 @@ async fn blocks_backend_reports_a_declined_grid_frame_and_keeps_the_connection()
     assert_eq!(frames.len(), 3);
     assert_eq!(&frames[2][10..13], &[0x00, 0xFF, 0x00]);
     server_task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocks_backend_fails_an_unknown_grid_ack_byte_and_reconnects() -> TestResult {
+    let tempdir = tempdir()?;
+    let socket_path = tempdir.path().join("blocksd.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let task = tokio::spawn(async move {
+        let legacy: serde_json::Value = serde_json::from_str(&discover_response(TEST_UID))?;
+        serve_discovery(&listener, &[legacy["devices"][0].clone()]).await?;
+        let mut frame = [0_u8; 685];
+        // blocksd only ever answers 0x01 or 0x00; 0x7F is neither.
+        let mut reader = serve_ping(&listener).await?;
+        reader.read_exact(&mut frame).await?;
+        reader.get_mut().write_all(&[0x7F]).await?;
+        drop(reader);
+        let mut reader = serve_ping(&listener).await?;
+        reader.read_exact(&mut frame).await?;
+        reader.get_mut().write_all(&[0x01]).await?;
+        TestResult::Ok(())
+    });
+    let discovered = BlocksScanner::new(socket_path.clone()).scan().await?;
+    let backend = BlocksBackend::new(socket_path);
+    let device_id = discovered[0].info.id;
+    backend.adopt_device(&discovered[0])?;
+    backend.connect(&device_id).await?;
+
+    let garbled = deliver(&backend, &device_id, 1, vec![[1, 2, 3]]).await;
+    assert_eq!(garbled.status, DeviceDeliveryStatus::Failed);
+    let error = garbled.error.ok_or("an unknown ack byte fails the frame")?;
+    assert!(
+        error.to_string().contains("acknowledgement byte 0x7f"),
+        "the error names the byte: {error}"
+    );
+
+    let dropped = deliver(&backend, &device_id, 2, vec![[1, 2, 3]]).await;
+    assert!(
+        matches!(dropped.error, Some(DeviceError::Disconnected { .. })),
+        "the failure dropped the connection: {:?}",
+        dropped.error
+    );
+
+    backend.connect(&device_id).await?;
+    let accepted = deliver(&backend, &device_id, 3, vec![[1, 2, 3]]).await;
+    assert_eq!(accepted.status, DeviceDeliveryStatus::Completed);
+    task.await??;
     Ok(())
 }
 
