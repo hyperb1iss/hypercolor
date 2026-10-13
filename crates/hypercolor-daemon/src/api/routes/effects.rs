@@ -35,6 +35,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                     "effects",
                     "Install effect",
                 )
+                .multipart_body::<hypercolor_types::api::effects::EffectInstallForm>()
                 .status("201"),
             ],
         ))

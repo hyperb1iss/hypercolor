@@ -50,6 +50,7 @@ from .apply_policy_type_4 import ApplyPolicyType4
 from .apply_policy_type_4_kind import ApplyPolicyType4Kind
 from .asset_scan_status import AssetScanStatus
 from .asset_update_request import AssetUpdateRequest
+from .asset_upload_form import AssetUploadForm
 from .asset_upload_response import AssetUploadResponse
 from .asset_warning_type_0 import AssetWarningType0
 from .asset_warning_type_0_kind import AssetWarningType0Kind
@@ -363,6 +364,7 @@ from .effect_capability_set import EffectCapabilitySet
 from .effect_category import EffectCategory
 from .effect_detail_response import EffectDetailResponse
 from .effect_health_status import EffectHealthStatus
+from .effect_install_form import EffectInstallForm
 from .effect_metadata import EffectMetadata
 from .effect_playlist import EffectPlaylist
 from .effect_playlist_list_response import EffectPlaylistListResponse
@@ -722,6 +724,7 @@ __all__ = (
     "ApplyPolicyType4Kind",
     "AssetScanStatus",
     "AssetUpdateRequest",
+    "AssetUploadForm",
     "AssetUploadResponse",
     "AssetWarningType0",
     "AssetWarningType0Kind",
@@ -985,6 +988,7 @@ __all__ = (
     "EffectCategory",
     "EffectDetailResponse",
     "EffectHealthStatus",
+    "EffectInstallForm",
     "EffectMetadata",
     "EffectPlaylist",
     "EffectPlaylistListResponse",

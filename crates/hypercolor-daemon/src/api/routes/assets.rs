@@ -25,6 +25,7 @@ pub(super) fn router(asset_upload_body_limit: usize) -> OpenApiRouter<Arc<AppSta
                     "Upload a media asset",
                 )
                 .query::<hypercolor_types::api::assets::AssetUploadQuery>()
+                .multipart_body::<hypercolor_types::api::assets::AssetUploadForm>()
                 .also_status("201"),
             ],
         ))

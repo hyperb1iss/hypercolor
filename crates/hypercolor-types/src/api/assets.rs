@@ -35,6 +35,25 @@ pub struct AssetUploadQuery {
     pub r#type: Option<String>,
 }
 
+/// The `multipart/form-data` fields `POST /api/v1/assets` reads.
+///
+/// This documents the wire form for clients and the OpenAPI document; the
+/// daemon reads the parts one by one rather than deserializing this type.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct AssetUploadForm {
+    /// The asset bytes, sent as a file part. Required.
+    #[cfg_attr(feature = "schema", schema(value_type = String, format = Binary))]
+    pub file: Vec<u8>,
+    /// Display name; defaults to the uploaded file name.
+    pub name: Option<String>,
+    /// Tags, comma separated or as a JSON array of strings.
+    pub tags: Option<String>,
+    /// Asset type hint (`lottie` or `stream`), overriding the `type` query
+    /// parameter and content sniffing.
+    pub r#type: Option<String>,
+}
+
 /// Request body for `PUT /api/v1/assets/{id}`.
 ///
 /// Omitted fields leave the stored metadata untouched.

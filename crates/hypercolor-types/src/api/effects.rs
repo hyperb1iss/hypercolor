@@ -154,6 +154,18 @@ pub struct EffectDetailResponse {
     pub cover_image_url: Option<String>,
 }
 
+/// The `multipart/form-data` field `POST /api/v1/effects/install` reads.
+///
+/// This documents the wire form for clients and the OpenAPI document; the
+/// daemon reads the part directly rather than deserializing this type.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct EffectInstallForm {
+    /// The HTML effect document, sent as a file part with a file name.
+    #[cfg_attr(feature = "schema", schema(value_type = String, format = Binary))]
+    pub file: Vec<u8>,
+}
+
 /// Response for `POST /api/v1/effects/install`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

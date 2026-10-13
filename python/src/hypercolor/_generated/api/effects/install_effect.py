@@ -6,17 +6,27 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
+from ...models.effect_install_form import EffectInstallForm
 from ...models.install_effect_response_201 import InstallEffectResponse201
 from ...types import Response
 
 
-def _get_kwargs() -> dict[str, Any]:
+def _get_kwargs(
+    *,
+    body: EffectInstallForm,
+) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
         "url": "/api/v1/effects/install",
     }
 
+    _kwargs["files"] = body.to_multipart()
+
+    headers["Content-Type"] = "multipart/form-data; boundary=+++"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
@@ -93,8 +103,16 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
+    body: EffectInstallForm,
 ) -> Response[ApiErrorBody | InstallEffectResponse201]:
     """Install effect
+
+    Args:
+        body (EffectInstallForm): The `multipart/form-data` field `POST /api/v1/effects/install`
+            reads.
+
+            This documents the wire form for clients and the OpenAPI document; the
+            daemon reads the part directly rather than deserializing this type.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -104,7 +122,9 @@ def sync_detailed(
         Response[ApiErrorBody | InstallEffectResponse201]
     """
 
-    kwargs = _get_kwargs()
+    kwargs = _get_kwargs(
+        body=body,
+    )
 
     response = client.get_httpx_client().request(
         **kwargs,
@@ -116,8 +136,16 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
+    body: EffectInstallForm,
 ) -> ApiErrorBody | InstallEffectResponse201 | None:
     """Install effect
+
+    Args:
+        body (EffectInstallForm): The `multipart/form-data` field `POST /api/v1/effects/install`
+            reads.
+
+            This documents the wire form for clients and the OpenAPI document; the
+            daemon reads the part directly rather than deserializing this type.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -129,14 +157,23 @@ def sync(
 
     return sync_detailed(
         client=client,
+        body=body,
     ).parsed
 
 
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
+    body: EffectInstallForm,
 ) -> Response[ApiErrorBody | InstallEffectResponse201]:
     """Install effect
+
+    Args:
+        body (EffectInstallForm): The `multipart/form-data` field `POST /api/v1/effects/install`
+            reads.
+
+            This documents the wire form for clients and the OpenAPI document; the
+            daemon reads the part directly rather than deserializing this type.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -146,7 +183,9 @@ async def asyncio_detailed(
         Response[ApiErrorBody | InstallEffectResponse201]
     """
 
-    kwargs = _get_kwargs()
+    kwargs = _get_kwargs(
+        body=body,
+    )
 
     response = await client.get_async_httpx_client().request(**kwargs)
 
@@ -156,8 +195,16 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
+    body: EffectInstallForm,
 ) -> ApiErrorBody | InstallEffectResponse201 | None:
     """Install effect
+
+    Args:
+        body (EffectInstallForm): The `multipart/form-data` field `POST /api/v1/effects/install`
+            reads.
+
+            This documents the wire form for clients and the OpenAPI document; the
+            daemon reads the part directly rather than deserializing this type.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -170,5 +217,6 @@ async def asyncio(
     return (
         await asyncio_detailed(
             client=client,
+            body=body,
         )
     ).parsed

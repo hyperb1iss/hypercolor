@@ -550,6 +550,23 @@ fn runtime_document_records_real_statuses_bodies_and_media_types() {
         );
     }
 
+    for (path, schema) in [
+        ("/api/v1/assets", "AssetUploadForm"),
+        ("/api/v1/effects/install", "EffectInstallForm"),
+    ] {
+        let body = &paths[path]["post"]["requestBody"];
+        assert_eq!(body["required"], true, "POST {path}");
+        assert_eq!(
+            body["content"]["multipart/form-data"]["schema"]["$ref"],
+            format!("#/components/schemas/{schema}"),
+            "POST {path} documents its upload form"
+        );
+        assert_eq!(
+            document["components"]["schemas"][schema]["properties"]["file"]["format"], "binary",
+            "{schema}.file is a file part"
+        );
+    }
+
     let schemas = &document["components"]["schemas"];
     let control_variants = schemas["ControlValue"]["oneOf"]
         .as_array()

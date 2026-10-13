@@ -6,6 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
+from ...models.asset_upload_form import AssetUploadForm
 from ...models.upload_asset_response_200 import UploadAssetResponse200
 from ...models.upload_asset_response_201 import UploadAssetResponse201
 from ...types import UNSET, Response, Unset
@@ -13,9 +14,11 @@ from ...types import UNSET, Response, Unset
 
 def _get_kwargs(
     *,
+    body: AssetUploadForm,
     rename_duplicate: bool | Unset = UNSET,
     type_: None | str | Unset = UNSET,
 ) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
 
     params: dict[str, Any] = {}
 
@@ -36,6 +39,11 @@ def _get_kwargs(
         "params": params,
     }
 
+    _kwargs["files"] = body.to_multipart()
+
+    headers["Content-Type"] = "multipart/form-data; boundary=+++"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
@@ -117,6 +125,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
+    body: AssetUploadForm,
     rename_duplicate: bool | Unset = UNSET,
     type_: None | str | Unset = UNSET,
 ) -> Response[ApiErrorBody | UploadAssetResponse200 | UploadAssetResponse201]:
@@ -125,6 +134,10 @@ def sync_detailed(
     Args:
         rename_duplicate (bool | Unset):
         type_ (None | str | Unset):
+        body (AssetUploadForm): The `multipart/form-data` fields `POST /api/v1/assets` reads.
+
+            This documents the wire form for clients and the OpenAPI document; the
+            daemon reads the parts one by one rather than deserializing this type.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -135,6 +148,7 @@ def sync_detailed(
     """
 
     kwargs = _get_kwargs(
+        body=body,
         rename_duplicate=rename_duplicate,
         type_=type_,
     )
@@ -149,6 +163,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
+    body: AssetUploadForm,
     rename_duplicate: bool | Unset = UNSET,
     type_: None | str | Unset = UNSET,
 ) -> ApiErrorBody | UploadAssetResponse200 | UploadAssetResponse201 | None:
@@ -157,6 +172,10 @@ def sync(
     Args:
         rename_duplicate (bool | Unset):
         type_ (None | str | Unset):
+        body (AssetUploadForm): The `multipart/form-data` fields `POST /api/v1/assets` reads.
+
+            This documents the wire form for clients and the OpenAPI document; the
+            daemon reads the parts one by one rather than deserializing this type.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -168,6 +187,7 @@ def sync(
 
     return sync_detailed(
         client=client,
+        body=body,
         rename_duplicate=rename_duplicate,
         type_=type_,
     ).parsed
@@ -176,6 +196,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
+    body: AssetUploadForm,
     rename_duplicate: bool | Unset = UNSET,
     type_: None | str | Unset = UNSET,
 ) -> Response[ApiErrorBody | UploadAssetResponse200 | UploadAssetResponse201]:
@@ -184,6 +205,10 @@ async def asyncio_detailed(
     Args:
         rename_duplicate (bool | Unset):
         type_ (None | str | Unset):
+        body (AssetUploadForm): The `multipart/form-data` fields `POST /api/v1/assets` reads.
+
+            This documents the wire form for clients and the OpenAPI document; the
+            daemon reads the parts one by one rather than deserializing this type.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -194,6 +219,7 @@ async def asyncio_detailed(
     """
 
     kwargs = _get_kwargs(
+        body=body,
         rename_duplicate=rename_duplicate,
         type_=type_,
     )
@@ -206,6 +232,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
+    body: AssetUploadForm,
     rename_duplicate: bool | Unset = UNSET,
     type_: None | str | Unset = UNSET,
 ) -> ApiErrorBody | UploadAssetResponse200 | UploadAssetResponse201 | None:
@@ -214,6 +241,10 @@ async def asyncio(
     Args:
         rename_duplicate (bool | Unset):
         type_ (None | str | Unset):
+        body (AssetUploadForm): The `multipart/form-data` fields `POST /api/v1/assets` reads.
+
+            This documents the wire form for clients and the OpenAPI document; the
+            daemon reads the parts one by one rather than deserializing this type.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -226,6 +257,7 @@ async def asyncio(
     return (
         await asyncio_detailed(
             client=client,
+            body=body,
             rename_duplicate=rename_duplicate,
             type_=type_,
         )
