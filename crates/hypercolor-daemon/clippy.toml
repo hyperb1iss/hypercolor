@@ -8,12 +8,14 @@ msrv = "1.95"
 # whose rejections render as the canonical error envelope; only that module
 # may name these types. This fence reads spelled types, not inferred closure
 # patterns, and it does not cover every rejecting extractor (Bytes, String,
-# RawForm, RawPathParams, NestedPath, MatchedPath); the
-# api_rejection_sweep_tests suite checks documented operations by behavior.
+# RawForm, RawPathParams, NestedPath, MatchedPath). The
+# api_rejection_sweep_tests suite probes the JSON and multipart bodies, path
+# parameters, and typed query parameters the OpenAPI document declares,
+# whatever the handler's spelling.
 disallowed-types = [
     { path = "axum::Json", reason = "extract with api::extract::ApiJson; respond with api::envelope" },
     { path = "axum::Form", reason = "add an api::extract wrapper before accepting forms" },
-    { path = "axum::Extension", reason = "extract with api::extract::ApiExtension" },
+    { path = "axum::Extension", reason = "extract with api::extract::ApiRequestExtension" },
     { path = "axum::extract::Path", reason = "extract with api::extract::ApiPath" },
     { path = "axum::extract::Query", reason = "extract with api::extract::ApiQuery" },
     { path = "axum::extract::Multipart", reason = "extract with api::extract::ApiMultipart" },

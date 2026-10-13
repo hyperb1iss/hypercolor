@@ -21,11 +21,15 @@
 //! need a wrapper first), everywhere but here, which catches any spelled type
 //! (renamed, grouped, globbed, re-exported, or qualified) but not an
 //! inferred closure pattern such as `|axum::Json(value)| ...`. The
-//! `api_rejection_sweep_tests` suite closes that gap by sending malformed
-//! input to every documented operation, however its handler is written.
-//! Other Axum extractors can also reject (`Bytes`, `String`, `RawForm`,
-//! `RawPathParams`, `NestedPath`, and a required `MatchedPath`); no
-//! handler extracts them today and neither guard names them.
+//! `api_rejection_sweep_tests` suite covers that pattern by behavior for
+//! the inputs the OpenAPI document declares: it sends a malformed JSON or
+//! multipart body, path segment, or typed query value to each documented
+//! operation that takes one, however its handler is written. Operations
+//! that declare none of those inputs, undocumented routes, and inputs the
+//! document does not describe (a required request extension) fall outside
+//! the sweep. Other Axum extractors can also reject (`Bytes`, `String`,
+//! `RawForm`, `RawPathParams`, `NestedPath`, and a required `MatchedPath`);
+//! no handler extracts them today and neither guard names them.
 #![expect(
     clippy::disallowed_types,
     reason = "the wrappers delegate to the stock extractors they replace"

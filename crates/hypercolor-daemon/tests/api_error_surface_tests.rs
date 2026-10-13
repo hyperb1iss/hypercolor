@@ -275,9 +275,11 @@ fn the_deleted_error_machinery_stays_deleted() {
 /// warnings` (`just lint`, CI) enforces it. It does not see inferred
 /// closure patterns (`|axum::Json(value)| ...`), and it does not name the
 /// rarer rejecting extractors no handler uses (`Bytes`, `String`,
-/// `RawForm`, `RawPathParams`, `NestedPath`, a required `MatchedPath`);
-/// `api_rejection_sweep_tests` covers documented operations by behavior
-/// instead. That `clippy.toml` is live, and that each entry resolves, is
+/// `RawForm`, `RawPathParams`, `NestedPath`, a required `MatchedPath`).
+/// `api_rejection_sweep_tests` covers inferred patterns by behavior for the
+/// JSON and multipart bodies, path parameters, and typed query parameters
+/// the OpenAPI document declares. That `clippy.toml` is live, and that each
+/// entry resolves, is
 /// proven by the expectations in `api::extract`, which fail the lint if
 /// their uses stop matching.
 const DISALLOWED_EXTRACTORS: [&str; 7] = [
