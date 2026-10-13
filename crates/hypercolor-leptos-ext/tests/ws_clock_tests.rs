@@ -1,6 +1,6 @@
 #![cfg(feature = "ws-core")]
 
-use hypercolor_leptos_ext::ws::{HelloClock, PublicationStamp};
+use hypercolor_leptos_ext::ws::{HelloClock, PublicationStamp, ResponseStamp};
 
 #[test]
 fn publication_stamp_decodes_from_a_whole_event_message() {
@@ -66,4 +66,35 @@ fn hello_clock_decodes_from_a_whole_hello_and_round_trips() {
     let encoded = serde_json::to_value(&clock).expect("encode hello clock");
     let decoded: HelloClock = serde_json::from_value(encoded).expect("decode hello clock");
     assert_eq!(decoded, clock);
+}
+
+#[test]
+fn response_stamp_decodes_from_a_whole_response_and_round_trips() {
+    let wire = serde_json::json!({
+        "type": "response",
+        "id": "cmd-7",
+        "status": 200,
+        "mono_us": 81_250_000,
+        "data": {}
+    });
+
+    let stamp: ResponseStamp = serde_json::from_value(wire).expect("decode response stamp");
+    assert_eq!(stamp.mono_us, Some(81_250_000));
+
+    let encoded = serde_json::to_value(stamp).expect("encode response stamp");
+    assert_eq!(encoded, serde_json::json!({ "mono_us": 81_250_000 }));
+    let decoded: ResponseStamp = serde_json::from_value(encoded).expect("decode response stamp");
+    assert_eq!(decoded, stamp);
+}
+
+#[test]
+fn response_stamp_tolerates_a_daemon_without_it() {
+    let wire = serde_json::json!({ "type": "response", "id": "cmd-7", "status": 200 });
+
+    let stamp: ResponseStamp = serde_json::from_value(wire).expect("decode response stamp");
+    assert_eq!(stamp.mono_us, None);
+    assert_eq!(
+        serde_json::to_value(stamp).expect("encode empty stamp"),
+        serde_json::json!({})
+    );
 }
