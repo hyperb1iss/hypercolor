@@ -13,7 +13,7 @@ description: >-
 
 Hypercolor exposes three control surfaces. Choose the right one before acting.
 
-- **MCP tools** are the canonical agent surface: eighteen typed tools the daemon serves directly, reachable in Claude Code as `mcp__hypercolor__<tool>`. Prefer them when they are connected.
+- **MCP tools** are the canonical agent surface: twenty-one typed tools the daemon serves directly, reachable in Claude Code as `mcp__hypercolor__<tool>`. Prefer them when they are connected.
 - **Bare `hypercolor`** is the Rust system CLI for the daemon on `localhost:9420`. It covers everything MCP does not: devices, driver and device control surfaces, layouts, library, audio, permissions, config, and daemon lifecycle.
 - **`bunx hypercolor`** inside an effect workspace is the Bun authoring CLI for building, validating, and installing HTML effects.
 
@@ -23,7 +23,7 @@ The daemon mounts its MCP server over Streamable HTTP at `/mcp`, and only when t
 daemon config carries `[mcp] enabled = true`. Until that flag is set the endpoint 404s
 and the CLI is the only route in.
 
-Eighteen tools, five resources, four prompt templates. Selector arguments (`query`,
+Twenty-one tools, five resources, four prompt templates. Selector arguments (`query`,
 `name`, `zone`, `layer`, `device`, `effect_id`) all resolve in one fixed order: exact
 serialized ID, then exact case-insensitive name, then a unique case-insensitive name
 substring. An ambiguous substring fails with the candidate list instead of guessing.
@@ -39,6 +39,8 @@ Read-only:
 - `get_sensor_data` (`label` optional): CPU, GPU, memory, raw component temperatures
 - `diagnose` (no arguments): canonical checks, summary counts, captured status snapshot
 - `openrgb_status` (no arguments): host installation, SDK probes, permissions, ownership, and native-first coverage
+- `capture_canvas` (`frames` 1-8 default 1, `interval_ms` default 250, `width` default 320, `format` one of `jpeg`, `png`): the composed canvas as image content blocks, one per frame, plus frame metadata. `fresh: false` means nothing rendered during the wait
+- `get_effect_console` (`after`, `limit` default 100, `effect`, `level` one of `debug`, `log`, `warn`, `error`): what HTML effect pages printed, including uncaught script errors with lines in the author's file, after a cursor
 
 Mutating, not destructive:
 
@@ -47,7 +49,7 @@ Mutating, not destructive:
 - `adjust_controls` (`zone` and `layer` required, plus `values` and `clear_bindings`) atomically patches one live layer
 - `create_scene` (`name` required, plus `description`, `enabled`, `mutation_mode` one of `live`, `snapshot`)
 
-Destructive. These five are the ones the tool definitions flag `destructive`, because
+Destructive. These six are the ones the tool definitions flag `destructive`, because
 each replaces or clears state that no single-field undo restores. Read current state
 before calling them:
 
@@ -56,6 +58,7 @@ before calling them:
 - `clear_zone` (`zone` optional) clears one non-display zone's layer stack. Omitting `zone` clears every non-display zone and quiesces output.
 - `activate_scene` (`name` required, plus `transition_ms` default 1000)
 - `set_display_face` (`device` required, plus `effect_id`, `clear`, `scope` one of `default`, `scene`, and `controls`)
+- `install_effect` (`html` required, plus `file_name`) validates and installs one HTML page, replacing an installed effect with the same file name in place. It returns `console_after`, the console cursor to read the new page's output from. Writing or debugging an effect is its own loop: follow the `effect-livecoding` skill
 
 Resources: `hypercolor://state`, `hypercolor://devices`, `hypercolor://effects`,
 `hypercolor://scenes`, `hypercolor://audio`. Prompt templates: `mood_lighting`,
@@ -185,9 +188,12 @@ non-destructive alternative to `effects stop`. Pausing holds the active effect, 
 controls, and the scene exactly as they are, so resuming needs no re-apply. `effects
 stop` clears the live scene and cannot be undone that way.
 
-The nine `effects` subcommands are `list`, `activate`, `stop`, `pause`, `resume`,
-`info`, `patch`, `reset`, and `rescan`. Spatial layout work is a separate top-level
-command tree:
+The twelve `effects` subcommands are `list`, `activate`, `stop`, `pause`, `resume`,
+`info`, `patch`, `reset`, `rescan`, `install`, `console`, and `capture`. The last
+three are the effect authoring loop, covered by the `effect-livecoding` skill:
+`install` uploads one HTML file (`--activate` applies it), `console` prints effect
+script output after a cursor, and `capture` saves the composed canvas as an image.
+Spatial layout work is a separate top-level command tree:
 
 ```bash
 hypercolor layouts list
@@ -285,7 +291,9 @@ bunx hypercolor add ember --template canvas
 
 There is no dev server and no watch-mode preview. `build --all --watch` is the iteration
 loop: it rebuilds on every `.ts` or `.glsl` change under the entry roots and runs until
-interrupted. Preview the result in the real daemon or app after installing it.
+interrupted. Preview the result in the real daemon after installing it:
+`hypercolor effects capture` shows what it draws and `hypercolor effects console`
+shows what it throws.
 
 Scaffolded TypeScript workspaces expose the same flow through package scripts:
 
@@ -307,10 +315,13 @@ Preferred install sequence for built HTML effects:
 
 ```bash
 bunx hypercolor validate dist/aurora.html
-bunx hypercolor install dist/aurora.html --daemon
-hypercolor effects rescan
-hypercolor effects activate "Aurora"
+hypercolor effects install dist/aurora.html --activate
 ```
+
+`hypercolor effects install` uploads through `POST /api/v1/effects/install`, which
+registers the effect immediately, so no rescan is needed. Reinstalling the same
+file name updates that effect in place and keeps its id. `bunx hypercolor install
+dist/aurora.html --daemon` takes the same route from a Bun workspace.
 
 If no daemon is running yet, local install still works:
 
@@ -324,7 +335,8 @@ will pick up on boot or via `hypercolor effects rescan`.
 ## Behavioral guidance
 
 - Inspect first. Do not guess the active scene, its zones, or brightness.
-- Reach for the MCP tools when they are connected, and the CLI when they are not or when the work is outside their eighteen.
+- Reach for the MCP tools when they are connected, and the CLI when they are not or when the work is outside their twenty-one.
+- After a visual change, look before you report: `capture_canvas` or `hypercolor effects capture` for the picture, `get_effect_console` or `hypercolor effects console --level warn` for script errors.
 - Prefer targeted actions over restarting the daemon.
 - Prefer `pause` over `stop`, and `clear_zone` over a whole-scene clear, whenever the narrower action does the job.
 - Validate HTML artifacts before installing them.
