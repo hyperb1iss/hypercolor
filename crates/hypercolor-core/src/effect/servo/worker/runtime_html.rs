@@ -152,6 +152,19 @@ fn build_control_preamble_script(
     Ok(script)
 }
 
+/// Line breaks as the HTML tokenizer counts them: `\r\n`, a lone `\r`, or a
+/// lone `\n`.
+fn line_breaks(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    bytes
+        .iter()
+        .enumerate()
+        .filter(|(index, byte)| {
+            **byte == b'\n' || (**byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
+        })
+        .count()
+}
+
 /// Splice `block` into `html` after the `<head>` tag, before the first
 /// `<script>` when there is no head, or ahead of everything otherwise.
 ///
@@ -173,7 +186,7 @@ fn inject_runtime_head_block(html: &str, block: &str) -> (String, RuntimeLineShi
     if let Some(insert_at) = insert_at {
         let (before, after) = html.split_at(insert_at);
         let shift = RuntimeLineShift {
-            insert_line: before.matches('\n').count() + 1,
+            insert_line: line_breaks(before) + 1,
             // The leading newline ends the author's line before the block.
             inserted_lines: block_lines + 1,
         };
@@ -424,6 +437,18 @@ mod tests {
         assert_eq!(shift.original_line(4), None, "first injected line");
         let throw_runtime_line = 7 + shift.inserted_lines;
         assert_eq!(shift.original_line(throw_runtime_line), Some(7));
+    }
+
+    #[test]
+    fn line_shift_counts_carriage_return_line_breaks() {
+        let block = "<script>\nboot();\n</script>\n";
+        for html in [
+            "<!doctype html>\r\n<html>\r\n<head>\r\n<title>x</title>\r\n</head>\r\n",
+            "<!doctype html>\r<html>\r<head>\r<title>x</title>\r</head>\r",
+        ] {
+            let (_, shift) = inject_runtime_head_block(html, block);
+            assert_eq!(shift.insert_line, 3, "{html:?}");
+        }
     }
 
     #[test]
