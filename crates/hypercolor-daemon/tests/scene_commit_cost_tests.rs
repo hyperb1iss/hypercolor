@@ -191,6 +191,7 @@ async fn a_named_scene_control_patch_replaces_only_the_scene_store() {
     // The first patch writes the runtime projection that names the scene.
     patch_speed(&fixture, 0.5).await;
     let before = files.replacements();
+    let barriers_before = files.scenes.directory_sync_count();
 
     patch_speed(&fixture, 0.75).await;
 
@@ -203,6 +204,13 @@ async fn a_named_scene_control_patch_replaces_only_the_scene_store() {
         "one scene-store write; the unchanged runtime projection and the \
          driver inventory stay untouched"
     );
+    if cfg!(unix) {
+        assert_eq!(
+            files.scenes.directory_sync_count(),
+            barriers_before + 1,
+            "the scene-store write runs one directory barrier"
+        );
+    }
 }
 
 #[tokio::test]

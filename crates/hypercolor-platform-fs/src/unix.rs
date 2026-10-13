@@ -42,6 +42,10 @@ fn change_stamp(metadata: &fs::Metadata) -> crate::FileChangeStamp {
     }
 }
 
+pub(super) fn rename_replacing(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(source, destination)
+}
+
 pub(super) fn durable_replace(source: &Path, destination: &Path) -> io::Result<()> {
     durable_replace_with(source, destination, sync_directory)
 }
