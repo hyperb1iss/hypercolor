@@ -1,19 +1,24 @@
-//! Every documented operation refuses malformed input with the envelope.
+//! Documented request inputs refuse malformed values with the envelope.
 //!
 //! A spelling fence keeps handlers from naming Axum's stock extractors,
 //! but a closure handler whose parameter is an inferred constructor
 //! pattern (`|axum::Json(value)| ...`) names no type and slips past any
-//! such fence. This sweep checks behavior instead, so it does not
-//! care how a handler is written. It reads the daemon's own OpenAPI
-//! document and, for every operation, sends the malformed request that
-//! operation's inputs allow: broken JSON where it takes a JSON body, an
-//! undecodable segment where its path has parameters, and an unparseable
-//! value for each typed query parameter. Each must answer with the
-//! canonical error envelope and the code the error table maps it to.
+//! such fence. This sweep checks behavior instead, so it does not care how
+//! a handler is written. It reads the daemon's own OpenAPI document and,
+//! for each versioned operation, probes every input the document declares
+//! that can be malformed: a JSON request body (broken JSON), a multipart
+//! request body (no boundary), path parameters (an undecodable segment),
+//! and typed query parameters (an unparseable value). Each probe must
+//! answer with the canonical error envelope and the code the error table
+//! maps it to.
 //!
-//! Routes outside the document (the API fallbacks, Swagger, MCP, static
-//! files, and extension routes this test does not register) are not
-//! swept here.
+//! What it does not cover, by construction: operations that declare none
+//! of those inputs (the test reports how many), free-form string query
+//! parameters (any value parses), extractors that read neither a declared
+//! body, path, nor query (a required request extension, covered in
+//! `api_rejection_envelope_tests`), and routes outside the document (the
+//! API fallbacks, Swagger, MCP, static files, and extension routes this
+//! test does not register).
 
 use std::sync::Arc;
 
@@ -34,6 +39,9 @@ const UNDECODABLE_SEGMENT: &str = "%FF";
 /// Fails at the first key whatever the body type, so the probe reaches the
 /// syntax error rather than a type's unknown-field or missing-field check.
 const BROKEN_JSON: &str = "{,";
+/// A multipart content type with no boundary, which no multipart reader
+/// can split.
+const BOUNDARYLESS_MULTIPART: &str = "multipart/form-data";
 const UNPARSEABLE_QUERY_VALUE: &str = "sweep-not-a-value";
 
 struct Harness {
@@ -55,6 +63,8 @@ fn harness() -> Harness {
 /// One malformed request and the refusal it must earn.
 struct Probe {
     class: &'static str,
+    /// `METHOD /path` as the document names the operation.
+    operation: String,
     method: String,
     uri: String,
     content_type: Option<&'static str>,
@@ -79,9 +89,13 @@ fn fill_path(path: &str, segment: &str) -> String {
 }
 
 /// Whether a query parameter's schema rejects an arbitrary word: numbers,
-/// booleans, and enumerations do; free-form strings accept anything.
+/// booleans, and enumerations (inline `enum`, or a `$ref`/composition to
+/// one) do; free-form strings accept anything.
 fn is_typed_query_schema(schema: &Value) -> bool {
-    if schema.get("$ref").is_some() || schema.get("oneOf").is_some() {
+    if ["$ref", "oneOf", "anyOf", "allOf", "enum"]
+        .iter()
+        .any(|key| schema.get(*key).is_some())
+    {
         return true;
     }
     let types: Vec<&str> = match schema.get("type") {
@@ -94,8 +108,11 @@ fn is_typed_query_schema(schema: &Value) -> bool {
         .any(|kind| matches!(*kind, "boolean" | "integer" | "number"))
 }
 
-fn probes(document: &Value) -> Vec<Probe> {
+/// Every probe the document allows, and how many versioned operations it
+/// lists in all.
+fn probes(document: &Value) -> (Vec<Probe>, usize) {
     let mut probes = Vec::new();
+    let mut operations = 0;
     let paths = document["paths"].as_object().expect("document has paths");
     for (path, item) in paths {
         if !path.starts_with("/api/v1/") {
@@ -107,6 +124,7 @@ fn probes(document: &Value) -> Vec<Probe> {
                 continue;
             }
             let method = method.to_ascii_uppercase();
+            operations += 1;
 
             let takes_json = operation["requestBody"]["content"]
                 .get("application/json")
@@ -114,6 +132,7 @@ fn probes(document: &Value) -> Vec<Probe> {
             if takes_json {
                 probes.push(Probe {
                     class: "json_body",
+                    operation: format!("{method} {path}"),
                     method: method.clone(),
                     uri: fill_path(path, VALID_SEGMENT),
                     content_type: Some("application/json"),
@@ -125,9 +144,28 @@ fn probes(document: &Value) -> Vec<Probe> {
                 });
             }
 
+            let takes_multipart = operation["requestBody"]["content"]
+                .get("multipart/form-data")
+                .is_some();
+            if takes_multipart {
+                probes.push(Probe {
+                    class: "multipart",
+                    operation: format!("{method} {path}"),
+                    method: method.clone(),
+                    uri: fill_path(path, VALID_SEGMENT),
+                    content_type: Some(BOUNDARYLESS_MULTIPART),
+                    body: "",
+                    status: StatusCode::BAD_REQUEST,
+                    code: "malformed_request",
+                    field: None,
+                    message_contains: Some("boundary"),
+                });
+            }
+
             if path.contains('{') {
                 probes.push(Probe {
                     class: "path",
+                    operation: format!("{method} {path}"),
                     method: method.clone(),
                     uri: fill_path(path, UNDECODABLE_SEGMENT),
                     content_type: None,
@@ -153,6 +191,7 @@ fn probes(document: &Value) -> Vec<Probe> {
                     .to_owned();
                 probes.push(Probe {
                     class: "query",
+                    operation: format!("{method} {path}"),
                     method: method.clone(),
                     uri: format!(
                         "{}?{name}={UNPARSEABLE_QUERY_VALUE}",
@@ -168,7 +207,7 @@ fn probes(document: &Value) -> Vec<Probe> {
             }
         }
     }
-    probes
+    (probes, operations)
 }
 
 /// Send one probe and describe how it missed, if it did.
@@ -245,7 +284,7 @@ async fn miss(harness: &Harness, probe: &Probe) -> Option<String> {
 }
 
 #[tokio::test]
-async fn every_documented_operation_refuses_malformed_input_with_the_envelope() {
+async fn documented_inputs_refuse_malformed_values_with_the_envelope() {
     let harness = harness();
     let response = harness
         .api
@@ -263,7 +302,7 @@ async fn every_documented_operation_refuses_malformed_input_with_the_envelope() 
         .expect("document reads");
     let document: Value = serde_json::from_slice(&bytes).expect("document is JSON");
 
-    let probes = probes(&document);
+    let (probes, operations) = probes(&document);
     let mut misses = Vec::new();
     for probe in &probes {
         if let Some(missed) = miss(&harness, probe).await {
@@ -272,14 +311,31 @@ async fn every_documented_operation_refuses_malformed_input_with_the_envelope() 
     }
 
     let count = |class: &str| probes.iter().filter(|probe| probe.class == class).count();
-    let (json_body, path, query) = (count("json_body"), count("path"), count("query"));
-    eprintln!("swept {json_body} JSON-body, {path} path, and {query} typed-query probes");
+    let (json_body, multipart, path, query) = (
+        count("json_body"),
+        count("multipart"),
+        count("path"),
+        count("query"),
+    );
+    let mut probed: Vec<&str> = probes
+        .iter()
+        .map(|probe| probe.operation.as_str())
+        .collect();
+    probed.sort_unstable();
+    probed.dedup();
+    eprintln!(
+        "swept {json_body} JSON-body, {multipart} multipart, {path} path, and {query} \
+         typed-query probes across {} of {operations} versioned operations; the rest \
+         declare no input that can be malformed",
+        probed.len()
+    );
     // Floors sit just under today's catalog, so a sweep that silently
     // stopped reading the document fails rather than passing on nothing.
     assert!(
         json_body >= 40,
         "only {json_body} JSON-body operations swept"
     );
+    assert!(multipart >= 2, "only {multipart} multipart uploads swept");
     assert!(path >= 60, "only {path} path-parameter operations swept");
     assert!(query >= 18, "only {query} typed query parameters swept");
     assert!(
@@ -312,4 +368,27 @@ async fn a_plain_get_on_the_websocket_route_is_a_malformed_request_envelope() {
     let envelope: ApiErrorBody =
         serde_json::from_slice(&bytes).expect("a refused upgrade is the envelope");
     assert_eq!(envelope.error.code, "malformed_request");
+}
+
+/// Enumerations count as typed however the document spells them, so
+/// inlining an enum schema cannot quietly drop its probe.
+#[test]
+fn every_enum_spelling_is_a_typed_query_schema() {
+    for schema in [
+        serde_json::json!({ "type": "string", "enum": ["a", "b"] }),
+        serde_json::json!({ "type": ["string", "null"], "enum": ["a", null] }),
+        serde_json::json!({ "$ref": "#/components/schemas/EffectCategory" }),
+        serde_json::json!({ "oneOf": [{ "$ref": "#/components/schemas/X" }, { "type": "null" }] }),
+        serde_json::json!({ "anyOf": [{ "$ref": "#/components/schemas/X" }] }),
+        serde_json::json!({ "type": ["boolean", "null"] }),
+        serde_json::json!({ "type": "integer", "minimum": 0 }),
+    ] {
+        assert!(is_typed_query_schema(&schema), "{schema} is typed");
+    }
+    for schema in [
+        serde_json::json!({ "type": "string" }),
+        serde_json::json!({ "type": ["string", "null"] }),
+    ] {
+        assert!(!is_typed_query_schema(&schema), "{schema} accepts any word");
+    }
 }
