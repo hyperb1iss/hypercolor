@@ -292,6 +292,17 @@ pub enum RuntimeSessionSaveOutcome {
     },
 }
 
+/// How much a runtime-session save trusts about the scene store.
+#[derive(Debug, Clone, Copy)]
+enum StoreSave {
+    /// Right after a scene commit: the scene service's own receipts decide
+    /// whether the store needs a write, with no file I/O when they do not.
+    AfterCommit,
+    /// Shutdown, output power, device removal: the store file itself is
+    /// verified against memory before it is trusted.
+    WholeSession,
+}
+
 struct RuntimeSessionSave {
     pending: runtime_state::RuntimeSnapshotSave,
     snapshot: RuntimeSessionSnapshot,
@@ -536,7 +547,7 @@ impl RuntimeSessionService {
 
     /// [`Self::save_after_scene_commit`], returning each actual outcome.
     pub(crate) async fn save_after_scene_commit_with_outcome(&self) -> RuntimeSessionSaveOutcome {
-        self.save_projection(async {}).await
+        self.save_projection(async {}, StoreSave::AfterCommit).await
     }
 
     fn log_outcome(path: &Path, outcome: RuntimeSessionSaveOutcome) {
@@ -565,15 +576,22 @@ impl RuntimeSessionService {
     /// return each actual outcome without inferring durability from newer state.
     pub async fn save_with_outcome(&self) -> RuntimeSessionSaveOutcome {
         let driver_host = self.driver_host.upgrade();
-        self.save_projection(async move {
-            if let Some(driver_host) = driver_host {
-                driver_host.refresh_driver_inventory().await;
-            }
-        })
+        self.save_projection(
+            async move {
+                if let Some(driver_host) = driver_host {
+                    driver_host.refresh_driver_inventory().await;
+                }
+            },
+            StoreSave::WholeSession,
+        )
         .await
     }
 
-    async fn save_projection<Fut>(&self, before_snapshot: Fut) -> RuntimeSessionSaveOutcome
+    async fn save_projection<Fut>(
+        &self,
+        before_snapshot: Fut,
+        store_save: StoreSave,
+    ) -> RuntimeSessionSaveOutcome
     where
         Fut: Future<Output = ()>,
     {
@@ -585,7 +603,10 @@ impl RuntimeSessionService {
             Ok(save) => save,
             Err(error) => return RuntimeSessionSaveOutcome::BeforeAdmission { error },
         };
-        let scene_store = self.save_scene_store_snapshot().await;
+        let scene_store = match store_save {
+            StoreSave::AfterCommit => self.projection.scenes.persist_snapshot_after_commit().await,
+            StoreSave::WholeSession => self.save_scene_store_snapshot().await,
+        };
         let (projection, snapshot) = save.commit_observed().await;
         RuntimeSessionSaveOutcome::Attempted {
             scene_store,
