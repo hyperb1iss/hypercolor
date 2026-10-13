@@ -21,6 +21,7 @@ mod media;
 mod network;
 mod rendering;
 mod root;
+mod strict;
 mod web;
 
 pub use audio::*;
@@ -36,6 +37,7 @@ pub use media::*;
 pub use network::*;
 pub use rendering::*;
 pub use root::*;
+pub use strict::deserialize_section_strict;
 pub use web::*;
 
 // ─── Default Value Functions ─────────────────────────────────────────────────

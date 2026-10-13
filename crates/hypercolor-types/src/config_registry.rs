@@ -235,7 +235,8 @@ macro_rules! config_key_registry {
 
 fn validate_capture_section(value: &serde_json::Value) -> Result<(), String> {
     let capture: crate::config::CaptureConfig =
-        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+        crate::config::deserialize_section_strict("capture", value.clone())
+            .map_err(|error| error.to_string())?;
     capture.validate().map_err(|error| error.to_string())
 }
 

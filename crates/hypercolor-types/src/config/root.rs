@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::session::SessionConfig;
@@ -97,25 +96,8 @@ impl HypercolorConfig {
     where
         D: Deserializer<'de>,
     {
-        let mut unknown = Vec::new();
-        let config: Self =
-            serde_ignored::deserialize(deserializer, |path| unknown.push(path.to_string()))?;
-        if unknown.is_empty() {
-            Ok(config)
-        } else {
-            Err(D::Error::custom(unknown_keys_message(&unknown)))
-        }
+        super::strict::deserialize_strict_under(None, deserializer)
     }
-}
-
-fn unknown_keys_message(keys: &[String]) -> String {
-    let listed = keys
-        .iter()
-        .map(|key| format!("`{key}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let noun = if keys.len() == 1 { "key" } else { "keys" };
-    format!("unknown config {noun} {listed}")
 }
 
 impl Default for HypercolorConfig {
