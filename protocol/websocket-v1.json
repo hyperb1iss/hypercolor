@@ -184,6 +184,24 @@
     "contract": "The events channel carries live changes only. A client that loses the socket misses every event during the gap, and the daemon does not replay them on reconnect. Refetch the resources you mirror after the first subscribed acknowledgment on every connection, after the event relay is live. Fold that subscription generation into your fetch epochs, and do the same on resync_required, which the daemon sends when a subscriber falls far enough behind that events were dropped on a socket that is still open.",
     "resync_signal": "resync_required"
   },
+  "clock": {
+    "contract": "Every server message listed in stamped_messages carries two publication stamps at the top level. timestamp is wall-clock time (ISO 8601 UTC, millisecond precision) and follows the host clock through NTP slews and manual steps. mono_us is microseconds on the daemon's monotonic clock: it never moves backwards and ignores wall-clock adjustments, so order messages, measure intervals, and judge frame pacing with it. An event is stamped when it is published on the daemon bus, before any relay queueing, so frame_rendered stamps follow the render thread rather than socket delivery. Snapshot messages (metrics, device_metrics, sensors) are stamped when the daemon assembles them. The hello names the clock: clock_epoch is an opaque identity for this daemon run's monotonic origin, compared by equality only, and mono_us is the clock's reading when the daemon built the hello, which lets a client estimate the offset to its own monotonic clock. mono_us values are comparable only within one clock_epoch, and a restarted daemon announces a new one. Events from different producers are stamped independently and can arrive slightly out of stamp order, so sort by mono_us when order matters.",
+    "stamped_messages": [
+      "event",
+      "metrics",
+      "device_metrics",
+      "sensors"
+    ],
+    "stamp_fields": [
+      "timestamp",
+      "mono_us"
+    ],
+    "hello_fields": [
+      "clock_epoch",
+      "mono_us"
+    ],
+    "mono_unit": "microseconds"
+  },
   "capabilities": [
     "frames",
     "spectrum",

@@ -1,5 +1,5 @@
 {
-  "_generated": "Authored prose input to the WebSocket protocol manifest. The generator (just ws-manifest) merges these descriptions with topic validation metadata from the Rust registry and binary layouts from the compiled codecs. Topic names, wire layouts, config bounds, cadences, control gates, keys, backpressure classes, capabilities, and the event vocabulary must be edited in Rust.",
+  "_generated": "Authored prose input to the WebSocket protocol manifest. The generator (just ws-manifest) merges these descriptions with topic validation metadata from the Rust registry and binary layouts from the compiled codecs. Topic names, wire layouts, config bounds, cadences, control gates, keys, backpressure classes, capabilities, the event vocabulary, and the clock-stamped message list must be edited in Rust.",
   "topics": {
     "frames": {
       "description": "LED color data for subscribed zones."
@@ -52,5 +52,8 @@
     "dimension_type": "u32",
     "passive_zero_dimension": "auto",
     "interactive_zero_dimension": "invalid"
+  },
+  "clock": {
+    "contract": "Every server message listed in stamped_messages carries two publication stamps at the top level. timestamp is wall-clock time (ISO 8601 UTC, millisecond precision) and follows the host clock through NTP slews and manual steps. mono_us is microseconds on the daemon's monotonic clock: it never moves backwards and ignores wall-clock adjustments, so order messages, measure intervals, and judge frame pacing with it. An event is stamped when it is published on the daemon bus, before any relay queueing, so frame_rendered stamps follow the render thread rather than socket delivery. Snapshot messages (metrics, device_metrics, sensors) are stamped when the daemon assembles them. The hello names the clock: clock_epoch is an opaque identity for this daemon run's monotonic origin, compared by equality only, and mono_us is the clock's reading when the daemon built the hello, which lets a client estimate the offset to its own monotonic clock. mono_us values are comparable only within one clock_epoch, and a restarted daemon announces a new one. Events from different producers are stamped independently and can arrive slightly out of stamp order, so sort by mono_us when order matters."
   }
 }
