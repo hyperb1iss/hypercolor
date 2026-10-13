@@ -177,7 +177,7 @@ impl ServerHandler for HypercolorMcpServer {
                     .with_website_url("https://github.com/hyperb1iss/hypercolor"),
             )
             .with_instructions(
-                "You are controlling Hypercolor, an RGB lighting system. Start with get_status or the hypercolor://state resource before making changes. Use list_effects to discover the effect catalog before applying visuals. Use capture_canvas to see what is rendering after a change instead of assuming it looks right. Prefer structured tool arguments and resource reads over guessing current state.",
+                "You are controlling Hypercolor, an RGB lighting system. Start with get_status or the hypercolor://state resource before making changes. Use list_effects to discover the effect catalog before applying visuals. Use capture_canvas to see what is rendering after a change instead of assuming it looks right. To write or debug an HTML effect, install_effect it, apply it once with set_effect, then on each iteration read get_effect_console from console_after and look with capture_canvas; reinstalling under the same file_name hot swaps the running effect. Prefer structured tool arguments and resource reads over guessing current state.",
             )
     }
 
