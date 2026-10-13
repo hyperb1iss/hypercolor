@@ -150,7 +150,9 @@ pub enum PersistenceError {
 /// Result of committing a reserved atomic write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtomicWriteOutcome {
-    /// This reservation replaced the destination.
+    /// The destination durably holds this payload: this reservation replaced
+    /// it, or it already held exactly these bytes, verified and synced. See
+    /// [`AtomicFileWriter`] for what the guarantee covers.
     Written,
     /// A newer reservation superseded this payload before replacement.
     Superseded,
@@ -243,12 +245,29 @@ impl PersistenceFlushReport {
 
 /// Generation coordinator for one stable destination.
 ///
-/// While any writer keeps the destination alive, it remembers a digest of
-/// the bytes it last made durable and the change stamp of the file they
-/// landed as. A payload with the same digest lands as written without
-/// touching the filesystem, as long as the file's change stamp shows nothing
-/// has replaced, rewritten, or re-permissioned it since and it still carries
-/// the requested mode.
+/// # Durability contract
+///
+/// The destination is daemon-owned. A write that reports
+/// [`AtomicWriteOutcome::Written`] (or [`AtomicWriteCommitResult::DurableWritten`])
+/// leaves the destination durably holding its payload, with the requested
+/// mode. That covers every outside edit that completed before the call,
+/// including replacements, renames, and inode reuse.
+///
+/// A payload identical to the last one this process made durable can land
+/// without being rewritten. While any writer keeps the destination alive, it
+/// remembers that payload's digest and the change stamp of the file it
+/// landed as. A different stamp means the write goes ahead. An equal stamp
+/// proves nothing on its own, so the skip opens the file, checks it is the
+/// file this process wrote and carries the requested mode, compares its
+/// bytes, and syncs the file and, on Unix, its parent directory. That
+/// re-establishes whichever directory entry names the file, so the result
+/// does not depend on the entry being the one this process created.
+///
+/// A writer active during the call is outside the contract. It can leave
+/// other bytes at the destination after the call reports success, as it can
+/// for any rename-based write, and no file API prevents that without an
+/// exclusion protocol the stores do not have. Once that writer has
+/// finished, the next write verifies the file again and repairs it.
 #[derive(Debug, Clone)]
 pub struct AtomicFileWriter {
     destination: Arc<Destination>,
@@ -672,7 +691,10 @@ impl AtomicFileWriter {
     ///
     /// This blocks on file I/O: it reads the file, compares it with the
     /// recorded digest, and syncs the file and its directory entry, as the
-    /// identical-bytes skip does.
+    /// identical-bytes skip does. A `true` answer covers outside edits that
+    /// completed before the call, under the same daemon-owned contract as a
+    /// write (see [`AtomicFileWriter`]); a writer active during the call can
+    /// leave other bytes behind.
     #[must_use]
     pub fn holds_durable_bytes(&self) -> bool {
         let durable = self
