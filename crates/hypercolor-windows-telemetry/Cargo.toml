@@ -16,6 +16,6 @@ hypercolor-types = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-hypercolor-windows-pawnio = { path = "../hypercolor-windows-pawnio", version = "0.7.0-rc.1" }
+hypercolor-windows-pawnio = { path = "../hypercolor-windows-pawnio", version = "0.7.0" }
 serde = { workspace = true }
 wmi = { workspace = true }

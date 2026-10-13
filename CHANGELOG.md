@@ -5,6 +5,80 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-10-13
+
+This release detects competing RGB software and reports it in the UI and diagnostics, rebuilds the main UI drag surfaces on captured pointer events (wave 1 of spec 75), and tightens the daemon's network trust model behind a credential authority seam. Config writes now tell you whether they reached disk, and LightScript effects can read device touch and button input. The insertion count is dominated by vendoring `servo-script` 0.6.0 into `vendor/`.
+
+### Added
+
+- Detect **competing RGB software** end to end: a 16-entry conflict catalog in `crates/hypercolor-core/src/device/conflicts/` (OpenRGB deliberately excluded), process inventory on Linux and Windows, daemon scan with ordered results that distinguishes `scan_failed` from absence, REST conflict routes, and the `software_conflicts_changed` WebSocket event (c9033af, b4f3e33)
+- Surface conflicts in the UI: a Devices page warning banner, a daemon-driven SMBus support card with a stale-list flag after a failed scan, and app-wide shared conflict state (9312f2c, eaf8241, f6867da)
+- Add a **credential authority seam** so downstream builds can supply API credentials: `CredentialAuthority::ceiling()` and `authenticate()` (36dce83)
+- Add `--port` to move the daemon's port without pinning interfaces, plus `SupervisedDaemonConfig { listen: DaemonListen }` so the desktop app's daemon follows the configured network mode (ba10898, 7b9b1c5)
+- Add `network.allowed_hosts`, `allow_unauthenticated_remote_access`, and `lan_trusted` configuration for LAN exposure
+- Expose **device touch input to effects**: `DeviceSurfaceMap::canvas_position` places device touch surfaces on the render canvas, the daemon resolves surfaces per render zone, and `engine.touch` / `engine.deviceButtons` reach LightScript with matching SDK types (a89fbdb, 7fd7fea, 1ee0865, c1a1c34)
+- Add the **Touch Ripple** effect, driven by ROLI Lightpad touches (70c7e8c)
+- Add optional OSS GitHub release notifications, stored in `release-notifications.json` and polled on a 24-hour interval (1f5228b)
+- Report config persistence truthfully: `ConfigMutationResponse.persisted` and `persistence_error`, a `config_persistence` diagnose check, and a CLI warning when a change did not reach disk (8784684, 2d00030, 04f0947)
+- Add a `devices.smbus_broker` diagnose check that flags a broker installed but not running (6b7de37)
+- Enumerate USB HID top-level collections in the HAL (a67b1be)
+- Let UI callers build binary WebSocket frames from a browser `ArrayBuffer` (4197921)
+
+### Changed
+
+- Vendor `servo-script` 0.6.0 unmodified under `vendor/servo-script/`, with `scripts/check-vendored-patches.sh` wired into CI to catch silent drift and to fail when a vendored crate stops resolving to `vendor/` (63c24cd, 1cef3fc, cff07b2)
+- Add a single-pointer gesture model (`crates/hypercolor-ui/src/pointer_gesture.rs`) as the shared basis for drag surfaces (8064665)
+- Make the SMBus broker log its lifecycle to `logs\smbus-broker.log` and report service status (4ded5c9)
+- Run Windows hardware setup in 64-bit PowerShell and tell the user when the SMBus broker does not start (775c4cf, 0f8ab74)
+- Warn at startup when the API listens keyless on the network, scoped to the families the serving policy actually admits (89455d7, 72a601b, 42f2333)
+- Let bug reports take attachments and document competing-software detection, Export Diagnostics, and the container blind spot (a6e1888, 92a37a4, e34c91b)
+- Refresh API and guide docs to match the daemon: LAN and WebSocket origin behavior, MCP and CORS statements, the persisted contract, and the capture exception (15c3dfb, 890f6aa, 4518c1a)
+
+### Fixed
+
+- Drive the **color wheel**, panel splitters, Studio editor panels, Studio layout boxes, and the viewport picker with captured pointer events so touch input works on those surfaces (c83db8e, c79e89b, 32052dd, 301661487, 3b0ff6f)
+- Dismiss popovers on `pointerdown` instead of `mousedown`, keep the color picker popover where its position puts it, and keep it open under a live wheel drag (08a96c2, 4302fd7, 5adeec0)
+- End drags on chorded release and on detached capture, reconcile preview buttons from the buttons mask, and remove Studio and dashboard window listeners on cleanup (15b4d76, 4d3bfd2, 665ea7b)
+- Keep touch press defaults so double-tap still fires `dblclick`, and keep interactive canvas input whole on touch and lost capture (b1903b0, 67161f6)
+- Close a revoked WebSocket session with code **1008** and reason `credential revoked` on every exit path, including setup failure, and interrupt its in-flight sends (38e8798, d55a2d1, 79e608d)
+- Admit credentialed WebSocket upgrades, carry the session grant into replayed commands, and let a keyless daemon's own pages open a WebSocket (57a6b9b, d75dba2, 45f26e0)
+- Drop USB functions with no lighting-capable interface, hide HID functions that carry only consumer controls, and keep hotplug arrivals from joining partial HID data (ed8176a, 81e3cf6, e96734c)
+- Lian Li wireless: probe returning receivers before resetting TX, keep TX on the discovered fan channel, recover fans discovered after an empty reconnect, bound probe budget renewal across brief table omissions, and judge receiver absence from its last sighting (540ebe1, 23cbbe7, d82dc64, d237d6e, 5f8a09c)
+- Servo runtime: release the extra reference to every script private, collect garbage after sustained script evaluation, and let the batch that opens a GC window reach the source trigger (5f44e50, e0c31a7, b904b73)
+- Pin `servo-allocator` back to Servo's version so jemalloc links (87cbb10)
+- Keep a lagging config file's error until a write lands and stop a stale retry from overwriting a capture commit (b3671b6, 2fa3344)
+- PawnIO broker: unquote the image path, fail a pipeless broker, wait out a squatted pipe instead of stopping, and survive a pipe flood (d3cd2ed, 7b635c6, 7bbfa74)
+- Installer: register the SMBus broker even when PawnIO setup fails, and keep the setup log when it cannot be rotated (12643ac, 18a6c89)
+- Re-send the LightScript interaction batch after an edge frame (d81742f)
+- Recover corrupt update preferences with checks disabled (ff39a06)
+
+### Security
+
+- Add a `HostAllowlist` that checks the `Host` header, the URI authority, and `X-Forwarded-Host`, refusing keyless requests that name a foreign host (`refuse_foreign_host` in `api/security.rs`) (e6f923d, 1694ab4)
+- Never grant loopback trust to a relayed request, and never give a public route loopback locality (2967271, dd7bd77)
+- Refuse ambient writes from foreign pages on every path and refuse keyless relays unless remote access is open (402bea4, 94299c6)
+- Keep public and exempt paths anonymous end to end, withhold the docs exemption from refused declarations, and reserve the MCP mount from public declarations (db098de, 9b4e4a3, 9c158eb)
+- Apply per-minute rate limits of **120 / 60 / 6** by route class
+- Send CORS headers to bracketed IPv6 loopback origins (7fba4e3)
+
+### Removed
+
+- Retire the desktop app's conflicting-tool detector, including its `sc.exe` and `tasklist.exe` probes and its OpenRGB mislabeling; the daemon's catalog-backed scan replaces it (63c03a1)
+
+### Breaking Changes
+
+- **The desktop app's bundled daemon now follows the configured network mode.** An existing LAN setting opens the app's daemon to the network on upgrade. Review `network.allowed_hosts`, `allow_unauthenticated_remote_access`, and `lan_trusted` before upgrading, and note that a pinned host is the exception to the app's startup steps (7b9b1c5, 2da7d1a, 85e4b18)
+- **Keyless requests that name a foreign host are refused**, and relayed requests no longer inherit loopback trust. Reverse proxies must forward an allowed host name or the daemon must be given an API credential
+
+### Metrics
+
+- Total Commits: 170
+- Files Changed: 1,176
+- Insertions: +321,265
+- Deletions: -2,884
+- Note: the vendored `servo-script` 0.6.0 tree accounts for the bulk of the insertions
+<!-- -------------------------------------------------------------- -->
+
 ## [0.7.0-rc.1] - 2026-10-12
 
 This release candidate hardens the daemon's network trust model, adds catalog-backed detection of competing RGB software, and opens device touch surfaces to effects. It also vendors Servo's `script` crate to fix two memory leaks that grew unbounded during long render sessions.
