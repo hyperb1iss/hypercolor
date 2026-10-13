@@ -145,12 +145,18 @@ class MetricsMessage:
 
 @dataclass(slots=True)
 class CommandResponse:
-    """Response to a previously issued WebSocket command."""
+    """Response to a previously issued WebSocket command.
+
+    ``mono_us`` is the daemon's monotonic clock reading taken after the
+    command finished and immediately before the response was sent, so it
+    falls inside the caller's round trip. ``None`` from older daemons.
+    """
 
     id: str
     status: int
     data: JsonObject | None = None
     error: JsonObject | None = None
+    mono_us: int | None = None
 
 
 @dataclass(slots=True)
@@ -1119,6 +1125,7 @@ class HypercolorEventStream:
                 status=int(payload["status"]),
                 data=_optional_dict(payload.get("data")),
                 error=_optional_dict(payload.get("error")),
+                mono_us=_optional_mono_us(payload),
             )
         return EventMessage(
             event=str(message_type),
