@@ -26,6 +26,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
 use super::memory::ServoMemoryReportSnapshot;
+use crate::effect::console::EffectConsoleSource;
 use crate::effect::traits::EffectRenderOutput;
 use anyhow::{Context, Result, bail};
 use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
@@ -169,6 +170,7 @@ pub(super) enum WorkerCommand {
     Load {
         session_id: ServoSessionId,
         html_path: PathBuf,
+        console: Option<EffectConsoleSource>,
         width: u32,
         height: u32,
         response_tx: SyncSender<Result<()>>,
@@ -501,6 +503,7 @@ impl ServoWorkerClient {
         &self,
         session_id: ServoSessionId,
         html_path: &Path,
+        console: Option<EffectConsoleSource>,
         width: u32,
         height: u32,
     ) -> Result<()> {
@@ -511,6 +514,7 @@ impl ServoWorkerClient {
             WorkerCommand::Load {
                 session_id,
                 html_path: html_path.to_path_buf(),
+                console,
                 width,
                 height,
                 response_tx,

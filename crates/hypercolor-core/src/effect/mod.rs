@@ -6,6 +6,7 @@
 //! all discovered effects from the filesystem.
 
 pub mod builtin;
+pub mod console;
 mod factory;
 mod lightscript;
 mod loader;

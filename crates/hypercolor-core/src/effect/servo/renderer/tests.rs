@@ -225,7 +225,10 @@ fn attach_renderer_session(
     )
     .expect("test session should initialize");
     session
-        .load_html_file(std::path::Path::new("test.html"))
+        .load_html_with_console(
+            std::path::Path::new("test.html"),
+            crate::effect::console::EffectConsoleSource::verbatim("test", "test.html"),
+        )
         .expect("test session should load");
     renderer.session = Some(session);
 }
@@ -705,7 +708,10 @@ fn destroy_discards_completed_load_task_before_it_is_polled() {
         .recv_timeout(Duration::from_millis(100))
         .expect("create-session command should be queued");
     session
-        .load_html_file(std::path::Path::new("test.html"))
+        .load_html_with_console(
+            std::path::Path::new("test.html"),
+            crate::effect::console::EffectConsoleSource::verbatim("test", "test.html"),
+        )
         .expect("test session should load");
 
     let (response_tx, response_rx) = std::sync::mpsc::sync_channel(1);

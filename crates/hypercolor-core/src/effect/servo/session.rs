@@ -8,6 +8,7 @@ use hypercolor_types::canvas::Canvas;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::display::DisplayDescriptor;
 
+use crate::effect::console::EffectConsoleSource;
 use crate::effect::traits::EffectRenderOutput;
 
 use super::worker::{
@@ -79,9 +80,19 @@ impl ServoSessionHandle {
             .load_url(self.session_id, url, self.render_width, self.render_height)
     }
 
-    pub fn load_html_file(&mut self, path: &Path) -> Result<()> {
-        self.worker
-            .load_effect(self.session_id, path, self.render_width, self.render_height)
+    /// Load an HTML file, journaling its console output under `console`.
+    pub(crate) fn load_html_with_console(
+        &mut self,
+        path: &Path,
+        console: EffectConsoleSource,
+    ) -> Result<()> {
+        self.worker.load_effect(
+            self.session_id,
+            path,
+            Some(console),
+            self.render_width,
+            self.render_height,
+        )
     }
 
     /// Load an effect page, injecting the runtime preamble when this session
@@ -91,12 +102,13 @@ impl ServoSessionHandle {
     /// clean up once the page is done with, if one was written.
     pub(crate) fn load_effect_html(
         &mut self,
+        effect_name: &str,
         source: &Path,
         controls: &HashMap<String, ControlValue>,
         host_driven_animation: bool,
         display_descriptor: Option<&DisplayDescriptor>,
     ) -> Result<(PathBuf, Option<PathBuf>)> {
-        let (runtime_source, runtime_html_path) = prepare_runtime_html_source(
+        let prepared = prepare_runtime_html_source(
             source,
             controls,
             host_driven_animation,
@@ -110,10 +122,16 @@ impl ServoSessionHandle {
             )
         })?;
 
-        match self.load_html_file(&runtime_source) {
-            Ok(()) => Ok((runtime_source, runtime_html_path)),
+        let console = EffectConsoleSource {
+            effect_name: effect_name.to_owned(),
+            source_path: source.to_path_buf(),
+            runtime_path: prepared.path.clone(),
+            line_shift: prepared.line_shift,
+        };
+        match self.load_html_with_console(&prepared.path, console) {
+            Ok(()) => Ok((prepared.path, prepared.cleanup_path)),
             Err(error) => {
-                if let Some(path) = runtime_html_path.as_ref() {
+                if let Some(path) = prepared.cleanup_path.as_ref() {
                     cleanup_runtime_html_path(path);
                 }
                 Err(error)
