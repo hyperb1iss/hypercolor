@@ -1491,6 +1491,41 @@ mod tests {
     }
 
     #[test]
+    fn a_fifo_at_the_destination_is_replaced_without_waiting() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("store.json");
+        let writer = AtomicFileWriter::new(&path).expect("writer");
+        writer.write(b"payload").expect("first write lands");
+
+        fs::remove_file(&path).expect("remove the payload");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("run mkfifo");
+        assert!(made.success(), "mkfifo should create the FIFO");
+        writer.set_injected_stale_stamps(true);
+
+        let (done, finished) = std::sync::mpsc::channel();
+        let saving = writer.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(saving.write(b"payload").map_err(|error| error.to_string()));
+        });
+        let outcome = finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("verification must not wait on a FIFO");
+        assert_eq!(outcome, Ok(AtomicWriteOutcome::Written));
+        assert_eq!(writer.verified_skip_count(), 0);
+        assert!(
+            fs::symlink_metadata(&path)
+                .expect("destination metadata")
+                .file_type()
+                .is_file(),
+            "the FIFO was replaced by a regular file"
+        );
+        assert_eq!(fs::read(&path).expect("store"), b"payload");
+    }
+
+    #[test]
     fn a_symlink_to_the_identical_payload_is_replaced_not_trusted() {
         let directory = tempfile::tempdir().expect("tempdir");
         let path = directory.path().join("store.json");
