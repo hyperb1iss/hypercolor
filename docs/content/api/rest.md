@@ -1165,8 +1165,8 @@ Captures never upscale past the canvas size. The response carries
 `X-Canvas-Frame-Number`, `X-Canvas-Timestamp-Ms`, `X-Canvas-Width`,
 `X-Canvas-Height`, `X-Canvas-Source-Width`, and `X-Canvas-Source-Height`.
 `X-Canvas-Fresh: 0` means nothing rendered during the wait and the image is
-the last frame published before rendering went quiet. A daemon that has not
-rendered a frame since it started answers `503`.
+the last frame published before rendering went quiet. When the newest published
+canvas is empty, as before anything has rendered, the route answers `503`.
 
 ```bash
 curl -s 'http://127.0.0.1:9420/api/v1/canvas/frame?format=png&width=320' -o canvas.png

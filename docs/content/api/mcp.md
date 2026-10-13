@@ -101,9 +101,11 @@ R --> E
 `get_devices`, `get_status`, `list_scenes`, `get_audio_state`, `get_sensor_data`,
 `get_layout`, `diagnose`, `openrgb_status`, `get_effect_console`,
 `capture_canvas`), and every tool carries an `idempotent` annotation so agents can
-reason about retries. Five are non-idempotent: `set_effect`, `set_color`,
+reason about retries. Six are non-idempotent: `set_effect`, `set_color`,
 `create_scene`, and `set_display_face` because repeated calls replace or add
-state, and `capture_canvas` because every call returns a new frame.
+state, `install_effect` because each call restarts the running page and
+returns a new console cursor, and `capture_canvas` because every call returns a
+new frame.
 
 **Resources** are live read-only snapshots the agent can pull for context. The
 `hypercolor://audio` resource updates at roughly 10 Hz when audio is active (not
@@ -143,7 +145,7 @@ input schemas, defaults, enums, and a worked call plus response for each tool.
 | `diagnose`           | Yes       | No          | Yes        |
 | `openrgb_status`     | Yes       | No          | Yes        |
 | `capture_canvas`     | Yes       | No          | No         |
-| `install_effect`     | No        | Yes         | Yes        |
+| `install_effect`     | No        | Yes         | No         |
 | `get_effect_console` | Yes       | No          | Yes        |
 
 `set_effect` resolves an effect by exact ID, exact case-insensitive name, or a

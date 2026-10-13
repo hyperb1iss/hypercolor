@@ -43,7 +43,9 @@ pub(super) fn build_install_effect() -> ToolDefinition {
         output_schema: output_schema::<InstalledEffectResult>(),
         read_only: false,
         destructive: true,
-        idempotent: true,
+        // Each install restarts the running page and returns a new console
+        // cursor, so repeating one is not a no-op.
+        idempotent: false,
     }
 }
 

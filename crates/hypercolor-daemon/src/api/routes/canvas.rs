@@ -12,7 +12,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
         [OperationDoc::get::<serde_json::Value>(
             "get_canvas_frame",
             "canvas",
-            "Capture the composed canvas",
+            "Capture the composed canvas (JPEG, or PNG with format=png)",
         )
         .query::<canvas::CanvasFrameQuery>()
         .component::<crate::canvas_capture::CanvasImageFormat>()

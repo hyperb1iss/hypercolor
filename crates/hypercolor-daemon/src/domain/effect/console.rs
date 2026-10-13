@@ -63,10 +63,7 @@ pub async fn read_console(
     let target = match read.effect.as_deref() {
         None => None,
         Some(selector) => Some(match effects.resolve_metadata(selector).await {
-            Some(metadata) => EffectTarget::Effect {
-                id: metadata.id,
-                name: metadata.name,
-            },
+            Some(metadata) => EffectTarget::Effect(metadata.id),
             None => EffectTarget::Name(selector.to_owned()),
         }),
     };
@@ -89,9 +86,9 @@ pub async fn read_console(
 }
 
 enum EffectTarget {
-    /// An installed effect: match its source file, or its name for output
-    /// recorded before the file moved.
-    Effect { id: EffectId, name: String },
+    /// An installed effect: match output from its source file only, so a
+    /// copy that shares its title stays separate.
+    Effect(EffectId),
     /// A selector the catalog does not know: match recorded names.
     Name(String),
 }
@@ -99,10 +96,7 @@ enum EffectTarget {
 impl EffectTarget {
     fn matches(&self, entry: &JournalEntry, catalog: &[(PathBuf, EffectId)]) -> bool {
         match self {
-            Self::Effect { id, name } => {
-                catalog_id(&entry.source_path, catalog) == Some(*id)
-                    || entry.effect_name.eq_ignore_ascii_case(name)
-            }
+            Self::Effect(id) => catalog_id(&entry.source_path, catalog) == Some(*id),
             Self::Name(name) => entry.effect_name.eq_ignore_ascii_case(name),
         }
     }
