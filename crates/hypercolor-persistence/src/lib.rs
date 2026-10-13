@@ -337,11 +337,13 @@ struct DestinationState {
 /// set `ChangeTime`. A skip is reported only after opening the destination,
 /// confirming from that same handle that it is the file this process staged
 /// and synced and that it carries the requested mode, reading its bytes and
-/// comparing them with the payload (or the digest), and syncing that handle
-/// so the bytes it holds are durable even if something rewrote identical
-/// bytes without syncing. The file is this process's own synced inode, so
-/// its directory entry is already covered by the barrier that followed its
-/// rename. Any mismatch or error falls through to a normal write.
+/// comparing them with the payload (or the digest), syncing that handle so
+/// the bytes it holds are durable even if something rewrote identical bytes
+/// without syncing, and then syncing the parent directory so whichever entry
+/// names the file is durable too. The identity match carries no durability
+/// weight: a rename or a reused inode number cannot leave the skip trusting
+/// an entry nothing synced. Any mismatch or error falls through to a normal
+/// write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DurableBytes {
     digest: PayloadDigest,
@@ -424,6 +426,16 @@ fn verify_destination_file(
     #[cfg(any(test, feature = "persistence-test-hooks"))]
     destination.file_syncs.fetch_add(1, Ordering::AcqRel);
     file.sync_all()?;
+    // The entry naming the file may be one nothing synced: an outside rename
+    // that moved this file away and back, or a new file that reused its
+    // inode number. Syncing the directory makes whichever entry it is
+    // durable, so the identity match above carries no durability weight.
+    #[cfg(unix)]
+    {
+        #[cfg(any(test, feature = "persistence-test-hooks"))]
+        destination.directory_syncs.fetch_add(1, Ordering::AcqRel);
+        sync_parent_directory(&destination.parent).map_err(std::io::Error::other)?;
+    }
     Ok(true)
 }
 
@@ -659,7 +671,8 @@ impl AtomicFileWriter {
     /// durable here, in the file it wrote, with the requested mode.
     ///
     /// This blocks on file I/O: it reads the file, compares it with the
-    /// recorded digest, and syncs it, as the identical-bytes skip does.
+    /// recorded digest, and syncs the file and its directory entry, as the
+    /// identical-bytes skip does.
     #[must_use]
     pub fn holds_durable_bytes(&self) -> bool {
         let durable = self
@@ -730,9 +743,10 @@ impl AtomicFileWriter {
         self.destination.replacements.load(Ordering::Acquire)
     }
 
-    /// How many directory durability barriers this destination's writes have
-    /// run in this process: exactly one per replacement on Unix, none on
-    /// Windows, where the replacement itself is write-through.
+    /// How many directory durability barriers this destination has run in
+    /// this process. On Unix that is exactly one per replacement and one per
+    /// successful verification; Windows runs none, since its replacement is
+    /// write-through.
     #[cfg(any(test, feature = "persistence-test-hooks"))]
     #[must_use]
     pub fn directory_sync_count(&self) -> usize {
@@ -1399,12 +1413,43 @@ mod tests {
         assert_eq!(writer.replacement_count(), 2);
         assert_eq!(writer.directory_sync_count(), 2);
 
-        // Bytes already durable need neither a replacement nor a barrier,
-        // only the verification that they are still there.
+        // Bytes already durable need no replacement, only the verification
+        // that they are still there: one file sync and one directory sync.
+        let file_syncs = writer.file_sync_count();
         writer.write(b"second").expect("identical write lands");
         assert_eq!(writer.replacement_count(), 2);
-        assert_eq!(writer.directory_sync_count(), 2);
         assert_eq!(writer.verified_skip_count(), 1);
+        assert_eq!(writer.verification_read_count(), 1);
+        assert_eq!(writer.file_sync_count(), file_syncs + 1);
+        assert_eq!(writer.directory_sync_count(), 3);
+    }
+
+    #[test]
+    fn a_skip_syncs_the_directory_entry_an_outside_rename_left() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("store.json");
+        let aside = directory.path().join("store.json.aside");
+        let writer = AtomicFileWriter::new(&path).expect("writer");
+        writer.write(b"payload").expect("first write lands");
+
+        // Moved away and back by something that never synced the directory:
+        // same inode, same bytes, an entry this process did not create.
+        fs::rename(&path, &aside).expect("move away");
+        fs::rename(&aside, &path).expect("move back");
+        writer.set_injected_stale_stamps(true);
+        let barriers = writer.directory_sync_count();
+
+        assert_eq!(
+            writer.write(b"payload").expect("identical write lands"),
+            AtomicWriteOutcome::Written
+        );
+        assert_eq!(writer.replacement_count(), 1, "the bytes were kept");
+        assert_eq!(writer.verified_skip_count(), 1);
+        assert_eq!(
+            writer.directory_sync_count(),
+            barriers + 1,
+            "the skip made the current entry durable"
+        );
     }
 
     #[test]
