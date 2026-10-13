@@ -133,6 +133,12 @@ impl FileChangeStamp {
         self.volume == other.volume && self.file_id == other.file_id
     }
 
+    /// The file's length in bytes when stamped.
+    #[must_use]
+    pub const fn byte_len(&self) -> u64 {
+        self.len
+    }
+
     /// The Unix permission bits the file carried when stamped.
     #[cfg(unix)]
     #[must_use]

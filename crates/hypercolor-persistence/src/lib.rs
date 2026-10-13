@@ -8,7 +8,7 @@ use std::collections::HashMap;
 #[cfg(not(windows))]
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
+use std::io::{Read as _, Write};
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::sync::atomic::AtomicU32;
@@ -287,6 +287,10 @@ struct Destination {
     replacements: AtomicUsize,
     #[cfg(any(test, feature = "persistence-test-hooks"))]
     directory_syncs: AtomicUsize,
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    injected_stale_stamps: std::sync::atomic::AtomicBool,
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    verified_skips: AtomicUsize,
 }
 
 #[cfg(windows)]
@@ -320,17 +324,27 @@ struct DestinationState {
 }
 
 /// What a destination's file durably held after one of this process's
-/// writes: the payload's digest, and the change stamp of the file it landed
-/// as.
+/// writes, so an identical payload can be confirmed instead of rewritten.
 ///
-/// Other code can replace or rewrite the same path without this coordinator
-/// (a directly staged replacement, a hand edit, a timestamp-preserving
-/// restore), and any of those moves the change stamp, so the digest only
-/// describes the file while a fresh stamp still matches. A platform with no
-/// change stamp never records one, and every write there replaces the file.
+/// Nothing here is proof on its own. The change stamp is a fast reject: a
+/// different stamp or file identity shows the file changed, and the write
+/// goes ahead without reading anything. An equal stamp establishes nothing,
+/// since timestamp precision varies by filesystem and Windows lets callers
+/// set `ChangeTime`. A skip is reported only after opening the destination,
+/// confirming from that same handle that it is the file this process staged
+/// and synced and that it carries the requested mode, reading its bytes and
+/// comparing them with the payload (or the digest), and syncing that handle
+/// so the bytes it holds are durable even if something rewrote identical
+/// bytes without syncing. The file is this process's own synced inode, so
+/// its directory entry is already covered by the barrier that followed its
+/// rename. Any mismatch or error falls through to a normal write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DurableBytes {
     digest: PayloadDigest,
+    /// The staged file as read from its own handle before the rename. Only
+    /// its identity is compared, which a rename keeps.
+    staged: hypercolor_platform_fs::FileChangeStamp,
+    /// The destination's stamp once the barrier completed: a fast reject.
     stamp: hypercolor_platform_fs::FileChangeStamp,
 }
 
@@ -340,31 +354,96 @@ fn payload_digest(payload: &[u8]) -> PayloadDigest {
     Sha256::digest(payload).into()
 }
 
+/// What a verification compares the destination's bytes against.
+#[derive(Clone, Copy)]
+enum ExpectedBytes<'a> {
+    /// The caller holds the payload, so the comparison is byte for byte.
+    Payload(&'a [u8]),
+    /// Only the recorded digest is at hand.
+    Digest(&'a PayloadDigest),
+}
+
 impl DurableBytes {
-    /// Whether the destination file is still exactly the one these bytes
-    /// landed as, with the permissions the destination asks for.
-    fn still_current(&self, destination: &Destination) -> bool {
+    /// Whether the destination's stamp still matches. A mismatch proves the
+    /// file changed; a match proves nothing.
+    fn stamp_unchanged(&self, destination: &Destination) -> bool {
+        #[cfg(any(test, feature = "persistence-test-hooks"))]
+        if destination.injected_stale_stamps.load(Ordering::Acquire) {
+            return true;
+        }
         hypercolor_platform_fs::path_change_stamp(&destination.path)
             .ok()
             .flatten()
             == Some(self.stamp)
-            && self.has_requested_mode(destination)
     }
 
-    #[cfg(unix)]
-    fn has_requested_mode(&self, destination: &Destination) -> bool {
-        let requested = destination.file_mode.load(Ordering::Acquire);
-        requested == 0 || self.stamp.permission_bits() == requested & 0o7777
+    /// Whether the destination durably holds `expected` in the file this
+    /// process wrote. Blocks on file I/O: a read and a file sync.
+    fn verify(&self, destination: &Destination, expected: ExpectedBytes<'_>) -> bool {
+        self.stamp_unchanged(destination)
+            && verify_destination_file(destination, &self.staged, expected).unwrap_or(false)
     }
+}
 
-    #[cfg(not(unix))]
-    #[expect(
-        clippy::unused_self,
-        reason = "Non-Unix platforms carry no requested file mode"
-    )]
-    const fn has_requested_mode(&self, _destination: &Destination) -> bool {
-        true
+/// Open the destination, confirm from that handle that it is the staged
+/// file with the requested mode, compare its bytes, and sync it.
+fn verify_destination_file(
+    destination: &Destination,
+    staged: &hypercolor_platform_fs::FileChangeStamp,
+    expected: ExpectedBytes<'_>,
+) -> std::io::Result<bool> {
+    let mut file = open_for_verification(&destination.path)?;
+    let Some(opened) = hypercolor_platform_fs::file_change_stamp(&file)? else {
+        return Ok(false);
+    };
+    if !opened.same_file(staged) || !has_requested_mode(destination, &opened) {
+        return Ok(false);
     }
+    if let ExpectedBytes::Payload(payload) = expected
+        && u64::try_from(payload.len()).ok() != Some(opened.byte_len())
+    {
+        return Ok(false);
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(opened.byte_len()).unwrap_or(0));
+    file.read_to_end(&mut bytes)?;
+    let matches = match expected {
+        ExpectedBytes::Payload(payload) => bytes == payload,
+        ExpectedBytes::Digest(digest) => payload_digest(&bytes) == *digest,
+    };
+    if !matches {
+        return Ok(false);
+    }
+    file.sync_all()?;
+    Ok(true)
+}
+
+/// Windows flushes only through a handle with write access.
+fn open_for_verification(path: &Path) -> std::io::Result<fs::File> {
+    #[cfg(windows)]
+    {
+        fs::OpenOptions::new().read(true).write(true).open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path)
+    }
+}
+
+#[cfg(unix)]
+fn has_requested_mode(
+    destination: &Destination,
+    stamp: &hypercolor_platform_fs::FileChangeStamp,
+) -> bool {
+    let requested = destination.file_mode.load(Ordering::Acquire);
+    requested == 0 || stamp.permission_bits() == requested & 0o7777
+}
+
+#[cfg(not(unix))]
+const fn has_requested_mode(
+    _destination: &Destination,
+    _stamp: &hypercolor_platform_fs::FileChangeStamp,
+) -> bool {
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -464,6 +543,10 @@ impl AtomicFileWriter {
             replacements: AtomicUsize::new(0),
             #[cfg(any(test, feature = "persistence-test-hooks"))]
             directory_syncs: AtomicUsize::new(0),
+            #[cfg(any(test, feature = "persistence-test-hooks"))]
+            injected_stale_stamps: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "persistence-test-hooks"))]
+            verified_skips: AtomicUsize::new(0),
         });
 
         #[cfg(windows)]
@@ -558,16 +641,22 @@ impl AtomicFileWriter {
             .durable = None;
     }
 
-    /// Whether the file still holds, untouched, the bytes this process last
-    /// made durable here.
+    /// Whether the file durably holds the bytes this process last made
+    /// durable here, in the file it wrote, with the requested mode.
+    ///
+    /// This blocks on file I/O: it reads the file, compares it with the
+    /// recorded digest, and syncs it, as the identical-bytes skip does.
     #[must_use]
     pub fn holds_durable_bytes(&self) -> bool {
-        self.destination
+        let durable = self
+            .destination
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .durable
-            .is_some_and(|durable| durable.still_current(&self.destination))
+            .durable;
+        durable.is_some_and(|durable| {
+            durable.verify(&self.destination, ExpectedBytes::Digest(&durable.digest))
+        })
     }
 
     /// Wait for this destination's newest dirty snapshot to converge.
@@ -634,6 +723,24 @@ impl AtomicFileWriter {
     #[must_use]
     pub fn directory_sync_count(&self) -> usize {
         self.destination.directory_syncs.load(Ordering::Acquire)
+    }
+
+    /// How many writes this destination confirmed instead of rewriting,
+    /// after verifying the bytes on disk.
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    #[must_use]
+    pub fn verified_skip_count(&self) -> usize {
+        self.destination.verified_skips.load(Ordering::Acquire)
+    }
+
+    /// Make the change-stamp fast reject report no change, as on a
+    /// filesystem whose timestamps miss a same-length rewrite, so tests can
+    /// reach the content verification behind it.
+    #[cfg(any(test, feature = "persistence-test-hooks"))]
+    pub fn set_injected_stale_stamps(&self, stale: bool) {
+        self.destination
+            .injected_stale_stamps
+            .store(stale, Ordering::Release);
     }
 
     /// Inject post-replacement directory-sync failures for deterministic tests.
@@ -960,7 +1067,7 @@ fn try_write_stage_aware(
     payload: &[u8],
 ) -> AtomicWriteCommitResult {
     let digest = payload_digest(payload);
-    let holds_known_bytes = {
+    let durable = {
         let state = destination
             .state
             .lock()
@@ -970,19 +1077,24 @@ fn try_write_stage_aware(
         if generation != state.latest_admitted_generation {
             return AtomicWriteCommitResult::Superseded;
         }
-        // Only one attempt per destination runs at a time, so nothing this
-        // coordinator owns can change the file between this check and the
-        // outcome; the change stamp catches anything that did from outside,
-        // and a mode the file no longer carries is written again too.
-        match state.durable {
-            Some(durable) if durable.still_current(destination) => {
-                if durable.digest == digest {
-                    return AtomicWriteCommitResult::DurableWritten;
-                }
-                true
+        state.durable
+    };
+    // Verification reads and syncs a file, so it runs outside the state
+    // lock. Only one attempt per destination runs at a time, so nothing this
+    // coordinator owns changes the file meanwhile.
+    let holds_known_bytes = match durable {
+        Some(durable) if durable.digest == digest => {
+            if durable.verify(destination, ExpectedBytes::Payload(payload)) {
+                #[cfg(any(test, feature = "persistence-test-hooks"))]
+                destination.verified_skips.fetch_add(1, Ordering::AcqRel);
+                return AtomicWriteCommitResult::DurableWritten;
             }
-            _ => false,
+            false
         }
+        // Only spares the observer and the history clock a read of bytes the
+        // digest already says differ; it never skips a write.
+        Some(durable) => durable.stamp_unchanged(destination),
+        None => false,
     };
 
     let mut temporary = match NamedTempFile::new_in(&destination.parent) {
@@ -1050,10 +1162,10 @@ fn try_write_stage_aware(
         });
     }
 
-    // Which file is ours, read from the staged file itself. A rename keeps
-    // that identity but moves the change stamp, so the stamp to record is
-    // read from the destination after the barrier, and only kept when it
-    // still names this file.
+    // Which file is ours, read from the staged file's own handle. A rename
+    // keeps that identity but moves the change stamp, so the fast-reject
+    // stamp is read from the destination after the barrier, and only kept
+    // when it still names this file. Neither is trusted as content.
     let staged = hypercolor_platform_fs::file_change_stamp(temporary.as_file())
         .ok()
         .flatten();
@@ -1101,13 +1213,19 @@ fn try_write_stage_aware(
     }
     let landed = hypercolor_platform_fs::path_change_stamp(&destination.path)
         .ok()
-        .flatten()
-        .filter(|landed| staged.is_some_and(|staged| staged.same_file(landed)));
+        .flatten();
     destination
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .durable = landed.map(|stamp| DurableBytes { digest, stamp });
+        .durable = staged
+        .zip(landed)
+        .filter(|(staged, landed)| staged.same_file(landed))
+        .map(|(staged, stamp)| DurableBytes {
+            digest,
+            staged,
+            stamp,
+        });
     AtomicWriteCommitResult::DurableWritten
 }
 
@@ -1248,10 +1366,43 @@ mod tests {
         assert_eq!(writer.replacement_count(), 2);
         assert_eq!(writer.directory_sync_count(), 2);
 
-        // Bytes already durable need neither a replacement nor a barrier.
+        // Bytes already durable need neither a replacement nor a barrier,
+        // only the verification that they are still there.
         writer.write(b"second").expect("identical write lands");
         assert_eq!(writer.replacement_count(), 2);
         assert_eq!(writer.directory_sync_count(), 2);
+        assert_eq!(writer.verified_skip_count(), 1);
+    }
+
+    #[test]
+    fn an_equal_stamp_over_different_bytes_is_still_written() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("store.json");
+        let writer = AtomicFileWriter::new(&path).expect("writer");
+        writer.write(b"original").expect("first write lands");
+        let modified = fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .expect("landed mtime");
+
+        // A same-length rewrite of the same inode with its mtime restored,
+        // on a filesystem whose stamps miss it.
+        fs::write(&path, b"restored").expect("overwrite in place");
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_modified(modified))
+            .expect("restore mtime");
+        writer.set_injected_stale_stamps(true);
+        assert!(!writer.holds_durable_bytes());
+
+        assert_eq!(
+            writer.write(b"original").expect("save lands"),
+            AtomicWriteOutcome::Written
+        );
+        assert_eq!(fs::read(&path).expect("store"), b"original");
+        assert_eq!(writer.replacement_count(), 2, "a real write ran");
+        assert_eq!(writer.verified_skip_count(), 0);
+        assert!(writer.holds_durable_bytes());
     }
 
     #[test]
