@@ -358,7 +358,7 @@ pub async fn install_effect(
 
     if file_bytes.len() > MAX_EFFECT_UPLOAD_BYTES {
         return DomainError::PayloadTooLarge {
-            limit_bytes: MAX_EFFECT_UPLOAD_BYTES as u64,
+            limit_bytes: Some(MAX_EFFECT_UPLOAD_BYTES as u64),
         }
         .into_response();
     }

@@ -90,9 +90,9 @@ pub(crate) fn client_details(error: &DomainError) -> Option<serde_json::Value> {
         DomainError::PreconditionFailed {
             expected, current, ..
         } => Some(serde_json::json!({ "expected": expected, "current": current })),
-        DomainError::PayloadTooLarge { limit_bytes } => {
-            Some(serde_json::json!({ "limit_bytes": limit_bytes }))
-        }
+        DomainError::PayloadTooLarge {
+            limit_bytes: Some(limit_bytes),
+        } => Some(serde_json::json!({ "limit_bytes": limit_bytes })),
         DomainError::RateLimited {
             limit,
             window_seconds,
@@ -299,9 +299,18 @@ mod tests {
 
     #[tokio::test]
     async fn limit_details_survive_projection() {
-        let payload = DomainError::PayloadTooLarge { limit_bytes: 64 };
+        let payload = DomainError::PayloadTooLarge {
+            limit_bytes: Some(64),
+        };
         let json = body_json(payload.into_response()).await;
         assert_eq!(json["error"]["details"]["limit_bytes"], 64);
+
+        let unnamed = DomainError::PayloadTooLarge { limit_bytes: None };
+        let json = body_json(unnamed.into_response()).await;
+        assert!(
+            json["error"].get("details").is_none(),
+            "an unknown limit is omitted, never guessed: {json}"
+        );
 
         let rate = DomainError::RateLimited {
             message: "slow down".to_owned(),

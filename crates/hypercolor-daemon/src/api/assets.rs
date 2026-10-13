@@ -250,7 +250,7 @@ async fn parse_upload(
 fn multipart_error_response(context: &str, error: MultipartError) -> DomainError {
     if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
         return DomainError::PayloadTooLarge {
-            limit_bytes: asset_upload_body_limit_bytes(),
+            limit_bytes: Some(asset_upload_body_limit_bytes()),
         };
     }
     DomainError::malformed(format!("{context}: {error}"))
@@ -293,7 +293,7 @@ fn parse_tags(raw: &str) -> Result<Vec<String>, String> {
 fn asset_error(error: AssetLibraryError) -> DomainError {
     match error {
         AssetLibraryError::HardCapExceeded { hard_cap_bytes, .. } => DomainError::PayloadTooLarge {
-            limit_bytes: hard_cap_bytes,
+            limit_bytes: Some(hard_cap_bytes),
         },
         AssetLibraryError::UnsupportedMediaType { reason } => {
             DomainError::unsupported_media_type(reason)

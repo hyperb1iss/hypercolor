@@ -10,14 +10,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::ws::Message;
 use http::{Request, StatusCode, header};
+use hypercolor_daemon::api::extract::{API_BODY_LIMIT_BYTES, ApiJson};
 use hypercolor_daemon::api::local::{TrustedLocalApi, TrustedLocalWebSocket};
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::api::scene::SceneDocument;
 use hypercolor_types::api::scenes::ReplaceSceneRequest;
 use serde_json::{Value, json};
 use tokio::time::timeout;
+use tower::ServiceExt;
 
 struct Harness {
     api: TrustedLocalApi,
@@ -335,7 +338,7 @@ async fn a_body_without_a_json_content_type_is_unsupported_media_type() {
 }
 
 #[tokio::test]
-async fn an_oversized_body_names_the_limit_the_router_enforces() {
+async fn an_oversized_body_is_payload_too_large_without_a_guessed_limit() {
     let harness = harness();
     let oversized = json!({ "name": "x".repeat(2 * 1024 * 1024 + 1) });
     let (status, content_type, body) =
@@ -347,7 +350,57 @@ async fn an_oversized_body_names_the_limit_the_router_enforces() {
         StatusCode::PAYLOAD_TOO_LARGE,
         "payload_too_large",
     );
-    assert_eq!(error["details"]["limit_bytes"], 2 * 1024 * 1024);
+    assert!(
+        error.get("details").is_none(),
+        "the extractor cannot see which limit fired, so it names none: {error}"
+    );
+}
+
+/// An extension route that opts into `ApiJson` under its own ceiling.
+async fn echo(ApiJson(value): ApiJson<Value>) -> axum::Json<Value> {
+    axum::Json(value)
+}
+
+#[tokio::test]
+async fn a_route_with_its_own_limit_never_reports_the_router_default() {
+    let router = axum::Router::new()
+        .route("/echo", axum::routing::post(echo))
+        .layer(DefaultBodyLimit::max(1024));
+
+    let small = router
+        .clone()
+        .oneshot(json_request("POST", "/echo", &json!({ "ok": true })))
+        .await
+        .expect("router answers");
+    assert_eq!(
+        small.status(),
+        StatusCode::OK,
+        "bodies under the limit decode"
+    );
+
+    let response = router
+        .oneshot(json_request(
+            "POST",
+            "/echo",
+            &json!({ "pad": "x".repeat(2048) }),
+        ))
+        .await
+        .expect("router answers");
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads");
+    let body: Value = serde_json::from_slice(&bytes).expect("413 is the JSON envelope");
+    assert_eq!(body["error"]["code"], "payload_too_large");
+    assert!(
+        body["error"].get("details").is_none(),
+        "no limit is stated, least of all the router's 2 MiB: {body}"
+    );
+    let message = body["error"]["message"].as_str().expect("message");
+    assert!(
+        !message.contains(&API_BODY_LIMIT_BYTES.to_string()),
+        "the message names no false limit: {message}"
+    );
 }
 
 #[tokio::test]

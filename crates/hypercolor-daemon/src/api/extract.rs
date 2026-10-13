@@ -34,17 +34,18 @@ use crate::domain::DomainError;
 /// The request body ceiling every `/api/v1` route enforces unless it sets
 /// its own.
 ///
-/// This equals Axum's built-in default. The API router installs it
-/// explicitly so the `413` [`ApiJson`] renders names a limit the daemon
-/// actually enforces. A route that installs a different
-/// `DefaultBodyLimit` reports its own ceiling instead (asset upload does).
+/// This equals Axum's built-in default; the API router installs it
+/// explicitly so the ceiling is a daemon decision rather than an inherited
+/// one. An extractor `413` cannot tell which `DefaultBodyLimit` refused the
+/// body, so it omits `details.limit_bytes`; a route that knows its own
+/// ceiling (asset upload) renders that 413 itself.
 pub const API_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 
 /// A JSON request body. A body that will not decode is `400
 /// malformed_request` (invalid JSON), `422 validation_error` (wrong
 /// shape, with `details.field` naming the path), `415
 /// unsupported_media_type` (no JSON content type), or `413
-/// payload_too_large`.
+/// payload_too_large` (without a limit, which Axum does not expose).
 ///
 /// As `Option<ApiJson<T>>` it is absent when the request carries no
 /// `Content-Type`, matching `Option<axum::Json<T>>`.
@@ -254,9 +255,10 @@ fn websocket_upgrade_rejection(rejection: WebSocketUpgradeRejection) -> DomainEr
 /// keyed by the status Axum assigned it.
 fn status_rejection(status: StatusCode, message: String) -> DomainError {
     match status {
-        StatusCode::PAYLOAD_TOO_LARGE => DomainError::PayloadTooLarge {
-            limit_bytes: u64::try_from(API_BODY_LIMIT_BYTES).unwrap_or(u64::MAX),
-        },
+        // Axum keeps the applied `DefaultBodyLimit` private and its
+        // length error does not carry it, so the ceiling that fired is
+        // unknowable here; a route-level limit may differ from the router's.
+        StatusCode::PAYLOAD_TOO_LARGE => DomainError::PayloadTooLarge { limit_bytes: None },
         StatusCode::UNSUPPORTED_MEDIA_TYPE => DomainError::unsupported_media_type(message),
         StatusCode::UNPROCESSABLE_ENTITY => DomainError::validation(message),
         status if status.is_server_error() => {
