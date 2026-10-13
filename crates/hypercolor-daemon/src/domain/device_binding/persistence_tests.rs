@@ -14,6 +14,7 @@ use hypercolor_types::device::{
     DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::effect::EffectId;
+use hypercolor_types::event::{HypercolorEvent, SceneLibraryChangeKind, ZoneChangeKind};
 use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
@@ -156,6 +157,8 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
     let mut named_zone = default_primary_zone(legacy_layout.clone());
     named_zone.display_target = Some(DisplayFaceTarget::new(legacy_physical_id));
     named_zone.role = ZoneRole::Display;
+    let named_zone_id = named_zone.id;
+    let named_scene_id = named.id;
     named.zones.push(named_zone);
     manager.create(named).expect("named scene should be valid");
 
@@ -407,17 +410,40 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
     let mut events = event_bus.subscribe_all();
     assert_eq!(publication.publish(&context), 11);
     let mut layout_changes = Vec::new();
+    let mut named_scene_changes = Vec::new();
     while let Ok(timestamped) = events.try_recv() {
-        if let hypercolor_types::event::HypercolorEvent::LayoutChanged { previous, current } =
-            timestamped.event
-        {
-            layout_changes.push((previous, current));
+        match timestamped.event {
+            HypercolorEvent::LayoutChanged { previous, current } => {
+                layout_changes.push((previous, current));
+            }
+            HypercolorEvent::ZoneChanged {
+                scene_id,
+                zone_id,
+                kind,
+                ..
+            } if scene_id == named_scene_id => {
+                named_scene_changes.push(format!("zone {zone_id} {kind:?}"));
+            }
+            HypercolorEvent::SceneLibraryChanged { scene_id, kind, .. }
+                if scene_id == named_scene_id =>
+            {
+                named_scene_changes.push(format!("library {kind:?}"));
+            }
+            _ => {}
         }
     }
     assert_eq!(
         layout_changes,
         vec![(None, "saved".to_owned())],
         "the migration rebinds one stored layout and names it once"
+    );
+    assert_eq!(
+        named_scene_changes,
+        vec![
+            format!("zone {named_zone_id} {:?}", ZoneChangeKind::Updated),
+            format!("library {:?}", SceneLibraryChangeKind::Updated),
+        ],
+        "the rebound saved scene announces its rewritten zone"
     );
     context.journal.clear().expect("clear migration journal");
     assert!(

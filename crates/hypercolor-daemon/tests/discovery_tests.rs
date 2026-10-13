@@ -45,7 +45,9 @@ use hypercolor_types::device::{
     DeviceTopologyHint, DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::effect::EffectId;
-use hypercolor_types::event::ZoneColors;
+use hypercolor_types::event::{
+    HypercolorEvent, SceneLibraryChangeKind, ZoneChangeKind, ZoneColors,
+};
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::portable::{
     PortableIdentityClaim, ReviewedSerial, SerialNormalization, SerialNormalizerRegistry,
@@ -1401,6 +1403,43 @@ fn display_surface_zone(name: &str, device_id: DeviceId, layers: Vec<SceneLayer>
     }
 }
 
+/// A scene event reduced to what observers act on.
+#[derive(Debug, PartialEq, Eq)]
+enum SceneEventShape {
+    Zone(ZoneId, ZoneRole, ZoneChangeKind),
+    Library(SceneLibraryChangeKind, Option<String>),
+    LayerStack(ZoneId),
+}
+
+fn drain_scene_events(
+    receiver: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+    scene_id: SceneId,
+) -> Vec<SceneEventShape> {
+    let mut seen = Vec::new();
+    while let Ok(timestamped) = receiver.try_recv() {
+        match timestamped.event {
+            HypercolorEvent::ZoneChanged {
+                scene_id: event_scene,
+                zone_id,
+                role,
+                kind,
+            } if event_scene == scene_id => seen.push(SceneEventShape::Zone(zone_id, role, kind)),
+            HypercolorEvent::SceneLibraryChanged {
+                scene_id: event_scene,
+                kind,
+                name,
+            } if event_scene == scene_id => seen.push(SceneEventShape::Library(kind, name)),
+            HypercolorEvent::LayerStackChanged {
+                scene_id: event_scene,
+                zone_id,
+                ..
+            } if event_scene == scene_id => seen.push(SceneEventShape::LayerStack(zone_id)),
+            _ => {}
+        }
+    }
+    seen
+}
+
 fn display_zones_targeting(scene: &Scene, device_id: DeviceId) -> Vec<&Zone> {
     scene
         .zones
@@ -1518,7 +1557,10 @@ async fn complete_sweep_moves_display_zones_off_identities_minted_before_driver_
         ),
     ];
     let scene_id = scene.id;
+    let legacy_push2_zone_id = scene.zones[0].id;
     let face_zone_id = scene.zones[1].id;
+    let current_push2_zone_id = scene.zones[2].id;
+    let current_lcd_zone_id = scene.zones[3].id;
     let mut manager = SceneManager::with_default_layout(empty_layout());
     manager
         .create(scene)
@@ -1569,6 +1611,7 @@ async fn complete_sweep_moves_display_zones_off_identities_minted_before_driver_
         DiscoveryTarget::driver("corsair"),
     ];
     let revision_before = scenes.revision();
+    let mut events = runtime.event_bus.subscribe_all();
 
     run_complete_sweep(&runtime, targets.clone()).await;
 
@@ -1595,7 +1638,37 @@ async fn complete_sweep_moves_display_zones_off_identities_minted_before_driver_
         display_zones_targeting(scene, stable_device_id(CURRENT_PUSH2)).len(),
         1
     );
-    assert!(scenes.revision() > revision_before);
+    assert_eq!(
+        scenes.revision(),
+        revision_before + 1,
+        "the migration publishes as exactly one scene commit"
+    );
+    assert_eq!(
+        drain_scene_events(&mut events, scene_id),
+        vec![
+            SceneEventShape::Zone(
+                legacy_push2_zone_id,
+                ZoneRole::Display,
+                ZoneChangeKind::Updated
+            ),
+            SceneEventShape::Zone(face_zone_id, ZoneRole::Display, ZoneChangeKind::Updated),
+            SceneEventShape::Zone(
+                current_push2_zone_id,
+                ZoneRole::Display,
+                ZoneChangeKind::Removed
+            ),
+            SceneEventShape::Zone(
+                current_lcd_zone_id,
+                ZoneRole::Display,
+                ZoneChangeKind::Removed
+            ),
+            SceneEventShape::Library(
+                SceneLibraryChangeKind::Updated,
+                Some("Studio Session".to_owned())
+            ),
+        ],
+        "the migration commit announces every zone it moved or collapsed"
+    );
     let journal: serde_json::Value = serde_json::from_slice(
         &std::fs::read(&journal_path).expect("migration journal should be written"),
     )
@@ -1614,6 +1687,7 @@ async fn complete_sweep_moves_display_zones_off_identities_minted_before_driver_
         settled_revision,
         "a second sweep has nothing left to migrate"
     );
+    assert_eq!(drain_scene_events(&mut events, scene_id), Vec::new());
     assert_eq!(scenes.snapshot().await.get(&scene_id), Some(&settled));
 }
 
