@@ -12,6 +12,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use tokio::fs;
 use tracing::{info, warn};
 
+use hypercolor_core::effect::console::EffectConsoleJournal;
 use hypercolor_core::effect::{
     HtmlControlKind, ParsedHtmlEffectMetadata, parse_html_effect_metadata,
 };
@@ -39,14 +40,15 @@ use crate::resource_summary::{
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
-const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
+/// Largest HTML effect the install routes accept.
+pub(crate) const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
 const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
 // Wire contracts live in hypercolor-types::api::effects — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
-    EffectCapabilitySet, EffectDetailResponse, EffectListResponse, EffectPresetListResponse,
-    EffectPresetOrigin, EffectPresetSummary, EffectSourceKind, EffectSummary,
-    InstalledEffectResponse, RescanResponse,
+    EffectCapabilitySet, EffectConsoleEntry, EffectConsoleLevel, EffectConsoleResponse,
+    EffectDetailResponse, EffectListResponse, EffectPresetListResponse, EffectPresetOrigin,
+    EffectPresetSummary, EffectSourceKind, EffectSummary, InstalledEffectResponse, RescanResponse,
 };
 
 struct ResolvedEffectPreset {
@@ -325,6 +327,51 @@ pub async fn get_effect_cover(
     effect_cover_image_response(&metadata, EffectCoverCache::Catalog).await
 }
 
+/// Query string for `GET /api/v1/effects/console`.
+#[derive(Debug, Clone, Default, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct EffectConsoleQuery {
+    /// Return only messages recorded after this cursor (a previous
+    /// response's `next_seq`). Omit or pass 0 for everything retained.
+    #[serde(default)]
+    pub after: Option<u64>,
+    /// Most messages to return, 1 to 500. Defaults to 100.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Effect id or name to narrow to.
+    #[serde(default)]
+    pub effect: Option<String>,
+    /// Lowest severity to include: `debug` (default), `log`, `warn`, or
+    /// `error`.
+    #[serde(default)]
+    pub level: Option<EffectConsoleLevel>,
+}
+
+/// `GET /api/v1/effects/console` — What effect pages printed, after a cursor.
+pub async fn get_effect_console(
+    State(state): State<Arc<AppState>>,
+    ApiQuery(query): ApiQuery<EffectConsoleQuery>,
+) -> Response {
+    let read = domain::effect::console::ConsoleRead {
+        after: query.after.unwrap_or_default(),
+        limit: query
+            .limit
+            .unwrap_or(domain::effect::console::DEFAULT_CONSOLE_LIMIT),
+        effect: query.effect,
+        level: query.level.unwrap_or_default(),
+    };
+    match domain::effect::console::read_console(
+        &state.domains.effects,
+        EffectConsoleJournal::global(),
+        read,
+    )
+    .await
+    {
+        Ok(response) => envelope::ok(response),
+        Err(error) => error.into_response(),
+    }
+}
+
 /// `POST /api/v1/effects/rescan` — Manually trigger an effect registry rescan.
 pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
     let report = match state.domains.effects.rescan_registry().await {
@@ -357,48 +404,78 @@ pub async fn install_effect(
     };
 
     if file_bytes.len() > MAX_EFFECT_UPLOAD_BYTES {
-        return DomainError::PayloadTooLarge {
-            limit_bytes: Some(MAX_EFFECT_UPLOAD_BYTES as u64),
-        }
-        .into_response();
+        return DomainError::from(EffectInstallError::TooLarge).into_response();
     }
 
     let Ok(html) = String::from_utf8(file_bytes) else {
         return DomainError::malformed("Uploaded effect must be valid UTF-8 HTML.").into_response();
     };
 
-    let validated = match validate_uploaded_html(&html) {
-        Ok(validated) => validated,
-        Err(errors) => {
-            return DomainError::validation_details(
+    match install_html_effect(state.as_ref(), file_name.as_deref(), &html).await {
+        Ok(installed) => envelope::created(InstalledEffectResponse {
+            id: installed.metadata.id.to_string(),
+            name: installed.metadata.name,
+            path: installed.source_path.display().to_string(),
+            controls: installed.metadata.controls.len(),
+            presets: installed.metadata.presets.len(),
+        }),
+        Err(error) => DomainError::from(error).into_response(),
+    }
+}
+
+/// Why an HTML effect install was refused.
+#[derive(Debug)]
+pub(crate) enum EffectInstallError {
+    /// The page is larger than [`MAX_EFFECT_UPLOAD_BYTES`].
+    TooLarge,
+    /// The page failed effect validation; one message per problem.
+    Invalid(Vec<String>),
+    /// The registry refused the install.
+    Domain(DomainError),
+}
+
+impl From<EffectInstallError> for DomainError {
+    fn from(error: EffectInstallError) -> Self {
+        match error {
+            EffectInstallError::TooLarge => Self::PayloadTooLarge {
+                limit_bytes: Some(MAX_EFFECT_UPLOAD_BYTES as u64),
+            },
+            EffectInstallError::Invalid(errors) => Self::validation_details(
                 "Uploaded effect failed validation.",
                 serde_json::json!({ "errors": errors }),
-            )
-            .into_response();
+            ),
+            EffectInstallError::Domain(error) => error,
         }
-    };
+    }
+}
 
-    let install_dir = user_effects_install_dir(state.as_ref());
-    let preferred_stem = file_name
-        .as_deref()
-        .and_then(uploaded_file_stem)
-        .map_or_else(
-            || sanitize_effect_filename_stem(&validated.title),
-            sanitize_effect_filename_stem,
-        );
-    // Same stem updates in place: the path-derived effect id stays stable,
-    // so existing assignments follow the update instead of a `-2` clone
-    // appearing beside the original.
-    let installed_path = install_dir.join(format!("{preferred_stem}.html"));
-    let installed = match state
+/// Validate one HTML effect and install it into the user effects directory.
+///
+/// The file is named after `file_name`'s stem, or the page title when no name
+/// is given. Installing over an existing stem replaces that effect in place:
+/// its id is derived from the path, so scenes that use it pick up the new
+/// page on their next frame instead of a `-2` copy appearing beside it.
+pub(crate) async fn install_html_effect(
+    state: &AppState,
+    file_name: Option<&str>,
+    html: &str,
+) -> Result<domain::effect::InstalledEffect, EffectInstallError> {
+    if html.len() > MAX_EFFECT_UPLOAD_BYTES {
+        return Err(EffectInstallError::TooLarge);
+    }
+    let validated = validate_uploaded_html(html).map_err(EffectInstallError::Invalid)?;
+
+    let preferred_stem = file_name.and_then(uploaded_file_stem).map_or_else(
+        || sanitize_effect_filename_stem(&validated.title),
+        sanitize_effect_filename_stem,
+    );
+    let installed_path = user_effects_install_dir(state).join(format!("{preferred_stem}.html"));
+    let installed = state
         .domains
         .effects
-        .install_registry_file(&installed_path, &html)
+        .install_registry_file(&installed_path, html)
         .await
-    {
-        Ok(installed) => installed,
-        Err(error) => return error.into_response(),
-    };
+        .map_err(EffectInstallError::Domain)?;
 
     info!(
         effect = %installed.metadata.name,
@@ -406,14 +483,7 @@ pub async fn install_effect(
         replaced_existing = installed.replaced_existing,
         "Installed uploaded effect"
     );
-
-    envelope::created(InstalledEffectResponse {
-        id: installed.metadata.id.to_string(),
-        name: installed.metadata.name,
-        path: installed.source_path.display().to_string(),
-        controls: installed.metadata.controls.len(),
-        presets: installed.metadata.presets.len(),
-    })
+    Ok(installed)
 }
 
 async fn effect_preset_stack(

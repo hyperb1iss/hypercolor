@@ -363,6 +363,9 @@ from .edit_members_request import EditMembersRequest
 from .edit_members_response import EditMembersResponse
 from .effect_capability_set import EffectCapabilitySet
 from .effect_category import EffectCategory
+from .effect_console_entry import EffectConsoleEntry
+from .effect_console_level import EffectConsoleLevel
+from .effect_console_response import EffectConsoleResponse
 from .effect_detail_response import EffectDetailResponse
 from .effect_health_status import EffectHealthStatus
 from .effect_install_form import EffectInstallForm
@@ -400,6 +403,7 @@ from .get_device_response_200 import GetDeviceResponse200
 from .get_display_face_response_200 import GetDisplayFaceResponse200
 from .get_driver_config_response_200 import GetDriverConfigResponse200
 from .get_driver_control_surface_response_200 import GetDriverControlSurfaceResponse200
+from .get_effect_console_response_200 import GetEffectConsoleResponse200
 from .get_effect_response_200 import GetEffectResponse200
 from .get_layout_response_200 import GetLayoutResponse200
 from .get_live_scene_response_200 import GetLiveSceneResponse200
@@ -988,6 +992,9 @@ __all__ = (
     "EditMembersResponse",
     "EffectCapabilitySet",
     "EffectCategory",
+    "EffectConsoleEntry",
+    "EffectConsoleLevel",
+    "EffectConsoleResponse",
     "EffectDetailResponse",
     "EffectHealthStatus",
     "EffectInstallForm",
@@ -1025,6 +1032,7 @@ __all__ = (
     "GetDisplayFaceResponse200",
     "GetDriverConfigResponse200",
     "GetDriverControlSurfaceResponse200",
+    "GetEffectConsoleResponse200",
     "GetEffectResponse200",
     "GetLayoutResponse200",
     "GetLiveSceneResponse200",

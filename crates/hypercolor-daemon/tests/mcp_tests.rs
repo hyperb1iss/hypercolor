@@ -832,7 +832,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let tools = list_payload["result"]["tools"]
         .as_array()
         .expect("tools list array");
-    assert_eq!(tools.len(), 19);
+    assert_eq!(tools.len(), 21);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
     assert!(tools.iter().any(|tool| tool["name"] == "set_display_face"));
 
@@ -2329,7 +2329,7 @@ async fn read_only_tool_results_match_their_declared_schemas() {
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 19);
+    assert_eq!(tools.len(), 21);
     assert!(
         tools
             .iter()
@@ -3140,5 +3140,108 @@ async fn mcp_http_capture_canvas_returns_image_content_blocks() {
     assert!(
         content.iter().any(|block| block["type"] == "text"),
         "the structured payload stays mirrored as text for older clients"
+    );
+}
+
+// ── install_effect / get_effect_console ─────────────────────────────────
+
+const LIVECODE_HTML: &str = r#"<!DOCTYPE html><html><head><title>Livecode Probe</title><meta property="speed" label="Speed" type="number" min="0" max="10" default="5"></head><body><canvas id="exCanvas"></canvas><script>console.log('frame')</script></body></html>"#;
+
+#[tokio::test]
+async fn install_effect_updates_in_place_when_the_file_name_repeats() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let first = execute_tool_with_state(
+        "install_effect",
+        &json!({ "html": LIVECODE_HTML, "file_name": "livecode-probe.html" }),
+        &state,
+    )
+    .await
+    .expect("first install should succeed");
+    assert_eq!(first["name"], "Livecode Probe");
+    assert_eq!(first["controls"], 1);
+    assert_eq!(first["replaced_existing"], false);
+    assert!(
+        first["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("livecode-probe.html"))
+    );
+    assert!(first["console_after"].as_u64().is_some_and(|cursor| {
+        cursor <= hypercolor_core::effect::console::EffectConsoleJournal::global().latest_seq()
+    }));
+
+    let edited = LIVECODE_HTML.replace("console.log('frame')", "console.log('frame 2')");
+    let second = execute_tool_with_state(
+        "install_effect",
+        &json!({ "html": edited, "file_name": "livecode-probe.html" }),
+        &state,
+    )
+    .await
+    .expect("reinstall should succeed");
+    assert_eq!(second["replaced_existing"], true);
+    assert_eq!(second["id"], first["id"], "an in-place update keeps the id");
+}
+
+#[tokio::test]
+async fn install_effect_lists_every_validation_problem() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let error = execute_tool_with_state(
+        "install_effect",
+        &json!({ "html": "<html><body>no surface</body></html>" }),
+        &state,
+    )
+    .await
+    .expect_err("an invalid page should be refused");
+    let ToolError::InvalidParam { param, reason } = error else {
+        panic!("expected an invalid-parameter error, got {error:?}");
+    };
+    assert_eq!(param, "html");
+    assert!(reason.contains("Missing <title> tag"), "{reason}");
+    assert!(reason.contains("Missing <script> tag"), "{reason}");
+}
+
+#[tokio::test]
+async fn get_effect_console_reads_after_a_cursor_with_a_severity_floor() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let journal = hypercolor_core::effect::console::EffectConsoleJournal::global();
+    let mark = journal.latest_seq();
+    for (level, message) in [("log", "tick"), ("error", "TypeError: ctx is null")] {
+        journal.record(hypercolor_core::effect::console::EffectConsoleRecord {
+            level: level.to_owned(),
+            message: message.to_owned(),
+            effect_name: "mcp-console-probe".to_owned(),
+            source_path: PathBuf::from("/fx/mcp-console-probe.html"),
+            line: Some(9),
+        });
+    }
+
+    let page = execute_tool_with_state(
+        "get_effect_console",
+        &json!({ "after": mark, "effect": "mcp-console-probe", "level": "error" }),
+        &state,
+    )
+    .await
+    .expect("console read should succeed");
+    let entries = page["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["message"], "TypeError: ctx is null");
+    assert_eq!(entries[0]["line"], 9);
+    assert!(page["next_seq"].as_u64().is_some_and(|next| next > mark));
+
+    let tools = build_tool_definitions();
+    let console = tools
+        .iter()
+        .find(|tool| tool.name == "get_effect_console")
+        .expect("get_effect_console should be registered");
+    assert!(console.read_only);
+    let install = tools
+        .iter()
+        .find(|tool| tool.name == "install_effect")
+        .expect("install_effect should be registered");
+    assert!(!install.read_only);
+    assert!(
+        install.destructive,
+        "installing can overwrite an effect file"
     );
 }
