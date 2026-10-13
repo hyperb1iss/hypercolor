@@ -20,7 +20,7 @@ pub(super) fn build_install_effect() -> ToolDefinition {
     ToolDefinition {
         name: "install_effect".into(),
         title: "Install HTML Effect".into(),
-        description: "Install or update an HTML effect from its complete page source; the fastest way to livecode an effect. The page needs a <title>, a <canvas>, and a <script>, and declares controls with <meta property=...> tags. Validation problems come back as an invalid-parameter error that lists each one. Reusing a file_name replaces that effect in place and keeps its id, so a layer already running it reloads with the new code on its own; apply a new effect once with set_effect. Then read get_effect_console with after=console_after for errors the new page threw, and capture_canvas to see what it draws.".into(),
+        description: "Install or update an HTML effect from its complete page source; the fastest way to livecode an effect. The page needs a <title>, a <canvas id=\"exCanvas\"> sized to the window (the engine canvas is 640x480 by default and configurable), and an inline <script>. Controls are <meta property=...> tags; the runtime exposes each as a global it reassigns on every patch, so read it every frame. Validation problems come back as an invalid-parameter error that lists each one. Reusing a file_name replaces that effect in place and keeps its id, so a layer already running it reloads with the new code on its own; apply a new effect once with set_effect. Then read get_effect_console with after=console_after for errors the new page threw, and capture_canvas to see what it draws.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
