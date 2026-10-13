@@ -138,6 +138,9 @@ def sync_detailed(
 
             This documents the wire form for clients and the OpenAPI document; the
             daemon reads the parts one by one rather than deserializing this type.
+            The optional parts are documented as absent-or-string, never null: a
+            multipart part has no null, and a generated client that sent one would
+            send the literal text.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -176,6 +179,9 @@ def sync(
 
             This documents the wire form for clients and the OpenAPI document; the
             daemon reads the parts one by one rather than deserializing this type.
+            The optional parts are documented as absent-or-string, never null: a
+            multipart part has no null, and a generated client that sent one would
+            send the literal text.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -209,6 +215,9 @@ async def asyncio_detailed(
 
             This documents the wire form for clients and the OpenAPI document; the
             daemon reads the parts one by one rather than deserializing this type.
+            The optional parts are documented as absent-or-string, never null: a
+            multipart part has no null, and a generated client that sent one would
+            send the literal text.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -245,6 +254,9 @@ async def asyncio(
 
             This documents the wire form for clients and the OpenAPI document; the
             daemon reads the parts one by one rather than deserializing this type.
+            The optional parts are documented as absent-or-string, never null: a
+            multipart part has no null, and a generated client that sent one would
+            send the literal text.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

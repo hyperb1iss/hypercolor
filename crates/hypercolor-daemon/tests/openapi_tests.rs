@@ -566,6 +566,17 @@ fn runtime_document_records_real_statuses_bodies_and_media_types() {
             "{schema}.file is a file part"
         );
     }
+    // A multipart part has no null, so optional parts are documented as
+    // absent-or-string; a nullable type would let a generated client send
+    // the literal text "None".
+    let asset_form = &document["components"]["schemas"]["AssetUploadForm"];
+    assert_eq!(asset_form["required"], serde_json::json!(["file"]));
+    for part in ["name", "tags", "type"] {
+        assert_eq!(
+            asset_form["properties"][part]["type"], "string",
+            "AssetUploadForm.{part} is an optional, non-nullable string"
+        );
+    }
 
     let schemas = &document["components"]["schemas"];
     let control_variants = schemas["ControlValue"]["oneOf"]
