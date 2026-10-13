@@ -163,6 +163,11 @@ pub struct InstalledEffectResponse {
     pub path: String,
     pub controls: usize,
     pub presets: usize,
+    /// Effect console cursor taken just before the install. Pass it as
+    /// `after` to `GET /api/v1/effects/console` to read only what the new
+    /// page prints.
+    #[serde(default)]
+    pub console_after: u64,
 }
 
 /// Response for `POST /api/v1/effects/rescan`.

@@ -128,6 +128,10 @@ async fn console_maps_installed_effects_to_their_catalog_id() {
             .expect("body should read"),
     )
     .expect("install body should be JSON");
+    assert!(
+        installed["data"]["console_after"].is_u64(),
+        "installs report the console cursor taken before the page loads"
+    );
     let id = installed["data"]["id"].as_str().expect("id").to_owned();
     let path = PathBuf::from(installed["data"]["path"].as_str().expect("path"));
 
