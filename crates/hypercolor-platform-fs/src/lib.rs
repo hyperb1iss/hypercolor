@@ -109,6 +109,40 @@ pub fn open_no_follow(path: &Path) -> io::Result<File> {
     }
 }
 
+/// Open an existing regular file so it can be synced, without following a
+/// final symlink or Windows reparse point.
+///
+/// Unix opens read-only, which is enough to sync. Windows opens with write
+/// access, since it flushes only through such a handle.
+///
+/// # Errors
+///
+/// Returns the platform filesystem error when the path cannot be opened, the
+/// final path component is a symlink or reparse point, or what it names is not
+/// a regular file.
+pub fn open_regular_no_follow_for_sync(path: &Path) -> io::Result<File> {
+    #[cfg(unix)]
+    let file = unix::open_no_follow(path)?;
+
+    #[cfg(target_os = "windows")]
+    let file = windows::open_no_follow_with_write(path, true)?;
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    let file: File = {
+        let _ = path;
+        return Err(unsupported("symlink-refusing file open"));
+    };
+
+    if file.metadata()?.is_file() {
+        Ok(file)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing to open something other than a regular file",
+        ))
+    }
+}
+
 /// Which file this is, plus a change stamp that moves whenever it changes.
 ///
 /// The stamp is the inode change time on Unix and `ChangeTime` with the file

@@ -243,8 +243,13 @@ pub(super) fn path_change_stamp(path: &Path) -> io::Result<crate::FileChangeStam
 }
 
 pub(super) fn open_no_follow(path: &Path) -> io::Result<File> {
+    open_no_follow_with_write(path, false)
+}
+
+pub(super) fn open_no_follow_with_write(path: &Path, write: bool) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
+        .write(write)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
     let mut information = FILE_ATTRIBUTE_TAG_INFO::default();

@@ -2,7 +2,9 @@ use std::fs;
 
 #[cfg(unix)]
 use hypercolor_platform_fs::ExclusiveDirectory;
-use hypercolor_platform_fs::{durable_replace, rename_replacing, replace_file};
+use hypercolor_platform_fs::{
+    durable_replace, open_regular_no_follow_for_sync, rename_replacing, replace_file,
+};
 
 #[cfg(unix)]
 fn acquire(directory: &std::path::Path) -> ExclusiveDirectory {
@@ -344,4 +346,42 @@ fn unopenable_parent_fails_before_the_destination_changes() {
     result.expect_err("unopenable parent must fail");
     assert_eq!(fs::read(&destination).expect("read destination"), b"old");
     assert_eq!(fs::read(&source).expect("read source"), b"new");
+}
+
+#[test]
+fn a_regular_file_opens_for_sync() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+    let path = directory.path().join("state.json");
+    fs::write(&path, b"state").expect("write file");
+
+    let file = open_regular_no_follow_for_sync(&path).expect("open regular file");
+    file.sync_all().expect("the handle can sync");
+}
+
+#[test]
+fn a_directory_is_refused_for_sync() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+
+    open_regular_no_follow_for_sync(directory.path()).expect_err("a directory is not a file");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_final_symlink_is_refused_for_sync() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+    let target = directory.path().join("target.json");
+    let link = directory.path().join("state.json");
+    fs::write(&target, b"state").expect("write target");
+    std::os::unix::fs::symlink(&target, &link).expect("create link");
+
+    open_regular_no_follow_for_sync(&link).expect_err("a final symlink is never followed");
 }
