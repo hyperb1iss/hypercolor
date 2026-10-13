@@ -13,9 +13,10 @@ use axum::body::Body;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::ws::Message;
 use http::{Request, StatusCode, header};
-use hypercolor_daemon::api::extract::{API_BODY_LIMIT_BYTES, ApiJson};
+use hypercolor_daemon::api::extract::{API_BODY_LIMIT_BYTES, ApiJson, ApiRequestExtension};
 use hypercolor_daemon::api::local::{TrustedLocalApi, TrustedLocalWebSocket};
 use hypercolor_daemon::app_state::AppState;
+use hypercolor_types::api::envelope::ApiErrorBody;
 use hypercolor_types::api::scene::SceneDocument;
 use hypercolor_types::api::scenes::ReplaceSceneRequest;
 use serde_json::{Value, json};
@@ -458,4 +459,32 @@ async fn success_bodies_keep_their_shape() {
     assert!(content_type.is_some_and(|value| value.starts_with("application/json")));
     assert_eq!(body["data"]["id"], scene_id);
     assert!(body.get("error").is_none());
+}
+
+/// A request extension no middleware installed.
+#[derive(Clone)]
+struct NeverInstalled;
+
+async fn needs_extension(ApiRequestExtension(_): ApiRequestExtension<NeverInstalled>) -> String {
+    "the extension was present".to_owned()
+}
+
+/// A required extension the router never installed is a wiring defect, so
+/// it renders as the 500 envelope with a generic message rather than
+/// Axum's plain-text "Missing request extension" sentence.
+#[tokio::test]
+async fn a_missing_request_extension_is_the_internal_error_envelope() {
+    let response = axum::Router::new()
+        .route("/needs", axum::routing::get(needs_extension))
+        .oneshot(request("GET", "/needs", None, Body::empty()))
+        .await
+        .expect("router answers");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads");
+    let envelope: ApiErrorBody =
+        serde_json::from_slice(&bytes).expect("a missing extension is the envelope");
+    assert_eq!(envelope.error.code, "internal_error");
+    assert_eq!(envelope.error.message, "internal error");
 }
