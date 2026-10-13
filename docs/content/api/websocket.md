@@ -129,6 +129,8 @@ live.
     "instance_name": "hypercolor",
     "version": "0.1.0"
   },
+  "clock_epoch": "6f1d3c1e-9a4b-4e0c-8a51-2b7f0c9d4e21",
+  "mono_us": 81234567,
   "state": {
     "running": true,
     "paused": false,
@@ -158,6 +160,11 @@ plus feature flags such as `commands`, `canvas_format_jpeg`,
 `interactive_previews`, `wide_preview_frames`, and `preview_chunking`.
 `subscriptions` uses the same entry shape the acknowledgments do, so a client
 reads its live set the same way everywhere.
+
+`clock_epoch` and `mono_us` announce the daemon's monotonic clock: an opaque
+identity for this daemon run and the clock's reading, in microseconds, when the
+daemon built the `hello`. Every timestamped message on the connection is
+stamped on that clock. See [Clocks and timing](#clocks-and-timing).
 
 The daemon advertises one `preview_transport_v2` capability. The capability
 describes receiver memory contracts for decoded and encoded publications,
@@ -501,6 +508,7 @@ want raw per-frame timing.
   "type": "event",
   "event": "effect_started",
   "timestamp": "2026-06-24T18:03:11.482Z",
+  "mono_us": 81240113,
   "data": {
     "effect": { "id": "borealis", "name": "Borealis", "engine": "native" },
     "trigger": "api",
@@ -537,6 +545,7 @@ device output, and WebSocket statistics. A representative subset:
 {
   "type": "metrics",
   "timestamp": "2026-06-24T18:03:11.482Z",
+  "mono_us": 81240113,
   "data": {
     "fps": { "target": 60, "ceiling": 60, "capacity": 59.8, "delivered": 59.2, "dropped": 0 },
     "frame_time": { "avg_ms": 4.2, "p95_ms": 5.1, "p99_ms": 6.0, "max_ms": 8.3 },
@@ -566,6 +575,7 @@ TUI and dashboard surface. The `data` object is a `SystemSnapshot`.
 {
   "type": "sensors",
   "timestamp": "2026-06-24T18:03:11.482Z",
+  "mono_us": 81240113,
   "data": { "...": "system snapshot fields" }
 }
 ```
@@ -605,6 +615,38 @@ All four topics use `reduce_fps` with `suggested_fps`. Telemetry suggestions may
 be fractional.
 Daemon metrics expose preview queue bytes plus queued, replaced, rejected,
 sent-publication, and sent-chunk counters for diagnosing the actual bottleneck.
+
+### Clocks and timing
+
+Every server message that reports when it was published (`event`, `metrics`,
+`device_metrics`, and `sensors`) carries two stamps at the top level:
+
+| Field | Clock | Use it for |
+| --- | --- | --- |
+| `timestamp` | Host wall clock, ISO 8601 UTC, millisecond precision | Showing a time to a person or matching logs |
+| `mono_us` | Daemon monotonic clock, microseconds | Ordering, intervals, latency, and frame pacing |
+
+The wall clock follows NTP slews and manual steps, so two `timestamp` values
+can run backwards or stretch. `mono_us` never moves backwards and ignores those
+adjustments, and its microsecond resolution leaves room to measure jitter
+inside a 16.7 ms frame.
+
+Events are stamped when they are published on the daemon's internal bus,
+before any relay queueing, so `frame_rendered` stamps on the `frame_events`
+topic follow the render thread rather than socket delivery. The snapshot
+topics stamp a message when the daemon assembles it. Events from different
+producers are stamped independently and can arrive slightly out of stamp
+order; sort by `mono_us` when order matters.
+
+Stamps are comparable only within one `clock_epoch`. The `hello` announces the
+epoch and the clock's current reading, which lets a client estimate the offset
+between the daemon clock and its own monotonic clock (the estimate includes the
+hello's one-way delivery delay). A reconnect to the same daemon run sees the
+same `clock_epoch`; a restarted daemon announces a new one, and stamps from the
+previous run no longer line up with the new ones.
+
+The manifest's `clock` block lists the stamped messages and field names for
+generated clients.
 
 ### Continuity: events are not replayed
 
