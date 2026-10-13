@@ -88,70 +88,23 @@ fn fill_path(path: &str, segment: &str) -> String {
     filled
 }
 
-/// Whether a query parameter's schema rejects an arbitrary word.
+/// Whether a query parameter's schema rejects the probe word.
 ///
-/// Numbers, booleans, and enumerations do; a free-form string accepts
-/// anything. A `$ref` resolves against the document's `schemas`. A value
-/// must satisfy every `allOf` branch, so one typed branch is enough; it
-/// needs only one `anyOf` or `oneOf` branch, so every branch that could
-/// take a word must be typed (a branch that is only `null` takes none).
-fn is_typed_query_schema(schema: &Value, schemas: &Value) -> bool {
-    rejects_a_word(schema, schemas, 0)
-}
-
-fn rejects_a_word(schema: &Value, schemas: &Value, depth: usize) -> bool {
-    // A cyclic or absurdly deep reference chain proves nothing.
-    if depth > 16 {
-        return false;
-    }
-    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-        let name = reference.rsplit('/').next().unwrap_or(reference);
-        return schemas
-            .get(name)
-            .is_some_and(|target| rejects_a_word(target, schemas, depth + 1));
-    }
-    if schema.get("enum").is_some() || schema.get("const").is_some() {
-        return true;
-    }
-    if let Some(branches) = schema.get("allOf").and_then(Value::as_array)
-        && branches
-            .iter()
-            .any(|branch| rejects_a_word(branch, schemas, depth + 1))
-    {
-        return true;
-    }
-    for key in ["anyOf", "oneOf"] {
-        if let Some(branches) = schema.get(key).and_then(Value::as_array) {
-            let wordy: Vec<&Value> = branches
-                .iter()
-                .filter(|branch| !is_only_null(branch))
-                .collect();
-            return !wordy.is_empty()
-                && wordy
-                    .iter()
-                    .all(|branch| rejects_a_word(branch, schemas, depth + 1));
-        }
-    }
-    let types = schema_types(schema);
-    !types.contains(&"string")
-        && types
-            .iter()
-            .any(|kind| matches!(*kind, "boolean" | "integer" | "number"))
-}
-
-fn schema_types(schema: &Value) -> Vec<&str> {
-    match schema.get("type") {
-        Some(Value::String(single)) => vec![single.as_str()],
-        Some(Value::Array(many)) => many.iter().filter_map(Value::as_str).collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn is_only_null(schema: &Value) -> bool {
-    schema_types(schema) == ["null"]
-        && ["$ref", "enum", "const", "allOf", "anyOf", "oneOf"]
-            .iter()
-            .all(|key| schema.get(*key).is_none())
+/// This is decided by JSON Schema validation, not by reading the schema by
+/// hand: the parameter schema is validated inside a root that carries the
+/// document's `components`, so `#/components/schemas/...` references
+/// resolve as any client generator resolves them, and every keyword
+/// (compositions, siblings beside a `$ref`, null branches reached through
+/// references) means what the specification says. Query values arrive as
+/// strings, so the word is validated as the JSON string it is. A schema
+/// that does not compile is a document defect and fails the sweep.
+fn rejects_probe_word(schema: &Value, components: &Value) -> bool {
+    let root = serde_json::json!({ "components": components, "allOf": [schema] });
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(&root)
+        .unwrap_or_else(|error| panic!("query schema {schema} should compile: {error}"));
+    !validator.is_valid(&Value::String(UNPARSEABLE_QUERY_VALUE.to_owned()))
 }
 
 /// Every probe the document allows, and how many versioned operations it
@@ -160,7 +113,7 @@ fn probes(document: &Value) -> (Vec<Probe>, usize) {
     let mut probes = Vec::new();
     let mut operations = 0;
     let paths = document["paths"].as_object().expect("document has paths");
-    let schemas = &document["components"]["schemas"];
+    let components = &document["components"];
     for (path, item) in paths {
         if !path.starts_with("/api/v1/") {
             continue;
@@ -230,7 +183,7 @@ fn probes(document: &Value) -> (Vec<Probe>, usize) {
                 .unwrap_or_default();
             for parameter in parameters {
                 if parameter["in"] != "query"
-                    || !is_typed_query_schema(&parameter["schema"], schemas)
+                    || !rejects_probe_word(&parameter["schema"], components)
                 {
                     continue;
                 }
@@ -419,19 +372,20 @@ async fn a_plain_get_on_the_websocket_route_is_a_malformed_request_envelope() {
     assert_eq!(envelope.error.code, "malformed_request");
 }
 
-/// Enumerations count as typed however the document spells them, so
-/// inlining an enum schema cannot quietly drop its probe, and a composed
-/// or referenced free-form string never earns a probe it cannot fail.
+/// Selection follows the validator, so every way of spelling a schema that
+/// rejects the word earns a probe, and a free-form string never earns one it
+/// cannot fail.
 #[test]
-fn query_schemas_are_typed_exactly_when_they_reject_a_word() {
-    let schemas = serde_json::json!({
+fn a_query_parameter_is_probed_exactly_when_its_schema_rejects_the_word() {
+    let components = serde_json::json!({ "schemas": {
         "Category": { "type": "string", "enum": ["ambient", "audio"] },
         "Variants": { "oneOf": [
             { "type": "string", "enum": ["a"] },
             { "type": "string", "enum": ["b"] }
         ] },
         "Label": { "type": "string" },
-    });
+        "Null": { "type": "null" },
+    } });
     for schema in [
         serde_json::json!({ "type": "string", "enum": ["a", "b"] }),
         serde_json::json!({ "type": ["string", "null"], "enum": ["a", null] }),
@@ -447,10 +401,25 @@ fn query_schemas_are_typed_exactly_when_they_reject_a_word() {
         ] }),
         serde_json::json!({ "type": ["boolean", "null"] }),
         serde_json::json!({ "type": "integer", "minimum": 0 }),
+        // A null branch reached through a reference takes no word.
+        serde_json::json!({ "anyOf": [
+            { "type": "integer" }, { "$ref": "#/components/schemas/Null" }
+        ] }),
+        // So does one reached through a composition.
+        serde_json::json!({ "anyOf": [
+            { "type": "integer" }, { "allOf": [{ "type": "null" }] }
+        ] }),
+        // A restrictive sibling binds even when a composition would not.
+        serde_json::json!({
+            "type": "integer",
+            "anyOf": [{ "type": "integer" }, { "type": "string" }]
+        }),
+        // An enum beside a reference to a free-form string still binds.
+        serde_json::json!({ "$ref": "#/components/schemas/Label", "enum": ["a"] }),
     ] {
         assert!(
-            is_typed_query_schema(&schema, &schemas),
-            "{schema} is typed"
+            rejects_probe_word(&schema, &components),
+            "{schema} rejects the word and must be probed"
         );
     }
     for schema in [
@@ -466,12 +435,10 @@ fn query_schemas_are_typed_exactly_when_they_reject_a_word() {
         serde_json::json!({ "anyOf": [
             { "$ref": "#/components/schemas/Category" }, { "type": "string" }
         ] }),
-        serde_json::json!({ "oneOf": [{ "type": "null" }] }),
-        serde_json::json!({ "$ref": "#/components/schemas/Missing" }),
     ] {
         assert!(
-            !is_typed_query_schema(&schema, &schemas),
-            "{schema} accepts any word"
+            !rejects_probe_word(&schema, &components),
+            "{schema} accepts the word and must not be probed"
         );
     }
 }
