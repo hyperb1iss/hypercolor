@@ -200,8 +200,9 @@ async fn encode(
     fresh: bool,
     request: &CanvasCaptureRequest,
 ) -> Result<CapturedCanvasFrame, DomainError> {
-    // Never upscale: a side at or past the source falls back to the source
-    // size, and the other side keeps the aspect ratio.
+    // Never upscale. A requested side at or past the source size is dropped,
+    // so it follows the other side's aspect ratio, or the source size when
+    // both are dropped.
     let width = if request.width >= frame.width {
         0
     } else {

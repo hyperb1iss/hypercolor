@@ -24,7 +24,7 @@ Every tool carries four annotations the daemon reports to MCP clients.
 | `destructive` | The tool overwrites state you cannot get back. Reported per tool, not as a blanket value.                      |
 | `open_world`  | Always `false`; the tool set is closed and known.                                                              |
 
-Of the 21 tools, **11 are read-only**: `get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, `diagnose`, `openrgb_status`, `get_effect_console`, and `capture_canvas`. The other 10 mutate state. Five tools are non-idempotent: `set_effect` and `set_color` mint fresh layer identities, `create_scene` mints a scene, `set_display_face` replaces an assignment, and `capture_canvas` returns a new frame on every call even though it changes nothing.
+Of the 21 tools, **11 are read-only**: `get_status`, `list_effects`, `get_devices`, `get_audio_state`, `get_sensor_data`, `list_scenes`, `get_layout`, `diagnose`, `openrgb_status`, `get_effect_console`, and `capture_canvas`. The other 10 mutate state. Six tools are non-idempotent: `set_effect` and `set_color` mint fresh layer identities, `create_scene` mints a scene, `set_display_face` replaces an assignment, `install_effect` restarts the running page and returns a new console cursor, and `capture_canvas` returns a new frame on every call even though it changes nothing.
 
 Six of the ten mutating tools are destructive: `set_effect`, `set_color`, `clear_zone`, `activate_scene`, and `set_display_face` each discard state the caller did not supply and cannot recover, and `install_effect` overwrites any installed page that shares its file name. The other four are not: `set_brightness` and `set_output_power` are reversible value writes, `adjust_controls` patches named values and bindings, and `create_scene` only adds.
 
@@ -407,7 +407,7 @@ These three tools let an agent write an HTML effect against a running daemon wit
 
 ### install_effect
 
-Install or update an HTML effect from its complete page source. Mutates state, destructive, and idempotent. The page lands in the user effects directory and joins the catalog immediately, so no rescan is needed.
+Install or update an HTML effect from its complete page source. Mutates state, destructive, and non-idempotent, since every call restarts the running page and returns a new console cursor. The page lands in the user effects directory and joins the catalog immediately, so no rescan is needed.
 
 - **Required:** `html` (string, at most 1 MiB): the complete HTML document.
 - **Optional:** `file_name` (string, 1-128 characters): the installed file name, such as `ember.html`. Defaults to a slug of the page `<title>`.

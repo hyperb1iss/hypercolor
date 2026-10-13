@@ -74,8 +74,9 @@ Without MCP or the CLI, the REST equivalents are `POST /api/v1/effects/install`
 ## The page contract
 
 The validator rejects a page missing any of these, and lists every problem at
-once: a `<title>` (the catalog name), a `<canvas id="exCanvas">` (that exact id),
-and at least one inline `<script>`. Keep everything inline: a rig without network
+once: a `<title>` (the catalog name), a render surface, and at least one inline
+`<script>`. For an LED effect the render surface is `<canvas id="exCanvas">`; the
+parser looks for that id, so a plain `<canvas>` fails. Keep everything inline: a rig without network
 access cannot fetch an outside script, and the SDK validator flags one.
 `references/starter.html` is a complete page that follows every rule below; copy
 it rather than starting blank.
@@ -86,8 +87,9 @@ it rather than starting blank.
   `width="320" height="200"` fills only the top-left corner of the frame.
 - **Declare controls as meta tags.**
   `<meta property="speed" label="Speed" type="number" min="0" max="10" default="5">`.
-  Types are `number`, `boolean`, `color`, `combobox` (with `values="A,B,C"`),
-  `hue`, and `text`. `min` must be below `max`.
+  The everyday types are `number`, `boolean`, `color`, `combobox` (with
+  `values="A,B,C"`), `hue`, and `text`; `sensor`, `area`, `rect`, and `asset`
+  cover specialized inputs. `min` must be below `max`.
 - **Read controls every frame.** The runtime defines each control as a global
   before your script runs and reassigns it on every patch, so
   `const speed = window.speed` at load time freezes the value. Read
