@@ -176,6 +176,7 @@ fn spawn_local_socket(
             SessionSocket {
                 transport: SessionTransport::Local(transport),
                 grant,
+                closing: false,
             },
             state,
             auth_context,
@@ -213,6 +214,9 @@ pub(super) fn spawn_test_granted_local_socket(
 struct SessionSocket {
     transport: SessionTransport,
     grant: Option<CredentialGrant>,
+    /// Set once the session is tearing down: its replies have nowhere
+    /// useful to go, and a peer that stopped reading must not hold it.
+    closing: bool,
 }
 
 enum SessionTransport {
@@ -228,6 +232,8 @@ enum SessionSocketError {
     LocalClosed,
     #[error("the session's credential was revoked")]
     Revoked,
+    #[error("the session is closing")]
+    Closing,
 }
 
 impl SessionSocket {
@@ -235,6 +241,7 @@ impl SessionSocket {
         Self {
             transport: SessionTransport::Network(socket),
             grant,
+            closing: false,
         }
     }
 
@@ -243,6 +250,9 @@ impl SessionSocket {
     }
 
     async fn send(&mut self, message: Message) -> Result<(), SessionSocketError> {
+        if self.closing {
+            return Err(SessionSocketError::Closing);
+        }
         let Some(revocation) = self.revocation() else {
             return self.transport.send(message).await;
         };
@@ -718,18 +728,63 @@ async fn handle_socket(
 
     // However the loop ended, a revoked session tells its peer why, once.
     socket.close_if_revoked().await;
-    // Every command the session read runs, as it did when commands ran
-    // inline, unless the credential was revoked. A peer that closed or
-    // vanished, or a shutdown, only loses the responses.
-    let stop_queued = revocation
-        .as_ref()
-        .is_some_and(CancellationToken::is_cancelled);
-    commands
-        .finish(
-            inbound.into_iter().filter_map(InboundMessage::into_command),
-            stop_queued,
-        )
-        .await;
+    // Everything the session read still runs, in the order it was read, as
+    // it did when commands ran inline, unless the credential was revoked. A
+    // command joins the lane, and any other message waits for the commands
+    // ahead of it, so a release or unsubscribe still lands between the
+    // commands it was sent between. A peer that closed or vanished, or a
+    // shutdown, only loses the replies.
+    socket.closing = true;
+    let revoked = || {
+        revocation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+    };
+    while let Some(next) = inbound.pop_front() {
+        if revoked() {
+            break;
+        }
+        match next {
+            InboundMessage::Client(ClientMessage::Command {
+                id,
+                method,
+                path,
+                body,
+            }) => {
+                commands
+                    .submit_draining(QueuedCommand {
+                        id,
+                        method,
+                        path,
+                        body,
+                    })
+                    .await;
+            }
+            InboundMessage::Client(message) => {
+                commands.wait_idle().await;
+                if revoked() {
+                    break;
+                }
+                handle_client_message(
+                    message,
+                    &state,
+                    auth_context,
+                    &mut subscriptions,
+                    &subscriptions_tx,
+                    &mut input_demand_leases,
+                    zone_layout_preview_owner,
+                    &mut zone_layout_preview_keys,
+                    &mut browser_previews,
+                    &preview_tx,
+                    &mut commands,
+                    &mut socket,
+                )
+                .await;
+            }
+            InboundMessage::Invalid(_) => {}
+        }
+    }
+    commands.finish(revoked()).await;
     abort_and_join_relays(relay_handles).await;
     browser_previews.shutdown().await;
     while let Some(cursor) = preview_cursors.pop_next() {
@@ -1580,23 +1635,6 @@ enum InboundMessage {
 }
 
 impl InboundMessage {
-    fn into_command(self) -> Option<QueuedCommand> {
-        match self {
-            Self::Client(ClientMessage::Command {
-                id,
-                method,
-                path,
-                body,
-            }) => Some(QueuedCommand {
-                id,
-                method,
-                path,
-                body,
-            }),
-            _ => None,
-        }
-    }
-
     fn parse(text: &str) -> Self {
         serde_json::from_str::<ClientMessage>(text).map_or_else(
             |error| {
@@ -1706,26 +1744,53 @@ impl CommandLane {
         }
     }
 
+    /// Queue `command` while the session tears down, waiting for room and
+    /// discarding the responses that free it.
+    async fn submit_draining(&mut self, command: QueuedCommand) {
+        let Some(sender) = self.commands.clone() else {
+            return;
+        };
+        let send = sender.send(command);
+        tokio::pin!(send);
+        loop {
+            tokio::select! {
+                sent = &mut send => {
+                    if sent.is_ok() {
+                        self.in_flight += 1;
+                    }
+                    return;
+                }
+                response = self.responses.recv() => {
+                    if response.is_none() {
+                        return;
+                    }
+                    self.in_flight = self.in_flight.saturating_sub(1);
+                }
+            }
+        }
+    }
+
+    /// Wait until every queued command has answered, discarding responses,
+    /// or until the lane stops.
+    async fn wait_idle(&mut self) {
+        while self.in_flight > 0 {
+            if self.responses.recv().await.is_none() {
+                self.in_flight = 0;
+                return;
+            }
+            self.in_flight -= 1;
+        }
+    }
+
     /// End the lane and wait for its worker.
     ///
     /// With `stop_queued`, nothing queued starts and only a running command
-    /// finishes. Otherwise `backlog` joins the queue in order and every
-    /// queued command runs. Responses are discarded either way, since the
-    /// session no longer sends them.
-    async fn finish(
-        &mut self,
-        backlog: impl IntoIterator<Item = QueuedCommand>,
-        stop_queued: bool,
-    ) {
+    /// finishes. Otherwise every queued command runs. Responses are
+    /// discarded either way, since the session no longer sends them.
+    async fn finish(&mut self, stop_queued: bool) {
         self.responses.close();
         if stop_queued {
             self.closed.cancel();
-        } else if let Some(commands) = self.commands.as_ref() {
-            for command in backlog {
-                if commands.send(command).await.is_err() {
-                    break;
-                }
-            }
         }
         self.commands = None;
         if let Some(worker) = self.worker.take() {
