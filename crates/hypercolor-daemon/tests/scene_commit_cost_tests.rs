@@ -194,6 +194,9 @@ async fn a_named_scene_control_patch_replaces_only_the_scene_store() {
     let barriers_before = files.scenes.directory_sync_count();
     let syncs_before = files.scenes.file_sync_count();
     let reads_before = files.scenes.verification_read_count();
+    let runtime_syncs_before = files.runtime_state.file_sync_count();
+    let runtime_barriers_before = files.runtime_state.directory_sync_count();
+    let runtime_reads_before = files.runtime_state.verification_read_count();
 
     patch_speed(&fixture, 0.75).await;
 
@@ -223,6 +226,22 @@ async fn a_named_scene_control_patch_replaces_only_the_scene_store() {
         reads_before,
         "the runtime save trusts the commit's receipt instead of the file"
     );
+    // The unchanged runtime projection is a verified skip: one read, one
+    // file sync, and one directory sync, and no replacement.
+    assert_eq!(
+        files.runtime_state.verification_read_count(),
+        runtime_reads_before + 1
+    );
+    assert_eq!(
+        files.runtime_state.file_sync_count(),
+        runtime_syncs_before + 1
+    );
+    if cfg!(unix) {
+        assert_eq!(
+            files.runtime_state.directory_sync_count(),
+            runtime_barriers_before + 1
+        );
+    }
 }
 
 #[tokio::test]
