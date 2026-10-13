@@ -257,6 +257,12 @@ impl PersistenceFlushReport {
 /// mode. That covers every outside edit that completed before the call,
 /// including replacements, renames, and inode reuse.
 ///
+/// The guarantee covers the destination's own directory entry in its
+/// parent directory, which is resolved once when the destination is first
+/// opened. Durability of ancestor directories, including an outside rename
+/// or symlink swap of the state directory itself, belongs to whoever
+/// changed them; no write here syncs ancestors up to the mount.
+///
 /// A payload identical to the last one this process made durable can land
 /// without being rewritten. While any writer keeps the destination alive, it
 /// remembers that payload's digest and the change stamp of the file it
