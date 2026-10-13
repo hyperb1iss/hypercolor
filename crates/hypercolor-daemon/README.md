@@ -58,7 +58,7 @@ The daemon serves on `:9420`:
 - `GET|POST /api/v1/layouts` — spatial layout CRUD
 - `WebSocket /api/v1/ws` — real-time events, canvas frames, metrics, spectrum
 - `GET /api/v1/docs` — interactive API docs; the raw spec is at `GET /api/v1/openapi.json`
-- MCP server: 17 tools, 5 resources for AI integration
+- MCP server: 21 tools, 5 resources, and 4 prompt templates for AI integration
 
 ## Usage
 

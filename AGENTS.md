@@ -358,7 +358,7 @@ The daemon exposes REST + WebSocket on `:9420` (Axum):
 - `POST /api/v1/scenes/{id}/activate`: Scene activation
 - `GET/POST /api/v1/layouts`: Spatial layout CRUD
 - `WebSocket /api/v1/ws`: Real-time state (events, canvas frames, metrics, spectrum)
-- **MCP server**: 17 tools, 5 resources, and 3 prompt templates for AI integration
+- **MCP server**: 21 tools, 5 resources, and 4 prompt templates for AI integration
 
 Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
 

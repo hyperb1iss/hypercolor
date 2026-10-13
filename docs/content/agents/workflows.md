@@ -1,20 +1,20 @@
 +++
 title = "Agent workflows"
-description = "Three worked agent playbooks for Hypercolor: set a calm scene, build and apply an effect, and diagnose a sick device."
+description = "Four worked agent playbooks for Hypercolor: set a calm scene, build and apply an effect, write an effect live, and diagnose a sick device."
 weight = 60
 +++
 
-This page turns the tools, resources, and CLI commands from the rest of the Agents section into three end-to-end playbooks an agent can follow verbatim. Each one is a real sequence of calls with the responses an agent should expect, drawn straight from the daemon's MCP and CLI contracts. Every workflow opens the same way: read state before you touch it.
+This page turns the tools, resources, and CLI commands from the rest of the Agents section into four end-to-end playbooks an agent can follow verbatim. Each one is a real sequence of calls with the responses an agent should expect, drawn straight from the daemon's MCP and CLI contracts. Every workflow opens the same way: read state before you touch it.
 
 {% <callout type="tip"> %}
-The MCP server ships this exact instruction to every client: start with `get_status` or the `hypercolor://state` resource, browse with `list_effects` before applying visuals, and prefer structured arguments and resource reads over guessing. The playbooks below are that discipline made concrete.
+The MCP server ships this exact instruction to every client: start with `get_status` or the `hypercolor://state` resource, browse with `list_effects` before applying visuals, check the result with `capture_canvas` instead of assuming it looks right, and prefer structured arguments and resource reads over guessing. The playbooks below are that discipline made concrete.
 {% </callout> %}
 
 {{< img path="img/ui/dashboard.webp" alt="The Hypercolor dashboard an agent reads through hypercolor://state" />}}
 
 ## Before you start
 
-Two surfaces drive Hypercolor, and a complete workflow often uses both. The [MCP server](@/agents/mcp-setup.md) gives a model 18 structured tools, 5 browsable resources, and 4 prompts over Streamable HTTP at `http://127.0.0.1:9420/mcp`. The [`hypercolor` CLI](@/agents/cli-scripting.md) gives any agent that can run a shell command a machine-readable contract through `--json` output and exit codes. Local agents need no credentials, since loopback requests bypass auth entirely.
+Two surfaces drive Hypercolor, and a complete workflow often uses both. The [MCP server](@/agents/mcp-setup.md) gives a model 21 structured tools, 5 browsable resources, and 4 prompts over Streamable HTTP at `http://127.0.0.1:9420/mcp`. The [`hypercolor` CLI](@/agents/cli-scripting.md) gives any agent that can run a shell command a machine-readable contract through `--json` output and exit codes. Local agents need no credentials, since loopback requests bypass auth entirely.
 
 One thing trips agents up constantly, so fix it in your head now. There are two different `hypercolor` command-line tools:
 
@@ -158,7 +158,7 @@ Note the CLI surface differs from the MCP tool. The activate verb uses `--speed`
 
 ## Workflow B: build an effect, then apply it
 
-This is the playbook that crosses both CLIs. You author an HTML effect with the SDK, install it into the daemon, then apply it. There is no MCP tool to install or rescan effects, so this path has to cross from the authoring CLI to the daemon CLI or an MCP `set_effect` call.
+This is the playbook that crosses both CLIs. You author an HTML effect with the SDK, install it into the daemon, then apply it. The SDK path suits a workspace with a build step and several effects; to iterate on one page over MCP alone, use [Workflow C](#workflow-c-write-an-effect-live).
 
 {% <callout type="info"> %}
 Inside a scaffolded effect workspace, `bunx hypercolor` resolves the workspace's `hypercolor` dependency: the npm release by default, or a local build when the workspace was scaffolded with a `file:` SDK spec. These instructions assume you are in such a workspace.
@@ -190,17 +190,15 @@ Install uploads the validated effect to the running daemon through `POST /api/v1
 bunx hypercolor install dist/aurora.html --daemon
 ```
 
-### 4. Rescan, then apply
+### 4. Apply
 
-After installing, the daemon picks up the new effect through a rescan. There is no MCP rescan tool, so an agent uses the daemon CLI.
+The install route adds the effect to the catalog as soon as it answers, so no rescan is needed. Confirm it landed, then apply it through whichever surface the agent already speaks.
 
 ```bash
-hypercolor effects rescan
-# → Rescanned: 3 added, 1 updated, 0 removed
 hypercolor effects list --search aurora -j
 ```
 
-Then apply it through whichever surface the agent already speaks. Over the daemon CLI:
+Over the daemon CLI:
 
 ```bash
 hypercolor effects activate "Aurora" --param speed=7
@@ -218,7 +216,112 @@ Or over MCP, with `set_effect`:
 The install-and-apply path is the clearest case where a single agent job spans both CLIs. The SDK authoring CLI gets the effect onto the daemon; the daemon CLI or an MCP tool makes it live. Building [HTML effects](@/effects/_index.md) is its own topic with its own section.
 {% </callout> %}
 
-## Workflow C: diagnose a sick device
+## Workflow C: write an effect live
+
+An agent that writes effect code itself does not need an SDK workspace. Over MCP alone it can install a page, read what the page printed, look at what it drew, and go again. Every iteration reuses one `file_name`, so the effect keeps its ID and the running layer picks up each new version without another `set_effect`.
+
+### 1. Install the page
+
+Send the complete HTML document. The page needs a `<title>`, a `<canvas id="exCanvas">`, and a `<script>`. Validation reports every problem at once as an invalid-parameter error, so one failed call lists everything to fix.
+
+```json
+// install_effect with
+{
+  "html": "<!DOCTYPE html><html><head><title>Livecode Probe</title>...</html>",
+  "file_name": "probe.html"
+}
+// → returns
+{
+  "id": "e77d0339-0967-495f-bf5c-b57fcfbc5faf",
+  "name": "Livecode Probe",
+  "path": "/home/you/.local/share/hypercolor/effects/user/probe.html",
+  "controls": 2,
+  "presets": 0,
+  "replaced_existing": false,
+  "console_after": 6
+}
+```
+
+Keep `console_after`. It is the console cursor from just before the install, so it marks where this version's output begins.
+
+### 2. Apply it once
+
+A first install only adds the effect to the catalog. Put it on a layer with one `set_effect` call, and keep the returned zone and layer IDs for tuning.
+
+```json
+// set_effect with { "query": "e77d0339-0967-495f-bf5c-b57fcfbc5faf" }
+```
+
+### 3. Read the console
+
+Ask for warnings and errors printed since the install. Locations point at your own file and line, not at the runtime copy the engine actually loads.
+
+```json
+// get_effect_console with { "after": 6, "level": "warn" }
+// → returns (abridged)
+{
+  "entries": [
+    {
+      "seq": 7,
+      "level": "error",
+      "message": "Error at file:///home/you/.local/share/hypercolor/effects/user/probe.html:19:5 undefinedFunctionCall is not defined",
+      "effect_name": "Livecode Probe",
+      "source_file": "probe.html",
+      "line": 19
+    }
+  ],
+  "next_seq": 7,
+  "truncated": false
+}
+```
+
+An empty `entries` array means nothing at warning level or above has printed yet. Pass `next_seq` as `after` on the next read.
+
+### 4. Look at it
+
+A quiet console does not mean the effect looks right. Capture a short burst to judge color and motion.
+
+```json
+// capture_canvas with { "frames": 4, "interval_ms": 250 }
+// → returns four images plus metadata (abridged to the first frame)
+{
+  "frames": [
+    {
+      "frame_number": 258,
+      "timestamp_ms": 9036,
+      "width": 320,
+      "height": 240,
+      "fresh": true,
+      "mime_type": "image/jpeg"
+    }
+  ],
+  "source_width": 640,
+  "source_height": 480
+}
+```
+
+The canvas is the full-brightness image before LED sampling. A frame with `fresh: false` means nothing rendered during the wait, so the effect is not drawing at all; the burst stops there.
+
+### 5. Tune without a reload
+
+For value changes, patch the live layer with `adjust_controls` instead of reinstalling. The page keeps running rather than reloading.
+
+```json
+// adjust_controls with
+{
+  "zone": "0199...",
+  "layer": "0199...",
+  "values": { "speed": { "kind": "float", "value": 0.6 } }
+}
+```
+
+### 6. Hot swap the code
+
+For code changes, call `install_effect` again with the same `file_name`. The response carries the same `id` and `replaced_existing: true`, and the running layer reloads the new page on its own. Read the console from the new `console_after`, capture again, and repeat.
+
+Over the daemon CLI, the same loop is `hypercolor effects install probe.html --activate`, then `hypercolor effects console --after 6 --level warn`, then `hypercolor effects capture -o probe.png --frames 4`.
+
+## Workflow D: diagnose a sick device
 
 A device stops responding, or the frame rate drops. This playbook narrows from the whole system to the offending device, reading live metrics at each step. It mirrors the shipped [`troubleshoot` prompt](@/agents/prompt-templates.md), which runs the same diagnostic descent.
 
@@ -309,7 +412,7 @@ hypercolor diagnose --report ./hypercolor-report.json --system
 Read the checks before acting. A network device that drops to `delivered_fps: 0` with rising transport failures is usually outside the daemon's control: powered down, on a different VLAN, or behind AP isolation. The fix lives in [Network devices](@/hardware/_index.md), not in a nonexistent reconnect tool. A device that is connected but rendering wrong colors is a different class of problem, covered in [Color science for LEDs](@/effects/color-science.md). Distinguishing the two is exactly what the diagnostic snapshot lets an agent do.
 
 {% <callout type="success"> %}
-The pattern repeats across all three workflows: orient on shared state, narrow with a filtered query, act with a structured call, and verify by reading state back. An agent that follows it never operates blind.
+The pattern repeats across all four workflows: orient on shared state, narrow with a filtered query, act with a structured call, and verify by reading state back. An agent that follows it never operates blind.
 {% </callout> %}
 
 ## Where to go next
