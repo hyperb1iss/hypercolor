@@ -1,6 +1,11 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["crates/hypercolor-ui", "vendor/servo-script", "vendor/tachys"]
+exclude = [
+    "crates/hypercolor-ui",
+    "vendor/servo-script",
+    "vendor/tachys",
+    "vendor/utoipa-swagger-ui",
+]
 resolver = "3"
 
 [workspace.package]
@@ -268,8 +273,15 @@ stats_alloc = "0.1.10"
 # only: bumping servo leaves it unused behind a single cargo warning, which
 # scripts/check-vendored-patches.sh turns into a CI failure, so re-vendor or
 # drop it in the same change.
+#
+# utoipa-swagger-ui 10.0.1, vendored to carry upstream's unreleased move of
+# its build-time zip dependency to 9.x. vendor/utoipa-swagger-ui/HYPERCOLOR.md
+# describes the patch and says to drop the vendor once a utoipa-swagger-ui
+# release carries it; scripts/check-vendored-patches.sh fails CI as soon as a
+# bump moves the crate off 10.0.1.
 [patch.crates-io]
 servo-script = { path = "vendor/servo-script" }
+utoipa-swagger-ui = { path = "vendor/utoipa-swagger-ui" }
 
 [profile.release]
 opt-level = 3

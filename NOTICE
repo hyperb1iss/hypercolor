@@ -40,3 +40,7 @@ Vendored Dependencies
   under a Trusted Types content security policy
   Original: https://github.com/leptos-rs/leptos
   License: MIT
+- utoipa-swagger-ui (vendor/utoipa-swagger-ui/): Swagger UI integration for
+  utoipa 10.0.1, vendored to build against zip 9 ahead of an upstream release
+  Original: https://github.com/juhaku/utoipa
+  License: MIT OR Apache-2.0
