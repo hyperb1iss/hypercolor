@@ -14,9 +14,11 @@ no subtables. Not one documented key parses: `CaptureConfig` carries `enabled`,
 `publication_memory_bytes`, `smoothing`, `scene_cut_threshold`, `letterbox`,
 `letterbox_threshold`, `brightness`, `gamma`, `saturation`, `exposure_ev`,
 `restore_token`, and the four `target_led_*` keys
-(`crates/hypercolor-types/src/config/capture.rs:25`). That struct sets
-`deny_unknown_fields`, so pasting any block from this document into
-`hypercolor.toml` is a hard config parse failure, not a partial load.
+(`crates/hypercolor-types/src/config/capture.rs:24`). The config loader
+refuses every key the schema does not model
+(`HypercolorConfig::deserialize_strict`), so pasting any block from this
+document into `hypercolor.toml` is a hard config parse failure, not a
+partial load.
 
 ---
 

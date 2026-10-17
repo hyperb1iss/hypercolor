@@ -1,5 +1,6 @@
 //! Tests for configuration types — defaults, serde roundtrips, partial deserialization.
 
+use hypercolor_types::api::ApiResponse;
 use hypercolor_types::config::{
     AudioConfig, CaptureBackendId, CaptureCadenceMode, CaptureConfig, CaptureConfigValidationError,
     DaemonConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig, EffectErrorFallbackPolicy,
@@ -8,6 +9,12 @@ use hypercolor_types::config::{
     ServoGpuImportConfig, ServoGpuImportMode, ShutdownBehavior, WebConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
+
+/// Decode a TOML document the way the config file loader does.
+fn strict_toml(source: &str) -> Result<HypercolorConfig, toml::de::Error> {
+    let deserializer = toml::Deserializer::parse(source).expect("test TOML is well formed");
+    HypercolorConfig::deserialize_strict(deserializer)
+}
 
 // ─── Default Value Tests ─────────────────────────────────────────────────────
 
@@ -217,10 +224,12 @@ fn capture_backend_names_stay_stable_on_the_wire() {
 
 #[test]
 fn capture_config_rejects_retired_monitor_key() {
-    let error = toml::from_str::<CaptureConfig>("enabled = true\nmonitor = 2\n")
+    let error = strict_toml("schema_version = 5\n[capture]\nenabled = true\nmonitor = 2\n")
         .expect_err("retired monitor key must be rejected");
     assert!(
-        error.to_string().contains("unknown field `monitor`"),
+        error
+            .to_string()
+            .contains("unknown config key `capture.monitor`"),
         "{error}"
     );
 }
@@ -800,12 +809,12 @@ schema_version = 5
 port = 9420
 some_future_field = "hello from the future"
 "#;
-    let error = toml::from_str::<HypercolorConfig>(toml_with_future_field)
-        .expect_err("unknown nested field must be rejected");
+    let error =
+        strict_toml(toml_with_future_field).expect_err("unknown nested field must be rejected");
     assert!(
         error
             .to_string()
-            .contains("unknown field `some_future_field`"),
+            .contains("unknown config key `daemon.some_future_field`"),
         "{error}"
     );
 }
@@ -828,12 +837,12 @@ fn every_closed_root_section_rejects_unknown_fields() {
         "web",
     ] {
         let source = format!("schema_version = 5\n[{section}]\nunrecognized_config_key = true\n");
-        let error = toml::from_str::<HypercolorConfig>(&source)
-            .expect_err("closed config section must reject unknown fields");
+        let error =
+            strict_toml(&source).expect_err("closed config section must reject unknown fields");
         assert!(
-            error
-                .to_string()
-                .contains("unknown field `unrecognized_config_key`"),
+            error.to_string().contains(&format!(
+                "unknown config key `{section}.unrecognized_config_key`"
+            )),
             "section {section}: {error}"
         );
     }
@@ -844,14 +853,121 @@ schema_version = 5
 [rendering.servo_gpu_import]
 unrecognized_config_key = true
 ";
-    let error = toml::from_str::<HypercolorConfig>(nested)
-        .expect_err("closed nested config object must reject unknown fields");
+    let error =
+        strict_toml(nested).expect_err("closed nested config object must reject unknown fields");
     assert!(
         error
             .to_string()
-            .contains("unknown field `unrecognized_config_key`"),
+            .contains("unknown config key `rendering.servo_gpu_import.unrecognized_config_key`"),
         "{error}"
     );
+}
+
+#[test]
+fn strict_decode_names_every_unknown_key() {
+    let source = r"
+schema_version = 5
+
+[daemon]
+first_typo = 1
+
+[web]
+second_typo = 2
+";
+    let error = strict_toml(source).expect_err("unknown keys must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown config keys `daemon.first_typo`, `web.second_typo`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn strict_decode_keeps_extension_sections_and_driver_settings_open() {
+    let source = r#"
+schema_version = 5
+
+[daemon]
+port = 9421
+
+[drivers.wled]
+enabled = true
+known_ips = ["192.168.1.50"]
+
+[cloud]
+enabled = true
+"#;
+    let config = strict_toml(source).expect("open maps capture every key they are given");
+    assert_eq!(config.daemon.port, 9421);
+    assert_eq!(
+        config.drivers["wled"].settings.get("known_ips"),
+        Some(&serde_json::json!(["192.168.1.50"]))
+    );
+    assert_eq!(
+        config.extensions.get("cloud"),
+        Some(&serde_json::json!({ "enabled": true }))
+    );
+}
+
+/// A daemon config payload carrying keys this build has never heard of,
+/// as a newer daemon would send it.
+fn config_payload_from_a_newer_daemon() -> serde_json::Value {
+    let mut config = serde_json::to_value(HypercolorConfig::default()).expect("config projects");
+    config["daemon"]["port"] = serde_json::json!(9555);
+    config["daemon"]["state_history_generations"] = serde_json::json!(12);
+    config["daemon"]["future_daemon_knob"] = serde_json::json!(true);
+    config["audio"]["enabled"] = serde_json::json!(false);
+    config["audio"]["future_audio_knob"] = serde_json::json!({ "nested": [1, 2, 3] });
+    config["rendering"]["servo_gpu_import"]["future_import_knob"] = serde_json::json!("auto");
+    config["session"]["idle_dim_timeout_secs"] = serde_json::json!(45);
+    config["session"]["future_session_knob"] = serde_json::json!(7);
+    config
+}
+
+#[test]
+fn client_decode_tolerates_config_keys_from_a_newer_daemon() {
+    // The web UI decodes `GET /api/v1/config` exactly like this, and the
+    // daemon on the other end may be newer than the UI.
+    let envelope = serde_json::json!({
+        "data": config_payload_from_a_newer_daemon(),
+        "meta": {
+            "api_version": "1.0",
+            "request_id": "req_test",
+            "timestamp": "2026-10-12T00:00:00Z",
+        },
+    });
+    let decoded = serde_json::from_value::<ApiResponse<HypercolorConfig>>(envelope)
+        .expect("a client must read a newer daemon's config")
+        .data;
+
+    assert_eq!(decoded.daemon.port, 9555);
+    assert_eq!(decoded.daemon.state_history_generations, 12);
+    assert!(!decoded.audio.enabled);
+    assert_eq!(decoded.session.idle_dim_timeout_secs, 45);
+    assert_eq!(
+        decoded.daemon.target_fps,
+        DaemonConfig::default().target_fps,
+        "known keys the payload carried untouched keep their values"
+    );
+}
+
+#[test]
+fn strict_decode_refuses_the_payload_a_client_tolerates() {
+    let error = HypercolorConfig::deserialize_strict(config_payload_from_a_newer_daemon())
+        .expect_err("an authoritative decode must refuse unknown keys");
+    let rendered = error.to_string();
+    for path in [
+        "daemon.future_daemon_knob",
+        "audio.future_audio_knob",
+        "rendering.servo_gpu_import.future_import_knob",
+        "session.future_session_knob",
+    ] {
+        assert!(
+            rendered.contains(&format!("`{path}`")),
+            "{path}: {rendered}"
+        );
+    }
 }
 
 #[test]

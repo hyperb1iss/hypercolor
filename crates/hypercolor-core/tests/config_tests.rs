@@ -218,6 +218,30 @@ fn load_canonicalizes_legacy_audio_device_ids() {
 }
 
 #[test]
+fn load_refuses_unknown_keys_and_names_the_file_and_each_key_path() {
+    let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+    fs::write(
+        tmp.path(),
+        "schema_version = 5\n\n[daemon]\nprot = 9420\n\n\
+         [rendering.servo_gpu_import]\nmdoe = \"auto\"\n",
+    )
+    .expect("failed to write misspelled config");
+
+    let error = ConfigManager::load(tmp.path())
+        .expect_err("a key the schema does not model must be refused, never dropped");
+    let rendered = format!("{error:#}");
+
+    assert!(
+        rendered.contains(&tmp.path().display().to_string()),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("unknown config keys `daemon.prot`, `rendering.servo_gpu_import.mdoe`"),
+        "{rendered}"
+    );
+}
+
+#[test]
 fn load_invalid_toml_returns_error() {
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
     fs::write(tmp.path(), "not valid { toml [[[").expect("failed to write temp file");

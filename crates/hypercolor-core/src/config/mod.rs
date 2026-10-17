@@ -1044,8 +1044,10 @@ impl ConfigManager {
     /// # Errors
     ///
     /// Returns an error if the TOML is malformed, does not deserialize
-    /// into [`HypercolorConfig`], declares conflicting v4 start keys, or
-    /// declares any unsupported schema version.
+    /// into [`HypercolorConfig`], names a key this build does not read
+    /// (see [`HypercolorConfig::deserialize_strict`]), declares
+    /// conflicting v4 start keys, or declares any unsupported schema
+    /// version.
     pub fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
         let mut document = toml::from_str::<toml::Value>(toml_str)
             .context("failed to parse configuration TOML")?;
@@ -1061,8 +1063,7 @@ impl ConfigManager {
         } else if schema_version != CURRENT_SCHEMA_VERSION {
             bail!(schema_mismatch_message(schema_version));
         }
-        let config: HypercolorConfig = document
-            .try_into()
+        let config = HypercolorConfig::deserialize_strict(document)
             .context("failed to deserialize configuration TOML")?;
         Ok(normalize_config(config))
     }

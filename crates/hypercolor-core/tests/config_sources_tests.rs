@@ -107,6 +107,20 @@ fn invalid_env_overlay_key_fails_the_load() {
 }
 
 #[test]
+fn unknown_env_overlay_key_fails_the_load() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_config(&dir, "");
+    let mut sources = sources_for(path);
+    sources.env.values = vec![("daemon.not_a_real_key".to_owned(), serde_json::json!(1))];
+    let error = ConfigManager::load_with_sources(sources)
+        .expect_err("an overlay naming no modeled key must fail, not vanish");
+    assert!(
+        format!("{error:#}").contains("unknown config key `daemon.not_a_real_key`"),
+        "{error:#}"
+    );
+}
+
+#[test]
 fn malformed_overlay_keys_are_rejected() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = write_config(&dir, "");

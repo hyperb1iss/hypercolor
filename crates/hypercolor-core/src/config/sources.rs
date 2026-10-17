@@ -340,7 +340,8 @@ fn record_cli(
 }
 
 /// Set a dotted key inside the config via its JSON projection,
-/// re-validating through deserialization.
+/// re-validating through the strict decode, so an overlay naming a key
+/// this build does not read fails the load instead of vanishing.
 fn set_dotted(config: &mut HypercolorConfig, key: &str, value: serde_json::Value) -> Result<()> {
     if !hypercolor_types::config_registry::is_valid_key(key) {
         bail!("malformed config key: {key:?}");
@@ -363,7 +364,8 @@ fn set_dotted(config: &mut HypercolorConfig, key: &str, value: serde_json::Value
             .entry(segment.to_owned())
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
     }
-    *config = serde_json::from_value(root).with_context(|| format!("overlay {key} rejected"))?;
+    *config = HypercolorConfig::deserialize_strict(root)
+        .with_context(|| format!("overlay {key} rejected"))?;
     Ok(())
 }
 
