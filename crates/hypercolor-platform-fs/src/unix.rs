@@ -17,6 +17,38 @@ const SECRET_FILE_MODE: u32 = 0o600;
 const OPEN_NO_FOLLOW: i32 = 0x0100;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 const OPEN_NO_FOLLOW: i32 = 0x0002_0000;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+const OPEN_NONBLOCK: i32 = 0x0004;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const OPEN_NONBLOCK: i32 = 0o4000;
+
+pub(super) fn file_change_stamp(file: &File) -> io::Result<crate::FileChangeStamp> {
+    file.metadata().map(|metadata| change_stamp(&metadata))
+}
+
+pub(super) fn path_change_stamp(path: &Path) -> io::Result<crate::FileChangeStamp> {
+    fs::metadata(path).map(|metadata| change_stamp(&metadata))
+}
+
+fn change_stamp(metadata: &fs::Metadata) -> crate::FileChangeStamp {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let nanos = |seconds: i64, nanoseconds: i64| {
+        i128::from(seconds) * 1_000_000_000 + i128::from(nanoseconds)
+    };
+    crate::FileChangeStamp {
+        volume: metadata.dev(),
+        file_id: u128::from(metadata.ino()),
+        len: metadata.len(),
+        changed: nanos(metadata.ctime(), metadata.ctime_nsec()),
+        modified: nanos(metadata.mtime(), metadata.mtime_nsec()),
+        mode: metadata.mode(),
+    }
+}
+
+pub(super) fn rename_replacing(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(source, destination)
+}
 
 pub(super) fn durable_replace(source: &Path, destination: &Path) -> io::Result<()> {
     durable_replace_with(source, destination, sync_directory)
@@ -55,6 +87,35 @@ fn write_secret_with(
 }
 
 pub(super) fn open_no_follow(path: &Path) -> io::Result<File> {
+    open_no_follow_with_flags(path, 0)
+}
+
+/// [`open_no_follow`] that also never blocks in the open itself, so a FIFO
+/// at the path is reported instead of waiting for a writer. Reads and syncs
+/// of a regular file are unaffected by the flag.
+pub(super) fn open_no_follow_nonblocking(path: &Path) -> io::Result<File> {
+    #[cfg(any(
+        target_os = "android",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "macos"
+    ))]
+    {
+        open_no_follow_with_flags(path, OPEN_NONBLOCK)
+    }
+
+    #[cfg(not(any(
+        target_os = "android",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "macos"
+    )))]
+    {
+        open_no_follow_with_flags(path, 0)
+    }
+}
+
+fn open_no_follow_with_flags(path: &Path, extra_flags: i32) -> io::Result<File> {
     #[cfg(any(
         target_os = "android",
         target_os = "ios",
@@ -64,7 +125,7 @@ pub(super) fn open_no_follow(path: &Path) -> io::Result<File> {
     {
         OpenOptions::new()
             .read(true)
-            .custom_flags(OPEN_NO_FOLLOW)
+            .custom_flags(OPEN_NO_FOLLOW | extra_flags)
             .open(path)
     }
 
@@ -75,7 +136,7 @@ pub(super) fn open_no_follow(path: &Path) -> io::Result<File> {
         target_os = "macos"
     )))]
     {
-        let _ = path;
+        let _ = (path, extra_flags);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "symlink-refusing file open is unsupported on this Unix platform",

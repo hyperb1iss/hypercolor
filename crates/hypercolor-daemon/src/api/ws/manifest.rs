@@ -15,24 +15,27 @@
 //! and `just ws-manifest-check` fails in the meantime.
 //!
 //! What stays authored lives in `protocol/websocket-v1.descriptions.json`:
-//! human topic and transport descriptions. Config bounds
-//! come from the same compiled registry metadata as the validators, and
-//! binary layouts come from the compiled codecs.
+//! human topic, transport, and clock descriptions. Config bounds
+//! come from the same compiled registry metadata as the validators,
+//! binary layouts come from the compiled codecs, and clock field names
+//! come from the shared stamp types' serde shape.
 
 use std::collections::BTreeMap;
 
 use hypercolor_leptos_ext::ws::registry::TopicId;
 use hypercolor_types::event::event_vocabulary;
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use hypercolor_leptos_ext::ws::{
-    HYPERCOLOR_WS_PROTOCOL, HYPERCOLOR_WS_VERSION, PREVIEW_MIN_MESSAGE_BYTES,
-    PreviewTransportLimits, codec_binary_messages, codec_frame_layouts,
+    HYPERCOLOR_WS_PROTOCOL, HYPERCOLOR_WS_VERSION, HelloClock, PREVIEW_MIN_MESSAGE_BYTES,
+    PreviewTransportLimits, PublicationStamp, ResponseStamp, codec_binary_messages,
+    codec_frame_layouts,
 };
 
 use super::protocol::{
-    SubscriptionState, client_message_vocabulary, json_payload_manifest, server_message_vocabulary,
-    ws_capabilities,
+    PUBLICATION_STAMPED_SERVER_MESSAGES, ROUND_TRIP_STAMPED_SERVER_MESSAGES, SubscriptionState,
+    client_message_vocabulary, json_payload_manifest, server_message_vocabulary, ws_capabilities,
 };
 
 /// The authored half of the manifest, as committed.
@@ -44,7 +47,11 @@ pub const PROTOCOL_VERSION: &str = HYPERCOLOR_WS_VERSION;
 /// Sec-WebSocket-Protocol value clients negotiate.
 pub const SUBPROTOCOL: &str = HYPERCOLOR_WS_PROTOCOL;
 /// Manifest schema version, bumped when the manifest's own shape moves.
-pub const SCHEMA_VERSION: u64 = 2;
+///
+/// Version 3 added the top-level `clock` block. Nothing in this file or
+/// its consumers defines a new block as compatible, so a new block counts
+/// as a shape change.
+pub const SCHEMA_VERSION: u64 = 3;
 
 /// Build the manifest.
 ///
@@ -73,6 +80,7 @@ pub fn build() -> anyhow::Result<Value> {
     manifest.insert("topics".to_owned(), topics(&descriptions)?);
     manifest.insert("events".to_owned(), json!(event_vocabulary()));
     manifest.insert("continuity".to_owned(), continuity());
+    manifest.insert("clock".to_owned(), clock(&descriptions)?);
     manifest.insert("capabilities".to_owned(), json!(ws_capabilities()));
     manifest.insert(
         "preview_transport".to_owned(),
@@ -122,6 +130,47 @@ fn continuity() -> Value {
              on a socket that is still open.",
         "resync_signal": "resync_required",
     })
+}
+
+/// The publication clock: which server messages carry stamps, the fields
+/// a stamp, the `hello` announcement, and a command response carry, and
+/// the authored contract for reading them.
+fn clock(descriptions: &Value) -> anyhow::Result<Value> {
+    let mut block = authored(descriptions, "clock")?
+        .as_object()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("clock must be an object"))?;
+    let stamp_fields = field_names(&PublicationStamp {
+        timestamp: String::new(),
+        mono_us: 0,
+    })?;
+    let hello_fields = field_names(&HelloClock {
+        clock_epoch: String::new(),
+        mono_us: 0,
+    })?;
+    let round_trip_fields = field_names(&ResponseStamp { mono_us: Some(0) })?;
+    block.insert(
+        "stamped_messages".to_owned(),
+        json!(PUBLICATION_STAMPED_SERVER_MESSAGES),
+    );
+    block.insert("stamp_fields".to_owned(), json!(stamp_fields));
+    block.insert("hello_fields".to_owned(), json!(hello_fields));
+    block.insert(
+        "round_trip_messages".to_owned(),
+        json!(ROUND_TRIP_STAMPED_SERVER_MESSAGES),
+    );
+    block.insert("round_trip_fields".to_owned(), json!(round_trip_fields));
+    block.insert("mono_unit".to_owned(), json!("microseconds"));
+    Ok(Value::Object(block))
+}
+
+/// The top-level keys a shared clock type puts on the wire, in order.
+fn field_names<T: Serialize>(sample: &T) -> anyhow::Result<Vec<String>> {
+    let value = serde_json::to_value(sample)?;
+    let fields = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("clock types must serialize as objects"))?;
+    Ok(fields.keys().cloned().collect())
 }
 
 fn topics(descriptions: &Value) -> anyhow::Result<Value> {

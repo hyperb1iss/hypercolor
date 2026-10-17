@@ -75,6 +75,7 @@ static RELAYS: &[RelayRegistration] = &[
         source: RelaySource::Connection(|context| {
             tokio::spawn(relay_events(
                 context.state.event_bus.subscribe_all(),
+                *context.state.event_bus.clock(),
                 context.json_tx.clone(),
                 context.subscriptions.clone(),
             ))

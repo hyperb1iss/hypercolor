@@ -202,6 +202,10 @@ pub struct RuntimeSessionService {
     path: PathBuf,
     projection: RuntimeSessionProjection,
     driver_host: std::sync::Weak<DaemonDriverHost>,
+    /// Keeps the runtime-state destination, and the digest of its last
+    /// durable bytes, alive between saves that each open a short-lived
+    /// writer for the same path.
+    _destination: Option<AtomicFileWriter>,
 }
 
 #[derive(Clone)]
@@ -288,6 +292,17 @@ pub enum RuntimeSessionSaveOutcome {
     },
 }
 
+/// How much a runtime-session save trusts about the scene store.
+#[derive(Debug, Clone, Copy)]
+enum StoreSave {
+    /// Right after a scene commit: the scene service's own receipts decide
+    /// whether the store needs a write, with no file I/O when they do not.
+    AfterCommit,
+    /// Shutdown, output power, device removal: the store file itself is
+    /// verified against memory before it is trusted.
+    WholeSession,
+}
+
 struct RuntimeSessionSave {
     pending: runtime_state::RuntimeSnapshotSave,
     snapshot: RuntimeSessionSnapshot,
@@ -311,10 +326,10 @@ impl RuntimeSessionProjection {
     }
 
     pub(crate) async fn snapshot(&self) -> RuntimeSessionSnapshot {
-        let mut snapshot = {
-            let manager = self.scenes.snapshot().await;
-            runtime_state::snapshot_from_scene_manager(&manager)
-        };
+        let mut snapshot = self
+            .scenes
+            .read_with(runtime_state::snapshot_from_scene_manager)
+            .await;
         snapshot.active_layout_id = Some(self.spatial.layout().id.clone());
         let power = self.output_power.snapshot();
         snapshot.manual_paused = power.manually_paused();
@@ -364,8 +379,9 @@ impl RuntimeSessionProjection {
             .await
             .map_err(RuntimeSessionPersistenceError::BeforeAdmission)?;
         update(&mut save.snapshot);
-        save.commit().map_err(|error| match error {
-            error @ runtime_state::RuntimeSessionError::Persist { .. } => {
+        save.commit().await.map_err(|error| match error {
+            error @ (runtime_state::RuntimeSessionError::Persist { .. }
+            | runtime_state::RuntimeSessionError::WriteTask { .. }) => {
                 RuntimeSessionPersistenceError::RetryArmed(error)
             }
             error => RuntimeSessionPersistenceError::BeforeAdmission(error),
@@ -393,13 +409,14 @@ impl RuntimeSessionProjection {
             }
         };
         update(&mut save.snapshot);
-        let (projection, result) = save.commit_observed();
+        let (projection, result) = save.commit_observed().await;
         let durability = match result {
             Ok(AtomicWriteOutcome::Written) => ProjectionDurability::Written,
             Ok(AtomicWriteOutcome::Superseded) => ProjectionDurability::Superseded,
-            Err(error @ runtime_state::RuntimeSessionError::Persist { .. }) => {
-                ProjectionDurability::Retrying(error.to_string())
-            }
+            Err(
+                error @ (runtime_state::RuntimeSessionError::Persist { .. }
+                | runtime_state::RuntimeSessionError::WriteTask { .. }),
+            ) => ProjectionDurability::Retrying(error.to_string()),
             Err(error) => ProjectionDurability::BeforeAdmission(error.to_string()),
         };
         ProjectionWriteEvidence {
@@ -479,10 +496,17 @@ impl RuntimeSessionService {
         projection: RuntimeSessionProjection,
         driver_host: &Arc<DaemonDriverHost>,
     ) -> Self {
+        let destination = AtomicFileWriter::new(&path)
+            .inspect_err(|error| {
+                tracing::warn!(path = %path.display(), %error,
+                    "Runtime session destination unavailable until its first save");
+            })
+            .ok();
         Self {
             path,
             projection,
             driver_host: Arc::downgrade(driver_host),
+            _destination: destination,
         }
     }
 
@@ -506,9 +530,30 @@ impl RuntimeSessionService {
     /// Persist the scene store and runtime pointer, logging failures for callers
     /// that do not consume persistence evidence.
     pub async fn save(&self) {
-        match self.save_with_outcome().await {
+        Self::log_outcome(&self.path, self.save_with_outcome().await);
+    }
+
+    /// Persist the runtime pointer after a scene commit, logging failures.
+    ///
+    /// A scene commit changes scene state only, so unlike [`Self::save`]
+    /// this leaves the driver inventory to the discovery scans and device
+    /// paths that change it.
+    pub(crate) async fn save_after_scene_commit(&self) {
+        Self::log_outcome(
+            &self.path,
+            self.save_after_scene_commit_with_outcome().await,
+        );
+    }
+
+    /// [`Self::save_after_scene_commit`], returning each actual outcome.
+    pub(crate) async fn save_after_scene_commit_with_outcome(&self) -> RuntimeSessionSaveOutcome {
+        self.save_projection(async {}, StoreSave::AfterCommit).await
+    }
+
+    fn log_outcome(path: &Path, outcome: RuntimeSessionSaveOutcome) {
+        match outcome {
             RuntimeSessionSaveOutcome::BeforeAdmission { error } => {
-                tracing::warn!(path = %self.path.display(), %error,
+                tracing::warn!(path = %path.display(), %error,
                     "Failed to reserve runtime session snapshot");
             }
             RuntimeSessionSaveOutcome::Attempted {
@@ -520,7 +565,7 @@ impl RuntimeSessionService {
                     tracing::warn!(%error, "Failed to persist scene store before runtime snapshot save");
                 }
                 if let Err(error) = snapshot {
-                    tracing::warn!(path = %self.path.display(), %error,
+                    tracing::warn!(path = %path.display(), %error,
                         "Failed to persist runtime session snapshot");
                 }
             }
@@ -531,21 +576,38 @@ impl RuntimeSessionService {
     /// return each actual outcome without inferring durability from newer state.
     pub async fn save_with_outcome(&self) -> RuntimeSessionSaveOutcome {
         let driver_host = self.driver_host.upgrade();
-        let refresh_inventory = async move {
-            if let Some(driver_host) = driver_host {
-                driver_host.refresh_driver_inventory().await;
-            }
-        };
+        self.save_projection(
+            async move {
+                if let Some(driver_host) = driver_host {
+                    driver_host.refresh_driver_inventory().await;
+                }
+            },
+            StoreSave::WholeSession,
+        )
+        .await
+    }
+
+    async fn save_projection<Fut>(
+        &self,
+        before_snapshot: Fut,
+        store_save: StoreSave,
+    ) -> RuntimeSessionSaveOutcome
+    where
+        Fut: Future<Output = ()>,
+    {
         let save = match self
             .projection
-            .prepare_save(&self.path, refresh_inventory)
+            .prepare_save(&self.path, before_snapshot)
             .await
         {
             Ok(save) => save,
             Err(error) => return RuntimeSessionSaveOutcome::BeforeAdmission { error },
         };
-        let scene_store = self.save_scene_store_snapshot().await;
-        let (projection, snapshot) = save.commit_observed();
+        let scene_store = match store_save {
+            StoreSave::AfterCommit => self.projection.scenes.persist_snapshot_after_commit().await,
+            StoreSave::WholeSession => self.save_scene_store_snapshot().await,
+        };
+        let (projection, snapshot) = save.commit_observed().await;
         RuntimeSessionSaveOutcome::Attempted {
             scene_store,
             projection,
@@ -570,6 +632,22 @@ impl RuntimeSessionService {
             .await
     }
 
+    /// Persist the runtime pointer as a whole-session save.
+    ///
+    /// The scene store file is verified against memory first, and rewritten
+    /// when it differs, so an outside edit never outlives this save even when
+    /// the scene service's receipts cover the store. A store failure is
+    /// logged, as [`Self::save`] logs it, and the pointer's own outcome is
+    /// returned with its usual errors and supersession.
+    pub(crate) async fn persist_snapshot_verifying_store(
+        &self,
+    ) -> Result<AtomicWriteOutcome, RuntimeSessionPersistenceError> {
+        if let Err(error) = self.save_scene_store_snapshot().await {
+            tracing::warn!(%error, "Failed to persist scene store before runtime snapshot save");
+        }
+        self.persist_snapshot().await
+    }
+
     async fn save_scene_store_snapshot(&self) -> anyhow::Result<Option<AtomicWriteOutcome>> {
         self.projection.scenes.persist_snapshot().await
     }
@@ -583,11 +661,14 @@ impl RuntimeSessionService {
 }
 
 impl RuntimeSessionSave {
-    fn commit(self) -> Result<AtomicWriteOutcome, runtime_state::RuntimeSessionError> {
-        self.commit_observed().1
+    async fn commit(self) -> Result<AtomicWriteOutcome, runtime_state::RuntimeSessionError> {
+        self.commit_observed().await.1
     }
 
-    fn commit_observed(
+    /// Serialize and admit on this task, then run the durable replacement
+    /// on the blocking pool. The publication guard is held until the
+    /// attempt finishes, as when it ran inline.
+    async fn commit_observed(
         self,
     ) -> (
         RuntimeSessionSnapshot,
@@ -598,8 +679,23 @@ impl RuntimeSessionSave {
             snapshot,
             publication_guard,
         } = self;
-        let outcome = runtime_state::save_reserved(pending, &snapshot);
-        drop(publication_guard);
+        let admitted = match runtime_state::admit_reserved(pending, &snapshot) {
+            Ok(admitted) => admitted,
+            Err(error) => return (snapshot, Err(error)),
+        };
+        let path = admitted.path().to_path_buf();
+        let outcome = crate::audit_log::run_blocking_attributed(move || {
+            let outcome = admitted.commit();
+            drop(publication_guard);
+            outcome
+        })
+        .await
+        .unwrap_or_else(|error| {
+            Err(runtime_state::RuntimeSessionError::WriteTask {
+                path,
+                detail: error.to_string(),
+            })
+        });
         (snapshot, outcome)
     }
 }
@@ -816,12 +912,14 @@ impl SceneContext {
 
     /// Persist the durable runtime-session projection after a scene mutation.
     pub async fn save_runtime_session(&self) {
-        self.runtime_session.save().await;
+        self.runtime_session.save_after_scene_commit().await;
     }
 
     /// Return persistence evidence for the current runtime-session projection.
     pub async fn save_runtime_session_with_outcome(&self) -> RuntimeSessionSaveOutcome {
-        self.runtime_session.save_with_outcome().await
+        self.runtime_session
+            .save_after_scene_commit_with_outcome()
+            .await
     }
 
     /// Remove explicitly forgotten controller outputs from every saved scene and layout.
@@ -859,7 +957,7 @@ impl SceneContext {
         self.layout.prune_targets(targets, reference).await?;
         let outcome = self
             .runtime_session
-            .persist_snapshot()
+            .persist_snapshot_verifying_store()
             .await
             .map_err(|error| DomainError::Internal(anyhow::anyhow!(error)))?;
         if outcome == AtomicWriteOutcome::Superseded {

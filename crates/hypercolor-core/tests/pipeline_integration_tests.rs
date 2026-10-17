@@ -652,7 +652,7 @@ async fn event_bus_broadcast_receives_events() {
     let event = rx.recv().await.expect("should receive event");
     assert!(matches!(event.event, HypercolorEvent::DaemonStarted { .. }));
     assert!(event.timestamp.epoch_millis() > 0);
-    assert!(event.mono_ms < 10_000); // should be within first 10 seconds
+    assert!(event.mono_us < 10_000_000); // should be within first 10 seconds
 }
 
 #[tokio::test]

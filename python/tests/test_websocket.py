@@ -20,11 +20,14 @@ from hypercolor.websocket import (
     ActiveSubscription,
     BinaryMessage,
     CanvasData,
+    CommandResponse,
     DisplayPreviewData,
+    EventMessage,
     FrameData,
     HelloMessage,
     HypercolorEventStream,
     InteractivePreviewData,
+    MetricsMessage,
     ScreenZonesData,
     SpectrumData,
     SubscribedMessage,
@@ -332,6 +335,59 @@ def test_decode_hello_message() -> None:
         ActiveSubscription(topic="events"),
         ActiveSubscription(topic="display_preview", key="device-abc", config={"fps": 15}),
     ]
+    assert message.clock_epoch is None
+    assert message.mono_us is None
+
+
+def test_decode_hello_message_reads_the_daemon_clock() -> None:
+    message = HypercolorEventStream._decode_json(
+        '{"type":"hello","version":"1.0","state":{},"capabilities":[],"subscriptions":[],'
+        '"clock_epoch":"6f1d3c1e-9a4b-4e0c-8a51-2b7f0c9d4e21","mono_us":81234567}'
+    )
+
+    assert isinstance(message, HelloMessage)
+    assert message.clock_epoch == "6f1d3c1e-9a4b-4e0c-8a51-2b7f0c9d4e21"
+    assert message.mono_us == 81234567
+
+
+def test_decode_stamped_messages_read_mono_us() -> None:
+    event = HypercolorEventStream._decode_json(
+        '{"type":"event","event":"frame_rendered","timestamp":"2027-01-15T08:00:00.000Z",'
+        '"mono_us":12345678,"data":{"frame_number":8}}'
+    )
+    metrics = HypercolorEventStream._decode_json(
+        '{"type":"metrics","timestamp":"2027-01-15T08:00:00.000Z","mono_us":12345900,"data":{}}'
+    )
+    sensors = HypercolorEventStream._decode_json(
+        '{"type":"sensors","timestamp":"2027-01-15T08:00:00.000Z","mono_us":12346000,"data":{}}'
+    )
+    legacy = HypercolorEventStream._decode_json(
+        '{"type":"event","event":"paused","timestamp":"2027-01-15T08:00:00.000Z","data":{}}'
+    )
+
+    assert isinstance(event, EventMessage)
+    assert event.mono_us == 12345678
+    assert isinstance(metrics, MetricsMessage)
+    assert metrics.mono_us == 12345900
+    assert isinstance(sensors, EventMessage)
+    assert sensors.event == "sensors"
+    assert sensors.mono_us == 12346000
+    assert isinstance(legacy, EventMessage)
+    assert legacy.mono_us is None
+
+
+def test_decode_command_response_reads_the_round_trip_stamp() -> None:
+    stamped = HypercolorEventStream._decode_json(
+        '{"type":"response","id":"rt-1","status":200,"mono_us":81250000,"data":{}}'
+    )
+    legacy = HypercolorEventStream._decode_json(
+        '{"type":"response","id":"rt-2","status":200,"data":{}}'
+    )
+
+    assert isinstance(stamped, CommandResponse)
+    assert stamped.mono_us == 81250000
+    assert isinstance(legacy, CommandResponse)
+    assert legacy.mono_us is None
 
 
 def test_parse_led_frame() -> None:

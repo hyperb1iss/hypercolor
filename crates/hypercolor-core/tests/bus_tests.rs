@@ -1,11 +1,12 @@
 //! Comprehensive tests for the event bus.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypercolor_core::bus::{
     CanvasFrame, DisplayZoneFrame, DisplayZoneTarget, EventFilter, EventTimestamp, HypercolorBus,
-    INPUT_STATUS_EVENT_KIND, INPUT_STATUS_EVENT_SOURCE, PreviewKind, TimestampedEvent, WatchLane,
-    ZonePreviewFrame,
+    INPUT_STATUS_EVENT_KIND, INPUT_STATUS_EVENT_SOURCE, PreviewKind, PublicationClock,
+    TimestampedEvent, WatchLane, ZonePreviewFrame,
 };
 use hypercolor_core::input::{SourceKind, SourceState, SourceStatusReporter};
 use hypercolor_types::canvas::{Canvas, Rgba};
@@ -117,30 +118,101 @@ async fn publish_preserves_event_data() {
 }
 
 #[tokio::test]
-async fn mono_ms_is_monotonic() {
+async fn mono_us_counts_microseconds() {
     let bus = HypercolorBus::new();
     let mut rx = bus.subscribe_all();
 
     bus.publish(paused_event());
     let first = recv_one(&mut rx).await.expect("first event");
 
-    // Tiny delay so monotonic clock advances.
-    tokio::time::sleep(Duration::from_millis(1)).await;
+    tokio::time::sleep(Duration::from_millis(2)).await;
 
     bus.publish(HypercolorEvent::Resumed);
     let second = recv_one(&mut rx).await.expect("second event");
 
+    let elapsed_us = second
+        .mono_us
+        .checked_sub(first.mono_us)
+        .expect("mono_us must not move backwards");
     assert!(
-        second.mono_ms >= first.mono_ms,
-        "mono_ms should be monotonically increasing"
+        elapsed_us >= 2_000,
+        "a 2 ms sleep should span at least 2000 us, got {elapsed_us}"
     );
+}
+
+#[tokio::test]
+async fn mono_us_is_non_decreasing_across_a_burst() {
+    let bus = HypercolorBus::new();
+    let mut rx = bus.subscribe_all();
+
+    for _ in 0..200 {
+        bus.publish(paused_event());
+    }
+
+    let mut previous = 0_u64;
+    for index in 0..200 {
+        let event = recv_one(&mut rx).await.expect("burst event");
+        assert!(
+            event.mono_us >= previous,
+            "event {index} stamped {} after {previous}",
+            event.mono_us
+        );
+        previous = event.mono_us;
+    }
+}
+
+/// Wall time the stepped clock below reports, in Unix epoch millis.
+static STEPPED_WALL_MS: AtomicU64 = AtomicU64::new(0);
+
+fn stepped_wall_clock() -> EventTimestamp {
+    EventTimestamp::from_epoch_millis(STEPPED_WALL_MS.load(Ordering::SeqCst))
+}
+
+#[tokio::test]
+async fn mono_us_ignores_a_backwards_wall_clock_step() {
+    let bus = HypercolorBus::with_clock(PublicationClock::with_wall_clock(stepped_wall_clock));
+    let mut rx = bus.subscribe_all();
+
+    STEPPED_WALL_MS.store(1_800_000_000_000, Ordering::SeqCst);
+    bus.publish(paused_event());
+    let before = recv_one(&mut rx).await.expect("event before the step");
+
+    // An NTP step or a manual clock change moves the wall clock back an hour.
+    STEPPED_WALL_MS.store(1_800_000_000_000 - 3_600_000, Ordering::SeqCst);
+    bus.publish(HypercolorEvent::Resumed);
+    let after = recv_one(&mut rx).await.expect("event after the step");
+
+    assert!(
+        after.timestamp < before.timestamp,
+        "the wall stamp follows the step"
+    );
+    assert!(
+        after.mono_us >= before.mono_us,
+        "the monotonic stamp must not follow the step"
+    );
+    assert_eq!(after.stamp().timestamp, after.timestamp);
+    assert_eq!(after.stamp().mono_us, after.mono_us);
+}
+
+#[test]
+fn bus_clones_share_one_clock_epoch_and_new_buses_do_not() {
+    let bus = HypercolorBus::new();
+    let clone = bus.clone();
+    let restarted = HypercolorBus::new();
+
+    assert_eq!(bus.clock().epoch(), clone.clock().epoch());
+    assert_ne!(bus.clock().epoch(), restarted.clock().epoch());
+
+    let first = bus.clock().mono_us();
+    let second = clone.clock().mono_us();
+    assert!(second >= first, "clones read one monotonic origin");
 }
 
 #[test]
 fn timestamp_serializes_as_iso8601_string() {
     let event = TimestampedEvent {
         timestamp: EventTimestamp::from_epoch_millis(0),
-        mono_ms: 0,
+        mono_us: 0,
         event: HypercolorEvent::Paused,
     };
 
