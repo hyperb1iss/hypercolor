@@ -21,6 +21,33 @@ in `crates/hypercolor-daemon/src/api/openapi.rs`, built with the `axum` and
 unpacks the Swagger UI archive shipped by `utoipa-swagger-ui-vendored` into
 `OUT_DIR` at compile time.
 
+## Patches
+
+### 1. Build against zip 9
+
+Files: `Cargo.toml` (`[build-dependencies.zip]`) and `build.rs`
+(`SwaggerZip`'s extraction loop).
+
+The published crate requires `zip` ^8.6. Every zip 8 release is affected by
+RUSTSEC-2026-0367 (SUID and SGID bits survive extraction),
+RUSTSEC-2026-0368 (`ZipArchive::extract` writes symlinks that point outside
+the destination), and RUSTSEC-2026-0369 (extraction applies permissions
+through symlinks), and zip 9.0.0 is the first fixed release. The patch is
+upstream's own change from juhaku/utoipa#1645 (merge commit
+`5aff30b375c0c72aeccfa8fa6100db8f2901b3ba`, 2026-10-17): the requirement
+becomes `9.0`, and `build.rs` adds a `?` because zip 9's `ZipFile::name`
+returns a `Result`. After the patch, `build.rs` and every file under `src/`
+match upstream at that commit byte for byte.
+
+The build script extracts entries itself instead of calling the affected
+`extract` APIs, and its input is the Swagger UI archive pinned inside
+`utoipa-swagger-ui-vendored`, so the advisories were not exploitable here.
+The patch exists so the dependency graph stays free of known-vulnerable
+releases and `cargo deny check advisories` passes without ignores.
+
+Upstream status: unreleased. The newest `utoipa-swagger-ui` on crates.io is
+10.0.1, and its changelog lists the zip move under "Unreleased".
+
 ## Removal rule
 
 Drop this directory and its `[patch.crates-io]` entry once a
