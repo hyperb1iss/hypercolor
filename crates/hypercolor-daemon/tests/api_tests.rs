@@ -3309,6 +3309,79 @@ async fn config_write_declining_live_persists_without_re_applying() {
     );
 }
 
+/// Config writes decode strictly even though clients decode the config
+/// payload tolerantly: a key the schema does not model is a client typo,
+/// refused instead of answered 200 and silently dropped.
+#[tokio::test]
+async fn config_writes_refuse_keys_the_schema_does_not_model() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+    let state = isolated_state_with_config_manager(Arc::clone(&config_manager));
+    let app = test_app_with_state(Arc::new(state));
+    let before = serde_json::to_value(&**config_manager.get()).expect("config projects to JSON");
+
+    let mut session_with_typo =
+        serde_json::to_value(&config_manager.get().session).expect("session projects to JSON");
+    session_with_typo["not_a_real_key"] = serde_json::json!(1);
+    let session_patch = Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/config/keys/session?live=false")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "not_a_real_key": 1 }).to_string(),
+        ))
+        .expect("failed to build request");
+
+    for (request, unknown_path) in [
+        (
+            config_put_request("daemon.not_a_real_key", &serde_json::json!(1), Some(false)),
+            "daemon.not_a_real_key",
+        ),
+        (
+            config_put_request(
+                "rendering.servo_gpu_import.not_a_real_key",
+                &serde_json::json!(true),
+                Some(false),
+            ),
+            "rendering.servo_gpu_import.not_a_real_key",
+        ),
+        (
+            config_put_request("session", &session_with_typo, Some(false)),
+            "session.not_a_real_key",
+        ),
+        (session_patch, "session.not_a_real_key"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("failed to execute request");
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{unknown_path}"
+        );
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "validation_error");
+        let message = json["error"]["message"]
+            .as_str()
+            .expect("error message should be a string");
+        assert!(
+            message.contains(&format!("unknown config key `{unknown_path}`")),
+            "{message}"
+        );
+    }
+
+    assert_eq!(
+        serde_json::to_value(&**config_manager.get()).expect("config projects to JSON"),
+        before,
+        "a refused write leaves the live config alone"
+    );
+    assert!(!config_path.exists(), "a refused write never persists");
+}
+
 /// A whole-config reset re-applies every live section, render included.
 ///
 /// The hand predicate this replaced matched three exact keys and ignored

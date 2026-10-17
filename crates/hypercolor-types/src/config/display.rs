@@ -10,7 +10,6 @@ pub const FACE_FPS_CAP_MAX: u32 = 60;
 
 /// Device display (LCD face) output settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DisplayConfig {
     /// Upper bound for HTML face rendering on the zone-direct path.
     /// The device transport limit still wins below this cap.

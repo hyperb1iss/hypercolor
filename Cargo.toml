@@ -73,6 +73,8 @@ needless_continue = { level = "allow", priority = 36 }
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Reports keys a derive skipped, so authoritative config decodes stay strict.
+serde_ignored = "0.1.14"
 # The error type Axum keeps as the source of a JSON or query rejection,
 # which is where the API extractors read the offending field path.
 serde_path_to_error = "0.1"

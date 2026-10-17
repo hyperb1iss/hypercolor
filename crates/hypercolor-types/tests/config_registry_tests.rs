@@ -2,7 +2,9 @@
 //! (Spec 76 §3.3). The completeness test is the contract: a config
 //! section added without a registry row fails here, not in review.
 
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::config::{
+    AudioConfig, CaptureConfig, HypercolorConfig, RenderingConfig, deserialize_section_strict,
+};
 use hypercolor_types::config_registry::{
     ApplyPolicy, LiveSection, Redaction, declared_namespace_roots, declared_section_roots,
     descriptor_for, is_redacted, registry, requires_restart, schema_entries,
@@ -136,6 +138,64 @@ fn capture_validator_is_wired_and_rejects_bad_values() {
         validate(&invalid).is_err(),
         "out-of-range smoothing must be rejected"
     );
+}
+
+#[test]
+fn capture_validator_rejects_a_retired_key_by_its_section_path() {
+    let validate = descriptor_for("capture")
+        .validate
+        .expect("capture section declares a validator");
+    let error = validate(&serde_json::json!({ "enabled": false, "monitor": 2 }))
+        .expect_err("the retired monitor key must be refused");
+    assert!(
+        error.contains("unknown config key `capture.monitor`"),
+        "{error}"
+    );
+}
+
+/// Each section's default projection with one key its type never had.
+fn section_with_unknown_key<T: serde::Serialize>(section: &T, unknown: &str) -> serde_json::Value {
+    let mut value = serde_json::to_value(section).expect("section projects to JSON");
+    value[unknown] = serde_json::json!(true);
+    value
+}
+
+#[test]
+fn section_validation_is_strict_while_client_decodes_stay_tolerant() {
+    let audio = section_with_unknown_key(&AudioConfig::default(), "future_audio_knob");
+    let error = deserialize_section_strict::<AudioConfig, _>("audio", audio.clone())
+        .expect_err("audio must refuse an unknown key");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown config key `audio.future_audio_knob`"),
+        "{error}"
+    );
+    serde_json::from_value::<AudioConfig>(audio).expect("a client still reads the section");
+
+    let capture = section_with_unknown_key(&CaptureConfig::default(), "monitor");
+    let error = deserialize_section_strict::<CaptureConfig, _>("capture", capture.clone())
+        .expect_err("capture must refuse an unknown key");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown config key `capture.monitor`"),
+        "{error}"
+    );
+    serde_json::from_value::<CaptureConfig>(capture).expect("a client still reads the section");
+
+    let mut rendering =
+        serde_json::to_value(RenderingConfig::default()).expect("section projects to JSON");
+    rendering["servo_gpu_import"]["future_import_knob"] = serde_json::json!("auto");
+    let error = deserialize_section_strict::<RenderingConfig, _>("rendering", rendering.clone())
+        .expect_err("a nested unknown key must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown config key `rendering.servo_gpu_import.future_import_knob`"),
+        "{error}"
+    );
+    serde_json::from_value::<RenderingConfig>(rendering).expect("a client still reads the section");
 }
 
 #[test]

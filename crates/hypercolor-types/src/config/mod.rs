@@ -1,9 +1,12 @@
 //! Configuration types -- daemon, audio, web, capture, discovery, and driver settings.
 //!
 //! Optional fields use Serde defaults so a fresh install can boot entirely from
-//! compile-time values. Closed nested sections reject unknown keys before a
-//! whole-file rewrite can silently delete them; the root and driver maps retain
-//! explicit extension doors.
+//! compile-time values. The plain `Deserialize` impl skips keys it does not
+//! know, so a client can read the config payload of a newer daemon. Sources
+//! of truth (the config file, startup overlays, REST writes) decode through
+//! [`HypercolorConfig::deserialize_strict`] instead, which refuses unknown
+//! keys before a whole-file rewrite can silently delete them; the root and
+//! driver maps retain explicit extension doors.
 
 mod audio;
 mod capture;
@@ -18,6 +21,7 @@ mod media;
 mod network;
 mod rendering;
 mod root;
+mod strict;
 mod web;
 
 pub use audio::*;
@@ -33,6 +37,7 @@ pub use media::*;
 pub use network::*;
 pub use rendering::*;
 pub use root::*;
+pub use strict::deserialize_section_strict;
 pub use web::*;
 
 // ─── Default Value Functions ─────────────────────────────────────────────────
