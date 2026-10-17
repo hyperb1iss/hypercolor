@@ -1,6 +1,6 @@
 +++
 title = "MCP server"
-description = "Hypercolor's Model Context Protocol server: 18 tools, 5 resources, 4 prompts over Streamable HTTP. Canonical docs live in Agents."
+description = "Hypercolor's Model Context Protocol server: 21 tools, 5 resources, 4 prompts over Streamable HTTP. Canonical docs live in Agents."
 weight = 80
 +++
 
@@ -16,7 +16,7 @@ shapes, and the prompt templates) lives in the **Agents** section. Start there:
 
 - [Agents & MCP overview](@/agents/_index.md): MCP vs CLI and the three primitives
 - [MCP setup](@/agents/mcp-setup.md): Claude Code / Desktop / Cursor / Zed config
-- [Tools reference](@/agents/tools-reference.md): all 18 tools, full JSON schema
+- [Tools reference](@/agents/tools-reference.md): all 21 tools, full JSON schema
 - [Resources reference](@/agents/resources-reference.md): the 5 `hypercolor://` resources
 - [Prompt templates](@/agents/prompt-templates.md): the 4 shipped prompts
   {% </callout> %}
@@ -31,14 +31,14 @@ HTTP with optional Server-Sent Events for streaming.
 | ------------- | ------------------------------------------------------- |
 | Transport     | Streamable HTTP (`streamable-http`)                     |
 | Default URL   | `http://localhost:9420/mcp`                             |
-| Tools         | 18                                                      |
+| Tools         | 21                                                      |
 | Resources     | 5 (`state`, `devices`, `effects`, `audio`, `scenes`)    |
 | Prompts       | 4 (`mood_lighting`, `troubleshoot`, `setup_automation`, `openrgb_setup`) |
 | Default state | **disabled**                                            |
 
 The server advertises tools, resources, and prompts in its capabilities and ships
 `instructions` that tell agents to read `hypercolor://state` or call `get_status`
-before making changes.
+before making changes and to check `capture_canvas` after one.
 
 {% <callout type="warning"> %}
 **MCP is off by default.** Until you set `enabled = true` in the `[mcp]` config
@@ -90,18 +90,22 @@ The three MCP primitives map cleanly onto Hypercolor's engine.
 
 {% <mermaid> %}
 graph TD
-A[MCP client] -->|tools| T[18 tools: set_effect, get_status, ...]
+A[MCP client] -->|tools| T[21 tools: set_effect, get_status, capture_canvas, ...]
 A -->|resources| R[5 resources: hypercolor://state, devices, ...]
 A -->|prompts| P[4 prompts: mood_lighting, troubleshoot, setup_automation, openrgb_setup]
 T --> E[Daemon engine + event bus]
 R --> E
 {% </mermaid> %}
 
-**Tools** are actions and reads. Nine are listed as `read_only` (`list_effects`,
+**Tools** are actions and reads. Eleven are listed as `read_only` (`list_effects`,
 `get_devices`, `get_status`, `list_scenes`, `get_audio_state`, `get_sensor_data`,
-`get_layout`, `diagnose`, `openrgb_status`), and the mutating ones carry `idempotent` annotations so
-agents can reason about retries. `set_effect`, `set_color`, `create_scene`, and
-`set_display_face` are non-idempotent because repeated calls replace or add state.
+`get_layout`, `diagnose`, `openrgb_status`, `get_effect_console`,
+`capture_canvas`), and every tool carries an `idempotent` annotation so agents can
+reason about retries. Six are non-idempotent: `set_effect`, `set_color`,
+`create_scene`, and `set_display_face` because repeated calls replace or add
+state, `install_effect` because each call restarts the running page and
+returns a new console cursor, and `capture_canvas` because every call returns a
+new frame.
 
 **Resources** are live read-only snapshots the agent can pull for context. The
 `hypercolor://audio` resource updates at roughly 10 Hz when audio is active (not
@@ -120,26 +124,29 @@ below is a map; the [tools reference](@/agents/tools-reference.md) carries the f
 input schemas, defaults, enums, and a worked call plus response for each tool.
 {% </api_endpoint> %}
 
-| Tool               | Read-only | Destructive | Idempotent |
-| ------------------ | --------- | ----------- | ---------- |
-| `set_effect`       | No        | Yes         | No         |
-| `list_effects`     | Yes       | No          | Yes        |
-| `set_color`        | No        | Yes         | No         |
-| `set_output_power` | No        | No          | Yes        |
-| `clear_zone`       | No        | Yes         | Yes        |
-| `adjust_controls`  | No        | No          | Yes        |
-| `get_devices`      | Yes       | No          | Yes        |
-| `set_brightness`   | No        | No          | Yes        |
-| `get_status`       | Yes       | No          | Yes        |
-| `activate_scene`   | No        | Yes         | Yes        |
-| `list_scenes`      | Yes       | No          | Yes        |
-| `create_scene`     | No        | No          | No         |
-| `get_audio_state`  | Yes       | No          | Yes        |
-| `get_sensor_data`  | Yes       | No          | Yes        |
-| `set_display_face` | No        | Yes         | No         |
-| `get_layout`       | Yes       | No          | Yes        |
-| `diagnose`         | Yes       | No          | Yes        |
-| `openrgb_status`   | Yes       | No          | Yes        |
+| Tool                 | Read-only | Destructive | Idempotent |
+| -------------------- | --------- | ----------- | ---------- |
+| `set_effect`         | No        | Yes         | No         |
+| `list_effects`       | Yes       | No          | Yes        |
+| `set_color`          | No        | Yes         | No         |
+| `set_output_power`   | No        | No          | Yes        |
+| `clear_zone`         | No        | Yes         | Yes        |
+| `adjust_controls`    | No        | No          | Yes        |
+| `get_devices`        | Yes       | No          | Yes        |
+| `set_brightness`     | No        | No          | Yes        |
+| `get_status`         | Yes       | No          | Yes        |
+| `activate_scene`     | No        | Yes         | Yes        |
+| `list_scenes`        | Yes       | No          | Yes        |
+| `create_scene`       | No        | No          | No         |
+| `get_audio_state`    | Yes       | No          | Yes        |
+| `get_sensor_data`    | Yes       | No          | Yes        |
+| `set_display_face`   | No        | Yes         | No         |
+| `get_layout`         | Yes       | No          | Yes        |
+| `diagnose`           | Yes       | No          | Yes        |
+| `openrgb_status`     | Yes       | No          | Yes        |
+| `capture_canvas`     | Yes       | No          | No         |
+| `install_effect`     | No        | Yes         | No         |
+| `get_effect_console` | Yes       | No          | Yes        |
 
 `set_effect` resolves an effect by exact ID, exact case-insensitive name, or a
 unique case-insensitive name substring. Scene, zone, layer, device, and display

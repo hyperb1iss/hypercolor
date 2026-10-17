@@ -40,6 +40,19 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
             ],
         ))
         .routes(openapi::documented_route(
+            "/effects/console",
+            axum::routing::get(effects::get_effect_console),
+            [
+                OperationDoc::get::<hypercolor_types::api::effects::EffectConsoleResponse>(
+                    "get_effect_console",
+                    "effects",
+                    "Read effect console output",
+                )
+                .query::<effects::EffectConsoleQuery>()
+                .component::<hypercolor_types::api::effects::EffectConsoleLevel>(),
+            ],
+        ))
+        .routes(openapi::documented_route(
             "/effects/{id}",
             axum::routing::get(effects::get_effect),
             [OperationDoc::get::<
@@ -54,7 +67,7 @@ pub(super) fn router() -> OpenApiRouter<Arc<AppState>> {
                 "effects",
                 "Get effect cover image",
             )
-            .binary("image/jpeg")],
+            .binary(&["image/jpeg"])],
         ))
         .routes(openapi::documented_route(
             "/effects/{id}/apply",

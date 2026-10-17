@@ -194,9 +194,11 @@ collection routes do not, and the exceptions are
 contract: `GET /displays`, `/capture/monitors`, `/simulators/displays`, and
 `/config/schema` put a bare JSON array in `data` (they register through
 `OperationDoc::get_vec`), and `GET /control-surfaces` answers
-`{ surfaces: [...] }`. Check the generated OpenAPI document before assuming a
-collection is paged. Diagnostic telemetry (system status internals,
-metrics) deliberately stays daemon-local; clients consume tolerant subsets.
+`{ surfaces: [...] }`. `GET /effects/console` is a cursor window over a log,
+`{ entries, next_seq, truncated }`, not a collection. Check the generated
+OpenAPI document before assuming a collection is paged. Diagnostic telemetry
+(system status internals, metrics) deliberately stays daemon-local; clients
+consume tolerant subsets.
 When adding or changing an endpoint in a shared domain, change the type in
 `hypercolor-types::api`, never a hand-mirrored copy.
 
@@ -357,7 +359,7 @@ The daemon exposes REST + WebSocket on `:9420` (Axum):
 - `POST /api/v1/scenes/{id}/activate`: Scene activation
 - `GET/POST /api/v1/layouts`: Spatial layout CRUD
 - `WebSocket /api/v1/ws`: Real-time state (events, canvas frames, metrics, spectrum)
-- **MCP server**: 17 tools, 5 resources, and 3 prompt templates for AI integration
+- **MCP server**: 21 tools, 5 resources, and 4 prompt templates for AI integration
 
 Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
 

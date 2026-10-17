@@ -832,7 +832,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let tools = list_payload["result"]["tools"]
         .as_array()
         .expect("tools list array");
-    assert_eq!(tools.len(), 18);
+    assert_eq!(tools.len(), 21);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
     assert!(tools.iter().any(|tool| tool["name"] == "set_display_face"));
 
@@ -2329,7 +2329,7 @@ async fn read_only_tool_results_match_their_declared_schemas() {
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 18);
+    assert_eq!(tools.len(), 21);
     assert!(
         tools
             .iter()
@@ -3011,4 +3011,237 @@ fn openrgb_setup_prompt_preserves_native_ownership_and_explicit_zone_sizes() {
     assert!(text.contains("openrgb_status"));
     assert!(text.contains("never infer sizes"));
     assert!(text.contains("keep native drivers in charge"));
+}
+
+// ── capture_canvas ──────────────────────────────────────────────────────
+
+/// Publish solid canvas frames the way the render thread does while a canvas
+/// receiver exists, until aborted.
+fn spawn_canvas_renderer(
+    state: &Arc<AppState>,
+    width: u32,
+    height: u32,
+) -> tokio::task::JoinHandle<()> {
+    let bus = Arc::clone(&state.event_bus);
+    tokio::spawn(async move {
+        let mut canvas = hypercolor_types::canvas::Canvas::new(width, height);
+        canvas.fill(hypercolor_types::canvas::Rgba::new(0, 220, 255, 255));
+        let mut frame_number = 1;
+        loop {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            let _ = bus
+                .canvas_lane()
+                .send(hypercolor_core::bus::CanvasFrame::from_canvas(
+                    &canvas,
+                    frame_number,
+                    frame_number * 16,
+                ));
+            frame_number += 1;
+        }
+    })
+}
+
+#[tokio::test]
+async fn capture_canvas_returns_one_image_per_frame_with_matching_metadata() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let renderer = spawn_canvas_renderer(&state, 64, 32);
+
+    let response = mcp::tools::execute_tool_response_with_state(
+        "capture_canvas",
+        &json!({ "frames": 2, "interval_ms": 10, "width": 16 }),
+        state.as_ref(),
+    )
+    .await
+    .expect("capture_canvas should succeed while frames publish");
+    renderer.abort();
+
+    assert_eq!(response.images.len(), 2);
+    let frames = response.payload["frames"].as_array().expect("frames array");
+    assert_eq!(frames.len(), 2);
+    assert_eq!(response.payload["source_width"], 64);
+    assert_eq!(response.payload["source_height"], 32);
+    for (frame, image) in frames.iter().zip(&response.images) {
+        assert_eq!(frame["mime_type"], image.mime_type);
+        assert_eq!(frame["width"], 16);
+        assert_eq!(frame["height"], 8);
+        assert_eq!(frame["fresh"], true);
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &image.data)
+            .expect("image data should be base64");
+        let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg)
+            .expect("image should be a JPEG");
+        assert_eq!((decoded.width(), decoded.height()), (16, 8));
+    }
+}
+
+#[tokio::test]
+async fn capture_canvas_is_read_only_and_rejects_unknown_formats() {
+    let tools = build_tool_definitions();
+    let capture = tools
+        .iter()
+        .find(|tool| tool.name == "capture_canvas")
+        .expect("capture_canvas should be registered");
+    assert!(capture.read_only);
+    assert!(!capture.destructive);
+
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let error = execute_tool_with_state("capture_canvas", &json!({ "format": "gif" }), &state)
+        .await
+        .expect_err("gif is not a capture format");
+    assert_eq!(error.error_code(), -32602);
+}
+
+#[tokio::test]
+async fn mcp_http_capture_canvas_returns_image_content_blocks() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let renderer = spawn_canvas_renderer(&state, 32, 32);
+    let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
+    let (client, base_url) = spawn_router(router).await;
+
+    let response = post_json(
+        &client,
+        &format!("{base_url}/mcp"),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "capture_canvas",
+                "arguments": { "format": "png", "width": 16 }
+            }
+        }),
+        None,
+    )
+    .await;
+    let (_session_id, payload, _content_type, _body) = parse_jsonrpc_response(response).await;
+    renderer.abort();
+
+    let result = &payload["result"];
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        result["structuredContent"]["frames"][0]["mime_type"],
+        "image/png"
+    );
+    let content = result["content"].as_array().expect("content blocks");
+    let images = content
+        .iter()
+        .filter(|block| block["type"] == "image")
+        .collect::<Vec<_>>();
+    assert_eq!(images.len(), 1, "one image block per captured frame");
+    assert_eq!(images[0]["mimeType"], "image/png");
+    let bytes = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        images[0]["data"].as_str().expect("image data"),
+    )
+    .expect("image data should be base64");
+    image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+        .expect("image block should carry a PNG");
+    assert!(
+        content.iter().any(|block| block["type"] == "text"),
+        "the structured payload stays mirrored as text for older clients"
+    );
+}
+
+// ── install_effect / get_effect_console ─────────────────────────────────
+
+const LIVECODE_HTML: &str = r#"<!DOCTYPE html><html><head><title>Livecode Probe</title><meta property="speed" label="Speed" type="number" min="0" max="10" default="5"></head><body><canvas id="exCanvas"></canvas><script>console.log('frame')</script></body></html>"#;
+
+#[tokio::test]
+async fn install_effect_updates_in_place_when_the_file_name_repeats() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let first = execute_tool_with_state(
+        "install_effect",
+        &json!({ "html": LIVECODE_HTML, "file_name": "livecode-probe.html" }),
+        &state,
+    )
+    .await
+    .expect("first install should succeed");
+    assert_eq!(first["name"], "Livecode Probe");
+    assert_eq!(first["controls"], 1);
+    assert_eq!(first["replaced_existing"], false);
+    assert!(
+        first["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("livecode-probe.html"))
+    );
+    assert!(first["console_after"].as_u64().is_some_and(|cursor| {
+        cursor <= hypercolor_core::effect::console::EffectConsoleJournal::global().latest_seq()
+    }));
+
+    let edited = LIVECODE_HTML.replace("console.log('frame')", "console.log('frame 2')");
+    let second = execute_tool_with_state(
+        "install_effect",
+        &json!({ "html": edited, "file_name": "livecode-probe.html" }),
+        &state,
+    )
+    .await
+    .expect("reinstall should succeed");
+    assert_eq!(second["replaced_existing"], true);
+    assert_eq!(second["id"], first["id"], "an in-place update keeps the id");
+}
+
+#[tokio::test]
+async fn install_effect_lists_every_validation_problem() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let error = execute_tool_with_state(
+        "install_effect",
+        &json!({ "html": "<html><body>no surface</body></html>" }),
+        &state,
+    )
+    .await
+    .expect_err("an invalid page should be refused");
+    let ToolError::InvalidParam { param, reason } = error else {
+        panic!("expected an invalid-parameter error, got {error:?}");
+    };
+    assert_eq!(param, "html");
+    assert!(reason.contains("Missing <title> tag"), "{reason}");
+    assert!(reason.contains("Missing <script> tag"), "{reason}");
+}
+
+#[tokio::test]
+async fn get_effect_console_reads_after_a_cursor_with_a_severity_floor() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let journal = hypercolor_core::effect::console::EffectConsoleJournal::global();
+    let mark = journal.latest_seq();
+    for (level, message) in [("log", "tick"), ("error", "TypeError: ctx is null")] {
+        journal.record(hypercolor_core::effect::console::EffectConsoleRecord {
+            level: level.to_owned(),
+            message: message.to_owned(),
+            effect_name: "mcp-console-probe".to_owned(),
+            source_path: PathBuf::from("/fx/mcp-console-probe.html"),
+            line: Some(9),
+        });
+    }
+
+    let page = execute_tool_with_state(
+        "get_effect_console",
+        &json!({ "after": mark, "effect": "mcp-console-probe", "level": "error" }),
+        &state,
+    )
+    .await
+    .expect("console read should succeed");
+    let entries = page["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["message"], "TypeError: ctx is null");
+    assert_eq!(entries[0]["line"], 9);
+    assert!(page["next_seq"].as_u64().is_some_and(|next| next > mark));
+
+    let tools = build_tool_definitions();
+    let console = tools
+        .iter()
+        .find(|tool| tool.name == "get_effect_console")
+        .expect("get_effect_console should be registered");
+    assert!(console.read_only);
+    let install = tools
+        .iter()
+        .find(|tool| tool.name == "install_effect")
+        .expect("install_effect should be registered");
+    assert!(!install.read_only);
+    assert!(
+        install.destructive,
+        "installing can overwrite an effect file"
+    );
 }

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use image::ImageEncoder as _;
 use turbojpeg::{
     Compressor as TurboJpegCompressor, Image as TurboJpegImage,
     PixelFormat as TurboJpegPixelFormat, Subsamp as TurboJpegSubsamp,
@@ -409,6 +410,59 @@ pub(super) fn encode_canvas_jpeg_payload_scaled_stateless(
 ) -> Result<Vec<u8>> {
     let mut encoder = PreviewJpegEncoder::new()?;
     encoder.encode_scaled_payload(frame, header, brightness, requested_width, requested_height)
+}
+
+/// Standalone image encodings a one-shot canvas capture can produce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CanvasStillFormat {
+    Jpeg,
+    Png,
+}
+
+/// One canvas frame encoded as a standalone image file.
+#[derive(Debug)]
+pub(crate) struct EncodedCanvasStill {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+/// Encode one canvas frame as a standalone JPEG or PNG at full brightness.
+///
+/// Dimensions follow the preview stream rules: zero on both sides keeps the
+/// source size, and zero on one side preserves the source aspect ratio.
+pub(crate) fn encode_canvas_still(
+    frame: &CanvasFrame,
+    format: CanvasStillFormat,
+    requested_width: u32,
+    requested_height: u32,
+) -> Result<EncodedCanvasStill> {
+    let (width, height) =
+        resolve_preview_dimensions(frame.width, frame.height, requested_width, requested_height)?;
+    let bytes = match format {
+        CanvasStillFormat::Jpeg => {
+            PreviewJpegEncoder::new()?.encode_scaled_body(frame, 1.0, width, height)?
+        }
+        CanvasStillFormat::Png => {
+            let rgb = PreviewRawEncoder::new().encode_scaled_body(
+                frame,
+                CanvasFormat::Rgb,
+                1.0,
+                width,
+                height,
+            )?;
+            let mut png = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut png)
+                .write_image(&rgb, width, height, image::ExtendedColorType::Rgb8)
+                .context("failed to encode canvas PNG")?;
+            png
+        }
+    };
+    Ok(EncodedCanvasStill {
+        bytes,
+        width,
+        height,
+    })
 }
 
 fn identity_brightness_lut() -> [u8; 256] {

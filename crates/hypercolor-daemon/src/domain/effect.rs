@@ -7,6 +7,7 @@
 //! [`RequestedTransition`], and both get the same validation, scene
 //! mutation, and ordered events.
 
+pub mod console;
 mod identity;
 
 pub(crate) use identity::{

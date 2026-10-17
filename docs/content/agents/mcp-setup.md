@@ -5,7 +5,7 @@ weight = 10
 template = "page.html"
 +++
 
-The Hypercolor daemon ships a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 18 tools, 5 resources, and 4 prompts over Streamable HTTP. This page gets it running and wired into your assistant. There is one thing to do before anything else: turn it on.
+The Hypercolor daemon ships a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 21 tools, 5 resources, and 4 prompts over Streamable HTTP. This page gets it running and wired into your assistant. There is one thing to do before anything else: turn it on.
 
 {% <callout type="warning"> %}
 The MCP server is **off by default**. Until you enable it in config, `http://127.0.0.1:9420/mcp` returns 404 and no client can connect. Enabling it is step one below.
@@ -127,7 +127,7 @@ Any MCP client that can speak Streamable HTTP connects with just the URL. Two da
 - The default base path is `/mcp`. If you changed `base_path`, append your value to the daemon address instead.
 
 {% <callout type="info"> %}
-The server advertises three capabilities to every client on connect: tools, resources, and prompts. It also ships operating instructions that tell the agent to read `get_status` or the `hypercolor://state` resource first, browse the catalog with `list_effects` before applying visuals, and prefer structured arguments over guessing. A well-behaved client surfaces all three primitives automatically.
+The server advertises three capabilities to every client on connect: tools, resources, and prompts. It also ships operating instructions that tell the agent to read `get_status` or the `hypercolor://state` resource first, browse the catalog with `list_effects` before applying visuals, look with `capture_canvas` after a change instead of assuming it looks right, and prefer structured arguments over guessing. A well-behaved client surfaces all three primitives automatically.
 {% </callout> %}
 
 ## Authentication
@@ -174,7 +174,7 @@ Point the MCP URL at the discovered host and port (`http://<host>:9420/mcp`), bi
 Once the server is connected, learn what it can do:
 
 - **[Agents & MCP](@/agents/_index.md)**: The three-primitive model and how MCP and the CLI complement each other.
-- **[Tools reference](@/agents/tools-reference.md)**: All 18 tools with arguments, defaults, enums, and worked calls.
+- **[Tools reference](@/agents/tools-reference.md)**: All 21 tools with arguments, defaults, enums, and worked calls.
 - **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources and their payload shapes.
 - **[Prompt templates](@/agents/prompt-templates.md)**: The 4 shipped prompts and when each fits.
 - **[CLI scripting for agents](@/agents/cli-scripting.md)**: Drive the daemon from a shell when an agent cannot speak MCP.

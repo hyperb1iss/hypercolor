@@ -436,7 +436,50 @@ the daemon. Call this after shipping an effect from the SDK.
 
 {% <api_endpoint method="POST" path="/api/v1/effects/install"> %}
 Install an effect from an uploaded file via multipart form upload, so a freshly
-built HTML bundle reaches the library without a manual file copy.
+built HTML bundle reaches the library without a manual file copy. Uploading a
+file name that is already installed replaces that effect in place and keeps its
+id, so a scene already running it reloads the new page on its next frame.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="GET" path="/api/v1/effects/console"> %}
+Read what HTML effect pages printed: `console.*` output and uncaught script
+errors, oldest first. Locations in an effect's own page point at the author's
+source file and line, not the engine's runtime copy with its injected
+preamble. The daemon keeps the most recent 512 messages.
+
+**Query parameters:**
+
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `after` | `0` | Return only messages after this cursor |
+| `limit` | `100` | At most this many messages, `1` to `500` |
+| `effect` | none | Effect id or name to narrow to |
+| `level` | `debug` | Lowest severity: `debug`, `log`, `warn`, or `error` |
+
+**Response:**
+
+```json
+{
+  "entries": [
+    {
+      "seq": 42,
+      "timestamp_ms": 1760300000000,
+      "level": "error",
+      "message": "TypeError: ctx is null at file:///home/me/fx/ember.html:57:9",
+      "effect_name": "Ember",
+      "effect_id": "0199c1f2-3a4b-7c5d-8e6f-0a1b2c3d4e5f",
+      "source_file": "ember.html",
+      "line": 57
+    }
+  ],
+  "next_seq": 42,
+  "truncated": false
+}
+```
+
+This is a cursor window, not a paged list. Pass `next_seq` back as `after` to
+read only newer output. `truncated: true` means messages after your cursor
+were evicted before the read.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="GET" path="/api/v1/effects/{id}/cover"> %}
@@ -1097,6 +1140,37 @@ drops its payload hears about it. Use `GET` to read.
 
 A brightness outside `0.0` to `1.0` returns `422` naming the offending field,
 and it is refused before power moves, so a rejected patch changes nothing.
+{% </api_endpoint> %}
+
+## Canvas
+
+The canvas is the composed image every effect layer draws into before the
+spatial sampler maps it onto LEDs. It is rendered at full brightness, so it
+shows what an effect looks like rather than how bright the hardware is set.
+
+{% <api_endpoint method="GET" path="/api/v1/canvas/frame"> %}
+Capture one still of the composed canvas. The request waits up to 1.5 seconds
+for a frame rendered after it arrives, so the image reflects the scene as it
+is now, then returns the raw image bytes rather than a JSON envelope.
+
+**Query parameters:**
+
+| Name | Default | Meaning |
+| --- | --- | --- |
+| `format` | `jpeg` | `jpeg`, or `png` for exact pixel values |
+| `width` | canvas width | Output width; set one side alone to keep the aspect ratio |
+| `height` | canvas height | Output height, same rules as `width` |
+
+Captures never upscale past the canvas size. The response carries
+`X-Canvas-Frame-Number`, `X-Canvas-Timestamp-Ms`, `X-Canvas-Width`,
+`X-Canvas-Height`, `X-Canvas-Source-Width`, and `X-Canvas-Source-Height`.
+`X-Canvas-Fresh: 0` means nothing rendered during the wait and the image is
+the last frame published before rendering went quiet. When the newest published
+canvas is empty, as before anything has rendered, the route answers `503`.
+
+```bash
+curl -s 'http://127.0.0.1:9420/api/v1/canvas/frame?format=png&width=320' -o canvas.png
+```
 {% </api_endpoint> %}
 
 ## Screen capture

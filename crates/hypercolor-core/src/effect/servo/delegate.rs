@@ -7,11 +7,14 @@
 //! - console messages from effect scripts
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use servo::{ConsoleLogLevel, LoadStatus, WebView, WebViewDelegate};
 use tracing::{debug, error, info, trace, warn};
+
+use super::worker::remap_console_message;
+use crate::effect::console::{EffectConsoleJournal, EffectConsoleRecord, EffectConsoleSource};
 
 /// Bounded console message captured from Servo.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +39,9 @@ pub struct HypercolorWebViewDelegate {
     closed_count: AtomicU64,
     last_url: Mutex<Option<String>>,
     console_messages: Mutex<VecDeque<ConsoleMessage>>,
+    /// The effect page currently loaded, whose console output also goes to
+    /// the process-wide [`EffectConsoleJournal`].
+    console_source: Mutex<Option<Arc<EffectConsoleSource>>>,
 }
 
 impl HypercolorWebViewDelegate {
@@ -49,7 +55,24 @@ impl HypercolorWebViewDelegate {
             closed_count: AtomicU64::new(0),
             last_url: Mutex::new(None),
             console_messages: Mutex::new(VecDeque::with_capacity(MAX_CONSOLE_MESSAGES)),
+            console_source: Mutex::new(None),
         }
+    }
+
+    /// Name the effect page being loaded, or `None` for a page whose console
+    /// output should stay out of the effect journal.
+    pub fn set_console_source(&self, source: Option<EffectConsoleSource>) {
+        *self
+            .console_source
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = source.map(Arc::new);
+    }
+
+    fn console_source(&self) -> Option<Arc<EffectConsoleSource>> {
+        self.console_source
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Returns true when Servo has signaled a frame is ready to paint.
@@ -152,6 +175,16 @@ impl HypercolorWebViewDelegate {
                 message: message.to_owned(),
             });
         });
+        if let Some(source) = self.console_source() {
+            let (message, line) = remap_console_message(message, &source);
+            EffectConsoleJournal::global().record(EffectConsoleRecord {
+                level: level_label.to_owned(),
+                message,
+                effect_name: source.effect_name.clone(),
+                source_path: source.source_path.clone(),
+                line,
+            });
+        }
 
         match level {
             ConsoleLogLevel::Log | ConsoleLogLevel::Info | ConsoleLogLevel::Dir => {

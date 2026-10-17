@@ -177,10 +177,16 @@ While building:
 
 Testing:
 
-- Whiteness ratio < 0.3 for vivid areas?
+- Whiteness ratio < 0.3 for vivid areas? Measure it on real pixels from a PNG
+  capture (`capture_canvas` with `format: "png"`, or
+  `hypercolor effects capture --image-format png`), not on the colors in the source
 - Any hues in 30-90 danger zone? Test on hardware
-- Transitions > 200ms?
+- Transitions > 200ms? A capture burst (`--frames 4 --interval-ms 100`) shows motion
 - Works on both small (keyboard) and large (strip) layouts?
+- Console clean? `hypercolor effects console --level warn` after each install
+
+Install, error reading, capture, and live control tuning against a running daemon
+form one loop; the `effect-livecoding` skill covers it.
 
 ## Detailed References
 

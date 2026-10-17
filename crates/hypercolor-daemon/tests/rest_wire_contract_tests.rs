@@ -644,6 +644,24 @@ async fn config_schema_is_served_as_a_list_of_entries() {
 }
 
 #[tokio::test]
+async fn effect_console_is_a_cursor_window_not_a_list() {
+    let (state, _tmp) = isolated_state();
+    let app = test_app(&state);
+
+    let response = send(&app, get("/api/v1/effects/console?limit=1")).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_envelope(&json);
+    assert_keys(
+        &json["data"],
+        &["entries", "next_seq", "truncated"],
+        "effect console window",
+    );
+    assert!(json["data"]["entries"].is_array());
+}
+
+#[tokio::test]
 async fn config_key_writes_take_the_value_as_the_body() {
     let (state, _tmp) = isolated_state();
     let app = test_app(&state);

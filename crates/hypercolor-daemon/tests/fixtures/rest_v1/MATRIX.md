@@ -125,7 +125,7 @@ Not everything on the wire is enveloped, and the exceptions are contract:
 | Surface | Shape |
 | --- | --- |
 | `GET /health` | Bare probe object (§4) |
-| Binary routes (`/effects/{id}/cover`, `/assets/{id}/blob`, `/displays/{id}/frame`) | Raw bytes |
+| Binary routes (`/effects/{id}/cover`, `/assets/{id}/blob`, `/displays/{id}/frame`, `/canvas/frame`) | Raw bytes |
 | Axum's own rejections (malformed JSON, body-limit 413) | Plain text, no envelope |
 
 Axum's own rejections are the only errors that bypass the envelope, because
@@ -184,6 +184,10 @@ Five list-shaped routes are **not** `ListResponse`. `GET /api/v1/displays`,
 still carry the standard envelope, so `meta` is unchanged and only `data`
 deviates, but a client cannot read `data.items` or `data.total` on any of
 them.
+
+`GET /api/v1/effects/console` is a cursor window over a bounded log rather than
+a collection: `{"entries": [ ], "next_seq": 42, "truncated": false}`. Clients
+pass `next_seq` back as `after` to read only newer messages.
 
 `GET /api/v1/effects` is the one row that reads its query string (Spec 78
 wave 78.0a). It honors `category`, `audio_reactive`, `screen_reactive`,
