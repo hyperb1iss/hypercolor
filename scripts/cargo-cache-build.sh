@@ -263,6 +263,126 @@ prune_stale_turbojpeg_cmake_cache() {
   done < <(find "$TARGET_DIR" -path '*/build/turbojpeg-sys-*/out/build/CMakeCache.txt' -print0)
 }
 
+# Cargo never evicts incremental session caches, and every worktree path,
+# feature set, and profile mints new crate-hash dirs under each
+# <profile>/incremental, so a long-lived target grows without bound. rustc
+# refreshes a crate dir's mtime whenever it opens a session there, so a dir
+# idle for days belongs to no running build, and losing one only costs that
+# crate its incremental head start: rustc recreates the dir and compiles
+# the crate in full the next time it changes. Once a day per target, idle
+# entries are renamed into a trash dir inside the same incremental dir, which
+# takes them out of rustc's view atomically, and deleted in the background.
+
+# A real, already-canonical <profile>/incremental dir under the target that
+# sits next to one of Cargo's profile lock files.
+is_prunable_incremental_dir() {
+  local dir="$1" parent
+  case "$dir" in
+    "$TARGET_DIR"/*/incremental) ;;
+    *) return 1 ;;
+  esac
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  [ "$(cd "$dir" 2>/dev/null && pwd -P)" = "$dir" ] || return 1
+  parent="${dir%/incremental}"
+  [ -e "$parent/.cargo-lock" ] || [ -e "$parent/.cargo-build-lock" ] \
+    || [ -e "$parent/.cargo-artifact-lock" ]
+}
+
+# Renaming a stale stamp is atomic and noclobber creation is O_EXCL, so
+# exactly one of several racing builds claims the day's prune.
+claim_daily_incremental_prune() {
+  local stamp="$1"
+  if [ -e "$stamp" ]; then
+    if [ -n "$(find "$stamp" -prune -mmin -1440 -print 2>/dev/null || true)" ]; then
+      return 1
+    fi
+    mv -f -- "$stamp" "$stamp.$$" 2>/dev/null || return 1
+    rm -f -- "$stamp.$$"
+  fi
+  (set -C && : >"$stamp") 2>/dev/null
+}
+
+prune_stale_incremental_dirs() {
+  local days="${HYPERCOLOR_INCREMENTAL_PRUNE_DAYS:-3}"
+  if [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]; then
+    echo "[cargo-cache] incremental prune skipped in CI"
+    return 0
+  fi
+  case "$days" in
+    off | false) days=0 ;;
+    "" | *[!0-9]* | ??????*)
+      echo "[cargo-cache] incremental prune skipped: HYPERCOLOR_INCREMENTAL_PRUNE_DAYS must be a day count or off, not '$days'" >&2
+      return 0
+      ;;
+  esac
+  days=$((10#$days))
+  if [ "$days" -eq 0 ]; then
+    echo "[cargo-cache] incremental prune disabled (HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=${HYPERCOLOR_INCREMENTAL_PRUNE_DAYS:-})"
+    return 0
+  fi
+  case "${TARGET_DIR:-}" in
+    "" | / | "${HOME:-/}" | [!/]*)
+      echo "[cargo-cache] incremental prune skipped: refusing target directory '${TARGET_DIR:-}'" >&2
+      return 0
+      ;;
+  esac
+  [ -d "$TARGET_DIR" ] || return 0
+
+  local stamp="$TARGET_DIR/.hypercolor-incremental-prune"
+  if ! claim_daily_incremental_prune "$stamp"; then
+    echo "[cargo-cache] incremental prune skipped: already ran within the last day"
+    return 0
+  fi
+
+  local candidate
+  local -a incremental_dirs=()
+  for candidate in "$TARGET_DIR"/*/incremental "$TARGET_DIR"/*/*/incremental; do
+    is_prunable_incremental_dir "$candidate" || continue
+    incremental_dirs+=("$candidate")
+  done
+
+  local minutes=$((days * 1440))
+  local stale_count=0
+  if [ "${#incremental_dirs[@]}" -gt 0 ]; then
+    stale_count="$( { find "${incremental_dirs[@]}" -mindepth 1 -maxdepth 1 \
+      -mmin "+$minutes" -print 2>/dev/null || true; } | wc -l)"
+    stale_count=$((stale_count))
+  fi
+  if [ "$stale_count" -eq 0 ]; then
+    echo "[cargo-cache] incremental prune: nothing idle for ${days}+ days"
+    return 0
+  fi
+
+  local log="$stamp.log"
+  # Detached from every wrapper descriptor (the target lock FIFOs included)
+  # and from stdout, so neither the build nor its caller waits on deletion.
+  (
+    set +e
+    trap '' HUP
+    low_priority=(nice -n 19)
+    if command -v ionice >/dev/null 2>&1 && ionice -c 3 true 2>/dev/null; then
+      low_priority=(ionice -c 3 nice -n 19)
+    fi
+    echo "pruning incremental entries idle for ${days}+ days, started $(date)"
+    for dir in "${incremental_dirs[@]}"; do
+      is_prunable_incremental_dir "$dir" || continue
+      trash="$(mktemp -d "$dir/.hypercolor-prune.XXXXXX")" || continue
+      case "$trash" in
+        "$dir"/.hypercolor-prune.?*) ;;
+        *) continue ;;
+      esac
+      # find re-reads each entry's age immediately before moving it, and
+      # never follows symlinks, so a link is moved and removed as a link.
+      "${low_priority[@]}" find "$dir" -mindepth 1 -maxdepth 1 \
+        -mmin "+$minutes" -exec mv -- {} "$trash/" \;
+      "${low_priority[@]}" rm -rf -- "$trash"
+      echo "cleared $dir"
+    done
+    echo "finished $(date)"
+  ) </dev/null >"$log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
+  echo "[cargo-cache] incremental prune: deleting $stale_count entries idle for ${days}+ days in the background (log: $log)"
+}
+
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 
 if ld.lld --help 2>/dev/null | grep -Fq -- '--compress-debug-sections=[none,zlib,zstd]'; then
@@ -288,6 +408,7 @@ fi
 acquire_target_build_lock
 trap 'cleanup_locks' EXIT
 prune_stale_turbojpeg_cmake_cache
+prune_stale_incremental_dirs
 
 SCCACHE_BIN="$(command -v sccache || true)"
 CCACHE_BIN="$(command -v ccache || true)"

@@ -114,7 +114,7 @@ Target dirs grow without bound as toolchains, lockfiles, and feature shapes
 churn; Cargo never garbage-collects them. Bound them with:
 
 ```bash
-just disk          # per-profile + shared-cache usage report
+just disk          # profile, incremental, worktree target, and cache usage
 just gc            # preview eligible profiles across every worktree
 just gc-apply      # prune eligible profiles until pressure clears
 just gc-reclaim    # clear pressure now, preserving dirty and locked profiles
@@ -131,6 +131,16 @@ which protects multi-command build workflows between Cargo invocations. Set
 `HYPERCOLOR_GC_HIGH_WATER_BYTES`, `HYPERCOLOR_GC_LOW_WATER_BYTES`, and
 `HYPERCOLOR_GC_MIN_AGE_DAYS` to tune the daily bounds. Set
 `HYPERCOLOR_GC_RECLAIM_MIN_AGE_SECONDS` to tune the explicit reclaim grace.
+
+Incremental caches need no pressure to collect, so the build wrapper prunes
+them on its own. Cargo never evicts them, and every worktree path, feature
+set, and profile adds new crate-hash dirs under `<profile>/incremental`.
+Once a day per target dir, the first wrapped command removes entries that no
+compile has touched for 3 days, from every profile and target triple, and
+deletes them in the background at low priority. A crate that loses its entry
+compiles in full once, the next time it changes. Set
+`HYPERCOLOR_INCREMENTAL_PRUNE_DAYS` to change the age, or to `0` or `off` to
+disable the prune. CI skips it, since CI targets start fresh.
 
 The default dev profile keeps readable backtraces with line tables and trims
 third-party symbols. Use `just debug-build` when a debugger needs full locals
