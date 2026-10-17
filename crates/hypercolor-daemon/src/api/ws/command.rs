@@ -3,6 +3,11 @@
 //! Client messages of type `command` get routed through the normal Axum router
 //! by injecting a synthetic request and relaying the response through the
 //! `Response` server message.
+//!
+//! Responses leave here unstamped. The session stamps each one with the
+//! daemon clock after the command finishes and immediately before writing
+//! it (`stamp_command_response`), so the stamp lands inside the client's
+//! round trip.
 
 use std::sync::Arc;
 
@@ -12,6 +17,8 @@ use serde_json::json;
 use tower::ServiceExt;
 
 use super::cache::cached_command_router;
+use hypercolor_leptos_ext::ws::ResponseStamp;
+
 use super::protocol::{ServerMessage, WsProtocolError};
 use crate::api::security::{CredentialGrant, RequestAuthContext};
 use crate::app_state::AppState;
@@ -35,6 +42,7 @@ pub(super) async fn dispatch_command(
             return ServerMessage::Response {
                 id,
                 status: 400,
+                stamp: ResponseStamp::default(),
                 data: None,
                 error: Some(protocol_error_json(error)),
             };
@@ -46,6 +54,7 @@ pub(super) async fn dispatch_command(
             return ServerMessage::Response {
                 id,
                 status: 400,
+                stamp: ResponseStamp::default(),
                 data: None,
                 error: Some(protocol_error_json(error)),
             };
@@ -68,6 +77,7 @@ pub(super) async fn dispatch_command(
             return ServerMessage::Response {
                 id,
                 status: 400,
+                stamp: ResponseStamp::default(),
                 data: None,
                 error: Some(protocol_error_json(WsProtocolError::invalid_request(
                     format!("Invalid command request: {error}"),
@@ -147,6 +157,7 @@ pub(super) async fn command_response_from_http(id: String, response: Response) -
             return ServerMessage::Response {
                 id,
                 status: 502,
+                stamp: ResponseStamp::default(),
                 data: None,
                 error: Some(protocol_error_json(WsProtocolError::invalid_request(
                     format!("Command response body exceeded {WS_COMMAND_BODY_MAX} bytes: {error}"),
@@ -163,6 +174,7 @@ pub(super) async fn command_response_from_http(id: String, response: Response) -
         return ServerMessage::Response {
             id,
             status,
+            stamp: ResponseStamp::default(),
             data,
             error: None,
         };
@@ -176,6 +188,7 @@ pub(super) async fn command_response_from_http(id: String, response: Response) -
     ServerMessage::Response {
         id,
         status,
+        stamp: ResponseStamp::default(),
         data: None,
         error: Some(error),
     }

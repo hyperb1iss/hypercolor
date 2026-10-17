@@ -90,21 +90,34 @@ class ActiveSubscription:
 
 @dataclass(slots=True)
 class HelloMessage:
-    """Initial hello payload sent by the daemon."""
+    """Initial hello payload sent by the daemon.
+
+    ``clock_epoch`` identifies the daemon run's monotonic clock and
+    ``mono_us`` is that clock's reading, in microseconds, when the daemon
+    built the hello. Both are ``None`` from daemons that predate them.
+    """
 
     version: str
     state: JsonObject
     capabilities: list[str]
     subscriptions: list[ActiveSubscription]
+    clock_epoch: str | None = None
+    mono_us: int | None = None
 
 
 @dataclass(slots=True)
 class EventMessage:
-    """JSON event pushed by the daemon."""
+    """JSON event pushed by the daemon.
+
+    ``timestamp`` is the wall-clock publication time. ``mono_us`` is the
+    publication time on the monotonic clock the hello names, which never
+    moves backwards and is the one to order or time events with.
+    """
 
     event: str
     timestamp: str
     data: JsonObject
+    mono_us: int | None = None
 
 
 @dataclass(slots=True)
@@ -127,16 +140,23 @@ class MetricsMessage:
 
     timestamp: str
     data: JsonObject
+    mono_us: int | None = None
 
 
 @dataclass(slots=True)
 class CommandResponse:
-    """Response to a previously issued WebSocket command."""
+    """Response to a previously issued WebSocket command.
+
+    ``mono_us`` is the daemon's monotonic clock reading taken after the
+    command finished and immediately before the response was sent, so it
+    falls inside the caller's round trip. ``None`` from older daemons.
+    """
 
     id: str
     status: int
     data: JsonObject | None = None
     error: JsonObject | None = None
+    mono_us: int | None = None
 
 
 @dataclass(slots=True)
@@ -1074,17 +1094,21 @@ class HypercolorEventStream:
 
         message_type = payload.get("type")
         if message_type == "hello":
+            clock_epoch = payload.get("clock_epoch")
             return HelloMessage(
                 version=str(payload["version"]),
                 state=_expect_dict(payload.get("state")),
                 capabilities=_expect_list_of_str(payload.get("capabilities")),
                 subscriptions=_parse_subscriptions(payload.get("subscriptions")),
+                clock_epoch=clock_epoch if isinstance(clock_epoch, str) else None,
+                mono_us=_optional_mono_us(payload),
             )
         if message_type == "event":
             return EventMessage(
                 event=str(payload["event"]),
                 timestamp=str(payload["timestamp"]),
                 data=_expect_dict(payload.get("data")),
+                mono_us=_optional_mono_us(payload),
             )
         subscription_message = _decode_subscription_message(payload, message_type)
         if subscription_message is not None:
@@ -1093,6 +1117,7 @@ class HypercolorEventStream:
             return MetricsMessage(
                 timestamp=str(payload["timestamp"]),
                 data=_expect_dict(payload.get("data")),
+                mono_us=_optional_mono_us(payload),
             )
         if message_type == "response":
             return CommandResponse(
@@ -1100,11 +1125,13 @@ class HypercolorEventStream:
                 status=int(payload["status"]),
                 data=_optional_dict(payload.get("data")),
                 error=_optional_dict(payload.get("error")),
+                mono_us=_optional_mono_us(payload),
             )
         return EventMessage(
             event=str(message_type),
             timestamp=str(payload.get("timestamp", "")),
             data=_expect_dict(payload),
+            mono_us=_optional_mono_us(payload),
         )
 
     @staticmethod
@@ -1625,6 +1652,13 @@ def _expect_dict(value: Any) -> JsonObject:
 
 def _optional_dict(value: Any) -> JsonObject | None:
     return value if isinstance(value, dict) else None
+
+
+def _optional_mono_us(payload: JsonObject) -> int | None:
+    value = payload.get("mono_us")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 def _expect_list_of_str(value: Any) -> list[str]:
