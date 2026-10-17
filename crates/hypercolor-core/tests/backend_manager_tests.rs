@@ -5457,6 +5457,7 @@ async fn output_queue_rebinds_to_frame_sink_registered_after_queue_creation() {
 #[derive(Debug, Clone, Copy)]
 enum ScriptedDelivery {
     Complete,
+    Decline,
     TransientFailure,
     Failure,
 }
@@ -5490,6 +5491,7 @@ impl DeviceFrameSink for ScriptedFrameSink {
             ScriptedDelivery::Complete => {
                 DeviceDeliveryAck::completed(id, colors.len().saturating_mul(3), Duration::ZERO)
             }
+            ScriptedDelivery::Decline => DeviceDeliveryAck::declined(id, Duration::ZERO),
             ScriptedDelivery::TransientFailure => {
                 DeviceDeliveryAck::failed_transient(id, true, Duration::ZERO, error)
             }
@@ -5582,12 +5584,14 @@ async fn deliver_scripted_frame(
         }],
         layout,
     );
+    await_scripted_ack(attempts, before, &format!("scripted delivery {shade}")).await;
+}
+
+/// Wait until the sink acknowledges one more delivery than `before`.
+async fn await_scripted_ack(attempts: &AtomicUsize, before: usize, label: &str) {
     let deadline = Instant::now() + Duration::from_secs(1);
     while attempts.load(Ordering::SeqCst) == before {
-        assert!(
-            Instant::now() < deadline,
-            "scripted delivery {shade} was never acknowledged"
-        );
+        assert!(Instant::now() < deadline, "{label} was never acknowledged");
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
     // The queue records the acknowledgement just after the sink returns it.
@@ -5653,4 +5657,96 @@ async fn async_failures_keep_fatal_lane_failures_non_transient() {
         "the newest failure carries its own producer classification"
     );
     assert_eq!(failures[0].consecutive_failures, 2);
+}
+
+// ── Device declines ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn declined_deliveries_count_apart_from_sent_and_failed_and_never_reach_lifecycle() {
+    let (mut manager, attempts, layout) =
+        scripted_sink_manager([ScriptedDelivery::Decline, ScriptedDelivery::Complete]).await;
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 10).await;
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].transport_started, 1);
+    assert_eq!(stats[0].transport_declined, 1);
+    assert_eq!(stats[0].frames_sent, 0, "a declined frame is not delivered");
+    assert_eq!(stats[0].transport_completed, 0);
+    assert_eq!(stats[0].bytes_sent, 0);
+    assert_eq!(stats[0].transport_failed, 0, "a decline is not a failure");
+    assert_eq!(stats[0].errors_total, 0);
+    assert_eq!(stats[0].last_error, None);
+    assert!(
+        manager.async_write_failures().is_empty(),
+        "a decline never reaches device lifecycle, so nothing disconnects"
+    );
+
+    // The same colors again: the declined payload never reached the device,
+    // so dedupe lets it go out instead of suppressing it.
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 10).await;
+    let stats = manager.device_output_statistics();
+    assert_eq!(stats[0].transport_started, 2);
+    assert_eq!(stats[0].transport_declined, 1);
+    assert_eq!(stats[0].frames_sent, 1);
+    assert_eq!(stats[0].frames_suppressed, 0);
+    assert_eq!(
+        stats[0].frames_dropped, 0,
+        "a declined payload is terminal, so replacing it is not a coalesced drop"
+    );
+    assert!(manager.async_write_failures().is_empty());
+}
+
+#[tokio::test]
+async fn a_declined_delivery_neither_extends_nor_resets_a_failure_streak() {
+    let (mut manager, attempts, layout) = scripted_sink_manager([
+        ScriptedDelivery::TransientFailure,
+        ScriptedDelivery::Decline,
+        ScriptedDelivery::TransientFailure,
+    ])
+    .await;
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 10).await;
+    let first = manager.async_write_failures();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].consecutive_failures, 1);
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 20).await;
+    let after_decline = manager.async_write_failures();
+    assert_eq!(
+        after_decline, first,
+        "a decline leaves the retained failure alone"
+    );
+    assert!(first[0].is_current());
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 30).await;
+    let second = manager.async_write_failures();
+    assert_eq!(second.len(), 1);
+    assert_eq!(
+        second[0].consecutive_failures, 2,
+        "the decline between two failures does not restart the run"
+    );
+}
+
+#[tokio::test]
+async fn reuse_routed_frame_outputs_retries_latest_payload_after_decline() {
+    let (mut manager, attempts, layout) =
+        scripted_sink_manager([ScriptedDelivery::Decline, ScriptedDelivery::Complete]).await;
+
+    deliver_scripted_frame(&mut manager, &attempts, &layout, 10).await;
+    assert_eq!(manager.device_output_statistics()[0].transport_declined, 1);
+
+    assert!(manager.can_reuse_routed_frame_outputs(&layout));
+    let before = attempts.load(Ordering::SeqCst);
+    let retried = manager.reuse_routed_frame_outputs(&layout);
+    assert_eq!(retried.devices_written, 1);
+    assert_eq!(retried.total_leds, 2);
+    await_scripted_ack(&attempts, before, "retried declined payload").await;
+    assert_eq!(manager.device_output_statistics()[0].frames_sent, 1);
+
+    let quiet = manager.reuse_routed_frame_outputs(&layout);
+    assert_eq!(
+        quiet.devices_written, 0,
+        "a delivered payload is not retried again"
+    );
 }

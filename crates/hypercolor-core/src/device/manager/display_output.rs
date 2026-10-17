@@ -284,11 +284,11 @@ impl DisplayDeliveryCompletion {
                 self.failure_tracker
                     .record_failure(self.delivery_id, error, ack.transient);
             }
-            DeviceDeliveryStatus::SuppressedDuplicate | DeviceDeliveryStatus::SuppressedCadence => {
-                let error = DeviceError::protocol(
-                    self.device_id,
-                    "display transport returned an unsupported suppressed acknowledgement",
-                );
+            DeviceDeliveryStatus::SuppressedDuplicate
+            | DeviceDeliveryStatus::SuppressedCadence
+            | DeviceDeliveryStatus::Declined => {
+                let error =
+                    DeviceError::protocol(self.device_id, unsupported_display_ack(ack.status));
                 if let Some(lane) = &lane {
                     lane.transport_failed.fetch_add(1, Ordering::Relaxed);
                     lane.evict_display_sink();
@@ -502,12 +502,23 @@ fn delivery_result(
         DeviceDeliveryStatus::Failed => Err(ack.error.clone().unwrap_or_else(|| {
             DeviceError::protocol(device_id, "display delivery failed without error")
         })),
-        DeviceDeliveryStatus::SuppressedDuplicate | DeviceDeliveryStatus::SuppressedCadence => {
-            Err(DeviceError::protocol(
-                device_id,
-                "display transport returned an unsupported suppressed acknowledgement",
-            ))
+        DeviceDeliveryStatus::SuppressedDuplicate
+        | DeviceDeliveryStatus::SuppressedCadence
+        | DeviceDeliveryStatus::Declined => Err(DeviceError::protocol(
+            device_id,
+            unsupported_display_ack(ack.status),
+        )),
+    }
+}
+
+/// Display transports report only completion or failure, so any other
+/// acknowledgement fails the delivery.
+const fn unsupported_display_ack(status: DeviceDeliveryStatus) -> &'static str {
+    match status {
+        DeviceDeliveryStatus::Declined => {
+            "display transport returned an unsupported declined acknowledgement"
         }
+        _ => "display transport returned an unsupported suppressed acknowledgement",
     }
 }
 

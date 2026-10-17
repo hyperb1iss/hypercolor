@@ -8,6 +8,7 @@ from hypercolor import models
 from hypercolor._generated.api.devices import update_attachments
 from hypercolor._generated.models import (
     ComponentBinding,
+    DiagnoseDeviceOutputItem,
     EdgeBehaviorFadeToBlack,
     EdgeBehaviorType0,
     EffectDetailResponse,
@@ -283,6 +284,69 @@ def test_driver_model_decodes_protocol_catalog() -> None:
     assert not isinstance(protocols, Unset)
     assert protocols[0].protocol_id == "nollie_8"
     assert protocols[0].vendor_id == 0x2E8A
+
+
+def _device_output_item_payload() -> dict[str, object]:
+    counters = (
+        "fps_target",
+        "frames_received",
+        "accepted",
+        "frames_sent",
+        "transport_completed",
+        "transport_failed",
+        "completed_payload_bytes",
+        "frames_dropped",
+        "coalesced",
+        "coalesced_target_cadence",
+        "coalesced_backend_overrun",
+        "errors_total",
+        "avg_latency_ms",
+        "avg_queue_wait_ms",
+        "avg_write_ms",
+        "avg_transport_latency_ms",
+        "last_sequence",
+        "queue_generation",
+        "last_transport_started_sequence",
+        "last_transport_completed_sequence",
+        "last_transport_failed_sequence",
+        "display_transport_started",
+        "display_transport_completed",
+        "display_transport_failed",
+    )
+    return {
+        "id": "lightpad",
+        "backend_id": "blocks",
+        "mapped_layout_ids": ["blocks:pad"],
+        "uses_frame_sink": False,
+        "worker_finished": False,
+        "delivered_fps": 25.0,
+        "accepted_fps": 25.0,
+        "fps_sent": 25.0,
+        "fps_queued": 25.0,
+        **dict.fromkeys(counters, 0),
+        "transport_started": 5,
+        "transport_completed": 3,
+        "transport_failed": 0,
+    }
+
+
+def test_device_output_item_decodes_declined_deliveries() -> None:
+    item = DiagnoseDeviceOutputItem.from_dict(
+        {**_device_output_item_payload(), "transport_declined": 2}
+    )
+
+    assert item.transport_declined == 2
+    assert item.transport_started == (
+        item.transport_completed + item.transport_failed + item.transport_declined
+    )
+    assert item.to_dict()["transport_declined"] == 2
+
+
+def test_device_output_item_decodes_a_daemon_without_declined_deliveries() -> None:
+    item = DiagnoseDeviceOutputItem.from_dict(_device_output_item_payload())
+
+    assert isinstance(item.transport_declined, Unset)
+    assert "transport_declined" not in item.to_dict()
 
 
 def test_generated_device_model_rejects_a_dropped_required_field() -> None:

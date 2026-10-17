@@ -822,6 +822,7 @@ fn build_device_output_snapshot(metrics: &DeviceMetricsSnapshot) -> DiagnoseDevi
             transport_started: item.transport_started,
             transport_completed: item.transport_completed,
             transport_failed: item.transport_failed,
+            transport_declined: item.transport_declined,
             completed_payload_bytes: item.completed_payload_bytes,
             frames_dropped: item.frames_dropped,
             coalesced: item.coalesced,
@@ -931,7 +932,12 @@ mod tests {
 
     use hypercolor_types::api::system::{SoftwareConflict, SoftwareConflictsStatus};
 
-    use super::{conflicts_check, render_frame_liveness_status, render_led_freshness_status};
+    use super::{
+        build_device_output_snapshot, conflicts_check, render_frame_liveness_status,
+        render_led_freshness_status,
+    };
+    use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
+    use hypercolor_types::device::DeviceId;
 
     #[cfg(all(feature = "servo", not(target_os = "windows")))]
     use super::servo_memory_failure;
@@ -945,6 +951,69 @@ mod tests {
         assert_eq!(finding.name, "servo_memory");
         assert_eq!(finding.status, "fail");
         assert_eq!(finding.detail, "memory callback failed");
+    }
+
+    #[test]
+    fn device_output_snapshot_reports_declined_deliveries() {
+        let item = DeviceMetrics {
+            id: DeviceId::new(),
+            backend_id: "blocks".to_owned(),
+            mapped_layout_ids: vec!["blocks:pad".to_owned()],
+            uses_frame_sink: false,
+            worker_finished: false,
+            worker_recoveries: 0,
+            delivered_fps: 25.0,
+            accepted_fps: 25.0,
+            fps_sent: 25.0,
+            fps_queued: 25.0,
+            fps_actual: 25.0,
+            fps_target: 25,
+            target_interval_ms: None,
+            payload_bps_estimate: 900,
+            avg_latency_ms: 4,
+            avg_queue_wait_ms: 1,
+            avg_write_ms: 3,
+            avg_transport_latency_ms: 3,
+            frames_received: 5,
+            accepted: 5,
+            frames_sent: 3,
+            transport_started: 5,
+            transport_completed: 3,
+            transport_failed: 0,
+            transport_declined: 2,
+            completed_payload_bytes: 0,
+            frames_suppressed: 0,
+            frames_dropped: 0,
+            coalesced: 0,
+            coalesced_target_cadence: 0,
+            coalesced_backend_overrun: 0,
+            errors_total: 0,
+            write_failure_warnings_total: 0,
+            last_error: None,
+            last_sent_ago_ms: None,
+            last_sequence: 5,
+            queue_generation: 0,
+            last_transport_started_sequence: 5,
+            last_transport_completed_sequence: 3,
+            last_transport_failed_sequence: 0,
+            display_queue_generation: None,
+            display_transport_started: 0,
+            display_transport_completed: 0,
+            display_transport_failed: 0,
+        };
+
+        let snapshot = build_device_output_snapshot(&DeviceMetricsSnapshot {
+            taken_at_ms: 0,
+            items: vec![item],
+        });
+
+        let item = &snapshot.items[0];
+        assert_eq!(item.transport_declined, 2);
+        assert_eq!(
+            item.transport_started,
+            item.transport_completed + item.transport_failed + item.transport_declined
+        );
+        assert_eq!(snapshot.errors_total, 0, "a decline is not an error");
     }
 
     #[test]

@@ -135,6 +135,12 @@ pub enum DeviceWriteOutcome {
     SuppressedDuplicate,
     /// The lane intentionally skipped a frame inside its cadence window.
     SuppressedCadence,
+    /// The transport delivered the frame and the device declined it.
+    ///
+    /// The device keeps showing what it showed before. A decline is neither
+    /// a delivery nor a transport failure: the session stays healthy and a
+    /// later frame may be accepted.
+    Declined,
 }
 
 /// Queue-qualified identity for one device-frame delivery attempt.
@@ -155,6 +161,9 @@ pub enum DeviceDeliveryStatus {
     SuppressedDuplicate,
     /// The device lane suppressed a payload inside its cadence window.
     SuppressedCadence,
+    /// The transport delivered the payload and the device declined it, so
+    /// nothing new is displayed. The session stays healthy.
+    Declined,
     /// The transport or output lane rejected the attempt.
     Failed,
 }
@@ -216,6 +225,7 @@ impl DeviceDeliveryAck {
             Ok(DeviceWriteOutcome::SuppressedCadence) => {
                 Self::suppressed(id, DeviceDeliveryStatus::SuppressedCadence)
             }
+            Ok(DeviceWriteOutcome::Declined) => Self::declined(id, transport_latency),
             Err(error) => Self::failed(id, true, transport_latency, error),
         }
     }
@@ -238,6 +248,21 @@ impl DeviceDeliveryAck {
             status: DeviceDeliveryStatus::Completed,
             transport_started: true,
             completed_payload_bytes: u64::try_from(payload_bytes).unwrap_or(u64::MAX),
+            transport_latency,
+            error: None,
+            transient: false,
+        }
+    }
+
+    /// Build an acknowledgement for a payload the transport delivered and the
+    /// device declined.
+    #[must_use]
+    pub fn declined(id: DeviceDeliveryId, transport_latency: Duration) -> Self {
+        Self {
+            id,
+            status: DeviceDeliveryStatus::Declined,
+            transport_started: true,
+            completed_payload_bytes: 0,
             transport_latency,
             error: None,
             transient: false,

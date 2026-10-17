@@ -197,6 +197,9 @@ pub struct OutputQueueDebugSnapshot {
     /// Total delivery attempts failed by the lane or transport.
     pub transport_failed: u64,
 
+    /// Total delivery attempts the transport delivered and the device declined.
+    pub transport_declined: u64,
+
     /// Total frames intentionally suppressed by the output lane.
     pub frames_suppressed: u64,
 
@@ -321,6 +324,9 @@ pub struct DeviceOutputStatistics {
     /// Total delivery attempts failed by the lane or transport.
     pub transport_failed: u64,
 
+    /// Total delivery attempts the transport delivered and the device declined.
+    pub transport_declined: u64,
+
     /// Total frames intentionally suppressed by the output lane.
     pub frames_suppressed: u64,
 
@@ -421,6 +427,7 @@ impl DeviceOutputStatistics {
             transport_started: 0,
             transport_completed: 0,
             transport_failed: 0,
+            transport_declined: 0,
             frames_suppressed: 0,
             bytes_sent: 0,
             completed_payload_bytes: 0,
@@ -479,6 +486,7 @@ impl DeviceOutputStatistics {
             transport_started: self.transport_started,
             transport_completed: self.transport_completed,
             transport_failed: self.transport_failed,
+            transport_declined: self.transport_declined,
             frames_suppressed: self.frames_suppressed,
             bytes_sent: self.bytes_sent,
             completed_payload_bytes: self.completed_payload_bytes,
@@ -646,6 +654,7 @@ struct OutputQueueMetrics {
     coalesced_backend_overrun: AtomicU64,
     transport_started: AtomicU64,
     transport_failed: AtomicU64,
+    transport_declined: AtomicU64,
     total_latency_us: AtomicU64,
     total_queue_wait_us: AtomicU64,
     total_write_time_us: AtomicU64,
@@ -657,6 +666,10 @@ struct OutputQueueMetrics {
     last_handled_sequence: AtomicU64,
     last_success_sequence: AtomicU64,
     last_error_sequence: AtomicU64,
+    /// Most recent delivery the device declined. A declined payload is
+    /// terminal for its attempt but still undelivered, so dedupe and retry
+    /// treat it like a failed one without surfacing it to device lifecycle.
+    last_declined_sequence: AtomicU64,
     /// Failed deliveries since the last completed one; written only while
     /// holding `retained_failure`.
     consecutive_failures: AtomicU32,
@@ -680,6 +693,7 @@ impl OutputQueueMetrics {
             coalesced_backend_overrun: AtomicU64::new(0),
             transport_started: AtomicU64::new(0),
             transport_failed: AtomicU64::new(0),
+            transport_declined: AtomicU64::new(0),
             total_latency_us: AtomicU64::new(0),
             total_queue_wait_us: AtomicU64::new(0),
             total_write_time_us: AtomicU64::new(0),
@@ -691,6 +705,7 @@ impl OutputQueueMetrics {
             last_handled_sequence: AtomicU64::new(0),
             last_success_sequence: AtomicU64::new(0),
             last_error_sequence: AtomicU64::new(0),
+            last_declined_sequence: AtomicU64::new(0),
             consecutive_failures: AtomicU32::new(0),
             retained_failure: StdMutex::new(None),
         }
@@ -708,6 +723,7 @@ impl OutputQueueMetrics {
         self.last_handled_sequence.store(0, Ordering::Relaxed);
         self.last_success_sequence.store(0, Ordering::Relaxed);
         self.last_error_sequence.store(0, Ordering::Relaxed);
+        self.last_declined_sequence.store(0, Ordering::Relaxed);
         self.consecutive_failures.store(0, Ordering::Relaxed);
         *retained_failure = None;
     }
@@ -821,6 +837,50 @@ impl OutputQueueMetrics {
         }
     }
 
+    /// Record a payload the device declined.
+    ///
+    /// A decline is neither a delivery nor a failure: it leaves the sent
+    /// counters, the failure streak, and any retained failure untouched, and
+    /// never reaches device lifecycle.
+    fn record_write_declined(&self, id: DeviceDeliveryId, sent_at: Instant) {
+        // Held so a generation switch cannot land between the check and stores.
+        let _retained_failure = self
+            .retained_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.is_current(id) {
+            return;
+        }
+        self.transport_declined.fetch_add(1, Ordering::Relaxed);
+        self.last_sent_offset_us.store(
+            duration_micros(sent_at.saturating_duration_since(self.started_at)),
+            Ordering::Relaxed,
+        );
+        self.last_declined_sequence
+            .store(id.sequence, Ordering::Release);
+    }
+
+    /// Latest sequence whose delivery attempt reached a terminal state.
+    fn last_terminal_sequence(&self) -> u64 {
+        self.last_handled_sequence
+            .load(Ordering::Relaxed)
+            .max(self.last_error_sequence.load(Ordering::Relaxed))
+            .max(self.last_declined_sequence.load(Ordering::Relaxed))
+    }
+
+    /// Whether the attempt for `sequence` failed or was declined and no later
+    /// attempt has been handled, so its payload still has to reach the device
+    /// and the next identical payload must go out instead of being deduped.
+    fn ended_undelivered(&self, sequence: u64) -> bool {
+        let last_handled_sequence = self.last_handled_sequence.load(Ordering::Relaxed);
+        [
+            self.last_error_sequence.load(Ordering::Relaxed),
+            self.last_declined_sequence.load(Ordering::Relaxed),
+        ]
+        .into_iter()
+        .any(|terminal| sequence == terminal && terminal > last_handled_sequence)
+    }
+
     fn record_write_error(
         &self,
         id: DeviceDeliveryId,
@@ -886,6 +946,7 @@ impl OutputQueueMetrics {
             DeviceDeliveryStatus::SuppressedDuplicate | DeviceDeliveryStatus::SuppressedCadence => {
                 self.record_write_suppressed(ack.id, completed_at);
             }
+            DeviceDeliveryStatus::Declined => self.record_write_declined(ack.id, completed_at),
             DeviceDeliveryStatus::Failed => self.record_write_error(
                 ack.id,
                 completed_at,
@@ -935,6 +996,7 @@ impl OutputQueueMetrics {
         let frames_dropped = self.frames_dropped.load(Ordering::Relaxed);
         let transport_started = self.transport_started.load(Ordering::Relaxed);
         let transport_failed = self.transport_failed.load(Ordering::Relaxed);
+        let transport_declined = self.transport_declined.load(Ordering::Relaxed);
         let coalesced_target_cadence = self.coalesced_target_cadence.load(Ordering::Relaxed);
         let coalesced_backend_overrun = self.coalesced_backend_overrun.load(Ordering::Relaxed);
         let avg_latency_ms =
@@ -979,6 +1041,7 @@ impl OutputQueueMetrics {
             transport_started,
             transport_completed: frames_sent,
             transport_failed,
+            transport_declined,
             frames_suppressed,
             bytes_sent,
             completed_payload_bytes: bytes_sent,
@@ -1346,11 +1409,7 @@ fn requeue_cached_payload(
     let Some(payload) = current.as_ref() else {
         return false;
     };
-    let last_terminal_sequence = metrics
-        .last_handled_sequence
-        .load(Ordering::Relaxed)
-        .max(metrics.last_error_sequence.load(Ordering::Relaxed));
-    if payload.id.sequence > last_terminal_sequence {
+    if payload.id.sequence > metrics.last_terminal_sequence() {
         return false;
     }
     drop(current);
@@ -1601,6 +1660,7 @@ impl OutputQueue {
                         last_logged_write_error = None;
                         repeated_write_failures_since_log = 0;
                     }
+                    DeviceDeliveryStatus::Declined => {}
                     DeviceDeliveryStatus::Failed => {
                         let error = ack.error.clone().unwrap_or_else(|| {
                             DeviceError::protocol(device_id, "delivery failed without an error")
@@ -1641,9 +1701,9 @@ impl OutputQueue {
 
                 if let Some(max_frame_silence) = max_frame_silence {
                     let next_interval = match ack.status {
-                        DeviceDeliveryStatus::Completed | DeviceDeliveryStatus::Failed => {
-                            max_frame_silence
-                        }
+                        DeviceDeliveryStatus::Completed
+                        | DeviceDeliveryStatus::Declined
+                        | DeviceDeliveryStatus::Failed => max_frame_silence,
                         DeviceDeliveryStatus::SuppressedDuplicate
                         | DeviceDeliveryStatus::SuppressedCadence => send_interval
                             .filter(|interval| !interval.is_zero())
@@ -1745,11 +1805,7 @@ impl OutputQueue {
         self.tx.send_modify(|current| {
             if let Some(previous) = current.as_ref() {
                 let active_sequence = self.active_sequence.load(Ordering::Acquire);
-                let last_terminal_sequence = self
-                    .metrics
-                    .last_handled_sequence
-                    .load(Ordering::Relaxed)
-                    .max(self.metrics.last_error_sequence.load(Ordering::Relaxed));
+                let last_terminal_sequence = self.metrics.last_terminal_sequence();
                 if !previous.cached_reassertion
                     && previous.id.sequence != active_sequence
                     && previous.id.sequence > last_terminal_sequence
@@ -1802,19 +1858,19 @@ impl OutputQueue {
             return false;
         }
 
-        let last_handled_sequence = self.metrics.last_handled_sequence.load(Ordering::Relaxed);
-        let last_error_sequence = self.metrics.last_error_sequence.load(Ordering::Relaxed);
-
-        if payload.id.sequence == last_error_sequence && last_error_sequence > last_handled_sequence
-        {
+        if self.metrics.ended_undelivered(payload.id.sequence) {
             return false;
         }
 
+        let last_handled_sequence = self.metrics.last_handled_sequence.load(Ordering::Relaxed);
+        let last_error_sequence = self.metrics.last_error_sequence.load(Ordering::Relaxed);
         payload.id.sequence > last_handled_sequence
             || payload.id.sequence == last_handled_sequence
                 && last_handled_sequence >= last_error_sequence
     }
 
+    /// Requeue the latest payload when its attempt failed or the device
+    /// declined it, returning its LED count.
     pub(super) fn retry_latest_after_error(&mut self) -> Option<usize> {
         let mut delivery_sequence = self
             .delivery_sequence
@@ -1825,11 +1881,7 @@ impl OutputQueue {
             return None;
         };
 
-        let last_handled_sequence = self.metrics.last_handled_sequence.load(Ordering::Relaxed);
-        let last_error_sequence = self.metrics.last_error_sequence.load(Ordering::Relaxed);
-        if payload.id.sequence != last_error_sequence
-            || last_error_sequence <= last_handled_sequence
-        {
+        if !self.metrics.ended_undelivered(payload.id.sequence) {
             return None;
         }
 

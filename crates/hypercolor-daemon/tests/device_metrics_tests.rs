@@ -48,6 +48,7 @@ fn sample_stats_with_received(
         transport_started: frames_sent.saturating_add(errors_total),
         transport_completed: frames_sent,
         transport_failed: errors_total,
+        transport_declined: 0,
         frames_suppressed: 0,
         cached_payload_reassertions: 0,
         bytes_sent,
@@ -119,6 +120,24 @@ fn collector_preserves_display_lane_telemetry() {
     assert_eq!(published.items[0].display_transport_started, 7);
     assert_eq!(published.items[0].display_transport_completed, 6);
     assert_eq!(published.items[0].display_transport_failed, 1);
+}
+
+#[test]
+fn collector_preserves_declined_deliveries() {
+    let device_id = DeviceId::new();
+    let snapshot = Arc::new(ArcSwap::from_pointee(DeviceMetricsSnapshot::default()));
+    let mut collector = DeviceMetricsCollector::new(Arc::clone(&snapshot));
+    let mut statistics = sample_stats(device_id, 3, 36, 0, None);
+    statistics.transport_declined = 2;
+    statistics.transport_started = 5;
+
+    let published = collector.update_from_statistics_at(vec![statistics], Instant::now(), 42);
+
+    assert_eq!(published.items.len(), 1);
+    assert_eq!(published.items[0].transport_declined, 2);
+    assert_eq!(published.items[0].transport_started, 5);
+    assert_eq!(published.items[0].frames_sent, 3);
+    assert_eq!(published.items[0].errors_total, 0);
 }
 
 #[test]

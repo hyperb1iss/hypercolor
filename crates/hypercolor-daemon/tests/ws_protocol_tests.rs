@@ -491,6 +491,7 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
             transport_started: 64,
             transport_completed: 64,
             transport_failed: 0,
+            transport_declined: 0,
             completed_payload_bytes: 32_768,
             frames_suppressed: 0,
             frames_dropped: 1,

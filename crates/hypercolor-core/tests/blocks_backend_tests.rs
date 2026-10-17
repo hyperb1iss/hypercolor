@@ -1,9 +1,22 @@
 #![cfg(unix)]
 
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
-use hypercolor_core::device::{BlocksBackend, BlocksScanner};
-use hypercolor_driver_api::DeviceBackend;
+use hypercolor_core::device::{
+    BackendManager, BlocksBackend, BlocksScanner, DeviceOutputStatistics,
+};
+use hypercolor_driver_api::{
+    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceDeliveryStatus, DeviceWriteOutcome,
+};
+use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId};
+use hypercolor_types::event::ZoneColors;
+use hypercolor_types::spatial::{
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+    StripDirection,
+};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -11,6 +24,11 @@ use tokio::sync::oneshot;
 
 const TEST_UID: u64 = 15_574_837_184_041_537_129;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+/// Every binary frame the fake blocksd read, and the task serving them.
+type FakeBlocksd = (
+    oneshot::Receiver<Vec<Vec<u8>>>,
+    tokio::task::JoinHandle<TestResult>,
+);
 
 fn discover_response(uid: u64) -> String {
     format!(
@@ -25,13 +43,9 @@ fn discover_response(uid: u64) -> String {
     )
 }
 
-fn serve_backend_handshake(
-    socket_path: &Path,
-    ack: u8,
-) -> TestResult<(
-    oneshot::Receiver<Vec<u8>>,
-    tokio::task::JoinHandle<TestResult>,
-)> {
+/// Serve discovery and one backend connection that answers each binary frame
+/// with the next byte of `acks`, then report every frame it read.
+fn serve_backend_handshake(socket_path: &Path, acks: &'static [u8]) -> TestResult<FakeBlocksd> {
     let listener = UnixListener::bind(socket_path)?;
     let (frame_tx, frame_rx) = oneshot::channel();
 
@@ -64,12 +78,15 @@ fn serve_backend_handshake(
             .await?;
         writer_half.write_all(b"\n").await?;
 
-        let mut frame = vec![0_u8; 685];
-        reader.read_exact(&mut frame).await?;
-        frame_tx.send(frame).ok();
-
-        writer_half.write_all(&[ack]).await?;
-        writer_half.flush().await?;
+        let mut frames = Vec::with_capacity(acks.len());
+        for ack in acks {
+            let mut frame = vec![0_u8; 685];
+            reader.read_exact(&mut frame).await?;
+            frames.push(frame);
+            writer_half.write_all(&[*ack]).await?;
+            writer_half.flush().await?;
+        }
+        frame_tx.send(frames).ok();
 
         Ok(())
     });
@@ -81,7 +98,7 @@ fn serve_backend_handshake(
 async fn blocks_backend_writes_u64_binary_frames() -> TestResult {
     let tempdir = tempdir()?;
     let socket_path = tempdir.path().join("blocksd.sock");
-    let (frame_rx, server_task) = serve_backend_handshake(&socket_path, 0x01)?;
+    let (frame_rx, server_task) = serve_backend_handshake(&socket_path, &[0x01])?;
 
     let mut scanner = BlocksScanner::new(socket_path.clone());
     let discovered = scanner.scan().await?;
@@ -93,7 +110,8 @@ async fn blocks_backend_writes_u64_binary_frames() -> TestResult {
         .write_colors(&device_id, &[[0x12, 0x34, 0x56], [0xAB, 0xCD, 0xEF]])
         .await?;
 
-    let frame = frame_rx.await?;
+    let frames = frame_rx.await?;
+    let frame = &frames[0];
     assert_eq!(frame.len(), 685);
     assert_eq!(&frame[..2], &[0xBD, 0x01]);
     assert_eq!(u64::from_le_bytes(frame[2..10].try_into()?), TEST_UID);
@@ -104,11 +122,50 @@ async fn blocks_backend_writes_u64_binary_frames() -> TestResult {
     Ok(())
 }
 
+/// Observer for direct backend deliveries; these tests read the terminal ack.
+struct IgnoreTransportStart;
+
+impl DeviceDeliveryObserver for IgnoreTransportStart {
+    fn transport_started(&self, _id: DeviceDeliveryId) {}
+}
+
+async fn deliver(
+    backend: &BlocksBackend,
+    device_id: &DeviceId,
+    sequence: u64,
+    colors: Vec<[u8; 3]>,
+) -> DeviceDeliveryAck {
+    let id = DeviceDeliveryId {
+        queue_generation: 1,
+        sequence,
+    };
+    let ack = backend
+        .deliver_colors_shared_observed(
+            device_id,
+            id,
+            Arc::new(colors),
+            Arc::new(IgnoreTransportStart),
+        )
+        .await;
+    assert_eq!(ack.id, id);
+    ack
+}
+
+fn assert_declined(ack: &DeviceDeliveryAck) {
+    assert_eq!(ack.status, DeviceDeliveryStatus::Declined);
+    assert!(ack.transport_started, "the frame reached blocksd");
+    assert_eq!(
+        ack.completed_payload_bytes, 0,
+        "a declined frame is not sent"
+    );
+    assert_eq!(ack.error, None, "a decline is not a transport failure");
+}
+
 #[tokio::test]
-async fn blocks_backend_treats_binary_rejection_as_retryable() -> TestResult {
+async fn blocks_backend_reports_a_declined_grid_frame_and_keeps_the_connection() -> TestResult {
     let tempdir = tempdir()?;
     let socket_path = tempdir.path().join("blocksd.sock");
-    let (_frame_rx, server_task) = serve_backend_handshake(&socket_path, 0x00)?;
+    let (frame_rx, server_task) = serve_backend_handshake(&socket_path, &[0x00, 0x00, 0x01])?;
 
     let mut scanner = BlocksScanner::new(socket_path.clone());
     let discovered = scanner.scan().await?;
@@ -117,11 +174,71 @@ async fn blocks_backend_treats_binary_rejection_as_retryable() -> TestResult {
     let device_id = discovered[0].info.id;
     backend.connect(&device_id).await?;
 
-    backend
-        .write_colors(&device_id, &[[0xFF, 0x00, 0xFF]])
-        .await?;
+    let declined = deliver(&backend, &device_id, 1, vec![[0xFF, 0x00, 0xFF]]).await;
+    assert_declined(&declined);
+    assert_eq!(
+        backend
+            .write_colors_shared_outcome(&device_id, Arc::new(vec![[0xFF, 0x00, 0xFF]]))
+            .await?,
+        DeviceWriteOutcome::Declined
+    );
+    let accepted = deliver(&backend, &device_id, 2, vec![[0x00, 0xFF, 0x00]; 225]).await;
+    assert_eq!(accepted.status, DeviceDeliveryStatus::Completed);
+    assert_eq!(accepted.completed_payload_bytes, 675);
 
+    // All three frames arrived on the one connection the fake serves, so the
+    // declines did not drop it.
+    let frames = frame_rx.await?;
+    assert_eq!(frames.len(), 3);
+    assert_eq!(&frames[2][10..13], &[0x00, 0xFF, 0x00]);
     server_task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocks_backend_fails_an_unknown_grid_ack_byte_and_reconnects() -> TestResult {
+    let tempdir = tempdir()?;
+    let socket_path = tempdir.path().join("blocksd.sock");
+    let listener = UnixListener::bind(&socket_path)?;
+    let task = tokio::spawn(async move {
+        let legacy: serde_json::Value = serde_json::from_str(&discover_response(TEST_UID))?;
+        serve_discovery(&listener, &[legacy["devices"][0].clone()]).await?;
+        let mut frame = [0_u8; 685];
+        // blocksd only ever answers 0x01 or 0x00; 0x7F is neither.
+        let mut reader = serve_ping(&listener).await?;
+        reader.read_exact(&mut frame).await?;
+        reader.get_mut().write_all(&[0x7F]).await?;
+        drop(reader);
+        let mut reader = serve_ping(&listener).await?;
+        reader.read_exact(&mut frame).await?;
+        reader.get_mut().write_all(&[0x01]).await?;
+        TestResult::Ok(())
+    });
+    let discovered = BlocksScanner::new(socket_path.clone()).scan().await?;
+    let backend = BlocksBackend::new(socket_path);
+    let device_id = discovered[0].info.id;
+    backend.adopt_device(&discovered[0])?;
+    backend.connect(&device_id).await?;
+
+    let garbled = deliver(&backend, &device_id, 1, vec![[1, 2, 3]]).await;
+    assert_eq!(garbled.status, DeviceDeliveryStatus::Failed);
+    let error = garbled.error.ok_or("an unknown ack byte fails the frame")?;
+    assert!(
+        error.to_string().contains("acknowledgement byte 0x7f"),
+        "the error names the byte: {error}"
+    );
+
+    let dropped = deliver(&backend, &device_id, 2, vec![[1, 2, 3]]).await;
+    assert!(
+        matches!(dropped.error, Some(DeviceError::Disconnected { .. })),
+        "the failure dropped the connection: {:?}",
+        dropped.error
+    );
+
+    backend.connect(&device_id).await?;
+    let accepted = deliver(&backend, &device_id, 3, vec![[1, 2, 3]]).await;
+    assert_eq!(accepted.status, DeviceDeliveryStatus::Completed);
+    task.await??;
     Ok(())
 }
 
@@ -298,7 +415,8 @@ async fn blocks_backend_interleaves_key_json_and_grid_binary_frames() -> TestRes
 }
 
 #[tokio::test]
-async fn blocks_backend_retries_rejected_key_frame_on_same_connection() -> TestResult {
+async fn blocks_backend_reports_a_declined_key_frame_and_retries_on_the_same_connection()
+-> TestResult {
     let tempdir = tempdir()?;
     let socket_path = tempdir.path().join("blocksd.sock");
     let listener = UnixListener::bind(&socket_path)?;
@@ -327,8 +445,11 @@ async fn blocks_backend_retries_rejected_key_frame_on_same_connection() -> TestR
                 .is_err()
         );
     }
-    backend.write_colors(&device.info.id, &key_colors()).await?;
-    backend.write_colors(&device.info.id, &key_colors()).await?;
+    let declined = deliver(&backend, &device.info.id, 1, key_colors().to_vec()).await;
+    assert_declined(&declined);
+    let accepted = deliver(&backend, &device.info.id, 2, key_colors().to_vec()).await;
+    assert_eq!(accepted.status, DeviceDeliveryStatus::Completed);
+    assert_eq!(accepted.completed_payload_bytes, 72);
     task.await??;
     Ok(())
 }
@@ -427,5 +548,116 @@ async fn blocks_backend_fails_an_oversized_reply_and_reconnects() -> TestResult 
     backend.connect(&device.info.id).await?;
     backend.write_colors(&device.info.id, &key_colors()).await?;
     task.await??;
+    Ok(())
+}
+
+fn pad_layout(layout_device_id: &str) -> SpatialLayout {
+    SpatialLayout {
+        id: "blocks-layout".into(),
+        name: "Blocks Layout".into(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![Output {
+            id: "pad".into(),
+            name: "pad".into(),
+            device_id: layout_device_id.into(),
+            zone_name: None,
+            position: NormalizedPosition { x: 0.5, y: 0.5 },
+            size: NormalizedPosition { x: 1.0, y: 1.0 },
+            rotation: 0.0,
+            scale: 1.0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 4,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: None,
+            shape_preset: None,
+            display_order: 0,
+            attachment: None,
+            brightness: None,
+        }],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    }
+}
+
+fn pad_frame(color: [u8; 3]) -> Vec<ZoneColors> {
+    vec![ZoneColors {
+        zone_id: "pad".into(),
+        colors: vec![color; 4],
+    }]
+}
+
+async fn wait_for_stats(
+    manager: &BackendManager,
+    ready: impl Fn(&DeviceOutputStatistics) -> bool,
+) -> TestResult<DeviceOutputStatistics> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let stats = manager.device_output_statistics();
+        if let Some(stats) = stats.into_iter().next().filter(|stats| ready(stats)) {
+            return Ok(stats);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("output queue did not reach the expected state".into());
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test]
+async fn blocks_output_queue_counts_a_declined_frame_as_declined_not_sent() -> TestResult {
+    let tempdir = tempdir()?;
+    let socket_path = tempdir.path().join("blocksd.sock");
+    let (frame_rx, server_task) = serve_backend_handshake(&socket_path, &[0x00, 0x01])?;
+
+    let discovered = BlocksScanner::new(socket_path.clone()).scan().await?;
+    let backend = BlocksBackend::new(socket_path);
+    backend.adopt_device(&discovered[0])?;
+    let device_id = discovered[0].info.id;
+    let mut manager = BackendManager::new();
+    manager.register_backend(Arc::new(backend));
+    manager
+        .connect_device(BLOCKS_OUTPUT_BACKEND_ID, device_id, "blocks:pad")
+        .await?;
+    let layout = pad_layout("blocks:pad");
+
+    manager.write_frame(&pad_frame([200, 40, 120]), &layout);
+    let declined = wait_for_stats(&manager, |stats| stats.transport_declined == 1).await?;
+    assert_eq!(declined.transport_started, 1);
+    assert_eq!(declined.frames_sent, 0, "a declined frame is not delivered");
+    assert_eq!(declined.transport_completed, 0);
+    assert_eq!(declined.bytes_sent, 0);
+    assert_eq!(declined.transport_failed, 0, "a decline is not a failure");
+    assert_eq!(declined.errors_total, 0);
+    assert_eq!(declined.last_error, None);
+    assert!(
+        manager.async_write_failures().is_empty(),
+        "a decline never reaches device lifecycle, so nothing disconnects"
+    );
+
+    manager.write_frame(&pad_frame([40, 200, 120]), &layout);
+    let accepted = wait_for_stats(&manager, |stats| stats.frames_sent == 1).await?;
+    assert_eq!(accepted.transport_started, 2);
+    assert_eq!(accepted.transport_completed, 1);
+    assert_eq!(accepted.transport_declined, 1);
+    assert_eq!(accepted.bytes_sent, 12);
+    assert_eq!(accepted.transport_failed, 0);
+    assert_eq!(
+        accepted.transport_started,
+        accepted.transport_completed + accepted.transport_failed + accepted.transport_declined,
+        "every Blocks attempt starts transport, so each ends completed, failed, or declined"
+    );
+    assert!(manager.async_write_failures().is_empty());
+
+    assert_eq!(frame_rx.await?.len(), 2, "both frames share one connection");
+    server_task.await??;
     Ok(())
 }
