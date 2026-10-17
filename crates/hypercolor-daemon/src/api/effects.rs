@@ -4,9 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::rejection::QueryRejection;
-use axum::extract::{Multipart, Path, Query, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
@@ -31,6 +29,7 @@ use crate::domain;
 // One definition of the source spelling, shared with the `source`
 // catalog filter: a second one here would let a listing narrow on values
 // the payload never reports.
+use crate::api::extract::{ApiJson, ApiMultipart, ApiPath, ApiQuery};
 use crate::domain::effect::RequestedTransition;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
 use crate::resource_summary::{
@@ -92,14 +91,8 @@ pub struct EffectListQuery {
 /// `GET /api/v1/effects` — the effect catalog, narrowed server-side.
 pub async fn list_effects(
     State(state): State<Arc<AppState>>,
-    query: Result<Query<EffectListQuery>, QueryRejection>,
+    ApiQuery(query): ApiQuery<EffectListQuery>,
 ) -> Response {
-    let Query(query) = match query {
-        Ok(query) => query,
-        Err(error) => {
-            return DomainError::validation(error.body_text()).into_response();
-        }
-    };
     let includes = match EffectListIncludes::parse(query.include.as_deref()) {
         Ok(includes) => includes,
         Err(error) => return error.into_response(),
@@ -133,7 +126,10 @@ pub async fn list_effects(
 }
 
 /// `GET /api/v1/effects/{id}` — Get a single effect's metadata.
-pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn get_effect(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<String>,
+) -> Response {
     let Some(meta) = state.domains.effects.resolve_metadata(&id).await else {
         return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
@@ -160,7 +156,7 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
 /// `GET /api/v1/effects/{id}/presets` lists bundled and saved presets.
 pub async fn list_effect_presets(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Response {
     let Some(metadata) = state.domains.effects.resolve_metadata(&id).await else {
         return DomainError::not_found(ResourceKind::Effect, &id).into_response();
@@ -178,27 +174,27 @@ pub async fn list_effect_presets(
 /// `POST /api/v1/effects/{id}/presets/{preset}/apply` applies one preset.
 pub async fn apply_effect_preset(
     State(state): State<Arc<AppState>>,
-    Path((id, preset_id)): Path<(String, String)>,
+    ApiPath((id, preset_id)): ApiPath<(String, String)>,
     headers: HeaderMap,
-    body: Option<Json<SceneApplyEffectRequest>>,
+    body: Option<ApiJson<SceneApplyEffectRequest>>,
 ) -> Response {
     let Ok(preset) = preset_id.parse::<PresetId>() else {
         return DomainError::not_found(ResourceKind::Preset, &preset_id).into_response();
     };
-    let mut request = body.map(|Json(body)| body).unwrap_or_default();
+    let mut request = body.map(|ApiJson(body)| body).unwrap_or_default();
     request.preset_id = Some(preset);
 
-    apply_effect(State(state), Path(id), headers, Some(Json(request))).await
+    apply_effect(State(state), ApiPath(id), headers, Some(ApiJson(request))).await
 }
 
 /// `POST /api/v1/effects/{id}/apply` — Start rendering an effect.
 pub async fn apply_effect(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    body: Option<Json<SceneApplyEffectRequest>>,
+    body: Option<ApiJson<SceneApplyEffectRequest>>,
 ) -> Response {
-    let request = body.map(|Json(body)| body).unwrap_or_default();
+    let request = body.map(|ApiJson(body)| body).unwrap_or_default();
     let transition = match request.transition.unwrap_or_default() {
         TransitionType::Cut => RequestedTransition::cut(),
     };
@@ -320,7 +316,7 @@ pub async fn apply_effect(
 /// `GET /api/v1/effects/{id}/cover` — Get an effect cover image.
 pub async fn get_effect_cover(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Response {
     let Some(metadata) = state.domains.effects.resolve_metadata(&id).await else {
         return DomainError::not_found(ResourceKind::Effect, &id).into_response();
@@ -353,7 +349,7 @@ pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
 /// `POST /api/v1/effects/install` — Validate and install a user HTML effect.
 pub async fn install_effect(
     State(state): State<Arc<AppState>>,
-    mut multipart: Multipart,
+    mut multipart: ApiMultipart,
 ) -> Response {
     let (file_name, file_bytes) = match next_uploaded_html_field(&mut multipart).await {
         Ok(upload) => upload,
@@ -362,7 +358,7 @@ pub async fn install_effect(
 
     if file_bytes.len() > MAX_EFFECT_UPLOAD_BYTES {
         return DomainError::PayloadTooLarge {
-            limit_bytes: MAX_EFFECT_UPLOAD_BYTES as u64,
+            limit_bytes: Some(MAX_EFFECT_UPLOAD_BYTES as u64),
         }
         .into_response();
     }
@@ -618,7 +614,7 @@ struct ValidatedUploadedHtml {
 }
 
 async fn next_uploaded_html_field(
-    multipart: &mut Multipart,
+    multipart: &mut ApiMultipart,
 ) -> Result<(Option<String>, Vec<u8>), DomainError> {
     while let Some(field) = multipart.next_field().await.map_err(|error| {
         DomainError::malformed(format!("Failed to read multipart upload: {error}"))

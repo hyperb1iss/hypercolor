@@ -192,11 +192,9 @@ async def test_stored_scene_put_replaces_the_complete_document(
     request = route.calls[0].request
     replacement = json.loads(request.content)
     assert request.headers["if-match"] == '"12"'
-    assert "is_default" not in replacement
-    assert "revision" not in replacement
-    assert replacement == {
-        key: value for key, value in LIVE_SCENE.items() if key not in {"is_default", "revision"}
-    }
+    # The read-back document travels whole; the daemon checks the
+    # server-owned `is_default` and `revision` it echoes.
+    assert replacement == LIVE_SCENE
     assert str(updated.zones[0].layers[0].id) == LAYER_ID
 
 

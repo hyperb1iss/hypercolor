@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 
 use hypercolor_types::control::ControlValue;
@@ -12,6 +11,7 @@ use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollect
 use hypercolor_types::library::{EffectPreset, PresetId};
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -38,7 +38,10 @@ pub async fn list_presets(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// `GET /api/v1/library/presets/{id}` — fetch one preset.
-pub async fn get_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn get_preset(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<String>,
+) -> Response {
     let Some(preset_id) = resolve_preset_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
@@ -53,7 +56,7 @@ pub async fn get_preset(State(state): State<Arc<AppState>>, Path(id): Path<Strin
 /// `POST /api/v1/library/presets` — create a new saved preset.
 pub async fn create_preset(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<SavePresetRequest>,
+    ApiJson(body): ApiJson<SavePresetRequest>,
 ) -> Response {
     if body.name.trim().is_empty() {
         return DomainError::validation("Preset name must not be empty").into_response();
@@ -104,8 +107,8 @@ pub async fn create_preset(
 /// `PUT /api/v1/library/presets/{id}` — update an existing preset.
 pub async fn update_preset(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(body): Json<SavePresetRequest>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(body): ApiJson<SavePresetRequest>,
 ) -> Response {
     let Some(preset_id) = resolve_preset_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
@@ -160,7 +163,10 @@ pub async fn update_preset(
 }
 
 /// `DELETE /api/v1/library/presets/{id}` — remove a preset.
-pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn delete_preset(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<String>,
+) -> Response {
     let Some(preset_id) = resolve_preset_id(&state, &id).await else {
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };

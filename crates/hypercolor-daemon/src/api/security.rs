@@ -1855,7 +1855,8 @@ fn masked_v6(address: Ipv6Addr, prefix: u8) -> u128 {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    use axum::extract::{ConnectInfo, Extension};
+    use crate::api::extract::ApiRequestExtension;
+    use axum::extract::ConnectInfo;
     use axum::http::header::AUTHORIZATION;
     use axum::routing::{get, post};
     use axum::{Router, body::Body};
@@ -1890,7 +1891,7 @@ mod tests {
             .route(
                 "/api/v1/system",
                 get(
-                    |Extension(context): Extension<RequestAuthContext>| async move {
+                    |ApiRequestExtension(context): ApiRequestExtension<RequestAuthContext>| async move {
                         axum::Json(serde_json::json!({
                             "identity": true,
                             "status": context.can_read_system_status(),
@@ -1902,7 +1903,7 @@ mod tests {
             .route(
                 "/api/v1/ws",
                 get(
-                    |Extension(context): Extension<RequestAuthContext>| async move {
+                    |ApiRequestExtension(context): ApiRequestExtension<RequestAuthContext>| async move {
                         if context.can_protected_control() {
                             StatusCode::OK
                         } else {
@@ -1914,7 +1915,7 @@ mod tests {
             .route(
                 "/api/v1/protected-control",
                 get(
-                    |Extension(context): Extension<RequestAuthContext>| async move {
+                    |ApiRequestExtension(context): ApiRequestExtension<RequestAuthContext>| async move {
                         if context.can_protected_control() {
                             StatusCode::OK
                         } else {
@@ -3912,23 +3913,26 @@ mod tests {
                 &[],
                 &[],
             ));
-            let app = Router::new()
-                .route(
-                    "/api/v1/ext/pair",
-                    post(
-                        |Extension(context): Extension<RequestAuthContext>| async move {
-                            if context.can_control() || context.is_loopback() {
-                                StatusCode::IM_A_TEAPOT
-                            } else {
-                                StatusCode::OK
-                            }
-                        },
-                    ),
-                )
-                .layer(axum::middleware::from_fn_with_state(
-                    state,
-                    enforce_security,
-                ));
+            let app =
+                Router::new()
+                    .route(
+                        "/api/v1/ext/pair",
+                        post(
+                            |ApiRequestExtension(context): ApiRequestExtension<
+                                RequestAuthContext,
+                            >| async move {
+                                if context.can_control() || context.is_loopback() {
+                                    StatusCode::IM_A_TEAPOT
+                                } else {
+                                    StatusCode::OK
+                                }
+                            },
+                        ),
+                    )
+                    .layer(axum::middleware::from_fn_with_state(
+                        state,
+                        enforce_security,
+                    ));
             let replay = || {
                 let mut request = Request::builder()
                     .method(Method::POST)
@@ -4032,7 +4036,7 @@ mod tests {
             .route(
                 "/health",
                 get(
-                    |grant: Option<Extension<super::CredentialGrant>>| async move {
+                    |grant: Option<ApiRequestExtension<super::CredentialGrant>>| async move {
                         axum::Json(serde_json::json!({ "grant": grant.is_some() }))
                     },
                 ),
@@ -4069,7 +4073,7 @@ mod tests {
             .route(
                 "/health",
                 get(
-                    |Extension(context): Extension<RequestAuthContext>| async move {
+                    |ApiRequestExtension(context): ApiRequestExtension<RequestAuthContext>| async move {
                         axum::Json(serde_json::json!({ "is_loopback": context.is_loopback() }))
                     },
                 ),

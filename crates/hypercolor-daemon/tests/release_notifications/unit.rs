@@ -166,7 +166,7 @@ async fn successful_check_caches_release_and_failure_preserves_it() {
         .route(
             "/success",
             axum::routing::get(|| async {
-                Json(serde_json::json!({
+                axum::Json(serde_json::json!({
                     "tag_name": "v99.0.0", "name": "New release", "body": "release notes",
                     "html_url": "https://github.com/hyperb1iss/hypercolor/releases/tag/v99.0.0",
                     "draft": false, "prerelease": false, "assets": []
@@ -343,6 +343,68 @@ async fn registration_controls_routes_capability_and_preference_mutations() {
     }
 }
 
+#[tokio::test]
+async fn a_malformed_preference_patch_answers_with_the_error_envelope() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("notifications.json");
+    let mut state = AppState::new_with_data_dir(directory.path().to_path_buf());
+    let service =
+        Arc::new(ReleaseNotifications::open(&path, Arc::clone(&state.event_bus)).expect("service"));
+    state
+        .extensions
+        .insert(Arc::clone(&service))
+        .expect("register");
+    state.api_extensions.push(service);
+    let app = crate::api::build_router(Arc::new(state), None);
+
+    for (body, status, code, field) in [
+        (
+            r#"{"automatic_checks":"sometimes"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation_error",
+            Some("automatic_checks"),
+        ),
+        (
+            r#"{"automatic_checks":"#,
+            StatusCode::BAD_REQUEST,
+            "malformed_request",
+            None,
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/release-notifications")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), status, "{body}");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("an extension rejection is still JSON");
+        assert_eq!(json["error"]["code"], code, "{body}");
+        assert_eq!(
+            json["error"]["details"]["field"].as_str(),
+            field,
+            "{body}: {json}"
+        );
+    }
+    assert!(!path.exists(), "a refused patch writes nothing");
+}
+
 #[tokio::test(start_paused = true)]
 async fn background_worker_honors_disabled_preference_and_cancellation() {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -465,7 +527,7 @@ async fn background_failure_recovers_on_retry_schedule() {
                 if count == 0 {
                     axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response()
                 } else {
-                    Json(serde_json::json!({
+                    axum::Json(serde_json::json!({
                         "tag_name": "v99.0.0", "name": "Recovered release", "body": "notes",
                         "html_url": "https://github.com/hyperb1iss/hypercolor/releases/tag/v99.0.0",
                         "draft": false, "prerelease": false, "assets": []

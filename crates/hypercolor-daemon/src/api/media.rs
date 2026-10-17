@@ -2,8 +2,7 @@
 
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::{Extension, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::input::media::{
     MediaAuthorizationTarget, MediaProviderError, MediaProviderErrorKind,
@@ -14,6 +13,7 @@ use tracing::{info, warn};
 use utoipa::ToSchema;
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiRequestExtension};
 use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::domain::DomainError;
@@ -74,8 +74,8 @@ pub struct MediaAuthorizationResponse {
 )]
 pub(crate) async fn authorize_media(
     State(_state): State<Arc<AppState>>,
-    Extension(auth_context): Extension<RequestAuthContext>,
-    Json(request): Json<MediaAuthorizationRequest>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
+    ApiJson(request): ApiJson<MediaAuthorizationRequest>,
 ) -> Response {
     if let Some(rejection) = protected_control_rejection(auth_context) {
         return rejection;

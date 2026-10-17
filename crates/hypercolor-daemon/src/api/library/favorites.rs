@@ -3,12 +3,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollection};
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -59,7 +59,7 @@ pub async fn list_favorites(State(state): State<Arc<AppState>>) -> Response {
 /// `POST /api/v1/library/favorites` — add/update a favorite entry.
 pub async fn add_favorite(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<AddFavoriteRequest>,
+    ApiJson(body): ApiJson<AddFavoriteRequest>,
 ) -> Response {
     let _admission = state.domains.effects.admit_current().await;
     let Some(effect) = state.domains.effects.resolve_metadata(&body.effect).await else {
@@ -101,7 +101,7 @@ pub async fn add_favorite(
 /// `DELETE /api/v1/library/favorites/{effect}` — remove a favorite by effect id/name.
 pub async fn remove_favorite(
     State(state): State<Arc<AppState>>,
-    Path(effect): Path<String>,
+    ApiPath(effect): ApiPath<String>,
 ) -> Response {
     let _admission = state.domains.effects.admit_current().await;
     let Some(effect) = state.domains.effects.resolve_metadata(&effect).await else {

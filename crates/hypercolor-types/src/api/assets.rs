@@ -35,6 +35,34 @@ pub struct AssetUploadQuery {
     pub r#type: Option<String>,
 }
 
+/// The `multipart/form-data` fields `POST /api/v1/assets` reads.
+///
+/// This documents the wire form for clients and the OpenAPI document; the
+/// daemon reads the parts one by one rather than deserializing this type.
+/// The optional parts are documented as absent-or-string, never null: a
+/// multipart part has no null, and a generated client that sent one would
+/// send the literal text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct AssetUploadForm {
+    /// The asset bytes, sent as a file part. Required.
+    #[cfg_attr(feature = "schema", schema(value_type = String, format = Binary))]
+    pub file: Vec<u8>,
+    /// Display name; defaults to the uploaded file name. Omit the part
+    /// rather than sending an empty or null value.
+    #[cfg_attr(feature = "schema", schema(value_type = String, required = false))]
+    pub name: Option<String>,
+    /// Tags, comma separated or as a JSON array of strings. Omit the part
+    /// when there are none.
+    #[cfg_attr(feature = "schema", schema(value_type = String, required = false))]
+    pub tags: Option<String>,
+    /// Asset type hint (`lottie` or `stream`), overriding the `type` query
+    /// parameter and content sniffing. Omit the part to let the daemon
+    /// sniff.
+    #[cfg_attr(feature = "schema", schema(value_type = String, required = false))]
+    pub r#type: Option<String>,
+}
+
 /// Request body for `PUT /api/v1/assets/{id}`.
 ///
 /// Omitted fields leave the stored metadata untouched.

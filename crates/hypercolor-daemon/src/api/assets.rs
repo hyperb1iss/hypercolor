@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
+use axum::extract::State;
 use axum::extract::multipart::MultipartError;
-use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::asset::{
@@ -14,6 +14,7 @@ use hypercolor_types::asset::AssetId;
 use hypercolor_types::event::{AssetChangeKind, HypercolorEvent};
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiMultipart, ApiPath, ApiQuery};
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
@@ -44,7 +45,10 @@ pub async fn list_assets(State(state): State<Arc<AppState>>) -> Response {
     })
 }
 
-pub async fn get_asset(State(state): State<Arc<AppState>>, Path(id): Path<AssetId>) -> Response {
+pub async fn get_asset(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<AssetId>,
+) -> Response {
     let library = state.asset_library.read().await;
     let Some(record) = library.get(id).cloned() else {
         return DomainError::not_found(ResourceKind::Asset, id).into_response();
@@ -54,8 +58,8 @@ pub async fn get_asset(State(state): State<Arc<AppState>>, Path(id): Path<AssetI
 
 pub async fn upload_asset(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<AssetUploadQuery>,
-    multipart: Multipart,
+    ApiQuery(query): ApiQuery<AssetUploadQuery>,
+    multipart: ApiMultipart,
 ) -> Response {
     let parsed = match parse_upload(multipart, query.r#type.as_deref()).await {
         Ok(parsed) => parsed,
@@ -88,8 +92,8 @@ pub async fn upload_asset(
 
 pub async fn update_asset(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<AssetId>,
-    axum::Json(body): axum::Json<AssetUpdateRequest>,
+    ApiPath(id): ApiPath<AssetId>,
+    ApiJson(body): ApiJson<AssetUpdateRequest>,
 ) -> Response {
     let update = {
         let mut library = state.asset_library.write().await;
@@ -106,7 +110,10 @@ pub async fn update_asset(
     envelope::ok(update.record)
 }
 
-pub async fn delete_asset(State(state): State<Arc<AppState>>, Path(id): Path<AssetId>) -> Response {
+pub async fn delete_asset(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<AssetId>,
+) -> Response {
     let event = {
         let mut library = state.asset_library.write().await;
         match library.remove(id) {
@@ -122,7 +129,7 @@ pub async fn delete_asset(State(state): State<Arc<AppState>>, Path(id): Path<Ass
 
 pub async fn get_asset_blob(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<AssetId>,
+    ApiPath(id): ApiPath<AssetId>,
 ) -> Response {
     let (record, path) = {
         let library = state.asset_library.read().await;
@@ -152,7 +159,7 @@ pub async fn get_asset_blob(
 
 pub async fn get_asset_thumbnail(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<AssetId>,
+    ApiPath(id): ApiPath<AssetId>,
 ) -> Response {
     let path = {
         let library = state.asset_library.read().await;
@@ -175,7 +182,7 @@ pub async fn get_asset_thumbnail(
 }
 
 async fn parse_upload(
-    mut multipart: Multipart,
+    mut multipart: ApiMultipart,
     query_type_hint: Option<&str>,
 ) -> Result<ParsedUpload, DomainError> {
     let mut file_bytes = None;
@@ -243,7 +250,7 @@ async fn parse_upload(
 fn multipart_error_response(context: &str, error: MultipartError) -> DomainError {
     if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
         return DomainError::PayloadTooLarge {
-            limit_bytes: asset_upload_body_limit_bytes(),
+            limit_bytes: Some(asset_upload_body_limit_bytes()),
         };
     }
     DomainError::malformed(format!("{context}: {error}"))
@@ -286,7 +293,7 @@ fn parse_tags(raw: &str) -> Result<Vec<String>, String> {
 fn asset_error(error: AssetLibraryError) -> DomainError {
     match error {
         AssetLibraryError::HardCapExceeded { hard_cap_bytes, .. } => DomainError::PayloadTooLarge {
-            limit_bytes: hard_cap_bytes,
+            limit_bytes: Some(hard_cap_bytes),
         },
         AssetLibraryError::UnsupportedMediaType { reason } => {
             DomainError::unsupported_media_type(reason)

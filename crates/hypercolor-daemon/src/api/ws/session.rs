@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
+use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, close_code};
-use axum::extract::{Extension, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_leptos_ext::axum::upgrade_handler;
@@ -59,6 +59,7 @@ use super::relays::{
     publish_subscriptions,
 };
 use super::topics::{RelayContext, spawn_relays};
+use crate::api::extract::{ApiRequestExtension, ApiWebSocketUpgrade};
 use crate::api::local::{
     TrustedLocalSocketTransport, TrustedLocalWebSocket, trusted_local_socket_pair,
 };
@@ -91,15 +92,17 @@ const SENSOR_STREAM_HZ: u32 = 1;
 
 /// `GET /api/v1/ws` — Upgrade to WebSocket.
 pub(crate) async fn ws_handler(
-    ws: WebSocketUpgrade,
+    ApiWebSocketUpgrade(ws): ApiWebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    connect_info: Option<Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
-    auth_context: Option<Extension<RequestAuthContext>>,
-    credential_grant: Option<Extension<CredentialGrant>>,
+    connect_info: Option<ApiRequestExtension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
+    auth_context: Option<ApiRequestExtension<RequestAuthContext>>,
+    credential_grant: Option<ApiRequestExtension<CredentialGrant>>,
 ) -> Response {
-    let auth_context =
-        auth_context.map_or_else(RequestAuthContext::unsecured, |Extension(context)| context);
+    let auth_context = auth_context.map_or_else(
+        RequestAuthContext::unsecured,
+        |ApiRequestExtension(context)| context,
+    );
     if !ws_origin_allowed(&state, &headers, auth_context) {
         return crate::domain::DomainError::forbidden(
             "Origin is not permitted to open a WebSocket against this daemon",
@@ -109,12 +112,12 @@ pub(crate) async fn ws_handler(
 
     // A revoked credential ends the session it opened, along with every
     // command the session would have dispatched under it.
-    let grant = credential_grant.map(|Extension(grant)| grant);
+    let grant = credential_grant.map(|ApiRequestExtension(grant)| grant);
     let ws = ws
         .max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES);
     let peer = crate::api::access_log::peer_identity(
-        connect_info.map(|Extension(axum::extract::ConnectInfo(address))| address),
+        connect_info.map(|ApiRequestExtension(axum::extract::ConnectInfo(address))| address),
         &headers,
     );
     upgrade_handler(ws, move |socket| {

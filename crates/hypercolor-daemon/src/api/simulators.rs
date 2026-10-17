@@ -3,9 +3,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::response::Response;
@@ -16,6 +15,7 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::DisconnectReason;
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
@@ -43,7 +43,7 @@ pub async fn list_simulated_displays(State(state): State<Arc<AppState>>) -> Resp
 
 pub async fn get_simulated_display(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
@@ -59,7 +59,7 @@ pub async fn get_simulated_display(
 
 pub async fn create_simulated_display(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<CreateSimulatedDisplayRequest>,
+    ApiJson(body): ApiJson<CreateSimulatedDisplayRequest>,
 ) -> Response {
     let config = SimulatedDisplayConfig {
         id: DeviceId::new(),
@@ -98,8 +98,8 @@ pub async fn create_simulated_display(
 
 pub async fn patch_simulated_display(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(body): Json<UpdateSimulatedDisplayRequest>,
+    ApiPath(id): ApiPath<String>,
+    ApiJson(body): ApiJson<UpdateSimulatedDisplayRequest>,
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
@@ -149,7 +149,7 @@ pub async fn patch_simulated_display(
 
 pub async fn delete_simulated_display(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
@@ -256,7 +256,7 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
 
 pub async fn get_simulated_display_frame(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,

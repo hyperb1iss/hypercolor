@@ -2417,7 +2417,7 @@ async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
     let api_state = Arc::new(AppState::from_daemon_state(&state));
     let response = hypercolor_daemon::api::layouts::preview_layout(
         State(api_state),
-        axum::Json(SpatialLayout {
+        hypercolor_daemon::api::extract::ApiJson(SpatialLayout {
             id: "late-paused-layout".to_owned(),
             name: "Late Paused Layout".to_owned(),
             description: None,

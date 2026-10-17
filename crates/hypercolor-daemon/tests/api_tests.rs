@@ -4204,9 +4204,11 @@ async fn set_layout_targeting_device(
         version: 1,
     };
     let publisher = tokio::spawn(run_layout_publications(Arc::clone(state), 1));
-    let response =
-        api::layouts::preview_layout(axum::extract::State(Arc::clone(state)), axum::Json(layout))
-            .await;
+    let response = api::layouts::preview_layout(
+        axum::extract::State(Arc::clone(state)),
+        api::extract::ApiJson(layout),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         publisher
@@ -10309,7 +10311,7 @@ async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
         );
         let response = api::layouts::preview_layout(
             axum::extract::State(Arc::clone(&state)),
-            axum::Json(layout),
+            api::extract::ApiJson(layout),
         )
         .await;
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -10322,7 +10324,7 @@ async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
         );
         let response = api::layouts::preview_layout(
             axum::extract::State(Arc::clone(&state)),
-            axum::Json(layout),
+            api::extract::ApiJson(layout),
         )
         .await;
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -10347,7 +10349,7 @@ async fn layout_preview_rejects_invalid_geometry_without_mutating() {
 
         let response = api::layouts::preview_layout(
             axum::extract::State(Arc::clone(&state)),
-            axum::Json(invalid),
+            api::extract::ApiJson(invalid),
         )
         .await;
 

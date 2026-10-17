@@ -263,6 +263,84 @@ fn the_deleted_error_machinery_stays_deleted() {
     );
 }
 
+// ── Stock extractor fence ────────────────────────────────────────────────
+
+/// The seven stock extractor types the daemon's `clippy.toml` must
+/// disallow: the six families `api::extract` wraps, plus `axum::Form`,
+/// which no handler takes.
+///
+/// Clippy resolves each spelled type to its definition, so renames, globs,
+/// groups, re-exports (`axum::extract::path::Path`), and qualified paths
+/// all trip the lint in every router the crate builds; `clippy -D
+/// warnings` (`just lint`, CI) enforces it. It does not see inferred
+/// closure patterns (`|axum::Json(value)| ...`), and it does not name the
+/// rarer rejecting extractors no handler uses (`Bytes`, `String`,
+/// `RawForm`, `RawPathParams`, `NestedPath`, a required `MatchedPath`).
+/// `api_rejection_sweep_tests` covers inferred patterns by behavior for the
+/// JSON and multipart bodies, path parameters, and typed query parameters
+/// the OpenAPI document declares. That `clippy.toml` is live, and that each
+/// entry resolves, is
+/// proven by the expectations in `api::extract`, which fail the lint if
+/// their uses stop matching.
+const DISALLOWED_EXTRACTORS: [&str; 7] = [
+    "axum::Json",
+    "axum::Form",
+    "axum::Extension",
+    "axum::extract::Path",
+    "axum::extract::Query",
+    "axum::extract::Multipart",
+    "axum::extract::ws::WebSocketUpgrade",
+];
+
+fn clippy_config(path: &Path) -> toml::Value {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("{} reads: {error}", path.display()));
+    toml::from_str(&text).unwrap_or_else(|error| panic!("{} parses: {error}", path.display()))
+}
+
+#[test]
+fn clippy_disallows_the_seven_stock_extractor_families() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let config = clippy_config(&manifest.join("clippy.toml"));
+    let listed: Vec<&str> = config
+        .get("disallowed-types")
+        .and_then(toml::Value::as_array)
+        .expect("clippy.toml lists disallowed-types")
+        .iter()
+        .filter_map(|entry| entry.get("path").and_then(toml::Value::as_str))
+        .collect();
+    for path in DISALLOWED_EXTRACTORS {
+        assert!(listed.contains(&path), "clippy.toml must disallow `{path}`");
+    }
+
+    // Clippy reads only the nearest clippy.toml and never merges parents,
+    // so the crate's file has to carry the workspace settings itself.
+    let workspace = clippy_config(&manifest.join("../../clippy.toml"));
+    assert_eq!(
+        config.get("msrv"),
+        workspace.get("msrv"),
+        "the daemon clippy.toml must restate the workspace msrv"
+    );
+}
+
+#[test]
+fn only_the_extract_module_silences_the_extractor_fence() {
+    let offenders: Vec<String> = daemon_sources()
+        .into_iter()
+        .filter(|(relative, source)| {
+            relative != "api/extract.rs" && source.contains("disallowed_types")
+        })
+        .map(|(relative, _)| relative)
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "only api::extract may name the stock extractors; extract through its \
+         wrappers instead of allowing clippy::disallowed_types:\n{}",
+        offenders.join("\n")
+    );
+}
+
 #[cfg(test)]
 mod scan_self_tests {
     use super::{is_response_type, result_error_types, strip_comments_and_strings};

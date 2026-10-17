@@ -17,6 +17,7 @@ pub mod drivers;
 pub mod effects;
 pub mod envelope;
 mod error;
+pub mod extract;
 mod forwarded;
 mod host_names;
 pub mod layouts;
@@ -231,7 +232,12 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     // fallback first, so the SPA never sees an API path.
     let api = api.fallback(api_route_not_found);
     let (api, versioned_openapi) = api.split_for_parts();
-    let api = api.method_not_allowed_fallback(api_route_not_found);
+    // The body ceiling is a daemon decision, pinned here rather than
+    // inherited from Axum's default. A route-level limit (asset upload)
+    // still overrides it.
+    let api = api.method_not_allowed_fallback(api_route_not_found).layer(
+        axum::extract::DefaultBodyLimit::max(extract::API_BODY_LIMIT_BYTES),
+    );
     let root = documented_root_routes();
     let (root, root_openapi) = root.split_for_parts();
     let document = root_openapi.nest("/api/v1", versioned_openapi);

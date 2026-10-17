@@ -116,6 +116,12 @@ def sync_detailed(
         id (str):
         body (ReplaceSceneRequest): Whole-document replacement body for `PUT /api/v1/scenes/{id}`.
 
+            Accepts the [`SceneDocument`] a `GET` returned, edited in place. The
+            server-owned fields it echoes are checked rather than written: `id`,
+            `kind`, and `is_default` must match the stored scene, and `revision`
+            is an optimistic-concurrency precondition with the same meaning as
+            `If-Match`.
+
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
@@ -148,6 +154,12 @@ def sync(
         id (str):
         body (ReplaceSceneRequest): Whole-document replacement body for `PUT /api/v1/scenes/{id}`.
 
+            Accepts the [`SceneDocument`] a `GET` returned, edited in place. The
+            server-owned fields it echoes are checked rather than written: `id`,
+            `kind`, and `is_default` must match the stored scene, and `revision`
+            is an optimistic-concurrency precondition with the same meaning as
+            `If-Match`.
+
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
@@ -174,6 +186,12 @@ async def asyncio_detailed(
     Args:
         id (str):
         body (ReplaceSceneRequest): Whole-document replacement body for `PUT /api/v1/scenes/{id}`.
+
+            Accepts the [`SceneDocument`] a `GET` returned, edited in place. The
+            server-owned fields it echoes are checked rather than written: `id`,
+            `kind`, and `is_default` must match the stored scene, and `revision`
+            is an optimistic-concurrency precondition with the same meaning as
+            `If-Match`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -204,6 +222,12 @@ async def asyncio(
     Args:
         id (str):
         body (ReplaceSceneRequest): Whole-document replacement body for `PUT /api/v1/scenes/{id}`.
+
+            Accepts the [`SceneDocument`] a `GET` returned, edited in place. The
+            server-owned fields it echoes are checked rather than written: `id`,
+            `kind`, and `is_default` must match the stored scene, and `revision`
+            is an optimistic-concurrency precondition with the same meaning as
+            `If-Match`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

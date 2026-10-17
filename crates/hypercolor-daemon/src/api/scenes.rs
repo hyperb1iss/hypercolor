@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 
@@ -12,6 +11,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{SceneId, SceneKind};
 
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::AppState;
 use crate::domain::{DomainError, DomainErrorDetails, ResourceKind};
 use crate::resource_summary::scene_summary;
@@ -48,7 +48,10 @@ pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
 }
 
 /// `GET /api/v1/scenes/{id}` — Get a single scene.
-pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn get_scene(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<String>,
+) -> Response {
     let manager = state.scene_manager.snapshot().await;
     let Some(scene_id) = resolve_stored_scene_id(&manager, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
@@ -68,7 +71,7 @@ pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String
 /// `POST /api/v1/scenes` — Create a new scene.
 pub async fn create_scene(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<CreateSceneRequest>,
+    ApiJson(body): ApiJson<CreateSceneRequest>,
 ) -> Response {
     let created = match crate::domain::scene::create_scene(
         &state.domains.scene_library,
@@ -92,7 +95,7 @@ pub async fn create_scene(
 /// `POST /api/v1/scenes/snapshot` — Save the current runtime scene.
 pub async fn snapshot_scene(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<SnapshotSceneRequest>,
+    ApiJson(body): ApiJson<SnapshotSceneRequest>,
 ) -> Response {
     let created = match crate::domain::scene::snapshot_scene(
         &state.domains.scene_library,
@@ -113,9 +116,9 @@ pub async fn snapshot_scene(
 /// `PUT /api/v1/scenes/{id}` — Replace a complete stored scene document.
 pub async fn update_scene(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<String>,
     headers: HeaderMap,
-    Json(body): Json<ReplaceSceneRequest>,
+    ApiJson(body): ApiJson<ReplaceSceneRequest>,
 ) -> Response {
     let expected_revision = match crate::api::scene::parse_if_match(&headers) {
         Ok(revision) => revision,
@@ -159,7 +162,10 @@ pub async fn update_scene(
 }
 
 /// `DELETE /api/v1/scenes/{id}` — Delete a scene.
-pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn delete_scene(
+    State(state): State<Arc<AppState>>,
+    ApiPath(id): ApiPath<String>,
+) -> Response {
     let manager = state.scene_manager.snapshot().await;
     let Some(scene_id) = resolve_scene_id(&manager, &id) else {
         return DomainError::not_found(ResourceKind::Scene, &id).into_response();
@@ -184,10 +190,10 @@ pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<Str
 /// `POST /api/v1/scenes/{id}/activate` — Manually activate a scene.
 pub async fn activate_scene(
     State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    body: Option<Json<ActivateSceneRequest>>,
+    ApiPath(id): ApiPath<String>,
+    body: Option<ApiJson<ActivateSceneRequest>>,
 ) -> Response {
-    let request = body.map(|Json(body)| body).unwrap_or_default();
+    let request = body.map(|ApiJson(body)| body).unwrap_or_default();
     // The media-cap violation body is a frozen v1 shape, so the adapter
     // renders it from the shared evaluation rather than from the service's
     // error text. The service enforces the same rule regardless.

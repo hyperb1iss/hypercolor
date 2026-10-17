@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use axum::extract::{Extension, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use tracing::{info, warn};
 
@@ -17,6 +17,7 @@ use hypercolor_types::api::capture::{
 };
 
 use crate::api::envelope;
+use crate::api::extract::ApiRequestExtension;
 use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::domain::DomainError;
@@ -126,7 +127,7 @@ fn install_picker_persistence_task(
 /// `POST /api/v1/input/authorize` — Request macOS Input Monitoring.
 pub(crate) async fn authorize_input_monitoring(
     State(state): State<Arc<AppState>>,
-    Extension(auth_context): Extension<RequestAuthContext>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
 ) -> Response {
     if let Some(response) = protected_control_rejection(auth_context) {
         return response;
@@ -181,7 +182,7 @@ pub(crate) async fn authorize_input_monitoring(
 /// `POST /api/v1/capture/authorize` — Request macOS Screen Recording.
 pub(crate) async fn authorize_screen_recording(
     State(state): State<Arc<AppState>>,
-    Extension(auth_context): Extension<RequestAuthContext>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
 ) -> Response {
     if let Some(response) = protected_control_rejection(auth_context) {
         return response;
@@ -237,7 +238,7 @@ pub(crate) async fn authorize_screen_recording(
 /// The accepted choice is persisted according to the platform source grammar.
 pub(crate) async fn set_capture_source(
     State(state): State<Arc<AppState>>,
-    Extension(auth_context): Extension<RequestAuthContext>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
 ) -> Response {
     if let Some(response) = protected_control_rejection(auth_context) {
         return response;
@@ -357,7 +358,7 @@ pub(crate) async fn set_capture_source(
 /// portal on Linux); the UI uses emptiness to decide between a monitor
 /// dropdown and the portal picker button.
 pub(crate) async fn list_capture_monitors(
-    Extension(auth_context): Extension<RequestAuthContext>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
 ) -> Response {
     if let Some(response) = protected_control_rejection(auth_context) {
         return response;

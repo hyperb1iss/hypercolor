@@ -4,9 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use hypercolor_types::api::displays::{
@@ -21,6 +20,7 @@ use hypercolor_types::scene::{DisplayFaceTarget, Zone};
 
 use crate::api::devices;
 use crate::api::envelope;
+use crate::api::extract::{ApiJson, ApiPath, ApiQuery};
 use crate::app_state::AppState;
 use crate::display_frames::DisplayFrameSnapshot;
 use crate::domain::display::{
@@ -114,7 +114,7 @@ async fn disambiguate_display_names(state: &AppState, displays: &mut [DisplaySum
 /// not yet produced a frame.
 pub async fn get_display_frame(
     State(state): State<Arc<AppState>>,
-    Path(device): Path<String>,
+    ApiPath(device): ApiPath<String>,
     headers: HeaderMap,
 ) -> Response {
     let device_id = match resolve_display_device_id_or_error(&state, &device).await {
@@ -154,7 +154,7 @@ pub async fn get_display_frame(
 /// default) plus which layers carry an assignment.
 pub async fn get_display_face(
     State(state): State<Arc<AppState>>,
-    Path(device): Path<String>,
+    ApiPath(device): ApiPath<String>,
 ) -> Response {
     let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
@@ -181,8 +181,8 @@ pub async fn get_display_face(
 /// `PUT /api/v1/displays/{id}/face` — assign or update a face in the active scene.
 pub async fn set_display_face(
     State(state): State<Arc<AppState>>,
-    Path(device): Path<String>,
-    Json(body): Json<SetDisplayFaceRequest>,
+    ApiPath(device): ApiPath<String>,
+    ApiJson(body): ApiJson<SetDisplayFaceRequest>,
 ) -> Response {
     let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
@@ -286,8 +286,8 @@ pub async fn set_display_face(
 /// face composes with the effect layer beneath it.
 pub async fn patch_display_face_composition(
     State(state): State<Arc<AppState>>,
-    Path(device): Path<String>,
-    Json(body): Json<UpdateDisplayFaceCompositionRequest>,
+    ApiPath(device): ApiPath<String>,
+    ApiJson(body): ApiJson<UpdateDisplayFaceCompositionRequest>,
 ) -> Response {
     let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
@@ -357,8 +357,8 @@ pub async fn patch_display_face_composition(
 /// until the next scene switch.
 pub async fn delete_display_face(
     State(state): State<Arc<AppState>>,
-    Path(device): Path<String>,
-    axum::extract::Query(query): axum::extract::Query<DisplayFaceScopeQuery>,
+    ApiPath(device): ApiPath<String>,
+    ApiQuery(query): ApiQuery<DisplayFaceScopeQuery>,
 ) -> Response {
     let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
@@ -426,8 +426,8 @@ pub async fn delete_display_face(
 /// persisted (defaults are resolved server-side and colors are normalized).
 pub async fn patch_display_face_controls(
     State(state): State<Arc<AppState>>,
-    Path(device): Path<String>,
-    Json(body): Json<PatchControlsRequest>,
+    ApiPath(device): ApiPath<String>,
+    ApiJson(body): ApiJson<PatchControlsRequest>,
 ) -> Response {
     let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,

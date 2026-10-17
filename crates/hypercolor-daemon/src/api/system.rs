@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{Extension, Path, State};
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::{DataSourceKind, InputData};
@@ -37,6 +37,7 @@ use metrics::{
     render_acceleration_status, round_1, round_2,
 };
 
+use crate::api::extract::{ApiPath, ApiQuery, ApiRequestExtension};
 #[cfg(test)]
 use crate::domain::input_status::input_source_status;
 #[cfg(test)]
@@ -51,7 +52,7 @@ const DEFAULT_AUDIT_LIMIT: usize = 100;
 /// first, from the daemon's persistent audit trail.
 pub async fn get_audit_log(
     State(state): State<Arc<AppState>>,
-    axum::extract::Query(query): axum::extract::Query<hypercolor_types::api::system::AuditLogQuery>,
+    ApiQuery(query): ApiQuery<hypercolor_types::api::system::AuditLogQuery>,
 ) -> Response {
     let limit = query
         .limit
@@ -320,7 +321,7 @@ async fn system_status_with_privacy(
 /// `GET /api/v1/system` -- Public identity with authorized daemon status.
 pub(crate) async fn get_system(
     State(state): State<Arc<AppState>>,
-    Extension(auth_context): Extension<RequestAuthContext>,
+    ApiRequestExtension(auth_context): ApiRequestExtension<RequestAuthContext>,
 ) -> Response {
     let identity = server_info(&state).await;
     let status = if auth_context.can_read_system_status() {
@@ -343,7 +344,10 @@ pub async fn get_sensors(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/system/sensors/{label}` — Resolve one named sensor.
 // Axum handlers return futures even when their current state access is synchronous.
 #[allow(clippy::unused_async)]
-pub async fn get_sensor(State(state): State<Arc<AppState>>, Path(label): Path<String>) -> Response {
+pub async fn get_sensor(
+    State(state): State<Arc<AppState>>,
+    ApiPath(label): ApiPath<String>,
+) -> Response {
     let snapshot = latest_sensor_snapshot(&state);
     if let Some(reading) = snapshot.reading(&label) {
         return envelope::ok(reading);

@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Json;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::api::scene::ReplaceLayerRequest;
@@ -24,6 +23,7 @@ use hypercolor_types::scene::{DisplayFaceTarget, SceneId, SceneKind, SceneMutati
 use tempfile::TempDir;
 
 use super::remap_zones;
+use crate::api::extract::{ApiJson, ApiPath};
 use crate::app_state::{AppState, AppStateBuilder};
 use crate::display_preferences::DisplayPreference;
 use crate::domain::DomainError;
@@ -964,7 +964,7 @@ async fn rest_apply_resolved_before_migration_is_rejected_after_publication() {
     let apply = tokio::spawn(async move {
         crate::api::effects::apply_effect(
             axum::extract::State(apply_state),
-            axum::extract::Path(legacy_id.to_string()),
+            ApiPath(legacy_id.to_string()),
             axum::http::HeaderMap::new(),
             None,
         )
@@ -1103,9 +1103,9 @@ async fn layer_create_holds_effect_admission_through_scene_commit() {
     let create = tokio::spawn(async move {
         crate::api::scene::create_layer(
             State(create_state),
-            AxumPath(zone_id.to_string()),
+            ApiPath(zone_id.to_string()),
             HeaderMap::new(),
-            Json(effect_layer_request(legacy_id).into()),
+            ApiJson(effect_layer_request(legacy_id).into()),
         )
         .await
     });
@@ -1148,9 +1148,9 @@ async fn layer_replace_holds_effect_admission_through_scene_commit() {
     let replace = tokio::spawn(async move {
         crate::api::scene::replace_layer(
             State(replace_state),
-            AxumPath((zone_id.to_string(), layer_id.to_string())),
+            ApiPath((zone_id.to_string(), layer_id.to_string())),
             HeaderMap::new(),
-            Json(effect_layer_request(legacy_id)),
+            ApiJson(effect_layer_request(legacy_id)),
         )
         .await
     });
@@ -1192,9 +1192,9 @@ async fn whole_scene_put_holds_effect_admission_through_scene_commit() {
     let replace = tokio::spawn(async move {
         crate::api::scenes::update_scene(
             State(replace_state),
-            AxumPath(scene_id.to_string()),
+            ApiPath(scene_id.to_string()),
             HeaderMap::new(),
-            Json(ReplaceSceneRequest::from(&document)),
+            ApiJson(ReplaceSceneRequest::from(&document)),
         )
         .await
     });
@@ -1378,9 +1378,9 @@ async fn scene_effect_writes_reject_unknown_and_retired_ids() {
     for effect_id in [legacy_id, EffectId::new(uuid::Uuid::now_v7())] {
         let response = crate::api::scene::create_layer(
             State(Arc::clone(&state)),
-            AxumPath(zone_id.to_string()),
+            ApiPath(zone_id.to_string()),
             HeaderMap::new(),
-            Json(effect_layer_request(effect_id).into()),
+            ApiJson(effect_layer_request(effect_id).into()),
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -1388,9 +1388,9 @@ async fn scene_effect_writes_reject_unknown_and_retired_ids() {
 
     let response = crate::api::scene::replace_layer(
         State(Arc::clone(&state)),
-        AxumPath((zone_id.to_string(), layer_id.to_string())),
+        ApiPath((zone_id.to_string(), layer_id.to_string())),
         HeaderMap::new(),
-        Json(effect_layer_request(legacy_id)),
+        ApiJson(effect_layer_request(legacy_id)),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -1408,9 +1408,9 @@ async fn scene_effect_writes_reject_unknown_and_retired_ids() {
     document.zones[0].layers[0].source = effect_layer_request(legacy_id).source;
     let response = crate::api::scenes::update_scene(
         State(Arc::clone(&state)),
-        AxumPath(named_scene_id.to_string()),
+        ApiPath(named_scene_id.to_string()),
         HeaderMap::new(),
-        Json(document),
+        ApiJson(document),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);

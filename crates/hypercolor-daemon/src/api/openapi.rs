@@ -119,6 +119,7 @@ pub(crate) struct OperationDoc {
     alternate_success_status: Option<&'static str>,
     success: ResponseShape,
     request: Option<(SchemaName, bool)>,
+    request_media_type: &'static str,
     response_schema: SchemaRegistrar,
     request_schema: Option<SchemaRegistrar>,
     additional_schemas: Vec<SchemaRegistrar>,
@@ -204,6 +205,7 @@ impl OperationDoc {
             alternate_success_status: None,
             success: ResponseShape::Enveloped(schema_name::<T>),
             request: None,
+            request_media_type: "application/json",
             response_schema: register_schema::<T>,
             request_schema: None,
             additional_schemas: Vec::new(),
@@ -243,6 +245,13 @@ impl OperationDoc {
     pub(crate) fn body<T: utoipa::ToSchema>(mut self) -> Self {
         self.request = Some((schema_name::<T>, true));
         self.request_schema = Some(register_schema::<T>);
+        self
+    }
+
+    /// A required `multipart/form-data` body whose parts `T` describes.
+    pub(crate) fn multipart_body<T: utoipa::ToSchema>(mut self) -> Self {
+        self = self.body::<T>();
+        self.request_media_type = "multipart/form-data";
         self
     }
 
@@ -348,7 +357,7 @@ fn operation(path: &str, document: OperationDoc) -> utoipa::openapi::path::Opera
                     Required::False
                 }))
                 .content(
-                    "application/json",
+                    document.request_media_type,
                     Content::new(Some(Ref::from_schema_name(schema()))),
                 )
                 .build(),

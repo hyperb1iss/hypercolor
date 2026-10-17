@@ -588,7 +588,10 @@ impl From<DomainError> for ToolError {
             | DomainError::ServiceUnavailable { message, .. } => Self::Conflict(message),
             DomainError::PayloadTooLarge { limit_bytes } => Self::InvalidParam {
                 param: "payload".to_owned(),
-                reason: format!("exceeds the {limit_bytes} byte limit"),
+                reason: limit_bytes.map_or_else(
+                    || "exceeds the route's size limit".to_owned(),
+                    |limit| format!("exceeds the {limit} byte limit"),
+                ),
             },
             DomainError::PreconditionFailed {
                 resource,

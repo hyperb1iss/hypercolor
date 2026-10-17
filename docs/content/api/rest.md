@@ -763,12 +763,16 @@ the same value as an `ETag` header.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PUT" path="/api/v1/scenes/{id}"> %}
-Replace one stored scene in full. Read the current document first, remove the
-server-owned `revision` and `is_default` fields, apply the intended edits, and
-send the result with the previous revision in `If-Match`.
+Replace one stored scene in full. Read the current document first, apply the
+intended edits, and send the whole document back. The read-only fields the
+read carried are checked, not written: the body's `revision` acts exactly like
+`If-Match`, so a document read before someone else's write is refused with
+`412 Precondition Failed`. `If-Match` remains accepted, and when both are sent
+each must name the current revision.
 
 The route id is authoritative. If the body includes `id`, it must match the
-route or the daemon returns `422 Unprocessable Entity`. Existing zone and
+route or the daemon returns `422 Unprocessable Entity`; `kind` and
+`is_default` likewise must match the stored scene. Existing zone and
 layer ids must already belong to this scene. Omit either id only when creating
 that resource, and the daemon mints it. Omitted optional fields are cleared,
 so partial update bodies are not accepted. A stale `If-Match` returns `412

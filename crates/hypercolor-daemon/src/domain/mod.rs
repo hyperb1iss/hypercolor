@@ -223,10 +223,11 @@ pub enum DomainError {
         details: Option<DomainErrorDetails>,
     },
     /// The payload exceeds what the route accepts.
-    #[error("payload exceeds the {limit_bytes} byte limit")]
+    #[error("{}", payload_too_large_message(*limit_bytes))]
     PayloadTooLarge {
-        /// The accepting limit, in bytes.
-        limit_bytes: u64,
+        /// The limit that refused the payload, in bytes. `None` when the
+        /// refusing layer cannot name it; a guess is never reported.
+        limit_bytes: Option<u64>,
     },
     /// The payload's media type is not one this route can decode.
     #[error("{message}")]
@@ -276,6 +277,13 @@ pub enum DomainError {
     /// the full chain goes to tracing.
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
+}
+
+fn payload_too_large_message(limit_bytes: Option<u64>) -> String {
+    limit_bytes.map_or_else(
+        || "payload exceeds the route's size limit".to_owned(),
+        |limit| format!("payload exceeds the {limit} byte limit"),
+    )
 }
 
 impl DomainError {
