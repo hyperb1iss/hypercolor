@@ -14,13 +14,16 @@ use hypercolor_types::layer::{
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
+use hypercolor_types::control::ControlValue;
 use hypercolor_ui::components::layer_panel::row::{layer_title, source_meta};
 use hypercolor_ui::components::layer_panel::source::{
-    AddLayerScope, EffectPickerMode, LayerSourceKind, available_add_layer_scopes, blend_options,
-    blend_value, default_blend_for_added_layer, effect_category_label, effect_layer_source,
-    effect_picker_matches_query, effect_picker_mode, fit_options, fit_value, media_layer_source,
-    parse_blend, parse_fit, resolve_add_layer_targets,
+    AddLayerScope, EffectPickerMode, LayerSourceKind, add_layer_request,
+    available_add_layer_scopes, blend_options, blend_value, default_blend_for_added_layer,
+    effect_category_label, effect_layer_source, effect_picker_matches_query, effect_picker_mode,
+    fit_options, fit_value, media_layer_source, parse_blend, parse_fit,
+    remembered_effect_layer_source, resolve_add_layer_targets,
 };
+use hypercolor_ui::preferences::EffectPreferences;
 
 /// A valid UUID string for effect/media id parsing.
 const SAMPLE_ID: &str = "0192f5a0-1234-7890-abcd-ef0123456789";
@@ -262,6 +265,77 @@ fn effect_source_requires_a_uuid_and_starts_with_clean_state() {
 
     assert!(effect_layer_source("pulse-temp").is_err());
     assert!(effect_layer_source("").is_err());
+}
+
+#[test]
+fn picking_a_remembered_effect_creates_it_in_its_saved_state() {
+    const PRESET_ID: &str = "0192f5a0-1234-7890-abcd-ef01234567aa";
+    let remembered = EffectPreferences {
+        preset_id: Some(PRESET_ID.to_owned()),
+        control_values: HashMap::from([
+            ("speed".to_owned(), ControlValue::Float(0.9)),
+            ("mirror".to_owned(), ControlValue::Bool(true)),
+        ]),
+    };
+
+    let source =
+        remembered_effect_layer_source(SAMPLE_ID, Some(&remembered)).expect("valid effect id");
+    let request = add_layer_request(Some("Aurora".to_owned()), source, 1);
+
+    // The single create request carries the whole remembered state.
+    let LayerSource::Effect {
+        effect_id,
+        controls,
+        control_bindings,
+        preset_id,
+    } = &request.source
+    else {
+        panic!("expected an Effect source, got {:?}", request.source);
+    };
+    assert_eq!(effect_id.to_string(), SAMPLE_ID);
+    assert_eq!(controls, &remembered.control_values);
+    assert!(control_bindings.is_empty());
+    assert_eq!(
+        preset_id.map(|preset| preset.to_string()).as_deref(),
+        Some(PRESET_ID)
+    );
+    assert_eq!(request.name.as_deref(), Some("Aurora"));
+    assert_eq!(request.blend, Some(BlendMode::Screen));
+
+    // The active-effect snapshot saves the created layer's preset and
+    // controls back into preferences, so what it records is the
+    // remembered state rather than the effect's defaults.
+    let saved_back = EffectPreferences {
+        preset_id: preset_id.map(|preset| preset.to_string()),
+        control_values: controls.clone(),
+    };
+    assert_eq!(saved_back, remembered);
+}
+
+#[test]
+fn picking_an_effect_without_usable_memory_keeps_what_it_can() {
+    assert_eq!(
+        remembered_effect_layer_source(SAMPLE_ID, None),
+        effect_layer_source(SAMPLE_ID),
+        "no memory starts at the effect's defaults"
+    );
+
+    let stale = EffectPreferences {
+        preset_id: Some("deleted-preset".to_owned()),
+        control_values: HashMap::from([("speed".to_owned(), ControlValue::Float(0.4))]),
+    };
+    let LayerSource::Effect {
+        controls,
+        preset_id,
+        ..
+    } = remembered_effect_layer_source(SAMPLE_ID, Some(&stale)).expect("valid effect id")
+    else {
+        panic!("expected an Effect source");
+    };
+    assert!(preset_id.is_none(), "an unparseable preset id is dropped");
+    assert_eq!(controls, stale.control_values);
+
+    assert!(remembered_effect_layer_source("pulse-temp", Some(&stale)).is_err());
 }
 
 #[test]

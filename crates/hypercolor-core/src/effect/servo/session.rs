@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::TryRecvError;
-use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use hypercolor_types::canvas::Canvas;
@@ -15,8 +15,8 @@ use super::worker::{
     prepare_runtime_html_source,
 };
 use super::worker_client::{
-    PendingServoFrame, ServoFramePayload, ServoProducerRole, ServoRenderEnqueue, ServoRenderMode,
-    ServoRenderReservation, ServoWorkerClient,
+    PendingServoFrame, ServoFramePayload, ServoPendingRenderTiming, ServoProducerRole,
+    ServoRenderEnqueue, ServoRenderMode, ServoRenderReservation, ServoWorkerClient,
 };
 
 pub(crate) enum ServoRenderStatus {
@@ -265,11 +265,14 @@ impl ServoSessionHandle {
         self.pending_render.is_some()
     }
 
+    /// How long the in-flight render has queued and, once the worker
+    /// picked it up, how long it has been executing.
     #[must_use]
-    pub fn pending_render_age(&self) -> Option<Duration> {
+    pub(super) fn pending_render_timing(&self) -> Option<ServoPendingRenderTiming> {
+        let now = Instant::now();
         self.pending_render
             .as_ref()
-            .map(|render| render.submitted_at.elapsed())
+            .map(|render| render.timing(now))
     }
 
     #[must_use]

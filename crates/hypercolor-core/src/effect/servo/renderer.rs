@@ -37,9 +37,11 @@ const DEFAULT_DISPLAY_FPS_CAP: u32 = 30;
 const MAX_EFFECT_FPS_CAP: u32 = 60;
 const SOFT_STALL_FRAME_INTERVALS: u32 = 5;
 
+/// A render the worker started and has not finished within
+/// [`super::worker::HARD_STALL_TIMEOUT`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ServoHardStall {
-    pending_age: Duration,
+    executing: Duration,
 }
 
 /// Feature-gated renderer for HTML effects.
@@ -63,6 +65,7 @@ pub struct ServoRenderer {
     reuse_cached_gpu_frame_on_no_ready: bool,
     warned_fallback_frame: bool,
     warned_stalled_frame: bool,
+    warned_queued_render: bool,
     hard_stall: Option<ServoHardStall>,
     command_queue_saturated: bool,
     include_audio_updates: bool,
@@ -115,6 +118,7 @@ impl ServoRenderer {
             reuse_cached_gpu_frame_on_no_ready: false,
             warned_fallback_frame: false,
             warned_stalled_frame: false,
+            warned_queued_render: false,
             hard_stall: None,
             command_queue_saturated: false,
             include_audio_updates: true,
@@ -279,6 +283,7 @@ impl EffectRenderer for ServoRenderer {
         self.load_failed = None;
         self.warned_fallback_frame = false;
         self.warned_stalled_frame = false;
+        self.warned_queued_render = false;
         self.hard_stall = None;
         self.command_queue_saturated = false;
         self.include_audio_updates = true;
@@ -305,7 +310,7 @@ impl ServoRenderer {
         if let Some(stall) = self.hard_stall {
             bail!(
                 "Servo frame render hard-stalled after {}ms; the in-process worker cannot be interrupted safely",
-                stall.pending_age.as_millis()
+                stall.executing.as_millis()
             )
         }
         if self.command_queue_saturated {

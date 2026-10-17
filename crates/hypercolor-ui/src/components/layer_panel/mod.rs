@@ -32,7 +32,7 @@ pub mod source;
 
 use std::collections::HashMap;
 
-use hypercolor_types::layer::{LayerAdjust, LayerTransform, SceneLayer};
+use hypercolor_types::layer::SceneLayer;
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -47,8 +47,7 @@ use crate::ws::messages::layer_health_key;
 use picker::{AddLayerPicker, NewLayerDraft};
 use row::LayerRow;
 use source::{
-    AddLayerScope, available_add_layer_scopes, default_blend_for_added_layer,
-    resolve_add_layer_targets,
+    AddLayerScope, add_layer_request, available_add_layer_scopes, resolve_add_layer_targets,
 };
 
 /// Effect schemas survive layer replacements; a reconnect invalidates their epoch.
@@ -195,17 +194,7 @@ pub fn LayerPanel(
             .get_untracked()
             .and_then(Result::ok)
             .map_or(0, |stack| stack.items.len());
-        let blend = default_blend_for_added_layer(&draft.source, existing_layer_count);
-        let request = api::CreateLayerRequest {
-            name: draft.name,
-            source: draft.source,
-            blend: Some(blend),
-            opacity: Some(1.0),
-            transform: Some(LayerTransform::default()),
-            adjust: Some(LayerAdjust::default()),
-            bindings: None,
-            enabled: None,
-        };
+        let request = add_layer_request(draft.name, draft.source, existing_layer_count);
         leptos::task::spawn_local(async move {
             let mut applied = 0_usize;
             let mut failed = 0_usize;
