@@ -108,6 +108,7 @@ pub(crate) struct SceneDeviceBindingMigration {
     candidate: SceneManager,
     store: Option<SceneStoreSave>,
     migrated: usize,
+    events: Vec<HypercolorEvent>,
     snapshot_save_guard: OwnedRwLockWriteGuard<()>,
 }
 
@@ -115,6 +116,7 @@ pub(crate) struct AdmittedSceneDeviceBindingMigration {
     base_revision: SceneRevision,
     candidate: SceneManager,
     store: Option<AdmittedSceneStoreSave>,
+    events: Vec<HypercolorEvent>,
     snapshot_save_guard: OwnedRwLockWriteGuard<()>,
 }
 
@@ -122,6 +124,7 @@ pub(crate) struct PersistedSceneDeviceBindingMigration {
     base_revision: SceneRevision,
     candidate: SceneManager,
     stored_scenes: Option<HashMap<SceneId, Scene>>,
+    events: Vec<HypercolorEvent>,
     snapshot_save_guard: OwnedRwLockWriteGuard<()>,
 }
 
@@ -130,6 +133,7 @@ pub(crate) struct SceneDeviceBindingMigrationPublication {
     store: Option<OwnedRwLockWriteGuard<SceneStore>>,
     candidate: Option<SceneManager>,
     stored_scenes: Option<HashMap<SceneId, Scene>>,
+    events: Vec<HypercolorEvent>,
     _snapshot_save_guard: OwnedRwLockWriteGuard<()>,
 }
 
@@ -355,6 +359,7 @@ impl SceneService {
         let mut candidate = manager.clone();
         let migrated =
             candidate.remap_device_bindings(&remaps.layout_device_ids, &remaps.physical_device_ids);
+        let events = device_binding_migration_events(&manager, &candidate);
         let store = match self.0.store.as_ref() {
             Some(store) => Some(
                 store
@@ -369,6 +374,7 @@ impl SceneService {
             candidate,
             store,
             migrated,
+            events,
             snapshot_save_guard,
         })
     }
@@ -397,6 +403,7 @@ impl SceneService {
             store,
             candidate: Some(migration.candidate),
             stored_scenes: migration.stored_scenes,
+            events: migration.events,
             _snapshot_save_guard: migration.snapshot_save_guard,
         })
     }
@@ -419,7 +426,7 @@ impl SceneService {
             publication.manager.plan_snapshot(ticket.generation()),
         ));
         let generation = ticket.generation();
-        ticket.release(Vec::new());
+        ticket.release(std::mem::take(&mut publication.events));
         SceneCommit::new(generation, generation, CommitDurability::Written, None)
     }
 
@@ -826,6 +833,7 @@ impl SceneDeviceBindingMigration {
             base_revision: self.base_revision,
             candidate: self.candidate,
             store: self.store.map(SceneStoreSave::admit),
+            events: self.events,
             snapshot_save_guard: self.snapshot_save_guard,
         }
     }
@@ -845,6 +853,7 @@ impl AdmittedSceneDeviceBindingMigration {
                 base_revision: self.base_revision,
                 candidate: self.candidate,
                 stored_scenes,
+                events: self.events,
                 snapshot_save_guard: self.snapshot_save_guard,
             },
             persistence,
@@ -2970,5 +2979,68 @@ pub fn zone_changed_event(scene_id: SceneId, zone: &Zone, kind: ZoneChangeKind) 
         zone_id: zone.id,
         role: zone.role,
         kind,
+    }
+}
+
+/// The events a device binding migration owes observers, derived from the
+/// state it replaces and the candidate it installs.
+///
+/// Each zone the rewrite changed or collapsed gets its `ZoneChanged`, a
+/// runtime default face is announced against the active scene as its
+/// overlay events are, and every saved scene the rewrite touched gets a
+/// `SceneLibraryChanged`. Clients refetch on these hints, so a silent
+/// migration would leave them writing to zones and targets that are gone.
+fn device_binding_migration_events(
+    before: &SceneManager,
+    after: &SceneManager,
+) -> Vec<HypercolorEvent> {
+    let mut events = Vec::new();
+    let mut scenes = after.list();
+    scenes.sort_by_key(|scene| scene.id.0);
+    for scene in scenes {
+        let Some(previous) = before.get(&scene.id) else {
+            continue;
+        };
+        if previous == scene {
+            continue;
+        }
+        push_zone_diff_events(&mut events, scene.id, &previous.zones, &scene.zones);
+        if scene.kind == SceneKind::Named && !scene.id.is_default() {
+            events.push(HypercolorEvent::SceneLibraryChanged {
+                scene_id: scene.id,
+                kind: SceneLibraryChangeKind::Updated,
+                name: Some(scene.name.clone()),
+            });
+        }
+    }
+    let overlay_scene_id = after.active_scene_id().copied().unwrap_or(SceneId::DEFAULT);
+    push_zone_diff_events(
+        &mut events,
+        overlay_scene_id,
+        before.default_display_zones(),
+        after.default_display_zones(),
+    );
+    events
+}
+
+fn push_zone_diff_events(
+    events: &mut Vec<HypercolorEvent>,
+    scene_id: SceneId,
+    before: &[Zone],
+    after: &[Zone],
+) {
+    for zone in after {
+        match before.iter().find(|previous| previous.id == zone.id) {
+            None => events.push(zone_changed_event(scene_id, zone, ZoneChangeKind::Created)),
+            Some(previous) if previous != zone => {
+                events.push(zone_changed_event(scene_id, zone, ZoneChangeKind::Updated));
+            }
+            Some(_) => {}
+        }
+    }
+    for zone in before {
+        if !after.iter().any(|current| current.id == zone.id) {
+            events.push(zone_changed_event(scene_id, zone, ZoneChangeKind::Removed));
+        }
     }
 }
