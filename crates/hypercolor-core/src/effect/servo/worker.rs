@@ -473,9 +473,18 @@ impl ServoWorkerRuntime {
                     height,
                     mode,
                     submitted_at,
+                    started,
                     response_tx,
                 }) => {
-                    record_servo_render_queue_wait(producer_role, submitted_at.elapsed());
+                    // The submitter's stall clock starts here, not at
+                    // submission: time spent behind other sessions' work
+                    // is queue wait, and a render that never started
+                    // cannot be the one that wedged the worker.
+                    let started_at = started.mark();
+                    record_servo_render_queue_wait(
+                        producer_role,
+                        started_at.saturating_duration_since(submitted_at),
+                    );
                     let result = self.render_frame(
                         session_id,
                         &scripts,

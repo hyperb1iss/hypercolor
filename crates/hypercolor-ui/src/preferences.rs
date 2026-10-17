@@ -3,9 +3,9 @@
 //! Switching effects feels broken if the daemon resets every control
 //! value and discards the preset you picked. This store lives in the
 //! browser and remembers the last preset + control-value snapshot for
-//! every effect the user has customised, keyed by effect ID, so the
-//! restore path in `app.rs` can re-apply the saved state on top of the
-//! daemon's defaults whenever the user comes back to an effect.
+//! every effect the user has customised, keyed by effect ID, so applying
+//! an effect from this UI can carry the saved state in its one apply
+//! request whenever the user comes back to it.
 //!
 //! The store is provided as a Leptos context in [`crate::app`] and
 //! persisted to `localStorage` as a single JSON blob under
@@ -23,10 +23,9 @@ use crate::storage;
 
 const STORAGE_KEY: &str = "hc-effect-preferences";
 
-/// Remembered state for a single effect. Written whenever the user
-/// changes a preset or tweaks a control, read when the effect becomes
-/// active again so we can re-apply the saved state on top of whatever
-/// fresh defaults the daemon loaded.
+/// Remembered state for a single effect. Written whenever the daemon
+/// confirms a preset or control change, read when this UI applies the
+/// effect again so the apply request starts it in the saved state.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct EffectPreferences {
     #[serde(default)]
@@ -69,9 +68,9 @@ impl PreferencesStore {
         }
     }
 
-    /// Untracked lookup — the restore path reads prefs inside spawned
-    /// tasks where reactive subscription would be meaningless and
-    /// potentially dangerous.
+    /// Untracked lookup: the apply paths read prefs inside event handlers
+    /// and spawned tasks where reactive subscription would be meaningless
+    /// and potentially dangerous.
     pub fn get(&self, effect_id: &str) -> Option<EffectPreferences> {
         self.entries
             .with_untracked(|map| map.get(effect_id).cloned())

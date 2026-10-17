@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
@@ -189,6 +190,7 @@ pub(super) enum WorkerCommand {
         height: u32,
         mode: ServoRenderMode,
         submitted_at: Instant,
+        started: ServoRenderStart,
         response_tx: SyncSender<Result<EffectRenderOutput>>,
     },
     DestroySession {
@@ -235,10 +237,66 @@ impl ServoRenderMode {
     }
 }
 
+/// The instant the worker began executing one render, shared between the
+/// session that submitted it and the worker that runs it.
+///
+/// It stays unset while the render waits behind other sessions' commands
+/// on the one shared worker, which is what lets the submitter tell queue
+/// wait apart from a render that started and stopped making progress.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ServoRenderStart(Arc<OnceLock<Instant>>);
+
+impl ServoRenderStart {
+    /// Records that the worker started executing the render. The first
+    /// call wins, and every call returns that first instant.
+    pub(super) fn mark(&self) -> Instant {
+        *self.0.get_or_init(Instant::now)
+    }
+
+    pub(super) fn started_at(&self) -> Option<Instant> {
+        self.0.get().copied()
+    }
+}
+
+/// Where an in-flight render's time has gone so far.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ServoPendingRenderTiming {
+    /// Time spent waiting for the worker: final once the render started,
+    /// still growing while it is queued.
+    pub(super) queue_wait: Duration,
+    /// Time since the worker started executing the render, or `None`
+    /// while it is still queued.
+    pub(super) executing: Option<Duration>,
+}
+
+impl ServoPendingRenderTiming {
+    /// Submission-to-now age, queue wait included.
+    pub(super) fn total(self) -> Duration {
+        self.queue_wait
+            .saturating_add(self.executing.unwrap_or_default())
+    }
+}
+
 /// Receipt for an in-flight render request.
 pub(super) struct PendingServoFrame {
     pub(super) response_rx: Receiver<Result<EffectRenderOutput>>,
     pub(super) submitted_at: Instant,
+    pub(super) started: ServoRenderStart,
+}
+
+impl PendingServoFrame {
+    pub(super) fn timing(&self, now: Instant) -> ServoPendingRenderTiming {
+        match self.started.started_at() {
+            Some(started_at) => ServoPendingRenderTiming {
+                queue_wait: started_at.saturating_duration_since(self.submitted_at),
+                executing: Some(now.saturating_duration_since(started_at)),
+            },
+            None => ServoPendingRenderTiming {
+                queue_wait: now.saturating_duration_since(self.submitted_at),
+                executing: None,
+            },
+        }
+    }
 }
 
 pub(super) enum ServoRenderEnqueue {
@@ -642,6 +700,7 @@ impl ServoWorkerClient {
     ) -> Result<PendingServoFrame> {
         let producer_role = self.with_session_slot(session_id, ClientStateSlot::producer_role)?;
         let submitted_at = Instant::now();
+        let started = ServoRenderStart::default();
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         let command = WorkerCommand::Render {
             session_id,
@@ -652,6 +711,7 @@ impl ServoWorkerClient {
             height,
             mode,
             submitted_at,
+            started: started.clone(),
             response_tx,
         };
         match self.command_tx.try_send(command) {
@@ -660,6 +720,7 @@ impl ServoWorkerClient {
                 Ok(PendingServoFrame {
                     response_rx,
                     submitted_at,
+                    started,
                 })
             }
             Err(TrySendError::Full(_)) => {

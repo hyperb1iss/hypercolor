@@ -72,7 +72,12 @@ pub fn spawn_test_worker() -> (ServoWorker, Arc<AtomicBool>) {
                 WorkerCommand::MemoryReport { response_tx } => {
                     let _ = response_tx.send(Ok(empty_memory_report()));
                 }
-                WorkerCommand::Render { response_tx, .. } => {
+                WorkerCommand::Render {
+                    started,
+                    response_tx,
+                    ..
+                } => {
+                    started.mark();
                     let _ = response_tx.send(Ok(EffectRenderOutput::Cpu(solid_canvas(12, 34, 56))));
                 }
             }
@@ -123,9 +128,11 @@ pub fn spawn_render_test_worker() -> (
                     width,
                     height,
                     mode,
+                    started,
                     response_tx,
                     ..
                 } => {
+                    started.mark();
                     #[cfg(feature = "servo-gpu-import")]
                     let prefer_gpu = mode.prefers_gpu();
                     #[cfg(feature = "servo-gpu-import")]
@@ -184,6 +191,88 @@ pub fn spawn_render_test_worker() -> (
     )
 }
 
+/// A render test worker that one other command can hold, the way a
+/// second session's page load holds the one shared Servo worker.
+///
+/// `LoadUrl` blocks the worker thread until `release_slow_load` fires, so
+/// anything submitted meanwhile waits in the command queue. Renders mark
+/// their start, report it on `render_started`, and then block until the
+/// test sends their result, which models a render that wedges mid-flight.
+pub struct ContendedRenderTestWorker {
+    pub worker: ServoWorker,
+    pub slow_load_started: Receiver<()>,
+    pub release_slow_load: Sender<()>,
+    pub render_started: Receiver<()>,
+    pub render_result: Sender<anyhow::Result<Canvas>>,
+    pub render_delivered: Receiver<()>,
+    pub stopped: Arc<AtomicBool>,
+}
+
+pub fn spawn_contended_render_test_worker() -> ContendedRenderTestWorker {
+    let (command_tx, command_rx) = mpsc::sync_channel(16);
+    let client_state = Arc::new(ServoWorkerClientSharedState::new());
+    let worker_client_state = Arc::clone(&client_state);
+    let (slow_load_started_tx, slow_load_started) = mpsc::channel();
+    let (release_slow_load, release_rx) = mpsc::channel();
+    let (render_started_tx, render_started) = mpsc::channel();
+    let (render_result, result_rx) = mpsc::channel::<anyhow::Result<Canvas>>();
+    let (delivered_tx, render_delivered) = mpsc::channel();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let stopped_clone = Arc::clone(&stopped);
+    let thread_handle = thread::spawn(move || {
+        while let Ok(command) = command_rx.recv() {
+            worker_client_state.note_command_dequeued(&command);
+            match command {
+                WorkerCommand::CreateSession { response_tx, .. }
+                | WorkerCommand::Load { response_tx, .. }
+                | WorkerCommand::DestroySession { response_tx, .. } => {
+                    let _ = response_tx.send(Ok(()));
+                }
+                WorkerCommand::LoadUrl { response_tx, .. } => {
+                    let _ = slow_load_started_tx.send(());
+                    let _ = release_rx.recv();
+                    let _ = response_tx.send(Ok(()));
+                }
+                WorkerCommand::Render {
+                    started,
+                    response_tx,
+                    ..
+                } => {
+                    started.mark();
+                    let _ = render_started_tx.send(());
+                    let result = result_rx
+                        .recv()
+                        .unwrap_or_else(|_| Ok(solid_canvas(12, 34, 56)));
+                    let _ = response_tx.send(result.map(EffectRenderOutput::Cpu));
+                    let _ = delivered_tx.send(());
+                }
+                WorkerCommand::Shutdown { response_tx } => {
+                    stopped_clone.store(true, Ordering::SeqCst);
+                    let _ = response_tx.send(());
+                    break;
+                }
+                WorkerCommand::MemoryReport { response_tx } => {
+                    let _ = response_tx.send(Ok(empty_memory_report()));
+                }
+            }
+        }
+    });
+
+    ContendedRenderTestWorker {
+        worker: ServoWorker {
+            command_tx: Some(command_tx),
+            thread_handle: Some(thread_handle),
+            client_state,
+        },
+        slow_load_started,
+        release_slow_load,
+        render_started,
+        render_result,
+        render_delivered,
+        stopped,
+    }
+}
+
 pub fn spawn_load_test_worker() -> (
     ServoWorker,
     Receiver<RecordedLoadCommand>,
@@ -220,7 +309,12 @@ pub fn spawn_load_test_worker() -> (
                     let _ = unload_tx.send(());
                     let _ = response_tx.send(Ok(()));
                 }
-                WorkerCommand::Render { response_tx, .. } => {
+                WorkerCommand::Render {
+                    started,
+                    response_tx,
+                    ..
+                } => {
+                    started.mark();
                     let _ = response_tx.send(Ok(EffectRenderOutput::Cpu(solid_canvas(12, 34, 56))));
                 }
                 WorkerCommand::Shutdown { response_tx } => {
@@ -284,7 +378,12 @@ pub fn spawn_blocking_load_test_worker() -> (
                     let _ = unload_tx.send(());
                     let _ = response_tx.send(Ok(()));
                 }
-                WorkerCommand::Render { response_tx, .. } => {
+                WorkerCommand::Render {
+                    started,
+                    response_tx,
+                    ..
+                } => {
+                    started.mark();
                     let _ = response_tx.send(Ok(EffectRenderOutput::Cpu(solid_canvas(12, 34, 56))));
                 }
                 WorkerCommand::Shutdown { response_tx } => {

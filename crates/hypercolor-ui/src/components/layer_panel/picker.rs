@@ -9,13 +9,15 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use super::source::{
-    AddLayerScope, EffectPickerMode, LayerSourceKind, effect_category_label, effect_layer_source,
+    AddLayerScope, EffectPickerMode, LayerSourceKind, effect_category_label,
     effect_picker_matches_query, effect_picker_mode, media_layer_source_for,
+    remembered_effect_layer_source,
 };
 use crate::api;
 use crate::components::media_grid::MediaGrid;
 use crate::components::modal::Modal;
 use crate::icons::*;
+use crate::preferences::PreferencesStore;
 use crate::toasts;
 
 /// A picked layer ready for the panel to send as a `create_layer` request.
@@ -191,6 +193,9 @@ fn EffectTab(
     #[prop(into)] mode: Signal<EffectPickerMode>,
     on_pick: Callback<NewLayerDraft>,
 ) -> impl IntoView {
+    // Absent when the panel mounts outside the app shell; picks then start
+    // at the effect's defaults.
+    let preferences = use_context::<PreferencesStore>();
     let search = RwSignal::new(String::new());
     let filtered = Memo::new(move |_| {
         let Some(Ok(items)) = effects.get() else {
@@ -228,7 +233,8 @@ fn EffectTab(
                                     let name = effect.name.clone();
                                     let category = effect_category_label(effect.category);
                                     let pick = move |_| {
-                                        match effect_layer_source(&id) {
+                                        let prefs = preferences.and_then(|store| store.get(&id));
+                                        match remembered_effect_layer_source(&id, prefs.as_ref()) {
                                             Ok(source) => on_pick.run(NewLayerDraft::named(name.clone(), source)),
                                             Err(error) => toasts::toast_error(&error),
                                         }

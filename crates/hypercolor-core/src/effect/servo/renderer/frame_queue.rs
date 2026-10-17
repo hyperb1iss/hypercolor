@@ -219,6 +219,7 @@ impl ServoRenderer {
         match request_result {
             Ok(()) => {
                 self.warned_stalled_frame = false;
+                self.warned_queued_render = false;
                 self.command_queue_saturated = false;
                 self.last_submit_time_secs = Some(frame.time_secs);
             }

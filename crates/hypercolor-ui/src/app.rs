@@ -196,18 +196,9 @@ pub struct EffectsContext {
     pub set_favorite_ids: WriteSignal<HashSet<String>>,
     /// Per-effect preferences (preset + control-value snapshot). Embedded
     /// on the context rather than looked up via `use_context` so the
-    /// save/restore path that runs inside spawned async tasks doesn't
+    /// save path that runs inside spawned async tasks doesn't
     /// depend on the reactive owner being live.
     pub preferences: PreferencesStore,
-    /// Effect IDs we've already checked against preferences this
-    /// session. `apply_active_effect_snapshot` consults this before
-    /// running the restore path so user modifications to the current
-    /// effect (preset selection, control tweaks) only trigger a save
-    /// — without it, every refresh after a user action would see
-    /// "daemon != stored" and mis-fire a restore that clobbers the
-    /// change. Cleared for an effect when `apply_effect(id)` is called,
-    /// so switching away and coming back re-triggers the restore.
-    pub restored_effects: StoredValue<HashSet<String>>,
     pub apply_generation: StoredValue<u64>,
     /// The zone a quick-apply targets. Studio writes it from the selected
     /// zone; every quick-apply surface reads it so applies land in the
@@ -292,10 +283,9 @@ impl EffectsContext {
     /// Apply an effect by ID — sets local state + calls API.
     ///
     /// When remembered preferences exist for this effect, they're baked
-    /// into the initial `/apply` request so the daemon starts rendering
-    /// with the user's saved preset + controls immediately. This avoids
-    /// the defaults-flash that used to occur while `restore_effect_preferences`
-    /// ran its follow-up round-trip.
+    /// into the one `/apply` request, so the daemon admits the effect with
+    /// the user's saved preset + controls in a single scene mutation
+    /// instead of starting at defaults and being corrected afterwards.
     pub fn apply_effect(&self, id: String) {
         let apply_target = self.apply_target.get_untracked();
         let stored_prefs = self.preferences.get(&id);
@@ -342,13 +332,6 @@ impl EffectsContext {
             return;
         }
 
-        self.restored_effects.update_value(|set| {
-            if stored_prefs.is_some() {
-                set.insert(id.clone());
-            } else {
-                set.remove(&id);
-            }
-        });
         let generation = self.apply_generation.get_value().saturating_add(1);
         self.apply_generation.set_value(generation);
         self.set_last_effect_error.set(None);
@@ -775,7 +758,6 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         favorite_ids,
         set_favorite_ids,
         preferences: preferences_store,
-        restored_effects: StoredValue::new(HashSet::new()),
         apply_generation: StoredValue::new(0),
         apply_target: RwSignal::new(ApplyTarget::Primary),
         scene_refresh: zones_ctx.refresh,

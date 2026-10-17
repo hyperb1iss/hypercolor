@@ -6,7 +6,8 @@ use anyhow::{Result, anyhow};
 
 use super::super::telemetry::{record_servo_render_queue_depth, record_servo_render_superseded};
 use super::super::worker_client::{
-    ServoFramePayload, ServoProducerRole, ServoRenderMode, ServoSessionId, WorkerCommand,
+    ServoFramePayload, ServoProducerRole, ServoRenderMode, ServoRenderStart, ServoSessionId,
+    WorkerCommand,
 };
 use crate::effect::traits::EffectRenderOutput;
 
@@ -19,6 +20,7 @@ pub(super) struct PendingRenderCommand {
     pub(super) height: u32,
     pub(super) mode: ServoRenderMode,
     pub(super) submitted_at: Instant,
+    pub(super) started: ServoRenderStart,
     pub(super) response_tx: mpsc::SyncSender<Result<EffectRenderOutput>>,
 }
 
@@ -69,6 +71,7 @@ impl ServoWorkerScheduler {
                 height,
                 mode,
                 submitted_at,
+                started,
                 response_tx,
             } => {
                 let pending = PendingRenderCommand {
@@ -80,6 +83,7 @@ impl ServoWorkerScheduler {
                     height,
                     mode,
                     submitted_at,
+                    started,
                     response_tx,
                 };
                 let slot = if let Some(slot) = self.open_render_slots.get(&session_id).copied() {

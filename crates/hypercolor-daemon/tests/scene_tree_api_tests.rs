@@ -714,6 +714,77 @@ async fn preset_apply_uses_the_canonical_apply_body_without_discarding_fields() 
 }
 
 #[tokio::test]
+async fn preset_apply_admits_the_preset_in_one_layer_like_a_plain_apply() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let effect_id = seed_tree(&state).await;
+    let preset_id = PresetId::stable("test-fast");
+
+    // One preset apply is one scene mutation and one effect admission,
+    // whichever of the two routes delivers it, and it lands the preset's
+    // own controls (speed 0.9, not the 0.25 default) in a single layer.
+    let routes = [
+        (
+            format!("/api/v1/effects/{effect_id}/apply"),
+            json!({ "preset_id": preset_id }),
+        ),
+        (
+            format!("/api/v1/effects/{effect_id}/presets/{preset_id}/apply"),
+            json!({}),
+        ),
+    ];
+    let mut admitted_sources = Vec::new();
+    for (route, body) in routes {
+        let before_revision = read_document(&app).await["data"]["revision"]
+            .as_u64()
+            .expect("live scene revision");
+        let mut events = state.event_bus.subscribe_all();
+
+        let response = send(&app, json_request("POST", route.clone(), body)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+        assert_eq!(
+            response_etag(&response),
+            format!("\"{}\"", before_revision + 1),
+            "{route} commits exactly one revision"
+        );
+        let applied = body_json(response).await;
+
+        let effect_starts = std::iter::from_fn(|| events.try_recv().ok())
+            .filter(|timestamped| {
+                matches!(timestamped.event, HypercolorEvent::EffectStarted { .. })
+            })
+            .count();
+        assert_eq!(effect_starts, 1, "{route} admits the effect once");
+
+        let document = read_document(&app).await;
+        assert_eq!(
+            document["data"]["revision"].as_u64(),
+            Some(before_revision + 1)
+        );
+        let layers = primary_zone(&document)["layers"]
+            .as_array()
+            .expect("primary zone layers");
+        assert_eq!(layers.len(), 1, "{route} leaves one layer");
+        assert_eq!(layers[0]["id"], applied["data"]["zone"]["layers"][0]["id"]);
+        let source = layers[0]["source"].clone();
+        assert_eq!(source["preset_id"], preset_id.to_string());
+        let speed = source["controls"]["speed"]["value"]
+            .as_f64()
+            .expect("speed should be numeric");
+        assert!(
+            (speed - 0.9).abs() < 1.0e-6,
+            "{route} applied speed {speed}"
+        );
+        admitted_sources.push(source);
+    }
+
+    assert_eq!(
+        admitted_sources[0], admitted_sources[1],
+        "the preset route admits exactly what a preset_id apply does"
+    );
+}
+
+#[tokio::test]
 async fn a_control_patch_event_names_its_zone_and_real_layer() {
     let (state, _tmp) = isolated_state();
     let app = api::build_router(Arc::clone(&state), None);

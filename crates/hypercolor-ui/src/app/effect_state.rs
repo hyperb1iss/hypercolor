@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::effect::{ControlDefinition, EffectId};
+use hypercolor_types::effect::ControlDefinition;
 use hypercolor_types::layer::{BlendMode, LayerAdjust, LayerSource, LayerTransform};
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
 use crate::api;
-use crate::control_value_json::controls_to_json;
+use crate::components::layer_panel::source::remembered_effect_layer_source;
 use crate::preferences::EffectPreferences;
 use crate::toasts;
 use crate::ws::EffectErrorHint;
@@ -30,7 +30,7 @@ pub(super) async fn apply_effect_to_current_led_zones(ctx: &EffectsContext, effe
     // primary-zone apply path — an all-zones apply should start every
     // zone in the user's saved state, not at defaults.
     let prefs = ctx.preferences.get(&effect_id);
-    let Some(source) = effect_layer_source(&effect_id, prefs.as_ref()) else {
+    let Ok(source) = remembered_effect_layer_source(&effect_id, prefs.as_ref()) else {
         toasts::toast_error("That effect has an invalid identifier");
         return;
     };
@@ -109,21 +109,6 @@ async fn apply_effect_layer(zone_id: &str, source: &LayerSource) -> api::ApiResu
     }
 }
 
-fn effect_layer_source(effect_id: &str, prefs: Option<&EffectPreferences>) -> Option<LayerSource> {
-    let uuid = uuid::Uuid::parse_str(effect_id.trim()).ok()?;
-    Some(LayerSource::Effect {
-        effect_id: EffectId::new(uuid),
-        controls: prefs
-            .map(|prefs| prefs.control_values.clone())
-            .unwrap_or_default(),
-        control_bindings: HashMap::new(),
-        preset_id: prefs
-            .and_then(|prefs| prefs.preset_id.as_deref())
-            .and_then(|raw| uuid::Uuid::parse_str(raw.trim()).ok())
-            .map(hypercolor_types::library::PresetId),
-    })
-}
-
 pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::PrimaryEffectView) {
     let api::PrimaryEffectView {
         id,
@@ -133,7 +118,7 @@ pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::Pr
         controls,
         control_values,
         active_preset_id,
-        scene_revision,
+        scene_revision: _,
     } = active;
     let target = api::EffectLayerTarget {
         effect_id: id.clone(),
@@ -152,57 +137,20 @@ pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::Pr
     ctx.set_active_preset_id.set(active_preset_id.clone());
     ctx.set_is_playing.set(true);
     if ctx.active_effect_target.get_untracked().as_ref() != Some(&target) {
-        ctx.set_active_effect_target.set(Some(target.clone()));
+        ctx.set_active_effect_target.set(Some(target));
     }
     if ctx.active_effect_id.get_untracked().as_deref() != Some(id.as_str()) {
         ctx.set_active_effect_id.set(Some(id.clone()));
     }
 
-    // ── Per-effect preferences: restore or save ───────────────────────
-    //
-    // Two paths:
-    //
-    //   1. First snapshot after a switch → RESTORE. The daemon has just
-    //      loaded defaults; if our stored preferences differ, re-apply
-    //      the saved state to the daemon.
-    //
-    //   2. Any follow-up snapshot (user picked a preset, tweaked a
-    //      control, etc.) → SAVE. The daemon is already in the state
-    //      the user just asked for; we just need to capture it.
-    //
-    // The `restored_effects` set gates this. It's cleared for an effect
-    // ID when `apply_effect(id)` is called, so we re-check on each
-    // genuine switch, and marked after the first check so subsequent
-    // refreshes for the same effect fall through to save.
-    let store = ctx.preferences;
-    let already_checked = ctx
-        .restored_effects
-        .with_value(|set| set.contains(id.as_str()));
-    if !already_checked {
-        ctx.restored_effects.update_value(|set| {
-            set.insert(id.clone());
-        });
-
-        if let Some(prefs) = store.get(&id) {
-            // Compare through the same lossy JSON serializer we use to
-            // send controls to the daemon — colors hex-encode to 256
-            // steps, so a naive `HashMap` equality would mis-fire
-            // thanks to float precision drift on round-trip.
-            let stored_json = controls_to_json(&prefs.control_values);
-            let daemon_json = controls_to_json(&control_values);
-            let needs_restore = prefs.preset_id != active_preset_id || stored_json != daemon_json;
-            if needs_restore {
-                restore_effect_preferences(*ctx, target, scene_revision, prefs);
-                return;
-            }
-        }
-    }
-
-    // Save path — either this was the first snapshot with nothing to
-    // restore, or it's a follow-up after user modification. In both
-    // cases, capture whatever the daemon just confirmed so switching
-    // away and coming back lands us in the same place.
-    if let Err(error) = store.save(
+    // Capture whatever the daemon confirmed so switching away and coming
+    // back lands in the same place. This tab's own applies already carry
+    // the remembered preset and controls in their one apply request, so
+    // a snapshot never writes back: when another client (the CLI, MCP, a
+    // script, another tab) switched the effect, re-applying the saved
+    // state here would add a second scene mutation, rebuild the effect's
+    // renderer, and overrule what that client asked for.
+    if let Err(error) = ctx.preferences.save(
         id,
         EffectPreferences {
             preset_id: active_preset_id,
@@ -211,106 +159,6 @@ pub(super) fn apply_active_effect_snapshot(ctx: &EffectsContext, active: api::Pr
     ) {
         log::error!("failed to persist active effect preferences: {error}");
     }
-}
-
-/// Restores a remembered preset and its exact derived control snapshot.
-fn restore_effect_preferences(
-    ctx: EffectsContext,
-    mut target: api::EffectLayerTarget,
-    scene_revision: u64,
-    prefs: EffectPreferences,
-) {
-    leptos::task::spawn_local(async move {
-        if ctx.active_effect_target.get_untracked().as_ref() != Some(&target) {
-            return;
-        }
-        let effect_id = target.effect_id.clone();
-
-        let resolved_preset_id = prefs
-            .preset_id
-            .as_deref()
-            .filter(|preset_id| uuid::Uuid::parse_str(preset_id).is_ok())
-            .map(str::to_owned);
-        if let Some(preset_id) = resolved_preset_id.as_ref() {
-            match api::apply_effect_preset(
-                &effect_id,
-                preset_id,
-                Some(&target.zone_id),
-                scene_revision,
-            )
-            .await
-            {
-                Ok(replacement) => {
-                    if ctx.active_effect_target.get_untracked().as_ref() != Some(&target) {
-                        return;
-                    }
-                    ctx.set_active_effect_target.set(Some(replacement.clone()));
-                    target = replacement;
-                }
-                Err(error) => {
-                    crate::toasts::toast_error(&format!("Couldn't restore preset: {error}"));
-                    ctx.refresh_active_effect();
-                    return;
-                }
-            }
-        }
-
-        if !prefs.control_values.is_empty() {
-            if ctx.active_effect_target.get_untracked().as_ref() != Some(&target) {
-                return;
-            }
-            if let Err(error) = patch_restored_controls(&target, &prefs.control_values).await {
-                crate::toasts::toast_error(&format!("Couldn't restore saved controls: {error}"));
-            }
-            if ctx.active_effect_target.get_untracked().as_ref() != Some(&target) {
-                return;
-            }
-        }
-
-        if prefs.preset_id != resolved_preset_id
-            && let Err(error) = ctx.preferences.save(
-                effect_id.clone(),
-                EffectPreferences {
-                    preset_id: resolved_preset_id,
-                    control_values: prefs.control_values,
-                },
-            )
-        {
-            log::error!("failed to persist repaired effect preferences: {error}");
-        }
-
-        // Surface the restored daemon state in the UI. This re-enters
-        // `apply_active_effect_snapshot`, but with the effect already
-        // present in `restored_effects` so the save branch fires.
-        ctx.refresh_active_effect();
-    });
-}
-
-async fn patch_restored_controls(
-    target: &api::EffectLayerTarget,
-    controls: &HashMap<String, ControlValue>,
-) -> api::ApiResult<()> {
-    patch_restored_controls_with(target, controls, |zone_id, layer_id, controls| async move {
-        api::patch_layer_controls(&zone_id, &layer_id, &controls).await
-    })
-    .await
-}
-
-async fn patch_restored_controls_with<Patch, PatchFuture>(
-    target: &api::EffectLayerTarget,
-    controls: &HashMap<String, ControlValue>,
-    patch: Patch,
-) -> api::ApiResult<()>
-where
-    Patch: FnOnce(String, String, HashMap<String, ControlValue>) -> PatchFuture,
-    PatchFuture: std::future::Future<Output = api::ApiResult<()>>,
-{
-    patch(
-        target.zone_id.clone(),
-        target.layer_id.clone(),
-        controls.clone(),
-    )
-    .await
 }
 
 pub(super) fn clear_active_effect_state(ctx: &EffectsContext) {
@@ -383,76 +231,5 @@ pub(super) fn restore_active_effect_state(ctx: &EffectsContext, snapshot: Active
             ctx.set_active_preset_id.set(snapshot.preset_id);
         }
         None => clear_active_effect_state(ctx),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::RefCell;
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::rc::Rc;
-    use std::task::{Context, Poll, Waker};
-
-    use hypercolor_types::control::ControlValue;
-
-    use super::patch_restored_controls_with;
-    use crate::api::{ApiResult, EffectLayerTarget};
-
-    struct SuspendedPatch {
-        current_layer: Rc<RefCell<String>>,
-        replacement_layer: String,
-        suspended: bool,
-    }
-
-    impl Future for SuspendedPatch {
-        type Output = ApiResult<()>;
-
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            if !self.suspended {
-                self.suspended = true;
-                self.current_layer.replace(self.replacement_layer.clone());
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    #[test]
-    fn suspended_same_effect_restoration_keeps_the_observed_layer_target() {
-        let old_layer = "00000000-0000-0000-0000-000000000003";
-        let new_layer = "00000000-0000-0000-0000-000000000004";
-        let target = EffectLayerTarget {
-            effect_id: "00000000-0000-0000-0000-00000000000a".to_owned(),
-            zone_id: "00000000-0000-0000-0000-000000000002".to_owned(),
-            layer_id: old_layer.to_owned(),
-        };
-        let current_layer = Rc::new(RefCell::new(old_layer.to_owned()));
-        let addressed_layer = Rc::new(RefCell::new(None::<String>));
-        let patch_current_layer = Rc::clone(&current_layer);
-        let patch_addressed_layer = Rc::clone(&addressed_layer);
-        let controls =
-            std::collections::HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]);
-        let future = patch_restored_controls_with(&target, &controls, move |_, layer_id, _| {
-            patch_addressed_layer.replace(Some(layer_id));
-            SuspendedPatch {
-                current_layer: patch_current_layer,
-                replacement_layer: new_layer.to_owned(),
-                suspended: false,
-            }
-        });
-        let mut future = std::pin::pin!(future);
-        let waker = Waker::noop();
-        let mut context = Context::from_waker(waker);
-
-        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
-        assert_eq!(current_layer.borrow().as_str(), new_layer);
-        assert_eq!(addressed_layer.borrow().as_deref(), Some(old_layer));
-        assert!(matches!(
-            future.as_mut().poll(&mut context),
-            Poll::Ready(Ok(()))
-        ));
-        assert_eq!(addressed_layer.borrow().as_deref(), Some(old_layer));
     }
 }
