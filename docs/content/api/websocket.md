@@ -371,8 +371,8 @@ result body:
 
 Successful commands unwrap the REST response envelope, so `data` is the
 canonical apply result itself: `{ zone, transition, output }`. `mono_us` is the
-daemon clock's reading when the command finished; see
-[Clocks and timing](#clocks-and-timing).
+daemon clock's reading after the command finished, taken immediately before the
+response went to the socket; see [Clocks and timing](#clocks-and-timing).
 
 On error, `status` is the route's real HTTP status and `error` is populated
 instead of `data`. The `error` object is the REST error envelope's `error`
