@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
@@ -9,7 +10,9 @@ use axum::response::IntoResponse;
 use tokio::sync::{RwLock, watch};
 use tokio_util::sync::CancellationToken;
 
-use hypercolor_core::bus::{CanvasFrame, HypercolorBus, ZonePreviewFrame};
+use hypercolor_core::bus::{
+    CanvasFrame, EventTimestamp, HypercolorBus, PublicationClock, ZonePreviewFrame,
+};
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::input::screen::PixelExtent;
 use hypercolor_core::input::screen::planner::{
@@ -31,10 +34,10 @@ use hypercolor_leptos_ext::ws::registry::{
 use hypercolor_leptos_ext::ws::topic::{TopicSelector, TopicSubscription};
 use hypercolor_leptos_ext::ws::{
     DisplayPreviewFrame as WireDisplayPreviewFrame, HYPERCOLOR_WS_PROTOCOL, HYPERCOLOR_WS_VERSION,
-    InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_MIN_MESSAGE_BYTES,
+    HelloClock, InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_MIN_MESSAGE_BYTES,
     PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
     PreviewPixelFormat as WirePreviewPixelFormat, PreviewStreamId, PreviewTransportLimits,
-    TimedInputEventPayload,
+    PublicationStamp, ResponseStamp, TimedInputEventPayload,
 };
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
@@ -78,10 +81,11 @@ use super::preview_encode::{
 use super::protocol::{
     ActiveFramesConfig, BrowserInputEdgeWire, ClientMessage, FrameZoneSelection,
     InputButtonStateWire, MAX_INPUT_INJECT_EVENTS, MAX_INPUT_NAME_BYTES, MAX_INPUT_SCROLL_Q16_16,
-    ServerMessage, SubscriptionState, TopicSelection, WsProtocolError,
-    deserialize_finite_coordinate, event_message_parts, json_payload_manifest, parse_selectors,
-    parse_subscriptions, should_relay_event, validate_interactive_preview_id,
-    validate_interactive_preview_shape, ws_capabilities,
+    PUBLICATION_STAMPED_SERVER_MESSAGES, ROUND_TRIP_STAMPED_SERVER_MESSAGES, ServerMessage,
+    SubscriptionState, TopicSelection, WsProtocolError, deserialize_finite_coordinate,
+    event_message_parts, hello_clock, json_payload_manifest, parse_selectors, parse_subscriptions,
+    publication_stamp, server_message_vocabulary, should_relay_event, stamp_command_response,
+    validate_interactive_preview_id, validate_interactive_preview_shape, ws_capabilities,
 };
 
 fn assert_manifested_json_payload(schema: &str, data: &serde_json::Value) {
@@ -3796,7 +3800,12 @@ async fn input_event_relay_preserves_equal_timestamps_and_sequence_gaps() {
         .expect("input events subscribe applies");
     let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
-    let relay_handle = tokio::spawn(relay_events(event_rx, json_tx, subscriptions_rx));
+    let relay_handle = tokio::spawn(relay_events(
+        event_rx,
+        *bus.clock(),
+        json_tx,
+        subscriptions_rx,
+    ));
 
     let first = sample_input_event();
     let mut second = sample_input_event();
@@ -3834,6 +3843,7 @@ async fn every_lagged_event_topic_emits_a_resync_hint() {
         for _ in 0..300 {
             bus.publish(HypercolorEvent::Paused);
         }
+        let burst_published_us = bus.clock().mono_us();
         let mut subscriptions = SubscriptionState::default();
         if topic != "events" {
             subscriptions = subscriptions
@@ -3843,7 +3853,12 @@ async fn every_lagged_event_topic_emits_a_resync_hint() {
         }
         let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
         let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(1);
-        let relay_handle = tokio::spawn(relay_events(event_rx, json_tx, subscriptions_rx));
+        let relay_handle = tokio::spawn(relay_events(
+            event_rx,
+            *bus.clock(),
+            json_tx,
+            subscriptions_rx,
+        ));
 
         let json = tokio::time::timeout(Duration::from_secs(1), json_rx.recv())
             .await
@@ -3857,10 +3872,216 @@ async fn every_lagged_event_topic_emits_a_resync_hint() {
                 .is_some_and(|count| count > 0),
             "topic {topic}"
         );
+        let stamp: PublicationStamp =
+            serde_json::from_value(wire).expect("resync notice carries a publication stamp");
+        assert!(
+            (burst_published_us..=bus.clock().mono_us()).contains(&stamp.mono_us),
+            "the relay stamps its own notice on the bus clock, topic {topic}"
+        );
 
         relay_handle.abort();
         let _ = relay_handle.await;
     }
+}
+
+/// Wall time the stepped clock below reports, in Unix epoch millis.
+static STEPPED_WALL_MS: AtomicU64 = AtomicU64::new(0);
+
+fn stepped_wall_clock() -> EventTimestamp {
+    EventTimestamp::from_epoch_millis(STEPPED_WALL_MS.load(Ordering::SeqCst))
+}
+
+fn sample_frame_rendered(frame_number: u32) -> HypercolorEvent {
+    HypercolorEvent::FrameRendered {
+        frame_number,
+        timing: FrameTiming {
+            producer_us: 3_000,
+            composition_us: 900,
+            render_us: 3_900,
+            sample_us: 120,
+            push_us: 340,
+            total_us: 4_400,
+            budget_us: 16_666,
+        },
+    }
+}
+
+#[tokio::test]
+async fn relayed_events_keep_the_bus_publication_stamp_across_a_wall_clock_step() {
+    let bus = HypercolorBus::with_clock(PublicationClock::with_wall_clock(stepped_wall_clock));
+    let mut published = bus.subscribe_all();
+    let event_rx = bus.subscribe_all();
+    let subscriptions = SubscriptionState::default()
+        .subscribed_unkeyed(&["frame_events"], serde_json::Value::Null)
+        .expect("frame events subscribe applies");
+    let (_subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions);
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(4);
+    let relay_handle = tokio::spawn(relay_events(
+        event_rx,
+        *bus.clock(),
+        json_tx,
+        subscriptions_rx,
+    ));
+
+    STEPPED_WALL_MS.store(1_800_000_000_000, Ordering::SeqCst);
+    bus.publish(HypercolorEvent::Paused);
+    // An NTP step or a manual clock change moves the wall clock back an hour
+    // between two publications.
+    STEPPED_WALL_MS.store(1_800_000_000_000 - 3_600_000, Ordering::SeqCst);
+    bus.publish(sample_frame_rendered(8));
+
+    let mut stamps = Vec::new();
+    for expected in ["paused", "frame_rendered"] {
+        let json = tokio::time::timeout(Duration::from_secs(1), json_rx.recv())
+            .await
+            .expect("event relay should respond")
+            .expect("event relay should remain open");
+        let wire: serde_json::Value = serde_json::from_str(json.as_str()).expect("relay JSON");
+        assert_eq!(wire["event"], expected);
+        let stamp: PublicationStamp =
+            serde_json::from_value(wire).expect("decode the shared stamp from the whole message");
+        let at_publication = published.recv().await.expect("bus copy of the event");
+        assert_eq!(
+            stamp,
+            publication_stamp(at_publication.stamp()),
+            "the relay forwards the stamp taken at publication instead of restamping"
+        );
+        stamps.push(stamp);
+    }
+
+    assert_eq!(stamps[0].timestamp, "2027-01-15T08:00:00.000Z");
+    assert_eq!(stamps[1].timestamp, "2027-01-15T07:00:00.000Z");
+    assert!(
+        stamps[1].mono_us >= stamps[0].mono_us,
+        "mono_us must not follow the wall clock backwards"
+    );
+
+    relay_handle.abort();
+    let _ = relay_handle.await;
+}
+
+#[tokio::test]
+async fn snapshot_messages_are_stamped_on_the_bus_clock() {
+    let state = Arc::new(AppState::new());
+    let clock = *state.event_bus.clock();
+    let before = clock.mono_us();
+    let messages = [
+        build_metrics_message(&state, 0.0).await,
+        build_device_metrics_message(&state),
+    ];
+    let after = clock.mono_us();
+
+    for message in messages {
+        let wire = serde_json::to_value(&message).expect("snapshot message serializes");
+        let kind = wire["type"].clone();
+        let stamp: PublicationStamp =
+            serde_json::from_value(wire).expect("snapshot message carries a publication stamp");
+        assert!(
+            (before..=after).contains(&stamp.mono_us),
+            "{kind} is stamped while the daemon assembles it"
+        );
+        assert!(
+            stamp.timestamp.ends_with('Z'),
+            "{kind} keeps its wall stamp"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_server_message_with_a_wall_timestamp_carries_mono_us() {
+    let state = Arc::new(AppState::new());
+    let clock = *state.event_bus.clock();
+    let mut stamped = Vec::new();
+    let mut round_trip = Vec::new();
+
+    for name in server_message_vocabulary() {
+        let message = match name.as_str() {
+            "hello" => ServerMessage::Hello {
+                version: HYPERCOLOR_WS_VERSION.to_owned(),
+                server: state.server_identity.clone(),
+                clock: hello_clock(&clock),
+                state: build_hello_state(&state).await,
+                capabilities: ws_capabilities(),
+                subscriptions: SubscriptionState::default().projection(),
+            },
+            "subscribed" => ServerMessage::Subscribed { topics: Vec::new() },
+            "unsubscribed" => ServerMessage::Unsubscribed { topics: Vec::new() },
+            "input_injected" => ServerMessage::InputInjected {
+                preview_id: "preview".to_owned(),
+                accepted_events: 1,
+            },
+            "interactive_preview_authoritative_claimed" => {
+                ServerMessage::InteractivePreviewAuthoritativeClaimed {
+                    preview_id: "preview".to_owned(),
+                    already_owned: false,
+                }
+            }
+            "interactive_preview_authoritative_released" => {
+                ServerMessage::InteractivePreviewAuthoritativeReleased {
+                    preview_id: "preview".to_owned(),
+                    released: true,
+                }
+            }
+            "event" => ServerMessage::Event {
+                event: "paused".to_owned(),
+                stamp: publication_stamp(clock.stamp()),
+                data: serde_json::json!({}),
+            },
+            "metrics" => build_metrics_message(&state, 0.0).await,
+            "device_metrics" => build_device_metrics_message(&state),
+            "sensors" => ServerMessage::Sensors {
+                stamp: publication_stamp(clock.stamp()),
+                data: SystemSnapshot::empty(),
+            },
+            "backpressure" => ServerMessage::Backpressure {
+                dropped_frames: 1,
+                topic: "frames".to_owned(),
+                key: None,
+                recommendation: "reduce_fps".to_owned(),
+                suggested_fps: Some(15.0),
+            },
+            "error" => ServerMessage::Error {
+                code: "invalid_request".to_owned(),
+                message: "bad request".to_owned(),
+                details: None,
+            },
+            "response" => {
+                let response = (
+                    axum::http::StatusCode::OK,
+                    axum::Json(serde_json::json!({ "data": {} })),
+                )
+                    .into_response();
+                let mut message = command_response_from_http("1".to_owned(), response).await;
+                stamp_command_response(&mut message, &clock);
+                message
+            }
+            other => panic!(
+                "server message {other} has no sample: decide whether it reports a \
+                 publication time, stamp it if so, and add it here"
+            ),
+        };
+        let wire = serde_json::to_value(&message).expect("server message serializes");
+        assert_eq!(wire["type"], name.as_str());
+        if wire.get("timestamp").is_some() {
+            assert!(
+                wire["mono_us"].is_u64(),
+                "{name} reports a wall timestamp without mono_us"
+            );
+            stamped.push(name.clone());
+        } else if name != "hello" && wire.get("mono_us").is_some() {
+            assert!(wire["mono_us"].is_u64(), "{name} mono_us is a u64");
+            round_trip.push(name.clone());
+        }
+        if name == "hello" {
+            let announced: HelloClock =
+                serde_json::from_value(wire).expect("hello carries the shared clock fields");
+            assert_eq!(announced.clock_epoch, clock.epoch().to_string());
+            assert!(announced.mono_us <= clock.mono_us());
+        }
+    }
+
+    assert_eq!(stamped, PUBLICATION_STAMPED_SERVER_MESSAGES);
+    assert_eq!(round_trip, ROUND_TRIP_STAMPED_SERVER_MESSAGES);
 }
 
 #[tokio::test]
@@ -3873,7 +4094,12 @@ async fn worker_failure_relay_invalidates_input_status_immediately() {
     );
     let (_subscriptions_tx, subscriptions_rx) = watch::channel(SubscriptionState::default());
     let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(8);
-    let relay_handle = tokio::spawn(relay_events(event_rx, json_tx, subscriptions_rx));
+    let relay_handle = tokio::spawn(relay_events(
+        event_rx,
+        *state.event_bus.clock(),
+        json_tx,
+        subscriptions_rx,
+    ));
 
     let initial = tokio::time::timeout(Duration::from_secs(1), json_rx.recv())
         .await
@@ -3951,9 +4177,15 @@ async fn one_input_status_publisher_fans_out_once_to_multiple_websocket_relays()
     let (_, second_subscriptions) = watch::channel(SubscriptionState::default());
     let (first_tx, mut first_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(8);
     let (second_tx, mut second_rx) = tokio::sync::mpsc::channel::<Utf8Bytes>(8);
-    let first_relay = tokio::spawn(relay_events(first_event_rx, first_tx, first_subscriptions));
+    let first_relay = tokio::spawn(relay_events(
+        first_event_rx,
+        *state.event_bus.clock(),
+        first_tx,
+        first_subscriptions,
+    ));
     let second_relay = tokio::spawn(relay_events(
         second_event_rx,
+        *state.event_bus.clock(),
         second_tx,
         second_subscriptions,
     ));
@@ -5045,6 +5277,26 @@ fn websocket_manifest_matches_protocol_constants() {
     assert_eq!(manifest_capabilities, ws_capabilities());
     assert_eq!(manifest["version"], HYPERCOLOR_WS_VERSION);
     assert_eq!(manifest["subprotocol"], HYPERCOLOR_WS_PROTOCOL);
+    assert_eq!(
+        manifest["clock"]["stamped_messages"],
+        serde_json::json!(PUBLICATION_STAMPED_SERVER_MESSAGES)
+    );
+    assert_eq!(
+        manifest["clock"]["stamp_fields"],
+        serde_json::json!(["timestamp", "mono_us"])
+    );
+    assert_eq!(
+        manifest["clock"]["hello_fields"],
+        serde_json::json!(["clock_epoch", "mono_us"])
+    );
+    assert_eq!(
+        manifest["clock"]["round_trip_messages"],
+        serde_json::json!(ROUND_TRIP_STAMPED_SERVER_MESSAGES)
+    );
+    assert_eq!(
+        manifest["clock"]["round_trip_fields"],
+        serde_json::json!(["mono_us"])
+    );
     let default_subscriptions = SubscriptionState::default()
         .live_subscriptions()
         .map(|subscription| subscription.topic.as_str())
@@ -5383,6 +5635,7 @@ async fn command_response_from_http_unwraps_data_envelope() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_test");
             assert_eq!(status, 200);
@@ -5409,6 +5662,7 @@ async fn command_response_from_http_unwraps_error_envelope() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_missing");
             assert_eq!(status, 404);
@@ -5478,6 +5732,7 @@ async fn dispatch_command_keeps_retired_status_route_absent() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_status");
             assert_eq!(status, 404);
@@ -5511,6 +5766,7 @@ async fn dispatch_command_routes_to_system() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_system");
             assert_eq!(status, 200);
@@ -5602,6 +5858,7 @@ async fn dispatch_command_rejects_invalid_method() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_bad_method");
             assert_eq!(status, 400);
@@ -5635,6 +5892,7 @@ async fn dispatch_command_preserves_secured_ws_auth_context() {
             status,
             data,
             error,
+            ..
         } => {
             assert_eq!(id, "cmd_system");
             assert_eq!(status, 200);
@@ -6914,6 +7172,57 @@ async fn a_command_executing_when_the_session_is_revoked_completes() {
     while socket.recv().await.is_some() {}
 
     assert_eq!(probe.executed.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn command_responses_are_stamped_after_the_command_finishes() {
+    let (state, probe) = revocation_probe_state();
+    let clock = *state.event_bus.clock();
+    let mut socket = spawn_test_granted_local_socket(
+        Arc::clone(&state),
+        &tokio::runtime::Handle::current(),
+        authority_control(),
+        probe_grant(tokio_util::sync::CancellationToken::new()),
+    );
+    let hello = socket.recv().await.expect("test socket should emit hello");
+    assert!(matches!(hello, Message::Text(_)));
+
+    let sent_us = clock.mono_us();
+    socket
+        .send(probe_command("/probe/gated"))
+        .await
+        .expect("test socket should queue the command");
+    probe.started.notified().await;
+    // The handler is running. Hold it long enough that a stamp taken when
+    // the command arrived would land measurably before this reading.
+    tokio::time::sleep(Duration::from_millis(2)).await;
+    let finishing_us = clock.mono_us();
+    probe.release.notify_one();
+
+    let response = loop {
+        let message = tokio::time::timeout(Duration::from_secs(2), socket.recv())
+            .await
+            .expect("command response should arrive")
+            .expect("session should stay open");
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let wire: serde_json::Value = serde_json::from_str(text.as_str()).expect("JSON");
+        if wire["type"] == "response" {
+            break wire;
+        }
+    };
+    let received_us = clock.mono_us();
+
+    assert_eq!(response["status"], 200);
+    let stamp: ResponseStamp =
+        serde_json::from_value(response).expect("response decodes as the shared stamp");
+    let mono_us = stamp.mono_us.expect("command responses carry mono_us");
+    assert!(sent_us <= mono_us && mono_us <= received_us);
+    assert!(
+        mono_us >= finishing_us,
+        "the stamp is taken after the command finishes, not when it arrives"
+    );
 }
 
 #[tokio::test]

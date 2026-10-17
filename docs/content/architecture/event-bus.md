@@ -39,10 +39,12 @@ The broadcast channel is sized at 256 events (`EVENT_CHANNEL_CAPACITY`). At a st
 
 ### Event timestamps
 
-The bus adds two timestamps at publish time so producers do not need clocks:
+The bus reads its `PublicationClock` once per publish and attaches both halves, so producers do not need clocks:
 
-- `timestamp`: wall-clock ISO 8601 in milliseconds (`EventTimestamp`, formatted as `YYYY-MM-DDTHH:MM:SS.mmmZ`)
-- `mono_ms`: monotonic milliseconds since bus creation, useful for correlating events to rendered frames
+- `timestamp`: wall-clock ISO 8601 in milliseconds (`EventTimestamp`, formatted as `YYYY-MM-DDTHH:MM:SS.mmmZ`). It follows the host clock through NTP slews and manual steps.
+- `mono_us`: monotonic microseconds since the bus was created. It never moves backwards and does not jump when the wall clock is stepped, though it can follow NTP frequency corrections, and it resolves 16.7 ms frame pacing.
+
+The clock also carries a random epoch id. The WebSocket relay forwards both stamps unchanged, and the snapshot topics (`metrics`, `device_metrics`, `sensors`) read the same clock when they assemble a message. The `hello` announces the epoch id so a client knows which stamps share an origin. See [the WebSocket clock contract](@/api/websocket.md#clocks-and-timing).
 
 ### Event priorities
 
@@ -127,7 +129,7 @@ When zones are removed, the daemon calls `retain_zone_canvases` to drop stale se
 
 ## Bus lifecycle
 
-`HypercolorBus` is constructed once at daemon startup and shared via clone (each clone shares the same underlying channel state via `Arc`). The bus starts a monotonic clock at construction time for `mono_ms` timestamps; all per-frame timing data can be correlated back to that origin.
+`HypercolorBus` is constructed once at daemon startup and shared via clone (each clone shares the same underlying channel state via `Arc`). The bus starts its publication clock at construction time, so one daemon run has one monotonic origin and one epoch id. Tests can build a bus whose clock reads an injected wall clock, which is how they step the wall clock and confirm `mono_us` does not follow.
 
 ```rust
 let bus = HypercolorBus::new();
