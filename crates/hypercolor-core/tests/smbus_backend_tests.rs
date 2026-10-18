@@ -973,6 +973,121 @@ async fn smbus_backend_rewrites_every_led_after_a_failed_write() {
         .expect("disconnect should succeed");
 }
 
+fn direct_mode_writes(operations: &[SmBusOperation]) -> usize {
+    operations
+        .iter()
+        .filter(|operation| {
+            **operation
+                == SmBusOperation::WriteWordData {
+                    register: 0x00,
+                    value: 0x2080,
+                }
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn smbus_backend_skips_the_bus_for_a_frame_the_dimm_already_shows() {
+    let mut dram = ScriptedDram::connect(Vec::new()).await;
+    dram.deliver(steady_dram_frame()).await;
+    let mut changed = steady_dram_frame();
+    changed[1] = [0x0A, 0x0B, 0x0C];
+    dram.deliver(changed.clone()).await;
+    dram.take_frames();
+    let started_before = dram.observer.started.load(Ordering::SeqCst);
+
+    let ack = dram.deliver(changed).await;
+
+    assert_eq!(ack.status, DeviceDeliveryStatus::SuppressedDuplicate);
+    assert!(!ack.transport_started);
+    assert!(dram.take_frames().is_empty());
+    assert_eq!(dram.observer.started.load(Ordering::SeqCst), started_before);
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
+}
+
+#[tokio::test]
+async fn smbus_backend_reasserts_direct_mode_after_a_failed_write() {
+    let mut dram = ScriptedDram::connect(vec![true, true, false]).await;
+    let mut changed = steady_dram_frame();
+    changed[4] = [0x20, 0x40, 0x60];
+
+    dram.deliver(steady_dram_frame()).await;
+    dram.deliver(changed.clone()).await;
+    let failed = dram.deliver(steady_dram_frame()).await;
+    assert_eq!(failed.status, DeviceDeliveryStatus::Failed);
+    dram.deliver(steady_dram_frame()).await;
+
+    let frames = dram.take_frames();
+    assert_eq!(frames.len(), 4);
+    assert_eq!(
+        direct_mode_writes(&frames[0]),
+        1,
+        "first frame of a session"
+    );
+    assert_eq!(direct_mode_writes(&frames[1]), 0, "confirmed delta frame");
+    assert_eq!(direct_mode_writes(&frames[2]), 0, "the frame that failed");
+    assert_eq!(
+        direct_mode_writes(&frames[3]),
+        1,
+        "the first frame after a failure must re-assert direct mode"
+    );
+    assert_eq!(block_writes(&frames[3]), 8);
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
+}
+
+#[tokio::test]
+async fn smbus_backend_reasserts_direct_mode_after_reconnect() {
+    let mut dram = ScriptedDram::connect(Vec::new()).await;
+    dram.deliver(steady_dram_frame()).await;
+    dram.deliver(steady_dram_frame()).await;
+    assert_eq!(
+        dram.take_frames().len(),
+        1,
+        "the repeat frame stays off the bus"
+    );
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
+    dram.backend
+        .connect(&dram.device_id)
+        .await
+        .expect("reconnect should succeed");
+    dram.sink = dram
+        .backend
+        .frame_sink(&dram.device_id)
+        .expect("reconnected DIMM should expose a frame sink");
+    let init = dram.take_frames();
+    assert_eq!(
+        init.iter()
+            .map(|ops| direct_mode_writes(ops))
+            .sum::<usize>(),
+        1,
+        "reconnect runs the init sequence's direct-mode write"
+    );
+
+    dram.deliver(steady_dram_frame()).await;
+
+    let frames = dram.take_frames();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(direct_mode_writes(&frames[0]), 1);
+    assert_eq!(block_writes(&frames[0]), 8);
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
+}
+
 fn discovered_smbus_device(device_id: DeviceId) -> DiscoveredDevice {
     discovered_smbus_device_at(device_id, "/dev/i2c-9", 0x71)
 }

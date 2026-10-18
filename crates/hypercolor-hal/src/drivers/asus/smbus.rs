@@ -499,7 +499,7 @@ pub const fn simple_gpu_magic(hi: u8, lo: u8) -> u16 {
 /// Frames write only the LEDs that changed since the last frame the
 /// controller accepted, which the backend confirms through
 /// [`Protocol::frame_write_finished`]. Without that confirmation every frame
-/// is written in full.
+/// is written in full, and DRAM frames re-assert direct mode.
 pub struct AuraSmBusProtocol {
     state: RwLock<AuraSmBusState>,
     baseline: Mutex<FrameBaseline>,
@@ -605,7 +605,11 @@ impl Protocol for AuraSmBusProtocol {
         };
 
         let mut operations = Vec::new();
-        if variant.frame_apply_register.is_some() {
+        // While the shown colors are unknown (the first frame of a session,
+        // after a failed or unreported write, and on the periodic full
+        // write) the DIMM may also have fallen out of direct mode, so the
+        // frame re-asserts it.
+        if variant.frame_apply_register.is_some() && baseline.shown.is_none() {
             operations.extend(ene_write_register(ENE_DIRECT_MODE_REGISTER, ENE_APPLY_VAL));
         }
         let mut written_leds = 0_usize;
