@@ -18,11 +18,15 @@ use hypercolor_types::canvas::{Canvas, Rgb};
 use hypercolor_types::event::FrameData;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ColorInterpolation;
+#[cfg(feature = "wgpu")]
+use hypercolor_types::scene::ZoneId;
 #[cfg(test)]
 use hypercolor_types::spatial::Output;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_composer::RenderStageStats;
+#[cfg(feature = "wgpu")]
+use super::pipeline_runtime::GpuFallbackSampling;
 use super::pipeline_runtime::{RetainedZoneFrame, SamplingRuntime, SceneTransitionKey};
 #[cfg(feature = "wgpu")]
 use super::producer_queue::{GpuTextureFrame, ProducerFrame};
@@ -68,13 +72,6 @@ impl ZoneSamplingSet {
         self.zones
             .iter()
             .flat_map(|zone| zone.prepared_zones.iter())
-            .map(prepared_zone_shape)
-    }
-
-    fn gpu_shape(&self) -> impl Iterator<Item = (&str, usize)> + '_ {
-        self.gpu_textures
-            .iter()
-            .flat_map(|texture| texture.prepared_zones.iter())
             .map(prepared_zone_shape)
     }
 
@@ -132,6 +129,56 @@ impl ZoneSamplingSet {
     }
 }
 
+/// Unassigned outputs sampled from the fallback zone's texture beside a zone
+/// set's own textures, in the same dispatch (Spec 86 §4.3). Their colors are
+/// the tail of the GPU result.
+#[cfg(feature = "wgpu")]
+struct FallbackPass {
+    zone_id: ZoneId,
+    /// The set's textures followed by the fallback zone's texture.
+    textures: Vec<ZoneTextureSample>,
+    ranges: usize,
+}
+
+#[cfg(feature = "wgpu")]
+impl FallbackPass {
+    /// The pass for `fallback` over `frame`, when `frame` is the GPU texture
+    /// the registered plan was laid out for.
+    fn new(
+        base: &[ZoneTextureSample],
+        frame: &ProducerFrame,
+        fallback: &GpuFallbackSampling,
+    ) -> Option<Self> {
+        let ProducerFrame::GpuTexture(texture) = frame else {
+            return None;
+        };
+        let layout = fallback.engine.layout();
+        let prepared_zones = fallback.engine.sampling_plan();
+        if texture.width != layout.canvas_width
+            || texture.height != layout.canvas_height
+            || prepared_zones.is_empty()
+            || !SparkleFlinger::gpu_samples_plan_modes(&prepared_zones)
+        {
+            return None;
+        }
+        let ranges = prepared_zones.len();
+        let mut textures = Vec::with_capacity(base.len().saturating_add(1));
+        textures.extend_from_slice(base);
+        textures.push(ZoneTextureSample {
+            frame: GpuTextureFrame {
+                immutable_lease: None,
+                ..texture.clone()
+            },
+            prepared_zones,
+        });
+        Some(Self {
+            zone_id: fallback.zone_id,
+            textures,
+            ranges,
+        })
+    }
+}
+
 /// What `resolve_led_sampling` samples on the GPU: the compositor's output
 /// with one engine, or a zone set's textures with their own engines.
 enum GpuSampleTarget {
@@ -140,7 +187,10 @@ enum GpuSampleTarget {
         prepared_zones: Arc<[PreparedZonePlan]>,
     },
     #[cfg(feature = "wgpu")]
-    Zones(Arc<ZoneSamplingSet>),
+    Zones {
+        set: Arc<ZoneSamplingSet>,
+        fallback: Option<FallbackPass>,
+    },
 }
 
 impl GpuSampleTarget {
@@ -148,7 +198,7 @@ impl GpuSampleTarget {
         match self {
             Self::Output { engine, .. } => engine.layout(),
             #[cfg(feature = "wgpu")]
-            Self::Zones(set) => Arc::clone(&set.layout),
+            Self::Zones { set, .. } => Arc::clone(&set.layout),
         }
     }
 
@@ -156,7 +206,9 @@ impl GpuSampleTarget {
         match self {
             Self::Output { prepared_zones, .. } => ZoneSamplingRequest::Output(prepared_zones),
             #[cfg(feature = "wgpu")]
-            Self::Zones(set) => ZoneSamplingRequest::ZoneTextures(&set.gpu_textures),
+            Self::Zones { set, fallback } => {
+                ZoneSamplingRequest::ZoneTextures(dispatched_textures(set, fallback.as_ref()))
+            }
         }
     }
 
@@ -167,7 +219,7 @@ impl GpuSampleTarget {
                 can_hold_zone_colors_for_prepared_sampling(prepared_zones, zones)
             }
             #[cfg(feature = "wgpu")]
-            Self::Zones(set) => zone_shapes_match(set.output_shape(), zones),
+            Self::Zones { set, .. } => zone_shapes_match(set.output_shape(), zones),
         }
     }
 
@@ -178,7 +230,13 @@ impl GpuSampleTarget {
                 can_hold_zone_colors_for_prepared_sampling(prepared_zones, zones)
             }
             #[cfg(feature = "wgpu")]
-            Self::Zones(set) => zone_shapes_match(set.gpu_shape(), zones),
+            Self::Zones { set, fallback } => zone_shapes_match(
+                dispatched_textures(set, fallback.as_ref())
+                    .iter()
+                    .flat_map(|texture| texture.prepared_zones.iter())
+                    .map(prepared_zone_shape),
+                zones,
+            ),
         }
     }
 
@@ -188,9 +246,18 @@ impl GpuSampleTarget {
                 zone_shape_signature_for_prepared_sampling(prepared_zones)
             }
             #[cfg(feature = "wgpu")]
-            Self::Zones(set) => hash_zone_shapes(set.output_shape()),
+            Self::Zones { set, .. } => hash_zone_shapes(set.output_shape()),
         }
     }
+}
+
+/// The textures one dispatch of a zone set reads.
+#[cfg(feature = "wgpu")]
+fn dispatched_textures<'a>(
+    set: &'a ZoneSamplingSet,
+    fallback: Option<&'a FallbackPass>,
+) -> &'a [ZoneTextureSample] {
+    fallback.map_or(&set.gpu_textures, |pass| &pass.textures)
 }
 
 #[cfg(feature = "wgpu")]
@@ -612,9 +679,10 @@ pub(crate) fn resolve_led_sampling(
             prepared_zones: spatial_engine.sampling_plan(),
         }),
         #[cfg(feature = "wgpu")]
-        LedSamplingStrategy::SparkleFlingerZones(set) => {
-            Some(GpuSampleTarget::Zones(Arc::clone(set)))
-        }
+        LedSamplingStrategy::SparkleFlingerZones(set) => Some(GpuSampleTarget::Zones {
+            set: Arc::clone(set),
+            fallback: None,
+        }),
         LedSamplingStrategy::PreSampled(_)
         | LedSamplingStrategy::RetainedPreSampled { .. }
         | LedSamplingStrategy::ReusePublished(_) => None,
@@ -643,9 +711,12 @@ pub(crate) fn resolve_led_sampling(
             match render_stage
                 .led_transition_source
                 .as_ref()
-                .and_then(|frame| one_zone_transition_set(&engine, &prepared_zones, frame))
+                .and_then(|frame| one_zone_set(&engine, &prepared_zones, frame))
             {
-                Some(set) => Some(GpuSampleTarget::Zones(Arc::new(set))),
+                Some(set) => Some(GpuSampleTarget::Zones {
+                    set: Arc::new(set),
+                    fallback: None,
+                }),
                 None => Some(GpuSampleTarget::Output {
                     engine,
                     prepared_zones,
@@ -655,7 +726,17 @@ pub(crate) fn resolve_led_sampling(
         other => other,
     };
     #[cfg(feature = "wgpu")]
-    let samples_zone_set = matches!(gpu_sample_target, Some(GpuSampleTarget::Zones(_)));
+    let gpu_sample_target = with_unassigned_fallback(
+        gpu_sample_target,
+        sampling
+            .output_artifacts
+            .unassigned_output_cache
+            .gpu_fallback(),
+        &render_stage.zone_canvases,
+        transition_active,
+    );
+    #[cfg(feature = "wgpu")]
+    let samples_zone_set = matches!(gpu_sample_target, Some(GpuSampleTarget::Zones { .. }));
     #[cfg(not(feature = "wgpu"))]
     let samples_zone_set = false;
     let mut gpu_zone_sampling = false;
@@ -952,7 +1033,7 @@ pub(crate) fn resolve_led_sampling(
             // Zone snapshots never reach the CPU (Spec 48 §4.1): without a GPU
             // sample, a zone set holds its published frame or goes black.
             #[cfg(feature = "wgpu")]
-            GpuSampleTarget::Zones(set) => {
+            GpuSampleTarget::Zones { set, .. } => {
                 if can_hold_published_frame {
                     render_stage.led_sampling_strategy =
                         LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
@@ -1020,16 +1101,26 @@ pub(crate) fn resolve_led_sampling(
         render_stage.sampled_us = micros_between(cpu_sample_start, Instant::now());
     }
 
-    // A fresh GPU sample of a zone set covers only its `Gpu` zones; splice
-    // the CPU-sampled and held zones back into zone order.
+    // A fresh GPU sample of a zone set covers only its `Gpu` zones, followed
+    // by any unassigned fallback outputs: keep the fallback colors for the
+    // output stage, then splice the CPU-sampled and held zones back into
+    // zone order.
     #[cfg(feature = "wgpu")]
     if gpu_zone_sampling
-        && let Some(GpuSampleTarget::Zones(set)) = gpu_sample_target.as_ref()
+        && let Some(GpuSampleTarget::Zones { set, fallback }) = gpu_sample_target.as_ref()
         && !matches!(
             render_stage.led_sampling_strategy,
             LedSamplingStrategy::ReusePublished(_)
         )
     {
+        if let Some(pass) = fallback {
+            let zones = sampling.output_artifacts.zones_mut();
+            let fallback_colors = zones.split_off(zones.len().saturating_sub(pass.ranges));
+            sampling
+                .output_artifacts
+                .unassigned_output_cache
+                .store_gpu_fallback_colors(pass.zone_id, fallback_colors);
+        }
         let published_frame = state.event_bus.frame_lane().borrow();
         set.assemble_into(
             sampling.output_artifacts.zones_mut(),
@@ -1168,13 +1259,67 @@ fn zone_set_transition_zones(
     None
 }
 
-/// A single-zone scene's own frame as a one-zone set, for a transition out of
-/// a multi-zone scene: GPU frames sample on the GPU, CPU-backed frames on the
-/// CPU where their pixels already are. A GPU copy drops the snapshot lease,
-/// because the dispatch that reads it is queued this frame, before the
-/// snapshot can be reused.
+/// Add the unassigned fallback pass the output stage registered (Spec 86
+/// §4.3). A zone set samples it beside its own textures. A single-zone scene
+/// samples its own frame as a one-zone set so the pass shares its dispatch;
+/// while a transition runs it keeps sampling the crossfade, and fallback
+/// outputs hold their last colors.
 #[cfg(feature = "wgpu")]
-fn one_zone_transition_set(
+fn with_unassigned_fallback(
+    target: Option<GpuSampleTarget>,
+    fallback: Option<&GpuFallbackSampling>,
+    zone_canvases: &[(ZoneId, ProducerFrame)],
+    transition_active: bool,
+) -> Option<GpuSampleTarget> {
+    let Some(fallback) = fallback else {
+        return target;
+    };
+    let Some(frame) = zone_canvases
+        .iter()
+        .find(|(zone_id, _)| *zone_id == fallback.zone_id)
+        .map(|(_, frame)| frame)
+    else {
+        return target;
+    };
+    match target {
+        Some(GpuSampleTarget::Zones {
+            set,
+            fallback: None,
+        }) => {
+            let pass = FallbackPass::new(&set.gpu_textures, frame, fallback);
+            Some(GpuSampleTarget::Zones {
+                set,
+                fallback: pass,
+            })
+        }
+        Some(GpuSampleTarget::Output {
+            engine,
+            prepared_zones,
+        }) if !transition_active => {
+            let fallback_target = one_zone_set(&engine, &prepared_zones, frame)
+                .filter(ZoneSamplingSet::samples_only_on_gpu)
+                .and_then(|set| {
+                    let pass = FallbackPass::new(&set.gpu_textures, frame, fallback)?;
+                    Some(GpuSampleTarget::Zones {
+                        set: Arc::new(set),
+                        fallback: Some(pass),
+                    })
+                });
+            fallback_target.or(Some(GpuSampleTarget::Output {
+                engine,
+                prepared_zones,
+            }))
+        }
+        other => other,
+    }
+}
+
+/// A single-zone scene's own frame as a one-zone set: GPU frames sample on
+/// the GPU, CPU-backed frames on the CPU where their pixels already are. A
+/// GPU copy drops the snapshot lease, because the dispatch that reads it is
+/// queued this frame, before the snapshot can be reused.
+#[cfg(feature = "wgpu")]
+fn one_zone_set(
     engine: &SpatialEngine,
     prepared_zones: &Arc<[PreparedZonePlan]>,
     frame: &ProducerFrame,

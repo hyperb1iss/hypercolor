@@ -2616,6 +2616,157 @@ async fn gpu_transition_out_of_overlapping_zones_blends_each_led_from_its_own_co
     );
 }
 
+/// A mock device mapped to the router with no layout output of its own, so
+/// every scene leaves its LEDs unassigned.
+#[cfg(feature = "wgpu")]
+async fn unplaced_mock_device(
+    led_count: u32,
+) -> (Arc<MockDeviceBackend>, DeviceId, BackendManager) {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Unplaced Strip".into(),
+        led_count,
+        topology: LedTopology::Strip {
+            count: led_count,
+            direction: StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+    let backend = Arc::new(MockDeviceBackend::new().with_device(&mock_config));
+    backend.connect(&device_id).await.expect("connect");
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(backend.clone());
+    backend_manager.map_device_with_segment(
+        "mock:unplaced",
+        "mock",
+        device_id,
+        Some(hypercolor_core::device::SegmentRange::new(
+            0,
+            usize::try_from(led_count).expect("LED count fits usize"),
+        )),
+    );
+    (backend, device_id, backend_manager)
+}
+
+/// Render `scene` until the unplaced device receives `expected` on every LED.
+#[cfg(feature = "wgpu")]
+async fn assert_unplaced_device_shows(
+    mode: RenderAccelerationMode,
+    scene: impl FnOnce(EffectId) -> (hypercolor_types::scene::Scene, ZoneId),
+    expected: [u8; 3],
+) {
+    let (backend, device_id, backend_manager) = unplaced_mock_device(4).await;
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        backend_manager,
+    );
+    state.render_acceleration_mode = mode;
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let (mut scene, fallback_zone) = scene(solid_id);
+    scene.unassigned_behavior = UnassignedBehavior::Fallback(fallback_zone);
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let unplaced_shows_expected = || {
+        backend
+            .last_colors(&device_id)
+            .is_some_and(|colors| colors == vec![expected; 4])
+    };
+    tokio::time::timeout(WAIT_DEADLINE, async {
+        while !unplaced_shows_expected() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the unplaced device never showed {expected:?}; last write was {:?}",
+            backend.last_colors(&device_id)
+        )
+    });
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
+/// `Fallback(zone)` on a GPU multi-zone scene samples the unassigned outputs
+/// from that zone's own texture in the LED dispatch: the unplaced device
+/// shows the red zone even though the blue zone composites over it in the
+/// scene canvas (Spec 86 §4.3).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_fallback_samples_unassigned_outputs_from_the_fallback_zone() {
+    assert_unplaced_device_shows(
+        RenderAccelerationMode::Gpu,
+        |solid_id| {
+            let mut scene = make_scene("Fallback Zones");
+            scene.zones = overlapping_zones(solid_id);
+            let red_zone = scene.zones[0].id;
+            (scene, red_zone)
+        },
+        [255, 0, 0],
+    )
+    .await;
+}
+
+/// The CPU backend gives the same unassigned output for the same scene.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn cpu_multi_zone_fallback_samples_unassigned_outputs_from_the_fallback_zone() {
+    assert_unplaced_device_shows(
+        RenderAccelerationMode::Cpu,
+        |solid_id| {
+            let mut scene = make_scene("Fallback Zones");
+            scene.zones = overlapping_zones(solid_id);
+            let red_zone = scene.zones[0].id;
+            (scene, red_zone)
+        },
+        [255, 0, 0],
+    )
+    .await;
+}
+
+/// A single-zone scene whose layers compose on the GPU publishes a texture,
+/// not a canvas; its fallback outputs ride the same LED dispatch.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_single_zone_fallback_samples_unassigned_outputs_from_its_texture() {
+    assert_unplaced_device_shows(
+        RenderAccelerationMode::Gpu,
+        |solid_id| {
+            let mut zone = primary_zone(
+                solid_id,
+                solid_color_controls(0, 0, 255),
+                test_layout(vec![strip_zone("zone_main", "mock:main", 4)]),
+            );
+            zone.layers.push(SceneLayer::from_effect(
+                SceneLayerId::new(),
+                solid_id,
+                solid_color_controls(0, 255, 0),
+                HashMap::new(),
+                None,
+            ));
+            let zone_id = zone.id;
+            let mut scene = make_scene("Fallback Single Zone");
+            scene.zones = vec![zone];
+            (scene, zone_id)
+        },
+        [0, 255, 0],
+    )
+    .await;
+}
+
 #[cfg(feature = "wgpu")]
 fn overlapping_zones(solid_id: EffectId) -> Vec<Zone> {
     vec![

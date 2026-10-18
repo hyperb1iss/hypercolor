@@ -691,6 +691,24 @@ pub(crate) struct CachedUnassignedOutputEntry {
 pub(crate) struct UnassignedOutputCache {
     entry: Option<CachedUnassignedOutputEntry>,
     fallback_spatial_engine: Option<CachedFallbackSpatialEngine>,
+    /// The fallback plan the next LED dispatch samples beside the scene,
+    /// registered while the fallback zone's frame is a GPU texture.
+    #[cfg(feature = "wgpu")]
+    gpu_fallback: Option<GpuFallbackSampling>,
+    /// The last fallback colors a GPU dispatch returned, and their zone.
+    #[cfg(feature = "wgpu")]
+    gpu_fallback_colors: Option<(ZoneId, Vec<ZoneColors>)>,
+}
+
+/// Unassigned outputs sampled from a GPU-backed fallback zone's texture in
+/// the frame's own LED dispatch, so their colors join its readback instead
+/// of materializing the zone on the CPU (Spec 86 §4.3).
+#[cfg(feature = "wgpu")]
+#[derive(Clone)]
+pub(crate) struct GpuFallbackSampling {
+    pub(crate) zone_id: ZoneId,
+    /// The unassigned outputs laid out over the zone's texture extent.
+    pub(crate) engine: SpatialEngine,
 }
 
 struct CachedFallbackSpatialEngine {
@@ -722,6 +740,44 @@ impl UnassignedOutputCache {
     pub(crate) fn clear(&mut self) {
         self.entry = None;
         self.fallback_spatial_engine = None;
+        #[cfg(feature = "wgpu")]
+        {
+            self.gpu_fallback = None;
+            self.gpu_fallback_colors = None;
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn gpu_fallback(&self) -> Option<&GpuFallbackSampling> {
+        self.gpu_fallback.as_ref()
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn set_gpu_fallback(&mut self, fallback: Option<GpuFallbackSampling>) {
+        self.gpu_fallback = fallback;
+    }
+
+    /// Keep the fallback colors a GPU dispatch returned for `zone_id`.
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn store_gpu_fallback_colors(&mut self, zone_id: ZoneId, colors: Vec<ZoneColors>) {
+        self.gpu_fallback_colors = Some((zone_id, colors));
+    }
+
+    /// The last GPU-sampled fallback colors for `zone_id`, when they have the
+    /// shape of `expected` (the unassigned outputs in black).
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn gpu_fallback_colors(
+        &self,
+        zone_id: ZoneId,
+        expected: &[ZoneColors],
+    ) -> Option<&[ZoneColors]> {
+        let (sampled_zone, colors) = self.gpu_fallback_colors.as_ref()?;
+        (*sampled_zone == zone_id
+            && colors.len() == expected.len()
+            && colors.iter().zip(expected).all(|(colors, expected)| {
+                colors.zone_id == expected.zone_id && colors.colors.len() == expected.colors.len()
+            }))
+        .then_some(colors.as_slice())
     }
 
     pub(crate) fn fallback_spatial_engine(&self, layout: &SpatialLayout) -> Option<SpatialEngine> {
