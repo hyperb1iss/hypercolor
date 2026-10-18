@@ -16,3 +16,5 @@ bun.lock
 # Vendored upstream sources stay byte-identical to the published crate
 vendor/servo-script/**
 !vendor/servo-script/HYPERCOLOR.md
+vendor/utoipa-swagger-ui/**
+!vendor/utoipa-swagger-ui/HYPERCOLOR.md
