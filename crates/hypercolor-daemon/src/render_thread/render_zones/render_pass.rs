@@ -254,8 +254,10 @@ impl ZoneRuntime {
     ) -> Result<()> {
         let frame = if let Some(frame) = frame {
             let frame = sparkleflinger.stabilize_projected_zone_frame(zone.id, frame)?;
-            self.last_zone_frames
-                .insert(zone.id, held_zone_frame(&frame));
+            match held_zone_frame(&frame) {
+                Some(held) => self.last_zone_frames.insert(zone.id, held),
+                None => self.last_zone_frames.remove(&zone.id),
+            };
             frame
         } else if let Some(frame) = self.last_zone_frames.get(&zone.id).cloned() {
             frame
@@ -367,19 +369,20 @@ impl ZoneRuntime {
 }
 
 /// The copy of a zone's frame kept for passes in which its layers produce
-/// nothing. It drops the snapshot lease: the copy only ever stands in for
-/// this zone's own snapshot, which lives until the next reconcile clears the
-/// copy, and holding the lease would keep retired projection resources
-/// accounted as in use.
-fn held_zone_frame(frame: &ProducerFrame) -> ProducerFrame {
+/// nothing, when keeping it costs only a handle copy. A GPU copy drops the
+/// snapshot lease: it only ever stands in for this zone's own snapshot,
+/// which lives until the next reconcile clears the copy, and holding the
+/// lease would keep retired projection resources accounted as in use.
+fn held_zone_frame(frame: &ProducerFrame) -> Option<ProducerFrame> {
     match frame {
         #[cfg(feature = "wgpu")]
-        ProducerFrame::GpuTexture(texture) => {
-            ProducerFrame::GpuTexture(super::super::producer_queue::GpuTextureFrame {
+        ProducerFrame::GpuTexture(texture) => Some(ProducerFrame::GpuTexture(
+            super::super::producer_queue::GpuTextureFrame {
                 immutable_lease: None,
                 ..texture.clone()
-            })
-        }
-        other => other.clone(),
+            },
+        )),
+        ProducerFrame::Surface(_) => Some(frame.clone()),
+        _ => None,
     }
 }
