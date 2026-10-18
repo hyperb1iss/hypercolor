@@ -608,6 +608,8 @@ fn red_gif_bytes() -> Vec<u8> {
 }
 
 mod device_surfaces;
+#[cfg(feature = "wgpu")]
+mod gpu_layer_latch;
 mod invalidation;
 mod layers;
 mod projection;

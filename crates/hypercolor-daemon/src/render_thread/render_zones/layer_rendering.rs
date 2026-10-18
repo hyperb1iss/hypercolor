@@ -376,12 +376,27 @@ impl ZoneRuntime {
         Ok(())
     }
 
+    /// Stands in for one Servo render of `layer_id`: the next effect render
+    /// of that layer returns `frame` instead of asking the effect pool.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn inject_effect_layer_frame_for_test(
+        &mut self,
+        layer_id: SceneLayerId,
+        frame: ProducerFrame,
+    ) {
+        self.injected_effect_layer_frames.insert(layer_id, frame);
+    }
+
     fn render_effect_layer_frame(
         &mut self,
         zone: &Zone,
         layer: &SceneLayer,
         context: ZoneFrameContext<'_>,
     ) -> Result<Option<ProducerFrame>> {
+        #[cfg(all(test, feature = "wgpu"))]
+        if let Some(frame) = self.injected_effect_layer_frames.remove(&layer.id) {
+            return Ok(Some(frame));
+        }
         let device_surfaces = self.device_surfaces_for(zone);
         let sources = FrameDataSources {
             device_surfaces: device_surfaces.as_ref(),

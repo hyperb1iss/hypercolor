@@ -115,6 +115,8 @@ pub(crate) struct ZoneRuntime {
     scene_height: u32,
     #[cfg(all(test, feature = "wgpu"))]
     fail_next_projected_scene_composition: bool,
+    #[cfg(all(test, feature = "wgpu"))]
+    injected_effect_layer_frames: HashMap<hypercolor_types::layer::SceneLayerId, ProducerFrame>,
 }
 
 pub(crate) struct PreparedSceneResize {
@@ -225,6 +227,8 @@ impl ZoneRuntime {
             scene_height,
             #[cfg(all(test, feature = "wgpu"))]
             fail_next_projected_scene_composition: false,
+            #[cfg(all(test, feature = "wgpu"))]
+            injected_effect_layer_frames: HashMap::new(),
         })
     }
 
