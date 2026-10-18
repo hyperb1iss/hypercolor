@@ -14,9 +14,14 @@ files.
 The commit that added this directory carries no source edits. Each patch
 below lands in its own later commit, so `git log -p --
 vendor/utoipa-swagger-ui` shows every change against the published crate.
+The packaged `Cargo.lock` and `Cargo.toml.orig` stay as published even
+though they still name zip 8.6, because Cargo and `cargo deny` both ignore
+them when the crate builds as a dependency.
 
-The daemon uses the crate for one route: `SwaggerUi::new("/api/v1/docs")`
-in `crates/hypercolor-daemon/src/api/openapi.rs`, built with the `axum` and
+The daemon uses the crate in one place,
+`crates/hypercolor-daemon/src/api/openapi.rs`, where
+`SwaggerUi::new("/api/v1/docs").url("/api/v1/openapi.json", ...)` serves
+the docs UI and the OpenAPI document. It builds with the `axum` and
 `vendored` features. Only the build script touches the patched code; it
 unpacks the Swagger UI archive shipped by `utoipa-swagger-ui-vendored` into
 `OUT_DIR` at compile time.
@@ -46,12 +51,13 @@ The patch exists so the dependency graph stays free of known-vulnerable
 releases and `cargo deny check advisories` passes without ignores.
 
 Upstream status: unreleased. The newest `utoipa-swagger-ui` on crates.io is
-10.0.1, and its changelog lists the zip move under "Unreleased".
+10.0.1, and upstream's changelog at `5aff30b` lists the zip move under
+"Unreleased".
 
 ## Removal rule
 
 Drop this directory and its `[patch.crates-io]` entry once a
-`utoipa-swagger-ui` release carries every patch below. A patch entry for
+`utoipa-swagger-ui` release carries every patch above. A patch entry for
 10.0.1 does nothing for any other version: Cargo only warns that the patch
 went unused and builds the unpatched crate from crates.io.
 `scripts/check-vendored-patches.sh` turns that into a CI failure, so any
