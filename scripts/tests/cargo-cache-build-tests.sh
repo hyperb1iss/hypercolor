@@ -17,11 +17,12 @@ kill_child_pid=""
 parallel_wrapper_one=""
 parallel_wrapper_two=""
 handoff_wrapper_pid=""
+trap_wrapper_pid=""
 cleanup() {
   for pid in "$signal_wrapper_pid" "$signal_child_pid" \
     "$signal_grandchild_pid" "$kill_wrapper_pid" "$kill_child_pid" \
     "$parallel_wrapper_one" "$parallel_wrapper_two" \
-    "$handoff_wrapper_pid"; do
+    "$handoff_wrapper_pid" "$trap_wrapper_pid"; do
     [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
   done
   rm -rf "$SANDBOX"
@@ -121,6 +122,10 @@ cat >"$SANDBOX/bin/sccache" <<'EOF'
 set -euo pipefail
 case "${1:-}" in
   --version)
+    if [ -n "${FAKE_SCCACHE_VERSION_STARTED:-}" ]; then
+      : >"$FAKE_SCCACHE_VERSION_STARTED"
+      sleep "${FAKE_SCCACHE_VERSION_DELAY:-0}"
+    fi
     printf 'sccache 0.14.0\n'
     ;;
   --stop-server)
@@ -743,6 +748,8 @@ exec "$REAL_FIND" "$@"
 EOF
 # Copies a probe instead of renaming it, the way mv falls back when a
 # rename would cross a mount.
+# Can also remove an entry just before its batch renames it, or hold a
+# batch rename until the test signals the wrapper.
 cat >"$SANDBOX/prune-bin/mv" <<'EOF'
 #!/usr/bin/env bash
 if [ -n "${FAKE_MV_CROSS_MOUNT:-}" ] && [ "$#" -eq 3 ] && [ "$1" = -- ]; then
@@ -752,7 +759,30 @@ if [ -n "${FAKE_MV_CROSS_MOUNT:-}" ] && [ "$#" -eq 3 ] && [ "$1" = -- ]; then
       ;;
   esac
 fi
+last="${!#}"
+case "$last" in
+  */.hypercolor-prune.*/)
+    for arg in "$@"; do
+      if [ -n "${FAKE_MV_DROP:-}" ] && [ "$arg" = "$FAKE_MV_DROP" ]; then
+        "$REAL_RM" -rf "$FAKE_MV_DROP"
+      fi
+    done
+    if [ -n "${FAKE_MV_HOLD_STARTED:-}" ]; then
+      : >"$FAKE_MV_HOLD_STARTED"
+      sleep 10
+    fi
+    ;;
+esac
 exec "$REAL_MV" "$@"
+EOF
+# An ls replacement such as eza, which prints no inode numbers.
+cat >"$SANDBOX/prune-bin/ls" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${FAKE_LS_EZA:-}" ]; then
+  printf 'drwx------ - user 17 Oct 12:00 %s\n' "${!#}"
+  exit 0
+fi
+exec "$REAL_LS" "$@"
 EOF
 # BSD touch has no epoch dates; macOS hosts often pair it with GNU date.
 cat >"$SANDBOX/prune-bin/touch" <<'EOF'
@@ -768,13 +798,13 @@ fi
 exec "$REAL_TOUCH" "$@"
 EOF
 chmod +x "$SANDBOX/prune-bin/rm" "$SANDBOX/prune-bin/find" "$SANDBOX/prune-bin/mv" \
-  "$SANDBOX/prune-bin/touch"
+  "$SANDBOX/prune-bin/touch" "$SANDBOX/prune-bin/ls"
 run_prune_wrapper() {
   env -u CI FAKE_CARGO_LOG="$SANDBOX/prune" \
     HYPERCOLOR_CACHE_DIR="$SANDBOX/prune-cache" HYPERCOLOR_NO_SCCACHE=1 \
     CARGO_TARGET_DIR="$prune_target" REAL_RM="$(command -v rm)" \
     REAL_FIND="$(command -v find)" REAL_MV="$(command -v mv)" \
-    REAL_TOUCH="$(command -v touch)" \
+    REAL_TOUCH="$(command -v touch)" REAL_LS="$(command -v ls)" \
     SLOW_RM_STARTED="$SANDBOX/slow-rm.started" \
     SLOW_RM_RELEASE="$SANDBOX/slow-rm.release" \
     PATH="$SANDBOX/prune-bin:$SANDBOX/bin:$PATH" \
@@ -843,16 +873,17 @@ test -z "$(find "$xdev_target" -name '.hypercolor-prune.*' -print -quit)"
 stat -c '%n %y' "$xdev_inc" "$xdev_target/debug" >"$SANDBOX/xdev-mtimes.after"
 diff -u "$SANDBOX/xdev-mtimes.before" "$SANDBOX/xdev-mtimes.after"
 
-# An entry that disappears between the shortlist and its move is not
-# counted as moved.
+# An entry that disappears between the shortlist and its move, or between
+# its re-check and its batch rename, is not counted as moved.
 vanish_target="$SANDBOX/vanish-target"
 vanish_inc="$vanish_target/debug/incremental"
-mkdir -p "$vanish_inc/old-a" "$vanish_inc/vanishing-b"
+mkdir -p "$vanish_inc/old-a" "$vanish_inc/vanishing-b" "$vanish_inc/dropped-c"
 touch "$vanish_target/debug/.cargo-lock"
-touch -t "$old_stamp" "$vanish_inc/old-a" "$vanish_inc/vanishing-b"
+touch -t "$old_stamp" "$vanish_inc/old-a" "$vanish_inc/vanishing-b" "$vanish_inc/dropped-c"
 prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 \
   CARGO_TARGET_DIR="$vanish_target" FAKE_FIND_DIR="$vanish_inc" \
-  FAKE_FIND_REMOVE="$vanish_inc/vanishing-b" SLOW_RM_RELEASE=/ \
+  FAKE_FIND_REMOVE="$vanish_inc/vanishing-b" FAKE_MV_DROP="$vanish_inc/dropped-c" \
+  SLOW_RM_RELEASE=/ \
   SLOW_RM_STARTED="$SANDBOX/vanish-rm.started")"
 grep -Fq 'incremental prune: moved 1 entries idle for 3+ days to trash' <<<"$prune_output"
 
@@ -865,6 +896,129 @@ prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 FAKE_TOUCH
   CARGO_TARGET_DIR="$mixed_target" SLOW_RM_RELEASE=/ \
   SLOW_RM_STARTED="$SANDBOX/mixed-rm.started" 2>&1)"
 grep -Fq 'incremental prune: moved 1 entries idle for 3+ days to trash' <<<"$prune_output"
+
+# The inode probe reads the system ls, so an ls replacement on PATH does
+# not make every dir look cross-mount.
+eza_target="$SANDBOX/eza-target"
+mkdir -p "$eza_target/debug/incremental/old-eza"
+touch "$eza_target/debug/.cargo-lock"
+touch -t "$old_stamp" "$eza_target/debug/incremental/old-eza"
+prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 FAKE_LS_EZA=1 \
+  CARGO_TARGET_DIR="$eza_target" SLOW_RM_RELEASE=/ \
+  SLOW_RM_STARTED="$SANDBOX/eza-rm.started")"
+grep -Fq 'incremental prune: moved 1 entries idle for 3+ days to trash' <<<"$prune_output"
+
+# A profile that cargo clean removes while its trash is being deleted stays
+# gone: no stray file takes its place to break the next build.
+gone_target="$SANDBOX/gone-target"
+mkdir -p "$gone_target/debug/incremental/old-gone"
+touch "$gone_target/debug/.cargo-lock"
+touch -t "$old_stamp" "$gone_target/debug/incremental/old-gone" \
+  "$gone_target/debug/incremental" "$gone_target/debug"
+run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 CARGO_TARGET_DIR="$gone_target" \
+  SLOW_RM_STARTED="$SANDBOX/gone-rm.started" \
+  SLOW_RM_RELEASE="$SANDBOX/gone-rm.release" >/dev/null
+for _ in {1..300}; do
+  [ -e "$SANDBOX/gone-rm.started" ] && break
+  sleep 0.01
+done
+test -e "$SANDBOX/gone-rm.started"
+rm -rf "$gone_target/debug"
+: >"$SANDBOX/gone-rm.release"
+for _ in {1..1000}; do
+  grep -q '^finished' "$(prune_claim "$gone_target")/prune.log" 2>/dev/null && break
+  sleep 0.01
+done
+grep -q '^finished' "$(prune_claim "$gone_target")/prune.log"
+test ! -e "$gone_target/debug"
+test ! -L "$gone_target/debug"
+# The first thing the next build does in that profile.
+mkdir "$gone_target/debug"
+
+# A build that writes into a profile while its trash is being deleted keeps
+# that activity: the profile is not handed back its old mtime.
+busy_target="$SANDBOX/busy-target"
+mkdir -p "$busy_target/debug/incremental/old-busy"
+touch "$busy_target/debug/.cargo-lock"
+touch -t "$old_stamp" "$busy_target/debug/incremental/old-busy" \
+  "$busy_target/debug/incremental" "$busy_target/debug" "$SANDBOX/old-marker"
+run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 CARGO_TARGET_DIR="$busy_target" \
+  SLOW_RM_STARTED="$SANDBOX/busy-rm.started" \
+  SLOW_RM_RELEASE="$SANDBOX/busy-rm.release" >/dev/null
+for _ in {1..300}; do
+  [ -e "$SANDBOX/busy-rm.started" ] && break
+  sleep 0.01
+done
+test -e "$SANDBOX/busy-rm.started"
+test ! "$busy_target/debug" -nt "$SANDBOX/old-marker"
+: >"$busy_target/debug/fresh-artifact"
+: >"$SANDBOX/busy-rm.release"
+for _ in {1..1000}; do
+  grep -q '^finished' "$(prune_claim "$busy_target")/prune.log" 2>/dev/null && break
+  sleep 0.01
+done
+grep -q '^finished' "$(prune_claim "$busy_target")/prune.log"
+test "$busy_target/debug" -nt "$SANDBOX/old-marker"
+
+# Ctrl-C at a terminal during the rename pass restores the mtimes, then
+# stops the wrapper by the signal itself, so a shell loop around it stops
+# too. A pty gives the loop a real foreground job and a real Ctrl-C.
+if script --version 2>&1 | grep -Fq 'util-linux'; then
+  loop_target="$SANDBOX/loop-target"
+  mkdir -p "$loop_target/debug/incremental/old-loop"
+  touch "$loop_target/debug/.cargo-lock"
+  touch -t "$old_stamp" "$loop_target/debug/incremental/old-loop" \
+    "$loop_target/debug/incremental" "$loop_target/debug"
+  stat -c '%n %y' "$loop_target/debug/incremental" "$loop_target/debug" \
+    >"$SANDBOX/loop-mtimes.before"
+  loop_command="for i in 1 2; do env -u CI FAKE_CARGO_LOG=$SANDBOX/loop HYPERCOLOR_CACHE_DIR=$SANDBOX/prune-cache HYPERCOLOR_NO_SCCACHE=1 HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 CARGO_TARGET_DIR=$loop_target REAL_RM=$(command -v rm) REAL_MV=$(command -v mv) REAL_FIND=$(command -v find) REAL_TOUCH=$(command -v touch) REAL_LS=$(command -v ls) FAKE_MV_HOLD_STARTED=$SANDBOX/loop-mv.started PATH=$SANDBOX/prune-bin:$SANDBOX/bin:$PATH $WRAPPER cargo check >/dev/null 2>&1; printf '%s\\n' \$i >>$SANDBOX/loop.log; done"
+  loop_status=0
+  {
+    printf '%s\n' "$loop_command"
+    for _ in {1..500}; do
+      [ -e "$SANDBOX/loop-mv.started" ] && break
+      sleep 0.01
+    done
+    test -e "$SANDBOX/loop-mv.started"
+    printf '\003'
+    sleep 0.5
+    printf 'exit\n'
+  } | timeout 15 script -qec 'bash --noprofile --norc -i' /dev/null \
+    >"$SANDBOX/loop-pty-output" || loop_status=$?
+  test "$loop_status" -eq 0 || test "$loop_status" -eq 130
+  test -e "$SANDBOX/loop-mv.started"
+  test ! -s "$SANDBOX/loop.log"
+  stat -c '%n %y' "$loop_target/debug/incremental" "$loop_target/debug" \
+    >"$SANDBOX/loop-mtimes.after"
+  diff -u "$SANDBOX/loop-mtimes.before" "$SANDBOX/loop-mtimes.after"
+fi
+
+# The traps come off after the rename pass: a TERM that lands later, while
+# the wrapper waits on a slow command, stops it at once rather than after.
+trap_target="$SANDBOX/trap-target"
+mkdir -p "$trap_target"
+env -u CI FAKE_CARGO_LOG="$SANDBOX/trap" FAKE_SCCACHE_LOG="$SANDBOX/trap.sccache.log" \
+  FAKE_SCCACHE_VERSION_STARTED="$SANDBOX/trap-version.started" \
+  FAKE_SCCACHE_VERSION_DELAY=4 HYPERCOLOR_CACHE_DIR="$SANDBOX/prune-cache" \
+  HYPERCOLOR_FORCE_SCCACHE=1 HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 \
+  CARGO_TARGET_DIR="$trap_target" PATH="$SANDBOX/bin:$PATH" \
+  "$WRAPPER" cargo build >"$SANDBOX/trap.out" 2>&1 &
+trap_wrapper_pid=$!
+for _ in {1..500}; do
+  [ -e "$SANDBOX/trap-version.started" ] && break
+  sleep 0.01
+done
+test -e "$SANDBOX/trap-version.started"
+trap_signal_at="$(date +%s%N)"
+kill -TERM "$trap_wrapper_pid"
+set +e
+wait "$trap_wrapper_pid"
+trap_status=$?
+set -e
+trap_wrapper_pid=""
+test "$trap_status" -eq 143
+test $(( ($(date +%s%N) - trap_signal_at) / 1000000 )) -lt 2000
+grep -Fq 'incremental prune: nothing idle for 3+ days' "$SANDBOX/trap.out"
 
 # fd 12 is the capture pipe too: the substitution only returns once every
 # holder of it, background jobs included, has closed it.

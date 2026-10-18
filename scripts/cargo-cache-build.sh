@@ -294,12 +294,18 @@ is_prunable_incremental_dir() {
 }
 
 # Prints a path's inode number. A rename keeps it; a copy does not.
+# command -p reaches the system ls even when PATH puts a replacement such as
+# eza first, and an answer that is not a number counts as no inode.
 path_inode() {
   local line
-  line="$(ls -di -- "$1" 2>/dev/null)" || return 1
+  line="$(command -p ls -di -- "$1" 2>/dev/null)" \
+    || line="$(ls -di -- "$1" 2>/dev/null)" || return 1
   line="${line#"${line%%[! ]*}"}"
-  [ -n "$line" ] || return 1
-  printf '%s\n' "${line%% *}"
+  line="${line%% *}"
+  case "$line" in
+    "" | *[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$line"
 }
 
 # Creates a file whose mtime is the prune cutoff. Each tool is probed rather
@@ -349,14 +355,15 @@ DOOMED_PROFILES=()
 DOOMED_REFS=()
 
 # Puts back any mtime the foreground pass has changed but not yet restored.
-# Runs at the end of each dir and from the INT, TERM, and HUP traps.
+# Runs at the end of each dir and from the INT, TERM, and HUP traps. touch -c
+# never recreates a dir that a concurrent cargo clean removed.
 restore_pending_prune_mtimes() {
   if [ -n "$PRUNE_PENDING_PROFILE" ]; then
-    touch -r "$PRUNE_PENDING_PROFILE_REF" "$PRUNE_PENDING_PROFILE" 2>/dev/null || true
+    touch -c -r "$PRUNE_PENDING_PROFILE_REF" "$PRUNE_PENDING_PROFILE" 2>/dev/null || true
     PRUNE_PENDING_PROFILE=""
   fi
   if [ -n "$PRUNE_PENDING_DIR" ]; then
-    touch -r "$PRUNE_PENDING_DIR_REF" "$PRUNE_PENDING_DIR" 2>/dev/null || true
+    touch -c -r "$PRUNE_PENDING_DIR_REF" "$PRUNE_PENDING_DIR" 2>/dev/null || true
     PRUNE_PENDING_DIR=""
   fi
 }
@@ -425,7 +432,7 @@ move_idle_incremental_entries() {
         INCREMENTAL_PRUNE_SKIPPED=$((INCREMENTAL_PRUNE_SKIPPED + 1))
         return 0
       fi
-      touch -r "$profile_ref" "$profile" 2>/dev/null || true
+      touch -c -r "$profile_ref" "$profile" 2>/dev/null || true
       PRUNE_PENDING_PROFILE=""
       doom_incremental_trash "$trash" "$profile" "$profile_ref"
     fi
@@ -533,9 +540,11 @@ prune_stale_incremental_dirs() {
   DOOMED_PATHS=()
   DOOMED_PROFILES=()
   DOOMED_REFS=()
-  trap 'restore_pending_prune_mtimes; exit 129' HUP
-  trap 'restore_pending_prune_mtimes; exit 130' INT
-  trap 'restore_pending_prune_mtimes; exit 143' TERM
+  # Each trap restores, then re-raises its signal, so the wrapper still dies
+  # by it and a parent shell loop stops just as it would on main.
+  trap 'restore_pending_prune_mtimes; trap - HUP; kill -HUP $$' HUP
+  trap 'restore_pending_prune_mtimes; trap - INT; kill -INT $$' INT
+  trap 'restore_pending_prune_mtimes; trap - TERM; kill -TERM $$' TERM
   for candidate in "$TARGET_DIR"/*/incremental "$TARGET_DIR"/*/*/incremental; do
     is_prunable_incremental_dir "$candidate" || continue
     index=$((index + 1))
@@ -573,9 +582,7 @@ prune_stale_incremental_dirs() {
   fi
   # Every descriptor above stderr is closed (the target lock FIFOs and any
   # pipe the caller passed down included), so neither the build nor its
-  # caller waits on the delete. A profile's mtime is restored after each
-  # delete only if nothing else changed the profile since the foreground
-  # restored it, so a build's own activity is never hidden from the GC.
+  # caller waits on the delete.
   (
     set +e
     trap '' HUP
@@ -593,16 +600,19 @@ prune_stale_incremental_dirs() {
     fi
     i=0
     while [ "$i" -lt "${#DOOMED_PATHS[@]}" ]; do
+      trash="${DOOMED_PATHS[i]}"
       profile="${DOOMED_PROFILES[i]}"
       ref="${DOOMED_REFS[i]}"
-      untouched=0
-      if [ -e "$ref" ] && [ ! "$profile" -nt "$ref" ] && [ ! "$profile" -ot "$ref" ]; then
-        untouched=1
+      # Emptying the trash leaves the profile's own mtime alone. The profile
+      # is then compared with the mtime the foreground restored, right
+      # before the rmdir that bumps it, and given that mtime back only if
+      # nothing else wrote to it or removed it meanwhile.
+      "${low_priority[@]}" find "$trash" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+      if [ -e "$ref" ] && [ -d "$profile" ] && [ ! -L "$profile" ] \
+        && [ ! "$profile" -nt "$ref" ] && [ ! "$profile" -ot "$ref" ]; then
+        rmdir -- "$trash" && touch -c -r "$ref" "$profile"
       fi
-      "${low_priority[@]}" rm -rf -- "${DOOMED_PATHS[i]}"
-      if [ "$untouched" -eq 1 ]; then
-        touch -r "$ref" "$profile"
-      fi
+      rm -rf -- "$trash"
       i=$((i + 1))
     done
     rm -f -- "${DOOMED_REFS[@]}"
