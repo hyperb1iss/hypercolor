@@ -248,6 +248,53 @@ pub async fn execute_discovery_scan(
     .await
 }
 
+/// Scan one target in its own lane, beside whatever scan holds the shared
+/// in-progress slot.
+///
+/// The scan waits only for an earlier scan of the same target, never for
+/// other drivers. A request for a target whose lane scan has not started
+/// yet merges into it. Returns `false` once discovery has shut down.
+pub fn schedule_target_scan(
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverModuleRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
+    config: Arc<HypercolorConfig>,
+    target: DiscoveryTarget,
+    timeout: Duration,
+) -> bool {
+    let lanes = Arc::clone(&runtime.target_lanes);
+    if lanes.is_shut_down() {
+        return false;
+    }
+    if !lanes.queue(&target) {
+        debug!(
+            target = target.as_str(),
+            "merged discovery request into a queued lane scan"
+        );
+        return true;
+    }
+    let handle = runtime.task_spawner.clone();
+    lanes.spawn(&handle, async move {
+        let config = driver_host.current_config_snapshot().unwrap_or(config);
+        let result = run_discovery_scan(
+            runtime,
+            driver_registry,
+            driver_host,
+            config,
+            vec![target],
+            timeout,
+        )
+        .await;
+        debug!(
+            targets = ?result.targets,
+            found = result.new_devices.len() + result.reappeared_devices.len(),
+            vanished = result.vanished_devices.len(),
+            duration_ms = result.duration_ms,
+            "Lane discovery scan finished"
+        );
+    })
+}
+
 /// Everything one target's scan needs, shared by every target of a scan.
 #[derive(Clone)]
 struct TargetScanContext {

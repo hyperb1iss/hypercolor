@@ -2246,6 +2246,14 @@ async fn a_failed_connect_before_the_first_scan_scans_inline() {
     );
 }
 
+static LANE_SLOW_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "lane_slow",
+    "Lane Slow Discovery",
+    DriverTransportKind::Network,
+    true,
+    false,
+);
+
 static LANE_QUICK_DRIVER: DriverDescriptor = DriverDescriptor::new(
     "lane_quick",
     "Lane Quick Discovery",
@@ -2286,9 +2294,33 @@ impl LaneDiscoveryDriver {
         }
     }
 
+    fn blocking(mut self) -> Self {
+        self.release = Some(Arc::new(Semaphore::new(0)));
+        self
+    }
+
     fn failing(mut self) -> Self {
         self.fail = true;
         self
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::Acquire)
+    }
+
+    fn report(&self, devices: Vec<DiscoveredDevice>) {
+        *self
+            .devices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = devices;
+    }
+
+    async fn wait_started(&self) {
+        timeout(Duration::from_secs(2), self.started.acquire())
+            .await
+            .expect("lane discovery should start")
+            .expect("lane start semaphore should stay open")
+            .forget();
     }
 }
 
@@ -2383,6 +2415,95 @@ fn lane_runtime(
     )
 }
 
+fn disconnected_ids(
+    events: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let HypercolorEvent::DeviceDisconnected { device_id, .. } = event.event {
+            ids.push(device_id);
+        }
+    }
+    ids
+}
+
+#[tokio::test]
+async fn driver_scoped_scan_runs_beside_a_slow_full_scan() {
+    use hypercolor_driver_api::DriverRuntimeActions;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let slow = LaneDiscoveryDriver::new(&LANE_SLOW_DRIVER).blocking();
+    let quick = LaneDiscoveryDriver::new(&LANE_QUICK_DRIVER);
+    let runtime = lane_runtime(&temp_dir, &[&slow, &quick]);
+    runtime.in_progress.store(false, Ordering::Release);
+    let mut events = runtime.event_bus.subscribe_all();
+
+    schedule_discovery_scan(
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        Arc::new(HypercolorConfig::default()),
+        vec![
+            DiscoveryTarget::driver(LANE_SLOW_DRIVER.id),
+            DiscoveryTarget::driver(LANE_QUICK_DRIVER.id),
+        ],
+        Duration::from_secs(10),
+    );
+    slow.wait_started().await;
+    quick.wait_started().await;
+
+    // A block arrives while the full scan still waits on the slow driver.
+    let arrival = lane_device(&LANE_QUICK_DRIVER, "arrival");
+    quick.report(vec![arrival.clone()]);
+    runtime
+        .driver_host
+        .request_discovery(LANE_QUICK_DRIVER.id)
+        .await
+        .expect("driver-scoped discovery should be scheduled");
+    timeout(Duration::from_secs(2), async {
+        while runtime
+            .device_registry
+            .get(&arrival.info.id)
+            .await
+            .is_none()
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the driver-scoped scan adopts the arrival before the full scan ends");
+    assert!(
+        runtime.in_progress.load(Ordering::Acquire),
+        "the full scan is still waiting on the slow driver"
+    );
+    assert_eq!(quick.calls(), 2);
+
+    // The full scan finishes with its older view of the quick driver, and
+    // must not retire what the newer lane scan adopted.
+    slow.release
+        .as_ref()
+        .expect("slow driver blocks")
+        .add_permits(1);
+    timeout(Duration::from_secs(2), async {
+        while runtime.in_progress.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the full scan finishes");
+    assert!(
+        runtime
+            .device_registry
+            .get(&arrival.info.id)
+            .await
+            .is_some()
+    );
+    assert!(
+        !disconnected_ids(&mut events).contains(&arrival.info.id.to_string()),
+        "the stale full scan retired a device the lane scan adopted"
+    );
+}
+
 #[tokio::test]
 async fn a_failing_scanner_does_not_keep_another_drivers_departure_connected() {
     let temp_dir = tempfile::tempdir().expect("tempdir should be created");
@@ -2417,4 +2538,42 @@ async fn a_failing_scanner_does_not_keep_another_drivers_departure_connected() {
         runtime.lifecycle_manager.lock().await.state(departed),
         Some(DeviceState::Connected)
     );
+}
+
+#[tokio::test]
+async fn shutdown_stops_an_active_driver_scoped_scan_and_refuses_new_ones() {
+    use hypercolor_driver_api::DriverRuntimeActions;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let slow = LaneDiscoveryDriver::new(&LANE_SLOW_DRIVER).blocking();
+    let runtime = lane_runtime(&temp_dir, &[&slow]);
+    slow.report(vec![lane_device(&LANE_SLOW_DRIVER, "late")]);
+
+    runtime
+        .driver_host
+        .request_discovery(LANE_SLOW_DRIVER.id)
+        .await
+        .expect("driver-scoped discovery should be scheduled");
+    slow.wait_started().await;
+
+    timeout(Duration::from_secs(2), runtime.target_lanes.shut_down())
+        .await
+        .expect("shutdown cancels and joins the active lane scan");
+
+    // A release after shutdown must not let the cancelled scan apply.
+    slow.release
+        .as_ref()
+        .expect("slow driver blocks")
+        .add_permits(1);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(runtime.device_registry.len().await, 0);
+
+    let refused = runtime
+        .driver_host
+        .request_discovery(LANE_SLOW_DRIVER.id)
+        .await
+        .expect_err("discovery requests are refused after shutdown");
+    assert!(refused.to_string().contains("shut down"), "{refused}");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(slow.calls(), 1);
 }

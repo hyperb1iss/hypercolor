@@ -62,7 +62,7 @@ pub use lifecycle::{
 };
 pub use scan::{
     execute_discovery_scan, execute_discovery_scan_if_idle, execute_discovery_scan_or_enqueue,
-    schedule_discovery_scan,
+    schedule_discovery_scan, schedule_target_scan,
 };
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
@@ -140,7 +140,8 @@ pub struct DiscoveryRuntime {
     /// Coalesced background scans that must run after the current owner exits.
     pub pending_scans: Arc<StdMutex<PendingDiscoveryScans>>,
 
-    /// Per-target lanes that order each target's scans.
+    /// Per-target lanes that order each target's scans and run
+    /// driver-scoped scans beside the shared in-progress slot.
     pub target_lanes: Arc<TargetLanes>,
 
     /// Main daemon runtime handle for detached background work.

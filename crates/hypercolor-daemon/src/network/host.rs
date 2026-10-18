@@ -88,11 +88,13 @@ impl DaemonDriverHost {
             .map(|manager| Arc::clone(&manager.get()))
     }
 
-    /// Merge a discovery scan scoped to one driver into the pending scans.
+    /// Scan one driver's discovery targets in their own lanes, beside any
+    /// scan already in flight.
     ///
     /// # Errors
     ///
-    /// Fails when the driver is unknown, disabled, or has nothing to scan.
+    /// Fails when the driver is unknown, disabled, or has nothing to scan,
+    /// and once discovery has shut down.
     fn schedule_driver_rescan(&self, driver_id: &str) -> Result<(), String> {
         let config = self.current_config();
         let targets = discovery::rescan_targets_for_driver(
@@ -100,14 +102,19 @@ impl DaemonDriverHost {
             config.as_ref(),
             &self.driver_registry,
         )?;
-        discovery::schedule_discovery_scan(
-            self.discovery_runtime(),
-            Arc::clone(&self.driver_registry),
-            Arc::new(self.clone()),
-            config,
-            targets,
-            discovery::default_timeout(),
-        );
+        let driver_host = Arc::new(self.clone());
+        for target in targets {
+            if !discovery::schedule_target_scan(
+                self.discovery_runtime(),
+                Arc::clone(&self.driver_registry),
+                Arc::clone(&driver_host),
+                Arc::clone(&config),
+                target,
+                discovery::default_timeout(),
+            ) {
+                return Err("discovery has shut down".to_owned());
+            }
+        }
         Ok(())
     }
 
