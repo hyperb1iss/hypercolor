@@ -2767,12 +2767,54 @@ async fn a_sweep_does_not_reconnect_a_device_a_newer_lane_scan_retired() {
 }
 
 /// Backend whose connects run in the background, as native SMBus ones do,
-/// and wait at a gate the test opens.
+/// and wait at a gate the test opens. Disconnects can be gated too.
 struct GatedBackgroundBackend {
-    connect_started: Arc<Semaphore>,
-    connect_gate: Arc<Semaphore>,
-    connects_finished: Arc<std::sync::atomic::AtomicUsize>,
-    disconnects: Arc<std::sync::atomic::AtomicUsize>,
+    connect_started: Semaphore,
+    connect_gate: Semaphore,
+    disconnect_started: Semaphore,
+    disconnect_gate: Option<Semaphore>,
+    connected: AtomicBool,
+    connects_finished: std::sync::atomic::AtomicUsize,
+    disconnects_finished: std::sync::atomic::AtomicUsize,
+    /// Backend calls in completion order.
+    calls: StdMutex<Vec<&'static str>>,
+}
+
+impl GatedBackgroundBackend {
+    fn new(gate_disconnects: bool) -> Self {
+        Self {
+            connect_started: Semaphore::new(0),
+            connect_gate: Semaphore::new(0),
+            disconnect_started: Semaphore::new(0),
+            disconnect_gate: gate_disconnects.then(|| Semaphore::new(0)),
+            connected: AtomicBool::new(false),
+            connects_finished: std::sync::atomic::AtomicUsize::new(0),
+            disconnects_finished: std::sync::atomic::AtomicUsize::new(0),
+            calls: StdMutex::new(Vec::new()),
+        }
+    }
+
+    fn record(&self, call: &'static str) {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(call);
+    }
+
+    fn calls(&self) -> Vec<&'static str> {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    async fn wait(semaphore: &Semaphore, what: &str) {
+        timeout(Duration::from_secs(5), semaphore.acquire())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+            .expect("test semaphore should stay open")
+            .forget();
+    }
 }
 
 #[async_trait::async_trait]
@@ -2799,17 +2841,28 @@ impl DeviceBackend for GatedBackgroundBackend {
 
     async fn connect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
         self.connect_started.add_permits(1);
-        Arc::clone(&self.connect_gate)
-            .acquire_owned()
+        self.connect_gate
+            .acquire()
             .await
             .expect("connect gate should stay open")
             .forget();
+        self.connected.store(true, Ordering::Release);
+        self.record("connect");
         self.connects_finished.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
     async fn disconnect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
-        self.disconnects.fetch_add(1, Ordering::AcqRel);
+        self.disconnect_started.add_permits(1);
+        if let Some(gate) = &self.disconnect_gate {
+            gate.acquire()
+                .await
+                .expect("disconnect gate should stay open")
+                .forget();
+        }
+        self.connected.store(false, Ordering::Release);
+        self.record("disconnect");
+        self.disconnects_finished.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -2821,7 +2874,7 @@ impl DeviceBackend for GatedBackgroundBackend {
 struct GatedMigrationScenario {
     runtime: TestDiscoveryRuntime,
     asus: LaneDiscoveryDriver,
-    stick_id: DeviceId,
+    stick: DiscoveredDevice,
     backend: Arc<GatedBackgroundBackend>,
     publications: hypercolor_daemon::LayoutPublicationTestExecutor,
     _temp_dir: tempfile::TempDir,
@@ -2830,7 +2883,7 @@ struct GatedMigrationScenario {
 impl GatedMigrationScenario {
     /// Run a complete sweep whose binding migration starts a background
     /// connect for the ASUS stick, and wait until that connect is at the gate.
-    async fn start() -> Self {
+    async fn start(gate_disconnects: bool) -> Self {
         let asus = LaneDiscoveryDriver::new(&STATIC_ASUS_DISCOVERY_DRIVER);
         let slow = LaneDiscoveryDriver::new(&LANE_SLOW_DRIVER).blocking();
         let mut info = smbus_device_info("ASUS Aura DRAM (SMBus 0x73)");
@@ -2843,8 +2896,7 @@ impl GatedMigrationScenario {
             metadata: HashMap::new(),
             claim: None,
         };
-        let stick_id = stick.info.id;
-        asus.report(vec![stick]);
+        asus.report(vec![stick.clone()]);
 
         let mut drivers = DriverModuleRegistry::new();
         drivers.register(asus.clone()).expect("asus driver");
@@ -2860,12 +2912,7 @@ impl GatedMigrationScenario {
             legacy_asus_dram_layout(),
             HashSet::new(),
         );
-        let backend = Arc::new(GatedBackgroundBackend {
-            connect_started: Arc::new(Semaphore::new(0)),
-            connect_gate: Arc::new(Semaphore::new(0)),
-            connects_finished: Arc::default(),
-            disconnects: Arc::default(),
-        });
+        let backend = Arc::new(GatedBackgroundBackend::new(gate_disconnects));
         runtime
             .backend_manager
             .lock()
@@ -2892,22 +2939,23 @@ impl GatedMigrationScenario {
         let scenario = Self {
             runtime,
             asus,
-            stick_id,
+            stick,
             backend,
             publications,
             _temp_dir: temp_dir,
         };
         scenario.pump_until(|| sweep.is_finished()).await;
         sweep.await.expect("sweep task");
-        timeout(
-            Duration::from_secs(2),
-            scenario.backend.connect_started.acquire(),
+        GatedBackgroundBackend::wait(
+            &scenario.backend.connect_started,
+            "the migration's background connect",
         )
-        .await
-        .expect("the migration starts a background connect")
-        .expect("connect start semaphore should stay open")
-        .forget();
+        .await;
         scenario
+    }
+
+    fn target() -> DiscoveryTarget {
+        DiscoveryTarget::driver(STATIC_ASUS_DISCOVERY_DRIVER.id)
     }
 
     /// Drive layout publications until `done` holds.
@@ -2918,11 +2966,55 @@ impl GatedMigrationScenario {
                     .execute_next_layout_publication()
                     .await
                     .expect("layout publication");
-                tokio::time::sleep(Duration::from_millis(1)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await
         .expect("timed out driving layout publications");
+    }
+
+    /// Drive layout publications until the stick reports `renderable`.
+    async fn pump_until_stick_renderable(&self) {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let state = self
+                    .runtime
+                    .device_registry
+                    .get(&self.stick.info.id)
+                    .await
+                    .map(|tracked| tracked.state);
+                if state.as_ref().is_some_and(DeviceState::is_renderable) {
+                    return;
+                }
+                self.publications
+                    .execute_next_layout_publication()
+                    .await
+                    .expect("layout publication");
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for the stick to connect");
+    }
+
+    /// Report the stick gone and wait until a lane scan retires it.
+    async fn retire_stick(&self) {
+        use hypercolor_driver_api::DriverRuntimeActions;
+
+        self.asus.report(Vec::new());
+        let mut events = self.runtime.event_bus.subscribe_all();
+        self.runtime
+            .driver_host
+            .request_discovery(STATIC_ASUS_DISCOVERY_DRIVER.id)
+            .await
+            .expect("driver-scoped discovery should be scheduled");
+        let stick = self.stick.info.id.to_string();
+        let mut retired = false;
+        self.pump_until(|| {
+            retired |= disconnected_ids(&mut events).contains(&stick);
+            retired
+        })
+        .await;
     }
 
     async fn mappings(&self) -> usize {
@@ -2934,65 +3026,94 @@ impl GatedMigrationScenario {
             .mappings
             .len()
     }
-
-    /// Open the connect gate and let the connect run to completion.
-    async fn finish_connect(&self) {
-        self.backend.connect_gate.add_permits(1);
-        let finished = Arc::clone(&self.backend.connects_finished);
-        self.pump_until(|| finished.load(Ordering::Acquire) == 1)
-            .await;
-        for _ in 0..50 {
-            self.publications
-                .execute_next_layout_publication()
-                .await
-                .expect("layout publication");
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    }
 }
 
 #[tokio::test]
 async fn a_background_connect_does_not_map_a_device_a_newer_scan_retired() {
+    let scenario = GatedMigrationScenario::start(false).await;
+    scenario.retire_stick().await;
+    assert_eq!(scenario.mappings().await, 0);
+
+    // The old connect finishes afterwards; its teardown is the acknowledgment
+    // that it reached the fence.
+    scenario.backend.connect_gate.add_permits(1);
+    let disconnects = &scenario.backend.disconnects_finished;
+    scenario
+        .pump_until(|| disconnects.load(Ordering::Acquire) == 1)
+        .await;
+    assert_eq!(
+        scenario.mappings().await,
+        0,
+        "a stale background connect mapped a device a newer scan retired"
+    );
+    assert!(!scenario.backend.connected.load(Ordering::Acquire));
+}
+
+#[tokio::test]
+async fn a_background_connect_maps_a_device_that_is_still_present() {
+    let scenario = GatedMigrationScenario::start(false).await;
+
+    scenario.backend.connect_gate.add_permits(1);
+    scenario.pump_until_stick_renderable().await;
+    assert_eq!(scenario.mappings().await, 1);
+    assert_eq!(
+        scenario
+            .backend
+            .disconnects_finished
+            .load(Ordering::Acquire),
+        0
+    );
+}
+
+#[tokio::test]
+async fn a_stale_teardown_holds_the_lane_until_the_stale_connection_closes() {
     use hypercolor_driver_api::DriverRuntimeActions;
 
-    let scenario = GatedMigrationScenario::start().await;
+    let scenario = GatedMigrationScenario::start(true).await;
+    scenario.retire_stick().await;
 
-    // The stick leaves while its connect waits at the gate, and a newer
-    // lane scan retires it.
-    scenario.asus.report(Vec::new());
-    let mut events = scenario.runtime.event_bus.subscribe_all();
+    // The stale connect finishes, the fence chooses teardown, and the
+    // teardown's disconnect stops at its gate.
+    scenario.backend.connect_gate.add_permits(1);
+    GatedBackgroundBackend::wait(
+        &scenario.backend.disconnect_started,
+        "the stale connect's teardown",
+    )
+    .await;
+    assert!(
+        scenario
+            .runtime
+            .target_lanes
+            .is_busy(&GatedMigrationScenario::target()),
+        "a stale teardown released the lane before closing its connection"
+    );
+
+    // The stick comes back. Its scan can only connect once the stale
+    // connection is closed, so that disconnect cannot close the new one.
+    scenario.asus.report(vec![scenario.stick.clone()]);
     scenario
         .runtime
         .driver_host
         .request_discovery(STATIC_ASUS_DISCOVERY_DRIVER.id)
         .await
         .expect("driver-scoped discovery should be scheduled");
-    let stick = scenario.stick_id.to_string();
-    let mut retired = false;
+    scenario.backend.connect_gate.add_permits(1);
     scenario
-        .pump_until(|| {
-            retired |= disconnected_ids(&mut events).contains(&stick);
-            retired
-        })
-        .await;
-    assert_eq!(scenario.mappings().await, 0);
+        .backend
+        .disconnect_gate
+        .as_ref()
+        .expect("disconnects are gated")
+        .add_permits(1);
+    scenario.pump_until_stick_renderable().await;
 
-    // The old connect finishes afterwards and must neither map the stick
-    // nor leave its connection open.
-    scenario.finish_connect().await;
-    assert_eq!(
-        scenario.mappings().await,
-        0,
-        "a stale background connect mapped a device a newer scan retired"
+    assert!(
+        scenario.backend.connected.load(Ordering::Acquire),
+        "the stale teardown disconnected the reappeared stick: {:?}",
+        scenario.backend.calls()
     );
-    assert_eq!(scenario.backend.disconnects.load(Ordering::Acquire), 1);
-}
-
-#[tokio::test]
-async fn a_background_connect_maps_a_device_that_is_still_present() {
-    let scenario = GatedMigrationScenario::start().await;
-
-    scenario.finish_connect().await;
+    assert_eq!(
+        scenario.backend.calls(),
+        vec!["connect", "disconnect", "connect"]
+    );
     assert_eq!(scenario.mappings().await, 1);
-    assert_eq!(scenario.backend.disconnects.load(Ordering::Acquire), 0);
 }

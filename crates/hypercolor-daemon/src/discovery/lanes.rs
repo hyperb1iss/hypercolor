@@ -118,6 +118,13 @@ impl TargetLanes {
         self.shutdown.clone()
     }
 
+    /// Whether a scan, or a background connect publishing or tearing down,
+    /// owns `target`'s lane right now.
+    #[must_use]
+    pub fn is_busy(&self, target: &DiscoveryTarget) -> bool {
+        self.lane(target).observation.try_lock().is_err()
+    }
+
     /// Whether discovery has stopped accepting work.
     #[must_use]
     pub fn is_shut_down(&self) -> bool {
@@ -202,8 +209,10 @@ pub(crate) enum FenceCheck {
     Publish(LaneHold),
     /// Another connect owns the device now; leave its connection alone.
     Yield,
-    /// The device was retired: tear down the connection just opened.
-    TearDown,
+    /// The device was retired: tear down the connection just opened, still
+    /// holding the lane so no fresh scan can connect the device until the
+    /// stale connection is closed.
+    TearDown(LaneHold),
 }
 
 impl ConnectFence {
@@ -247,7 +256,10 @@ impl ConnectFence {
             {
                 FenceCheck::Yield
             }
-            None => FenceCheck::TearDown,
+            None => {
+                drop(lifecycle);
+                FenceCheck::TearDown(hold)
+            }
         }
     }
 }

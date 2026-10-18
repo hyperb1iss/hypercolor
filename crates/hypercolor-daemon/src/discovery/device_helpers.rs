@@ -5,7 +5,7 @@ use hypercolor_types::device::{
     DeviceError, DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
 };
 use hypercolor_types::event::{DeviceRef, HypercolorEvent, ZoneRef};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use std::time::Duration;
 
@@ -221,6 +221,26 @@ pub(super) async fn connect_backend_device_fenced(
     .map(|hold| hold.map_or(FencedConnect::Superseded, FencedConnect::Installed))
 }
 
+async fn close_superseded_connect(io: &BackendIo, device_id: DeviceId, limit: Option<Duration>) {
+    let closed = match limit {
+        Some(limit) => {
+            let Ok(closed) = tokio::time::timeout(limit, io.disconnect(device_id)).await else {
+                warn!(
+                    %device_id,
+                    timeout_ms = u64::try_from(limit.as_millis()).unwrap_or(u64::MAX),
+                    "closing a superseded connect timed out"
+                );
+                return;
+            };
+            closed
+        }
+        None => io.disconnect(device_id).await,
+    };
+    if let Err(error) = closed {
+        debug!(%device_id, %error, "failed to close a superseded connect");
+    }
+}
+
 /// Connect and map a device. With a fence, the mapping is installed only
 /// if the fence still allows it, and the lane hold it was installed under
 /// is returned; `Ok(None)` means the fence turned the connect away.
@@ -251,10 +271,13 @@ async fn connect_backend_device_inner(
         Some(fence) => match fence.check(runtime).await {
             FenceCheck::Publish(hold) => Some(hold),
             FenceCheck::Yield => return Ok(None),
-            FenceCheck::TearDown => {
-                if let Err(error) = io.disconnect(device_id).await {
-                    debug!(%device_id, %error, "failed to close a superseded connect");
-                }
+            FenceCheck::TearDown(hold) => {
+                // The lane stays held until the stale connection is closed,
+                // so a fresh scan cannot connect the device in between and
+                // have this disconnect close the wanted connection. The
+                // connect timeout bounds that hold.
+                close_superseded_connect(&io, device_id, timeout).await;
+                drop(hold);
                 return Ok(None);
             }
         },
