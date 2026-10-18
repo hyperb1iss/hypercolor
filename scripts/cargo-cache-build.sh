@@ -263,6 +263,364 @@ prune_stale_turbojpeg_cmake_cache() {
   done < <(find "$TARGET_DIR" -path '*/build/turbojpeg-sys-*/out/build/CMakeCache.txt' -print0)
 }
 
+# Cargo never evicts incremental session caches, and every worktree path,
+# feature set, and profile mints new crate-hash dirs under each
+# <profile>/incremental, so a long-lived target grows without bound. rustc
+# refreshes a crate dir's mtime whenever it opens a session there, so a dir
+# idle for days belongs to no running build, and losing one only costs that
+# crate its incremental head start: rustc recreates the dir and compiles
+# the crate in full the next time it changes.
+#
+# Once a day per target, before Cargo starts, idle entries are renamed into
+# a trash dir inside their own profile dir, which keeps them on the same
+# mount and inside the target GC's per-profile accounting. The rename takes
+# them out of rustc's view atomically, so only the slow delete runs in the
+# background. The target GC reads both the profile dir's and the incremental
+# dir's mtimes as profile activity, so each touched dir gets its mtime back.
+
+# A real, already-canonical <profile>/incremental dir under the target that
+# sits next to one of Cargo's profile lock files.
+is_prunable_incremental_dir() {
+  local dir="$1" parent
+  case "$dir" in
+    "$TARGET_DIR"/*/incremental) ;;
+    *) return 1 ;;
+  esac
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  [ "$(cd "$dir" 2>/dev/null && pwd -P)" = "$dir" ] || return 1
+  parent="${dir%/incremental}"
+  [ -e "$parent/.cargo-lock" ] || [ -e "$parent/.cargo-build-lock" ] \
+    || [ -e "$parent/.cargo-artifact-lock" ]
+}
+
+# Prints a path's inode number. A rename keeps it; a copy does not.
+# command -p reaches the system ls even when PATH puts a replacement such as
+# eza first, and an answer that is not a number counts as no inode.
+path_inode() {
+  local line
+  line="$(command -p ls -di -- "$1" 2>/dev/null)" \
+    || line="$(ls -di -- "$1" 2>/dev/null)" || return 1
+  line="${line#"${line%%[! ]*}"}"
+  line="${line%% *}"
+  case "$line" in
+    "" | *[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$line"
+}
+
+# Creates a file whose mtime is the prune cutoff. Each tool is probed rather
+# than assumed per platform, since macOS hosts often mix BSD and GNU tools:
+# GNU touch reads epoch dates, and GNU or BSD date can format one for -t.
+make_incremental_cutoff() {
+  local path="$1" days="$2" epoch stamp
+  epoch=$(($(date +%s) - days * 86400))
+  if touch -d "@$epoch" "$path" 2>/dev/null; then
+    return 0
+  fi
+  stamp="$(date -d "@$epoch" +%Y%m%d%H%M.%S 2>/dev/null)" \
+    || stamp="$(date -r "$epoch" +%Y%m%d%H%M.%S 2>/dev/null)" \
+    || return 1
+  touch -t "$stamp" "$path" 2>/dev/null
+}
+
+# True while an entry is still idle: present, older than the cutoff and, for
+# a crate dir, holding no rustc session newer than it (rustc names a live
+# session s-<time>-<id>-working, next to its s-<time>-<id>.lock). find has
+# already judged a symlink by its own mtime, and rustc never creates one.
+incremental_entry_is_idle() {
+  local entry="$1" cutoff="$2" session
+  if [ -L "$entry" ]; then
+    return 0
+  fi
+  [ -e "$entry" ] || return 1
+  [ "$entry" -ot "$cutoff" ] || return 1
+  [ -d "$entry" ] || return 0
+  for session in "$entry"/s-*-working "$entry"/s-*.lock; do
+    if [ "$session" -nt "$cutoff" ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+INCREMENTAL_PRUNE_MOVED=0
+INCREMENTAL_PRUNE_SKIPPED=0
+INCREMENTAL_PRUNE_STALE=0
+PRUNE_PENDING_DIR=""
+PRUNE_PENDING_DIR_REF=""
+PRUNE_PENDING_PROFILE=""
+PRUNE_PENDING_PROFILE_REF=""
+DOOMED_PATHS=()
+DOOMED_PROFILES=()
+DOOMED_REFS=()
+
+# Puts back any mtime the foreground pass has changed but not yet restored.
+# Runs at the end of each dir and from the INT, TERM, and HUP traps. touch -c
+# never recreates a dir that a concurrent cargo clean removed.
+restore_pending_prune_mtimes() {
+  if [ -n "$PRUNE_PENDING_PROFILE" ]; then
+    touch -c -r "$PRUNE_PENDING_PROFILE_REF" "$PRUNE_PENDING_PROFILE" 2>/dev/null || true
+    PRUNE_PENDING_PROFILE=""
+  fi
+  if [ -n "$PRUNE_PENDING_DIR" ]; then
+    touch -c -r "$PRUNE_PENDING_DIR_REF" "$PRUNE_PENDING_DIR" 2>/dev/null || true
+    PRUNE_PENDING_DIR=""
+  fi
+}
+
+# Queues a trash dir for the background delete, along with the profile it
+# lives in and the saved profile mtime to restore once it is gone.
+doom_incremental_trash() {
+  local trash="$1" profile="$2" ref="$3"
+  case "$trash" in
+    "$profile"/.hypercolor-prune.?*) ;;
+    *) return 0 ;;
+  esac
+  DOOMED_PATHS+=("$trash")
+  DOOMED_PROFILES+=("$profile")
+  DOOMED_REFS+=("$ref")
+}
+
+flush_incremental_batch() {
+  local trash="$1" entry
+  shift
+  [ "$#" -gt 0 ] || return 0
+  mv -- "$@" "$trash/" 2>/dev/null || true
+  for entry in "$@"; do
+    if [ ! -e "$entry" ] && [ ! -L "$entry" ] \
+      && { [ -e "$trash/${entry##*/}" ] || [ -L "$trash/${entry##*/}" ]; }; then
+      INCREMENTAL_PRUNE_MOVED=$((INCREMENTAL_PRUNE_MOVED + 1))
+    fi
+  done
+}
+
+# Renames one incremental dir's idle direct children into a trash dir in
+# its profile. BSD find stats a directory's entries when it reads the
+# directory, so its listing is only a shortlist: each entry is checked
+# again just before the small batch that moves it.
+move_idle_incremental_entries() {
+  local dir="$1" index="$2" cutoff="$3" minutes="$4" claim="$5"
+  local profile="${dir%/incremental}" trash="" probe before after entry
+  local dir_ref="$claim/$index.incremental" profile_ref="$claim/$index.profile"
+  local -a batch=()
+  while IFS= read -r -d '' entry; do
+    incremental_entry_is_idle "$entry" "$cutoff" || continue
+    if [ -z "$trash" ]; then
+      touch -r "$dir" "$dir_ref" 2>/dev/null || return 0
+      if [ ! -e "$profile_ref" ]; then
+        touch -r "$profile" "$profile_ref" 2>/dev/null || return 0
+      fi
+      PRUNE_PENDING_DIR="$dir"
+      PRUNE_PENDING_DIR_REF="$dir_ref"
+      PRUNE_PENDING_PROFILE="$profile"
+      PRUNE_PENDING_PROFILE_REF="$profile_ref"
+      # The trash starts inside the incremental dir and is renamed up into
+      # the profile. mv quietly copies across mounts (a bind mount of the
+      # same filesystem included), so a changed inode means renames out of
+      # this dir would become copies: undo the probe and skip the dir.
+      probe="$(mktemp -d "$dir/.hypercolor-prune.XXXXXX" 2>/dev/null)" || {
+        restore_pending_prune_mtimes
+        return 0
+      }
+      before="$(path_inode "$probe")" || before=""
+      mv -- "$probe" "$profile/" 2>/dev/null || true
+      trash="$profile/${probe##*/}"
+      after="$(path_inode "$trash")" || after=""
+      if [ -z "$before" ] || [ "$before" != "$after" ]; then
+        rmdir -- "$trash" "$probe" 2>/dev/null || true
+        restore_pending_prune_mtimes
+        INCREMENTAL_PRUNE_SKIPPED=$((INCREMENTAL_PRUNE_SKIPPED + 1))
+        return 0
+      fi
+      touch -c -r "$profile_ref" "$profile" 2>/dev/null || true
+      PRUNE_PENDING_PROFILE=""
+      doom_incremental_trash "$trash" "$profile" "$profile_ref"
+    fi
+    batch+=("$entry")
+    if [ "${#batch[@]}" -ge 32 ]; then
+      flush_incremental_batch "$trash" "${batch[@]}"
+      batch=()
+    fi
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -mmin "+$minutes" -print0 2>/dev/null)
+  if [ -n "$trash" ] && [ "${#batch[@]}" -gt 0 ]; then
+    flush_incremental_batch "$trash" "${batch[@]}"
+  fi
+  restore_pending_prune_mtimes
+  rm -f -- "$dir_ref"
+}
+
+# Queues trash dirs a killed delete left in this profile. An hour is long
+# past any live prune's use of them, since claims are daily.
+doom_stale_incremental_trash() {
+  local profile="$1" profile_ref="$2" stale
+  while IFS= read -r -d '' stale; do
+    if [ ! -e "$profile_ref" ]; then
+      touch -r "$profile" "$profile_ref" 2>/dev/null || return 0
+    fi
+    doom_incremental_trash "$stale" "$profile" "$profile_ref"
+    INCREMENTAL_PRUNE_STALE=$((INCREMENTAL_PRUNE_STALE + 1))
+  done < <(find "$profile" -mindepth 1 -maxdepth 1 -name '.hypercolor-prune.*' \
+    -mmin +60 -print0 2>/dev/null)
+}
+
+prune_stale_incremental_dirs() {
+  local days="${HYPERCOLOR_INCREMENTAL_PRUNE_DAYS:-3}"
+  if [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ]; then
+    echo "[cargo-cache] incremental prune skipped in CI"
+    return 0
+  fi
+  case "$days" in
+    off | false) days=0 ;;
+    *[!0-9]* | ??????*)
+      echo "[cargo-cache] incremental prune skipped: HYPERCOLOR_INCREMENTAL_PRUNE_DAYS must be a day count or off, not '$days'" >&2
+      return 0
+      ;;
+  esac
+  days=$((10#$days))
+  if [ "$days" -eq 0 ]; then
+    echo "[cargo-cache] incremental prune disabled (HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=${HYPERCOLOR_INCREMENTAL_PRUNE_DAYS:-})"
+    return 0
+  fi
+  # TARGET_DIR is canonical, so HOME must be too before comparing them.
+  local home_dir="" refuse=0
+  if [ -n "${HOME:-}" ] && [ -d "$HOME" ]; then
+    home_dir="$(cd "$HOME" 2>/dev/null && pwd -P)" || home_dir=""
+  fi
+  case "${TARGET_DIR:-}" in
+    "" | / | [!/]*) refuse=1 ;;
+  esac
+  if [ -n "$home_dir" ] && [ "${TARGET_DIR:-}" = "$home_dir" ]; then
+    refuse=1
+  fi
+  if [ "$refuse" -eq 1 ]; then
+    echo "[cargo-cache] incremental prune skipped: refusing target directory '${TARGET_DIR:-}'" >&2
+    return 0
+  fi
+  [ -d "$TARGET_DIR" ] || return 0
+
+  # mkdir is atomic everywhere and fails on anything already at the path,
+  # symlinks included, so exactly one build per target claims each UTC day
+  # (whatever TZ each build runs under), and the log inside the fresh dir
+  # cannot be a planted link.
+  local claim
+  claim="$TARGET_DIR/.hypercolor-incremental-prune.$(date -u +%Y%m%d)"
+  local claim_error
+  if ! claim_error="$(mkdir -- "$claim" 2>&1)"; then
+    if [ -d "$claim" ] && [ ! -L "$claim" ]; then
+      echo "[cargo-cache] incremental prune skipped: already ran today"
+    else
+      echo "[cargo-cache] incremental prune skipped: cannot claim today's run (${claim_error:-mkdir failed})" >&2
+    fi
+    return 0
+  fi
+  local log="$claim/prune.log" log_error
+  if ! log_error="$( (set -C && : >"$log") 2>&1)"; then
+    rm -rf -- "$claim" 2>/dev/null || true
+    echo "[cargo-cache] incremental prune skipped: cannot create its log (${log_error:-unknown error})" >&2
+    return 0
+  fi
+  local previous
+  for previous in "$TARGET_DIR"/.hypercolor-incremental-prune*; do
+    [ "$previous" != "$claim" ] || continue
+    if [ -e "$previous" ] || [ -L "$previous" ]; then
+      rm -rf -- "$previous" 2>/dev/null || true
+    fi
+  done
+  local cutoff="$claim/cutoff"
+  if ! make_incremental_cutoff "$cutoff" "$days"; then
+    rm -rf -- "$claim" 2>/dev/null || true
+    echo "[cargo-cache] incremental prune skipped: cannot stamp the ${days}-day cutoff" >&2
+    return 0
+  fi
+
+  local minutes=$((days * 1440)) index=0 candidate
+  INCREMENTAL_PRUNE_MOVED=0
+  INCREMENTAL_PRUNE_SKIPPED=0
+  INCREMENTAL_PRUNE_STALE=0
+  DOOMED_PATHS=()
+  DOOMED_PROFILES=()
+  DOOMED_REFS=()
+  # Each trap restores, then re-raises its signal, so the wrapper still dies
+  # by it and a parent shell loop stops just as it would on main.
+  trap 'restore_pending_prune_mtimes; trap - HUP; kill -HUP $$' HUP
+  trap 'restore_pending_prune_mtimes; trap - INT; kill -INT $$' INT
+  trap 'restore_pending_prune_mtimes; trap - TERM; kill -TERM $$' TERM
+  for candidate in "$TARGET_DIR"/*/incremental "$TARGET_DIR"/*/*/incremental; do
+    is_prunable_incremental_dir "$candidate" || continue
+    index=$((index + 1))
+    doom_stale_incremental_trash "${candidate%/incremental}" "$claim/$index.profile" || true
+    move_idle_incremental_entries "$candidate" "$index" "$cutoff" "$minutes" "$claim" || true
+  done
+  trap - HUP INT TERM
+  rm -f -- "$cutoff"
+
+  local summary
+  if [ "$INCREMENTAL_PRUNE_MOVED" -gt 0 ]; then
+    summary="moved $INCREMENTAL_PRUNE_MOVED entries idle for ${days}+ days to trash"
+  elif [ "$INCREMENTAL_PRUNE_SKIPPED" -gt 0 ]; then
+    summary="moved nothing"
+  else
+    summary="nothing idle for ${days}+ days"
+  fi
+  if [ "$INCREMENTAL_PRUNE_SKIPPED" -gt 0 ]; then
+    summary="$summary, skipped $INCREMENTAL_PRUNE_SKIPPED dirs whose renames would cross a mount"
+  fi
+  if [ "$INCREMENTAL_PRUNE_STALE" -gt 0 ]; then
+    summary="$summary, found $INCREMENTAL_PRUNE_STALE stale trash dirs"
+  fi
+  if [ "${#DOOMED_PATHS[@]}" -eq 0 ]; then
+    echo "$summary ($(date))" >>"$log" 2>/dev/null
+    echo "[cargo-cache] incremental prune: $summary"
+    return 0
+  fi
+  # The delete runs either way, since the renames already happened; a log
+  # that stopped accepting writes only costs its record.
+  local job_log="$log" log_note="log: $log"
+  if ! echo "$summary; deleting in the background, started $(date)" >>"$log" 2>/dev/null; then
+    job_log=/dev/null
+    log_note="log unwritable"
+  fi
+  # Every descriptor above stderr is closed (the target lock FIFOs and any
+  # pipe the caller passed down included), so neither the build nor its
+  # caller waits on the delete.
+  (
+    set +e
+    trap '' HUP
+    for fd_path in /dev/fd/*; do
+      fd="${fd_path##*/}"
+      case "$fd" in
+        "" | *[!0-9]*) continue ;;
+      esac
+      [ "$fd" -gt 2 ] || continue
+      eval "exec $fd>&-"
+    done
+    low_priority=(nice -n 19)
+    if command -v ionice >/dev/null 2>&1 && ionice -c 3 true 2>/dev/null; then
+      low_priority=(ionice -c 3 nice -n 19)
+    fi
+    i=0
+    while [ "$i" -lt "${#DOOMED_PATHS[@]}" ]; do
+      trash="${DOOMED_PATHS[i]}"
+      profile="${DOOMED_PROFILES[i]}"
+      ref="${DOOMED_REFS[i]}"
+      # Emptying the trash leaves the profile's own mtime alone. The profile
+      # is then compared with the mtime the foreground restored, right
+      # before the rmdir that bumps it, and given that mtime back only if
+      # nothing else wrote to it or removed it meanwhile.
+      "${low_priority[@]}" find "$trash" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+      if [ -e "$ref" ] && [ -d "$profile" ] && [ ! -L "$profile" ] \
+        && [ ! "$profile" -nt "$ref" ] && [ ! "$profile" -ot "$ref" ]; then
+        rmdir -- "$trash" && touch -c -r "$ref" "$profile"
+      fi
+      rm -rf -- "$trash"
+      i=$((i + 1))
+    done
+    rm -f -- "${DOOMED_REFS[@]}"
+    echo "finished $(date)"
+  ) </dev/null >>"$job_log" 2>&1 &
+  echo "[cargo-cache] incremental prune: $summary; deleting in the background ($log_note)"
+}
+
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 
 if ld.lld --help 2>/dev/null | grep -Fq -- '--compress-debug-sections=[none,zlib,zstd]'; then
@@ -288,6 +646,7 @@ fi
 acquire_target_build_lock
 trap 'cleanup_locks' EXIT
 prune_stale_turbojpeg_cmake_cache
+prune_stale_incremental_dirs || true
 
 SCCACHE_BIN="$(command -v sccache || true)"
 CCACHE_BIN="$(command -v ccache || true)"

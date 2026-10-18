@@ -17,17 +17,28 @@ kill_child_pid=""
 parallel_wrapper_one=""
 parallel_wrapper_two=""
 handoff_wrapper_pid=""
+trap_wrapper_pid=""
 cleanup() {
   for pid in "$signal_wrapper_pid" "$signal_child_pid" \
     "$signal_grandchild_pid" "$kill_wrapper_pid" "$kill_child_pid" \
     "$parallel_wrapper_one" "$parallel_wrapper_two" \
-    "$handoff_wrapper_pid"; do
+    "$handoff_wrapper_pid" "$trap_wrapper_pid"; do
     [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
   done
   rm -rf "$SANDBOX"
 }
 trap 'cleanup' EXIT
 unset CARGO_TARGET_DIR
+# Every case runs a copy of the wrapper whose checkout root is the sandbox,
+# so a case that leaves the target dir unset resolves to a scratch target and
+# the suite can never prune or lock this checkout's real one.
+SANDBOX_CHECKOUT="$SANDBOX/checkout"
+mkdir -p "$SANDBOX_CHECKOUT/scripts"
+cp "$WRAPPER" "$ROOT_DIR/scripts/cargo-cache-lock.rs" \
+  "$ROOT_DIR/scripts/cargo-cache-cargo-shim.sh" "$SANDBOX_CHECKOUT/scripts/"
+WRAPPER="$SANDBOX_CHECKOUT/scripts/cargo-cache-build.sh"
+# Quiet by default; the prune fixtures below opt back in.
+export HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=0
 # CI runs this suite after the cache action may have enabled the shared R2
 # compiler cache; the fake server must start from a local-only configuration.
 unset SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_KEY_PREFIX \
@@ -52,6 +63,13 @@ if [ -n "${FAKE_BUILD_LOCK_PATH:-}" ]; then
   if flock -n 10; then
     echo "target build lock was not held" >&2
     exit 9
+  fi
+fi
+if [ -n "${FAKE_CARGO_EXPECT_GONE:-}" ]; then
+  if [ -e "$FAKE_CARGO_EXPECT_GONE" ]; then
+    printf 'present\n' >"$FAKE_CARGO_LOG.gone"
+  else
+    printf 'absent\n' >"$FAKE_CARGO_LOG.gone"
   fi
 fi
 if [ -n "${FAKE_LOCK_DESCENDANT_PID_FILE:-}" ]; then
@@ -104,6 +122,10 @@ cat >"$SANDBOX/bin/sccache" <<'EOF'
 set -euo pipefail
 case "${1:-}" in
   --version)
+    if [ -n "${FAKE_SCCACHE_VERSION_STARTED:-}" ]; then
+      : >"$FAKE_SCCACHE_VERSION_STARTED"
+      sleep "${FAKE_SCCACHE_VERSION_DELAY:-0}"
+    fi
     printf 'sccache 0.14.0\n'
     ;;
   --stop-server)
@@ -346,7 +368,7 @@ if script --version 2>&1 | grep -Fq 'util-linux'; then
 fi
 
 run_wrapper default
-assert_args default build --target-dir "$ROOT_DIR/target" --workspace
+assert_args default build --target-dir "$SANDBOX_CHECKOUT/target" --workspace
 test ! -s "$SANDBOX/default.target-env"
 
 lock_target="$SANDBOX/lock-target"
@@ -637,5 +659,461 @@ test -f "$failure_descendant_lease"
 failure_descendant_group="$(<"$failure_descendant_lease")"
 kill -0 -- "-$failure_descendant_group"
 kill -TERM -- "-$failure_descendant_group"
+
+# The daily incremental prune renames only idle direct children of a Cargo
+# profile's incremental dir into a trash dir inside that profile, before
+# Cargo starts. It never follows symlinks, never acts outside a canonical
+# profile dir, re-checks each entry just before moving it, skips crate dirs
+# with a live rustc session, and leaves every profile and incremental dir's
+# mtime as it found it. The slow delete runs detached: the caller's stdout
+# and any pipe it passed down close, and the target lock frees, while it
+# still runs, and the target GC still counts the trash meanwhile.
+prune_target="$SANDBOX/prune target"
+prune_debug="$prune_target/debug"
+prune_inc="$prune_debug/incremental"
+prune_wasm_inc="$prune_target/wasm32-unknown-unknown/debug/incremental"
+prune_idle_inc="$prune_target/release/incremental"
+prune_outside="$SANDBOX/prune-outside"
+old_stamp=202001010000
+mkdir -p "$prune_inc/old crate/s-session" "$prune_inc/fresh-crate/s-old-session" \
+  "$prune_inc/recent-crate" "$prune_inc/live-crate" "$prune_inc/racing-crate" \
+  "$prune_wasm_inc/old-wasm" \
+  "$prune_idle_inc/recent-release" \
+  "$prune_target/unowned/incremental/old-unowned" \
+  "$prune_outside/incremental/old-linked" \
+  "$prune_debug/.hypercolor-prune.orphan/old-orphan" \
+  "$prune_debug/.hypercolor-prune.recent/recent-orphan"
+for profile in debug wasm32-unknown-unknown/debug release; do
+  touch "$prune_target/$profile/.cargo-lock"
+done
+# Big enough to stand out in the GC's per-profile accounting.
+head -c 4194304 /dev/zero >"$prune_inc/old crate/s-session/query-cache.bin"
+touch "$prune_outside/.cargo-lock"
+printf 'keep\n' >"$prune_outside/keep"
+printf 'precious\n' >"$prune_outside/legacy-log"
+ln -s "$prune_outside" "$prune_inc/old-link"
+ln -s "$prune_outside" "$prune_target/linked"
+ln -s "$prune_outside/legacy-log" "$prune_target/.hypercolor-incremental-prune.log"
+: >"$prune_target/.hypercolor-incremental-prune"
+# A session that opened after find's shortlist: the crate dir itself still
+# looks idle, but its working session dir is fresh.
+mkdir "$prune_inc/live-crate/s-hnb62h77g4-1jcu2p3-working"
+touch -h -t "$old_stamp" "$prune_inc/old crate/s-session/query-cache.bin" \
+  "$prune_inc/old crate/s-session" "$prune_inc/old crate" \
+  "$prune_inc/fresh-crate/s-old-session" "$prune_inc/old-link" \
+  "$prune_inc/live-crate" "$prune_inc/racing-crate" \
+  "$prune_wasm_inc/old-wasm" "$prune_target/unowned/incremental/old-unowned" \
+  "$prune_outside/incremental/old-linked" "$prune_target/linked" \
+  "$prune_debug/.hypercolor-prune.orphan"
+touch -d '2 days ago' "$prune_inc/recent-crate"
+prune_dirs=("$prune_inc" "$prune_wasm_inc" "$prune_idle_inc" "$prune_debug" \
+  "$prune_target/wasm32-unknown-unknown/debug" "$prune_target/release")
+touch -t "$old_stamp" "${prune_dirs[@]}"
+prune_mtimes() {
+  stat -c '%n %y' "${prune_dirs[@]}"
+}
+prune_mtimes >"$SANDBOX/prune-mtimes.before"
+
+mkdir -p "$SANDBOX/prune-bin"
+# Holds the background delete until the test releases it.
+cat >"$SANDBOX/prune-bin/rm" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *.hypercolor-prune.*)
+    : >"$SLOW_RM_STARTED"
+    for _ in {1..1000}; do
+      [ -e "$SLOW_RM_RELEASE" ] && break
+      sleep 0.01
+    done
+    ;;
+esac
+exec "$REAL_RM" "$@"
+EOF
+# Changes entries after find has listed them, the way a rustc session
+# opening, or a concurrent cargo clean, between the shortlist and the move
+# would.
+cat >"$SANDBOX/prune-bin/find" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${FAKE_FIND_DIR:-}" ] && [ "${1:-}" = "$FAKE_FIND_DIR" ]; then
+  listing="$(mktemp)"
+  "$REAL_FIND" "$@" >"$listing"
+  status=$?
+  [ -z "${FAKE_FIND_FRESHEN:-}" ] || touch "$FAKE_FIND_FRESHEN"
+  [ -z "${FAKE_FIND_REMOVE:-}" ] || "$REAL_RM" -rf "$FAKE_FIND_REMOVE"
+  cat "$listing"
+  "$REAL_RM" -f "$listing"
+  exit "$status"
+fi
+exec "$REAL_FIND" "$@"
+EOF
+# Copies a probe instead of renaming it, the way mv falls back when a
+# rename would cross a mount.
+# Can also remove an entry just before its batch renames it, or hold a
+# batch rename until the test signals the wrapper.
+cat >"$SANDBOX/prune-bin/mv" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${FAKE_MV_CROSS_MOUNT:-}" ] && [ "$#" -eq 3 ] && [ "$1" = -- ]; then
+  case "$2" in
+    */incremental/.hypercolor-prune.*)
+      cp -R "$2" "$3" && exec "$REAL_RM" -rf "$2"
+      ;;
+  esac
+fi
+last="${!#}"
+case "$last" in
+  */.hypercolor-prune.*/)
+    for arg in "$@"; do
+      if [ -n "${FAKE_MV_DROP:-}" ] && [ "$arg" = "$FAKE_MV_DROP" ]; then
+        "$REAL_RM" -rf "$FAKE_MV_DROP"
+      fi
+    done
+    if [ -n "${FAKE_MV_HOLD_STARTED:-}" ]; then
+      : >"$FAKE_MV_HOLD_STARTED"
+      sleep 10
+    fi
+    ;;
+esac
+exec "$REAL_MV" "$@"
+EOF
+# An ls replacement such as eza, which prints no inode numbers.
+cat >"$SANDBOX/prune-bin/ls" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${FAKE_LS_EZA:-}" ]; then
+  printf 'drwx------ - user 17 Oct 12:00 %s\n' "${!#}"
+  exit 0
+fi
+exec "$REAL_LS" "$@"
+EOF
+# BSD touch has no epoch dates; macOS hosts often pair it with GNU date.
+cat >"$SANDBOX/prune-bin/touch" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${FAKE_TOUCH_BSD:-}" ]; then
+  for arg in "$@"; do
+    if [ "$arg" = -d ]; then
+      echo "touch: illegal option -- d" >&2
+      exit 1
+    fi
+  done
+fi
+exec "$REAL_TOUCH" "$@"
+EOF
+chmod +x "$SANDBOX/prune-bin/rm" "$SANDBOX/prune-bin/find" "$SANDBOX/prune-bin/mv" \
+  "$SANDBOX/prune-bin/touch" "$SANDBOX/prune-bin/ls"
+run_prune_wrapper() {
+  env -u CI FAKE_CARGO_LOG="$SANDBOX/prune" \
+    HYPERCOLOR_CACHE_DIR="$SANDBOX/prune-cache" HYPERCOLOR_NO_SCCACHE=1 \
+    CARGO_TARGET_DIR="$prune_target" REAL_RM="$(command -v rm)" \
+    REAL_FIND="$(command -v find)" REAL_MV="$(command -v mv)" \
+    REAL_TOUCH="$(command -v touch)" REAL_LS="$(command -v ls)" \
+    SLOW_RM_STARTED="$SANDBOX/slow-rm.started" \
+    SLOW_RM_RELEASE="$SANDBOX/slow-rm.release" \
+    PATH="$SANDBOX/prune-bin:$SANDBOX/bin:$PATH" \
+    "$@" "$WRAPPER" cargo check
+}
+prune_claim() {
+  printf '%s\n' "$1/.hypercolor-incremental-prune.$(date -u +%Y%m%d)"
+}
+
+# Builds under timezones 26 hours apart share one claim per UTC day.
+tz_target="$SANDBOX/tz-target"
+mkdir -p "$tz_target"
+for zone in AAA-14 BBB+12; do
+  env -u CI TZ="$zone" FAKE_CARGO_LOG="$SANDBOX/tz" \
+    HYPERCOLOR_CACHE_DIR="$SANDBOX/prune-cache" HYPERCOLOR_NO_SCCACHE=1 \
+    HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 CARGO_TARGET_DIR="$tz_target" \
+    PATH="$SANDBOX/bin:$PATH" "$WRAPPER" cargo check >"$SANDBOX/tz-$zone.out" 2>&1
+done
+grep -Fq 'incremental prune: nothing idle for 3+ days' "$SANDBOX/tz-AAA-14.out"
+grep -Fq 'incremental prune skipped: already ran today' "$SANDBOX/tz-BBB+12.out"
+test -d "$(prune_claim "$tz_target")"
+
+# A planted claim path is never followed, so its log cannot be truncated.
+link_target="$SANDBOX/link-target"
+mkdir -p "$link_target" "$SANDBOX/planted-claim"
+printf 'precious\n' >"$SANDBOX/planted-claim/prune.log"
+ln -s "$SANDBOX/planted-claim" "$(prune_claim "$link_target")"
+prune_output="$(env -u CI FAKE_CARGO_LOG="$SANDBOX/link" \
+  HYPERCOLOR_CACHE_DIR="$SANDBOX/prune-cache" HYPERCOLOR_NO_SCCACHE=1 \
+  HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 CARGO_TARGET_DIR="$link_target" \
+  PATH="$SANDBOX/bin:$PATH" "$WRAPPER" cargo check 2>&1)"
+grep -Fq "incremental prune skipped: cannot claim today's run" <<<"$prune_output"
+test "$(<"$SANDBOX/planted-claim/prune.log")" = precious
+
+# A HOME reached through a symlink still protects the real home directory.
+home_target="$SANDBOX/home-target"
+mkdir -p "$home_target/debug/incremental/old-home"
+touch "$home_target/debug/.cargo-lock"
+touch -t "$old_stamp" "$home_target/debug/incremental/old-home"
+ln -s "$home_target" "$SANDBOX/home-link"
+prune_output="$(env -u CI HOME="$SANDBOX/home-link" \
+  RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+  FAKE_CARGO_LOG="$SANDBOX/home" HYPERCOLOR_CACHE_DIR="$SANDBOX/prune-cache" \
+  HYPERCOLOR_NO_SCCACHE=1 HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 \
+  CARGO_TARGET_DIR="$home_target" PATH="$SANDBOX/bin:$PATH" \
+  "$WRAPPER" cargo check 2>&1)"
+grep -Fq "incremental prune skipped: refusing target directory '$(cd "$home_target" && pwd -P)'" \
+  <<<"$prune_output"
+test -d "$home_target/debug/incremental/old-home"
+
+# A dir whose renames would cross a mount is left exactly as it was: no
+# trash, no moves, no mtime changes, and a line that says so.
+xdev_target="$SANDBOX/xdev-target"
+xdev_inc="$xdev_target/debug/incremental"
+mkdir -p "$xdev_inc/old-xdev"
+touch "$xdev_target/debug/.cargo-lock"
+touch -t "$old_stamp" "$xdev_inc/old-xdev" "$xdev_inc" "$xdev_target/debug"
+stat -c '%n %y' "$xdev_inc" "$xdev_target/debug" >"$SANDBOX/xdev-mtimes.before"
+prune_output="$(run_prune_wrapper FAKE_MV_CROSS_MOUNT=1 HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 \
+  CARGO_TARGET_DIR="$xdev_target")"
+grep -Fq 'incremental prune: moved nothing, skipped 1 dirs whose renames would cross a mount' \
+  <<<"$prune_output"
+test -z "$(grep -F 'deleting in the background' <<<"$prune_output")"
+test -d "$xdev_inc/old-xdev"
+test -z "$(find "$xdev_target" -name '.hypercolor-prune.*' -print -quit)"
+stat -c '%n %y' "$xdev_inc" "$xdev_target/debug" >"$SANDBOX/xdev-mtimes.after"
+diff -u "$SANDBOX/xdev-mtimes.before" "$SANDBOX/xdev-mtimes.after"
+
+# An entry that disappears between the shortlist and its move, or between
+# its re-check and its batch rename, is not counted as moved.
+vanish_target="$SANDBOX/vanish-target"
+vanish_inc="$vanish_target/debug/incremental"
+mkdir -p "$vanish_inc/old-a" "$vanish_inc/vanishing-b" "$vanish_inc/dropped-c"
+touch "$vanish_target/debug/.cargo-lock"
+touch -t "$old_stamp" "$vanish_inc/old-a" "$vanish_inc/vanishing-b" "$vanish_inc/dropped-c"
+prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 \
+  CARGO_TARGET_DIR="$vanish_target" FAKE_FIND_DIR="$vanish_inc" \
+  FAKE_FIND_REMOVE="$vanish_inc/vanishing-b" FAKE_MV_DROP="$vanish_inc/dropped-c" \
+  SLOW_RM_RELEASE=/ \
+  SLOW_RM_STARTED="$SANDBOX/vanish-rm.started")"
+grep -Fq 'incremental prune: moved 1 entries idle for 3+ days to trash' <<<"$prune_output"
+
+# The cutoff stamp works with BSD touch next to GNU date.
+mixed_target="$SANDBOX/mixed-target"
+mkdir -p "$mixed_target/debug/incremental/old-mixed"
+touch "$mixed_target/debug/.cargo-lock"
+touch -t "$old_stamp" "$mixed_target/debug/incremental/old-mixed"
+prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 FAKE_TOUCH_BSD=1 \
+  CARGO_TARGET_DIR="$mixed_target" SLOW_RM_RELEASE=/ \
+  SLOW_RM_STARTED="$SANDBOX/mixed-rm.started" 2>&1)"
+grep -Fq 'incremental prune: moved 1 entries idle for 3+ days to trash' <<<"$prune_output"
+
+# The inode probe reads the system ls, so an ls replacement on PATH does
+# not make every dir look cross-mount.
+eza_target="$SANDBOX/eza-target"
+mkdir -p "$eza_target/debug/incremental/old-eza"
+touch "$eza_target/debug/.cargo-lock"
+touch -t "$old_stamp" "$eza_target/debug/incremental/old-eza"
+prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 FAKE_LS_EZA=1 \
+  CARGO_TARGET_DIR="$eza_target" SLOW_RM_RELEASE=/ \
+  SLOW_RM_STARTED="$SANDBOX/eza-rm.started")"
+grep -Fq 'incremental prune: moved 1 entries idle for 3+ days to trash' <<<"$prune_output"
+
+# A profile that cargo clean removes while its trash is being deleted stays
+# gone: no stray file takes its place to break the next build.
+gone_target="$SANDBOX/gone-target"
+mkdir -p "$gone_target/debug/incremental/old-gone"
+touch "$gone_target/debug/.cargo-lock"
+touch -t "$old_stamp" "$gone_target/debug/incremental/old-gone" \
+  "$gone_target/debug/incremental" "$gone_target/debug"
+run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 CARGO_TARGET_DIR="$gone_target" \
+  SLOW_RM_STARTED="$SANDBOX/gone-rm.started" \
+  SLOW_RM_RELEASE="$SANDBOX/gone-rm.release" >/dev/null
+for _ in {1..300}; do
+  [ -e "$SANDBOX/gone-rm.started" ] && break
+  sleep 0.01
+done
+test -e "$SANDBOX/gone-rm.started"
+rm -rf "$gone_target/debug"
+: >"$SANDBOX/gone-rm.release"
+for _ in {1..1000}; do
+  grep -q '^finished' "$(prune_claim "$gone_target")/prune.log" 2>/dev/null && break
+  sleep 0.01
+done
+grep -q '^finished' "$(prune_claim "$gone_target")/prune.log"
+test ! -e "$gone_target/debug"
+test ! -L "$gone_target/debug"
+# The first thing the next build does in that profile.
+mkdir "$gone_target/debug"
+
+# A build that writes into a profile while its trash is being deleted keeps
+# that activity: the profile is not handed back its old mtime.
+busy_target="$SANDBOX/busy-target"
+mkdir -p "$busy_target/debug/incremental/old-busy"
+touch "$busy_target/debug/.cargo-lock"
+touch -t "$old_stamp" "$busy_target/debug/incremental/old-busy" \
+  "$busy_target/debug/incremental" "$busy_target/debug" "$SANDBOX/old-marker"
+run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 CARGO_TARGET_DIR="$busy_target" \
+  SLOW_RM_STARTED="$SANDBOX/busy-rm.started" \
+  SLOW_RM_RELEASE="$SANDBOX/busy-rm.release" >/dev/null
+for _ in {1..300}; do
+  [ -e "$SANDBOX/busy-rm.started" ] && break
+  sleep 0.01
+done
+test -e "$SANDBOX/busy-rm.started"
+test ! "$busy_target/debug" -nt "$SANDBOX/old-marker"
+: >"$busy_target/debug/fresh-artifact"
+: >"$SANDBOX/busy-rm.release"
+for _ in {1..1000}; do
+  grep -q '^finished' "$(prune_claim "$busy_target")/prune.log" 2>/dev/null && break
+  sleep 0.01
+done
+grep -q '^finished' "$(prune_claim "$busy_target")/prune.log"
+test "$busy_target/debug" -nt "$SANDBOX/old-marker"
+
+# Ctrl-C at a terminal during the rename pass restores the mtimes, then
+# stops the wrapper by the signal itself, so a shell loop around it stops
+# too. A pty gives the loop a real foreground job and a real Ctrl-C.
+if script --version 2>&1 | grep -Fq 'util-linux'; then
+  loop_target="$SANDBOX/loop-target"
+  mkdir -p "$loop_target/debug/incremental/old-loop"
+  touch "$loop_target/debug/.cargo-lock"
+  touch -t "$old_stamp" "$loop_target/debug/incremental/old-loop" \
+    "$loop_target/debug/incremental" "$loop_target/debug"
+  stat -c '%n %y' "$loop_target/debug/incremental" "$loop_target/debug" \
+    >"$SANDBOX/loop-mtimes.before"
+  loop_command="for i in 1 2; do env -u CI FAKE_CARGO_LOG=$SANDBOX/loop HYPERCOLOR_CACHE_DIR=$SANDBOX/prune-cache HYPERCOLOR_NO_SCCACHE=1 HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 CARGO_TARGET_DIR=$loop_target REAL_RM=$(command -v rm) REAL_MV=$(command -v mv) REAL_FIND=$(command -v find) REAL_TOUCH=$(command -v touch) REAL_LS=$(command -v ls) FAKE_MV_HOLD_STARTED=$SANDBOX/loop-mv.started PATH=$SANDBOX/prune-bin:$SANDBOX/bin:$PATH $WRAPPER cargo check >/dev/null 2>&1; printf '%s\\n' \$i >>$SANDBOX/loop.log; done"
+  loop_status=0
+  {
+    printf '%s\n' "$loop_command"
+    for _ in {1..500}; do
+      [ -e "$SANDBOX/loop-mv.started" ] && break
+      sleep 0.01
+    done
+    test -e "$SANDBOX/loop-mv.started"
+    printf '\003'
+    sleep 0.5
+    printf 'exit\n'
+  } | timeout 15 script -qec 'bash --noprofile --norc -i' /dev/null \
+    >"$SANDBOX/loop-pty-output" || loop_status=$?
+  test "$loop_status" -eq 0 || test "$loop_status" -eq 130
+  test -e "$SANDBOX/loop-mv.started"
+  test ! -s "$SANDBOX/loop.log"
+  stat -c '%n %y' "$loop_target/debug/incremental" "$loop_target/debug" \
+    >"$SANDBOX/loop-mtimes.after"
+  diff -u "$SANDBOX/loop-mtimes.before" "$SANDBOX/loop-mtimes.after"
+fi
+
+# The traps come off after the rename pass: a TERM that lands later, while
+# the wrapper waits on a slow command, stops it at once rather than after.
+trap_target="$SANDBOX/trap-target"
+mkdir -p "$trap_target"
+env -u CI FAKE_CARGO_LOG="$SANDBOX/trap" FAKE_SCCACHE_LOG="$SANDBOX/trap.sccache.log" \
+  FAKE_SCCACHE_VERSION_STARTED="$SANDBOX/trap-version.started" \
+  FAKE_SCCACHE_VERSION_DELAY=4 HYPERCOLOR_CACHE_DIR="$SANDBOX/prune-cache" \
+  HYPERCOLOR_FORCE_SCCACHE=1 HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 \
+  CARGO_TARGET_DIR="$trap_target" PATH="$SANDBOX/bin:$PATH" \
+  "$WRAPPER" cargo build >"$SANDBOX/trap.out" 2>&1 &
+trap_wrapper_pid=$!
+for _ in {1..500}; do
+  [ -e "$SANDBOX/trap-version.started" ] && break
+  sleep 0.01
+done
+test -e "$SANDBOX/trap-version.started"
+trap_signal_at="$(date +%s%N)"
+kill -TERM "$trap_wrapper_pid"
+set +e
+wait "$trap_wrapper_pid"
+trap_status=$?
+set -e
+trap_wrapper_pid=""
+test "$trap_status" -eq 143
+test $(( ($(date +%s%N) - trap_signal_at) / 1000000 )) -lt 2000
+grep -Fq 'incremental prune: nothing idle for 3+ days' "$SANDBOX/trap.out"
+
+# fd 12 is the capture pipe too: the substitution only returns once every
+# holder of it, background jobs included, has closed it.
+prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 \
+  FAKE_FIND_DIR="$prune_inc" FAKE_FIND_FRESHEN="$prune_inc/racing-crate" \
+  FAKE_CARGO_EXPECT_GONE="$prune_inc/old crate" 12>&1)"
+# The renames finish before Cargo starts, so this build's own compiles can
+# never race them.
+test "$(<"$SANDBOX/prune.gone")" = absent
+grep -Fq 'incremental prune: moved 3 entries idle for 3+ days to trash, found 1 stale trash dirs; deleting in the background' <<<"$prune_output"
+for _ in {1..300}; do
+  [ -e "$SANDBOX/slow-rm.started" ] && break
+  sleep 0.01
+done
+test -e "$SANDBOX/slow-rm.started"
+# While the delete is held: the GC's per-profile accounting still sees the
+# moved bytes, the trash sits inside its profile, every mtime is already
+# back, and the target lock is free.
+test -n "$(find "$prune_target" -maxdepth 2 -name '.hypercolor-prune.*' \
+  ! -name '.hypercolor-prune.recent' ! -name '.hypercolor-prune.orphan' -print -quit)"
+gc_total="$(HYPERCOLOR_CACHE_DIR="$SANDBOX/gc-cache" HYPERCOLOR_GC_REPOS="" \
+  HYPERCOLOR_GC_TARGETS="$prune_target" "$ROOT_DIR/scripts/cargo-target-gc.sh" --dry-run \
+  | sed -n 's/^\[cargo-gc\] \([^ ]*\) across .*/\1/p')"
+gc_bytes="$(numfmt --from=iec-i --suffix=B "$gc_total")"
+test "${gc_bytes%B}" -ge 4194304
+test -n "$(find "$prune_debug" -maxdepth 1 -name '.hypercolor-prune.*' \
+  ! -name '.hypercolor-prune.recent' ! -name '.hypercolor-prune.orphan' -print -quit)"
+test -z "$(find "$prune_target" -maxdepth 1 -name '.hypercolor-prune.*' -print -quit)"
+prune_mtimes >"$SANDBOX/prune-mtimes.after"
+diff -u "$SANDBOX/prune-mtimes.before" "$SANDBOX/prune-mtimes.after"
+exec 9<>"$prune_target/.cargo-build-lock"
+flock -n 9
+exec 9>&-
+: >"$SANDBOX/slow-rm.release"
+prune_log="$(prune_claim "$prune_target")/prune.log"
+for _ in {1..1000}; do
+  grep -q '^finished' "$prune_log" 2>/dev/null && break
+  sleep 0.01
+done
+grep -q '^finished' "$prune_log"
+for gone in "$prune_inc/old crate" "$prune_inc/old-link" "$prune_wasm_inc/old-wasm" \
+  "$prune_debug/.hypercolor-prune.orphan" \
+  "$prune_target/.hypercolor-incremental-prune" \
+  "$prune_target/.hypercolor-incremental-prune.log"; do
+  test ! -e "$gone"
+  test ! -L "$gone"
+done
+for kept in "$prune_inc/fresh-crate/s-old-session" "$prune_inc/recent-crate" \
+  "$prune_inc/live-crate" "$prune_inc/racing-crate" "$prune_idle_inc/recent-release" \
+  "$prune_target/unowned/incremental/old-unowned" \
+  "$prune_outside/incremental/old-linked" "$prune_target/linked" \
+  "$prune_debug/.hypercolor-prune.recent/recent-orphan"; do
+  test -e "$kept"
+done
+test "$(<"$prune_outside/keep")" = keep
+test "$(<"$prune_outside/legacy-log")" = precious
+test "$(find "$prune_target" -maxdepth 3 -name '.hypercolor-prune.*' | wc -l)" -eq 1
+prune_mtimes >"$SANDBOX/prune-mtimes.after"
+diff -u "$SANDBOX/prune-mtimes.before" "$SANDBOX/prune-mtimes.after"
+
+prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3)"
+grep -Fq 'incremental prune skipped: already ran today' <<<"$prune_output"
+for disabled in off false 0 00; do
+  prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS="$disabled")"
+  grep -Fq 'incremental prune disabled' <<<"$prune_output"
+done
+prune_output="$(run_prune_wrapper CI=true HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3)"
+grep -Fq 'incremental prune skipped in CI' <<<"$prune_output"
+prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3d 2>&1)"
+grep -Fq "must be a day count or off, not '3d'" <<<"$prune_output"
+# The next day's claim replaces the previous one.
+mv "$(prune_claim "$prune_target")" "$prune_target/.hypercolor-incremental-prune.20200101"
+prune_output="$(run_prune_wrapper HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3)"
+grep -Fq 'incremental prune: nothing idle for 3+ days' <<<"$prune_output"
+test -z "$(grep -F 'deleting in the background' <<<"$prune_output")"
+test ! -e "$prune_target/.hypercolor-incremental-prune.20200101"
+test -d "$(prune_claim "$prune_target")"
+prune_mtimes >"$SANDBOX/prune-mtimes.after"
+diff -u "$SANDBOX/prune-mtimes.before" "$SANDBOX/prune-mtimes.after"
+
+# Racing builds: exactly one claims the day.
+claim_target="$SANDBOX/claim-target"
+mkdir -p "$claim_target"
+claim_pids=()
+for lane in {1..16}; do
+  env -u CI FAKE_CARGO_LOG="$SANDBOX/claim-$lane" \
+    HYPERCOLOR_CACHE_DIR="$SANDBOX/prune-cache" HYPERCOLOR_NO_SCCACHE=1 \
+    HYPERCOLOR_INCREMENTAL_PRUNE_DAYS=3 CARGO_TARGET_DIR="$claim_target" \
+    PATH="$SANDBOX/bin:$PATH" "$WRAPPER" cargo check >"$SANDBOX/claim-$lane.out" 2>&1 &
+  claim_pids+=("$!")
+done
+for pid in "${claim_pids[@]}"; do
+  wait "$pid"
+done
+test "$(cat "$SANDBOX"/claim-*.out | grep -c 'incremental prune: nothing idle')" -eq 1
+test "$(cat "$SANDBOX"/claim-*.out | grep -c 'incremental prune skipped: already ran today')" -eq 15
 
 printf 'cargo-cache-build tests: PASS\n'
