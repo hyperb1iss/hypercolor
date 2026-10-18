@@ -34,7 +34,9 @@ struct SampleParams {
   width: u32,
   height: u32,
   sample_count: u32,
-  _pad: u32,
+  // Index of this pass's first point in the shared points and output
+  // buffers; each pass samples one texture.
+  point_offset: u32,
 }
 
 @group(0) @binding(0) var source_tex: texture_2d<f32>;
@@ -383,10 +385,10 @@ fn sample_area_linear_u16(point: SamplePoint) -> vec3<u32> {
 
 @compute @workgroup_size(64)
 fn sample_pixels(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let index = gid.x;
-  if (index >= params.sample_count) {
+  if (gid.x >= params.sample_count) {
     return;
   }
+  let index = params.point_offset + gid.x;
 
   let point = points[index];
   let position = vec2<f32>(

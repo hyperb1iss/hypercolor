@@ -29,7 +29,7 @@ pub(super) struct GpuAreaResources {
     horizontal_sums: GpuAreaHierarchy,
     vertical_sums: GpuAreaHierarchy,
     params: wgpu::Buffer,
-    bind_groups: [Option<wgpu::BindGroup>; 3],
+    bind_groups: Vec<(GpuSampleSource, wgpu::BindGroup)>,
 }
 
 struct GpuAreaHierarchy {
@@ -299,7 +299,7 @@ impl GpuAreaResources {
             horizontal_sums,
             vertical_sums,
             params,
-            bind_groups: std::array::from_fn(|_| None),
+            bind_groups: Vec::with_capacity(2),
         }
     }
 
@@ -312,7 +312,11 @@ impl GpuAreaResources {
     }
 
     pub(super) fn clear_bind_groups(&mut self) {
-        self.bind_groups.fill(None);
+        self.bind_groups.clear();
+    }
+
+    pub(super) fn retain_bind_groups(&mut self, keep: impl Fn(GpuSampleSource) -> bool) {
+        self.bind_groups.retain(|(source, _)| keep(*source));
     }
 
     fn bind_group(
@@ -322,8 +326,11 @@ impl GpuAreaResources {
         source: GpuSampleSource,
         source_view: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
-        let index = source.index();
-        if let Some(bind_group) = &self.bind_groups[index] {
+        if let Some((_, bind_group)) = self
+            .bind_groups
+            .iter()
+            .find(|(cached, _)| *cached == source)
+        {
             return bind_group.clone();
         }
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -340,7 +347,7 @@ impl GpuAreaResources {
                 buffer_entry(4, &self.params),
             ],
         });
-        self.bind_groups[index] = Some(bind_group.clone());
+        self.bind_groups.push((source, bind_group.clone()));
         bind_group
     }
 }

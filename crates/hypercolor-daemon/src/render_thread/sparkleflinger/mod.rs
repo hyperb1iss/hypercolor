@@ -60,6 +60,8 @@ use crate::render_thread::sparkleflinger::gpu::{
     PendingGpuDisplayFinalize, PendingGpuZoneSampling,
 };
 use crate::startup::StartupProgress;
+#[cfg(feature = "wgpu")]
+pub(crate) use gpu::ZoneTextureSample;
 
 use super::producer_queue::ProducerFrame;
 
@@ -658,6 +660,16 @@ pub(crate) enum PendingZoneSampling {
     Gpu(PendingGpuZoneSampling),
 }
 
+/// What a zone sampling dispatch reads.
+#[derive(Clone, Copy)]
+pub(crate) enum ZoneSamplingRequest<'a> {
+    /// The compositor's current output, sampled with one prepared plan.
+    Output(&'a [PreparedZonePlan]),
+    /// Retained zone textures, each sampled with its own prepared plan.
+    #[cfg(feature = "wgpu")]
+    ZoneTextures(&'a [ZoneTextureSample]),
+}
+
 #[cfg(feature = "wgpu")]
 pub(crate) enum DisplayFinalizeDispatch {
     Unsupported,
@@ -1164,6 +1176,13 @@ impl SparkleFlinger {
         }
     }
 
+    /// Whether the GPU sampler can run every output's sampling mode in
+    /// `prepared_zones` (it has no Gaussian-area sampler).
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn gpu_samples_plan_modes(prepared_zones: &[PreparedZonePlan]) -> bool {
+        gpu_sampling::GpuSamplingPlan::supports_prepared_zones(prepared_zones)
+    }
+
     pub(crate) fn supports_gpu_output_frames(&self) -> bool {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => false,
@@ -1452,28 +1471,36 @@ impl SparkleFlinger {
         clippy::unnecessary_wraps,
         reason = "the public wrapper mirrors the GPU backend signature even when only the CPU path is compiled"
     )]
-    pub(crate) fn begin_sample_zone_plan_into(
+    pub(crate) fn begin_sample_zones_into(
         &mut self,
-        prepared_zones: &[PreparedZonePlan],
+        request: ZoneSamplingRequest<'_>,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<ZoneSamplingDispatch> {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => {
-                let _ = prepared_zones;
+                let _ = request;
                 let _ = zones;
                 Ok(ZoneSamplingDispatch::Unsupported)
             }
             #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { gpu, .. } => Ok(
-                match gpu.begin_sample_zone_plan_into(prepared_zones, zones)? {
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                let dispatch = match request {
+                    ZoneSamplingRequest::Output(prepared_zones) => {
+                        gpu.begin_sample_zone_plan_into(prepared_zones, zones)?
+                    }
+                    ZoneSamplingRequest::ZoneTextures(textures) => {
+                        gpu.begin_sample_zone_textures_into(textures, zones)?
+                    }
+                };
+                Ok(match dispatch {
                     GpuZoneSamplingDispatch::Unsupported => ZoneSamplingDispatch::Unsupported,
                     GpuZoneSamplingDispatch::Ready => ZoneSamplingDispatch::Ready,
                     GpuZoneSamplingDispatch::Saturated => ZoneSamplingDispatch::Saturated,
                     GpuZoneSamplingDispatch::Pending(pending) => {
                         ZoneSamplingDispatch::Pending(PendingZoneSampling::Gpu(pending))
                     }
-                },
-            ),
+                })
+            }
         }
     }
 
@@ -1518,16 +1545,25 @@ impl SparkleFlinger {
             reason = "GPU-only parameter still present in the CPU-only build"
         )
     )]
-    pub(crate) fn pending_zone_sampling_matches_current_work(
+    pub(crate) fn pending_zone_sampling_matches_request(
         &self,
         pending: &PendingZoneSampling,
-        prepared_zones: &[PreparedZonePlan],
+        request: ZoneSamplingRequest<'_>,
     ) -> bool {
         match (&self.backend, pending) {
             (SparkleFlingerBackend::Cpu(_), _) => false,
             #[cfg(feature = "wgpu")]
             (SparkleFlingerBackend::Gpu { gpu, .. }, PendingZoneSampling::Gpu(pending)) => {
-                gpu.pending_zone_sampling_matches_current_work(pending, prepared_zones)
+                match request {
+                    ZoneSamplingRequest::Output(prepared_zones) => {
+                        gpu.pending_zone_sampling_matches_current_work(pending, prepared_zones)
+                    }
+                    ZoneSamplingRequest::ZoneTextures(textures) => {
+                        gpu::GpuSparkleFlinger::pending_zone_texture_sampling_matches(
+                            pending, textures,
+                        )
+                    }
+                }
             }
             #[allow(unreachable_patterns)]
             _ => false,

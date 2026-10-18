@@ -138,13 +138,15 @@ pub(super) fn zones_support_projection_composition(
     scene_zone_count > 0
 }
 
+/// Whether a zone can be projected into the scene canvas on the GPU.
+///
+/// The projected scene feeds previews, captures, and display backdrops only;
+/// LED output samples each zone's own texture (Spec 86 §5.1). So projection
+/// needs only an affine placement per output, not a particular sampling
+/// mode: the target-space fetch rounds to the nearest texel, which is exact
+/// for zones at the scene extent and a nearest resample otherwise.
 pub(super) fn projection_supports_composition(projection: &CachedZoneProjection) -> bool {
-    !projection.zones.is_empty()
-        && projection.zones.iter().all(|zone| {
-            zone.affine.is_some()
-                && zone.sampling_mode == SamplingMode::Nearest
-                && zone.edge_behavior == EdgeBehavior::Clamp
-        })
+    !projection.zones.is_empty() && projection.zones.iter().all(|zone| zone.affine.is_some())
 }
 
 pub(super) fn append_projection_composition_layers_for_zone(

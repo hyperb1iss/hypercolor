@@ -1,23 +1,23 @@
-//! Multi-zone scenes whose layers render on the GPU (Servo HTML effects) and
-//! whose layouts refuse GPU projection (bilinear sampling) fall back to the
-//! CPU zone path: every zone composes through the shared SparkleFlinger with
-//! `requires_cpu_sampling_canvas`, so its CPU canvas can only come back
-//! through the compositor's one-frame sampling readback latch.
+//! Multi-zone scenes whose layers render on the GPU (Servo HTML effects)
+//! with bilinear layouts, at the owner's rig extents: a 640x480 scene, 640x630
+//! LED zones, and LCD faces composing at their own extents on the same
+//! compositor.
 //!
-//! The rig shape mirrors the O11D scene: the daemon canvas is 640x480, the
-//! two LED zone layouts are 640x630 with bilinear sampling, and LCD face
-//! zones compose at their own extents on the same compositor. A compose at a
-//! new extent replaces the compositor surfaces, which clears the latch, so a
-//! face compose between two frames leaves every LED zone without a canvas.
-//! Without a face, same-extent zones share the one latch and read each
-//! other's staged readbacks.
+//! Before Spec 86 these zones fell back to a CPU path whose one compositor-
+//! wide readback latch a face compose cleared every frame, so every LED and
+//! the scene canvas went black, and same-extent zones read each other's
+//! staged readbacks. Each zone now samples its own retained GPU texture with
+//! its own plan, so every case here must hold its colors from the first
+//! frame.
 
 use std::fmt::Write as _;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use super::super::projection::zones_support_projection_composition;
 use super::*;
-use crate::render_thread::sparkleflinger::MediaTextureSourceKey;
+use crate::render_thread::frame_sampling::ZoneSamplingSet;
+use crate::render_thread::sparkleflinger::{
+    MediaTextureSourceKey, ZoneSamplingDispatch, ZoneSamplingRequest,
+};
 
 const SCENE_WIDTH: u32 = 640;
 const SCENE_HEIGHT: u32 = 480;
@@ -25,11 +25,8 @@ const LED_ZONE_WIDTH: u32 = 640;
 const LED_ZONE_HEIGHT: u32 = 630;
 const LCD_FACE_EXTENT: u32 = 480;
 const RENDERED_FRAMES: u64 = 8;
-/// The sampling latch serves the previous compose's readback, so the first
-/// frames may legitimately come back empty while it fills.
-const WARMUP_FRAMES: u64 = 2;
-/// Real frames are paced by the render loop; give each staged readback the
-/// time a 60 fps frame would before the next frame resolves it.
+/// Real frames are paced by the render loop; pace the test the same way so
+/// frame-to-frame state (held frames, sample caches) sees realistic gaps.
 const FRAME_PACING: Duration = Duration::from_millis(20);
 
 const CASE_RED: Rgba = Rgba::new(255, 0, 0, 255);
@@ -47,13 +44,11 @@ struct GpuLayerSource {
 struct LedExpectation {
     output_id: &'static str,
     zone_name: String,
-    zone_id: ZoneId,
     color: Rgba,
 }
 
-/// The live rig: every LED and the whole scene canvas stay black.
+/// The live rig: two LED zones beside an LCD face.
 #[test]
-#[ignore = "reproduces multi-zone GPU black frame"]
 fn two_bilinear_led_zones_with_gpu_layers_and_lcd_face_keep_their_colors() {
     let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
         return;
@@ -82,10 +77,8 @@ fn two_bilinear_led_zones_with_gpu_layers_and_lcd_face_keep_their_colors() {
     );
 }
 
-/// Without a face compose the latch survives, but the second zone samples
-/// the first zone's staged readback (and the first zone the second's).
+/// Two LED zones and no face: each keeps its own color.
 #[test]
-#[ignore = "reproduces multi-zone GPU black frame"]
 fn two_bilinear_led_zones_with_gpu_layers_keep_their_own_colors() {
     let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
         return;
@@ -112,10 +105,9 @@ fn two_bilinear_led_zones_with_gpu_layers_keep_their_own_colors() {
     );
 }
 
-/// Contrast case: one off-extent zone alone recovers after the first latch
-/// frame, so the extent mismatch by itself does not black out the rig.
+/// One LED zone whose canvas differs from the scene's takes the multi-zone
+/// path and keeps its color.
 #[test]
-#[ignore = "contrast case for the multi-zone GPU black frame repro; passes today"]
 fn single_bilinear_led_zone_off_scene_extent_with_gpu_layer_keeps_its_color() {
     let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
         return;
@@ -135,9 +127,8 @@ fn single_bilinear_led_zone_off_scene_extent_with_gpu_layer_keeps_its_color() {
     );
 }
 
-/// The single-zone Studio preview variant goes black once a face composes.
+/// The Studio zone-layout preview shape: one off-extent zone beside a face.
 #[test]
-#[ignore = "reproduces multi-zone GPU black frame"]
 fn single_bilinear_led_zone_off_scene_extent_with_lcd_face_keeps_its_color() {
     let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
         return;
@@ -161,9 +152,42 @@ fn single_bilinear_led_zone_off_scene_extent_with_lcd_face_keeps_its_color() {
     );
 }
 
+/// Two zones whose outputs sit at the same scene position: each zone's LEDs
+/// still read that zone's own pixels (Spec 64 §2.3), where the old projected
+/// path sampled whichever zone composited last.
+#[test]
+fn overlapping_bilinear_led_zones_keep_their_own_colors() {
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let case = bilinear_led_zone("Case", "case_leds", 0.5, solid_id);
+    let accents = bilinear_led_zone("WLED Accents", "accent_leds", 0.5, solid_id);
+    let face = alpha_lcd_face_zone("Corsair iCUE LINK LCD", solid_id);
+    let sources = [
+        gpu_source(&case, 1, CASE_RED),
+        gpu_source(&accents, 2, ACCENT_BLUE),
+        gpu_source(&face, 3, FACE_GREEN),
+    ];
+    let expectations = [
+        led_expectation(&case, "case_leds", CASE_RED),
+        led_expectation(&accents, "accent_leds", ACCENT_BLUE),
+    ];
+
+    assert_scene_keeps_led_colors(
+        &mut sparkleflinger,
+        &registry,
+        &[case, accents, face],
+        &sources,
+        &expectations,
+    );
+}
+
 /// Renders `RENDERED_FRAMES` paced frames, feeding every layer a fresh
-/// GPU-resident frame the way a Servo effect does, and asserts that after
-/// the latch warmup every LED zone samples its own layer color.
+/// GPU-resident frame the way a Servo effect does, and asserts on every frame
+/// that each LED zone samples its own layer color and that the projected
+/// scene canvas is lit.
 fn assert_scene_keeps_led_colors(
     sparkleflinger: &mut SparkleFlinger,
     registry: &EffectRegistry,
@@ -175,6 +199,7 @@ fn assert_scene_keeps_led_colors(
     let mut zone_colors = Vec::new();
     let mut trace = String::new();
     let mut failures = Vec::new();
+    let scene_probe = SpatialEngine::new(scene_probe_layout());
 
     for frame in 0..RENDERED_FRAMES {
         for source in sources {
@@ -204,51 +229,25 @@ fn assert_scene_keeps_led_colors(
             sparkleflinger,
         )
         .expect("multi-zone GPU scene should render");
-
-        if frame == 0 {
-            assert!(
-                !zones_support_projection_composition(zones, &runtime.scene_projection_cache),
-                "bilinear layouts must refuse GPU projection so zones take the CPU path"
-            );
-        }
-        assert!(
-            matches!(
-                result.led_sampling_strategy,
-                LedSamplingStrategy::PreSampled(_)
-            ),
-            "the CPU zone path pre-samples LED colors from zone target canvases"
-        );
+        let LedSamplingStrategy::SparkleFlingerZones(set) = &result.led_sampling_strategy else {
+            panic!("a GPU multi-zone scene should sample each zone's own texture");
+        };
+        let leds_by_output = sample_zone_set(sparkleflinger, set);
 
         let _ = write!(trace, "frame {frame}:");
         for expectation in expectations {
-            let leds = zone_colors
+            let leds = leds_by_output
                 .iter()
                 .find(|zone| zone.zone_id == expectation.output_id)
                 .map(|zone| zone.colors.clone())
                 .unwrap_or_default();
-            let materialized = result
-                .zone_canvases
-                .iter()
-                .find(|(zone_id, _)| *zone_id == expectation.zone_id)
-                .map(|(_, frame)| canvas_from_scene_frame(frame).get_pixel(0, 0));
-            let _ = write!(
-                trace,
-                " {} leds={:?} zone_canvas={};",
-                expectation.zone_name,
-                leds.first(),
-                materialized.map_or_else(
-                    || "none (GPU frame, target cleared)".to_owned(),
-                    |pixel| format!("{pixel:?}")
-                ),
-            );
+            let _ = write!(trace, " {} leds={:?};", expectation.zone_name, leds.first());
             let expected = [
                 expectation.color.r,
                 expectation.color.g,
                 expectation.color.b,
             ];
-            if frame >= WARMUP_FRAMES
-                && (leds.is_empty() || leds.iter().any(|color| *color != expected))
-            {
+            if leds.is_empty() || leds.iter().any(|color| *color != expected) {
                 failures.push(format!(
                     "frame {frame} {}: expected {expected:?}, sampled {:?}",
                     expectation.zone_name,
@@ -256,24 +255,95 @@ fn assert_scene_keeps_led_colors(
                 ));
             }
         }
-        let scene = canvas_from_scene_frame(&result.scene_frame);
-        let scene_lit = scene
-            .as_rgba_bytes()
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|pixel| pixel[..3] != [0, 0, 0])
-            .count();
-        let _ = writeln!(trace, " scene lit pixels={scene_lit}");
+        let scene_lit = scene_lit_samples(sparkleflinger, &result.scene_frame, &scene_probe);
+        let _ = writeln!(trace, " scene lit samples={scene_lit}");
+        if scene_lit == 0 {
+            failures.push(format!(
+                "frame {frame}: the projected scene canvas is black"
+            ));
+        }
 
         std::thread::sleep(FRAME_PACING);
     }
 
     assert!(
         failures.is_empty(),
-        "LED zones lost their GPU layer colors after warmup:\n{}\ntrace:\n{trace}",
+        "LED zones lost their GPU layer colors:\n{}\ntrace:\n{trace}",
         failures.join("\n")
     );
+}
+
+/// Sample a zone set the way the render thread does: one dispatch over the
+/// zones' textures, then splice CPU-sampled and held zones into zone order.
+fn sample_zone_set(sparkleflinger: &mut SparkleFlinger, set: &ZoneSamplingSet) -> Vec<ZoneColors> {
+    let mut colors = Vec::new();
+    match sparkleflinger
+        .begin_sample_zones_into(
+            ZoneSamplingRequest::ZoneTextures(&set.gpu_textures),
+            &mut colors,
+        )
+        .expect("zone set sampling should dispatch")
+    {
+        ZoneSamplingDispatch::Ready => {}
+        ZoneSamplingDispatch::Pending(mut pending) => {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !sparkleflinger
+                .try_finish_pending_zone_sampling(&mut pending, &mut colors)
+                .expect("zone set readback should finish")
+            {
+                assert!(Instant::now() < deadline, "zone set readback timed out");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        ZoneSamplingDispatch::Unsupported | ZoneSamplingDispatch::Saturated => {
+            panic!("zone set sampling should admit bilinear plans")
+        }
+    }
+    set.assemble_into(&mut colors, &[]);
+    colors
+}
+
+/// Count lit samples on an 8x8 nearest grid over the scene canvas.
+fn scene_lit_samples(
+    sparkleflinger: &mut SparkleFlinger,
+    scene_frame: &ProducerFrame,
+    scene_probe: &SpatialEngine,
+) -> usize {
+    let samples = match scene_frame {
+        ProducerFrame::GpuTexture(texture) => sparkleflinger
+            .sample_texture_zone_plan(texture, scene_probe.sampling_plan().as_ref())
+            .expect("scene probe sampling should run")
+            .expect("scene probe sampling should be admitted"),
+        frame => scene_probe.sample(&canvas_from_scene_frame(frame)),
+    };
+    samples
+        .iter()
+        .flat_map(|zone| zone.colors.iter())
+        .filter(|color| **color != [0, 0, 0])
+        .count()
+}
+
+fn scene_probe_layout() -> SpatialLayout {
+    let mut probe = point_zone_at("scene_probe", 0.5, 0.5);
+    probe.size = NormalizedPosition::new(1.0, 1.0);
+    probe.topology = LedTopology::Matrix {
+        width: 8,
+        height: 8,
+        serpentine: false,
+        start_corner: Corner::TopLeft,
+    };
+    probe.sampling_mode = Some(SamplingMode::Nearest);
+    SpatialLayout {
+        id: "scene-probe".into(),
+        name: "Scene probe".into(),
+        description: None,
+        canvas_width: SCENE_WIDTH,
+        canvas_height: SCENE_HEIGHT,
+        zones: vec![probe],
+        default_sampling_mode: SamplingMode::Nearest,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    }
 }
 
 fn bilinear_led_zone(name: &str, output_id: &str, x: f32, effect_id: EffectId) -> Zone {
@@ -313,7 +383,6 @@ fn led_expectation(zone: &Zone, output_id: &'static str, color: Rgba) -> LedExpe
     LedExpectation {
         output_id,
         zone_name: zone.name.clone(),
-        zone_id: zone.id,
         color,
     }
 }

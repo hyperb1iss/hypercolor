@@ -70,7 +70,7 @@ pub(crate) use probe::{GpuCompositorProbe, probe_render_device};
 pub(crate) use projected::{GpuProjectedScenePreparation, GpuProjectedSceneResourceError};
 use readback::{CachedReadbackKey, CachedReadbackSurface};
 use sampler::CachedSampleResult;
-pub(crate) use sampler::{GpuZoneSamplingDispatch, PendingGpuZoneSampling};
+pub(crate) use sampler::{GpuZoneSamplingDispatch, PendingGpuZoneSampling, ZoneTextureSample};
 use screen_upload::{
     ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadResidencyPolicy,
 };

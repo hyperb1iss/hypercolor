@@ -12,8 +12,8 @@ use super::{
     GpuCanvasFallbackReason, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame,
     GpuSparkleFlinger, GpuZoneSamplingDispatch, MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES,
     MEDIA_UPLOAD_TEXTURE_RING_LEN, MediaTextureSourceKey, MediaUploadTextureKey, PendingPreviewMap,
-    PendingPreviewReadback, ensure_readback_buffer_capacity, ensure_storage_buffer_capacity,
-    gpu_canvas_admission,
+    PendingPreviewReadback, ZoneTextureSample, ensure_readback_buffer_capacity,
+    ensure_storage_buffer_capacity, gpu_canvas_admission,
 };
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin, ProducerFrame};
