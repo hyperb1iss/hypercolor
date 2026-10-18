@@ -114,7 +114,7 @@ const ATTACHMENT: u32 = hypercolor_types::attachment::CURRENT_ATTACHMENT_SCHEMA_
 
 /// Every durable store this release reads or writes.
 pub const DURABLE_STORES: &[DurableStore] = &[
-    // Refuses every schema but 5; 4 is upgraded in memory
+    // Reads schemas 4 through 6; 4 and 5 are upgraded in memory
     // (hypercolor_core::config::ConfigManager::parse_toml).
     DurableStore {
         name: "config",

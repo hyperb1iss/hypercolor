@@ -4,8 +4,8 @@
       "name": "config",
       "storage_format": "toml",
       "readable_schema_min": 4,
-      "readable_schema_max": 5,
-      "written_schema": 5,
+      "readable_schema_max": 6,
+      "written_schema": 6,
       "migration_mode": "backward_compatible"
     },
     {

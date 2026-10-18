@@ -83,7 +83,7 @@ fn enforced_versions_come_from_the_stores_own_constants() {
         hypercolor_daemon::device_settings::DEVICE_SETTINGS_SCHEMA_VERSION
     );
     for (name, min, max) in [
-        ("config", 4, 5),
+        ("config", 4, 6),
         ("scenes", 2, 2),
         ("device-settings", 1, 3),
         ("device-aliases", 2, 2),
