@@ -335,7 +335,7 @@ device = "default"                   # PulseAudio/PipeWire device name, or "defa
 fft_size = 1024                      # FFT window size (256, 512, 1024, 2048, 4096)
 smoothing = 0.8                      # FFT smoothing factor (0.0 = raw, 1.0 = frozen)
 noise_gate = 0.02                    # Below this level, signal treated as silence
-beat_sensitivity = 1.2               # Beat onset threshold multiplier (higher = only strong hits)
+beat_sensitivity = 1.2               # Beat onset threshold multiplier (higher = fewer, stronger beats)
 
 # ─── Screen Capture ───────────────────────────────────────────
 

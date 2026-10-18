@@ -164,7 +164,7 @@ If effects react but with low amplitude, verify your system output volume is not
 
 ```toml
 [audio]
-beat_sensitivity = 1.2   # Default; lower = more beats detected, higher = only strong hits
+beat_sensitivity = 1.2   # Default; lower = more beats detected, higher = fewer, stronger beats
 ```
 
 ---
@@ -192,7 +192,7 @@ All keys live under `[audio]` in `~/.config/hypercolor/hypercolor.toml`:
 | `fft_size` | `1024` | FFT window size. Larger improves bass resolution at the cost of latency. |
 | `smoothing` | `0.8` | Spectrum smoothing factor (0.0 = raw, 1.0 = frozen). |
 | `noise_gate` | `0.02` | Linear amplitude threshold below which audio is treated as silence. |
-| `beat_sensitivity` | `1.2` | Onset threshold multiplier. Lower = more triggers, higher = only strong hits; below `1.0` fires on held bass. |
+| `beat_sensitivity` | `1.2` | Onset threshold multiplier. Lower = more triggers, higher = fewer, stronger triggers; below `1.0` fires on held bass. |
 
 ---
 

@@ -114,7 +114,7 @@ Replace the device value with the exact source name you found above. If you want
 | `fft_size` | `1024` | Primary FFT window size. Larger = more bass resolution, more CPU. Valid: 256, 512, 1024, 2048, 4096. |
 | `smoothing` | `0.8` | Temporal smoothing on the falling edge (0.0 = instant, 1.0 = frozen). |
 | `noise_gate` | `0.02` | RMS level below which the pipeline emits silence. Raises to avoid flicker in quiet rooms. |
-| `beat_sensitivity` | `1.2` | Beat onset threshold multiplier. Higher = only strong hits like kicks; below `1.0` fires on held bass notes. |
+| `beat_sensitivity` | `1.2` | Beat onset threshold multiplier. Higher = fewer, stronger beats; below `1.0` fires on held bass notes. |
 
 {% <callout type="info"> %}
 Internally the `device` key maps onto an audio source type: `"default"` selects the system monitor, `"microphone"` selects the default input device, and any other string becomes `AudioSourceType::Named(...)`, resolved against the platform's device list at startup and on every live reconfiguration.
@@ -168,9 +168,9 @@ Your `device` is pointing at a microphone input rather than a monitor source. Se
 
 Explicitly set `device` to the monitor source for your preferred output. On Linux, run `pactl list short sources` to confirm the name; elsewhere use `hypercolor audio devices`.
 
-**Lights react but feel sluggish or over-smoothed**
+**Beat-synced effects miss kicks or flash between them**
 
-Lower `smoothing` (try `0.5`) in `[audio]`. If beat-synced effects miss kicks, lower `beat_sensitivity` (try `1.0`); if they flash on hats and sustained notes, raise it (try `1.5`).
+If they miss kicks, lower `beat_sensitivity` in `[audio]` (try `1.0`). If they pulse on held bass notes between kicks, raise it (try `1.5`) and expect to lose some kicks. Raising it thins out flashes on hats and other bright hits only slowly, because part of the detector fires on them at almost any threshold, so going much past `1.5` mostly costs kicks.
 
 **Lights are flickering on silence / in a quiet room**
 
