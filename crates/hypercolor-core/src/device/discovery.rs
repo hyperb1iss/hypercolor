@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use hypercolor_driver_api::DiscoveredDevice;
 use tokio::task::JoinSet;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use hypercolor_types::device::{DeviceFingerprint, DeviceId};
 
@@ -143,9 +143,30 @@ impl DiscoveryOrchestrator {
     ///
     /// This allows higher layers to start device lifecycle work immediately
     /// instead of waiting for the entire discovery sweep to complete.
-    #[expect(clippy::too_many_lines)]
-    pub async fn full_scan_with_progress<F, Fut>(mut self, mut on_progress: F) -> DiscoveryReport
+    pub async fn full_scan_with_progress<F, Fut>(self, on_progress: F) -> DiscoveryReport
     where
+        F: FnMut(DiscoveryProgress) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        self.full_scan_with_progress_until(std::future::pending(), on_progress)
+            .await
+            .expect("a scan that is never cancelled always reports")
+    }
+
+    /// Run [`full_scan_with_progress`](Self::full_scan_with_progress) until
+    /// `cancelled` resolves.
+    ///
+    /// Cancellation is checked between scanner results, never in the middle
+    /// of merging one. Once it lands, every scanner still running is aborted
+    /// and awaited, so none is still executing when this returns `None`.
+    #[expect(clippy::too_many_lines)]
+    pub async fn full_scan_with_progress_until<C, F, Fut>(
+        mut self,
+        cancelled: C,
+        mut on_progress: F,
+    ) -> Option<DiscoveryReport>
+    where
+        C: Future<Output = ()>,
         F: FnMut(DiscoveryProgress) -> Fut,
         Fut: Future<Output = ()>,
     {
@@ -174,7 +195,21 @@ impl DiscoveryOrchestrator {
         let mut reappeared_devices = Vec::new();
         let mut seen_ids = HashSet::new();
 
-        while let Some(task) = scan_tasks.join_next().await {
+        let mut cancelled = std::pin::pin!(cancelled);
+        loop {
+            let task = tokio::select! {
+                biased;
+                () = &mut cancelled => {
+                    scan_tasks.abort_all();
+                    while scan_tasks.join_next().await.is_some() {}
+                    debug!("discovery batch cancelled; scanners drained");
+                    return None;
+                }
+                task = scan_tasks.join_next() => task,
+            };
+            let Some(task) = task else {
+                break;
+            };
             match task {
                 Ok((index, scanner_name, elapsed, result)) => {
                     match result {
@@ -302,7 +337,7 @@ impl DiscoveryOrchestrator {
             "Discovery sweep complete"
         );
 
-        DiscoveryReport {
+        Some(DiscoveryReport {
             new_devices,
             reappeared_devices,
             vanished_devices,
@@ -312,7 +347,7 @@ impl DiscoveryOrchestrator {
                 .collect(),
             total_known,
             scan_duration,
-        }
+        })
     }
 
     fn merge_discovered(existing: &mut DiscoveredDevice, incoming: &DiscoveredDevice) {

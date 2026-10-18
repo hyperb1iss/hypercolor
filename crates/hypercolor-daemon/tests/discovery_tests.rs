@@ -2279,6 +2279,9 @@ struct LaneDiscoveryDriver {
     calls: Arc<std::sync::atomic::AtomicUsize>,
     started: Arc<Semaphore>,
     release: Option<Arc<Semaphore>>,
+    /// Busy-waits inside one poll, without yielding to Tokio, until set.
+    spin_until: Option<Arc<AtomicBool>>,
+    spun_out: Arc<AtomicBool>,
     fail: bool,
 }
 
@@ -2290,8 +2293,15 @@ impl LaneDiscoveryDriver {
             calls: Arc::default(),
             started: Arc::new(Semaphore::new(0)),
             release: None,
+            spin_until: None,
+            spun_out: Arc::default(),
             fail: false,
         }
+    }
+
+    fn spinning(mut self) -> Self {
+        self.spin_until = Some(Arc::default());
+        self
     }
 
     fn blocking(mut self) -> Self {
@@ -2350,6 +2360,12 @@ impl DiscoveryCapability for LaneDiscoveryDriver {
                 .await
                 .expect("lane release semaphore should stay open")
                 .forget();
+        }
+        if let Some(release) = &self.spin_until {
+            while !release.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            self.spun_out.store(true, Ordering::Release);
         }
         if self.fail {
             return Err(DriverError::discovery("scanner offline"));
@@ -2576,6 +2592,60 @@ async fn shutdown_stops_an_active_driver_scoped_scan_and_refuses_new_ones() {
     assert!(refused.to_string().contains("shut down"), "{refused}");
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(slow.calls(), 1);
+}
+
+struct ReleaseOnDrop(Arc<AtomicBool>);
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shutdown_waits_for_a_scanner_that_is_mid_work() {
+    use hypercolor_driver_api::DriverRuntimeActions;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let busy = LaneDiscoveryDriver::new(&LANE_SLOW_DRIVER).spinning();
+    let runtime = lane_runtime(&temp_dir, &[&busy]);
+    busy.report(vec![lane_device(&LANE_SLOW_DRIVER, "late")]);
+
+    runtime
+        .driver_host
+        .request_discovery(LANE_SLOW_DRIVER.id)
+        .await
+        .expect("driver-scoped discovery should be scheduled");
+    busy.wait_started().await;
+    // Released on any exit, so a failed assertion cannot leave the spinner
+    // holding a worker thread through runtime teardown.
+    let _release = ReleaseOnDrop(Arc::clone(
+        busy.spin_until.as_ref().expect("busy driver spins"),
+    ));
+
+    // The scanner is inside one poll, so no abort can stop it until it
+    // returns; shutdown has to wait for it rather than leave it running.
+    let lanes = Arc::clone(&runtime.target_lanes);
+    let shutting_down = tokio::spawn(async move { lanes.shut_down().await });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        !shutting_down.is_finished(),
+        "shutdown returned while a scanner was still running"
+    );
+
+    busy.spin_until
+        .as_ref()
+        .expect("busy driver spins")
+        .store(true, Ordering::Release);
+    timeout(Duration::from_secs(2), shutting_down)
+        .await
+        .expect("shutdown finishes once the scanner stops")
+        .expect("shutdown task");
+    assert!(busy.spun_out.load(Ordering::Acquire));
+
+    // What the scanner returned after shutdown began is never applied.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(runtime.device_registry.len().await, 0);
 }
 
 #[tokio::test]

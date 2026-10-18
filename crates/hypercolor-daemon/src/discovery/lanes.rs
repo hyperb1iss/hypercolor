@@ -6,6 +6,10 @@
 //! observation of the target, so later work can tell whether a newer scan
 //! has seen the target since. Scans of different targets never wait on each
 //! other, and two scans of one target never interleave.
+//!
+//! The lanes also own discovery's shutdown. Lane scans and the background
+//! connects scans start are tracked, and shutdown cancels them and waits
+//! until every one has stopped.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -16,6 +20,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use super::DiscoveryTarget;
 
@@ -23,12 +28,12 @@ use super::DiscoveryTarget;
 /// observation epoch; a scan that applied an observation bumps it.
 pub(super) type LaneHold = OwnedMutexGuard<u64>;
 
-/// Lane registry plus the workers that run driver-scoped scans.
+/// Lane registry plus the tracked work that shutdown has to stop.
 #[derive(Default)]
 pub struct TargetLanes {
     lanes: StdMutex<HashMap<String, Arc<TargetLane>>>,
     shutdown: CancellationToken,
-    workers: StdMutex<Vec<JoinHandle<()>>>,
+    tasks: StdMutex<TrackedTasks>,
 }
 
 #[derive(Default)]
@@ -37,6 +42,16 @@ struct TargetLane {
     /// A lane scan is waiting to start. Requests that arrive meanwhile are
     /// covered by it, since its observation begins after they did.
     queued: AtomicBool,
+}
+
+#[derive(Default)]
+struct TrackedTasks {
+    /// Lane scans. Each stops on its own once shutdown is signalled and
+    /// drains its own children before it finishes.
+    workers: Vec<JoinHandle<()>>,
+    /// Background lifecycle work, which has no cancellation point of its
+    /// own, so shutdown aborts it and then waits for it.
+    background: Vec<JoinHandle<()>>,
 }
 
 impl TargetLanes {
@@ -67,53 +82,90 @@ impl TargetLanes {
         !self.lane(target).queued.swap(true, Ordering::AcqRel)
     }
 
-    /// Run `scan` as a lane worker on `handle`. Returns `false`, without
-    /// running it, once discovery has shut down.
-    pub(super) fn spawn<F>(&self, handle: &Handle, scan: F) -> bool
+    /// Run a lane scan on `handle`. It must watch
+    /// [`shutdown_signal`](Self::shutdown_signal) and stop on its own.
+    /// Returns `false`, without running it, once discovery has shut down.
+    pub(super) fn spawn_worker<F>(&self, handle: &Handle, scan: F) -> bool
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        if self.shutdown.is_cancelled() {
-            return false;
-        }
-        let shutdown = self.shutdown.clone();
-        let worker = handle.spawn(async move {
-            // Biased, so a worker spawned as shutdown began never starts.
-            tokio::select! {
-                biased;
-                () = shutdown.cancelled() => {}
-                () = scan => {}
-            }
-        });
-        let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
-        workers.retain(|worker| !worker.is_finished());
-        workers.push(worker);
-        true
+        self.track(handle, scan, |tasks| &mut tasks.workers)
     }
 
-    /// Whether discovery has stopped accepting lane scans.
+    /// Run background lifecycle work on `handle`. Returns `false`, without
+    /// running it, once discovery has shut down.
+    pub(super) fn spawn_background<F>(&self, handle: &Handle, work: F) -> bool
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.track(handle, work, |tasks| &mut tasks.background)
+    }
+
+    /// Token that fires when discovery shuts down.
+    #[must_use]
+    pub fn shutdown_signal(&self) -> CancellationToken {
+        self.shutdown.clone()
+    }
+
+    /// Whether discovery has stopped accepting work.
     #[must_use]
     pub fn is_shut_down(&self) -> bool {
         self.shutdown.is_cancelled()
     }
 
-    /// Refuse new lane scans, cancel the running ones, and wait for every
-    /// worker to stop.
+    /// Refuse new work, stop the running work, and wait until every tracked
+    /// task, and every task those spawned, has finished.
     pub async fn shut_down(&self) {
-        self.shutdown.cancel();
-        let workers =
-            std::mem::take(&mut *self.workers.lock().unwrap_or_else(PoisonError::into_inner));
+        let TrackedTasks {
+            workers,
+            background,
+        } = {
+            let mut tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
+            // Cancelling under the lock means no spawn can slip in after the
+            // tasks are taken.
+            self.shutdown.cancel();
+            std::mem::take(&mut *tasks)
+        };
         for worker in workers {
-            if let Err(error) = worker.await
-                && !error.is_cancelled()
-            {
-                tracing::warn!(%error, "discovery lane worker did not stop cleanly");
-            }
+            await_stopped(worker, "discovery lane scan").await;
         }
+        for task in &background {
+            task.abort();
+        }
+        for task in background {
+            await_stopped(task, "discovery background connect").await;
+        }
+    }
+
+    fn track<F>(
+        &self,
+        handle: &Handle,
+        future: F,
+        bucket: fn(&mut TrackedTasks) -> &mut Vec<JoinHandle<()>>,
+    ) -> bool
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let mut tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.shutdown.is_cancelled() {
+            return false;
+        }
+        let tracked = bucket(&mut tasks);
+        tracked.retain(|task| !task.is_finished());
+        tracked.push(handle.spawn(future));
+        true
     }
 
     fn lane(&self, target: &DiscoveryTarget) -> Arc<TargetLane> {
         let mut lanes = self.lanes.lock().unwrap_or_else(PoisonError::into_inner);
         Arc::clone(lanes.entry(target.as_str().to_owned()).or_default())
+    }
+}
+
+async fn await_stopped(task: JoinHandle<()>, label: &str) {
+    if let Err(error) = task.await
+        && !error.is_cancelled()
+    {
+        warn!(%error, task = label, "task did not stop cleanly at discovery shutdown");
     }
 }

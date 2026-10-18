@@ -274,7 +274,7 @@ pub fn schedule_target_scan(
         return true;
     }
     let handle = runtime.task_spawner.clone();
-    lanes.spawn(&handle, async move {
+    lanes.spawn_worker(&handle, async move {
         let config = driver_host.current_config_snapshot().unwrap_or(config);
         let result = run_discovery_scan(
             runtime,
@@ -404,6 +404,22 @@ async fn run_discovery_scan(
         }
     }
     outcomes.sort_by_key(|(index, _)| *index);
+
+    // Each target scan stops on its own at shutdown; nothing here may act
+    // on what they left behind once the daemon is clearing devices.
+    if runtime.target_lanes.is_shut_down() {
+        debug!(targets = ?target_names, "discovery scan stopped by shutdown");
+        return DiscoveryScanResult {
+            targets: target_names,
+            timeout_ms,
+            new_devices: Vec::new(),
+            reappeared_devices: Vec::new(),
+            vanished_devices: Vec::new(),
+            total_known: runtime.device_registry.len().await,
+            duration_ms: 0,
+            scanners: Vec::new(),
+        };
+    }
 
     if outcomes.is_empty() {
         warn!("Discovery scan requested with zero active sources");
@@ -594,6 +610,7 @@ async fn scan_target(
     // Held until this target's departures are retired, so a newer scan of
     // the same target cannot interleave with this one.
     let mut lane = runtime.target_lanes.hold(target).await;
+    let shutdown = runtime.target_lanes.shutdown_signal();
     let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
     orchestrator.add_source(display_name, async move {
         let Some(capability) = driver.discovery() else {
@@ -629,14 +646,17 @@ async fn scan_target(
     let incremental_for_progress = Arc::clone(&incremental);
     let runtime_for_progress = runtime.clone();
     let report = orchestrator
-        .full_scan_with_progress(|progress: DiscoveryProgress| {
+        .full_scan_with_progress_until(shutdown.cancelled(), |progress: DiscoveryProgress| {
             let runtime = runtime_for_progress.clone();
             let incremental = Arc::clone(&incremental_for_progress);
             async move {
                 process_discovery_progress(&runtime, progress, &incremental).await;
             }
         })
-        .await;
+        .await?;
+    if shutdown.is_cancelled() {
+        return None;
+    }
 
     let IncrementalDiscoveryState {
         found,
@@ -1109,10 +1129,15 @@ fn spawn_lifecycle_actions_in_background(
     actions: Vec<LifecycleAction>,
 ) {
     let runtime_for_task = runtime.clone();
-    std::mem::drop(runtime.task_spawner.spawn(async move {
-        execute_lifecycle_actions(runtime_for_task.clone(), actions).await;
-        sync_registry_state(&runtime_for_task, device_id).await;
-    }));
+    let accepted = runtime
+        .target_lanes
+        .spawn_background(&runtime.task_spawner, async move {
+            execute_lifecycle_actions(runtime_for_task.clone(), actions).await;
+            sync_registry_state(&runtime_for_task, device_id).await;
+        });
+    if !accepted {
+        debug!(%device_id, "dropping background connect; discovery has shut down");
+    }
 }
 
 fn map_scanner_reports(reports: &[ScannerScanReport]) -> Vec<DiscoveryScannerResult> {
