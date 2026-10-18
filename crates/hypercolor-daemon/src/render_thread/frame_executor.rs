@@ -530,18 +530,6 @@ pub(crate) async fn execute_frame(
         let mut preview = render.preview_runtime();
         preview.advance_gpu_preview(&mut render_stage);
     }
-    let zone_preview_demand = ZonePreviewDemand::for_frame(
-        state,
-        &frame_loop.publication_cadence,
-        scene_snapshot.scene_runtime.active_scene_id,
-        scene_snapshot.elapsed_ms,
-    );
-    stage_gpu_zone_previews(
-        &mut render.sparkleflinger,
-        zone_preview_demand,
-        &render_stage.zone_canvases,
-        &render_stage.active_display_zone_ids,
-    );
     let sample_start = Instant::now();
     let preview_advance_us = micros_between(preview_advance_start, sample_start);
     let LedSamplingOutcome {
@@ -572,6 +560,22 @@ pub(crate) async fn execute_frame(
     let sample_done_us = micros_between(frame_start, sample_done_at);
     let sample_us = micros_between(sample_start, sample_done_at);
     let sample_dispatch_us = render_stage.sampled_us;
+    // Staged behind the LED sampling dispatch so LED work leads the queue.
+    let zone_preview_stage_start = Instant::now();
+    let zone_preview_demand = ZonePreviewDemand::for_frame(
+        state,
+        &frame_loop.publication_cadence,
+        scene_snapshot.scene_runtime.active_scene_id,
+        scene_snapshot.elapsed_ms,
+    );
+    stage_gpu_zone_previews(
+        &mut render.sparkleflinger,
+        zone_preview_demand,
+        &render_stage.zone_canvases,
+        &render_stage.active_display_zone_ids,
+    );
+    let preview_advance_us =
+        preview_advance_us.saturating_add(micros_u32(zone_preview_stage_start.elapsed()));
     frame_loop
         .lighting_feed
         .observe_zones(render.output_artifacts.zones(), scene_snapshot.elapsed_ms);
@@ -731,7 +735,11 @@ pub(crate) async fn execute_frame(
         frame_num_u32,
         u64_to_u32(scene_snapshot.elapsed_ms),
     );
-    let zone_preview_frames = zone_preview_sources(&render_stage.zone_canvases, &gpu_zone_previews);
+    let zone_preview_frames = zone_preview_sources(
+        zone_preview_demand,
+        &render_stage.zone_canvases,
+        &gpu_zone_previews,
+    );
     let publish_stats = publish_frame_updates(
         state,
         &mut frame_loop.publication_cadence,

@@ -129,27 +129,33 @@ pub(crate) fn collect_gpu_zone_previews(
     previews
 }
 
-/// The frames zone-preview publication reads: each GPU zone frame is
-/// replaced by its transport-sized preview, everything else passes through.
+/// The frames zone-preview publication reads. On a due frame each GPU zone
+/// frame becomes its transport-sized preview, or is left out until one has
+/// landed, because publication cannot read GPU frames itself. CPU frames,
+/// and every frame when no preview is due, pass through untouched.
 pub(crate) fn zone_preview_sources<'a>(
+    demand: ZonePreviewDemand,
     zone_canvases: &'a [(ZoneId, ProducerFrame)],
     gpu_previews: &[(ZoneId, PublishedSurface)],
 ) -> Cow<'a, [(ZoneId, ProducerFrame)]> {
-    if gpu_previews.is_empty() {
+    if !demand.due
+        || !zone_canvases
+            .iter()
+            .any(|(_, frame)| frame.is_gpu_resident())
+    {
         return Cow::Borrowed(zone_canvases);
     }
     Cow::Owned(
         zone_canvases
             .iter()
-            .map(|(zone_id, frame)| {
-                let preview = frame
-                    .is_gpu_resident()
-                    .then(|| gpu_previews.iter().find(|(id, _)| id == zone_id))
-                    .flatten();
-                match preview {
-                    Some((_, surface)) => (*zone_id, ProducerFrame::Surface(surface.clone())),
-                    None => (*zone_id, frame.clone()),
+            .filter_map(|(zone_id, frame)| {
+                if !frame.is_gpu_resident() {
+                    return Some((*zone_id, frame.clone()));
                 }
+                gpu_previews
+                    .iter()
+                    .find(|(id, _)| id == zone_id)
+                    .map(|(_, surface)| (*zone_id, ProducerFrame::Surface(surface.clone())))
             })
             .collect(),
     )
@@ -219,10 +225,16 @@ mod tests {
     }
 
     #[test]
-    fn preview_sources_borrow_when_no_gpu_previews_landed() {
-        let zone_canvases = vec![(ZoneId::new(), ProducerFrame::Canvas(Canvas::new(2, 2)))];
+    fn preview_sources_borrow_when_no_preview_is_due() {
+        let zone_id = ZoneId::new();
+        let zone_canvases = vec![(zone_id, ProducerFrame::Canvas(Canvas::new(2, 2)))];
+        let previews = vec![(
+            zone_id,
+            PublishedSurface::from_owned_canvas(Canvas::new(1, 1), 1, 1),
+        )];
+        let not_due = ZonePreviewDemand::from_summary(true, false, false, sized_demand(32, 32));
 
-        let sources = zone_preview_sources(&zone_canvases, &[]);
+        let sources = zone_preview_sources(not_due, &zone_canvases, &previews);
 
         assert!(matches!(sources, std::borrow::Cow::Borrowed(_)));
     }
@@ -238,7 +250,9 @@ mod tests {
             PublishedSurface::from_owned_canvas(Canvas::new(1, 1), 1, 1),
         )];
 
-        let sources = zone_preview_sources(&zone_canvases, &previews);
+        let due = ZonePreviewDemand::from_summary(true, true, false, sized_demand(32, 32));
+
+        let sources = zone_preview_sources(due, &zone_canvases, &previews);
 
         let ProducerFrame::Canvas(canvas) = &sources[0].1 else {
             panic!("a CPU zone keeps publishing its own canvas");

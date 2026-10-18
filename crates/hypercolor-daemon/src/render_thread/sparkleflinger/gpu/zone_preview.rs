@@ -202,15 +202,10 @@ impl GpuSparkleFlinger {
             .and_then(|lane| lane.latest.clone()))
     }
 
-    /// Drop every lane whose zone `keep` rejects, cancelling its readback.
+    /// Drop every lane whose zone `keep` rejects. Dropping a lane's
+    /// readback buffer cancels any map still in flight.
     pub(crate) fn retain_zone_previews(&mut self, mut keep: impl FnMut(ZoneId) -> bool) {
-        self.zone_preview_lanes.retain(|zone_id, lane| {
-            let kept = keep(*zone_id);
-            if !kept {
-                lane.discard_pending();
-            }
-            kept
-        });
+        self.zone_preview_lanes.retain(|zone_id, _| keep(*zone_id));
     }
 
     #[cfg(test)]
@@ -239,7 +234,6 @@ impl GpuSparkleFlinger {
             height,
         )?;
         if let Some(mut previous) = self.zone_preview_lanes.remove(&zone_id) {
-            previous.discard_pending();
             // Keep publishing the old size until the new one lands.
             lane.latest = previous.latest.take();
         }
@@ -255,11 +249,13 @@ impl GpuSparkleFlinger {
         let Some(pending) = lane.pending.as_mut() else {
             return Ok(());
         };
-        match poll_zone_preview_map(device, pending, &lane.readback) {
+        match poll_zone_preview_map(device, pending) {
             Ok(true) => {}
             Ok(false) => return Ok(()),
             Err(error) => {
-                lane.pending = None;
+                // A failed poll or map leaves the readback buffer's map state
+                // unknown, so the lane is rebuilt rather than reused.
+                self.zone_preview_lanes.remove(&zone_id);
                 return Err(error);
             }
         }
@@ -385,12 +381,6 @@ impl GpuZonePreviewLane {
         }
         bind_group
     }
-
-    fn discard_pending(&mut self) {
-        if self.pending.take().is_some() {
-            self.readback.unmap();
-        }
-    }
 }
 
 fn begin_zone_preview_map(
@@ -416,7 +406,6 @@ fn begin_zone_preview_map(
 fn poll_zone_preview_map(
     device: &wgpu::Device,
     pending: &mut PendingZonePreviewMap,
-    buffer: &wgpu::Buffer,
 ) -> Result<bool> {
     if pending.map_ready {
         return Ok(true);
@@ -424,7 +413,7 @@ fn poll_zone_preview_map(
     device
         .poll(wgpu::PollType::Poll)
         .context("GPU zone preview callback poll failed")?;
-    if take_zone_preview_map_ready(pending, buffer)? {
+    if take_zone_preview_map_ready(pending)? {
         return Ok(true);
     }
     match device.poll(wgpu::PollType::Wait {
@@ -437,13 +426,10 @@ fn poll_zone_preview_map(
     device
         .poll(wgpu::PollType::Poll)
         .context("GPU zone preview callback poll failed")?;
-    take_zone_preview_map_ready(pending, buffer)
+    take_zone_preview_map_ready(pending)
 }
 
-fn take_zone_preview_map_ready(
-    pending: &mut PendingZonePreviewMap,
-    buffer: &wgpu::Buffer,
-) -> Result<bool> {
+fn take_zone_preview_map_ready(pending: &mut PendingZonePreviewMap) -> Result<bool> {
     let Some(receiver) = pending.receiver.take() else {
         return Ok(pending.map_ready);
     };
@@ -452,13 +438,9 @@ fn take_zone_preview_map_ready(
             pending.map_ready = true;
             Ok(true)
         }
-        Ok(Err(error)) => {
-            buffer.unmap();
-            Err(error).context("GPU zone preview buffer mapping failed")
-        }
+        Ok(Err(error)) => Err(error).context("GPU zone preview buffer mapping failed"),
         Err(TryRecvError::Disconnected) => {
-            buffer.unmap();
-            anyhow::bail!("GPU zone preview map channel closed before completion");
+            anyhow::bail!("GPU zone preview map channel closed before completion")
         }
         Err(TryRecvError::Empty) => {
             pending.receiver = Some(receiver);
