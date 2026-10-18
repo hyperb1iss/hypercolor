@@ -88,6 +88,29 @@ impl DaemonDriverHost {
             .map(|manager| Arc::clone(&manager.get()))
     }
 
+    /// Merge a discovery scan scoped to one driver into the pending scans.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the driver is unknown, disabled, or has nothing to scan.
+    fn schedule_driver_rescan(&self, driver_id: &str) -> Result<(), String> {
+        let config = self.current_config();
+        let targets = discovery::rescan_targets_for_driver(
+            driver_id,
+            config.as_ref(),
+            &self.driver_registry,
+        )?;
+        discovery::schedule_discovery_scan(
+            self.discovery_runtime(),
+            Arc::clone(&self.driver_registry),
+            Arc::new(self.clone()),
+            config,
+            targets,
+            discovery::default_timeout(),
+        );
+        Ok(())
+    }
+
     async fn device_control_settings_key(&self, device_id: DeviceId) -> String {
         self.runtime
             .device_registry
@@ -157,16 +180,39 @@ impl DriverRuntimeActions for DaemonDriverHost {
     ) -> Result<bool> {
         request_device_reconnect(&self.runtime, device_id, backend_id, updated).await
     }
+
+    async fn request_discovery(&self, driver_id: &str) -> Result<()> {
+        self.schedule_driver_rescan(driver_id)
+            .map_err(anyhow::Error::msg)
+    }
 }
 
 /// Drivers retain a weak runtime so the backend graph cannot keep itself alive.
+///
+/// The other host parts are held strongly because none of them reaches back
+/// into the backends; they let a retained handle rebuild the host a
+/// discovery scan runs against.
 struct RetainedDriverRuntime {
     runtime: Weak<DiscoveryRuntime>,
+    driver_inventory: Arc<DriverInventoryStore>,
+    driver_registry: Arc<DriverModuleRegistry>,
+    config_manager: Option<Arc<ConfigManager>>,
+    device_input: Option<Arc<dyn DeviceInputSink>>,
 }
 
 impl RetainedDriverRuntime {
     fn upgrade(&self) -> Result<Arc<DiscoveryRuntime>> {
         self.runtime.upgrade().context("daemon driver host stopped")
+    }
+
+    fn upgrade_host(&self) -> Result<DaemonDriverHost> {
+        Ok(DaemonDriverHost {
+            runtime: self.upgrade()?,
+            driver_inventory: Arc::clone(&self.driver_inventory),
+            driver_registry: Arc::clone(&self.driver_registry),
+            config_manager: self.config_manager.clone(),
+            device_input: self.device_input.clone(),
+        })
     }
 }
 
@@ -201,6 +247,12 @@ impl DriverRuntimeActions for RetainedDriverRuntime {
     ) -> Result<bool> {
         let runtime = self.upgrade()?;
         request_device_reconnect(&runtime, device_id, backend_id, updated).await
+    }
+
+    async fn request_discovery(&self, driver_id: &str) -> Result<()> {
+        self.upgrade_host()?
+            .schedule_driver_rescan(driver_id)
+            .map_err(anyhow::Error::msg)
     }
 }
 
@@ -310,6 +362,10 @@ impl DriverHost for DaemonDriverHost {
     fn runtime_handle(&self) -> Option<Arc<dyn DriverRuntimeActions>> {
         Some(Arc::new(RetainedDriverRuntime {
             runtime: Arc::downgrade(&self.runtime),
+            driver_inventory: Arc::clone(&self.driver_inventory),
+            driver_registry: Arc::clone(&self.driver_registry),
+            config_manager: self.config_manager.clone(),
+            device_input: self.device_input.clone(),
         }))
     }
 
@@ -439,31 +495,9 @@ impl DriverLifecycleActions for DaemonDriverHost {
     }
 
     async fn rescan_driver(&self, driver_id: &str) -> Result<()> {
-        let runtime = self.discovery_runtime();
-        let driver_registry = Arc::clone(&self.driver_registry);
-        let driver_host = Arc::new(self.clone());
-        let config = self.current_config();
-        let targets = match discovery::rescan_targets_for_driver(
-            &driver_id,
-            config.as_ref(),
-            &driver_registry,
-        ) {
-            Ok(targets) => targets,
-            Err(error) => {
-                warn!(driver_id, error = %error, "Skipped driver control rescan");
-                return Ok(());
-            }
-        };
-
-        discovery::schedule_discovery_scan(
-            runtime,
-            driver_registry,
-            driver_host,
-            config,
-            targets,
-            discovery::default_timeout(),
-        );
-
+        if let Err(error) = self.schedule_driver_rescan(driver_id) {
+            warn!(driver_id, error = %error, "Skipped driver control rescan");
+        }
         Ok(())
     }
 }

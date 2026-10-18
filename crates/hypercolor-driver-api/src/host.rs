@@ -67,6 +67,19 @@ pub trait DriverRuntimeActions: Send + Sync {
         anyhow::bail!("host does not support driver-requested reconnects")
     }
 
+    /// Ask the host to rediscover one driver's devices soon.
+    ///
+    /// Drivers whose transport pushes arrival and departure events call this
+    /// so a device is adopted or retired without waiting for the periodic
+    /// scan. The host merges overlapping requests into its pending scans.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the host cannot schedule the scan.
+    async fn request_discovery(&self, _driver_id: &str) -> Result<()> {
+        anyhow::bail!("host does not support driver-requested discovery")
+    }
+
     /// Best-effort immediate activation after pairing.
     ///
     /// # Errors
