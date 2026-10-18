@@ -210,11 +210,14 @@ impl DeviceBackendFactory for BlocksTransportDriverModule {
         host: &dyn DriverHost,
         _config: DriverConfigView<'_>,
     ) -> Result<Arc<dyn DeviceBackend>, DriverError> {
-        let backend = BlocksBackend::new(self.socket_path.clone());
-        Ok(Arc::new(match host.device_input() {
-            Some(sink) => backend.with_device_input(sink),
-            None => backend,
-        }))
+        let mut backend = BlocksBackend::new(self.socket_path.clone());
+        if let Some(sink) = host.device_input() {
+            backend = backend.with_device_input(sink);
+        }
+        if let Some(runtime) = host.runtime_handle() {
+            backend = backend.with_discovery_requests(runtime, self.descriptor().id);
+        }
+        Ok(Arc::new(backend))
     }
 }
 

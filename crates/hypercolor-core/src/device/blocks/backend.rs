@@ -6,16 +6,18 @@ use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 
 use anyhow::Result;
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DeviceInputSink, DeviceWriteOutcome, DiscoveredDevice,
+    DriverRuntimeActions,
 };
 use hypercolor_types::device::{BLOCKS_OUTPUT_BACKEND_ID, DeviceError, DeviceId, DeviceInfo};
 
 use super::connection::{self, BlocksConnection};
 use super::input::BlocksInput;
 use super::types::BlocksSurface;
+use super::watcher::BlocksDeviceWatcher;
 
 /// Device backend that bridges to blocksd for ROLI Blocks hardware.
 pub struct BlocksBackend {
@@ -26,6 +28,8 @@ pub struct BlocksBackend {
     state: Mutex<BlocksBackendState>,
     /// Touch and button input, when the host accepts device input.
     input: Option<BlocksInput>,
+    /// Device-change watcher, when the host accepts discovery requests.
+    watcher: Option<BlocksDeviceWatcher>,
 }
 
 #[derive(Clone)]
@@ -64,6 +68,7 @@ impl BlocksBackend {
                 brightness: HashMap::new(),
             }),
             input: None,
+            watcher: None,
         }
     }
 
@@ -71,6 +76,26 @@ impl BlocksBackend {
     #[must_use]
     pub fn with_device_input(mut self, sink: Arc<dyn DeviceInputSink>) -> Self {
         self.input = Some(BlocksInput::new(self.socket_path.clone(), sink));
+        self
+    }
+
+    /// Ask `runtime` to rediscover `driver_id` whenever blocksd reports a
+    /// block arriving or leaving, so hot-plugged blocks are adopted and
+    /// unplugged ones retired without waiting for the periodic scan.
+    ///
+    /// The watcher runs on the current Tokio runtime. Outside one the
+    /// backend relies on the periodic scan alone.
+    #[must_use]
+    pub fn with_discovery_requests(
+        mut self,
+        runtime: Arc<dyn DriverRuntimeActions>,
+        driver_id: &str,
+    ) -> Self {
+        self.watcher =
+            BlocksDeviceWatcher::spawn(self.socket_path.clone(), runtime, Arc::from(driver_id));
+        if self.watcher.is_none() {
+            warn!("no Tokio runtime for the blocksd device watcher; relying on periodic scans");
+        }
         self
     }
 

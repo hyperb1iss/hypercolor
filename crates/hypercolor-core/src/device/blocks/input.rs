@@ -24,8 +24,8 @@ use super::framing::{LineRead, read_line_capped};
 use super::types::{BlocksButton, BlocksButtonAction, BlocksEvent, BlocksTouch, BlocksTouchAction};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-const RECONNECT_INITIAL: Duration = Duration::from_millis(250);
-const RECONNECT_MAX: Duration = Duration::from_secs(5);
+pub(super) const RECONNECT_INITIAL: Duration = Duration::from_millis(250);
+pub(super) const RECONNECT_MAX: Duration = Duration::from_secs(5);
 const SUBSCRIBE_REQUEST: &[u8] =
     b"{\"type\":\"subscribe\",\"events\":[\"device\",\"touch\",\"button\"]}\n";
 
@@ -36,7 +36,7 @@ const SUBSCRIBE_REQUEST: &[u8] =
 /// still. 64 KiB leaves two orders of magnitude for payload growth while
 /// bounding what a peer that never sends a newline can make this reader
 /// hold.
-const MAX_EVENT_LINE: usize = 64 * 1024;
+pub(super) const MAX_EVENT_LINE: usize = 64 * 1024;
 
 /// Input side of one Blocks backend.
 ///
@@ -233,7 +233,7 @@ async fn run_stream(socket_path: PathBuf, stream: EventStream) {
             }
         }
         let mut delivered = false;
-        match BlocksEventConnection::subscribe(&socket_path).await {
+        match BlocksEventConnection::subscribe(&socket_path, SUBSCRIBE_REQUEST).await {
             Ok(mut connection) => {
                 debug!(path = %socket_path.display(), "blocksd input stream connected");
                 backoff = RECONNECT_INITIAL;
@@ -321,26 +321,27 @@ fn reattach(sink: &Arc<dyn DeviceInputSink>, device: &mut InputDevice) {
     device.publisher = sink.attach(device.device_id, &device.label);
 }
 
-enum StreamItem {
+pub(super) enum StreamItem {
     Event(BlocksEvent),
     Undecodable(serde_json::Error),
     /// A line longer than [`MAX_EVENT_LINE`], discarded through its newline.
     Oversized,
 }
 
-struct BlocksEventConnection {
+pub(super) struct BlocksEventConnection {
     reader: BufReader<UnixStream>,
     line: Vec<u8>,
 }
 
 impl BlocksEventConnection {
-    async fn subscribe(path: &Path) -> Result<Self> {
+    /// Connect and send one `subscribe` request line.
+    pub(super) async fn subscribe(path: &Path, request: &[u8]) -> Result<Self> {
         let mut stream = timeout(CONNECT_TIMEOUT, UnixStream::connect(path))
             .await
             .context("blocksd input connect timeout")?
             .with_context(|| format!("failed to connect to blocksd at {}", path.display()))?;
         stream
-            .write_all(SUBSCRIBE_REQUEST)
+            .write_all(request)
             .await
             .context("blocksd subscribe failed")?;
         Ok(Self {
@@ -358,7 +359,7 @@ impl BlocksEventConnection {
     /// # Errors
     ///
     /// Fails when the socket read fails.
-    async fn next_item(&mut self) -> Result<Option<StreamItem>> {
+    pub(super) async fn next_item(&mut self) -> Result<Option<StreamItem>> {
         let read = read_line_capped(&mut self.reader, &mut self.line, MAX_EVENT_LINE).await?;
         Ok(match read {
             LineRead::Closed => None,
