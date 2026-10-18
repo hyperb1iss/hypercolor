@@ -11,7 +11,7 @@
 > texture with that zone's own plan, and the scene canvas and zone previews
 > become GPU outputs built for the people looking at them.
 
-**Status:** rev 4, approved for Phase 1 implementation after four cross-model review rounds (§10).
+**Status:** rev 5. Phase 1 core implemented; §11 records what shipped, where the implementation departs from rev 4, and what remains.
 **Crates:** `hypercolor-daemon` (render zones, frame sampling, frame publication, SparkleFlinger GPU compositor and sampler), `hypercolor-core` (spatial plan identity)
 **Amends:** Spec 64 §12.1 and §12.5 (per-group sampling moves to the GPU), Spec 48 §4.2 (multi-group preview derivation)
 **Author:** Nova
@@ -32,6 +32,7 @@
 8. [Phases and acceptance](#8-phases-and-acceptance)
 9. [Open questions](#9-open-questions)
 10. [Review history](#10-review-history)
+11. [Implementation status](#11-implementation-status)
 
 ---
 
@@ -608,3 +609,44 @@ closed, three new):
 **rev 4** (round 4): both lenses closed every remaining finding and returned
 PASS with no new blocking issues. Design review only; GPU execution and the
 live acceptance run happen during Phase 1.
+
+---
+
+## 11. Implementation status
+
+Phase 1 core landed on branch `nova/multizone-gpu` and was verified live on
+the evidence rig on 2026-10-18: the Default zone running Bubble Garden beside
+a ROLI zone running Bubble Garden with Touch Ripple in `screen` held the
+60 fps tier with all five display faces active, `gpu_zone_sampling` true,
+and the blocks receiving frames at their 25 fps device cap.
+
+### 11.1 Departures from rev 4
+
+- **Gaussian-area samples on the GPU now (was Phase 3).** The sample shader
+  runs it with the CPU sampler's fixed-point arithmetic and matches it
+  exactly. Every sampling mode therefore runs on the GPU, so there is no
+  `Unsupported` source, no `gpu_sampling_unsupported` health reason, and no
+  CPU-backed zone special case: on the GPU backend every zone composes on the
+  GPU and samples from its snapshot, whatever its layers' frames started as.
+  The §6 rules for refused plans and CPU-backed uploads are superseded. A
+  plan past device limits still fails admission for the whole dispatch, and
+  the frame then holds its published colors or goes black.
+- **Retained zone sets hold the published frame (§4.2).** A zone set's colors
+  resolve on the GPU after the scene renders, so retention stores no colors
+  and resumes as `ReusePublished`. The conditional conversion rev 4 asked for
+  is unnecessary because there are no retained colors to compare.
+- **Transitions (§4.1).** The single-zone path does not report a one-zone set
+  itself. While a transition runs, the composer keeps the single-zone scene
+  frame, and the resolver samples it as a one-zone set only when the last
+  stable frame was multi-zone. Ordinary frames carry nothing extra.
+
+### 11.2 Remaining Phase 1 work
+
+- §2.1 composition key and the skip it enables (zones recompose and
+  restabilize every frame today).
+- §4.3 `Fallback(zone)` for GPU zones (unassigned fallback outputs read only
+  CPU zone canvases, which GPU zones do not publish).
+- §5.2 GPU zone previews (in progress on `nova/multizone-zone-previews`).
+- §7 telemetry counters and the `multi_zone_sampling` diagnose check.
+- Acceptance criterion 9 (preview cadence across compositor size switches)
+  and criterion 16 (live canvas resize) have no dedicated tests yet.
