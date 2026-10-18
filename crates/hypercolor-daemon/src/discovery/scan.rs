@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hypercolor_core::device::{DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction};
 use hypercolor_driver_api::{DiscoveryRequest, DriverConfigView, DriverError};
@@ -9,6 +9,7 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DriverTransportKind};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use super::device_helpers::{
@@ -223,7 +224,6 @@ impl Drop for DiscoveryFlagGuard {
 ///
 /// This function assumes the caller already set `in_progress=true`. It always
 /// resets that flag on exit.
-#[allow(clippy::too_many_lines)]
 pub async fn execute_discovery_scan(
     runtime: DiscoveryRuntime,
     driver_registry: Arc<DriverModuleRegistry>,
@@ -237,12 +237,56 @@ pub async fn execute_discovery_scan(
         driver_registry: Arc::clone(&driver_registry),
         driver_host: Arc::clone(&driver_host),
     };
+    run_discovery_scan(
+        runtime,
+        driver_registry,
+        driver_host,
+        config,
+        targets,
+        timeout,
+    )
+    .await
+}
+
+/// Everything one target's scan needs, shared by every target of a scan.
+#[derive(Clone)]
+struct TargetScanContext {
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverModuleRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
+    config: Arc<HypercolorConfig>,
+    timeout: Duration,
+    enabled_driver_ids: Arc<BTreeSet<String>>,
+    registered_driver_ids: Arc<HashSet<String>>,
+}
+
+/// What one target's scan observed and applied.
+struct TargetScanOutcome {
+    found: Vec<DeviceRef>,
+    new_devices: Vec<DeviceRef>,
+    reappeared_devices: Vec<DeviceRef>,
+    seen_ids: HashSet<DeviceId>,
+    vanished_devices: Vec<String>,
+    scanner_reports: Vec<ScannerScanReport>,
+    failed: bool,
+}
+
+/// Scan `targets` and apply the results without touching the shared
+/// in-progress slot.
+///
+/// Targets scan concurrently, each in its own lane, and each retires its
+/// own departures from its own scanner's outcome, so one driver failing
+/// never keeps another driver's vanished devices connected.
+#[allow(clippy::too_many_lines)]
+async fn run_discovery_scan(
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverModuleRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
+    config: Arc<HypercolorConfig>,
+    targets: Vec<DiscoveryTarget>,
+    timeout: Duration,
+) -> DiscoveryScanResult {
     let target_names = super::target_names(&targets);
-    let transient_miss_targets = targets
-        .iter()
-        .filter(|target| target.preserves_renderable_on_discovery_miss())
-        .cloned()
-        .collect::<Vec<_>>();
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
 
     runtime
@@ -275,7 +319,7 @@ pub async fn execute_discovery_scan(
         };
     }
 
-    let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
+    let scan_started = Instant::now();
     let enabled_driver_ids = Arc::new(network::enabled_driver_module_ids(
         &driver_registry,
         &config,
@@ -285,60 +329,32 @@ pub async fn execute_discovery_scan(
     runtime
         .unclaimed_devices
         .set_enabled_driver_ids(Some((*enabled_driver_ids).clone()));
-    let registered_driver_ids = Arc::new(driver_registry.ids().into_iter().collect::<HashSet<_>>());
-    for target in &targets {
-        let driver_id = target.as_str().to_owned();
-        let Some(driver) = driver_registry.get(&driver_id) else {
-            warn!(driver_id, "skipping unknown discovery driver");
-            continue;
-        };
-        if driver.discovery().is_none() {
-            warn!(driver_id, "skipping driver without discovery capability");
-            continue;
-        }
-        let display_name = driver.descriptor().display_name.to_owned();
-        let serialize_probe = probes_shared_buses(&driver_id, &driver.descriptor().transport);
-        let probe_serializer = Arc::clone(&runtime.probe_serializer);
-        let driver_config = network::driver_config_entry(&config, &driver_id);
-        let host = Arc::clone(&driver_host);
-        let request = DiscoveryRequest {
-            timeout,
-            mdns_enabled: config.discovery.mdns_enabled,
-        };
-        let enabled_driver_ids = Arc::clone(&enabled_driver_ids);
-        let registered_driver_ids = Arc::clone(&registered_driver_ids);
-        orchestrator.add_source(display_name, async move {
-            let Some(capability) = driver.discovery() else {
-                return Ok::<_, DriverError>(Vec::new());
-            };
-            // Native SMBus probing and bridge discovery both open the same
-            // I2C adapters; letting them overlap corrupted DRAM LED counts.
-            let probe_guard = if serialize_probe {
-                Some(probe_serializer.lock().await)
-            } else {
-                None
-            };
-            let mut devices = capability
-                .discover(
-                    host.as_ref(),
-                    &request,
-                    DriverConfigView {
-                        driver_id: &driver_id,
-                        entry: &driver_config,
-                    },
-                )
-                .await?;
-            drop(probe_guard);
-            devices.retain(|device| {
-                let device_driver_id = device.info.driver_id();
-                !registered_driver_ids.contains(device_driver_id)
-                    || enabled_driver_ids.contains(device_driver_id)
-            });
-            Ok(devices)
-        });
-    }
+    let context = TargetScanContext {
+        runtime: runtime.clone(),
+        driver_registry: Arc::clone(&driver_registry),
+        driver_host: Arc::clone(&driver_host),
+        config: Arc::clone(&config),
+        timeout,
+        enabled_driver_ids,
+        registered_driver_ids: Arc::new(driver_registry.ids().into_iter().collect()),
+    };
 
-    if orchestrator.source_count() == 0 {
+    let mut target_scans = JoinSet::new();
+    for (index, target) in targets.iter().cloned().enumerate() {
+        let context = context.clone();
+        target_scans.spawn(async move { (index, scan_target(&context, &target).await) });
+    }
+    let mut outcomes = Vec::with_capacity(targets.len());
+    while let Some(joined) = target_scans.join_next().await {
+        match joined {
+            Ok((index, Some(outcome))) => outcomes.push((index, outcome)),
+            Ok((_, None)) => {}
+            Err(error) => warn!(%error, "discovery target scan task failed"),
+        }
+    }
+    outcomes.sort_by_key(|(index, _)| *index);
+
+    if outcomes.is_empty() {
         warn!("Discovery scan requested with zero active sources");
         runtime
             .event_bus
@@ -358,126 +374,30 @@ pub async fn execute_discovery_scan(
         };
     }
 
-    let incremental = Arc::new(Mutex::new(IncrementalDiscoveryState::default()));
-    let incremental_for_progress = Arc::clone(&incremental);
-    let runtime_for_progress = runtime.clone();
-    let report = orchestrator
-        .full_scan_with_progress(|progress: DiscoveryProgress| {
-            let runtime = runtime_for_progress.clone();
-            let incremental = Arc::clone(&incremental_for_progress);
-            async move {
-                process_discovery_progress(&runtime, progress, &incremental).await;
-            }
-        })
-        .await;
-
-    let IncrementalDiscoveryState {
-        found,
-        new_devices,
-        reappeared_devices,
-    } = incremental.lock().await.clone();
-
-    let seen_ids: HashSet<DeviceId> = report
-        .new_devices
-        .iter()
-        .chain(report.reappeared_devices.iter())
-        .copied()
-        .collect();
-
-    let scan_had_errors = report
-        .scanner_reports
-        .iter()
-        .any(|scanner| scanner.error.is_some());
-    let mut scoped_registry_ids = HashSet::new();
-    for tracked in runtime.device_registry.list().await {
-        if targets
-            .iter()
-            .any(|target| target.matches_device(&tracked.info))
-        {
-            scoped_registry_ids.insert(tracked.info.id);
-        }
-    }
-
-    let ignored_out_of_scope = report
-        .vanished_devices
-        .iter()
-        .filter(|id| !scoped_registry_ids.contains(id))
-        .count();
-    if ignored_out_of_scope > 0 {
-        debug!(
-            ignored_out_of_scope,
-            targets = ?target_names,
-            "ignoring vanished devices outside the active discovery target scope"
-        );
-    }
-
-    let mut vanished_ids: HashSet<DeviceId> = if scan_had_errors {
-        let failed_scanners = report
-            .scanner_reports
-            .iter()
-            .filter_map(|scanner| scanner.error.as_ref().map(|_| scanner.scanner.clone()))
-            .collect::<Vec<_>>();
-        warn!(
-            targets = ?target_names,
-            failed_scanners = ?failed_scanners,
-            "discovery scan was incomplete; preserving existing device mappings"
-        );
-        HashSet::new()
-    } else {
-        report
-            .vanished_devices
-            .iter()
-            .copied()
-            .filter(|id| scoped_registry_ids.contains(id))
-            .collect()
-    };
-    let lifecycle_tracked_ids = {
-        let lifecycle = runtime.lifecycle_manager.lock().await;
-        lifecycle.tracked_device_ids()
-    };
-    for id in lifecycle_tracked_ids {
-        if !scan_had_errors && scoped_registry_ids.contains(&id) && !seen_ids.contains(&id) {
-            vanished_ids.insert(id);
-        }
-    }
-    retain_transient_target_devices(&runtime, &transient_miss_targets, &mut vanished_ids).await;
-
-    let mut vanished_ids: Vec<DeviceId> = vanished_ids.into_iter().collect();
-    vanished_ids.sort_by_key(DeviceId::as_uuid);
-
+    let scan_had_errors = outcomes.iter().any(|(_, outcome)| outcome.failed);
+    let mut found = Vec::new();
+    let mut new_devices = Vec::new();
+    let mut reappeared_devices = Vec::new();
+    let mut seen_ids = HashSet::new();
     let mut vanished_devices = Vec::new();
-    for id in vanished_ids {
-        let device_label = device_log_label(&runtime, id).await;
-        let actions = {
-            let mut lifecycle = runtime.lifecycle_manager.lock().await;
-            lifecycle.on_device_vanished(id)
-        };
-        execute_lifecycle_actions(runtime.clone(), actions).await;
-        sync_registry_state(&runtime, id).await;
-
-        runtime
-            .event_bus
-            .publish(HypercolorEvent::DeviceDisconnected {
-                device_id: id.to_string(),
-                reason: DisconnectReason::Timeout,
-                will_retry: true,
-            });
-        info!(
-            device = %device_label,
-            device_id = %id,
-            reason = ?DisconnectReason::Timeout,
-            will_retry = true,
-            "device disconnected"
-        );
-        vanished_devices.push(id.to_string());
+    let mut scanner_reports = Vec::new();
+    for (_, outcome) in outcomes {
+        found.extend(outcome.found);
+        new_devices.extend(outcome.new_devices);
+        reappeared_devices.extend(outcome.reappeared_devices);
+        seen_ids.extend(outcome.seen_ids);
+        vanished_devices.extend(outcome.vanished_devices);
+        scanner_reports.extend(outcome.scanner_reports);
     }
+    let total_known = runtime.device_registry.len().await;
+    let scan_duration = scan_started.elapsed();
 
     driver_host
         .driver_inventory()
         .refresh(driver_registry.as_ref(), driver_host.as_ref())
         .await;
 
-    let duration_ms = u64::try_from(report.scan_duration.as_millis()).unwrap_or(u64::MAX);
+    let duration_ms = u64::try_from(scan_duration.as_millis()).unwrap_or(u64::MAX);
     runtime
         .event_bus
         .publish(HypercolorEvent::DeviceDiscoveryCompleted {
@@ -487,7 +407,7 @@ pub async fn execute_discovery_scan(
 
     debug!(
         new_devices = found.len(),
-        total_known = report.total_known,
+        total_known = total_known,
         duration_ms,
         "Discovery scan completed"
     );
@@ -495,7 +415,7 @@ pub async fn execute_discovery_scan(
         targets = ?target_names,
         found = found.len(),
         vanished = vanished_devices.len(),
-        total_known = report.total_known,
+        total_known = total_known,
         duration_ms,
         "Discovery sweep finished"
     );
@@ -571,10 +491,196 @@ pub async fn execute_discovery_scan(
         new_devices,
         reappeared_devices,
         vanished_devices,
-        total_known: report.total_known,
+        total_known,
         duration_ms,
-        scanners: map_scanner_reports(&report.scanner_reports),
+        scanners: map_scanner_reports(&scanner_reports),
     }
+}
+
+/// Scan one target while holding its lane: discover, apply what it found,
+/// then retire the target's devices it no longer reports.
+///
+/// Returns `None` for a target with no discovery driver behind it.
+#[allow(clippy::too_many_lines)]
+async fn scan_target(
+    context: &TargetScanContext,
+    target: &DiscoveryTarget,
+) -> Option<TargetScanOutcome> {
+    let runtime = &context.runtime;
+    let driver_id = target.as_str().to_owned();
+    let Some(driver) = context.driver_registry.get(&driver_id) else {
+        warn!(driver_id, "skipping unknown discovery driver");
+        return None;
+    };
+    if driver.discovery().is_none() {
+        warn!(driver_id, "skipping driver without discovery capability");
+        return None;
+    }
+    let display_name = driver.descriptor().display_name.to_owned();
+    let serialize_probe = probes_shared_buses(&driver_id, &driver.descriptor().transport);
+    let probe_serializer = Arc::clone(&runtime.probe_serializer);
+    let driver_config = network::driver_config_entry(&context.config, &driver_id);
+    let host = Arc::clone(&context.driver_host);
+    let request = DiscoveryRequest {
+        timeout: context.timeout,
+        mdns_enabled: context.config.discovery.mdns_enabled,
+    };
+    let enabled_driver_ids = Arc::clone(&context.enabled_driver_ids);
+    let registered_driver_ids = Arc::clone(&context.registered_driver_ids);
+
+    // Held until this target's departures are retired, so a newer scan of
+    // the same target cannot interleave with this one.
+    let _lane = runtime.target_lanes.hold(target).await;
+    let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
+    orchestrator.add_source(display_name, async move {
+        let Some(capability) = driver.discovery() else {
+            return Ok::<_, DriverError>(Vec::new());
+        };
+        // Native SMBus probing and bridge discovery both open the same
+        // I2C adapters; letting them overlap corrupted DRAM LED counts.
+        let probe_guard = if serialize_probe {
+            Some(probe_serializer.lock().await)
+        } else {
+            None
+        };
+        let mut devices = capability
+            .discover(
+                host.as_ref(),
+                &request,
+                DriverConfigView {
+                    driver_id: &driver_id,
+                    entry: &driver_config,
+                },
+            )
+            .await?;
+        drop(probe_guard);
+        devices.retain(|device| {
+            let device_driver_id = device.info.driver_id();
+            !registered_driver_ids.contains(device_driver_id)
+                || enabled_driver_ids.contains(device_driver_id)
+        });
+        Ok(devices)
+    });
+
+    let incremental = Arc::new(Mutex::new(IncrementalDiscoveryState::default()));
+    let incremental_for_progress = Arc::clone(&incremental);
+    let runtime_for_progress = runtime.clone();
+    let report = orchestrator
+        .full_scan_with_progress(|progress: DiscoveryProgress| {
+            let runtime = runtime_for_progress.clone();
+            let incremental = Arc::clone(&incremental_for_progress);
+            async move {
+                process_discovery_progress(&runtime, progress, &incremental).await;
+            }
+        })
+        .await;
+
+    let IncrementalDiscoveryState {
+        found,
+        new_devices,
+        reappeared_devices,
+    } = incremental.lock().await.clone();
+    let seen_ids: HashSet<DeviceId> = report
+        .new_devices
+        .iter()
+        .chain(report.reappeared_devices.iter())
+        .copied()
+        .collect();
+    let failed = report
+        .scanner_reports
+        .iter()
+        .any(|scanner| scanner.error.is_some());
+    let vanished_devices = if failed {
+        let failed_scanners = report
+            .scanner_reports
+            .iter()
+            .filter_map(|scanner| scanner.error.as_ref().map(|_| scanner.scanner.clone()))
+            .collect::<Vec<_>>();
+        warn!(
+            target = target.as_str(),
+            failed_scanners = ?failed_scanners,
+            "discovery of this target was incomplete; preserving its device mappings"
+        );
+        Vec::new()
+    } else {
+        retire_target_departures(runtime, target, &report.vanished_devices, &seen_ids).await
+    };
+
+    Some(TargetScanOutcome {
+        found,
+        new_devices,
+        reappeared_devices,
+        seen_ids,
+        vanished_devices,
+        scanner_reports: report.scanner_reports,
+        failed,
+    })
+}
+
+/// Retire the devices `target` owns that its scan did not report.
+async fn retire_target_departures(
+    runtime: &DiscoveryRuntime,
+    target: &DiscoveryTarget,
+    missing_since_snapshot: &[DeviceId],
+    seen_ids: &HashSet<DeviceId>,
+) -> Vec<String> {
+    let mut scoped_registry_ids = HashSet::new();
+    for tracked in runtime.device_registry.list().await {
+        if target.matches_device(&tracked.info) {
+            scoped_registry_ids.insert(tracked.info.id);
+        }
+    }
+
+    let mut vanished_ids: HashSet<DeviceId> = missing_since_snapshot
+        .iter()
+        .copied()
+        .filter(|id| scoped_registry_ids.contains(id))
+        .collect();
+    let lifecycle_tracked_ids = {
+        let lifecycle = runtime.lifecycle_manager.lock().await;
+        lifecycle.tracked_device_ids()
+    };
+    for id in lifecycle_tracked_ids {
+        if scoped_registry_ids.contains(&id) && !seen_ids.contains(&id) {
+            vanished_ids.insert(id);
+        }
+    }
+    if target.preserves_renderable_on_discovery_miss() {
+        retain_transient_target_devices(runtime, std::slice::from_ref(target), &mut vanished_ids)
+            .await;
+    }
+
+    let mut vanished_ids: Vec<DeviceId> = vanished_ids.into_iter().collect();
+    vanished_ids.sort_by_key(DeviceId::as_uuid);
+
+    let mut vanished_devices = Vec::new();
+    for id in vanished_ids {
+        let device_label = device_log_label(&runtime, id).await;
+        let actions = {
+            let mut lifecycle = runtime.lifecycle_manager.lock().await;
+            lifecycle.on_device_vanished(id)
+        };
+        execute_lifecycle_actions(runtime.clone(), actions).await;
+        sync_registry_state(&runtime, id).await;
+
+        runtime
+            .event_bus
+            .publish(HypercolorEvent::DeviceDisconnected {
+                device_id: id.to_string(),
+                reason: DisconnectReason::Timeout,
+                will_retry: true,
+            });
+        info!(
+            device = %device_label,
+            device_id = %id,
+            reason = ?DisconnectReason::Timeout,
+            will_retry = true,
+            "device disconnected"
+        );
+        vanished_devices.push(id.to_string());
+    }
+
+    vanished_devices
 }
 
 /// Whether a discovery driver touches host buses another driver also probes.

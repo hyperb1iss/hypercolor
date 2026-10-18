@@ -3,6 +3,7 @@
 mod conflict_guard;
 mod coverage;
 mod device_helpers;
+mod lanes;
 mod lifecycle;
 mod scan;
 
@@ -51,6 +52,7 @@ pub(crate) use device_helpers::{
     sync_registry_state,
 };
 pub use hypercolor_types::api::devices::{DiscoveryScanResult, DiscoveryScannerResult};
+pub use lanes::TargetLanes;
 pub(crate) use lifecycle::execute_lifecycle_actions;
 pub(crate) use lifecycle::handle_async_write_failures;
 pub use lifecycle::{
@@ -137,6 +139,9 @@ pub struct DiscoveryRuntime {
 
     /// Coalesced background scans that must run after the current owner exits.
     pub pending_scans: Arc<StdMutex<PendingDiscoveryScans>>,
+
+    /// Per-target lanes that order each target's scans.
+    pub target_lanes: Arc<TargetLanes>,
 
     /// Main daemon runtime handle for detached background work.
     pub task_spawner: Handle,

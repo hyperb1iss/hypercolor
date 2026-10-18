@@ -184,6 +184,7 @@ fn test_discovery_runtime(
         ),
         in_progress: Arc::new(AtomicBool::new(false)),
         pending_scans: Arc::default(),
+        target_lanes: Arc::default(),
         task_spawner: tokio::runtime::Handle::current(),
     }
 }

@@ -874,6 +874,7 @@ fn make_runtime_with_registry_and_layout(
         credential_store: Arc::clone(&credential_store),
         in_progress: Arc::clone(&in_progress),
         pending_scans: Arc::default(),
+        target_lanes: Arc::default(),
         task_spawner: tokio::runtime::Handle::current(),
     };
     let driver_host = Arc::new(DaemonDriverHost::new(
@@ -2242,5 +2243,178 @@ async fn a_failed_connect_before_the_first_scan_scans_inline() {
     assert!(
         store.status().scanned,
         "the failure path scans rather than hinting from an empty record"
+    );
+}
+
+static LANE_QUICK_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "lane_quick",
+    "Lane Quick Discovery",
+    DriverTransportKind::Bridge,
+    true,
+    false,
+);
+
+static LANE_FAILING_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "lane_failing",
+    "Lane Failing Discovery",
+    DriverTransportKind::Network,
+    true,
+    false,
+);
+
+/// Discovery driver for lane tests: reports `devices`, optionally waits
+/// for a release first, or fails outright.
+#[derive(Clone)]
+struct LaneDiscoveryDriver {
+    descriptor: &'static DriverDescriptor,
+    devices: Arc<StdMutex<Vec<DiscoveredDevice>>>,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    started: Arc<Semaphore>,
+    release: Option<Arc<Semaphore>>,
+    fail: bool,
+}
+
+impl LaneDiscoveryDriver {
+    fn new(descriptor: &'static DriverDescriptor) -> Self {
+        Self {
+            descriptor,
+            devices: Arc::default(),
+            calls: Arc::default(),
+            started: Arc::new(Semaphore::new(0)),
+            release: None,
+            fail: false,
+        }
+    }
+
+    fn failing(mut self) -> Self {
+        self.fail = true;
+        self
+    }
+}
+
+impl DriverModule for LaneDiscoveryDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        self.descriptor
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DiscoveryCapability for LaneDiscoveryDriver {
+    async fn discover(
+        &self,
+        _host: &dyn DriverHost,
+        _request: &DiscoveryRequest,
+        _config: DriverConfigView<'_>,
+    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        self.started.add_permits(1);
+        if let Some(release) = &self.release {
+            Arc::clone(release)
+                .acquire_owned()
+                .await
+                .expect("lane release semaphore should stay open")
+                .forget();
+        }
+        if self.fail {
+            return Err(DriverError::discovery("scanner offline"));
+        }
+        Ok(self
+            .devices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone())
+    }
+}
+
+fn lane_device(driver: &'static DriverDescriptor, unit: &str) -> DiscoveredDevice {
+    let fingerprint = DeviceFingerprint::from_persisted(format!("bridge:{}:{unit}", driver.id));
+    let mut info = mock_device_info();
+    info.id = fingerprint.stable_device_id();
+    info.name = format!("{} {unit}", driver.display_name);
+    info.family = DeviceFamily::new(driver.id, driver.display_name);
+    info.origin = DeviceOrigin::new(driver.id, driver.id, driver.transport.clone());
+    DiscoveredDevice {
+        fingerprint,
+        connect_behavior: DiscoveryConnectBehavior::Deferred,
+        info,
+        metadata: HashMap::new(),
+        claim: None,
+    }
+}
+
+/// Track `device` as connected, as an earlier scan would have left it.
+async fn track_connected(runtime: &TestDiscoveryRuntime, device: &DiscoveredDevice) -> DeviceId {
+    let id = runtime.device_registry.add_discovered(device.clone()).await;
+    assert!(
+        runtime
+            .device_registry
+            .set_state(&id, DeviceState::Connected)
+            .await
+    );
+    let mut lifecycle = runtime.lifecycle_manager.lock().await;
+    let _ = lifecycle.on_discovered(id, &device.info, None);
+    lifecycle
+        .on_connected(id)
+        .expect("lifecycle should accept the connected transition");
+    id
+}
+
+fn lane_runtime(
+    temp_dir: &tempfile::TempDir,
+    drivers: &[&LaneDiscoveryDriver],
+) -> TestDiscoveryRuntime {
+    let mut driver_registry = DriverModuleRegistry::new();
+    for driver in drivers {
+        driver_registry
+            .register((*driver).clone())
+            .expect("lane driver should register");
+    }
+    make_runtime_with_registry(
+        DeviceRegistry::new(),
+        Arc::new(Mutex::new(DeviceLifecycleManager::new())),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+        Some(driver_registry),
+        None,
+    )
+}
+
+#[tokio::test]
+async fn a_failing_scanner_does_not_keep_another_drivers_departure_connected() {
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let failing = LaneDiscoveryDriver::new(&LANE_FAILING_DRIVER).failing();
+    let quick = LaneDiscoveryDriver::new(&LANE_QUICK_DRIVER);
+    let runtime = lane_runtime(&temp_dir, &[&failing, &quick]);
+
+    let departed = track_connected(&runtime, &lane_device(&LANE_QUICK_DRIVER, "departed")).await;
+    let unverified =
+        track_connected(&runtime, &lane_device(&LANE_FAILING_DRIVER, "unverified")).await;
+
+    let result = execute_discovery_scan(
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        Arc::new(HypercolorConfig::default()),
+        vec![
+            DiscoveryTarget::driver(LANE_FAILING_DRIVER.id),
+            DiscoveryTarget::driver(LANE_QUICK_DRIVER.id),
+        ],
+        Duration::from_secs(2),
+    )
+    .await;
+
+    assert_eq!(result.vanished_devices, vec![departed.to_string()]);
+    assert_eq!(
+        runtime.lifecycle_manager.lock().await.state(unverified),
+        Some(DeviceState::Connected),
+        "a failed scan cannot prove its own devices left"
+    );
+    assert_ne!(
+        runtime.lifecycle_manager.lock().await.state(departed),
+        Some(DeviceState::Connected)
     );
 }
