@@ -109,7 +109,7 @@ fn audio_defaults_match_spec() {
     assert_eq!(a.fft_size, 1024);
     assert!((a.smoothing - 0.8).abs() < f32::EPSILON);
     assert!((a.noise_gate - 0.02).abs() < f32::EPSILON);
-    assert!((a.beat_sensitivity - 0.6).abs() < f32::EPSILON);
+    assert!((a.beat_sensitivity - 1.2).abs() < f32::EPSILON);
 }
 
 /// Screen capture is allowed by default only where turning it on cannot

@@ -4,6 +4,15 @@ use super::defaults;
 
 // ─── Audio ───────────────────────────────────────────────────────────────────
 
+/// Default `[audio] beat_sensitivity`, shared with
+/// [`AudioPipelineConfig::default`](crate::audio::AudioPipelineConfig).
+///
+/// The value multiplies the beat detector's onset thresholds, so higher
+/// means fewer, stronger beats. Below 1.0 the bass onset detector fires on
+/// any held bass note, so beat-reactive effects strobe on sustain instead
+/// of kicks; 1.2 is where that stops while kicks still land.
+pub const DEFAULT_BEAT_SENSITIVITY: f32 = 1.2;
+
 /// Audio capture and FFT analysis settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioConfig {
@@ -22,6 +31,8 @@ pub struct AudioConfig {
     #[serde(default = "defaults::noise_gate")]
     pub noise_gate: f32,
 
+    /// Beat onset threshold multiplier. Despite the name, higher values make
+    /// detection less sensitive: only sharper hits fire a beat.
     #[serde(default = "defaults::beat_sensitivity")]
     pub beat_sensitivity: f32,
 }
