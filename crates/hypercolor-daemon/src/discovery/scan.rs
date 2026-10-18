@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -309,6 +309,10 @@ struct TargetScanContext {
 
 /// What one target's scan observed and applied.
 struct TargetScanOutcome {
+    target: DiscoveryTarget,
+    /// The target's observation epoch this scan left behind, or `None` when
+    /// its scanner failed and nothing was observed.
+    observation: Option<u64>,
     found: Vec<DeviceRef>,
     new_devices: Vec<DeviceRef>,
     reappeared_devices: Vec<DeviceRef>,
@@ -428,7 +432,15 @@ async fn run_discovery_scan(
     let mut seen_ids = HashSet::new();
     let mut vanished_devices = Vec::new();
     let mut scanner_reports = Vec::new();
+    let mut observed_by = HashMap::new();
     for (_, outcome) in outcomes {
+        if let Some(observation) = outcome.observation {
+            for id in &outcome.seen_ids {
+                observed_by
+                    .entry(*id)
+                    .or_insert_with(|| (outcome.target.clone(), observation));
+            }
+        }
         found.extend(outcome.found);
         new_devices.extend(outcome.new_devices);
         reappeared_devices.extend(outcome.reappeared_devices);
@@ -469,11 +481,15 @@ async fn run_discovery_scan(
 
     let complete_sweep = super::resolve_targets(None, &config, &driver_registry)
         .is_ok_and(|expected| complete_target_set(&targets, &expected));
+    // Another target can keep this sweep running long after it observed a
+    // target, so a newer lane scan may have seen that target since. Only
+    // devices whose observation is still the newest take part.
+    let current_ids = still_current_observations(&runtime, &observed_by, &seen_ids);
     let bindings_migrated = if complete_sweep && !scan_had_errors {
         match Box::pin(runtime.binding_migration.reconcile_complete_sweep(
             &runtime.device_registry,
             &runtime.lifecycle_manager,
-            &seen_ids,
+            &current_ids,
         ))
         .await
         {
@@ -498,7 +514,7 @@ async fn run_discovery_scan(
         false
     };
     if bindings_migrated {
-        reconcile_migrated_device_connections(&runtime, &seen_ids).await;
+        reconcile_migrated_device_connections(&runtime, &current_ids, &observed_by).await;
     }
 
     runtime
@@ -577,7 +593,7 @@ async fn scan_target(
 
     // Held until this target's departures are retired, so a newer scan of
     // the same target cannot interleave with this one.
-    let _lane = runtime.target_lanes.hold(target).await;
+    let mut lane = runtime.target_lanes.hold(target).await;
     let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
     orchestrator.add_source(display_name, async move {
         let Some(capability) = driver.discovery() else {
@@ -652,8 +668,15 @@ async fn scan_target(
     } else {
         retire_target_departures(runtime, target, &report.vanished_devices, &seen_ids).await
     };
+    let observation = (!failed).then(|| {
+        *lane = lane.wrapping_add(1);
+        *lane
+    });
+    drop(lane);
 
     Some(TargetScanOutcome {
+        target: target.clone(),
+        observation,
         found,
         new_devices,
         reappeared_devices,
@@ -986,14 +1009,60 @@ async fn should_run_lifecycle_actions_in_background(
     false
 }
 
+/// The devices in `seen_ids` whose target no scan has observed since this
+/// sweep did.
+fn still_current_observations(
+    runtime: &DiscoveryRuntime,
+    observed_by: &HashMap<DeviceId, (DiscoveryTarget, u64)>,
+    seen_ids: &HashSet<DeviceId>,
+) -> HashSet<DeviceId> {
+    let mut current_targets = HashMap::new();
+    seen_ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            let Some((target, epoch)) = observed_by.get(id) else {
+                return false;
+            };
+            *current_targets.entry(target.clone()).or_insert_with(|| {
+                let current = runtime
+                    .target_lanes
+                    .hold_if_current(target, *epoch)
+                    .is_some();
+                if !current {
+                    debug!(
+                        target = target.as_str(),
+                        "a newer scan superseded this sweep's view of the target"
+                    );
+                }
+                current
+            })
+        })
+        .collect()
+}
+
 async fn reconcile_migrated_device_connections(
     runtime: &DiscoveryRuntime,
-    seen_ids: &HashSet<DeviceId>,
+    current_ids: &HashSet<DeviceId>,
+    observed_by: &HashMap<DeviceId, (DiscoveryTarget, u64)>,
 ) {
-    let mut device_ids = seen_ids.iter().copied().collect::<Vec<_>>();
+    let mut device_ids = current_ids.iter().copied().collect::<Vec<_>>();
     device_ids.sort_by_key(DeviceId::as_uuid);
 
     for device_id in device_ids {
+        let Some((target, epoch)) = observed_by.get(&device_id) else {
+            continue;
+        };
+        // Reconnect only while the sweep's observation is still the newest,
+        // and hold the lane so no newer scan can retire the device meanwhile.
+        let Some(_lane) = runtime.target_lanes.hold_if_current(target, *epoch) else {
+            debug!(
+                device_id = %device_id,
+                target = target.as_str(),
+                "skipping post-migration reconnect; a newer scan owns the device"
+            );
+            continue;
+        };
         let Some(tracked) = runtime.device_registry.get(&device_id).await else {
             continue;
         };

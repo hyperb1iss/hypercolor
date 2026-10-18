@@ -1,10 +1,11 @@
 //! Per-target discovery lanes.
 //!
-//! A scan applies each target's results, and reconciles that target's
-//! departures, while it holds the target's lane. Scans of different targets
-//! never wait on each other, and two scans of one target never interleave,
-//! so a driver-scoped scan can run beside a long scan of unrelated drivers
-//! without an older observation of its target landing after a newer one.
+//! A scan applies each target's results, and retires that target's
+//! departures, while it holds the target's lane. The lane lock guards the
+//! target's observation epoch, which counts the scans that have applied an
+//! observation of the target, so later work can tell whether a newer scan
+//! has seen the target since. Scans of different targets never wait on each
+//! other, and two scans of one target never interleave.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -18,6 +19,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::DiscoveryTarget;
 
+/// Exclusive hold on one target's lane. It dereferences to the target's
+/// observation epoch; a scan that applied an observation bumps it.
+pub(super) type LaneHold = OwnedMutexGuard<u64>;
+
 /// Lane registry plus the workers that run driver-scoped scans.
 #[derive(Default)]
 pub struct TargetLanes {
@@ -28,7 +33,7 @@ pub struct TargetLanes {
 
 #[derive(Default)]
 struct TargetLane {
-    scan: Arc<Mutex<()>>,
+    observation: Arc<Mutex<u64>>,
     /// A lane scan is waiting to start. Requests that arrive meanwhile are
     /// covered by it, since its observation begins after they did.
     queued: AtomicBool,
@@ -36,12 +41,24 @@ struct TargetLane {
 
 impl TargetLanes {
     /// Hold `target`'s lane, waiting only for a scan of the same target.
-    pub(super) async fn hold(&self, target: &DiscoveryTarget) -> OwnedMutexGuard<()> {
+    pub(super) async fn hold(&self, target: &DiscoveryTarget) -> LaneHold {
         let lane = self.lane(target);
-        let guard = Arc::clone(&lane.scan).lock_owned().await;
+        let hold = Arc::clone(&lane.observation).lock_owned().await;
         // Whatever this scan observes postdates every request queued so far.
         lane.queued.store(false, Ordering::Release);
-        guard
+        hold
+    }
+
+    /// Hold `target`'s lane only if no scan has observed the target since
+    /// `epoch`.
+    ///
+    /// A lane held right now counts as newer, since its holder is mid-way
+    /// through a fresher observation, so this never waits on another scan.
+    pub(super) fn hold_if_current(&self, target: &DiscoveryTarget, epoch: u64) -> Option<LaneHold> {
+        let hold = Arc::clone(&self.lane(target).observation)
+            .try_lock_owned()
+            .ok()?;
+        (*hold == epoch).then_some(hold)
     }
 
     /// Mark a lane scan queued for `target`. Returns `false` when one is

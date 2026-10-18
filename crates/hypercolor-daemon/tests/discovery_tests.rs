@@ -2577,3 +2577,121 @@ async fn shutdown_stops_an_active_driver_scoped_scan_and_refuses_new_ones() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(slow.calls(), 1);
 }
+
+#[tokio::test]
+async fn a_sweep_does_not_reconnect_a_device_a_newer_lane_scan_retired() {
+    use hypercolor_driver_api::DriverRuntimeActions;
+
+    // The ASUS DRAM stick is laid out under the identity minted before
+    // driver scoping, so only the complete sweep's binding migration would
+    // connect it.
+    let asus = LaneDiscoveryDriver::new(&STATIC_ASUS_DISCOVERY_DRIVER);
+    let slow = LaneDiscoveryDriver::new(&LANE_SLOW_DRIVER).blocking();
+    let mut info = smbus_device_info("ASUS Aura DRAM (SMBus 0x73)");
+    info.segments[0].name = "Lighting".to_owned();
+    info.origin.backend_id = "mock".to_owned();
+    let stick = DiscoveredDevice {
+        fingerprint: DeviceFingerprint::from_persisted("smbus:asus:pawnio:i801:73".to_owned()),
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+        info,
+        metadata: HashMap::new(),
+        claim: None,
+    };
+    let stick_id = stick.info.id;
+    asus.report(vec![stick]);
+
+    let mut drivers = DriverModuleRegistry::new();
+    drivers.register(asus.clone()).expect("asus driver");
+    drivers.register(slow.clone()).expect("slow driver");
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime_with_registry_and_layout(
+        DeviceRegistry::new(),
+        Arc::new(Mutex::new(DeviceLifecycleManager::new())),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+        Some(drivers),
+        None,
+        legacy_asus_dram_layout(),
+        HashSet::new(),
+    );
+    let connects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    runtime
+        .backend_manager
+        .lock()
+        .await
+        .register_backend(Arc::new(CountingBackend {
+            expected_device_id: stick_id,
+            connect_count: Arc::clone(&connects),
+            disconnect_count: Arc::default(),
+        }));
+    let publications = runtime.layout.layout_publication_test_executor();
+
+    // The complete sweep observes the stick, then waits on the slow driver.
+    let sweep = tokio::spawn(execute_discovery_scan(
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        Arc::new(HypercolorConfig::default()),
+        vec![
+            DiscoveryTarget::driver(STATIC_ASUS_DISCOVERY_DRIVER.id),
+            DiscoveryTarget::driver(LANE_SLOW_DRIVER.id),
+        ],
+        Duration::from_secs(2),
+    ));
+    slow.wait_started().await;
+    timeout(Duration::from_secs(5), async {
+        while runtime.device_registry.get(&stick_id).await.is_none() {
+            publications
+                .execute_next_layout_publication()
+                .await
+                .expect("layout publication");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the sweep observes the stick");
+
+    // The stick leaves, and a lane scan of the ASUS target retires it.
+    asus.report(Vec::new());
+    let mut events = runtime.event_bus.subscribe_all();
+    runtime
+        .driver_host
+        .request_discovery(STATIC_ASUS_DISCOVERY_DRIVER.id)
+        .await
+        .expect("driver-scoped discovery should be scheduled");
+    timeout(Duration::from_secs(5), async {
+        while !disconnected_ids(&mut events).contains(&stick_id.to_string()) {
+            publications
+                .execute_next_layout_publication()
+                .await
+                .expect("layout publication");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the lane scan retires the departed stick");
+
+    // The sweep finishes with its older view and migrates the binding; it
+    // must not reconnect the stick the newer scan retired.
+    slow.release
+        .as_ref()
+        .expect("slow driver blocks")
+        .add_permits(1);
+    timeout(Duration::from_secs(5), async {
+        while !sweep.is_finished() {
+            publications
+                .execute_next_layout_publication()
+                .await
+                .expect("layout publication");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the sweep finishes");
+    sweep.await.expect("sweep task");
+    assert_eq!(
+        connects.load(Ordering::Acquire),
+        0,
+        "the stale sweep reconnected a device a newer scan retired"
+    );
+}
