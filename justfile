@@ -976,8 +976,8 @@ disk:
     @if [ -d "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}" ]; then du -sh "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/* 2>/dev/null | sort -rh | head -15 || true; else echo '(no target dir)'; fi
     @echo '── incremental caches ──'
     @du -sh "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/*/incremental "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/*/*/incremental 2>/dev/null | sort -rh || true
-    @echo '── worktree targets ──'
-    @git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r tree; do du -sh "$tree/target" "$tree/crates/hypercolor-ui/target" 2>/dev/null; done | sort -rh || true
+    @echo '── other worktree targets ──'
+    @active="$(cd "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}" 2>/dev/null && pwd -P)"; git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r tree; do for dir in "$tree/target" "$tree/crates/hypercolor-ui/target"; do [ -d "$dir" ] && [ "$(cd "$dir" && pwd -P)" != "$active" ] && du -sh "$dir" 2>/dev/null; done; done | sort -rh || true
     @echo "── shared caches (${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}) ──"
     @if [ -d "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}" ]; then du -sh "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"/* 2>/dev/null | sort -rh || true; else echo '(no cache dir)'; fi
     @if command -v sccache >/dev/null 2>&1; then echo '── sccache ──'; SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}/sccache.sock}" SCCACHE_DIR="${SCCACHE_DIR:-${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}/sccache}" sccache --show-stats | grep -E 'Cache hits|Cache misses|Cache size|Max cache' || true; fi

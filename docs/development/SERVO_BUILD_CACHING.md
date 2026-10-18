@@ -135,12 +135,15 @@ which protects multi-command build workflows between Cargo invocations. Set
 Incremental caches need no pressure to collect, so the build wrapper prunes
 them on its own. Cargo never evicts them, and every worktree path, feature
 set, and profile adds new crate-hash dirs under `<profile>/incremental`.
-Once a day per target dir, the first wrapped command removes entries that no
-compile has touched for 3 days, from every profile and target triple, and
-deletes them in the background at low priority. A crate that loses its entry
+Once a day per target dir, the first wrapped command moves entries that no
+compile has touched for 3 days, from every profile and target triple, out of
+rustc's way before Cargo starts, then deletes them in the background at low
+priority. A crate that loses its entry
 compiles in full once, the next time it changes. Set
-`HYPERCOLOR_INCREMENTAL_PRUNE_DAYS` to change the age, or to `0` or `off` to
-disable the prune. CI skips it, since CI targets start fresh.
+`HYPERCOLOR_INCREMENTAL_PRUNE_DAYS` to change the age, or to `0`, `off`, or
+`false` to disable the prune; leaving it empty keeps the 3-day default. CI
+skips it, since CI targets start fresh. Each run logs to
+`target/.hypercolor-incremental-prune.<date>/prune.log`.
 
 The default dev profile keeps readable backtraces with line tables and trims
 third-party symbols. Use `just debug-build` when a debugger needs full locals
