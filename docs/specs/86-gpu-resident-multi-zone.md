@@ -618,7 +618,8 @@ Phase 1 core landed on branch `nova/multizone-gpu` and was verified live on
 the evidence rig on 2026-10-18: the Default zone running Bubble Garden beside
 a ROLI zone running Bubble Garden with Touch Ripple in `screen` held the
 60 fps tier with all five display faces active, `gpu_zone_sampling` true,
-and the blocks receiving frames at their 25 fps device cap.
+and the blocks receiving frames at their 25 fps device cap. Touching the
+Lightpad and the LUMI keys raised ripples over the bubbles on both blocks.
 
 ### 11.1 Departures from rev 4
 
@@ -639,14 +640,22 @@ and the blocks receiving frames at their 25 fps device cap.
   itself. While a transition runs, the composer keeps the single-zone scene
   frame, and the resolver samples it as a one-zone set only when the last
   stable frame was multi-zone. Ordinary frames carry nothing extra.
+- **Unassigned fallback (§4.3).** The unassigned outputs are planned in the
+  output stage, after LED sampling, so the fallback plan rides the next
+  frame's dispatch rather than the current one. The output stage registers
+  the plan, laid out over the fallback zone's texture extent, whenever that
+  zone's frame is a GPU texture; the resolver adds it as one more pass
+  against the texture and keeps the result's tail for the output stage. A
+  single-zone scene samples its own frame as a one-zone set so the pass
+  shares its dispatch, except during a transition, when fallback outputs
+  hold their last colors. This also covers single-zone scenes whose layers
+  compose on the GPU, which sent unassigned outputs black before this spec.
+  Fallback colors are held only for the zone that sampled them and only
+  while their shape matches, so a newly chosen fallback zone shows black for
+  a frame rather than the previous zone's pixels.
 
 ### 11.2 Remaining Phase 1 work
 
-- §2.1 composition key and the skip it enables (zones recompose and
-  restabilize every frame today).
-- §4.3 `Fallback(zone)` for GPU zones (unassigned fallback outputs read only
-  CPU zone canvases, which GPU zones do not publish).
-- §5.2 GPU zone previews (in progress on `nova/multizone-zone-previews`).
 - §7 telemetry counters and the `multi_zone_sampling` diagnose check.
 - Acceptance criterion 9 (preview cadence across compositor size switches)
   and criterion 16 (live canvas resize) have no dedicated tests yet.
