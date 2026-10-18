@@ -1,21 +1,25 @@
 //! Beat detection under the shipped `[audio]` defaults.
 //!
-//! The daemon builds its analyzer from the user-facing config section, so
-//! these tests do the same and step it one 60 fps render frame at a time.
-//! The signal is synthetic and deterministic: a four-on-the-floor kick,
-//! offbeat closed hats, and a held sub-bass note, the steady state of a
-//! house groove.
+//! The daemon builds its analyzer from the user-facing config section, and
+//! its audio worker analyzes each captured chunk as it arrives, with the
+//! time step taken from the chunk length. These tests build the analyzer
+//! the same way and feed it 20 ms chunks, the fragment PulseAudio delivers
+//! on Linux. The signal is synthetic and deterministic: a four-on-the-floor
+//! kick, offbeat closed hats, and a held sub-bass note, the steady state of
+//! a house groove.
 //!
-//! The offbeat hats are not asserted on. The spectral-flux path fires on
-//! bright transients whenever any bass is present, at every threshold, so
-//! hat rejection needs a detector change rather than a default.
+//! The offbeat hats are not asserted on. In this groove the spectral-flux
+//! path fires on them at every threshold, because it only requires some
+//! bass to be present, so hat rejection needs a detector change rather
+//! than a default.
 
 use hypercolor_core::input::audio::AudioAnalyzer;
 use hypercolor_types::audio::AudioPipelineConfig;
 use hypercolor_types::config::AudioConfig;
 
 const SAMPLE_RATE: u32 = 48_000;
-const FPS: u32 = 60;
+/// Samples per analysis: one 20 ms PulseAudio fragment at 48 kHz.
+const CHUNK_SAMPLES: usize = 960;
 const BPM: u32 = 120;
 const SECONDS: u32 = 8;
 /// Beats before the detector's slow energy baseline settles are ignored.
@@ -23,8 +27,8 @@ const WARMUP_SECS: f64 = 1.0;
 /// A beat belongs to a hit when it lands this soon after the onset.
 const HIT_WINDOW_SECS: f64 = 0.035;
 /// Ceiling on beats per second that land on neither a kick nor a hat.
-/// Thresholds below 1.0 fire on the held bass five to seven times a second
-/// in this groove; the shipped default stays near one.
+/// Thresholds below 1.0 fire on the held bass several times a second in
+/// this groove; the shipped default stays under one.
 const MAX_OFF_HIT_BEATS_PER_SEC: f64 = 1.5;
 
 struct Groove {
@@ -93,17 +97,16 @@ fn house_groove() -> Groove {
     }
 }
 
-/// Steps the analyzer exactly as the daemon render loop does and returns the
-/// frame-end time of every detected beat after warm-up.
+/// Analyzes one chunk at a time, as the audio worker does, and returns the
+/// time at the end of each chunk that detected a beat after warm-up.
 fn detected_beats(pipeline: &AudioPipelineConfig, samples: &[f32]) -> Vec<f64> {
     let mut analyzer = AudioAnalyzer::with_sample_rate(pipeline, SAMPLE_RATE);
-    let per_frame = (SAMPLE_RATE / FPS) as usize;
-    let dt = 1.0 / FPS as f32;
+    let dt = CHUNK_SAMPLES as f32 / SAMPLE_RATE as f32;
     let mut beats = Vec::new();
-    for (frame, chunk) in samples.chunks(per_frame).enumerate() {
+    for (index, chunk) in samples.chunks(CHUNK_SAMPLES).enumerate() {
         analyzer.push_samples(chunk);
         let analyzed = analyzer.analyze(dt).expect("analysis succeeds");
-        let time = (frame + 1) as f64 / f64::from(FPS);
+        let time = seconds((index + 1) * CHUNK_SAMPLES);
         if time >= WARMUP_SECS && analyzed.is_some_and(|audio| audio.beat_detected) {
             beats.push(time);
         }
