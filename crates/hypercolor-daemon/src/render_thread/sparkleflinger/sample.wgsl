@@ -44,6 +44,9 @@ struct SampleParams {
 @group(0) @binding(2) var<storage, read_write> output_rgb: array<u32>;
 @group(0) @binding(3) var<uniform> params: SampleParams;
 @group(0) @binding(4) var<storage, read> summed_area: array<WideRgb>;
+// Gaussian kernels, one per prepared output plan: the weight sum as a low
+// and high word, then one weight per tap in row-major order.
+@group(0) @binding(5) var<storage, read> gaussian_kernels: array<u32>;
 
 fn srgb_to_linear(channel: f32) -> f32 {
   if (channel <= 0.04045) {
@@ -143,6 +146,12 @@ fn sample_bilinear_linear(position: vec2<f32>) -> vec3<f32> {
 
 fn wide64_zero() -> Wide64 {
   return Wide64(0u, 0u);
+}
+
+fn wide64_add(left: Wide64, right: Wide64) -> Wide64 {
+  let lo = left.lo + right.lo;
+  let carry = select(0u, 1u, lo < left.lo);
+  return Wide64(lo, left.hi + right.hi + carry);
 }
 
 fn wide64_sub(left: Wide64, right: Wide64) -> Wide64 {
@@ -383,6 +392,50 @@ fn sample_area_linear_u16(point: SamplePoint) -> vec3<u32> {
   );
 }
 
+fn decode_linear_u16(x: u32, y: u32) -> vec3<u32> {
+  let texel = textureLoad(source_tex, vec2<i32>(i32(x), i32(y)), 0).rgb;
+  return vec3<u32>(
+    u32(round(srgb_to_linear(texel.r) * 65535.0)),
+    u32(round(srgb_to_linear(texel.g) * 65535.0)),
+    u32(round(srgb_to_linear(texel.b) * 65535.0)),
+  );
+}
+
+// Gaussian-weighted average in linear light, matching the CPU sampler's
+// fixed-point arithmetic exactly: taps clamp to the canvas edge, each linear
+// channel times its u16 weight accumulates in 64 bits, and the sum divides
+// by the kernel's weight sum with a floor.
+fn sample_gaussian_linear_u16(point: SamplePoint) -> vec3<u32> {
+  let kernel = point.radius_y;
+  let weight_sum = Wide128(
+    vec4<u32>(gaussian_kernels[kernel], gaussian_kernels[kernel + 1u], 0u, 0u),
+  );
+  let radius = i32(point.radius_x);
+  let max_x = i32(params.width) - 1;
+  let max_y = i32(params.height) - 1;
+  var sum_r = wide64_zero();
+  var sum_g = wide64_zero();
+  var sum_b = wide64_zero();
+  var weight_index = kernel + 2u;
+  for (var dy = -radius; dy <= radius; dy += 1) {
+    let y = u32(clamp(i32(point.center_y) + dy, 0, max_y));
+    for (var dx = -radius; dx <= radius; dx += 1) {
+      let x = u32(clamp(i32(point.center_x) + dx, 0, max_x));
+      let weight = gaussian_kernels[weight_index];
+      weight_index += 1u;
+      let linear = decode_linear_u16(x, y);
+      sum_r = wide64_add(sum_r, mul_u32(linear.r, weight));
+      sum_g = wide64_add(sum_g, mul_u32(linear.g, weight));
+      sum_b = wide64_add(sum_b, mul_u32(linear.b, weight));
+    }
+  }
+  return vec3<u32>(
+    divide_average(Wide128(vec4<u32>(sum_r.lo, sum_r.hi, 0u, 0u)), weight_sum),
+    divide_average(Wide128(vec4<u32>(sum_g.lo, sum_g.hi, 0u, 0u)), weight_sum),
+    divide_average(Wide128(vec4<u32>(sum_b.lo, sum_b.hi, 0u, 0u)), weight_sum),
+  );
+}
+
 @compute @workgroup_size(64)
 fn sample_pixels(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (gid.x >= params.sample_count) {
@@ -402,14 +455,19 @@ fn sample_pixels(@builtin(global_invocation_id) gid: vec3<u32>) {
   } else if (point.method == 1u) {
     linear_rgb = sample_bilinear_linear(position);
   } else {
-    var linear_u16 = sample_area_linear_u16(point);
+    var linear_u16: vec3<u32>;
+    if (point.method == 3u) {
+      linear_u16 = sample_gaussian_linear_u16(point);
+    } else {
+      linear_u16 = sample_area_linear_u16(point);
+    }
     if (point.attenuation < 256u) {
       linear_u16 = (linear_u16 * point.attenuation + vec3<u32>(128u)) / 256u;
     }
     linear_rgb = vec3<f32>(linear_u16) / 65535.0;
   }
   let attenuation = point.attenuation;
-  if (point.method != 2u && attenuation < 256u) {
+  if (point.method < 2u && attenuation < 256u) {
     linear_rgb *= f32(attenuation) / 256.0;
   }
   output_rgb[index] = encode_linear_rgb(linear_rgb);

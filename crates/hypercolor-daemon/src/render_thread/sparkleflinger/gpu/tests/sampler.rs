@@ -1733,3 +1733,79 @@ fn gpu_zone_texture_samples_cache_by_content_generation() {
     assert_eq!(resampled, sampled);
     assert!(compositor.spatial_sampler.sample_dispatch_count() > dispatches);
 }
+
+#[test]
+fn gpu_sampler_gaussian_zone_textures_match_the_cpu_sampler() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    // Radius 0, an interior kernel, and kernels that clamp at the canvas edge,
+    // across two extents so passes rebase their kernel offsets.
+    let zones = [
+        (
+            zone_texture_layout(
+                "tight",
+                6,
+                4,
+                SamplingMode::GaussianArea {
+                    sigma: 1.0,
+                    radius: 0,
+                },
+                5,
+            ),
+            patterned_canvas_with_size(6, 4, 9),
+        ),
+        (
+            zone_texture_layout(
+                "soft",
+                8,
+                8,
+                SamplingMode::GaussianArea {
+                    sigma: 1.5,
+                    radius: 2,
+                },
+                8,
+            ),
+            patterned_canvas_with_size(8, 8, 71),
+        ),
+        (
+            zone_texture_layout(
+                "wide",
+                5,
+                3,
+                SamplingMode::GaussianArea {
+                    sigma: 3.0,
+                    radius: 4,
+                },
+                6,
+            ),
+            patterned_canvas_with_size(5, 3, 188),
+        ),
+    ];
+    let engines = zones
+        .iter()
+        .map(|(layout, _)| SpatialEngine::new(layout.clone()))
+        .collect::<Vec<_>>();
+    let textures = zones
+        .iter()
+        .zip(&engines)
+        .zip(20_u64..)
+        .map(|(((_, canvas), engine), index)| ZoneTextureSample {
+            frame: uploaded_zone_texture(
+                &compositor,
+                canvas,
+                TEST_ZONE_TEXTURE_STORAGE_BASE + index,
+            ),
+            prepared_zones: engine.sampling_plan(),
+        })
+        .collect::<Vec<_>>();
+
+    let sampled = sample_zone_textures(&mut compositor, &textures);
+
+    let expected = zones
+        .iter()
+        .zip(&engines)
+        .flat_map(|((_, canvas), engine)| engine.sample(canvas))
+        .collect::<Vec<_>>();
+    assert_eq!(sampled, expected);
+}

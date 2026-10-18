@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::render_thread::frame_sampling::{ZoneSampleSource, ZoneSamplingSet};
+use crate::render_thread::frame_sampling::ZoneSamplingSet;
 use crate::render_thread::sparkleflinger::{
     MediaTextureSourceKey, ZoneSamplingDispatch, ZoneSamplingRequest,
 };
@@ -184,11 +184,10 @@ fn overlapping_bilinear_led_zones_keep_their_own_colors() {
     );
 }
 
-/// A GPU-backed zone whose layout samples Gaussian-area, which the GPU
-/// sampler cannot run, holds its outputs and reports the refusal on its
-/// layer, while its bilinear neighbor keeps sampling its own texture.
+/// A GPU-backed zone whose layout samples Gaussian-area samples on the GPU
+/// beside a bilinear zone, each from its own texture.
 #[test]
-fn gaussian_gpu_zone_holds_and_reports_while_its_neighbor_samples() {
+fn gaussian_gpu_zone_samples_on_the_gpu_beside_a_bilinear_zone() {
     let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
         return;
     };
@@ -200,67 +199,21 @@ fn gaussian_gpu_zone_holds_and_reports_while_its_neighbor_samples() {
         sigma: 2.0,
         radius: 3,
     });
-    let accent_layer = accents.layers[0].id;
-    let accent_zone = accents.id;
     let sources = [
         gpu_source(&case, 1, CASE_RED),
         gpu_source(&accents, 2, ACCENT_BLUE),
     ];
-    let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
-    for source in &sources {
-        let mut canvas = Canvas::new(source.width, source.height);
-        canvas.fill(source.color);
-        let gpu_frame = sparkleflinger
-            .upload_media_canvas_frame(MediaTextureSourceKey::for_test(source.source_key), &canvas)
-            .expect("GPU layer frame should upload");
-        runtime.inject_effect_layer_frame_for_test(
-            source.layer_id,
-            ProducerFrame::GpuTexture(gpu_frame),
-        );
-    }
-    let mut zone_colors = Vec::new();
-    let result = render_scene_for_test_with_screen_and_sparkleflinger(
-        &mut runtime,
-        &[case, accents],
-        1,
-        0,
-        &HashMap::new(),
-        &registry,
-        &mut zone_colors,
-        None,
-        &mut sparkleflinger,
-    )
-    .expect("a scene with a Gaussian GPU zone should still render");
+    let expectations = [
+        led_expectation(&case, "case_leds", CASE_RED),
+        led_expectation(&accents, "accent_leds", ACCENT_BLUE),
+    ];
 
-    let LedSamplingStrategy::SparkleFlingerZones(set) = &result.led_sampling_strategy else {
-        panic!("a GPU multi-zone scene should sample each zone's own texture");
-    };
-    assert_eq!(set.gpu_textures.len(), 1);
-    assert!(matches!(set.zones[1].source, ZoneSampleSource::Held));
-    let leds = sample_zone_set(&mut sparkleflinger, set);
-    let led = |output_id: &str| {
-        leds.iter()
-            .find(|zone| zone.zone_id == output_id)
-            .and_then(|zone| zone.colors.first().copied())
-    };
-    assert_eq!(led("case_leds"), Some([255, 0, 0]));
-    assert_eq!(led("accent_leds"), Some([0, 0, 0]));
-    assert!(
-        runtime
-            .drain_layer_runtime_events()
-            .iter()
-            .any(|event| matches!(
-                event,
-                HypercolorEvent::LayerHealthChanged {
-                    zone_id,
-                    layer_id,
-                    health: LayerHealth::Failed { reason },
-                    ..
-                } if *zone_id == accent_zone
-                    && *layer_id == accent_layer
-                    && reason == "gpu_sampling_unsupported:gaussian"
-            )),
-        "the refused zone's layer should report why it is held"
+    assert_scene_keeps_led_colors(
+        &mut sparkleflinger,
+        &registry,
+        &[case, accents],
+        &sources,
+        &expectations,
     );
 }
 

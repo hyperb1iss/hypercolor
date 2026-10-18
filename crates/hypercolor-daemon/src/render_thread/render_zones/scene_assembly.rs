@@ -2,11 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-#[cfg(feature = "wgpu")]
-use hypercolor_types::event::LayerHealth;
 use hypercolor_types::event::ZoneColors;
-#[cfg(feature = "wgpu")]
-use hypercolor_types::scene::SceneId;
 use hypercolor_types::scene::{Zone, ZoneId};
 
 use super::super::frame_sampling::LedSamplingStrategy;
@@ -28,11 +24,6 @@ use super::render_pass::RenderedZonePassOutput;
 use super::zone_state::{
     enabled_layer_count, scene_logical_layer_count, zone_contributes_to_scene_canvas,
 };
-
-/// Layer health reason for a GPU-backed zone whose sampling plan the GPU
-/// sampler cannot run. Gaussian-area is the only mode it lacks.
-#[cfg(feature = "wgpu")]
-const GPU_SAMPLING_UNSUPPORTED_REASON: &str = "gpu_sampling_unsupported:gaussian";
 
 impl ZoneRuntime {
     pub(crate) fn render_scene(
@@ -103,7 +94,7 @@ impl ZoneRuntime {
         }
         #[cfg(feature = "wgpu")]
         let zone_sampling = if gpu_resident && !self.combined_led_layout.zones.is_empty() {
-            Some(self.zone_sampling_set(context.zones, &zone_frames, context.active_scene_id))
+            Some(self.zone_sampling_set(context.zones, &zone_frames))
         } else {
             None
         };
@@ -240,10 +231,9 @@ impl ZoneRuntime {
     /// order the CPU per-zone path and the combined routing layout use.
     #[cfg(feature = "wgpu")]
     fn zone_sampling_set(
-        &mut self,
+        &self,
         zones: &[Zone],
         zone_frames: &[(ZoneId, ProducerFrame)],
-        active_scene_id: Option<SceneId>,
     ) -> Arc<ZoneSamplingSet> {
         let mut sampled = Vec::with_capacity(zone_frames.len());
         let mut gpu_textures = Vec::with_capacity(zone_frames.len());
@@ -260,9 +250,7 @@ impl ZoneRuntime {
                 .find(|(zone_id, _)| *zone_id == zone.id)
                 .map(|(_, frame)| frame);
             let source = match frame {
-                Some(ProducerFrame::GpuTexture(texture))
-                    if SparkleFlinger::gpu_samples_plan_modes(&prepared_zones) =>
-                {
+                Some(ProducerFrame::GpuTexture(texture)) => {
                     gpu_textures.push(ZoneTextureSample {
                         frame: texture.clone(),
                         prepared_zones: Arc::clone(&prepared_zones),
@@ -272,24 +260,9 @@ impl ZoneRuntime {
                 Some(frame) if !producer_frame_is_gpu(frame) => {
                     cpu_zone_sample_source(spatial_engine, frame)
                 }
-                // A GPU-backed zone whose plan the GPU sampler refuses: its
-                // pixels never reach the CPU (Spec 48 §4.1), so its outputs
-                // hold and the refusal is reported rather than silent.
-                Some(_) => {
-                    for layer in zone.layers.iter().filter(|layer| layer.enabled) {
-                        self.layer_runtime.note_health(
-                            active_scene_id,
-                            zone.id,
-                            layer.id,
-                            LayerHealth::Failed {
-                                reason: GPU_SAMPLING_UNSUPPORTED_REASON.to_owned(),
-                            },
-                        );
-                    }
-                    ZoneSampleSource::Held
-                }
-                // A zone that has not produced a frame yet.
-                None => ZoneSampleSource::Held,
+                // A zone that has not produced a frame yet, or an imported GPU
+                // frame the sampler cannot bind directly.
+                _ => ZoneSampleSource::Held,
             };
             sampled.push(ZoneSampling {
                 prepared_zones,

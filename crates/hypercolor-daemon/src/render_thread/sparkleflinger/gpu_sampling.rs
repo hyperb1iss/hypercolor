@@ -17,6 +17,7 @@ use crate::startup::StartupProgress;
 const SAMPLE_WORKGROUP_SIZE: u32 = 64;
 const SAMPLE_PARAM_BYTES: usize = 16;
 const SAMPLE_POINT_BYTES: u64 = 32;
+const GAUSSIAN_KERNEL_WORD_BYTES: u64 = 4;
 const SAMPLE_READBACK_SLOT_COUNT: usize = 3;
 const SAMPLE_READBACK_WAIT_STEP: Duration = Duration::from_millis(50);
 const SAMPLE_READBACK_WAIT_BUDGET: Duration = Duration::from_secs(2);
@@ -29,6 +30,7 @@ pub(super) enum GpuSampleMethod {
     Nearest = 0,
     Bilinear = 1,
     Area = 2,
+    Gaussian = 3,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -90,6 +92,9 @@ pub(super) struct GpuZoneRange {
 #[derive(Debug, Clone)]
 pub(super) struct GpuSamplingPlan {
     pub(super) points: Vec<GpuSamplePoint>,
+    /// Gaussian kernels the points reference: per kernel, the weight sum as
+    /// low and high words, then one weight per tap.
+    pub(super) kernels: Vec<u32>,
     pub(super) zones: Arc<[GpuZoneRange]>,
 }
 
@@ -144,6 +149,7 @@ struct CachedGpuSamplingPlan {
     key: GpuSamplingPlanKey,
     plan: GpuSamplingPlan,
     encoded_points: Vec<u8>,
+    encoded_kernels: Vec<u8>,
     passes: Vec<CachedGpuSamplePass>,
 }
 
@@ -344,6 +350,7 @@ enum GpuSamplingPreparationKind {
         admission: GpuSamplingAdmissionKey,
         plan: CachedGpuSamplingPlan,
         buffers: Option<PreparedGpuSampleBuffers>,
+        kernels: Option<wgpu::Buffer>,
         area: PreparedGpuArea,
     },
 }
@@ -403,12 +410,14 @@ impl GpuSamplingPreparation {
         admission: GpuSamplingAdmissionKey,
         plan: CachedGpuSamplingPlan,
         buffers: Option<PreparedGpuSampleBuffers>,
+        kernels: Option<wgpu::Buffer>,
         area: PreparedGpuArea,
     ) -> Self {
         Self(GpuSamplingPreparationKind::Replace {
             admission,
             plan,
             buffers,
+            kernels,
             area,
         })
     }
@@ -514,13 +523,21 @@ impl GpuSamplingPlan {
     /// it with each pass's point range in the concatenated buffer.
     fn from_pass_plans(passes: &[GpuSamplePassPlan<'_>]) -> Option<(Self, Vec<(usize, usize)>)> {
         let mut points = Vec::new();
+        let mut kernels = Vec::new();
         let mut zones = Vec::new();
         let mut ranges = Vec::with_capacity(passes.len());
         for pass in passes {
             let pass_plan = Self::from_prepared_zones(pass.prepared_zones)?;
             let offset = points.len();
+            let kernel_base = u32::try_from(kernels.len()).ok()?;
             ranges.push((offset, pass_plan.points.len()));
-            points.extend(pass_plan.points);
+            points.extend(pass_plan.points.into_iter().map(|mut point| {
+                if point.method == GpuSampleMethod::Gaussian {
+                    point.radius_y = point.radius_y.saturating_add(kernel_base);
+                }
+                point
+            }));
+            kernels.extend(pass_plan.kernels);
             zones.extend(pass_plan.zones.iter().map(|zone| GpuZoneRange {
                 zone_id: zone.zone_id.clone(),
                 start: zone.start.saturating_add(offset),
@@ -530,6 +547,7 @@ impl GpuSamplingPlan {
         Some((
             Self {
                 points,
+                kernels,
                 zones: zones.into(),
             },
             ranges,
@@ -540,7 +558,10 @@ impl GpuSamplingPlan {
         prepared_zones.iter().all(|zone| {
             matches!(
                 zone.sampling_mode,
-                SamplingMode::Nearest | SamplingMode::Bilinear | SamplingMode::AreaAverage { .. }
+                SamplingMode::Nearest
+                    | SamplingMode::Bilinear
+                    | SamplingMode::AreaAverage { .. }
+                    | SamplingMode::GaussianArea { .. }
             )
         })
     }
@@ -551,6 +572,7 @@ impl GpuSamplingPlan {
             .map(|zone| zone.sample_positions.len())
             .sum();
         let mut points = Vec::with_capacity(total_points);
+        let mut kernels = Vec::new();
         let mut zones = Vec::with_capacity(prepared_zones.len());
 
         for zone in prepared_zones {
@@ -597,6 +619,23 @@ impl GpuSamplingPlan {
                         },
                     ));
                 }
+                (SamplingMode::GaussianArea { .. }, PreparedZoneSamples::Gaussian(samples)) => {
+                    let kernel = u32::try_from(kernels.len()).ok()?;
+                    let weight_sum = samples.weight_sum;
+                    kernels.push(low_word(weight_sum));
+                    kernels.push(high_word(weight_sum));
+                    kernels.extend(samples.weights.iter().copied().map(u32::from));
+                    points.extend(zone.sample_positions.iter().zip(&samples.samples).map(
+                        |(position, sample)| {
+                            gpu_sample_point(
+                                position,
+                                GpuSampleMethod::Gaussian,
+                                sample.attenuation,
+                                Some((sample.center_x, sample.center_y, sample.radius, kernel)),
+                            )
+                        },
+                    ));
+                }
                 _ => return None,
             }
             zones.push(GpuZoneRange {
@@ -608,9 +647,23 @@ impl GpuSamplingPlan {
 
         Some(Self {
             points,
+            kernels,
             zones: zones.into(),
         })
     }
+}
+
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "splitting a u64 into its two u32 words"
+)]
+const fn low_word(value: u64) -> u32 {
+    value as u32
+}
+
+const fn high_word(value: u64) -> u32 {
+    low_word(value >> 32)
 }
 
 pub(super) struct GpuSpatialSampler {
@@ -625,6 +678,9 @@ pub(super) struct GpuSpatialSampler {
     deterministic_fallback_plan: Option<GpuSamplingAdmissionKey>,
     transient_retry: Option<GpuSamplingRetry>,
     dummy_summed_area_buffer: wgpu::Buffer,
+    dummy_gaussian_kernel_buffer: wgpu::Buffer,
+    gaussian_kernel_buffer: Option<wgpu::Buffer>,
+    gaussian_kernel_capacity: usize,
     /// One params uniform per pass. Queue writes land before the submit
     /// that reads them, so passes in one submission cannot share a buffer.
     params_buffers: Vec<GpuSampleParamsBuffer>,
@@ -709,6 +765,16 @@ impl GpuSpatialSampler {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -739,6 +805,12 @@ impl GpuSpatialSampler {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
+        let dummy_gaussian_kernel_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger GPU empty Gaussian kernels"),
+            size: GAUSSIAN_KERNEL_WORD_BYTES,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
 
         Self {
             bind_group_layout,
@@ -750,6 +822,9 @@ impl GpuSpatialSampler {
             deterministic_fallback_plan: None,
             transient_retry: None,
             dummy_summed_area_buffer,
+            dummy_gaussian_kernel_buffer,
+            gaussian_kernel_buffer: None,
+            gaussian_kernel_capacity: 0,
             params_buffers: vec![params_buffer],
             points_buffer: None,
             output_buffer: None,
@@ -922,6 +997,16 @@ impl GpuSpatialSampler {
                 }
             }
         }
+        let kernels = match self.prepare_gaussian_kernel_buffer(device, plan.kernels.len()) {
+            Ok(kernels) => kernels,
+            Err(error) => {
+                return GpuSamplingPreparation::cpu_fallback(
+                    admission,
+                    error,
+                    self.transient_retry.as_ref(),
+                );
+            }
+        };
         if self.take_plan_preparation_failure_injection() {
             return GpuSamplingPreparation::cpu_fallback(
                 admission,
@@ -932,15 +1017,18 @@ impl GpuSpatialSampler {
             );
         }
         let encoded_points = encode_points(&plan);
+        let encoded_kernels = encode_kernels(&plan);
         GpuSamplingPreparation::replace(
             admission,
             CachedGpuSamplingPlan {
                 key: plan_key,
                 plan,
                 encoded_points,
+                encoded_kernels,
                 passes: cached_passes,
             },
             buffers,
+            kernels,
             area,
         )
     }
@@ -993,8 +1081,16 @@ impl GpuSpatialSampler {
                 admission,
                 plan,
                 buffers,
+                kernels,
                 area,
             } => {
+                if let Some(kernels) = kernels {
+                    self.gaussian_kernel_capacity = plan.plan.kernels.len();
+                    self.gaussian_kernel_buffer = Some(kernels);
+                    self.buffer_generation = self.buffer_generation.saturating_add(1);
+                    self.uploaded_plan = None;
+                    self.cached_bind_groups.clear();
+                }
                 if let Some(buffers) = buffers {
                     self.points_buffer = Some(buffers.points);
                     self.output_buffer = Some(buffers.output);
@@ -1274,6 +1370,38 @@ impl GpuSpatialSampler {
         })
     }
 
+    /// A larger Gaussian kernel buffer when the plan's kernels outgrow the
+    /// current one; `None` keeps the current buffer.
+    fn prepare_gaussian_kernel_buffer(
+        &self,
+        device: &wgpu::Device,
+        words: usize,
+    ) -> std::result::Result<Option<wgpu::Buffer>, GpuSamplingPreparationFailure> {
+        if words <= self.gaussian_kernel_capacity {
+            return Ok(None);
+        }
+        let bytes = u64::try_from(words)
+            .ok()
+            .and_then(|words| words.checked_mul(GAUSSIAN_KERNEL_WORD_BYTES))
+            .ok_or_else(|| {
+                GpuSamplingPreparationFailure::deterministic(
+                    "GPU Gaussian kernel buffer size overflowed",
+                )
+            })?;
+        let limits = device.limits();
+        if bytes > limits.max_buffer_size || bytes > limits.max_storage_buffer_binding_size {
+            return Err(GpuSamplingPreparationFailure::deterministic(
+                "GPU Gaussian kernels exceed the device buffer limits",
+            ));
+        }
+        Ok(Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger GPU Gaussian kernels"),
+            size: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })))
+    }
+
     fn write_pass_params(
         &mut self,
         device: &wgpu::Device,
@@ -1391,6 +1519,11 @@ impl GpuSpatialSampler {
         }
 
         queue.write_buffer(points_buffer, 0, &cached_plan.encoded_points);
+        if !cached_plan.encoded_kernels.is_empty()
+            && let Some(kernels) = self.gaussian_kernel_buffer.as_ref()
+        {
+            queue.write_buffer(kernels, 0, &cached_plan.encoded_kernels);
+        }
         self.uploaded_plan = Some(upload);
     }
 
@@ -1441,6 +1574,14 @@ impl GpuSpatialSampler {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: summed_area_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self
+                        .gaussian_kernel_buffer
+                        .as_ref()
+                        .unwrap_or(&self.dummy_gaussian_kernel_buffer)
+                        .as_entire_binding(),
                 },
             ],
         });
@@ -1585,6 +1726,13 @@ fn encode_points(plan: &GpuSamplingPlan) -> Vec<u8> {
         bytes.extend_from_slice(&point.radius_y.to_le_bytes());
     }
     bytes
+}
+
+fn encode_kernels(plan: &GpuSamplingPlan) -> Vec<u8> {
+    plan.kernels
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect()
 }
 
 fn gpu_sample_point(
@@ -1927,15 +2075,24 @@ mod tests {
     #[test]
     fn gpu_area_query_shader_has_no_radius_proportional_loop() {
         let shader = include_str!("sample.wgsl");
+        let area_start = shader
+            .find("fn sample_area_linear_u16")
+            .expect("the area query should be a named shader function");
+        let area_body = shader[area_start..]
+            .split("\nfn ")
+            .next()
+            .expect("the area query should have a body");
 
-        assert!(shader.contains("rectangle_sum"));
-        assert!(!shader.contains("radius_i"));
-        assert!(!shader.contains("var dx"));
-        assert!(!shader.contains("var dy"));
+        assert!(area_body.contains("rectangle_sum"));
+        assert!(!area_body.contains("radius_i"));
+        assert!(!area_body.contains("var dx"));
+        assert!(!area_body.contains("var dy"));
+        assert!(!area_body.contains("for ("));
+        assert!(!area_body.contains("loop"));
     }
 
     #[test]
-    fn gpu_sampling_plan_rejects_gaussian_without_aliasing() {
+    fn gpu_sampling_plan_encodes_gaussian_kernels_without_aliasing() {
         let gaussian = SpatialEngine::new(test_layout(SamplingMode::GaussianArea {
             sigma: 1.0,
             radius: 2,
@@ -1943,9 +2100,18 @@ mod tests {
         let sampling_plan = gaussian.sampling_plan();
         let prepared_zones = sampling_plan.as_ref();
 
-        assert!(!GpuSamplingPlan::supports_prepared_zones(prepared_zones));
-        assert!(GpuSamplingPlan::key(prepared_zones).is_none());
-        assert!(GpuSamplingPlan::from_prepared_zones(prepared_zones).is_none());
+        assert!(GpuSamplingPlan::supports_prepared_zones(prepared_zones));
+        assert!(GpuSamplingPlan::key(prepared_zones).is_some());
+        let plan = GpuSamplingPlan::from_prepared_zones(prepared_zones)
+            .expect("Gaussian plans should encode for the GPU");
+        assert!(
+            plan.points
+                .iter()
+                .all(|point| point.method == GpuSampleMethod::Gaussian),
+            "Gaussian outputs must not be lowered to another sampling method"
+        );
+        // Weight sum (two words) plus a 5x5 kernel.
+        assert_eq!(plan.kernels.len(), 2 + 25);
     }
 
     #[test]
