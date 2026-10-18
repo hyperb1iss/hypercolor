@@ -205,8 +205,10 @@ device           = "default" # PulseAudio/PipeWire device, "default", or "microp
 fft_size         = 1024     # FFT window size: 256 | 512 | 1024 | 2048 | 4096
 smoothing        = 0.8      # FFT smoothing (0.0 = raw signal, 1.0 = fully frozen)
 noise_gate       = 0.02     # Signal below this level is treated as silence
-beat_sensitivity = 0.6      # Beat detection threshold (0.0 = never, 1.0 = always)
+beat_sensitivity = 1.2      # Beat onset threshold (higher = only strong hits)
 ```
+
+**`beat_sensitivity`** is a threshold despite its name, and the settings page labels it Beat Threshold. It multiplies the beat detector's onset thresholds, so higher values fire fewer, stronger beats. The default of `1.2` lands on kicks without firing on held bass notes; below `1.0` the detector fires on sustained bass several times a second and beat-reactive effects strobe. Config files saved by Hypercolor 0.7.0 and earlier that still carry the old `0.6` default move to the current default when they load.
 
 **`device`** special values: `"default"` captures from the system monitor (what you hear); `"microphone"` uses the default input device; any other string is matched against PulseAudio/PipeWire device names. List available devices:
 

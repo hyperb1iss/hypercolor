@@ -114,7 +114,7 @@ Replace the device value with the exact source name you found above. If you want
 | `fft_size` | `1024` | Primary FFT window size. Larger = more bass resolution, more CPU. Valid: 256, 512, 1024, 2048, 4096. |
 | `smoothing` | `0.8` | Temporal smoothing on the falling edge (0.0 = instant, 1.0 = frozen). |
 | `noise_gate` | `0.02` | RMS level below which the pipeline emits silence. Raises to avoid flicker in quiet rooms. |
-| `beat_sensitivity` | `0.6` | Onset threshold multiplier. Lower = more sensitive to subtle transients. |
+| `beat_sensitivity` | `1.2` | Beat onset threshold multiplier. Higher = only strong hits like kicks; below `1.0` fires on held bass notes. |
 
 {% <callout type="info"> %}
 Internally the `device` key maps onto an audio source type: `"default"` selects the system monitor, `"microphone"` selects the default input device, and any other string becomes `AudioSourceType::Named(...)`, resolved against the platform's device list at startup and on every live reconfiguration.
@@ -170,7 +170,7 @@ Explicitly set `device` to the monitor source for your preferred output. On Linu
 
 **Lights react but feel sluggish or over-smoothed**
 
-Lower `smoothing` (try `0.5`) or increase `beat_sensitivity` (try `0.8`) in `[audio]`.
+Lower `smoothing` (try `0.5`) in `[audio]`. If beat-synced effects miss kicks, lower `beat_sensitivity` (try `1.0`); if they flash on hats and sustained notes, raise it (try `1.5`).
 
 **Lights are flickering on silence / in a quiet room**
 
