@@ -23,7 +23,7 @@ use hypercolor_types::event::{
 };
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -32,8 +32,21 @@ static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<crate::input::InteractionData> =
     LazyLock::new(crate::input::InteractionData::default);
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
-static SOFT_STALL_TELEMETRY_TEST_LOCK: LazyLock<std::sync::Mutex<()>> =
-    LazyLock::new(std::sync::Mutex::default);
+static SOFT_STALL_TELEMETRY_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(Mutex::default);
+
+/// Serializes every test that can record a soft stall.
+///
+/// Soft stalls land in a process-global counter, and any test that polls
+/// an in-flight render bumps it once the render's age crosses
+/// `soft_stall_timeout()`, whether the test sleeps on purpose or the
+/// scheduler stalls it. The lock guards no data, so a panicking holder
+/// corrupts nothing; recovering from poison keeps one failure from
+/// cascading into every later soft-stall test.
+fn soft_stall_telemetry_guard() -> MutexGuard<'static, ()> {
+    SOFT_STALL_TELEMETRY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 trait RenderFrameExt: EffectRenderer {
     fn render_frame(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
@@ -951,7 +964,7 @@ fn soft_stall_timeout_tracks_active_animation_cap() {
 
 #[test]
 fn poll_in_flight_render_marks_soft_stall_before_hard_timeout() {
-    let _soft_stall_guard = SOFT_STALL_TELEMETRY_TEST_LOCK.lock().expect("lock");
+    let _soft_stall_guard = soft_stall_telemetry_guard();
     let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
         spawn_render_test_worker();
     let baseline_stalls = crate::effect::servo::servo_telemetry_snapshot().soft_stalls_total;
@@ -1011,7 +1024,7 @@ fn poll_in_flight_render_marks_soft_stall_before_hard_timeout() {
 
 #[test]
 fn poll_in_flight_render_clears_stall_warning_after_completed_frame() {
-    let _soft_stall_guard = SOFT_STALL_TELEMETRY_TEST_LOCK.lock().expect("lock");
+    let _soft_stall_guard = soft_stall_telemetry_guard();
     let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
         spawn_render_test_worker();
 
@@ -1124,6 +1137,7 @@ fn hard_stalled_render_surfaces_an_error_until_a_frame_completes() {
 
 #[test]
 fn queue_wait_alone_never_hard_stalls_a_render() {
+    let _soft_stall_guard = soft_stall_telemetry_guard();
     let mut renderer = ServoRenderer::new();
     renderer.initialized = true;
     let mut target = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
@@ -1177,6 +1191,7 @@ fn queue_wait_alone_never_hard_stalls_a_render() {
 
 #[test]
 fn render_queued_behind_a_slow_command_is_not_stalled_until_it_starts() {
+    let _soft_stall_guard = soft_stall_telemetry_guard();
     let contended = spawn_contended_render_test_worker();
     let mut renderer = ServoRenderer::new();
     attach_renderer_session(&mut renderer, &contended.worker);
@@ -1395,6 +1410,7 @@ fn render_into_copies_completed_frame_into_existing_target_storage() {
 
 #[test]
 fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
+    let _soft_stall_guard = soft_stall_telemetry_guard();
     let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
         spawn_render_test_worker();
 
@@ -2005,6 +2021,7 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
 
 #[test]
 fn render_into_reuses_last_completed_canvas_while_next_servo_frame_is_pending() {
+    let _soft_stall_guard = soft_stall_telemetry_guard();
     let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
         spawn_render_test_worker();
 
