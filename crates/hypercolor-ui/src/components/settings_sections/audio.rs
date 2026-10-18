@@ -228,8 +228,8 @@ pub fn AudioSection(
                     min=0.0 max=0.5 step=0.01
                 />
                 <SettingSlider
-                    label="Beat Sensitivity"
-                    description="How aggressively the beat detector triggers"
+                    label="Beat Threshold"
+                    description="Higher values trigger only on strong hits like kicks"
                     key="audio.beat_sensitivity"
                     value=beat_sensitivity
                     on_change=on_change

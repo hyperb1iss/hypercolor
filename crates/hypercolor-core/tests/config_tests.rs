@@ -4,14 +4,17 @@ use std::fs;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use hypercolor_core::config::ConfigManager;
-use hypercolor_types::config::{EffectErrorFallbackPolicy, InteractionRoutePolicy};
+use hypercolor_types::config::{
+    CURRENT_SCHEMA_VERSION, DEFAULT_BEAT_SENSITIVITY, EffectErrorFallbackPolicy, HypercolorConfig,
+    InteractionRoutePolicy,
+};
 
 // ─── TOML Parsing ───────────────────────────────────────────────────────────
 
 #[test]
 fn load_minimal_toml() {
     let toml = r"
-        schema_version = 5
+        schema_version = 6
     ";
 
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
@@ -19,7 +22,7 @@ fn load_minimal_toml() {
 
     let config = ConfigManager::load(tmp.path()).expect("minimal TOML should parse without error");
 
-    assert_eq!(config.schema_version, 5);
+    assert_eq!(config.schema_version, 6);
     // Sections should fall back to their serde defaults
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.target_fps, 30);
@@ -34,7 +37,7 @@ fn schema_v4_renames_start_profile_before_deserialization() {
         ConfigManager::parse_toml("schema_version = 4\n[daemon]\nstart_profile = \"Evening\"\n")
             .expect("schema v4 should migrate");
 
-    assert_eq!(config.schema_version, 5);
+    assert_eq!(config.schema_version, 6);
     assert_eq!(config.daemon.start_scene, "Evening");
 }
 
@@ -62,6 +65,55 @@ fn schema_v5_refuses_the_retired_clear_groups_fallback() {
         format!("{error:#}").contains("unknown variant `clear_groups`"),
         "{error:#}"
     );
+}
+
+#[test]
+fn schema_v5_moves_the_retired_beat_default_to_the_current_one() {
+    for version in [4, 5] {
+        let config = ConfigManager::parse_toml(&format!(
+            "schema_version = {version}\n[audio]\nbeat_sensitivity = 0.6\n"
+        ))
+        .expect("older schemas should migrate");
+
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(
+            (config.audio.beat_sensitivity - DEFAULT_BEAT_SENSITIVITY).abs() < f32::EPSILON,
+            "schema {version} kept {}",
+            config.audio.beat_sensitivity
+        );
+    }
+}
+
+/// A v5 save serialized the f32 default, which TOML may spell as
+/// 0.6000000238418579 rather than 0.6. The migration has to match both.
+#[test]
+fn schema_v5_moves_the_beat_default_exactly_as_a_save_wrote_it() {
+    let mut saved = HypercolorConfig {
+        schema_version: 5,
+        ..HypercolorConfig::default()
+    };
+    saved.audio.beat_sensitivity = 0.6;
+    let written = toml::to_string_pretty(&saved).expect("serialize a v5 save");
+
+    let config = ConfigManager::parse_toml(&written).expect("a v5 save should migrate");
+
+    assert!((config.audio.beat_sensitivity - DEFAULT_BEAT_SENSITIVITY).abs() < f32::EPSILON);
+}
+
+#[test]
+fn schema_v5_keeps_a_beat_threshold_someone_chose() {
+    let config = ConfigManager::parse_toml("schema_version = 5\n[audio]\nbeat_sensitivity = 0.9\n")
+        .expect("schema v5 should migrate");
+
+    assert!((config.audio.beat_sensitivity - 0.9).abs() < f32::EPSILON);
+}
+
+#[test]
+fn current_schema_keeps_a_beat_threshold_of_point_six() {
+    let config = ConfigManager::parse_toml("schema_version = 6\n[audio]\nbeat_sensitivity = 0.6\n")
+        .expect("current schema should parse");
+
+    assert!((config.audio.beat_sensitivity - 0.6).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -94,7 +146,7 @@ fn outdated_schema_is_refused_and_names_the_file_and_the_fix() {
     assert!(rendered.contains("schema_version 3"), "{rendered}");
     // Every edit the hand-migration needs, verbatim. Bumping the version
     // without the routes silently adopts the new daemon_route default.
-    assert!(rendered.contains("schema_version = 5"), "{rendered}");
+    assert!(rendered.contains("schema_version = 4"), "{rendered}");
     assert!(rendered.contains(r#"daemon_route = "merge""#), "{rendered}");
     assert!(
         rendered.contains(r#"preview_route = "browser""#),
@@ -102,10 +154,30 @@ fn outdated_schema_is_refused_and_names_the_file_and_the_fix() {
     );
 }
 
+/// The hand-migration lands an old file on the oldest schema the chain
+/// still upgrades, so later migrations run on it. Jumping straight to the
+/// current schema would skip them and keep a retired beat threshold.
+#[test]
+fn following_the_hand_migration_runs_every_later_migration() {
+    let old = "schema_version = 3\n\n[audio]\nbeat_sensitivity = 0.6\n";
+    let error = ConfigManager::parse_toml(old).expect_err("schema 3 must be refused");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("schema_version = 4"), "{rendered}");
+
+    let edited = old.replace("schema_version = 3", "schema_version = 4")
+        + "\n[input]\ndaemon_route = \"merge\"\npreview_route = \"browser\"\n";
+    let config = ConfigManager::parse_toml(&edited).expect("the hand-migrated file loads");
+
+    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+    assert!((config.audio.beat_sensitivity - DEFAULT_BEAT_SENSITIVITY).abs() < f32::EPSILON);
+    assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Merge);
+    assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
+}
+
 #[test]
 fn newer_schema_is_refused_as_written_by_a_newer_hypercolor() {
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
-    fs::write(tmp.path(), "schema_version = 6\n").expect("failed to write future config");
+    fs::write(tmp.path(), "schema_version = 7\n").expect("failed to write future config");
 
     let error = ConfigManager::load(tmp.path())
         .expect_err("a future schema must be refused, never guessed at");
@@ -115,7 +187,7 @@ fn newer_schema_is_refused_as_written_by_a_newer_hypercolor() {
         rendered.contains(&tmp.path().display().to_string()),
         "{rendered}"
     );
-    assert!(rendered.contains("schema_version 6"), "{rendered}");
+    assert!(rendered.contains("schema_version 7"), "{rendered}");
     assert!(rendered.contains("newer hypercolor"), "{rendered}");
     // A future file is not an old file: no hand-migration is offered.
     assert!(
@@ -130,7 +202,7 @@ fn current_schema_keeps_explicit_route_fields() {
     fs::write(
         tmp.path(),
         concat!(
-            "schema_version = 5\n\n",
+            "schema_version = 6\n\n",
             "[input]\n",
             "daemon_route = \"host\"\n",
             "preview_route = \"merge\"\n",
@@ -140,7 +212,7 @@ fn current_schema_keeps_explicit_route_fields() {
 
     let config = ConfigManager::load(tmp.path()).expect("current-schema config should load");
 
-    assert_eq!(config.schema_version, 5);
+    assert_eq!(config.schema_version, 6);
     assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(config.input.preview_route, InteractionRoutePolicy::Merge);
 }
@@ -267,7 +339,7 @@ fn new_with_missing_file_uses_defaults() {
         ConfigManager::new(path).expect("ConfigManager should fall back to defaults gracefully");
     let config = manager.get();
 
-    assert_eq!(config.schema_version, 5);
+    assert_eq!(config.schema_version, 6);
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.target_fps, 30);
     assert!(config.web.enabled);

@@ -335,7 +335,7 @@ device = "default"                   # PulseAudio/PipeWire device name, or "defa
 fft_size = 1024                      # FFT window size (256, 512, 1024, 2048, 4096)
 smoothing = 0.8                      # FFT smoothing factor (0.0 = raw, 1.0 = frozen)
 noise_gate = 0.02                    # Below this level, signal treated as silence
-beat_sensitivity = 0.6               # Beat detection threshold (0.0 = never, 1.0 = always)
+beat_sensitivity = 1.2               # Beat onset threshold multiplier (higher = fewer, stronger beats)
 
 # ─── Screen Capture ───────────────────────────────────────────
 
@@ -2215,7 +2215,7 @@ Every field has a compile-time default. A fresh install with zero config files s
 |                   | `fft_size`                     | `1024`                          |                                                                             |
 |                   | `smoothing`                    | `0.8`                           |                                                                             |
 |                   | `noise_gate`                   | `0.02`                          |                                                                             |
-|                   | `beat_sensitivity`             | `0.6`                           |                                                                             |
+|                   | `beat_sensitivity`             | `1.2`                           |                                                                             |
 | **capture**       | `enabled`                      | `false`                         | Off by default                                                              |
 |                   | `source`                       | `"auto"`                        |                                                                             |
 |                   | `capture_fps`                  | `30`                            |                                                                             |
@@ -2296,7 +2296,7 @@ mod defaults {
     pub fn fft_size() -> u32 { 1024 }
     pub fn smoothing() -> f32 { 0.8 }
     pub fn noise_gate() -> f32 { 0.02 }
-    pub fn beat_sensitivity() -> f32 { 0.6 }
+    pub fn beat_sensitivity() -> f32 { 1.2 }
     pub fn capture_source() -> String { "auto".into() }
     pub fn capture_fps() -> u32 { 30 }
     pub fn scan_interval() -> u64 { 300 }

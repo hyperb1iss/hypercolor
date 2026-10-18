@@ -118,7 +118,7 @@ mod defaults {
         0.02
     }
     pub fn beat_sensitivity() -> f32 {
-        0.6
+        super::DEFAULT_BEAT_SENSITIVITY
     }
 
     // Capture

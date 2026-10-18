@@ -1041,8 +1041,11 @@ impl ConfigManager {
     /// the same parse and normalize, so no caller can materialize a
     /// config that skips them. Schema v4 is upgraded in memory by
     /// renaming `daemon.start_profile` to `daemon.start_scene` and the
-    /// effect fallback value `clear_groups` to `clear_zones`; every other
-    /// older or newer schema is refused rather than guessed at.
+    /// effect fallback value `clear_groups` to `clear_zones`, then
+    /// upgraded again as v5. Schema v5 is upgraded by dropping an
+    /// `audio.beat_sensitivity` still at the retired 0.6 default so the
+    /// current default applies. Every other older or newer schema is
+    /// refused rather than guessed at.
     ///
     /// # Errors
     ///
@@ -1054,7 +1057,7 @@ impl ConfigManager {
     pub fn parse_toml(toml_str: &str) -> Result<HypercolorConfig> {
         let mut document = toml::from_str::<toml::Value>(toml_str)
             .context("failed to parse configuration TOML")?;
-        let schema_version = document
+        let mut schema_version = document
             .get("schema_version")
             .and_then(toml::Value::as_integer)
             .and_then(|version| u32::try_from(version).ok())
@@ -1063,6 +1066,10 @@ impl ConfigManager {
             })?;
         if schema_version == 4 {
             migrate_v4_to_v5(&mut document)?;
+            schema_version = 5;
+        }
+        if schema_version == 5 {
+            migrate_v5_to_v6(&mut document)?;
         } else if schema_version != CURRENT_SCHEMA_VERSION {
             bail!(schema_mismatch_message(schema_version));
         }
@@ -1110,12 +1117,43 @@ fn migrate_v4_to_v5(document: &mut toml::Value) -> Result<()> {
             toml::Value::String("clear_zones".to_owned()),
         );
     }
+    root.insert("schema_version".to_owned(), toml::Value::Integer(5));
+    Ok(())
+}
+
+/// The `audio.beat_sensitivity` default that schema v5 shipped.
+const V5_DEFAULT_BEAT_SENSITIVITY: f64 = 0.6;
+
+/// Schema v6 raised the beat threshold default from 0.6 to
+/// [`hypercolor_types::config::DEFAULT_BEAT_SENSITIVITY`]. Every save rewrites the whole file, so a
+/// v5 file carries 0.6 whether or not anyone chose it. That exact value is
+/// dropped so the current default applies; any other value was picked on
+/// purpose and stays.
+fn migrate_v5_to_v6(document: &mut toml::Value) -> Result<()> {
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("configuration root must be a TOML table"))?;
+    if let Some(audio) = root.get_mut("audio").and_then(toml::Value::as_table_mut)
+        && audio
+            .get("beat_sensitivity")
+            .and_then(toml::Value::as_float)
+            .is_some_and(|value| (value - V5_DEFAULT_BEAT_SENSITIVITY).abs() < 1e-6)
+    {
+        audio.remove("beat_sensitivity");
+    }
     root.insert(
         "schema_version".to_owned(),
         toml::Value::Integer(i64::from(CURRENT_SCHEMA_VERSION)),
     );
     Ok(())
 }
+
+/// The oldest schema [`ConfigManager::parse_toml`] upgrades in memory.
+///
+/// The hand-migration for anything older lands the file here rather than
+/// on [`CURRENT_SCHEMA_VERSION`], so every migration in the chain still
+/// runs on it.
+const OLDEST_MIGRATED_SCHEMA_VERSION: u32 = 4;
 
 /// The refusal text for a config file this build cannot read.
 ///
@@ -1125,22 +1163,26 @@ fn schema_mismatch_message(found: u32) -> String {
     if found > CURRENT_SCHEMA_VERSION {
         return format!(
             "config declares schema_version {found} but this build reads \
-             schema {CURRENT_SCHEMA_VERSION}: the file was written by a \
-             newer hypercolor. Upgrade hypercolor, or move the file aside \
-             to start from defaults. This build will not guess at a shape \
-             it does not know."
+             schemas {OLDEST_MIGRATED_SCHEMA_VERSION} through \
+             {CURRENT_SCHEMA_VERSION}: the file was written by a newer \
+             hypercolor. Upgrade hypercolor, or move the file aside to \
+             start from defaults. This build will not guess at a shape it \
+             does not know."
         );
     }
     format!(
         "config declares schema_version {found} but this build reads \
-         schema {CURRENT_SCHEMA_VERSION}; hypercolor no longer migrates \
-         older config files. Edit the file by hand, setting\n\n    \
-         schema_version = {CURRENT_SCHEMA_VERSION}\n\nand, when the file \
-         predates the interaction-route split, adding both routes under \
-         [input]:\n\n    daemon_route = \"merge\"\n    preview_route = \
-         \"browser\"\n\nWithout those two lines the version bump \
-         silently adopts the new \"host\" default for daemon_route. \
-         Moving the file aside starts from defaults instead."
+         schemas {OLDEST_MIGRATED_SCHEMA_VERSION} through \
+         {CURRENT_SCHEMA_VERSION}; hypercolor no longer migrates older \
+         config files. Edit the file by hand, setting\n\n    \
+         schema_version = {OLDEST_MIGRATED_SCHEMA_VERSION}\n\nand, when \
+         the file predates the interaction-route split, adding both routes \
+         under [input]:\n\n    daemon_route = \"merge\"\n    \
+         preview_route = \"browser\"\n\nWithout those two lines the \
+         version bump silently adopts the new \"host\" default for \
+         daemon_route. Hypercolor upgrades the edited file the rest of the \
+         way when it loads. Moving the file aside starts from defaults \
+         instead."
     )
 }
 

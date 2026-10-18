@@ -9,6 +9,8 @@
 
 use std::collections::VecDeque;
 
+use hypercolor_types::config::DEFAULT_BEAT_SENSITIVITY;
+
 // ── Constants ────────────────────────────────────────────────────────────
 
 /// Maximum onset history (seconds). Older onsets are discarded.
@@ -28,9 +30,6 @@ const PULSE_DECAY_RATE: f32 = 5.0;
 
 /// Default minimum inter-onset interval (seconds). Caps at ~400 BPM.
 const DEFAULT_MIN_INTERVAL: f32 = 0.15;
-
-/// Default energy onset threshold multiplier.
-const DEFAULT_THRESHOLD: f32 = 1.5;
 
 /// Fast EMA alpha for short-term energy tracking.
 const ENERGY_SHORT_ALPHA: f32 = 0.4;
@@ -453,8 +452,9 @@ impl BeatDetector {
 }
 
 impl Default for BeatDetector {
+    /// Uses the shipped `[audio] beat_sensitivity` default.
     fn default() -> Self {
-        Self::new(DEFAULT_THRESHOLD)
+        Self::new(DEFAULT_BEAT_SENSITIVITY)
     }
 }
 

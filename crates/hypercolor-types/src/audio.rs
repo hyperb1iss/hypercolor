@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::AudioConfig;
+use crate::config::{AudioConfig, DEFAULT_BEAT_SENSITIVITY};
 
 // ─── Constants ────────────────────────────────────────────────────────
 
@@ -179,7 +179,7 @@ pub struct AudioPipelineConfig {
     /// Noise gate threshold in dB (signals below this are treated as silence).
     pub noise_floor: f32,
 
-    /// Beat onset sensitivity multiplier (lower = more sensitive).
+    /// Beat onset threshold multiplier (lower = more sensitive).
     pub beat_sensitivity: f32,
 }
 
@@ -231,7 +231,7 @@ impl Default for AudioPipelineConfig {
             smoothing: 0.15,
             gain: 1.0,
             noise_floor: -60.0,
-            beat_sensitivity: 1.5,
+            beat_sensitivity: DEFAULT_BEAT_SENSITIVITY,
         }
     }
 }

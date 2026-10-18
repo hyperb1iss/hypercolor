@@ -1,7 +1,7 @@
 use hypercolor_types::audio::{
     AudioData, AudioPipelineConfig, AudioSourceType, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS,
 };
-use hypercolor_types::config::AudioConfig;
+use hypercolor_types::config::{AudioConfig, DEFAULT_BEAT_SENSITIVITY};
 
 // ─── AudioData::silence ───────────────────────────────────────────────
 
@@ -173,7 +173,19 @@ fn config_default_values() {
     assert!((cfg.smoothing - 0.15).abs() < f32::EPSILON);
     assert!((cfg.gain - 1.0).abs() < f32::EPSILON);
     assert!((cfg.noise_floor - (-60.0)).abs() < f32::EPSILON);
-    assert!((cfg.beat_sensitivity - 1.5).abs() < f32::EPSILON);
+    assert!((cfg.beat_sensitivity - 1.2).abs() < f32::EPSILON);
+}
+
+/// The daemon runs `From<&AudioConfig>`, while tests and tools reach for
+/// `AudioPipelineConfig::default()`. Both must agree on the beat threshold
+/// so a test of the pipeline default exercises what users actually run.
+#[test]
+fn pipeline_default_beat_threshold_matches_config_default() {
+    let shipped = AudioPipelineConfig::from(&AudioConfig::default());
+    let pipeline = AudioPipelineConfig::default();
+
+    assert!((pipeline.beat_sensitivity - shipped.beat_sensitivity).abs() < f32::EPSILON);
+    assert!((shipped.beat_sensitivity - DEFAULT_BEAT_SENSITIVITY).abs() < f32::EPSILON);
 }
 
 #[test]

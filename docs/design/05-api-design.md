@@ -538,7 +538,7 @@ PATCH  /api/v1/inputs/audio/config           # Update audio analysis config
     "noise_gate": 0.02,
     "frequency_range": { "min": 20, "max": 20000 },
     "gain": 1.0,
-    "beat_sensitivity": 0.6
+    "beat_sensitivity": 1.2
   },
   "current_levels": {
     "level": 0.42,
