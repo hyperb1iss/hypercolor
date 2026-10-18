@@ -28,6 +28,13 @@ pub(crate) enum ZonePreviewStage {
 impl SparkleFlinger {
     /// Scale a GPU zone frame to `width` x `height` on the GPU and start an
     /// asynchronous readback of just that payload.
+    #[cfg_attr(
+        not(feature = "wgpu"),
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "keeps the fallible GPU preview contract in CPU-only builds"
+        )
+    )]
     pub(crate) fn stage_zone_preview(
         &mut self,
         zone_id: ZoneId,
@@ -49,6 +56,13 @@ impl SparkleFlinger {
 
     /// The newest finished preview for `zone_id`, polling its readback
     /// without blocking.
+    #[cfg_attr(
+        not(feature = "wgpu"),
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "keeps the fallible GPU preview contract in CPU-only builds"
+        )
+    )]
     pub(crate) fn zone_preview_surface(
         &mut self,
         zone_id: ZoneId,

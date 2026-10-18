@@ -63,6 +63,7 @@ use crate::render_thread::sparkleflinger::gpu::{
 use crate::startup::StartupProgress;
 #[cfg(feature = "wgpu")]
 pub(crate) use gpu::ZoneTextureSample;
+#[cfg(feature = "wgpu")]
 pub(crate) use zone_preview::ZonePreviewStage;
 
 use super::producer_queue::ProducerFrame;
