@@ -179,6 +179,7 @@ impl ZoneRuntime {
                 ZoneFrameRequirements {
                     requires_cpu_sampling_canvas: !can_keep_zone_gpu_resident,
                     requires_published_surface: !can_keep_zone_gpu_resident,
+                    reuse_unchanged_composition: false,
                 },
             )?
             else {

@@ -20,6 +20,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 use super::super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
 use super::super::producer_queue::ProducerFrame;
 use super::super::scene_dependency::SceneDependencyKey;
+use super::super::sparkleflinger::{CompositionLayer, CompositionLayerIdentity};
 use crate::performance::FullFrameCopyMetrics;
 
 #[derive(Clone)]
@@ -132,6 +133,43 @@ impl<'a> RenderSceneContext<'a> {
 pub(super) struct ZoneFrameRequirements {
     pub(super) requires_cpu_sampling_canvas: bool,
     pub(super) requires_published_surface: bool,
+    /// Reuse the zone's held frame instead of composing when its layers are
+    /// identical to the ones that produced it (Spec 86 §2.1).
+    pub(super) reuse_unchanged_composition: bool,
+}
+
+/// The pixel-free description of the layers whose composition a zone's held
+/// frame shows.
+pub(super) struct ZoneCompositionIdentity {
+    width: u32,
+    height: u32,
+    layers: Vec<CompositionLayerIdentity>,
+}
+
+impl ZoneCompositionIdentity {
+    /// `None` when any layer has no stable identity, which makes the zone
+    /// recompose every frame.
+    pub(super) fn of(zone: &Zone, layers: &[CompositionLayer]) -> Option<Self> {
+        Some(Self {
+            width: zone.layout.canvas_width,
+            height: zone.layout.canvas_height,
+            layers: layers
+                .iter()
+                .map(CompositionLayer::identity)
+                .collect::<Option<Vec<_>>>()?,
+        })
+    }
+
+    pub(super) fn matches(&self, zone: &Zone, layers: &[CompositionLayer]) -> bool {
+        self.width == zone.layout.canvas_width
+            && self.height == zone.layout.canvas_height
+            && self.layers.len() == layers.len()
+            && self
+                .layers
+                .iter()
+                .zip(layers)
+                .all(|(stored, layer)| layer.identity().is_some_and(|current| current == *stored))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -217,6 +217,95 @@ fn gaussian_gpu_zone_samples_on_the_gpu_beside_a_bilinear_zone() {
     );
 }
 
+/// A zone whose layers hand back the same frames reuses its snapshot without
+/// composing: its content generation holds, so sampling hits its cache. A
+/// zone whose input changes composes again, and both keep their colors.
+#[test]
+fn unchanged_zone_layers_reuse_their_snapshot() {
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let case = bilinear_led_zone("Case", "case_leds", 0.3, solid_id);
+    let accents = bilinear_led_zone("WLED Accents", "accent_leds", 0.7, solid_id);
+    let upload = |sparkleflinger: &mut SparkleFlinger, source: &GpuLayerSource, color: Rgba| {
+        let mut canvas = Canvas::new(source.width, source.height);
+        canvas.fill(color);
+        sparkleflinger
+            .upload_media_canvas_frame(MediaTextureSourceKey::for_test(source.source_key), &canvas)
+            .expect("GPU layer frame should upload")
+    };
+    let case_source = gpu_source(&case, 1, CASE_RED);
+    let accent_source = gpu_source(&accents, 2, ACCENT_BLUE);
+    let case_frame = upload(&mut sparkleflinger, &case_source, CASE_RED);
+    let mut accent_frame = upload(&mut sparkleflinger, &accent_source, ACCENT_BLUE);
+    let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
+    let mut zone_colors = Vec::new();
+    let mut generations = Vec::new();
+
+    for frame in 0..4_u64 {
+        if frame == 3 {
+            accent_frame = upload(&mut sparkleflinger, &accent_source, FACE_GREEN);
+        }
+        runtime.inject_effect_layer_frame_for_test(
+            case_source.layer_id,
+            ProducerFrame::GpuTexture(case_frame.clone()),
+        );
+        runtime.inject_effect_layer_frame_for_test(
+            accent_source.layer_id,
+            ProducerFrame::GpuTexture(accent_frame.clone()),
+        );
+        let result = render_scene_for_test_with_screen_and_sparkleflinger(
+            &mut runtime,
+            &[case.clone(), accents.clone()],
+            1,
+            frame * 16,
+            &HashMap::new(),
+            &registry,
+            &mut zone_colors,
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("multi-zone GPU scene should render");
+        let LedSamplingStrategy::SparkleFlingerZones(set) = &result.led_sampling_strategy else {
+            panic!("a GPU multi-zone scene should sample each zone's own texture");
+        };
+        generations.push(
+            set.gpu_textures
+                .iter()
+                .map(|texture| texture.frame.content_generation)
+                .collect::<Vec<_>>(),
+        );
+        let leds = sample_zone_set(&mut sparkleflinger, set);
+        let led = |output_id: &str| {
+            leds.iter()
+                .find(|zone| zone.zone_id == output_id)
+                .and_then(|zone| zone.colors.first().copied())
+        };
+        assert_eq!(led("case_leds"), Some([255, 0, 0]), "frame {frame}");
+        let accent_color = if frame == 3 { [0, 255, 0] } else { [0, 0, 255] };
+        assert_eq!(led("accent_leds"), Some(accent_color), "frame {frame}");
+    }
+
+    assert_eq!(
+        generations[1], generations[0],
+        "unchanged layers should not recompose"
+    );
+    assert_eq!(
+        generations[2], generations[0],
+        "unchanged layers should not recompose"
+    );
+    assert_eq!(
+        generations[3][0], generations[0][0],
+        "the unchanged zone keeps its snapshot"
+    );
+    assert!(
+        generations[3][1] > generations[0][1],
+        "a zone whose input changed should compose again: {generations:?}"
+    );
+}
+
 /// Renders `RENDERED_FRAMES` paced frames, feeding every layer a fresh
 /// GPU-resident frame the way a Servo effect does, and asserts on every frame
 /// that each LED zone samples its own layer color and that the projected

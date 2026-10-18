@@ -18,11 +18,14 @@ use super::frame_helpers::{
     media_layer_producer_frame, passthrough_effect_layer, producer_frame_is_gpu,
     screen_region_layer_frame, transparent_black_frame,
 };
-use super::model::{CachedMediaProducer, MediaLayerFrame, ZoneFrameContext, ZoneFrameRequirements};
+use super::model::{
+    CachedMediaProducer, MediaLayerFrame, ZoneCompositionIdentity, ZoneFrameContext,
+    ZoneFrameRequirements,
+};
 use crate::render_thread::binding_eval::evaluate_layer_runtime;
 use crate::render_thread::producer_queue::{ProducerFrame, record_producer_frame};
 use crate::render_thread::sparkleflinger::{
-    CompositionPlan, PreviewSurfaceRequest, SparkleFlinger,
+    CompositionLayer, CompositionPlan, PreviewSurfaceRequest, SparkleFlinger,
 };
 
 impl ZoneRuntime {
@@ -196,6 +199,16 @@ impl ZoneRuntime {
         if composition_layers.is_empty() {
             return Ok(None);
         }
+        if requirements.reuse_unchanged_composition
+            && let Some(held) = self.unchanged_zone_frame(zone, &composition_layers)
+        {
+            return Ok(Some(held));
+        }
+        let composition_identity = if requirements.reuse_unchanged_composition {
+            ZoneCompositionIdentity::of(zone, &composition_layers)
+        } else {
+            None
+        };
 
         let plan = if composition_layers.len() == 1 {
             let layer = composition_layers
@@ -232,11 +245,32 @@ impl ZoneRuntime {
                 );
             }
         }
-        Ok(composed_frame_to_producer_frame(
-            composed,
-            sparkleflinger,
-            false,
-        ))
+        let frame = composed_frame_to_producer_frame(composed, sparkleflinger, false);
+        if requirements.reuse_unchanged_composition {
+            match (&frame, composition_identity) {
+                (Some(_), Some(identity)) => {
+                    self.zone_composition_identities.insert(zone.id, identity);
+                }
+                _ => {
+                    self.zone_composition_identities.remove(&zone.id);
+                }
+            }
+        }
+        Ok(frame)
+    }
+
+    /// The zone's held frame when its layers match the ones that produced it,
+    /// so composing again would draw the same pixels.
+    fn unchanged_zone_frame(
+        &self,
+        zone: &Zone,
+        layers: &[CompositionLayer],
+    ) -> Option<ProducerFrame> {
+        self.zone_composition_identities
+            .get(&zone.id)
+            .is_some_and(|identity| identity.matches(zone, layers))
+            .then(|| self.last_zone_frames.get(&zone.id).cloned())
+            .flatten()
     }
 
     fn render_media_layer_frame(

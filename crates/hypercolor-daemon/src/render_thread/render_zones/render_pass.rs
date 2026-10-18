@@ -87,6 +87,7 @@ impl ZoneRuntime {
                 ZoneFrameRequirements {
                     requires_cpu_sampling_canvas: true,
                     requires_published_surface: true,
+                    reuse_unchanged_composition: false,
                 },
             )?
             else {
@@ -142,6 +143,7 @@ impl ZoneRuntime {
                     ZoneFrameRequirements {
                         requires_cpu_sampling_canvas: !gpu_resident,
                         requires_published_surface: false,
+                        reuse_unchanged_composition: gpu_resident,
                     },
                 )?;
                 if frame.is_none() && gpu_resident {
@@ -152,6 +154,7 @@ impl ZoneRuntime {
                         ZoneFrameRequirements {
                             requires_cpu_sampling_canvas: true,
                             requires_published_surface: false,
+                            reuse_unchanged_composition: false,
                         },
                     )?;
                 }

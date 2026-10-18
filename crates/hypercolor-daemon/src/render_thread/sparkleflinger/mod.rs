@@ -333,6 +333,19 @@ impl CompositionLayer {
             && !self.needs_processing_for_size(width, height)
     }
 
+    /// What this layer contributes to a composition, without its pixels:
+    /// layers with equal identities compose identically.
+    pub(crate) fn identity(&self) -> Option<CompositionLayerIdentity> {
+        Some(CompositionLayerIdentity {
+            frame: self.frame.stable_identity()?,
+            mode: self.mode,
+            opacity_bits: self.opacity.to_bits(),
+            opaque_hint: self.opaque_hint,
+            transform: self.transform,
+            adjust: self.adjust,
+        })
+    }
+
     #[cfg(all(test, feature = "wgpu"))]
     pub(crate) fn gpu_frame_identity_for_test(
         &self,
@@ -353,6 +366,17 @@ impl CompositionLayer {
             .as_ref()
             .map(std::sync::Arc::strong_count)
     }
+}
+
+/// See [`CompositionLayer::identity`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CompositionLayerIdentity {
+    frame: super::producer_queue::ProducerFrameIdentity,
+    mode: CompositionMode,
+    opacity_bits: u32,
+    opaque_hint: bool,
+    transform: Option<CompositionTransform>,
+    adjust: Option<CompositionAdjust>,
 }
 
 #[derive(Debug, Clone)]

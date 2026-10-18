@@ -993,9 +993,11 @@ fn two_gpu_resident_zones_produce_stable_projected_scene_frame() {
         .collect::<Vec<_>>();
 
     assert_eq!(second_identities.len(), identities.len());
+    // Unchanged layers reuse each zone's snapshot without composing again,
+    // so its storage and content generation both hold (Spec 86 §2.1).
     for (first, second) in identities.iter().zip(&second_identities) {
         assert_eq!(first.0, second.0);
-        assert!(second.1 > first.1);
+        assert_eq!(first.1, second.1);
     }
     let second_scene = runtime
         .compose_projected_scene_frame(second.layers, &mut sparkleflinger)

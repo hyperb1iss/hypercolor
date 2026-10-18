@@ -102,6 +102,8 @@ pub(crate) struct ZoneRuntime {
     /// Each GPU-resident scene zone's last stabilized frame, which a zone
     /// whose layers are all still loading keeps sampling (Spec 86 §2.2).
     last_zone_frames: HashMap<ZoneId, ProducerFrame>,
+    /// The layers whose composition each zone's held frame shows.
+    zone_composition_identities: HashMap<ZoneId, model::ZoneCompositionIdentity>,
     #[cfg(all(test, feature = "wgpu"))]
     projected_scene_layer_allocation_count: usize,
     reconciled_dependency_key: Option<SceneDependencyKey>,
@@ -219,6 +221,7 @@ impl ZoneRuntime {
             reconciled_dependency_key: None,
             retained_frame: None,
             last_zone_frames: HashMap::new(),
+            zone_composition_identities: HashMap::new(),
             zone_sampling_scratch: Vec::new(),
             last_effect_error: None,
             recovered_effect_error: None,

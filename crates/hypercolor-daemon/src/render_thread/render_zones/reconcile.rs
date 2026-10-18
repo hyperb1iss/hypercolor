@@ -505,6 +505,7 @@ impl ZoneRuntime {
         // Zone textures may have been replaced or resized; a held frame must
         // never outlive the resources it was stabilized into.
         self.last_zone_frames.clear();
+        self.zone_composition_identities.clear();
         self.direct_surface_pools = direct_surface_pools;
         self.retained_direct_zone_frames = retained_direct_zone_frames;
         self.retained_materialized_zone_frames = retained_materialized_zone_frames;
