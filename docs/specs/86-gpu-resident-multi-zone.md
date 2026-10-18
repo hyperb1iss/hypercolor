@@ -11,7 +11,7 @@
 > texture with that zone's own plan, and the scene canvas and zone previews
 > become GPU outputs built for the people looking at them.
 
-**Status:** rev 2, revised after cross-model review (§10).
+**Status:** rev 3, revised after two cross-model review rounds (§10).
 **Crates:** `hypercolor-daemon` (render zones, frame sampling, frame publication, SparkleFlinger GPU compositor and sampler), `hypercolor-core` (spatial plan identity)
 **Amends:** Spec 64 §12.1 and §12.5 (per-group sampling moves to the GPU), Spec 48 §4.2 (multi-group preview derivation)
 **Author:** Nova
@@ -159,28 +159,57 @@ serves every pass (`gpu_sampling.rs:475-497`); and the reconcile gate in
 ## 2. Per-zone retained textures
 
 Whenever SparkleFlinger supports GPU output frames, reconcile emits a
-`ProjectedZoneTextureRequirement` for every scene-contributing zone that
-composes on the GPU (§6 names the CPU exception), sized to that zone's own
-`layout.canvas_width` and `layout.canvas_height`. Projection eligibility no
-longer gates the textures.
+`ProjectedZoneTextureRequirement` for every scene-contributing zone, sized to
+that zone's own `layout.canvas_width` and `layout.canvas_height`. GPU-composed
+zones sample from it; CPU-composed zones (§6) use it only as their scene
+projection source. Projection eligibility no longer gates the textures.
 
 ### 2.1 Composition key
 
 Each zone carries a composition key: the ordered list of its enabled layers'
-`(layer id, producer frame identity, blend, opacity, transform)`, where
-producer frame identity is whatever already distinguishes a new producer
-frame from a retained one (texture storage id plus producer frame number for
-GPU frames, the CPU replay key for canvases). When the key matches the
-previous frame's, the zone skips composition and stabilization, and its
-snapshot keeps its `content_generation`. A retained Servo frame
-(`hypercolor-core/src/effect/servo/renderer.rs:218`) therefore costs nothing
-downstream, the way it already costs nothing on the single-zone path through
-`layer_reuses_current_output_texture`. When the key changes, the zone
-composes and stabilizes, and the generation advances.
+producer frame identity together with every evaluated composition input the
+compositor applies to that layer (blend, opacity, transform, and the
+`LayerAdjust` color adjustments after binding evaluation,
+`binding_eval.rs:45`, `:129`). These are the same inputs the CPU replay key
+already hashes (`sparkleflinger/gpu/source/copy.rs:426`); the zone key
+extends that key to GPU frames. Producer frame identity is the texture
+storage id plus producer frame number for GPU frames and the CPU replay key
+for canvases.
 
-### 2.2 Lifetime
+- When every layer has an identity and the key matches the previous frame's,
+  the zone skips composition and stabilization, and its snapshot keeps its
+  `content_generation`. A retained Servo frame
+  (`hypercolor-core/src/effect/servo/renderer.rs:218`) under unchanging
+  parameters therefore costs nothing downstream, the way it already costs
+  nothing on the single-zone path through `layer_reuses_current_output_texture`.
+- When any layer lacks an identity (an owned canvas has no replay key,
+  `copy.rs:393`, `:409`, which includes screen-region layers), the zone is
+  uncacheable that frame: it composes, stabilizes, and advances its
+  generation. Absent identities never compare equal.
+- When the key changes, the zone composes and stabilizes, and the generation
+  advances.
 
-Snapshots are written only by stabilization and read only by passes queued
+### 2.2 Zones without a frame
+
+A zone can reach a frame with nothing to compose, and the two causes differ:
+
+- **No enabled layers** (the stack is empty, or every layer is disabled or
+  was removed). The zone is deliberately dark: its snapshot is cleared to
+  transparent black and its generation advances, matching today's
+  `target.clear()`.
+- **Enabled layers, none ready** (every layer returned `Pending`, so
+  `render_zone_frame` returns `None`, `layer_rendering.rs:196`, `:414`).
+  A zone with an initialized snapshot keeps it, unchanged, and keeps its
+  generation, so its LEDs hold their last colors. A zone with no initialized
+  snapshot (a cold start) contributes no `Gpu` source that frame: its LEDs
+  hold their last published colors when the published frame carries them
+  with a matching shape, and are black otherwise, the same rule §6 uses.
+  Spec 85's hold-then-swap governs what a loading layer shows once it does
+  produce frames.
+
+### 2.3 Lifetime
+
+Snapshots are written only by stabilization (or the upload in §6) and read only by passes queued
 in the same frame (sampling, scene projection, zone preview scaling), and the
 wgpu queue executes submissions in order. No consumer holds a zone snapshot
 across frames: per-frame sampling sets are dropped once dispatched (a pending
@@ -304,6 +333,14 @@ and the render-error path (`frame_composer.rs:468`) resume from those colors
 as `RetainedPreSampled`, so no retained result re-samples a snapshot that has
 moved on.
 
+Resuming must publish the retained colors. Today the resolver captures
+`RetainedPreSampled` colors and then, outside a transition, converts the
+strategy to `ReusePublished` (`frame_sampling.rs:452`, `:834`), which is
+correct only when the published frame already holds those colors. The
+conversion becomes conditional: it applies when the published frame's shape
+and colors equal the retained ones, and otherwise the retained colors are
+written as the frame's output.
+
 ### 4.3 Unassigned outputs
 
 `Off` and `Hold` behave as today; they do not read zone pixels.
@@ -313,6 +350,15 @@ moved on.
 zone, the synthesized fallback outputs are appended to the target zone's
 `Gpu` plan as an extra `GpuZoneRange` against that zone's snapshot, and their
 colors join the frame's readback. For a `Cpu` zone the existing path stays.
+
+Synthesized outputs carry no sampling override
+(`hypercolor-core/src/device/manager/routing.rs:472`), so they inherit the
+layout default (`hypercolor-core/src/spatial/sampler/mod.rs:124`), which may
+be a mode the GPU refuses even when every assigned output overrides to one it
+accepts. Fallback ranges are therefore admitted on their own. A refused range
+never refuses the zone's assigned outputs: against a `Cpu` zone it samples on
+the CPU, and against a GPU-backed zone it takes the §6 hold-or-black rule for
+those outputs only, with the same health and diagnose reporting.
 
 ---
 
@@ -356,7 +402,11 @@ as a `ProducerFrame::Surface` entry. Cadence and demand gating are unchanged.
 - **GPU backend, zone plan admitted.** `Gpu` source, §3.2.
 - **GPU backend, plan refused, zone frames CPU-backed.** The zone composes on
   the CPU and samples on the CPU as a `Cpu` source. A native or color-fill
-  zone with Gaussian sampling keeps working exactly as it does today.
+  zone with Gaussian sampling keeps working exactly as it does today. The
+  zone still contributes to the scene canvas: when §5 composes a scene, the
+  zone's canvas is uploaded into its snapshot, which then serves projection
+  and nothing else. The upload happens only on frames that compose a scene
+  and only when the zone's composition key changed.
 - **GPU backend, plan refused, zone frames GPU-backed** (a Gaussian zone
   running an HTML effect, or a plan past device limits). An `Unsupported`
   source: the zone holds its last published colors when the published frame
@@ -414,13 +464,31 @@ fails rather than skips (`sparkleflinger/gpu/tests.rs:74`). Required cases:
 8. Media, screen-region, and web-viewport layers in a non-primary zone.
 9. Zone previews publish for `Gpu` zones at the demanded size and cadence;
    scene preview and a blended display backdrop are non-black and include
-   transitions.
+   transitions. With a display zone switching the compositor's size every
+   frame, a staged scene preview still completes on a later frame and
+   preview and capture hold their cadence across many frames (size switches
+   unmap pending preview buffers today, `gpu/compositor/bypass.rs:61`,
+   `gpu/preview.rs:120`).
 10. The CPU backend produces the same per-zone output as before.
 11. No whole-image readback: the scene-zone path never calls
     `latch_sampling_surface_readback`, §7's materialization assertion holds,
     and test-level allocation counters for snapshots, bind groups, and SAT
     buffers stay flat after warmup.
-12. The reproduction test from the investigation is un-ignored and passes.
+12. The reproduction tests in `render_zones/tests/gpu_layer_latch.rs`
+    (`two_bilinear_led_zones_with_gpu_layers_and_lcd_face_keep_their_colors`,
+    `two_bilinear_led_zones_with_gpu_layers_keep_their_own_colors`, and
+    `single_bilinear_led_zone_off_scene_extent_with_lcd_face_keeps_its_color`)
+    are un-ignored and pass.
+13. A Gaussian native zone beside a Bilinear HTML zone appears in the scene
+    preview, a canvas capture, and a blended display backdrop.
+14. A zone whose layers are all `Pending` holds its snapshot; a cold-start
+    zone holds published colors or goes black by the §2.2 rule; removing a
+    zone's last layer turns it dark.
+15. A layer adjustment driven by a binding changes the zone's output while
+    the producer frame is retained, and a screen-region layer recomposes
+    every frame.
+16. A live canvas resize (`daemon.canvas_width` and `canvas_height` changed
+    while a multi-zone scene runs) keeps every zone sampling correctly.
 
 Live acceptance on the evidence rig: the Default zone running Bubble Garden
 plus a ROLI zone running Bubble Garden with Touch Ripple in `screen` holds
@@ -482,3 +550,20 @@ retires the `Unsupported` source for Gaussian plans.
 - Preview parity is required for all admitted modes in a later phase (§8).
 - Acceptance names executable gates, GPU-required test runs, and the cases
   rev 1 missed (§8).
+
+**rev 2 to rev 3** (round 2: eleven rev 1 findings closed, two partly closed,
+five new):
+
+- The composition key includes evaluated layer adjustments and every other
+  composition input, and a layer without an identity makes the zone
+  uncacheable (§2.1).
+- Zones with no enabled layers, all-pending layers, or a cold start have
+  defined outcomes (§2.2).
+- CPU-composed zones upload into their snapshot for scene projection, so they
+  stay in previews, captures, and display backdrops (§2, §6).
+- Synthesized fallback outputs are admitted on their own (§4.3).
+- Resuming retained colors publishes them unless the published frame already
+  matches (§4.2).
+- Acceptance adds preview cadence across size switches, names the
+  reproduction tests, and covers live canvas resize, mixed-source previews,
+  pending zones, and bound adjustments (§8).
