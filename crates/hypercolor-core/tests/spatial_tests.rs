@@ -1060,6 +1060,33 @@ fn failed_layout_update_preserves_previous_layout_plan_and_samples() {
 }
 
 #[test]
+fn spatial_engines_never_share_a_plan_generation() {
+    let zone = full_canvas_zone(
+        "strip",
+        LedTopology::Strip {
+            count: 4,
+            direction: StripDirection::LeftToRight,
+        },
+    );
+    let first = SpatialEngine::new(test_layout(vec![zone.clone()], 100, 20));
+    let second = SpatialEngine::try_new(test_layout(vec![zone.clone()], 100, 20))
+        .expect("layout is valid");
+    let mut third = SpatialEngine::new(test_layout(vec![zone.clone()], 100, 20));
+    third.update_layout(test_layout(vec![zone], 100, 20));
+
+    let generations = [
+        first.plan_generation(),
+        second.plan_generation(),
+        third.plan_generation(),
+    ];
+    assert_ne!(generations[0], generations[1]);
+    assert_ne!(generations[0], generations[2]);
+    assert_ne!(generations[1], generations[2]);
+    assert_eq!(first.sampling_plan()[0].plan_generation, generations[0]);
+    assert_eq!(second.sampling_plan()[0].plan_generation, generations[1]);
+}
+
+#[test]
 fn spatial_engine_advances_plan_generation_after_layout_update() {
     let zone = full_canvas_zone(
         "strip",

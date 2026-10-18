@@ -38,6 +38,7 @@ pub use topology::generate_positions;
 pub use viewport::sample_viewport;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypercolor_types::canvas::{Canvas, SurfaceDescriptor};
 use hypercolor_types::event::ZoneColors;
@@ -46,6 +47,16 @@ use thiserror::Error;
 
 /// Layout zone name reserved for display-only viewports.
 pub const DISPLAY_ZONE_NAME: &str = "Display";
+
+/// Source of plan generations, shared by every engine in the process so a
+/// generation names exactly one prepared plan. GPU sampling keys uploaded
+/// sample points by generation, and per-engine counters starting at one let
+/// two engines' plans collide when one reuses the other's allocation.
+static NEXT_PLAN_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_plan_generation() -> u64 {
+    NEXT_PLAN_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Failure to construct an addressable spatial sampling plan.
 #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
@@ -174,13 +185,14 @@ impl SpatialEngine {
     pub fn new(layout: SpatialLayout) -> Self {
         let mut layout = layout;
         let sampling_capacity = SpatialSamplingCapacity::UNBOUNDED;
-        match prepare_layout(&mut layout, 1, sampling_capacity) {
+        let plan_generation = next_plan_generation();
+        match prepare_layout(&mut layout, plan_generation, sampling_capacity) {
             Ok(prepared) => Self {
                 layout: Arc::new(layout),
                 prepared_zones: prepared.zones,
                 area_workspaces: prepared.area_workspaces,
                 sampling_capacity,
-                plan_generation: 1,
+                plan_generation,
             },
             Err(error) => {
                 tracing::warn!(%error, "Rejected unaddressable spatial sampling plan");
@@ -216,7 +228,7 @@ impl SpatialEngine {
         mut layout: SpatialLayout,
         sampling_capacity: SpatialSamplingCapacity,
     ) -> Result<Self, SpatialPlanError> {
-        let plan_generation = 1;
+        let plan_generation = next_plan_generation();
         let prepared = prepare_layout(&mut layout, plan_generation, sampling_capacity)?;
         Ok(Self {
             layout: Arc::new(layout),
@@ -422,7 +434,7 @@ impl SpatialEngine {
     /// or its Gaussian kernel storage cannot be reserved. The previous layout
     /// and sampling plan remain active on failure.
     pub fn try_update_layout(&mut self, mut layout: SpatialLayout) -> Result<(), SpatialPlanError> {
-        let plan_generation = self.plan_generation.saturating_add(1);
+        let plan_generation = next_plan_generation();
         let prepared = prepare_layout(&mut layout, plan_generation, self.sampling_capacity)?;
         self.layout = Arc::new(layout);
         self.prepared_zones = prepared.zones;
@@ -442,6 +454,10 @@ impl SpatialEngine {
         Arc::clone(&self.prepared_zones)
     }
 
+    /// Identity of the active prepared plan.
+    ///
+    /// Generations come from one process-wide counter, so no two plans ever
+    /// share one, even across engines.
     #[must_use]
     pub const fn plan_generation(&self) -> u64 {
         self.plan_generation
