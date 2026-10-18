@@ -976,6 +976,8 @@ disk:
     @if [ -d "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}" ]; then du -sh "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/* 2>/dev/null | sort -rh | head -15 || true; else echo '(no target dir)'; fi
     @echo '── incremental caches ──'
     @du -sh "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/*/incremental "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/*/*/incremental 2>/dev/null | sort -rh || true
+    @echo '── incremental prune trash and claims ──'
+    @t="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"; found=0; for path in "$t"/.hypercolor-incremental-prune.* "$t"/*/.hypercolor-prune.* "$t"/*/*/.hypercolor-prune.*; do [ -e "$path" ] || continue; du -sh "$path" 2>/dev/null; found=1; done; [ "$found" -eq 1 ] || echo '(none)'
     @echo '── other worktree targets ──'
     @active="$(cd "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}" 2>/dev/null && pwd -P)"; git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r tree; do for dir in "$tree/target" "$tree/crates/hypercolor-ui/target"; do [ -d "$dir" ] && [ "$(cd "$dir" && pwd -P)" != "$active" ] && du -sh "$dir" 2>/dev/null; done; done | sort -rh || true
     @echo "── shared caches (${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}) ──"

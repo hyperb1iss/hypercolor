@@ -142,8 +142,11 @@ priority. A crate that loses its entry
 compiles in full once, the next time it changes. Set
 `HYPERCOLOR_INCREMENTAL_PRUNE_DAYS` to change the age, or to `0`, `off`, or
 `false` to disable the prune; leaving it empty keeps the 3-day default. CI
-skips it, since CI targets start fresh. Each run logs to
-`target/.hypercolor-incremental-prune.<date>/prune.log`.
+skips it, since CI targets start fresh. Pending deletes sit in
+`<profile>/.hypercolor-prune.*` trash dirs, where the target GC still counts
+them, and each UTC day's run logs to
+`target/.hypercolor-incremental-prune.<YYYYMMDD>/prune.log`. `just disk`
+lists any trash and claim dirs that remain.
 
 The default dev profile keeps readable backtraces with line tables and trims
 third-party symbols. Use `just debug-build` when a debugger needs full locals
