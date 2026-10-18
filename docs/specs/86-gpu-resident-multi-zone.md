@@ -11,7 +11,7 @@
 > texture with that zone's own plan, and the scene canvas and zone previews
 > become GPU outputs built for the people looking at them.
 
-**Status:** rev 4, revised after three cross-model review rounds (§10).
+**Status:** rev 4, approved for Phase 1 implementation after four cross-model review rounds (§10).
 **Crates:** `hypercolor-daemon` (render zones, frame sampling, frame publication, SparkleFlinger GPU compositor and sampler), `hypercolor-core` (spatial plan identity)
 **Amends:** Spec 64 §12.1 and §12.5 (per-group sampling moves to the GPU), Spec 48 §4.2 (multi-group preview derivation)
 **Author:** Nova
@@ -604,3 +604,7 @@ closed, three new):
   promised a dark output the current code never produced (§2.2).
 - A CPU-backed zone with any refused range samples on the CPU, which covers
   Gaussian fallback ranges beside Bilinear assigned outputs (§4.3).
+
+**rev 4** (round 4): both lenses closed every remaining finding and returned
+PASS with no new blocking issues. Design review only; GPU execution and the
+live acceptance run happen during Phase 1.
