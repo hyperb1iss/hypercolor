@@ -17,7 +17,8 @@ use super::device_helpers::{
     device_ref_for_tracked, lifecycle_policy_for_device_info, refresh_connected_device_info,
     sync_logical_mappings_for_device, sync_registry_state,
 };
-use super::lifecycle::execute_lifecycle_actions;
+use super::lanes::ConnectFence;
+use super::lifecycle::{execute_fenced_lifecycle_actions, execute_lifecycle_actions};
 use super::{DiscoveryRuntime, DiscoveryScanResult, DiscoveryScannerResult, DiscoveryTarget};
 use crate::network::{self, DaemonDriverHost};
 
@@ -649,8 +650,9 @@ async fn scan_target(
         .full_scan_with_progress_until(shutdown.cancelled(), |progress: DiscoveryProgress| {
             let runtime = runtime_for_progress.clone();
             let incremental = Arc::clone(&incremental_for_progress);
+            let target = target.clone();
             async move {
-                process_discovery_progress(&runtime, progress, &incremental).await;
+                process_discovery_progress(&runtime, &target, progress, &incremental).await;
             }
         })
         .await?;
@@ -845,12 +847,13 @@ enum DiscoverySeenKind {
 
 async fn process_discovery_progress(
     runtime: &DiscoveryRuntime,
+    target: &DiscoveryTarget,
     progress: DiscoveryProgress,
     incremental: &Arc<Mutex<IncrementalDiscoveryState>>,
 ) {
     for id in progress.new_devices {
         if let Some((device_ref, _)) =
-            process_discovered_device(runtime, id, DiscoverySeenKind::New).await
+            process_discovered_device(runtime, target, id, DiscoverySeenKind::New).await
         {
             let mut state = incremental.lock().await;
             state.found.push(device_ref.clone());
@@ -860,7 +863,7 @@ async fn process_discovery_progress(
 
     for id in progress.reappeared_devices {
         let Some((device_ref, should_record)) =
-            process_discovered_device(runtime, id, DiscoverySeenKind::Reappeared).await
+            process_discovered_device(runtime, target, id, DiscoverySeenKind::Reappeared).await
         else {
             continue;
         };
@@ -875,6 +878,7 @@ async fn process_discovery_progress(
 
 async fn process_discovered_device(
     runtime: &DiscoveryRuntime,
+    target: &DiscoveryTarget,
     device_id: DeviceId,
     kind: DiscoverySeenKind,
 ) -> Option<(DeviceRef, bool)> {
@@ -964,7 +968,7 @@ async fn process_discovered_device(
             device_id = %device_id,
             "running discovery connect actions in background"
         );
-        spawn_lifecycle_actions_in_background(runtime, device_id, actions);
+        spawn_lifecycle_actions_in_background(runtime, target, device_id, actions).await;
     } else {
         execute_lifecycle_actions(runtime.clone(), actions).await;
         sync_registry_state(runtime, device_id).await;
@@ -1115,7 +1119,7 @@ async fn reconcile_migrated_device_connections(
             "reconciling device connectivity after binding migration"
         );
         if should_run_lifecycle_actions_in_background(runtime, &tracked.info, &actions).await {
-            spawn_lifecycle_actions_in_background(runtime, device_id, actions);
+            spawn_lifecycle_actions_in_background(runtime, target, device_id, actions).await;
         } else {
             execute_lifecycle_actions(runtime.clone(), actions).await;
             sync_registry_state(runtime, device_id).await;
@@ -1123,16 +1127,23 @@ async fn reconcile_migrated_device_connections(
     }
 }
 
-fn spawn_lifecycle_actions_in_background(
+/// Run a scan's connect actions for `device_id` in the background.
+///
+/// The connect outlives the scan's hold on `target`'s lane, so it is fenced
+/// to the lifecycle intent that issued it: a newer scan that retires the
+/// device before the connect lands always wins.
+async fn spawn_lifecycle_actions_in_background(
     runtime: &DiscoveryRuntime,
+    target: &DiscoveryTarget,
     device_id: DeviceId,
     actions: Vec<LifecycleAction>,
 ) {
+    let fence = ConnectFence::for_connect(runtime, target, device_id).await;
     let runtime_for_task = runtime.clone();
     let accepted = runtime
         .target_lanes
         .spawn_background(&runtime.task_spawner, async move {
-            execute_lifecycle_actions(runtime_for_task.clone(), actions).await;
+            execute_fenced_lifecycle_actions(runtime_for_task.clone(), actions, fence).await;
             sync_registry_state(&runtime_for_task, device_id).await;
         });
     if !accepted {

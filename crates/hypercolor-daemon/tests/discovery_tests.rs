@@ -2765,3 +2765,234 @@ async fn a_sweep_does_not_reconnect_a_device_a_newer_lane_scan_retired() {
         "the stale sweep reconnected a device a newer scan retired"
     );
 }
+
+/// Backend whose connects run in the background, as native SMBus ones do,
+/// and wait at a gate the test opens.
+struct GatedBackgroundBackend {
+    connect_started: Arc<Semaphore>,
+    connect_gate: Arc<Semaphore>,
+    connects_finished: Arc<std::sync::atomic::AtomicUsize>,
+    disconnects: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for GatedBackgroundBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "mock".into(),
+            name: "Gated Background".into(),
+            description: "Connects in the background behind a gate".into(),
+        }
+    }
+
+    fn lifecycle_policy(
+        &self,
+        _device: &DeviceInfo,
+    ) -> hypercolor_driver_api::DeviceLifecyclePolicy {
+        hypercolor_driver_api::DeviceLifecyclePolicy::default()
+            .with_connect_execution(hypercolor_driver_api::ConnectExecution::Background)
+    }
+
+    fn adopt_device(&self, _discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn connect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+        self.connect_started.add_permits(1);
+        Arc::clone(&self.connect_gate)
+            .acquire_owned()
+            .await
+            .expect("connect gate should stay open")
+            .forget();
+        self.connects_finished.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    async fn disconnect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+        self.disconnects.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
+        Ok(())
+    }
+}
+
+struct GatedMigrationScenario {
+    runtime: TestDiscoveryRuntime,
+    asus: LaneDiscoveryDriver,
+    stick_id: DeviceId,
+    backend: Arc<GatedBackgroundBackend>,
+    publications: hypercolor_daemon::LayoutPublicationTestExecutor,
+    _temp_dir: tempfile::TempDir,
+}
+
+impl GatedMigrationScenario {
+    /// Run a complete sweep whose binding migration starts a background
+    /// connect for the ASUS stick, and wait until that connect is at the gate.
+    async fn start() -> Self {
+        let asus = LaneDiscoveryDriver::new(&STATIC_ASUS_DISCOVERY_DRIVER);
+        let slow = LaneDiscoveryDriver::new(&LANE_SLOW_DRIVER).blocking();
+        let mut info = smbus_device_info("ASUS Aura DRAM (SMBus 0x73)");
+        "Lighting".clone_into(&mut info.segments[0].name);
+        "mock".clone_into(&mut info.origin.backend_id);
+        let stick = DiscoveredDevice {
+            fingerprint: DeviceFingerprint::from_persisted("smbus:asus:pawnio:i801:73".to_owned()),
+            connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+            info,
+            metadata: HashMap::new(),
+            claim: None,
+        };
+        let stick_id = stick.info.id;
+        asus.report(vec![stick]);
+
+        let mut drivers = DriverModuleRegistry::new();
+        drivers.register(asus.clone()).expect("asus driver");
+        drivers.register(slow.clone()).expect("slow driver");
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let runtime = make_runtime_with_registry_and_layout(
+            DeviceRegistry::new(),
+            Arc::new(Mutex::new(DeviceLifecycleManager::new())),
+            temp_dir.path().join("layouts.json"),
+            temp_dir.path().join("runtime-state.json"),
+            Some(drivers),
+            None,
+            legacy_asus_dram_layout(),
+            HashSet::new(),
+        );
+        let backend = Arc::new(GatedBackgroundBackend {
+            connect_started: Arc::new(Semaphore::new(0)),
+            connect_gate: Arc::new(Semaphore::new(0)),
+            connects_finished: Arc::default(),
+            disconnects: Arc::default(),
+        });
+        runtime
+            .backend_manager
+            .lock()
+            .await
+            .register_backend(Arc::clone(&backend) as Arc<dyn DeviceBackend>);
+        let publications = runtime.layout.layout_publication_test_executor();
+
+        let sweep = tokio::spawn(execute_discovery_scan(
+            runtime.runtime.clone(),
+            Arc::clone(&runtime.driver_registry),
+            Arc::clone(&runtime.driver_host),
+            Arc::new(HypercolorConfig::default()),
+            vec![
+                DiscoveryTarget::driver(STATIC_ASUS_DISCOVERY_DRIVER.id),
+                DiscoveryTarget::driver(LANE_SLOW_DRIVER.id),
+            ],
+            Duration::from_secs(2),
+        ));
+        slow.wait_started().await;
+        slow.release
+            .as_ref()
+            .expect("slow driver blocks")
+            .add_permits(1);
+        let scenario = Self {
+            runtime,
+            asus,
+            stick_id,
+            backend,
+            publications,
+            _temp_dir: temp_dir,
+        };
+        scenario.pump_until(|| sweep.is_finished()).await;
+        sweep.await.expect("sweep task");
+        timeout(
+            Duration::from_secs(2),
+            scenario.backend.connect_started.acquire(),
+        )
+        .await
+        .expect("the migration starts a background connect")
+        .expect("connect start semaphore should stay open")
+        .forget();
+        scenario
+    }
+
+    /// Drive layout publications until `done` holds.
+    async fn pump_until(&self, mut done: impl FnMut() -> bool) {
+        timeout(Duration::from_secs(5), async {
+            while !done() {
+                self.publications
+                    .execute_next_layout_publication()
+                    .await
+                    .expect("layout publication");
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("timed out driving layout publications");
+    }
+
+    async fn mappings(&self) -> usize {
+        self.runtime
+            .backend_manager
+            .lock()
+            .await
+            .routing_snapshot()
+            .mappings
+            .len()
+    }
+
+    /// Open the connect gate and let the connect run to completion.
+    async fn finish_connect(&self) {
+        self.backend.connect_gate.add_permits(1);
+        let finished = Arc::clone(&self.backend.connects_finished);
+        self.pump_until(|| finished.load(Ordering::Acquire) == 1)
+            .await;
+        for _ in 0..50 {
+            self.publications
+                .execute_next_layout_publication()
+                .await
+                .expect("layout publication");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_background_connect_does_not_map_a_device_a_newer_scan_retired() {
+    use hypercolor_driver_api::DriverRuntimeActions;
+
+    let scenario = GatedMigrationScenario::start().await;
+
+    // The stick leaves while its connect waits at the gate, and a newer
+    // lane scan retires it.
+    scenario.asus.report(Vec::new());
+    let mut events = scenario.runtime.event_bus.subscribe_all();
+    scenario
+        .runtime
+        .driver_host
+        .request_discovery(STATIC_ASUS_DISCOVERY_DRIVER.id)
+        .await
+        .expect("driver-scoped discovery should be scheduled");
+    let stick = scenario.stick_id.to_string();
+    let mut retired = false;
+    scenario
+        .pump_until(|| {
+            retired |= disconnected_ids(&mut events).contains(&stick);
+            retired
+        })
+        .await;
+    assert_eq!(scenario.mappings().await, 0);
+
+    // The old connect finishes afterwards and must neither map the stick
+    // nor leave its connection open.
+    scenario.finish_connect().await;
+    assert_eq!(
+        scenario.mappings().await,
+        0,
+        "a stale background connect mapped a device a newer scan retired"
+    );
+    assert_eq!(scenario.backend.disconnects.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn a_background_connect_maps_a_device_that_is_still_present() {
+    let scenario = GatedMigrationScenario::start().await;
+
+    scenario.finish_connect().await;
+    assert_eq!(scenario.mappings().await, 1);
+    assert_eq!(scenario.backend.disconnects.load(Ordering::Acquire), 0);
+}

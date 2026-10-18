@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
+use std::time::Instant;
 
 use tokio::runtime::Handle;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -22,7 +23,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use super::DiscoveryTarget;
+use hypercolor_types::device::DeviceId;
+
+use super::{DiscoveryRuntime, DiscoveryTarget};
 
 /// Exclusive hold on one target's lane. It dereferences to the target's
 /// observation epoch; a scan that applied an observation bumps it.
@@ -62,6 +65,14 @@ impl TargetLanes {
         // Whatever this scan observes postdates every request queued so far.
         lane.queued.store(false, Ordering::Release);
         hold
+    }
+
+    /// Hold `target`'s lane without standing in for a scan, so a queued lane
+    /// scan still runs afterwards.
+    async fn acquire(&self, target: &DiscoveryTarget) -> LaneHold {
+        Arc::clone(&self.lane(target).observation)
+            .lock_owned()
+            .await
     }
 
     /// Hold `target`'s lane only if no scan has observed the target since
@@ -167,5 +178,76 @@ async fn await_stopped(task: JoinHandle<()>, label: &str) {
         && !error.is_cancelled()
     {
         warn!(%error, task = label, "task did not stop cleanly at discovery shutdown");
+    }
+}
+
+/// Ties a background connect to the lifecycle intent that issued it.
+///
+/// A scan hands connects that may outlive its lane hold to the background.
+/// Before such a connect publishes its mapping it takes the device's lane,
+/// so any scan of the target in progress finishes first, and confirms the
+/// lifecycle still waits on this very connect. A device a newer scan
+/// retired meanwhile, or one a reissued connect now owns, is never mapped
+/// by the stale connect.
+#[derive(Clone, Debug)]
+pub(crate) struct ConnectFence {
+    target: DiscoveryTarget,
+    device_id: DeviceId,
+    issued_at: Instant,
+}
+
+/// What a fenced connect found when it came to publish.
+pub(crate) enum FenceCheck {
+    /// Still wanted: publish while holding the lane.
+    Publish(LaneHold),
+    /// Another connect owns the device now; leave its connection alone.
+    Yield,
+    /// The device was retired: tear down the connection just opened.
+    TearDown,
+}
+
+impl ConnectFence {
+    /// Fence the connect in flight for `device_id`, or `None` when the
+    /// lifecycle is not waiting on one.
+    pub(crate) async fn for_connect(
+        runtime: &DiscoveryRuntime,
+        target: &DiscoveryTarget,
+        device_id: DeviceId,
+    ) -> Option<Self> {
+        let issued_at = runtime
+            .lifecycle_manager
+            .lock()
+            .await
+            .connect_in_flight_since(device_id)?;
+        Some(Self {
+            target: target.clone(),
+            device_id,
+            issued_at,
+        })
+    }
+
+    /// The device this fence guards.
+    pub(crate) fn device_id(&self) -> DeviceId {
+        self.device_id
+    }
+
+    /// Take the device's lane and decide whether the connect may publish.
+    pub(crate) async fn check(&self, runtime: &DiscoveryRuntime) -> FenceCheck {
+        let hold = runtime.target_lanes.acquire(&self.target).await;
+        let lifecycle = runtime.lifecycle_manager.lock().await;
+        match lifecycle.connect_in_flight_since(self.device_id) {
+            Some(issued_at) if issued_at == self.issued_at => {
+                drop(lifecycle);
+                FenceCheck::Publish(hold)
+            }
+            Some(_) => FenceCheck::Yield,
+            None if lifecycle
+                .state(self.device_id)
+                .is_some_and(|state| state.is_renderable()) =>
+            {
+                FenceCheck::Yield
+            }
+            None => FenceCheck::TearDown,
+        }
     }
 }

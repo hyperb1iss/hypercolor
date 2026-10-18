@@ -1309,3 +1309,40 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         &vec![expected; 4]
     );
 }
+
+#[test]
+fn connect_in_flight_since_tracks_the_connect_the_manager_waits_on() {
+    let mut lifecycle = DeviceLifecycleManager::new();
+    let device_id = DeviceId::new();
+    let info = device_info(device_id, "DRAM Stick");
+    let fingerprint = DeviceFingerprint::from_persisted("smbus:asus:test:73".to_owned());
+    assert_eq!(lifecycle.connect_in_flight_since(device_id), None);
+
+    let actions = lifecycle.on_discovered(device_id, &info, Some(&fingerprint));
+    assert!(matches!(
+        actions.as_slice(),
+        [LifecycleAction::Connect { .. }]
+    ));
+    let first = lifecycle
+        .connect_in_flight_since(device_id)
+        .expect("the issued connect is in flight");
+
+    // A rediscovery while that connect is pending keeps it as the one.
+    let _ = lifecycle.on_discovered(device_id, &info, Some(&fingerprint));
+    assert_eq!(lifecycle.connect_in_flight_since(device_id), Some(first));
+
+    // Retiring the device withdraws it; a later rediscovery issues anew.
+    let _ = lifecycle.on_device_vanished(device_id);
+    assert_eq!(lifecycle.connect_in_flight_since(device_id), None);
+    std::thread::sleep(Duration::from_millis(2));
+    let _ = lifecycle.on_discovered(device_id, &info, Some(&fingerprint));
+    let reissued = lifecycle
+        .connect_in_flight_since(device_id)
+        .expect("the reissued connect is in flight");
+    assert!(reissued > first);
+
+    lifecycle
+        .on_connected(device_id)
+        .expect("connected transition");
+    assert_eq!(lifecycle.connect_in_flight_since(device_id), None);
+}

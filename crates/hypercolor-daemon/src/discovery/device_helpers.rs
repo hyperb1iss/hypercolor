@@ -5,11 +5,12 @@ use hypercolor_types::device::{
     DeviceError, DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
 };
 use hypercolor_types::event::{DeviceRef, HypercolorEvent, ZoneRef};
-use tracing::info;
+use tracing::{debug, info};
 
 use std::time::Duration;
 
 use super::DiscoveryRuntime;
+use super::lanes::{ConnectFence, FenceCheck, LaneHold};
 use crate::device_settings::StoredDeviceSettings;
 use crate::logical_devices;
 
@@ -183,17 +184,54 @@ pub(super) async fn connect_backend_device_with_timeout(
         device_id,
         layout_device_id,
         Some(timeout),
+        None,
     )
     .await
+    .map(|_| ())
 }
 
+/// How a fenced connect ended.
+pub(super) enum FencedConnect {
+    /// Mapped. The connect publishes the rest of its follow-up under this
+    /// hold on the device's lane.
+    Installed(LaneHold),
+    /// The lifecycle no longer wanted this connect, so it was not mapped.
+    Superseded,
+}
+
+/// Connect a device for a background connect that `fence` ties to its
+/// lifecycle intent; see [`ConnectFence`].
+pub(super) async fn connect_backend_device_fenced(
+    runtime: &DiscoveryRuntime,
+    backend_id: &str,
+    device_id: DeviceId,
+    layout_device_id: &str,
+    timeout: Duration,
+    fence: &ConnectFence,
+) -> Result<FencedConnect, DeviceError> {
+    connect_backend_device_inner(
+        runtime,
+        backend_id,
+        device_id,
+        layout_device_id,
+        Some(timeout),
+        Some(fence),
+    )
+    .await
+    .map(|hold| hold.map_or(FencedConnect::Superseded, FencedConnect::Installed))
+}
+
+/// Connect and map a device. With a fence, the mapping is installed only
+/// if the fence still allows it, and the lane hold it was installed under
+/// is returned; `Ok(None)` means the fence turned the connect away.
 async fn connect_backend_device_inner(
     runtime: &DiscoveryRuntime,
     backend_id: &str,
     device_id: DeviceId,
     layout_device_id: &str,
     timeout: Option<Duration>,
-) -> Result<(), DeviceError> {
+    fence: Option<&ConnectFence>,
+) -> Result<Option<LaneHold>, DeviceError> {
     let io = {
         let manager = runtime.backend_manager.lock().await;
         manager
@@ -208,6 +246,19 @@ async fn connect_backend_device_inner(
         Some(timeout) => io.connect_with_timeout(device_id, timeout).await?,
         None => io.connect(device_id).await?,
     };
+    let publication = match fence {
+        None => None,
+        Some(fence) => match fence.check(runtime).await {
+            FenceCheck::Publish(hold) => Some(hold),
+            FenceCheck::Yield => return Ok(None),
+            FenceCheck::TearDown => {
+                if let Err(error) = io.disconnect(device_id).await {
+                    debug!(%device_id, %error, "failed to close a superseded connect");
+                }
+                return Ok(None);
+            }
+        },
+    };
     let frame_sink = io.frame_sink(device_id);
 
     let mut manager = runtime.backend_manager.lock().await;
@@ -218,7 +269,7 @@ async fn connect_backend_device_inner(
         backend_id.to_owned(),
         device_id,
     );
-    Ok(())
+    Ok(publication)
 }
 
 /// Hand the backend the descriptor it needs before a connect. The scan
