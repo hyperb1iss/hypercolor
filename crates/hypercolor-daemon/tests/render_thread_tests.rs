@@ -2501,6 +2501,148 @@ async fn multi_zone_scene_publishes_authoritative_canvas_and_scene_canvas() {
     }
 }
 
+/// Two zones whose outputs sit at the same scene position each keep their
+/// own color on the GPU compositor: LEDs sample each zone's own texture, not
+/// the composited scene (Spec 86, Spec 64 §2.3).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_scene_samples_overlapping_zones_from_their_own_textures() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut scene = make_scene("Overlapping Zones");
+    scene.zones = overlapping_zones(solid_id);
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let frame = wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([255, 0, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 0, 255])
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert_eq!(zone_led(&frame, "zone_red"), Some([255, 0, 0]));
+    assert_eq!(zone_led(&frame, "zone_blue"), Some([0, 0, 255]));
+}
+
+/// A transition out of a multi-zone scene blends every LED from its own old
+/// color, even where zones overlap: the red zone's LED fades toward green
+/// without passing through the blue zone composited over it (Spec 86 §4.1).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_transition_out_of_overlapping_zones_blends_each_led_from_its_own_color() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut zoned = make_scene("Overlapping Zones");
+    zoned.transition.duration_ms = 0;
+    zoned.zones = overlapping_zones(solid_id);
+    zoned.unassigned_behavior = UnassignedBehavior::Off;
+    let mut single = make_scene("Single Zone");
+    single.transition.duration_ms = 60_000;
+    single.zones = vec![primary_zone(
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        test_layout(vec![
+            point_zone("zone_red", "mock:red", 0.5, 0.5),
+            point_zone("zone_blue", "mock:blue", 0.5, 0.5),
+        ]),
+    )];
+    single.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![zoned.clone(), single.clone()], zoned.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([255, 0, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 0, 255])
+    })
+    .await;
+
+    activate_render_scene(&state, single.id).await;
+    let blended = wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red").is_some_and(|color| color[1] > 0 && color != [0, 255, 0])
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    let red = zone_led(&blended, "zone_red").expect("the red zone's LED should publish");
+    let blue = zone_led(&blended, "zone_blue").expect("the blue zone's LED should publish");
+    assert_eq!(
+        red[2], 0,
+        "the red zone's LED blended through blue: {red:?}"
+    );
+    assert!(
+        red[0] > 0,
+        "the red zone's LED lost its own base color: {red:?}"
+    );
+    assert_eq!(
+        blue[0], 0,
+        "the blue zone's LED blended through red: {blue:?}"
+    );
+}
+
+#[cfg(feature = "wgpu")]
+fn overlapping_zones(solid_id: EffectId) -> Vec<Zone> {
+    vec![
+        custom_zone(
+            "Red",
+            solid_id,
+            solid_color_controls(255, 0, 0),
+            test_layout(vec![point_zone("zone_red", "mock:red", 0.5, 0.5)]),
+        ),
+        custom_zone(
+            "Blue",
+            solid_id,
+            solid_color_controls(0, 0, 255),
+            test_layout(vec![point_zone("zone_blue", "mock:blue", 0.5, 0.5)]),
+        ),
+    ]
+}
+
+#[cfg(feature = "wgpu")]
+fn zone_led(frame: &FrameData, zone_id: &str) -> Option<[u8; 3]> {
+    frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == zone_id)
+        .and_then(|zone| zone.colors.first().copied())
+}
+
 #[tokio::test]
 async fn late_zone_canvas_subscribers_see_last_display_face_frame() {
     let state = make_render_state(

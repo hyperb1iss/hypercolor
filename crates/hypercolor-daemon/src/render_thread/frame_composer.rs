@@ -44,6 +44,9 @@ pub(crate) struct RenderStageStats {
     pub(crate) zone_canvases: Vec<(ZoneId, ProducerFrame)>,
     pub(crate) active_display_zone_ids: Vec<ZoneId>,
     pub(crate) led_sampling_strategy: LedSamplingStrategy,
+    /// A single-zone scene's own pre-transition frame, kept so a transition
+    /// out of a multi-zone scene can sample it instead of the crossfade.
+    pub(crate) led_transition_source: Option<ProducerFrame>,
     pub(crate) producer_render_us: u32,
     pub(crate) producer_scene_compose_us: u32,
     pub(crate) sampled_us: u32,
@@ -321,6 +324,7 @@ impl ComposeContext<'_> {
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
                 self.scene_snapshot.spatial_engine.clone(),
             ),
+            led_transition_source: None,
             producer_render_us: 0,
             producer_scene_compose_us: 0,
             sampled_us: 0,
@@ -355,6 +359,14 @@ impl ComposeContext<'_> {
                 self.publish_effect_recovered();
                 self.publish_layer_runtime_events();
                 let scene_frame = render_zone_result.scene_frame.clone();
+                let led_transition_source = led_transition_source(
+                    &render_zone_result.led_sampling_strategy,
+                    &scene_frame,
+                    self.scene_snapshot
+                        .scene_runtime
+                        .active_transition
+                        .is_some(),
+                );
                 let composition_start = Instant::now();
                 let compiled_plan = self.compose.composition_planner.compile_primary_frame(
                     self.state.canvas_dims.width(),
@@ -440,6 +452,7 @@ impl ComposeContext<'_> {
                     zone_canvases: render_zone_result.zone_canvases,
                     active_display_zone_ids: render_zone_result.active_display_zone_ids,
                     led_sampling_strategy: render_zone_result.led_sampling_strategy,
+                    led_transition_source,
                     producer_render_us: render_zone_result.render_us,
                     producer_scene_compose_us: render_zone_result.scene_compose_us,
                     sampled_us: render_zone_result.sample_us,
@@ -521,6 +534,7 @@ impl ComposeContext<'_> {
                     led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
                         self.scene_snapshot.spatial_engine.clone(),
                     ),
+                    led_transition_source: None,
                     producer_render_us: 0,
                     producer_scene_compose_us: 0,
                     sampled_us: 0,
@@ -839,6 +853,18 @@ fn native_copy_failure_retains_last_frame(screen_queue: &ProducerQueue) -> bool 
 
 #[cfg(test)]
 mod tests;
+
+/// The single-zone scene frame a transition out of a multi-zone scene
+/// samples instead of the crossfade. Kept only while a scene transition is
+/// active, so ordinary frames never pay for the copy.
+fn led_transition_source(
+    strategy: &LedSamplingStrategy,
+    scene_frame: &ProducerFrame,
+    transition_active: bool,
+) -> Option<ProducerFrame> {
+    (transition_active && matches!(strategy, LedSamplingStrategy::SparkleFlinger(_)))
+        .then(|| scene_frame.clone())
+}
 
 #[cfg(test)]
 mod h21_tests {

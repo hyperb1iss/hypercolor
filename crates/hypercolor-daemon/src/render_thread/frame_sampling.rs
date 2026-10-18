@@ -24,10 +24,12 @@ use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_composer::RenderStageStats;
 use super::pipeline_runtime::{RetainedZoneFrame, SamplingRuntime, SceneTransitionKey};
-use super::scene_snapshot::{FrameSceneSnapshot, SceneTransitionSnapshot};
 #[cfg(feature = "wgpu")]
-use super::sparkleflinger::ZoneTextureSample;
+use super::producer_queue::{GpuTextureFrame, ProducerFrame};
+use super::scene_snapshot::{FrameSceneSnapshot, SceneTransitionSnapshot};
 use super::sparkleflinger::{PendingZoneSampling, ZoneSamplingDispatch, ZoneSamplingRequest};
+#[cfg(feature = "wgpu")]
+use super::sparkleflinger::{SparkleFlinger, ZoneTextureSample};
 use super::{RenderThreadState, micros_between};
 
 /// Per-zone LED sampling for a multi-zone scene on the GPU backend: each
@@ -616,6 +618,45 @@ pub(crate) fn resolve_led_sampling(
         | LedSamplingStrategy::RetainedPreSampled { .. }
         | LedSamplingStrategy::ReusePublished(_) => None,
     };
+    // Whether this frame renders a multi-zone scene; retained and reused
+    // frames say nothing new.
+    let multi_zone_frame = match &render_stage.led_sampling_strategy {
+        LedSamplingStrategy::PreSampled(_) => Some(true),
+        #[cfg(feature = "wgpu")]
+        LedSamplingStrategy::SparkleFlingerZones(_) => Some(true),
+        LedSamplingStrategy::SparkleFlinger(_) => Some(false),
+        LedSamplingStrategy::RetainedPreSampled { .. } | LedSamplingStrategy::ReusePublished(_) => {
+            None
+        }
+    };
+    let transition_active = scene_snapshot.scene_runtime.active_transition.is_some();
+    // A transition out of a multi-zone scene must not sample the crossfade,
+    // whose base is a composited preview with overlap baked in: a single-zone
+    // incoming scene samples its own frame and blends in LED space instead.
+    #[cfg(feature = "wgpu")]
+    let gpu_sample_target = match gpu_sample_target {
+        Some(GpuSampleTarget::Output {
+            engine,
+            prepared_zones,
+        }) if transition_active && sampling.zone_transition_planner.last_stable_multi_zone => {
+            match render_stage
+                .led_transition_source
+                .as_ref()
+                .and_then(|frame| one_zone_transition_set(&engine, &prepared_zones, frame))
+            {
+                Some(set) => Some(GpuSampleTarget::Zones(Arc::new(set))),
+                None => Some(GpuSampleTarget::Output {
+                    engine,
+                    prepared_zones,
+                }),
+            }
+        }
+        other => other,
+    };
+    #[cfg(feature = "wgpu")]
+    let samples_zone_set = matches!(gpu_sample_target, Some(GpuSampleTarget::Zones(_)));
+    #[cfg(not(feature = "wgpu"))]
+    let samples_zone_set = false;
     let mut gpu_zone_sampling = false;
     let mut gpu_sample_deferred = false;
     let gpu_sample_stale = stale_deferred_sampling.is_some();
@@ -995,14 +1036,30 @@ pub(crate) fn resolve_led_sampling(
         );
     }
 
-    if let Some(transition) = scene_snapshot.scene_runtime.active_transition.as_ref()
-        && uses_scene_sampled_zones
-        && let Some(transition_key) = scene_transition_key(transition)
-        && let Some(current_zones) = current_scene_sampled_zones(
+    let led_space_transition_zones = if !transition_active {
+        None
+    } else if uses_scene_sampled_zones {
+        current_scene_sampled_zones(
             &render_stage.led_sampling_strategy,
             sampling.output_artifacts.zones(),
         )
         .map(<[ZoneColors]>::to_vec)
+    } else if samples_zone_set {
+        zone_set_transition_zones(
+            sampling,
+            gpu_sample_target.as_ref(),
+            gpu_zone_sampling
+                && !matches!(
+                    render_stage.led_sampling_strategy,
+                    LedSamplingStrategy::ReusePublished(_)
+                ),
+        )
+    } else {
+        None
+    };
+    if let Some(transition) = scene_snapshot.scene_runtime.active_transition.as_ref()
+        && let Some(transition_key) = scene_transition_key(transition)
+        && let Some(current_zones) = led_space_transition_zones
     {
         let transition_blend_start = Instant::now();
         if sampling.zone_transition_planner.active_transition != Some(transition_key) {
@@ -1062,7 +1119,7 @@ pub(crate) fn resolve_led_sampling(
     if scene_snapshot.scene_runtime.active_transition.is_none() {
         sampling
             .zone_transition_planner
-            .record_stable(Arc::clone(&layout));
+            .record_stable(Arc::clone(&layout), multi_zone_frame);
     }
 
     LedSamplingOutcome {
@@ -1078,6 +1135,86 @@ pub(crate) fn resolve_led_sampling(
         reuses_published_frame,
         zone_shape_signature,
     }
+}
+
+/// The incoming scene's LED colors for a transition blend when it samples a
+/// zone set: this frame's fresh sample, remembered for deferred frames, or
+/// the latest one when this frame's sample is still in flight.
+#[cfg(feature = "wgpu")]
+fn zone_set_transition_zones(
+    sampling: &mut SamplingRuntime<'_>,
+    target: Option<&GpuSampleTarget>,
+    fresh: bool,
+) -> Option<Vec<ZoneColors>> {
+    let target = target?;
+    if fresh {
+        let zones = sampling.output_artifacts.zones();
+        let latest = &mut sampling.zone_transition_planner.latest_zone_set_sample;
+        latest.clear();
+        latest.extend_from_slice(zones);
+        return Some(zones.to_vec());
+    }
+    let latest = &sampling.zone_transition_planner.latest_zone_set_sample;
+    (!latest.is_empty() && target.output_shape_matches(latest)).then(|| latest.clone())
+}
+
+#[cfg(not(feature = "wgpu"))]
+fn zone_set_transition_zones(
+    _sampling: &mut SamplingRuntime<'_>,
+    _target: Option<&GpuSampleTarget>,
+    _fresh: bool,
+) -> Option<Vec<ZoneColors>> {
+    None
+}
+
+/// A single-zone scene's own frame as a one-zone set, for a transition out of
+/// a multi-zone scene: GPU frames sample on the GPU, CPU-backed frames on the
+/// CPU where their pixels already are. A GPU copy drops the snapshot lease,
+/// because the dispatch that reads it is queued this frame, before the
+/// snapshot can be reused.
+#[cfg(feature = "wgpu")]
+fn one_zone_transition_set(
+    engine: &SpatialEngine,
+    prepared_zones: &Arc<[PreparedZonePlan]>,
+    frame: &ProducerFrame,
+) -> Option<ZoneSamplingSet> {
+    let (source, gpu_textures) = match frame {
+        ProducerFrame::GpuTexture(texture)
+            if SparkleFlinger::gpu_samples_plan_modes(prepared_zones) =>
+        {
+            let texture = ZoneTextureSample {
+                frame: GpuTextureFrame {
+                    immutable_lease: None,
+                    ..texture.clone()
+                },
+                prepared_zones: Arc::clone(prepared_zones),
+            };
+            (ZoneSampleSource::Gpu, vec![texture])
+        }
+        ProducerFrame::GpuTexture(_) => return None,
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => return None,
+        cpu_frame => {
+            let canvas = match cpu_frame {
+                ProducerFrame::Canvas(canvas) => std::borrow::Cow::Borrowed(canvas),
+                ProducerFrame::Surface(surface) => {
+                    std::borrow::Cow::Owned(Canvas::from_published_surface(surface))
+                }
+                other => std::borrow::Cow::Owned(other.clone().into_cpu_render_frame()?.0),
+            };
+            let mut colors = Vec::new();
+            engine.try_sample_into(&canvas, &mut colors).ok()?;
+            (ZoneSampleSource::Cpu(colors), Vec::new())
+        }
+    };
+    Some(ZoneSamplingSet {
+        layout: engine.layout(),
+        zones: vec![ZoneSampling {
+            prepared_zones: Arc::clone(prepared_zones),
+            source,
+        }],
+        gpu_textures,
+    })
 }
 
 #[cfg(test)]

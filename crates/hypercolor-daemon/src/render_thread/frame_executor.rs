@@ -1034,6 +1034,7 @@ mod tests {
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(SpatialEngine::new(
                 sample_layout(&[]),
             )),
+            led_transition_source: None,
             producer_render_us: 0,
             producer_scene_compose_us: 0,
             sampled_us: 0,

@@ -1775,6 +1775,14 @@ pub(crate) struct ZoneTransitionPlanner {
     /// captures them lazily from the published frame when a transition starts
     /// — one zone deep copy per transition instead of one per stable frame.
     pub(crate) last_stable_layout: Option<Arc<SpatialLayout>>,
+    /// Whether the most recent stable frame came from a multi-zone scene,
+    /// whose composited preview is not a faithful LED base: a transition out
+    /// of it blends in LED space whatever the incoming scene is (Spec 86
+    /// §4.1).
+    pub(crate) last_stable_multi_zone: bool,
+    /// The latest fresh, fully assembled sample of the incoming zone set
+    /// during a transition, which deferred frames blend from.
+    pub(crate) latest_zone_set_sample: Vec<ZoneColors>,
 }
 
 impl ZoneTransitionPlanner {
@@ -1783,9 +1791,13 @@ impl ZoneTransitionPlanner {
         self.transition_base = None;
     }
 
-    pub(crate) fn record_stable(&mut self, layout: Arc<SpatialLayout>) {
+    pub(crate) fn record_stable(&mut self, layout: Arc<SpatialLayout>, multi_zone: Option<bool>) {
         self.clear();
         self.last_stable_layout = Some(layout);
+        if let Some(multi_zone) = multi_zone {
+            self.last_stable_multi_zone = multi_zone;
+        }
+        self.latest_zone_set_sample.clear();
     }
 }
 
