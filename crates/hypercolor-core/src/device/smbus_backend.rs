@@ -114,6 +114,7 @@ impl DeviceFrameSink for SmBusDeviceFrameSink {
             None,
         )
         .await
+        .map(|_| ())
     }
 
     async fn deliver_colors_shared_observed(
@@ -122,8 +123,8 @@ impl DeviceFrameSink for SmBusDeviceFrameSink {
         colors: Arc<Vec<[u8; 3]>>,
         observer: Arc<dyn DeviceDeliveryObserver>,
     ) -> DeviceDeliveryAck {
-        let payload_bytes = colors.len().saturating_mul(3);
         let started_at = Instant::now();
+        let mut payload_bytes = 0;
         let result = write_connected_device(
             self.device_id,
             self.device.as_ref(),
@@ -131,7 +132,15 @@ impl DeviceFrameSink for SmBusDeviceFrameSink {
             Some((id, observer.as_ref())),
         )
         .await
-        .map(|()| DeviceWriteOutcome::Sent);
+        .map(|write| match write {
+            FrameWrite::Unchanged => DeviceWriteOutcome::SuppressedDuplicate,
+            FrameWrite::Written {
+                payload_bytes: bytes,
+            } => {
+                payload_bytes = bytes;
+                DeviceWriteOutcome::Sent
+            }
+        });
         DeviceDeliveryAck::from_write_result(id, payload_bytes, started_at.elapsed(), result)
     }
 }
@@ -253,7 +262,9 @@ impl DeviceBackend for SmBusBackend {
             .ok_or_else(|| DeviceError::Disconnected {
                 device: id.to_string(),
             })?;
-        write_connected_device(*id, device.as_ref(), colors, None).await
+        write_connected_device(*id, device.as_ref(), colors, None)
+            .await
+            .map(|_| ())
     }
 
     async fn connected_device_info(
@@ -346,12 +357,24 @@ async fn connect_pending_device(
     })
 }
 
+/// What one frame write put on the bus.
+#[derive(Debug, Clone, Copy)]
+enum FrameWrite {
+    /// The protocol encoded nothing to send, so no transport I/O ran.
+    Unchanged,
+    /// The transport wrote the frame's commands.
+    Written {
+        /// Pixel bytes the commands carried.
+        payload_bytes: usize,
+    },
+}
+
 async fn write_connected_device(
     device_id: DeviceId,
     device: &ConnectedSmBusDevice,
     colors: &[[u8; 3]],
     delivery: Option<(DeviceDeliveryId, &dyn DeviceDeliveryObserver)>,
-) -> Result<(), DeviceError> {
+) -> Result<FrameWrite, DeviceError> {
     if !device.connected.load(Ordering::Acquire) {
         return Err(DeviceError::Disconnected {
             device: device_id.to_string(),
@@ -369,23 +392,32 @@ async fn write_connected_device(
         frame_commands,
     } = &mut *io;
     protocol.encode_frame_into(colors, frame_commands);
+    if frame_commands.is_empty() {
+        return Ok(FrameWrite::Unchanged);
+    }
+    let payload_bytes = protocol
+        .written_frame_bytes()
+        .unwrap_or_else(|| colors.len().saturating_mul(3));
     if let Some((id, observer)) = delivery {
         observer.transport_started(id);
     }
-    run_commands(
+    let result = run_commands(
         protocol.as_ref(),
         transport.as_ref(),
         frame_commands.as_slice(),
     )
-    .await
-    .map_err(|error| {
-        map_hal_transport_error(
-            device_id,
-            SMBUS_OUTPUT_BACKEND_ID,
-            DeviceTransportOperation::Write,
-            &error,
-        )
-    })
+    .await;
+    protocol.frame_write_finished(result.is_ok());
+    result
+        .map(|()| FrameWrite::Written { payload_bytes })
+        .map_err(|error| {
+            map_hal_transport_error(
+                device_id,
+                SMBUS_OUTPUT_BACKEND_ID,
+                DeviceTransportOperation::Write,
+                &error,
+            )
+        })
 }
 
 async fn run_init_sequence(

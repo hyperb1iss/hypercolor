@@ -2,7 +2,7 @@
 
 use hypercolor_types::device::SegmentInfo;
 
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 use tracing::warn;
@@ -64,11 +64,27 @@ pub const ENE_DRAM_I2C_ADDRESS_REGISTER: u16 = 0x80F9;
 /// ENE maximum `SMBus` block-write payload.
 pub const ENE_BLOCK_WRITE_LIMIT: usize = 3;
 
+/// Bytes of one LED in the direct-color register range.
+const ENE_LED_BYTES: usize = 3;
+
+const _: () = assert!(
+    ENE_LED_BYTES == ENE_BLOCK_WRITE_LIMIT,
+    "per-LED direct writes rely on one block chunk carrying exactly one LED"
+);
+
 /// ENE simple GPU magic word.
 pub const AURA_GPU_MAGIC: u16 = 0x1589;
 
 /// Delay between `SMBus` operations recommended by the spec.
 pub const ENE_OPERATION_DELAY: Duration = Duration::from_millis(1);
+
+/// Frames between full writes while the controller confirms every frame.
+///
+/// A controller that resets without failing a write, across host sleep or
+/// when other software takes it over, would otherwise keep stale colors on
+/// every LED a frame leaves unchanged. Every this-many frames the shown
+/// colors are treated as unknown and every LED is written again.
+pub const ENE_FULL_WRITE_INTERVAL: u32 = 60;
 
 const ENE_FIRMWARE_NAME_LEN: usize = 16;
 const ENE_CONFIG_TABLE_LEN: usize = 64;
@@ -96,6 +112,64 @@ struct AuraSmBusState {
     variant: Option<EneFirmwareVariant>,
     led_count: u32,
     supports_mode_14: bool,
+}
+
+/// What the controller is known to show, so a frame writes only the LEDs
+/// it changes.
+///
+/// Anything that leaves the shown colors in doubt forgets them: a failed or
+/// unreported write, the init sequence, and every
+/// [`ENE_FULL_WRITE_INTERVAL`]th frame. A command that changes what the
+/// controller displays outside a frame, such as a mode or brightness write,
+/// has to forget them too.
+#[derive(Debug, Default)]
+struct FrameBaseline {
+    /// Colors the controller last accepted, `None` when unknown.
+    shown: Option<Vec<[u8; 3]>>,
+    /// The frame most recently encoded, until its write is reported.
+    staged: Option<Vec<[u8; 3]>>,
+    /// Pixel bytes the most recently encoded frame writes.
+    written_frame_bytes: usize,
+    /// Frames encoded since the last one that started from unknown colors.
+    frames_since_full_write: u32,
+}
+
+impl FrameBaseline {
+    fn forget(&mut self) {
+        self.shown = None;
+        self.staged = None;
+    }
+
+    /// Start encoding a frame. A staged frame nobody reported on may have
+    /// reached the controller in part, so the shown colors become unknown.
+    fn begin_frame(&mut self) {
+        if self.staged.take().is_some() {
+            self.shown = None;
+        }
+        self.frames_since_full_write = self.frames_since_full_write.saturating_add(1);
+        if self.frames_since_full_write >= ENE_FULL_WRITE_INTERVAL {
+            self.shown = None;
+        }
+        if self.shown.is_none() {
+            self.frames_since_full_write = 0;
+        }
+        self.written_frame_bytes = 0;
+    }
+
+    fn needs_write(&self, colors: &[[u8; 3]], index: usize) -> bool {
+        self.shown
+            .as_ref()
+            .filter(|shown| shown.len() == colors.len())
+            .is_none_or(|shown| shown.get(index) != colors.get(index))
+    }
+
+    fn finish(&mut self, succeeded: bool) {
+        match (succeeded, self.staged.take()) {
+            (true, Some(staged)) => self.shown = Some(staged),
+            (true, None) => {}
+            (false, _) => self.shown = None,
+        }
+    }
 }
 
 /// Byte-swap a 16-bit ENE register address for the indirect address port.
@@ -361,6 +435,34 @@ pub fn ene_write_register_block(register: u16, data: &[u8]) -> Vec<SmBusOperatio
     operations
 }
 
+/// Build the direct-color write for one LED using the firmware's register
+/// layout.
+///
+/// Matches the chunk that LED gets in [`ene_direct_color_writes`]. Returns an
+/// empty vec, logged at warn level, if the LED's register would overflow the
+/// 16-bit ENE address space.
+#[must_use]
+pub fn ene_direct_led_write(
+    variant: EneFirmwareVariant,
+    index: usize,
+    color: [u8; 3],
+) -> Vec<SmBusOperation> {
+    let register = index
+        .checked_mul(ENE_LED_BYTES)
+        .and_then(|offset| u16::try_from(offset).ok())
+        .and_then(|offset| variant.direct_reg.checked_add(offset));
+    let Some(register) = register else {
+        warn!(
+            direct_reg = %format_args!("{:#06X}", variant.direct_reg),
+            index,
+            "ENE LED register overflows u16::MAX; dropping write"
+        );
+        return Vec::new();
+    };
+
+    ene_write_register_block(register, &ene_permute_color(color[0], color[1], color[2]))
+}
+
 /// Build a direct-color write sequence using the firmware's register layout.
 #[must_use]
 pub fn ene_direct_color_writes(
@@ -393,8 +495,14 @@ pub const fn simple_gpu_magic(hi: u8, lo: u8) -> u16 {
 }
 
 /// ASUS Aura ENE `SMBus` protocol with runtime firmware/config parsing.
+///
+/// Frames write only the LEDs that changed since the last frame the
+/// controller accepted, which the backend confirms through
+/// [`Protocol::frame_write_finished`]. Without that confirmation every frame
+/// is written in full.
 pub struct AuraSmBusProtocol {
     state: RwLock<AuraSmBusState>,
+    baseline: Mutex<FrameBaseline>,
 }
 
 impl AuraSmBusProtocol {
@@ -403,7 +511,12 @@ impl AuraSmBusProtocol {
     pub fn new() -> Self {
         Self {
             state: RwLock::new(AuraSmBusState::default()),
+            baseline: Mutex::new(FrameBaseline::default()),
         }
+    }
+
+    fn baseline(&self) -> std::sync::MutexGuard<'_, FrameBaseline> {
+        self.baseline.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn command(operations: &[SmBusOperation], expects_response: bool) -> ProtocolCommand {
@@ -459,6 +572,7 @@ impl Protocol for AuraSmBusProtocol {
     }
 
     fn init_sequence(&self) -> Vec<ProtocolCommand> {
+        self.baseline().forget();
         vec![
             Self::command(
                 &ene_read_register_range(0x1000, ENE_FIRMWARE_NAME_LEN),
@@ -483,6 +597,8 @@ impl Protocol for AuraSmBusProtocol {
     }
 
     fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+        let mut baseline = self.baseline();
+        baseline.begin_frame();
         let Some(variant) = self.firmware_variant() else {
             commands.clear();
             return;
@@ -492,10 +608,19 @@ impl Protocol for AuraSmBusProtocol {
         if variant.frame_apply_register.is_some() {
             operations.extend(ene_write_register(ENE_DIRECT_MODE_REGISTER, ENE_APPLY_VAL));
         }
-        operations.extend(ene_direct_color_writes(variant, colors));
-        if let Some(register) = variant.frame_apply_register {
+        let mut written_leds = 0_usize;
+        for (index, color) in colors.iter().enumerate() {
+            if baseline.needs_write(colors, index) {
+                operations.extend(ene_direct_led_write(variant, index, *color));
+                written_leds += 1;
+            }
+        }
+        if written_leds > 0
+            && let Some(register) = variant.frame_apply_register
+        {
             operations.extend(ene_write_register(register, ENE_APPLY_VAL));
         }
+        baseline.written_frame_bytes = written_leds * ENE_LED_BYTES;
         let mut command_buffer = CommandBuffer::new(commands);
         if operations.is_empty() {
             command_buffer.finish();
@@ -510,7 +635,16 @@ impl Protocol for AuraSmBusProtocol {
                 TransferType::Primary,
             );
             command_buffer.finish();
+            baseline.staged = Some(colors.to_vec());
         }
+    }
+
+    fn written_frame_bytes(&self) -> Option<usize> {
+        Some(self.baseline().written_frame_bytes)
+    }
+
+    fn frame_write_finished(&self, succeeded: bool) {
+        self.baseline().finish(succeeded);
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

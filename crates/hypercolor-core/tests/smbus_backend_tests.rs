@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use hypercolor_core::device::{SmBusBackend, SmBusScanner};
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceLifecyclePolicy, DiscoveredDevice, DiscoveryConnectBehavior,
+    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceDeliveryStatus, DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice,
+    DiscoveryConnectBehavior,
 };
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use hypercolor_hal::SmBusProbeError;
@@ -799,6 +801,176 @@ async fn smbus_bus_arbiter_retains_ownership_after_waiter_cancellation() {
         .await
         .expect("second transaction should proceed after the first completes")
         .expect("second transaction should succeed");
+}
+
+#[derive(Default)]
+struct CountingDeliveryObserver {
+    started: AtomicUsize,
+}
+
+impl DeviceDeliveryObserver for CountingDeliveryObserver {
+    fn transport_started(&self, _id: DeviceDeliveryId) {
+        self.started.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct ScriptedDram {
+    backend: SmBusBackend,
+    device_id: DeviceId,
+    sink: Arc<dyn DeviceFrameSink>,
+    packets: Arc<StdMutex<Vec<Vec<u8>>>>,
+    observer: Arc<CountingDeliveryObserver>,
+    sequence: u64,
+}
+
+impl ScriptedDram {
+    /// Connect one DIMM whose frame sends succeed or fail per `frame_sends`
+    /// in order, then succeed.
+    async fn connect(frame_sends: Vec<bool>) -> Self {
+        let device_id = DeviceId::new();
+        let packets = Arc::new(StdMutex::new(Vec::<Vec<u8>>::new()));
+        let backend = SmBusBackend::with_transport_factory({
+            let packets = Arc::clone(&packets);
+            move |_bus_path, _address, _bus_arbiter| {
+                let mut send_results = vec![Ok(())];
+                send_results.extend(frame_sends.iter().map(|&succeeds| {
+                    if succeeds {
+                        Ok(())
+                    } else {
+                        Err(TransportError::IoError {
+                            detail: "scripted frame failure".to_owned(),
+                        })
+                    }
+                }));
+                Ok(Box::new(ScriptedTransport::new(
+                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
+                    send_results,
+                    Arc::clone(&packets),
+                    Arc::new(AtomicUsize::new(0)),
+                )))
+            }
+        });
+        backend
+            .adopt_device(&discovered_smbus_device(device_id))
+            .expect("backend should adopt the DIMM");
+        backend
+            .connect(&device_id)
+            .await
+            .expect("DIMM should connect");
+        let sink = backend
+            .frame_sink(&device_id)
+            .expect("DIMM should expose a frame sink");
+        packets
+            .lock()
+            .expect("packet log lock should not be poisoned")
+            .clear();
+
+        Self {
+            backend,
+            device_id,
+            sink,
+            packets,
+            observer: Arc::new(CountingDeliveryObserver::default()),
+            sequence: 0,
+        }
+    }
+
+    async fn deliver(&mut self, colors: Vec<[u8; 3]>) -> DeviceDeliveryAck {
+        self.sequence += 1;
+        let observer: Arc<dyn DeviceDeliveryObserver> = self.observer.clone();
+        self.sink
+            .deliver_colors_shared_observed(
+                DeviceDeliveryId {
+                    queue_generation: 1,
+                    sequence: self.sequence,
+                },
+                Arc::new(colors),
+                observer,
+            )
+            .await
+    }
+
+    fn take_frames(&self) -> Vec<Vec<SmBusOperation>> {
+        std::mem::take(
+            &mut *self
+                .packets
+                .lock()
+                .expect("packet log lock should not be poisoned"),
+        )
+        .iter()
+        .map(|packet| decode_operations(packet).expect("frame packet should decode"))
+        .collect()
+    }
+}
+
+fn block_writes(operations: &[SmBusOperation]) -> usize {
+    operations
+        .iter()
+        .filter(|operation| matches!(operation, SmBusOperation::WriteBlockData { .. }))
+        .count()
+}
+
+fn steady_dram_frame() -> Vec<[u8; 3]> {
+    vec![[0x10, 0x20, 0x30]; 8]
+}
+
+#[tokio::test]
+async fn smbus_backend_writes_only_changed_leds_after_a_confirmed_frame() {
+    let mut dram = ScriptedDram::connect(Vec::new()).await;
+
+    let first = dram.deliver(steady_dram_frame()).await;
+    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
+    assert_eq!(first.completed_payload_bytes, 24);
+    let frames = dram.take_frames();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(block_writes(&frames[0]), 8);
+
+    let mut changed = steady_dram_frame();
+    changed[3] = [0x01, 0x02, 0x03];
+    let second = dram.deliver(changed).await;
+    assert_eq!(second.status, DeviceDeliveryStatus::Completed);
+    assert_eq!(
+        second.completed_payload_bytes, 3,
+        "the acknowledgement should count only the LED that was written"
+    );
+    let frames = dram.take_frames();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(block_writes(&frames[0]), 1);
+    assert_eq!(dram.observer.started.load(Ordering::SeqCst), 2);
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
+}
+
+#[tokio::test]
+async fn smbus_backend_rewrites_every_led_after_a_failed_write() {
+    let mut dram = ScriptedDram::connect(vec![true, false]).await;
+    let mut changed = steady_dram_frame();
+    changed[6] = [0xFF, 0xFF, 0xFF];
+
+    let first = dram.deliver(steady_dram_frame()).await;
+    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
+    let failed = dram.deliver(changed.clone()).await;
+    assert_eq!(failed.status, DeviceDeliveryStatus::Failed);
+    let retried = dram.deliver(changed).await;
+    assert_eq!(retried.status, DeviceDeliveryStatus::Completed);
+
+    let frames = dram.take_frames();
+    assert_eq!(frames.len(), 3);
+    assert_eq!(block_writes(&frames[1]), 1, "the failed frame was a delta");
+    assert_eq!(
+        block_writes(&frames[2]),
+        8,
+        "a failed write leaves the DIMM's colors unknown, so every LED is rewritten"
+    );
+    assert_eq!(retried.completed_payload_bytes, 24);
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
 }
 
 fn discovered_smbus_device(device_id: DeviceId) -> DiscoveredDevice {
