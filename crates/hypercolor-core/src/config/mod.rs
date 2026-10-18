@@ -1148,6 +1148,13 @@ fn migrate_v5_to_v6(document: &mut toml::Value) -> Result<()> {
     Ok(())
 }
 
+/// The oldest schema [`ConfigManager::parse_toml`] upgrades in memory.
+///
+/// The hand-migration for anything older lands the file here rather than
+/// on [`CURRENT_SCHEMA_VERSION`], so every migration in the chain still
+/// runs on it.
+const OLDEST_MIGRATED_SCHEMA_VERSION: u32 = 4;
+
 /// The refusal text for a config file this build cannot read.
 ///
 /// Old files get the exact hand-migration; new files get told to upgrade.
@@ -1156,22 +1163,26 @@ fn schema_mismatch_message(found: u32) -> String {
     if found > CURRENT_SCHEMA_VERSION {
         return format!(
             "config declares schema_version {found} but this build reads \
-             schema {CURRENT_SCHEMA_VERSION}: the file was written by a \
-             newer hypercolor. Upgrade hypercolor, or move the file aside \
-             to start from defaults. This build will not guess at a shape \
-             it does not know."
+             schemas {OLDEST_MIGRATED_SCHEMA_VERSION} through \
+             {CURRENT_SCHEMA_VERSION}: the file was written by a newer \
+             hypercolor. Upgrade hypercolor, or move the file aside to \
+             start from defaults. This build will not guess at a shape it \
+             does not know."
         );
     }
     format!(
         "config declares schema_version {found} but this build reads \
-         schema {CURRENT_SCHEMA_VERSION}; hypercolor no longer migrates \
-         older config files. Edit the file by hand, setting\n\n    \
-         schema_version = {CURRENT_SCHEMA_VERSION}\n\nand, when the file \
-         predates the interaction-route split, adding both routes under \
-         [input]:\n\n    daemon_route = \"merge\"\n    preview_route = \
-         \"browser\"\n\nWithout those two lines the version bump \
-         silently adopts the new \"host\" default for daemon_route. \
-         Moving the file aside starts from defaults instead."
+         schemas {OLDEST_MIGRATED_SCHEMA_VERSION} through \
+         {CURRENT_SCHEMA_VERSION}; hypercolor no longer migrates older \
+         config files. Edit the file by hand, setting\n\n    \
+         schema_version = {OLDEST_MIGRATED_SCHEMA_VERSION}\n\nand, when \
+         the file predates the interaction-route split, adding both routes \
+         under [input]:\n\n    daemon_route = \"merge\"\n    \
+         preview_route = \"browser\"\n\nWithout those two lines the \
+         version bump silently adopts the new \"host\" default for \
+         daemon_route. Hypercolor upgrades the edited file the rest of the \
+         way when it loads. Moving the file aside starts from defaults \
+         instead."
     )
 }
 
