@@ -2643,6 +2643,85 @@ fn zone_led(frame: &FrameData, zone_id: &str) -> Option<[u8; 3]> {
         .and_then(|zone| zone.colors.first().copied())
 }
 
+/// Studio's zone previews of a GPU multi-zone scene arrive at the demanded
+/// size with each zone's own pixels, scaled from that zone's GPU texture
+/// rather than materialized on the CPU (Spec 86 §5.2).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_scene_publishes_zone_previews_at_the_demanded_size() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut scene = make_scene("Zone Previews");
+    scene.zones = overlapping_zones(solid_id);
+    scene.zones[1].layout.canvas_width = 160;
+    scene.zones[1].layout.canvas_height = 100;
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    let red_zone = scene.zones[0].id;
+    let blue_zone = scene.zones[1].id;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    let mut previews_rx = state.preview_runtime.zone_preview_receiver();
+    previews_rx.update_demand(PreviewStreamDemand {
+        fps: 30,
+        format: PreviewPixelFormat::Rgb,
+        width: 32,
+        height: 20,
+    });
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let previews = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            {
+                let previews = previews_rx.borrow_and_update();
+                if previews.len() == 2
+                    && previews
+                        .iter()
+                        .all(|preview| (preview.frame.width, preview.frame.height) == (32, 20))
+                {
+                    break previews.clone();
+                }
+            }
+            previews_rx
+                .changed()
+                .await
+                .expect("zone preview stream should stay open");
+        }
+    })
+    .await
+    .expect("GPU zone previews should publish within timeout");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    for (zone_id, color) in [
+        (red_zone, Rgba::new(255, 0, 0, 255)),
+        (blue_zone, Rgba::new(0, 0, 255, 255)),
+    ] {
+        let preview = previews
+            .iter()
+            .find(|preview| preview.zone_id == zone_id)
+            .expect("every LED zone should publish a preview");
+        assert_eq!(preview.scene_id, scene.id);
+        assert_eq!((preview.frame.width, preview.frame.height), (32, 20));
+        assert_eq!(preview.frame.surface().get_pixel(0, 0), color);
+        assert_eq!(preview.frame.surface().get_pixel(31, 19), color);
+    }
+}
+
 #[tokio::test]
 async fn late_zone_canvas_subscribers_see_last_display_face_frame() {
     let state = make_render_state(

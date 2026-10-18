@@ -304,7 +304,7 @@ fn create_preview_scale_bind_group(
     })
 }
 
-pub(super) fn encode_preview_scale_params(
+pub(in crate::render_thread::sparkleflinger::gpu) fn encode_preview_scale_params(
     source_width: u32,
     source_height: u32,
     preview_width: u32,

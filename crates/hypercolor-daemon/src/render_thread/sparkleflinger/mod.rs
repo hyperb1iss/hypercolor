@@ -7,6 +7,7 @@ mod gpu_area_sat;
 #[cfg(feature = "wgpu")]
 mod gpu_sampling;
 mod transform;
+mod zone_preview;
 
 #[cfg(all(feature = "wgpu", feature = "allocation-contract-tests"))]
 #[doc(hidden)]
@@ -62,6 +63,7 @@ use crate::render_thread::sparkleflinger::gpu::{
 use crate::startup::StartupProgress;
 #[cfg(feature = "wgpu")]
 pub(crate) use gpu::ZoneTextureSample;
+pub(crate) use zone_preview::ZonePreviewStage;
 
 use super::producer_queue::ProducerFrame;
 

@@ -30,6 +30,9 @@ use super::scene_snapshot::{
 };
 use super::sparkleflinger::ComposedFrameSet;
 use super::unassigned_output::{UnassignedOutputPlanner, unassigned_behavior_generation};
+use super::zone_previews::{
+    ZonePreviewDemand, collect_gpu_zone_previews, stage_gpu_zone_previews, zone_preview_sources,
+};
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::OutputFrameSourceKind;
@@ -527,6 +530,18 @@ pub(crate) async fn execute_frame(
         let mut preview = render.preview_runtime();
         preview.advance_gpu_preview(&mut render_stage);
     }
+    let zone_preview_demand = ZonePreviewDemand::for_frame(
+        state,
+        &frame_loop.publication_cadence,
+        scene_snapshot.scene_runtime.active_scene_id,
+        scene_snapshot.elapsed_ms,
+    );
+    stage_gpu_zone_previews(
+        &mut render.sparkleflinger,
+        zone_preview_demand,
+        &render_stage.zone_canvases,
+        &render_stage.active_display_zone_ids,
+    );
     let sample_start = Instant::now();
     let preview_advance_us = micros_between(preview_advance_start, sample_start);
     let LedSamplingOutcome {
@@ -684,6 +699,12 @@ pub(crate) async fn execute_frame(
         let mut preview = render.preview_runtime();
         preview.finalize_gpu_preview(&mut render_stage);
     }
+    let gpu_zone_previews = collect_gpu_zone_previews(
+        &mut render.sparkleflinger,
+        zone_preview_demand,
+        &render_stage.zone_canvases,
+        &render_stage.active_display_zone_ids,
+    );
     let postprocess_us = micros_between(postprocess_start, Instant::now());
 
     let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
@@ -710,6 +731,7 @@ pub(crate) async fn execute_frame(
         frame_num_u32,
         u64_to_u32(scene_snapshot.elapsed_ms),
     );
+    let zone_preview_frames = zone_preview_sources(&render_stage.zone_canvases, &gpu_zone_previews);
     let publish_stats = publish_frame_updates(
         state,
         &mut frame_loop.publication_cadence,
@@ -726,7 +748,7 @@ pub(crate) async fn execute_frame(
             },
             scene_id: scene_snapshot.scene_runtime.active_scene_id,
             display_zone_frames: &render_stage.display_zone_frames,
-            zone_canvases: &render_stage.zone_canvases,
+            zone_canvases: &zone_preview_frames,
             active_display_zone_ids: &render_stage.active_display_zone_ids,
             frame_number: frame_num_u32,
             elapsed_ms: scene_snapshot.elapsed_ms,

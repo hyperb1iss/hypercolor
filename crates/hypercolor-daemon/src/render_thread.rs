@@ -52,6 +52,7 @@ mod screen_parity_diagnostics;
 #[doc(hidden)]
 pub mod sparkleflinger;
 mod unassigned_output;
+mod zone_previews;
 
 use std::any::Any;
 use std::sync::Arc;

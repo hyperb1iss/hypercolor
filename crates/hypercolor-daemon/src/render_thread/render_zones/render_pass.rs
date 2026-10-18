@@ -303,6 +303,9 @@ impl ZoneRuntime {
         if projected && !replayed {
             projected_scene.cpu_replay_complete = false;
         }
+        output
+            .rendered_zones
+            .push_fresh_scene_zone_frame(zone.id, held_zone_frame(&frame));
         projected_scene.zone_frames.push((zone.id, frame));
         Ok(())
     }

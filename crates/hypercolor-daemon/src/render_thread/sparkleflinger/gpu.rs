@@ -39,6 +39,7 @@ mod snapshot;
 mod source;
 mod submission;
 mod telemetry;
+mod zone_preview;
 
 #[cfg(test)]
 use canvas::GpuCanvasFallbackReason;
@@ -77,6 +78,7 @@ use screen_upload::{
 use source::{CachedSourceUpload, SourceCopyBindGroupCache};
 use submission::FrameInFlight;
 pub(crate) use telemetry::{GpuSparkleFlingerTelemetrySnapshot, record_gpu_display_finalize_latch};
+use zone_preview::GpuZonePreviewLane;
 
 pub(crate) fn gpu_sparkleflinger_telemetry_snapshot() -> GpuSparkleFlingerTelemetrySnapshot {
     telemetry::gpu_sparkleflinger_telemetry_snapshot()
@@ -205,6 +207,7 @@ pub(crate) struct GpuSparkleFlinger {
     media_texture_pools: HashMap<MediaUploadTextureKey, MediaUploadTexturePool>,
     media_texture_epoch: u64,
     projected_zone_snapshots: HashMap<ZoneId, Option<GpuProjectionSnapshot>>,
+    zone_preview_lanes: HashMap<ZoneId, GpuZonePreviewLane>,
     immutable_scene_snapshots: Vec<GpuImmutableSceneSnapshot>,
     current_output: Option<GpuCompositorOutputSurface>,
     cached_composition_key: Option<CachedReadbackKey>,
@@ -225,6 +228,8 @@ pub(crate) struct GpuSparkleFlinger {
         SubmissionRetirementQueue<wgpu::SubmissionIndex, NativeScreenTextureLease>,
     #[cfg(test)]
     superseded_frame_count: usize,
+    #[cfg(test)]
+    zone_preview_stage_count: usize,
     #[cfg(test)]
     preview_surface_allocation_count: usize,
     #[cfg(test)]

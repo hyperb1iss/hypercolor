@@ -9,7 +9,7 @@ mod readback_runtime;
 mod runtime;
 mod surfaces;
 
-use surfaces::encode_preview_scale_params;
+pub(super) use surfaces::encode_preview_scale_params;
 pub(super) use surfaces::{
     bypass_preview_surface, preview_request_matches_plan, preview_requires_scale,
 };

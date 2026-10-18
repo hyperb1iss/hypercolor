@@ -615,3 +615,5 @@ mod layers;
 mod projection;
 mod retention;
 mod scene_outputs;
+#[cfg(feature = "wgpu")]
+mod zone_previews;
