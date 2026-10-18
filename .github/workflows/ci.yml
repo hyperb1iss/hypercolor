@@ -1060,11 +1060,15 @@ jobs:
           -p hypercolor-daemon --no-default-features --features wgpu --lib
           -E 'test(gpu_pipeline_warmup_fits_daemon_startup_budget)' --no-capture
 
+      # Zone rendering and composer tests drive SparkleFlinger end to end
+      # (per-zone projection, zone texture sampling, zone previews), so they
+      # gate here too instead of skipping on adapterless runners.
       - name: Run SparkleFlinger GPU tests on WARP
         run: >-
           ./scripts/cargo-cache-build.ps1 cargo nextest run --locked --no-tests=fail --no-fail-fast
           -p hypercolor-daemon --no-default-features --features wgpu --lib
-          -E 'test(sparkleflinger::gpu::)
+          -E '(test(sparkleflinger::) or test(render_zones::tests::)
+          or test(frame_composer::))
           and not test(gpu_pipeline_warmup_fits_daemon_startup_budget)'
 
       - name: Save Rust build caches
