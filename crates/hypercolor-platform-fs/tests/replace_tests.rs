@@ -2,7 +2,9 @@ use std::fs;
 
 #[cfg(unix)]
 use hypercolor_platform_fs::ExclusiveDirectory;
-use hypercolor_platform_fs::{durable_replace, replace_file};
+use hypercolor_platform_fs::{
+    durable_replace, open_regular_no_follow_for_sync, rename_replacing, replace_file,
+};
 
 #[cfg(unix)]
 fn acquire(directory: &std::path::Path) -> ExclusiveDirectory {
@@ -39,6 +41,38 @@ fn failed_replacement_preserves_existing_destination() {
     fs::write(&destination, b"old").expect("write destination");
 
     durable_replace(&source, &destination).expect_err("missing source must fail");
+
+    assert_eq!(fs::read(&destination).expect("read destination"), b"old");
+}
+
+#[test]
+fn rename_replacing_swaps_the_destination_and_consumes_the_source() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+    let source = directory.path().join("source.tmp");
+    let destination = directory.path().join("state.json");
+    fs::write(&source, b"new").expect("write source");
+    fs::write(&destination, b"old").expect("write destination");
+
+    rename_replacing(&source, &destination).expect("rename over destination");
+
+    assert_eq!(fs::read(&destination).expect("read destination"), b"new");
+    assert!(!source.exists());
+}
+
+#[test]
+fn a_failed_rename_replacing_leaves_the_destination_alone() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+    let destination = directory.path().join("state.json");
+    fs::write(&destination, b"old").expect("write destination");
+
+    rename_replacing(&directory.path().join("missing.tmp"), &destination)
+        .expect_err("missing source must fail");
 
     assert_eq!(fs::read(&destination).expect("read destination"), b"old");
 }
@@ -312,4 +346,66 @@ fn unopenable_parent_fails_before_the_destination_changes() {
     result.expect_err("unopenable parent must fail");
     assert_eq!(fs::read(&destination).expect("read destination"), b"old");
     assert_eq!(fs::read(&source).expect("read source"), b"new");
+}
+
+#[test]
+fn a_regular_file_opens_for_sync() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+    let path = directory.path().join("state.json");
+    fs::write(&path, b"state").expect("write file");
+
+    let file = open_regular_no_follow_for_sync(&path).expect("open regular file");
+    file.sync_all().expect("the handle can sync");
+}
+
+#[test]
+fn a_directory_is_refused_for_sync() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+
+    open_regular_no_follow_for_sync(directory.path()).expect_err("a directory is not a file");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_final_symlink_is_refused_for_sync() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+    let target = directory.path().join("target.json");
+    let link = directory.path().join("state.json");
+    fs::write(&target, b"state").expect("write target");
+    std::os::unix::fs::symlink(&target, &link).expect("create link");
+
+    open_regular_no_follow_for_sync(&link).expect_err("a final symlink is never followed");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_is_refused_for_sync_without_waiting_for_a_writer() {
+    let directory = tempfile::Builder::new()
+        .prefix("platform-fs-")
+        .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+        .expect("temporary directory");
+    let fifo = directory.path().join("state.json");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("run mkfifo");
+    assert!(made.success(), "mkfifo should create the FIFO");
+
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(open_regular_no_follow_for_sync(&fifo).is_err());
+    });
+    let refused = finished
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("opening a FIFO must not wait for a writer");
+    assert!(refused, "a FIFO is not a regular file");
 }

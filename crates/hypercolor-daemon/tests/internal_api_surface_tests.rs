@@ -1156,6 +1156,9 @@ fn scene_store_writers_share_the_scene_service_authority() {
         "reserve_save",
         "save_reserved",
         "save_reserved_stage_aware",
+        "commit_admitted",
+        "with_reservation",
+        "file_writer",
         "replace_named_scenes",
         "persist_normalization",
         "kick_persistence",
@@ -1230,7 +1233,7 @@ fn scene_store_writers_share_the_scene_service_authority() {
 
     let scene_domain = source("domain/scene.rs");
     assert!(scene_domain.contains("store: SceneStore"));
-    assert!(scene_domain.contains("Some(Arc::new(tokio::sync::RwLock::new(store)))"));
+    assert!(scene_domain.contains("store: store.map(|store| Arc::new(RwLock::new(store)))"));
     assert!(!scene_domain.contains("store.read().await.clone()"));
 
     let raw_constructors = sources

@@ -341,8 +341,12 @@ impl DriverInventoryStore {
         driver_id: &str,
         cache: BTreeMap<String, Value>,
     ) -> Result<(), DriverInventoryError> {
-        let mut merged = self.driver_cache(driver_id);
+        let current = self.driver_cache(driver_id);
+        let mut merged = current.clone();
         merged.extend(cache);
+        if merged == current {
+            return Ok(());
+        }
         self.replace_driver_guarded(guard, driver_id, merged)
     }
 }

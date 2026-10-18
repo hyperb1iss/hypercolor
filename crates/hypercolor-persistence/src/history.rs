@@ -192,6 +192,9 @@ pub(crate) enum PreviousContent {
     Present(Vec<u8>),
     /// The destination existed but could not be read.
     Unreadable,
+    /// The destination holds bytes this process made durable, and their
+    /// digest proves they differ from the payload, so they were not read.
+    KnownDifferent,
 }
 
 impl PreviousContent {
@@ -381,9 +384,26 @@ pub fn restore_generation(path: &Path, id: u64) -> Result<RestoreOutcome, Histor
 }
 
 /// Read what the destination holds, when history or the observer needs it.
-pub(crate) fn previous_content(destination: &Destination) -> PreviousContent {
-    if policy_of(destination).is_none() && REPLACEMENT_OBSERVER.get().is_none() {
+///
+/// `known_different` says the destination holds bytes this process made
+/// durable and that differ from the payload. That alone answers the
+/// observer, and a history policy without a looser equivalence, unless a
+/// rotation is due and needs the bytes themselves.
+pub(crate) fn previous_content(
+    destination: &Destination,
+    known_different: bool,
+    rotation_due: bool,
+) -> PreviousContent {
+    let policy = policy_of(destination);
+    if policy.is_none() && REPLACEMENT_OBSERVER.get().is_none() {
         return PreviousContent::NotRead;
+    }
+    let bytes_needed = !known_different
+        || policy
+            .as_ref()
+            .is_some_and(|policy| rotation_due || policy.equivalent.is_some());
+    if !bytes_needed {
+        return PreviousContent::KnownDifferent;
     }
     match fs::read(&destination.path) {
         Ok(bytes) => PreviousContent::Present(bytes),
@@ -400,10 +420,14 @@ pub(crate) fn previous_content(destination: &Destination) -> PreviousContent {
 }
 
 /// Copy the outgoing content into history before it is replaced.
+///
+/// `rotation_due` is the same answer [`previous_content`] read the bytes
+/// for, so the two never disagree about whether this replacement rotates.
 pub(crate) fn rotate_before_replace(
     destination: &Destination,
     previous: &PreviousContent,
     payload: &[u8],
+    rotation_due: bool,
 ) {
     let PreviousContent::Present(previous) = previous else {
         return;
@@ -411,7 +435,7 @@ pub(crate) fn rotate_before_replace(
     let Some(policy) = policy_of(destination) else {
         return;
     };
-    if policy.same(previous, payload) || !rotation_due(destination) {
+    if policy.same(previous, payload) || !rotation_due {
         return;
     }
     match write_generation(destination, &policy, previous) {
@@ -468,7 +492,8 @@ fn policy_of(destination: &Destination) -> Option<HistoryPolicy> {
         .map(|state| state.policy.clone())
 }
 
-fn rotation_due(destination: &Destination) -> bool {
+/// Whether the content a replacement would retire is old enough to keep.
+pub(crate) fn rotation_due(destination: &Destination) -> bool {
     destination
         .history
         .lock()
@@ -535,7 +560,8 @@ fn write_generation(
     #[cfg(unix)]
     crate::apply_file_mode(destination, temporary.as_file()).map_err(io_error)?;
     let temporary = temporary.into_temp_path();
-    hypercolor_platform_fs::replace_file(&temporary, &target).map_err(io_error)?;
+    // The rename alone; the history directory's own barrier follows.
+    hypercolor_platform_fs::rename_replacing(&temporary, &target).map_err(io_error)?;
     // Only the rename consumed the temporary; nothing is left to delete.
     let _ = temporary.keep();
     #[cfg(unix)]

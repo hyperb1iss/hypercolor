@@ -46,8 +46,8 @@ pub struct HelloClock {
     pub mono_us: u64,
 }
 
-/// When the daemon finished one WebSocket command, carried on its
-/// `response`.
+/// When the daemon handed one WebSocket command's `response` to the
+/// socket, after the command finished.
 ///
 /// A client that sent the command at its own monotonic time `t0` and
 /// received the response at `t1` knows `t0 - mono_us <= offset <=

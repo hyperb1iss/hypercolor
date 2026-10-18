@@ -558,6 +558,9 @@ impl ConfigManager {
         // snapshot after it would clear the failure and hide the overwrite.
         let older_snapshot_pending = self.persistence.pending_failure().is_some();
         staged.file.durable_replace(&self.config_path)?;
+        // The staged file replaced the config behind the coordinator's back,
+        // so what it last wrote no longer describes the file.
+        self.persistence.forget_durable_bytes();
         let candidate = Arc::clone(&staged.candidate);
         let mut installed = false;
         let committed = {

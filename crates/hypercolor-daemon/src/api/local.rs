@@ -317,11 +317,19 @@ mod tests {
             ))
             .await
             .expect("trusted local websocket should accept a command frame");
-        let response = socket
-            .recv()
-            .await
-            .expect("trusted local websocket should emit the command response barrier");
-        let response = message_json(response);
+        // Commands run beside the session loop, which keeps relaying events
+        // meanwhile, so the brightness event may arrive before the response.
+        let response = loop {
+            let message = message_json(
+                socket
+                    .recv()
+                    .await
+                    .expect("trusted local websocket should emit the command response"),
+            );
+            if message["type"] != "event" {
+                break message;
+            }
+        };
         assert_eq!(response["type"], "response");
         assert_eq!(response["id"], "set_brightness");
         assert_eq!(response["status"], 200);

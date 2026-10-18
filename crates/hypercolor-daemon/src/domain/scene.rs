@@ -62,8 +62,10 @@ use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, DomainErrorDetails, ResourceKind};
-use crate::persistence::AtomicWriteOutcome;
-use crate::scene_store::{AdmittedSceneStoreSave, SceneStore, SceneStoreSave};
+use crate::persistence::{AtomicFileWriter, AtomicWriteOutcome};
+use crate::scene_store::{
+    AdmittedSceneStoreSave, PreparedSceneStoreSave, SceneStore, SceneStoreSave,
+};
 use crate::scene_transactions::{LayoutTransactionRejection, LayoutUpdateGuard};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -140,6 +142,14 @@ pub(crate) struct SceneDeviceBindingMigrationPublication {
 struct SceneServiceInner {
     manager: Arc<RwLock<SceneManager>>,
     store: Option<Arc<RwLock<SceneStore>>>,
+    /// The store file's coordinator, so a commit reserves its generation
+    /// under the scene write lock without also waiting on the store lock,
+    /// which another commit may hold across its durable write.
+    store_writer: Option<AtomicFileWriter>,
+    /// What the store file holds, by this service's own receipts. A
+    /// per-commit runtime-session save the receipts already cover has
+    /// nothing to add to the store.
+    store_durability: std::sync::Mutex<StoreDurability>,
     _temporary_store_root: Option<tempfile::TempDir>,
     snapshot_save_gate: Arc<RwLock<()>>,
     zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
@@ -148,6 +158,48 @@ struct SceneServiceInner {
     plan: ArcSwap<ScenePlanSnapshot>,
     #[cfg(all(test, feature = "persistence-test-hooks"))]
     persistence_test_barrier: std::sync::Mutex<Option<Arc<ScenePersistenceTestBarrier>>>,
+}
+
+/// How a store save decides that the file already holds the store.
+#[derive(Debug, Clone, Copy)]
+enum StoreCheck {
+    /// Receipts covering the store revision are enough: the per-commit path.
+    TrustReceipts,
+    /// Receipts lead to reading and syncing the file before it is trusted.
+    VerifyFile,
+}
+
+/// Whether two managers hold the same named scenes, the ones the store
+/// persists. The default scene lives in the runtime projection instead.
+fn named_scenes_equal(left: &SceneManager, right: &SceneManager) -> bool {
+    let left = stored_scenes(left);
+    left.len() == stored_scenes(right).len()
+        && left
+            .iter()
+            .all(|scene| right.get(&scene.id) == Some(*scene))
+}
+
+fn stored_scenes(manager: &SceneManager) -> Vec<&Scene> {
+    manager
+        .list()
+        .into_iter()
+        .filter(|scene| scene.kind == SceneKind::Named && !scene.id.is_default())
+        .collect()
+}
+
+/// The scene service's own record of what the store file holds, kept from
+/// its receipts rather than from the file.
+#[derive(Debug, Default)]
+struct StoreDurability {
+    /// Advanced by store writes outside a commit (migrations), so a save
+    /// reserved before one can never set `receipt`.
+    epoch: u64,
+    /// The newest scene revision that may have changed the named scenes the
+    /// store holds: the in-memory store revision.
+    projection: SceneRevision,
+    /// The newest store revision a `Written` receipt of this service's own
+    /// covers: a commit's durable write, or a store save that landed.
+    receipt: Option<SceneRevision>,
 }
 
 #[cfg(all(test, feature = "persistence-test-hooks"))]
@@ -232,7 +284,7 @@ impl SceneService {
         Ok(Self::build(
             manager,
             event_bus,
-            Some(Arc::new(tokio::sync::RwLock::new(store))),
+            Some(store),
             Some(root),
             Arc::new(ZoneLayoutPreviewStore::default()),
         ))
@@ -246,27 +298,24 @@ impl SceneService {
         store: SceneStore,
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     ) -> Self {
-        Self::build(
-            manager,
-            event_bus,
-            Some(Arc::new(tokio::sync::RwLock::new(store))),
-            None,
-            zone_layout_previews,
-        )
+        Self::build(manager, event_bus, Some(store), None, zone_layout_previews)
     }
 
     fn build(
         manager: SceneManager,
         event_bus: Arc<HypercolorBus>,
-        store: Option<Arc<tokio::sync::RwLock<SceneStore>>>,
+        store: Option<SceneStore>,
         temporary_store_root: Option<tempfile::TempDir>,
         zone_layout_previews: Arc<ZoneLayoutPreviewStore>,
     ) -> Self {
         let commits = Arc::new(SceneCommitSequencer::new());
         let plan = ArcSwap::from_pointee(manager.plan_snapshot(commits.revision()));
+        let store_writer = store.as_ref().map(SceneStore::file_writer);
         Self(Arc::new(SceneServiceInner {
             manager: Arc::new(RwLock::new(manager)),
-            store,
+            store: store.map(|store| Arc::new(RwLock::new(store))),
+            store_writer,
+            store_durability: std::sync::Mutex::new(StoreDurability::default()),
             _temporary_store_root: temporary_store_root,
             snapshot_save_gate: Arc::new(RwLock::new(())),
             zone_layout_previews,
@@ -281,6 +330,12 @@ impl SceneService {
     /// Capture an owned scene-manager snapshot under one brief read lock.
     pub async fn snapshot(&self) -> SceneManager {
         self.0.manager.read().await.clone()
+    }
+
+    /// Project the live scene state under one brief read lock, for callers
+    /// that need a part of it rather than an owned copy of all of it.
+    pub(crate) async fn read_with<R>(&self, read: impl FnOnce(&SceneManager) -> R) -> R {
+        read(&*self.0.manager.read().await)
     }
 
     /// Return the current admitted scene revision.
@@ -329,6 +384,7 @@ impl SceneService {
     ) -> Result<SceneEffectIdMigration, DomainError> {
         let snapshot_save_guard = Arc::clone(&self.0.snapshot_save_gate).write_owned().await;
         let manager = self.0.manager.read().await;
+        self.forget_store_durability();
         let mut candidate = manager.clone();
         let migrated = candidate.remap_effect_ids(migrations);
         let store = match self.0.store.as_ref() {
@@ -356,6 +412,7 @@ impl SceneService {
     ) -> anyhow::Result<SceneDeviceBindingMigration> {
         let snapshot_save_guard = Arc::clone(&self.0.snapshot_save_gate).write_owned().await;
         let manager = self.0.manager.read().await;
+        self.forget_store_durability();
         let mut candidate = manager.clone();
         let migrated =
             candidate.remap_device_bindings(&remaps.layout_device_ids, &remaps.physical_device_ids);
@@ -422,6 +479,7 @@ impl SceneService {
             .take()
             .expect("scene binding migration must publish exactly once");
         let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+        self.move_store_projection(ticket.generation());
         self.0.plan.store(Arc::new(
             publication.manager.plan_snapshot(ticket.generation()),
         ));
@@ -492,6 +550,7 @@ impl SceneService {
             .take()
             .expect("scene migration publication must publish exactly once");
         let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+        self.move_store_projection(ticket.generation());
         self.0
             .plan
             .store(Arc::new(manager.plan_snapshot(ticket.generation())));
@@ -561,6 +620,40 @@ impl SceneService {
             preview_zones_to_clear,
         } = mutation;
 
+        // Whether this commit changes the named scenes the store holds, and
+        // whether this service's receipts already cover the store revision it
+        // starts from. The comparison means anything only while the manager
+        // is still at the base revision; otherwise the commit conflicts below.
+        let has_store = self.0.store_writer.is_some();
+        let (store_changes, store_covered) = if has_store {
+            let manager = self.0.manager.read().await;
+            if self.0.commits.revision() == base_revision {
+                (
+                    !named_scenes_equal(&manager, &candidate),
+                    self.store_projection_current(),
+                )
+            } else {
+                (true, false)
+            }
+        } else {
+            (false, false)
+        };
+        // An unchanged store the receipts cover needs no write at all. The
+        // payload depends on nothing but the candidate, so when one is needed
+        // it is serialized before the write lock; only its generation is
+        // ordered under the lock.
+        let prepare = || {
+            PreparedSceneStoreSave::new(candidate.list().into_iter().cloned()).map_err(|error| {
+                DomainError::Internal(anyhow::anyhow!("Failed to persist scene: {error}"))
+            })
+        };
+        let mut prepared =
+            if has_store && persists_scene_content && (store_changes || !store_covered) {
+                Some(prepare()?)
+            } else {
+                None
+            };
+
         let (ticket, pending) = {
             let mut manager = self.0.manager.write().await;
             let current_revision = self.0.commits.revision();
@@ -576,27 +669,16 @@ impl SceneService {
                 ));
             }
 
-            let pending = if persists_scene_content {
-                let Some(store) = self.0.store.as_ref() else {
-                    return Err(DomainError::Internal(anyhow::anyhow!(
-                        "durable scene mutation has no owning scene store"
-                    )));
-                };
-                match store
-                    .read()
-                    .await
-                    .reserve_save(candidate.list().into_iter().cloned())
-                {
-                    Ok(pending) => Some(pending),
-                    Err(error) => {
-                        return Err(DomainError::Internal(anyhow::anyhow!(
-                            "Failed to persist scene: {error}"
-                        )));
-                    }
-                }
-            } else {
-                None
-            };
+            if persists_scene_content && !has_store {
+                return Err(DomainError::Internal(anyhow::anyhow!(
+                    "durable scene mutation has no owning scene store"
+                )));
+            }
+            // A migration reserving since the check above forgets the
+            // receipts; a commit that relied on them writes after all.
+            if persists_scene_content && prepared.is_none() && !self.store_projection_current() {
+                prepared = Some(prepare()?);
+            }
 
             self.0
                 .zone_layout_previews
@@ -607,6 +689,17 @@ impl SceneService {
                 .await;
             *manager = candidate;
             let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+            if store_changes {
+                self.move_store_projection(ticket.generation());
+            }
+            let pending = match (prepared, self.0.store_writer.as_ref()) {
+                (Some(prepared), Some(writer)) => Some((
+                    prepared.with_reservation(writer.reserve()),
+                    self.store_epoch(),
+                    self.store_projection(),
+                )),
+                _ => None,
+            };
             self.0
                 .plan
                 .store(Arc::new(manager.plan_snapshot(ticket.generation())));
@@ -614,7 +707,7 @@ impl SceneService {
         };
 
         let generation = ticket.generation();
-        let Some(pending) = pending else {
+        let Some((pending, store_epoch, store_revision)) = pending else {
             ticket.release(events);
             return Ok(SceneCommit::new(
                 generation,
@@ -631,9 +724,10 @@ impl SceneService {
             .expect("persistent scene commit must retain its owning store");
         #[cfg(all(test, feature = "persistence-test-hooks"))]
         self.pause_before_persistence_for_test().await;
-        let outcome = store.write().await.save_reserved(pending);
+        let outcome = save_store_reserved(store, pending).await;
         match outcome {
             Ok(AtomicWriteOutcome::Written) => {
+                self.note_store_receipt(store_revision, store_epoch);
                 ticket.release(events);
                 Ok(SceneCommit::new(
                     generation,
@@ -683,20 +777,127 @@ impl SceneService {
     }
 
     pub(crate) async fn persist_snapshot(&self) -> anyhow::Result<Option<AtomicWriteOutcome>> {
-        let Some(store) = self.0.store.as_ref() else {
+        self.persist_store(StoreCheck::VerifyFile).await
+    }
+
+    /// Persist the store after a scene commit, trusting this service's own
+    /// receipts: when they cover the in-memory store revision, nothing is
+    /// read or written. An outside edit to the file between commits is left
+    /// for the next store write to overwrite, and whole-session saves still
+    /// verify the file itself.
+    pub(crate) async fn persist_snapshot_after_commit(
+        &self,
+    ) -> anyhow::Result<Option<AtomicWriteOutcome>> {
+        self.persist_store(StoreCheck::TrustReceipts).await
+    }
+
+    async fn persist_store(&self, check: StoreCheck) -> anyhow::Result<Option<AtomicWriteOutcome>> {
+        let (Some(store), Some(writer)) = (self.0.store.as_ref(), self.0.store_writer.as_ref())
+        else {
             return Ok(None);
         };
         #[cfg(all(test, feature = "persistence-test-hooks"))]
         self.pause_before_persistence_for_test().await;
         let _snapshot_save_guard = Arc::clone(&self.0.snapshot_save_gate).read_owned().await;
-        let pending = {
-            let manager = self.snapshot().await;
-            store
-                .read()
-                .await
-                .reserve_save(manager.list().into_iter().cloned())?
+        if self.store_projection_current() {
+            match check {
+                StoreCheck::TrustReceipts => return Ok(Some(AtomicWriteOutcome::Written)),
+                StoreCheck::VerifyFile => {
+                    // Confirming the file reads, compares, and syncs it, so
+                    // it runs on the blocking pool with no scene lock held;
+                    // anything short of a confirmation saves for real.
+                    let writer = writer.clone();
+                    if tokio::task::spawn_blocking(move || writer.holds_durable_bytes())
+                        .await
+                        .unwrap_or(false)
+                    {
+                        return Ok(Some(AtomicWriteOutcome::Written));
+                    }
+                }
+            }
+        }
+        let (scenes, reservation, store_epoch, store_revision) = {
+            let manager = self.0.manager.read().await;
+            // Commits reserve under the write lock, so reserving under this
+            // read lock gives the snapshot a generation no older state can
+            // follow. Only the named scenes are copied out of the lock.
+            let scenes = manager
+                .list()
+                .into_iter()
+                .filter(|scene| scene.kind == SceneKind::Named && !scene.id.is_default())
+                .cloned()
+                .collect::<Vec<_>>();
+            (
+                scenes,
+                writer.reserve(),
+                self.store_epoch(),
+                self.store_projection(),
+            )
         };
-        store.write().await.save_reserved(pending).map(Some)
+        let pending = PreparedSceneStoreSave::new(scenes)?.with_reservation(reservation);
+        let outcome = save_store_reserved(store, pending).await?;
+        if outcome == AtomicWriteOutcome::Written {
+            self.note_store_receipt(store_revision, store_epoch);
+        }
+        Ok(Some(outcome))
+    }
+
+    fn store_durability(&self) -> std::sync::MutexGuard<'_, StoreDurability> {
+        self.0
+            .store_durability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The current store epoch. Callers read it under the scene lock that
+    /// orders their store reservation.
+    fn store_epoch(&self) -> u64 {
+        self.store_durability().epoch
+    }
+
+    /// The in-memory store revision. Moves only under the scene write lock.
+    fn store_projection(&self) -> SceneRevision {
+        self.store_durability().projection
+    }
+
+    /// Record that the commit admitted at `revision` may have changed the
+    /// named scenes the store holds.
+    fn move_store_projection(&self, revision: SceneRevision) {
+        let mut durability = self.store_durability();
+        durability.projection = durability.projection.max(revision);
+    }
+
+    /// Record a `Written` receipt for the store revision a save carried,
+    /// unless a migration reserved its own store write after this save
+    /// reserved (`epoch` names the epoch at reservation). Saves can land out
+    /// of order, so the newest revision wins.
+    fn note_store_receipt(&self, revision: SceneRevision, epoch: u64) {
+        let mut durability = self.store_durability();
+        if durability.epoch == epoch {
+            durability.receipt = Some(
+                durability
+                    .receipt
+                    .map_or(revision, |known| known.max(revision)),
+            );
+        }
+    }
+
+    /// Stop trusting the receipts before a migration writes the store file
+    /// with content no commit admitted. The migration may persist and then
+    /// never publish, which would leave the file ahead of what the receipts
+    /// name. Called under the scene read lock the migration reserves under,
+    /// so every save that reserved before it carries the old epoch and can
+    /// no longer record a receipt.
+    fn forget_store_durability(&self) {
+        let mut durability = self.store_durability();
+        durability.epoch = durability.epoch.wrapping_add(1);
+        durability.receipt = None;
+    }
+
+    /// Whether this service's receipts cover the in-memory store revision.
+    fn store_projection_current(&self) -> bool {
+        let durability = self.store_durability();
+        durability.receipt == Some(durability.projection)
     }
 
     #[cfg(test)]
@@ -754,6 +955,9 @@ impl SceneService {
         publish_renderer_state(candidate_spatial_engine.clone())?;
         manager.sync_primary_zone_layout(candidate_spatial_engine.layout().as_ref());
         let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+        // The synced primary zone may belong to a named scene, which only a
+        // later store save persists.
+        self.move_store_projection(ticket.generation());
         self.0
             .plan
             .store(Arc::new(manager.plan_snapshot(ticket.generation())));
@@ -787,6 +991,29 @@ impl SceneService {
 
         publish_renderer_state(candidate_spatial_engine)
     }
+}
+
+/// Commit a reserved store save on the blocking pool.
+///
+/// The store write lock is held until the attempt finishes, exactly as when
+/// this ran inline. Admission and replacement under that one lock are what
+/// keep a commit from admitting while the commit ahead of it is mid-write;
+/// releasing it before the durability barrier would let the newer
+/// admission supersede the older write at its final check, and a
+/// superseded commit discards its events. The owned guard rides into the
+/// blocking task, so a caller cancelled mid-write can neither release the
+/// lock early nor skip the store's superseded rollback. The payload is
+/// admitted before the hand-off, so a write task the runtime never starts
+/// still leaves it with the retry supervisor, as the error reports.
+async fn save_store_reserved(
+    store: &Arc<RwLock<SceneStore>>,
+    pending: SceneStoreSave,
+) -> anyhow::Result<AtomicWriteOutcome> {
+    let mut store = Arc::clone(store).write_owned().await;
+    let admitted = pending.admit();
+    crate::audit_log::run_blocking_attributed(move || store.commit_admitted(admitted))
+        .await
+        .map_err(|error| anyhow::anyhow!("scene store write task failed: {error}"))?
 }
 
 #[cfg(all(test, feature = "persistence-test-hooks"))]

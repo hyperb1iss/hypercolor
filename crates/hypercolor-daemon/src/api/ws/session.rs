@@ -1,10 +1,11 @@
 //! Connection upgrade, handshake, heartbeat, and client message dispatch.
 //!
 //! Owns the per-connection state machine: sends the initial hello, spawns
-//! relay tasks, runs the select loop that muxes incoming client frames,
-//! outbound JSON/binary queues, and the ping/pong heartbeat.
+//! relay tasks and the command lane, runs the select loop that muxes
+//! incoming client frames, command responses, outbound JSON/binary queues,
+//! and the ping/pong heartbeat.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -90,6 +91,14 @@ const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const REVOKED_CLOSE_DEADLINE: Duration = Duration::from_secs(1);
 const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
 const SENSOR_STREAM_HZ: u32 = 1;
+/// Commands a session hands its command lane ahead of the one running.
+const WS_COMMAND_QUEUE: usize = 16;
+/// Responses the command lane finishes ahead of the session sending them.
+const WS_COMMAND_RESPONSE_QUEUE: usize = 8;
+/// Client messages a session reads ahead while earlier commands run. A
+/// full backlog stops reading the socket, so the peer is held to the
+/// session's pace instead of growing it without bound.
+const WS_INBOUND_BACKLOG: usize = 64;
 
 /// `GET /api/v1/ws` — Upgrade to WebSocket.
 pub(crate) async fn ws_handler(
@@ -167,6 +176,7 @@ fn spawn_local_socket(
             SessionSocket {
                 transport: SessionTransport::Local(transport),
                 grant,
+                closing: false,
             },
             state,
             auth_context,
@@ -204,6 +214,9 @@ pub(super) fn spawn_test_granted_local_socket(
 struct SessionSocket {
     transport: SessionTransport,
     grant: Option<CredentialGrant>,
+    /// Set once the session is tearing down: its replies have nowhere
+    /// useful to go, and a peer that stopped reading must not hold it.
+    closing: bool,
 }
 
 enum SessionTransport {
@@ -219,6 +232,8 @@ enum SessionSocketError {
     LocalClosed,
     #[error("the session's credential was revoked")]
     Revoked,
+    #[error("the session is closing")]
+    Closing,
 }
 
 impl SessionSocket {
@@ -226,6 +241,7 @@ impl SessionSocket {
         Self {
             transport: SessionTransport::Network(socket),
             grant,
+            closing: false,
         }
     }
 
@@ -234,6 +250,9 @@ impl SessionSocket {
     }
 
     async fn send(&mut self, message: Message) -> Result<(), SessionSocketError> {
+        if self.closing {
+            return Err(SessionSocketError::Closing);
+        }
         let Some(revocation) = self.revocation() else {
             return self.transport.send(message).await;
         };
@@ -453,12 +472,18 @@ async fn handle_socket(
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut awaiting_pong = false;
     let mut ping_sent_at = Instant::now();
+    // Whether the session stopped reading at any point since the last ping.
+    // A full backlog leaves the pong unread, so it cannot count as silence.
+    let mut reading_paused = false;
     let zone_layout_preview_owner = ZoneLayoutPreviewOwner::new();
     let mut zone_layout_preview_keys = HashSet::<(SceneId, ZoneId)>::new();
     let preview_limits = PreviewTransportLimits::default();
     let mut preview_cursors = PreviewCursorQueue::with_limits(preview_limits);
+    let mut commands = CommandLane::spawn(Arc::clone(&state), auth_context, socket.grant.clone());
+    let mut inbound = VecDeque::<InboundMessage>::new();
     // Main loop: multiplex between incoming client messages and outbound events.
-    loop {
+    'session: loop {
+        reading_paused |= inbound.len() >= WS_INBOUND_BACKLOG;
         tokio::select! {
             () = wait_for_shutdown(shutdown.as_ref()) => break,
 
@@ -594,7 +619,7 @@ async fn handle_socket(
 
             // Keepalive heartbeat.
             _ = ping_interval.tick() => {
-                if awaiting_pong && ping_sent_at.elapsed() >= WS_PONG_TIMEOUT {
+                if awaiting_pong && !reading_paused && ping_sent_at.elapsed() >= WS_PONG_TIMEOUT {
                     warn!("WebSocket client timed out waiting for pong");
                     break;
                 }
@@ -604,10 +629,27 @@ async fn handle_socket(
                 }
                 awaiting_pong = true;
                 ping_sent_at = Instant::now();
+                reading_paused = inbound.len() >= WS_INBOUND_BACKLOG;
             }
 
-            // Inbound: process client messages.
-            msg = socket.recv() => {
+            // Command responses, in the order the commands arrived.
+            response = commands.responses.recv() => {
+                let Some(response) = response else {
+                    // The lane only stops early once the session's
+                    // credential is revoked, which ends the session too.
+                    break;
+                };
+                commands.in_flight = commands.in_flight.saturating_sub(1);
+                // The command has finished on its lane; nothing but
+                // serialization sits between this reading and the socket, so
+                // it falls inside the client's round trip.
+                let mut response = response;
+                stamp_command_response(&mut response, state.event_bus.clock());
+                let _ = send_json(&mut socket, &response).await;
+            }
+
+            // Inbound: read client messages into the ordered backlog.
+            msg = socket.recv(), if inbound.len() < WS_INBOUND_BACKLOG => {
                 // `select!` picks among ready branches at random, so a
                 // message that arrives with the revocation must not run.
                 if revocation.as_ref().is_some_and(CancellationToken::is_cancelled) {
@@ -615,20 +657,7 @@ async fn handle_socket(
                 }
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        handle_client_message(
-                            &text,
-                            &state,
-                            auth_context,
-                            &mut subscriptions,
-                            &subscriptions_tx,
-                            &mut input_demand_leases,
-                            zone_layout_preview_owner,
-                            &mut zone_layout_preview_keys,
-                            &mut browser_previews,
-                            &preview_tx,
-                            &mut socket,
-                        )
-                        .await;
+                        inbound.push_back(InboundMessage::parse(&text));
                     }
                     Some(Ok(Message::Pong(_))) => {
                         awaiting_pong = false;
@@ -650,10 +679,112 @@ async fn handle_socket(
                 }
             }
         }
+
+        // Take client messages in arrival order. A command joins the lane
+        // behind the ones already queued; anything else waits until every
+        // earlier command has answered, so it observes their effects just
+        // as it did when commands ran inline.
+        while let Some(next) = inbound.front() {
+            if revocation
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+            {
+                break 'session;
+            }
+            let ready = match next {
+                InboundMessage::Client(ClientMessage::Command { .. }) => commands.has_room(),
+                _ => commands.in_flight == 0,
+            };
+            if !ready {
+                break;
+            }
+            let Some(next) = inbound.pop_front() else {
+                break;
+            };
+            match next {
+                InboundMessage::Client(message) => {
+                    handle_client_message(
+                        message,
+                        &state,
+                        auth_context,
+                        &mut subscriptions,
+                        &subscriptions_tx,
+                        &mut input_demand_leases,
+                        zone_layout_preview_owner,
+                        &mut zone_layout_preview_keys,
+                        &mut browser_previews,
+                        &preview_tx,
+                        &mut commands,
+                        &mut socket,
+                    )
+                    .await;
+                }
+                InboundMessage::Invalid(error) => {
+                    let _ = send_json(&mut socket, &error.into_message()).await;
+                }
+            }
+        }
     }
 
     // However the loop ended, a revoked session tells its peer why, once.
     socket.close_if_revoked().await;
+    // Everything the session read still runs, in the order it was read, as
+    // it did when commands ran inline, unless the credential was revoked. A
+    // command joins the lane, and any other message waits for the commands
+    // ahead of it, so a release or unsubscribe still lands between the
+    // commands it was sent between. A peer that closed or vanished, or a
+    // shutdown, only loses the replies.
+    socket.closing = true;
+    let revoked = || {
+        revocation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+    };
+    while let Some(next) = inbound.pop_front() {
+        if revoked() {
+            break;
+        }
+        match next {
+            InboundMessage::Client(ClientMessage::Command {
+                id,
+                method,
+                path,
+                body,
+            }) => {
+                commands
+                    .submit_draining(QueuedCommand {
+                        id,
+                        method,
+                        path,
+                        body,
+                    })
+                    .await;
+            }
+            InboundMessage::Client(message) => {
+                commands.wait_idle().await;
+                if revoked() {
+                    break;
+                }
+                handle_client_message(
+                    message,
+                    &state,
+                    auth_context,
+                    &mut subscriptions,
+                    &subscriptions_tx,
+                    &mut input_demand_leases,
+                    zone_layout_preview_owner,
+                    &mut zone_layout_preview_keys,
+                    &mut browser_previews,
+                    &preview_tx,
+                    &mut commands,
+                    &mut socket,
+                )
+                .await;
+            }
+            InboundMessage::Invalid(_) => {}
+        }
+    }
+    commands.finish(revoked()).await;
     abort_and_join_relays(relay_handles).await;
     browser_previews.shutdown().await;
     while let Some(cursor) = preview_cursors.pop_next() {
@@ -1497,9 +1628,186 @@ fn subscription_projection(
     projection
 }
 
-/// Process a client subscription/unsubscription message.
+/// One client text frame, parsed when it was read.
+enum InboundMessage {
+    Client(ClientMessage),
+    Invalid(WsProtocolError),
+}
+
+impl InboundMessage {
+    fn parse(text: &str) -> Self {
+        serde_json::from_str::<ClientMessage>(text).map_or_else(
+            |error| {
+                Self::Invalid(WsProtocolError::invalid_request(format!(
+                    "Invalid JSON message: {error}"
+                )))
+            },
+            Self::Client,
+        )
+    }
+}
+
+/// A command waiting for the session's command lane.
+struct QueuedCommand {
+    id: String,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+}
+
+/// The session's commands, run one at a time and in arrival order on a task
+/// of their own, so a slow command never stalls the session loop that
+/// drains its outbound topics.
+struct CommandLane {
+    commands: Option<tokio::sync::mpsc::Sender<QueuedCommand>>,
+    responses: tokio::sync::mpsc::Receiver<ServerMessage>,
+    /// Commands handed to the lane that have not answered yet.
+    in_flight: usize,
+    closed: CancellationToken,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl CommandLane {
+    fn spawn(
+        state: Arc<AppState>,
+        auth_context: RequestAuthContext,
+        grant: Option<CredentialGrant>,
+    ) -> Self {
+        let (command_tx, mut command_rx) =
+            tokio::sync::mpsc::channel::<QueuedCommand>(WS_COMMAND_QUEUE);
+        let (response_tx, responses) = tokio::sync::mpsc::channel(WS_COMMAND_RESPONSE_QUEUE);
+        let closed = CancellationToken::new();
+        let session_closed = closed.clone();
+        let revocation = grant.as_ref().map(|grant| grant.revocation().clone());
+        let worker = async move {
+            while let Some(command) = command_rx.recv().await {
+                // A command queued before its credential was revoked, or
+                // before the session stopped its queue, must never start.
+                // One already running finishes.
+                if session_closed.is_cancelled()
+                    || revocation
+                        .as_ref()
+                        .is_some_and(CancellationToken::is_cancelled)
+                {
+                    break;
+                }
+                let response = dispatch_command(
+                    &state,
+                    auth_context,
+                    grant.clone(),
+                    command.id,
+                    command.method,
+                    command.path,
+                    command.body,
+                )
+                .await;
+                // A session whose peer went away still runs what it read;
+                // only the response has nowhere to go.
+                let _ = response_tx.send(response).await;
+            }
+        };
+        // The audit trail names the session's client as the sender of every
+        // command, so the lane runs as that peer too.
+        let worker = match crate::audit_log::current_ws_peer() {
+            Some(peer) => tokio::spawn(crate::audit_log::with_ws_peer(
+                peer.as_ref().clone(),
+                worker,
+            )),
+            None => tokio::spawn(worker),
+        };
+        Self {
+            commands: Some(command_tx),
+            responses,
+            in_flight: 0,
+            closed,
+            worker: Some(worker),
+        }
+    }
+
+    fn has_room(&self) -> bool {
+        self.commands
+            .as_ref()
+            .is_some_and(|commands| commands.capacity() > 0)
+    }
+
+    /// Queue `command` behind the ones already waiting. The session checks
+    /// [`Self::has_room`] first and is the lane's only sender, so this only
+    /// fails once the worker has stopped for a revocation, when the session
+    /// is ending anyway.
+    fn submit(&mut self, command: QueuedCommand) {
+        let Some(commands) = self.commands.as_ref() else {
+            return;
+        };
+        match commands.try_send(command) {
+            Ok(()) => self.in_flight += 1,
+            Err(error) => warn!(%error, "WebSocket command lane refused a command"),
+        }
+    }
+
+    /// Queue `command` while the session tears down, waiting for room and
+    /// discarding the responses that free it.
+    async fn submit_draining(&mut self, command: QueuedCommand) {
+        let Some(sender) = self.commands.clone() else {
+            return;
+        };
+        let send = sender.send(command);
+        tokio::pin!(send);
+        loop {
+            tokio::select! {
+                sent = &mut send => {
+                    if sent.is_ok() {
+                        self.in_flight += 1;
+                    }
+                    return;
+                }
+                response = self.responses.recv() => {
+                    if response.is_none() {
+                        return;
+                    }
+                    self.in_flight = self.in_flight.saturating_sub(1);
+                }
+            }
+        }
+    }
+
+    /// Wait until every queued command has answered, discarding responses,
+    /// or until the lane stops.
+    async fn wait_idle(&mut self) {
+        while self.in_flight > 0 {
+            if self.responses.recv().await.is_none() {
+                self.in_flight = 0;
+                return;
+            }
+            self.in_flight -= 1;
+        }
+    }
+
+    /// End the lane and wait for its worker.
+    ///
+    /// With `stop_queued`, nothing queued starts and only a running command
+    /// finishes. Otherwise every queued command runs. Responses are
+    /// discarded either way, since the session no longer sends them.
+    async fn finish(&mut self, stop_queued: bool) {
+        self.responses.close();
+        if stop_queued {
+            self.closed.cancel();
+        }
+        self.commands = None;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.await;
+        }
+    }
+}
+
+impl Drop for CommandLane {
+    fn drop(&mut self) {
+        self.closed.cancel();
+    }
+}
+
+/// Process one client message. Commands join the session's command lane.
 async fn handle_client_message(
-    text: &str,
+    msg: ClientMessage,
     state: &Arc<AppState>,
     auth_context: RequestAuthContext,
     subscriptions: &mut SubscriptionState,
@@ -1509,21 +1817,9 @@ async fn handle_client_message(
     zone_layout_preview_keys: &mut HashSet<(SceneId, ZoneId)>,
     browser_previews: &mut BrowserPreviewSession,
     preview_outbound: &PreviewOutboundSender,
+    commands: &mut CommandLane,
     socket: &mut SessionSocket,
 ) {
-    let msg = match serde_json::from_str::<ClientMessage>(text) {
-        Ok(msg) => msg,
-        Err(error) => {
-            let _ = send_json(
-                socket,
-                &WsProtocolError::invalid_request(format!("Invalid JSON message: {error}"))
-                    .into_message(),
-            )
-            .await;
-            return;
-        }
-    };
-
     match msg {
         ClientMessage::Subscribe { topics } => {
             // Validate the whole request first. Every step below builds
@@ -1619,16 +1915,12 @@ async fn handle_client_message(
             method,
             path,
             body,
-        } => {
-            let grant = socket.grant.clone();
-            let mut response =
-                dispatch_command(state, auth_context, grant, id, method, path, body).await;
-            // The command has finished; nothing but serialization sits between
-            // this reading and the socket, so it falls inside the client's
-            // round trip.
-            stamp_command_response(&mut response, state.event_bus.clock());
-            let _ = send_json(socket, &response).await;
-        }
+        } => commands.submit(QueuedCommand {
+            id,
+            method,
+            path,
+            body,
+        }),
         ClientMessage::ZoneLayoutPreview { zone_id, layout } => {
             if let Err(error) = ensure_control_tier(auth_context) {
                 let _ = send_json(socket, &error.into_message()).await;
