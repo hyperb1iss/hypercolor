@@ -73,13 +73,9 @@ impl SmBusBackend {
     fn default_transport_factory() -> SmBusTransportFactory {
         Arc::new(|bus_path, address, bus_arbiter| {
             Ok(Box::new(
-                SmBusTransport::open_with_arbiter(bus_path, address, bus_arbiter).with_context(
-                    || {
-                        format!(
-                            "failed to open SMBus transport at {bus_path} address 0x{address:02X}"
-                        )
-                    },
-                )?,
+                SmBusTransport::open_device(bus_path, address, bus_arbiter).with_context(|| {
+                    format!("failed to open SMBus transport at {bus_path} address 0x{address:02X}")
+                })?,
             ))
         })
     }

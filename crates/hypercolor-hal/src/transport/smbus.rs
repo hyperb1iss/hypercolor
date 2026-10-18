@@ -17,10 +17,86 @@ const SMBUS_OP_READ_BYTE_DATA: u8 = 0x03;
 const SMBUS_OP_WRITE_BLOCK_DATA: u8 = 0x04;
 const SMBUS_OP_DELAY: u8 = 0x05;
 
-/// Shared transaction lock for every device on one physical `SMBus` bus.
+/// How much of one physical `SMBus` bus a transaction claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmBusClaim {
+    /// The whole bus: nothing else runs on it until the transaction ends.
+    ///
+    /// Probes, address remaps, and register reads claim the bus, because
+    /// they change which device answers at an address or depend on it not
+    /// changing underneath them.
+    Bus,
+    /// One device address, shared with device claims on other addresses.
+    ///
+    /// Every ENE controller keeps its own indirect register pointer, so
+    /// transactions to different addresses may interleave on the wire
+    /// without disturbing each other. One address still sees one writer at
+    /// a time, and a waiting bus claim holds back new device claims, so
+    /// streaming output cannot starve discovery.
+    Device {
+        /// `SMBus` address the transaction targets.
+        address: u16,
+    },
+}
+
+/// Which claims a transport's batches may take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SmBusTransportScope {
+    /// Discovery and addressing work: every batch claims the whole bus.
+    #[default]
+    Bus,
+    /// A connected device's own register traffic: write-only batches claim
+    /// only the device's address.
+    Device,
+}
+
+impl SmBusClaim {
+    /// The claim one batch needs from a transport with `scope`.
+    ///
+    /// Only device-scoped, write-only batches share the bus. A batch with any
+    /// read claims the whole bus, as does every batch on a bus-scoped
+    /// transport.
+    #[must_use]
+    pub fn for_batch(
+        scope: SmBusTransportScope,
+        address: u16,
+        operations: &[SmBusOperation],
+    ) -> Self {
+        let reads = operations
+            .iter()
+            .any(|operation| matches!(operation, SmBusOperation::ReadByteData { .. }));
+        match scope {
+            SmBusTransportScope::Device if !reads => Self::Device { address },
+            SmBusTransportScope::Device | SmBusTransportScope::Bus => Self::Bus,
+        }
+    }
+}
+
+/// Transaction arbiter shared by every device on one physical `SMBus` bus.
+///
+/// Bus claims hold the bus exclusively. Device claims hold it shared, plus a
+/// lock for their own address.
 #[derive(Clone, Default)]
 pub struct SmBusBusArbiter {
-    transaction_lock: Arc<tokio::sync::Mutex<()>>,
+    bus: Arc<tokio::sync::RwLock<()>>,
+    devices: Arc<Mutex<HashMap<u16, Arc<tokio::sync::Mutex<()>>>>>,
+}
+
+/// Ownership of one [`SmBusClaim`], released when dropped.
+pub struct SmBusClaimGuard {
+    _held: HeldSmBusClaim,
+}
+
+enum HeldSmBusClaim {
+    Bus {
+        _bus: tokio::sync::OwnedRwLockWriteGuard<()>,
+    },
+    // Fields drop in declaration order, so the bus share is released before
+    // the address lock.
+    Device {
+        _bus: tokio::sync::OwnedRwLockReadGuard<()>,
+        _device: tokio::sync::OwnedMutexGuard<()>,
+    },
 }
 
 static SMBUS_BUS_ARBITERS: LazyLock<Mutex<HashMap<String, SmBusBusArbiter>>> =
@@ -39,14 +115,43 @@ impl SmBusBusArbiter {
     }
 
     /// Acquire exclusive ownership of one physical bus transaction segment.
-    pub async fn acquire_transaction(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        Arc::clone(&self.transaction_lock).lock_owned().await
+    pub async fn acquire_transaction(&self) -> SmBusClaimGuard {
+        self.acquire(SmBusClaim::Bus).await
     }
 
-    /// Run one blocking transaction while retaining physical bus ownership.
-    ///
-    /// The owned guard moves into the blocking task so cancelling the async
-    /// waiter cannot expose a bus transaction that is still in progress.
+    /// Acquire one claim on the bus.
+    pub async fn acquire(&self, claim: SmBusClaim) -> SmBusClaimGuard {
+        let held = match claim {
+            SmBusClaim::Bus => HeldSmBusClaim::Bus {
+                _bus: Arc::clone(&self.bus).write_owned().await,
+            },
+            SmBusClaim::Device { address } => {
+                // The address lock is taken before the bus share, so a task
+                // holding a share never waits on anything. A writer queued
+                // behind a busy address then holds nothing that would delay
+                // a waiting bus claim.
+                let device = self.device_lock(address).lock_owned().await;
+                let bus = Arc::clone(&self.bus).read_owned().await;
+                HeldSmBusClaim::Device {
+                    _bus: bus,
+                    _device: device,
+                }
+            }
+        };
+        SmBusClaimGuard { _held: held }
+    }
+
+    fn device_lock(&self, address: u16) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(
+            self.devices
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(address)
+                .or_default(),
+        )
+    }
+
+    /// Run one blocking transaction while retaining exclusive bus ownership.
     ///
     /// # Errors
     ///
@@ -57,9 +162,30 @@ impl SmBusBusArbiter {
         R: Send + 'static,
         F: FnOnce() -> Result<R, TransportError> + Send + 'static,
     {
-        let transaction = self.acquire_transaction().await;
+        self.run_blocking_claimed(SmBusClaim::Bus, operation).await
+    }
+
+    /// Run one blocking transaction while retaining `claim`.
+    ///
+    /// The owned guard moves into the blocking task so cancelling the async
+    /// waiter cannot expose a bus transaction that is still in progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when the transaction fails or its blocking
+    /// task cannot be joined.
+    pub async fn run_blocking_claimed<R, F>(
+        &self,
+        claim: SmBusClaim,
+        operation: F,
+    ) -> Result<R, TransportError>
+    where
+        R: Send + 'static,
+        F: FnOnce() -> Result<R, TransportError> + Send + 'static,
+    {
+        let held = self.acquire(claim).await;
         tokio::task::spawn_blocking(move || {
-            let _transaction = transaction;
+            let _held = held;
             operation()
         })
         .await
@@ -270,6 +396,7 @@ pub struct SmBusTransport {
     closed: AtomicBool,
     op_lock: tokio::sync::Mutex<()>,
     bus_arbiter: SmBusBusArbiter,
+    scope: SmBusTransportScope,
 }
 
 #[cfg(target_os = "linux")]
@@ -294,6 +421,31 @@ impl SmBusTransport {
         address: u16,
         bus_arbiter: SmBusBusArbiter,
     ) -> Result<Self, TransportError> {
+        Self::open_scoped(path, address, bus_arbiter, SmBusTransportScope::Bus)
+    }
+
+    /// Open one connected device's `SMBus` slave.
+    ///
+    /// Its write-only batches take a device claim, so they overlap with
+    /// other devices' writes on the same bus. Reads still claim the bus.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when the device path cannot be opened.
+    pub fn open_device<P: AsRef<Path>>(
+        path: P,
+        address: u16,
+        bus_arbiter: SmBusBusArbiter,
+    ) -> Result<Self, TransportError> {
+        Self::open_scoped(path, address, bus_arbiter, SmBusTransportScope::Device)
+    }
+
+    fn open_scoped<P: AsRef<Path>>(
+        path: P,
+        address: u16,
+        bus_arbiter: SmBusBusArbiter,
+        scope: SmBusTransportScope,
+    ) -> Result<Self, TransportError> {
         let path_string = path.as_ref().display().to_string();
         let device = LinuxI2CDevice::new(path.as_ref(), address)
             .map_err(|error| map_linux_i2c_error(&path_string, address, &error))?;
@@ -305,6 +457,7 @@ impl SmBusTransport {
             closed: AtomicBool::new(false),
             op_lock: tokio::sync::Mutex::new(()),
             bus_arbiter,
+            scope,
         })
     }
 
@@ -408,6 +561,8 @@ impl SmBusTransport {
     ///
     /// The delays run inside the closure rather than between fragments so the
     /// ENE address-set and its data-write stay inside one bus-arbiter hold.
+    /// A device claim lets other addresses' transactions interleave with
+    /// this one; the kernel serializes each individual transfer.
     async fn execute_operations(
         &self,
         operations: Vec<SmBusOperation>,
@@ -416,12 +571,13 @@ impl SmBusTransport {
             return Ok(Vec::new());
         }
 
+        let claim = SmBusClaim::for_batch(self.scope, self.address, &operations);
         let device = Arc::clone(&self.device);
         let path = self.path.clone();
         let address = self.address;
 
         self.bus_arbiter
-            .run_blocking(move || {
+            .run_blocking_claimed(claim, move || {
                 Self::execute_batch_locked(device.as_ref(), &path, address, &operations)
             })
             .await
@@ -510,6 +666,24 @@ impl SmBusTransport {
             op_lock: tokio::sync::Mutex::new(()),
             bus_arbiter,
         })
+    }
+
+    /// Open one connected device's `SMBus` slave.
+    ///
+    /// Every batch still claims the whole bus. Brokered PawnIO runs one
+    /// batch at a time regardless, and direct PawnIO serializes transfers
+    /// across bus handles only when the global `SMBus` mutex could be
+    /// opened, so sharing the bus here would gain nothing safely.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when PawnIO cannot open the bus.
+    pub fn open_device(
+        path: &str,
+        address: u16,
+        bus_arbiter: SmBusBusArbiter,
+    ) -> Result<Self, TransportError> {
+        Self::open_with_arbiter(path, address, bus_arbiter)
     }
 
     /// Probe whether one `SMBus` address responds on one PawnIO bus.
@@ -745,6 +919,17 @@ impl SmBusTransport {
 
     /// `SMBus` transport is only available on Linux and Windows.
     pub fn open_with_arbiter(
+        _path: &str,
+        _address: u16,
+        _bus_arbiter: SmBusBusArbiter,
+    ) -> Result<Self, TransportError> {
+        Err(TransportError::IoError {
+            detail: "SMBus transport is only available on Linux and Windows".to_owned(),
+        })
+    }
+
+    /// `SMBus` transport is only available on Linux and Windows.
+    pub fn open_device(
         _path: &str,
         _address: u16,
         _bus_arbiter: SmBusBusArbiter,
