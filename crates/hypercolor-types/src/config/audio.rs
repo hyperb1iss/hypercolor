@@ -10,7 +10,8 @@ use super::defaults;
 /// The value multiplies the beat detector's onset thresholds, so higher
 /// means fewer, stronger beats. Below 1.0 the bass onset detector fires on
 /// any held bass note, so beat-reactive effects strobe on sustain instead
-/// of kicks; 1.2 is where that stops while kicks still land.
+/// of kicks. In a sweep over synthetic genre tracks, 1.2 is where those
+/// sustain triggers mostly stop while most kicks still land.
 pub const DEFAULT_BEAT_SENSITIVITY: f32 = 1.2;
 
 /// Audio capture and FFT analysis settings.
