@@ -689,6 +689,7 @@ pub(crate) enum PendingZoneSampling {
 
 /// What a zone sampling dispatch reads.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
 pub(crate) enum ZoneSamplingRequest<'a> {
     /// The compositor's current output, sampled with one prepared plan.
     Output(&'a [PreparedZonePlan]),

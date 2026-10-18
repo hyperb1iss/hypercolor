@@ -3,7 +3,9 @@ use std::time::Instant;
 
 use anyhow::Result;
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::scene::{Zone, ZoneId};
+use hypercolor_types::scene::Zone;
+#[cfg(feature = "wgpu")]
+use hypercolor_types::scene::ZoneId;
 
 use super::super::frame_sampling::LedSamplingStrategy;
 #[cfg(feature = "wgpu")]

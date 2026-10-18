@@ -46,6 +46,7 @@ pub(crate) struct RenderStageStats {
     pub(crate) led_sampling_strategy: LedSamplingStrategy,
     /// A single-zone scene's own pre-transition frame, kept so a transition
     /// out of a multi-zone scene can sample it instead of the crossfade.
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
     pub(crate) led_transition_source: Option<ProducerFrame>,
     pub(crate) producer_render_us: u32,
     pub(crate) producer_scene_compose_us: u32,

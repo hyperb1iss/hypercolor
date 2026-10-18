@@ -193,6 +193,7 @@ impl GpuSampleTarget {
     }
 }
 
+#[cfg(feature = "wgpu")]
 fn prepared_zone_shape(zone: &PreparedZonePlan) -> (&str, usize) {
     (zone.zone_id.as_str(), zone.sample_positions.len())
 }
