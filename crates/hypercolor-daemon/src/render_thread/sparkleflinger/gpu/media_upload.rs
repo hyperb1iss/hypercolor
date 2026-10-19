@@ -1,4 +1,4 @@
-use hypercolor_types::canvas::Canvas;
+use hypercolor_types::canvas::{Canvas, PublishedSurfaceStorageIdentity};
 
 use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin};
 
@@ -22,6 +22,8 @@ pub(super) struct MediaUploadTexturePool {
     pub(super) textures: Vec<GpuCompositorTexture>,
     pub(super) next_slot: usize,
     pub(super) last_used_epoch: u64,
+    /// The canvas storage last written into the ring and the frame it became.
+    last_upload: Option<(PublishedSurfaceStorageIdentity, GpuTextureFrame)>,
 }
 
 impl MediaUploadTexturePool {
@@ -30,7 +32,28 @@ impl MediaUploadTexturePool {
             textures: Vec::with_capacity(MEDIA_UPLOAD_TEXTURE_RING_LEN),
             next_slot: 0,
             last_used_epoch: 0,
+            last_upload: None,
         }
+    }
+
+    /// The frame `canvas` already became, when the ring's last upload came
+    /// from the same canvas storage. A still image or a GIF between frame
+    /// changes hands the same storage every render, and a canvas changes
+    /// storage identity whenever its pixels change, so writing it again
+    /// would only spend upload bandwidth and bump the content generation
+    /// that composition reuse and the sample cache key on.
+    fn reuse_upload(
+        &mut self,
+        canvas: PublishedSurfaceStorageIdentity,
+        media_texture_epoch: u64,
+    ) -> Option<GpuTextureFrame> {
+        let (uploaded_from, frame) = self.last_upload.as_ref()?;
+        if *uploaded_from != canvas {
+            return None;
+        }
+        let frame = frame.clone();
+        self.last_used_epoch = media_texture_epoch;
+        Some(frame)
     }
 
     pub(super) fn next_texture(
@@ -103,6 +126,10 @@ impl GpuSparkleFlinger {
             .media_texture_pools
             .entry(key)
             .or_insert_with(MediaUploadTexturePool::new);
+        if let Some(frame) = pool.reuse_upload(canvas.storage_identity(), self.media_texture_epoch)
+        {
+            return Some(frame);
+        }
         let texture = pool.next_texture(&self.device, key, self.media_texture_epoch);
         record_gpu_media_texture_upload(canvas.width(), canvas.height());
         write_rgba_texture(
@@ -113,7 +140,7 @@ impl GpuSparkleFlinger {
             canvas.as_rgba_bytes(),
         );
         self.producer_content_generation = self.producer_content_generation.saturating_add(1);
-        Some(GpuTextureFrame {
+        let frame = GpuTextureFrame {
             width: canvas.width(),
             height: canvas.height(),
             storage_id: texture.storage_id,
@@ -123,6 +150,8 @@ impl GpuSparkleFlinger {
             view: texture.view.clone(),
             immutable_lease: None,
             native_screen_lease: None,
-        })
+        };
+        pool.last_upload = Some((canvas.storage_identity(), frame.clone()));
+        Some(frame)
     }
 }
