@@ -1069,8 +1069,8 @@ fn spatial_engines_never_share_a_plan_generation() {
         },
     );
     let first = SpatialEngine::new(test_layout(vec![zone.clone()], 100, 20));
-    let second = SpatialEngine::try_new(test_layout(vec![zone.clone()], 100, 20))
-        .expect("layout is valid");
+    let second =
+        SpatialEngine::try_new(test_layout(vec![zone.clone()], 100, 20)).expect("layout is valid");
     let mut third = SpatialEngine::new(test_layout(vec![zone.clone()], 100, 20));
     third.update_layout(test_layout(vec![zone], 100, 20));
 
