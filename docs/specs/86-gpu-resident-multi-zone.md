@@ -666,8 +666,9 @@ Lightpad and the LUMI keys raised ripples over the bubbles on both blocks.
 
 ### 11.2 Defects found while closing Phase 1
 
-Writing the remaining acceptance tests turned up defects outside the
-rev 4 design, each fixed with a test that fails without it:
+The acceptance tests and cross-model review of the branch turned up
+defects outside the rev 4 design, each fixed with a test that fails
+without it:
 
 - Every compositor size switch and every zone, face, or projection compose
   cancelled the scene preview's pending readback, so a preview that did not
@@ -682,13 +683,27 @@ rev 4 design, each fixed with a test that fails without it:
   admits three.
 - The sample cache never hit across frames, because composing any output
   cleared it, and compositor size switches rebuilt zone texture bind groups.
+- A loading zone's same-frame retry asked for a CPU sampling canvas, which
+  entered the shared readback latch (Spec 48 §4.1) and could hand the zone
+  another zone's pixels. The retry now stays GPU-resident.
+- An interrupted fade through an overlapping multi-zone scene went back to
+  sampling the compositor output, because only settled scenes recorded
+  per-zone provenance, so an LED could take another zone's color. The fade
+  now carries the provenance of the LEDs it last published.
+- A zone holding a screen-region crop or an image or GIF layer got no frame
+  on the GPU. The GPU compositor takes CPU canvases only at the zone's
+  extent, and the CPU fallback cannot read GPU textures, so the zone went
+  black and a display face mixing such a layer with an HTML layer
+  published nothing. Off-extent canvases now upload into the layer's media
+  texture ring whenever the plan needs the GPU, and an unchanged canvas
+  uploads once.
 
 ### 11.3 Remaining Phase 1 work
 
-- Dedicated tests for criteria 1 (three overlapping zones), 5 (single to
-  multi with overlap), 6 (render failure recovery, and `Off` and `Hold`
-  parity), 8, 13, 14, 15, and 17, a tighter cadence bound for criterion 9,
-  and a summed-area-table allocation assertion for criterion 11.
+- Criterion 8 for web-viewport layers. Every other criterion has a
+  dedicated test, but reconciling a web-viewport layer starts a real Servo
+  session, which the render-zone harness cannot host. Those layers render
+  through the same effect-layer path the injected-frame tests cover.
 - Demand gating for the scene projection (§3.4, §5.1): a multi-zone scene
   composes its projection every frame, even when no preview, capture, or
   blended display consumes it.
