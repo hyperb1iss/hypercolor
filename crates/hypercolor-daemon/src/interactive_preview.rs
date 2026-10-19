@@ -1175,14 +1175,16 @@ fn render_preview_scene(
             lighting: None,
         },
     };
-    zone_runtime
+    let surface = zone_runtime
         .render_scene(context, sparkleflinger, zones)
         .map_err(|error| error.to_string())
         .and_then(|rendered| {
             preview_surface(sparkleflinger, rendered, spec.width, spec.height).ok_or_else(|| {
                 "preview frame could not be materialized on its isolated device".to_owned()
             })
-        })
+        });
+    sparkleflinger.end_gpu_frame();
+    surface
 }
 
 fn preview_zone_runtime(

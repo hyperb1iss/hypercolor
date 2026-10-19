@@ -1129,7 +1129,12 @@ impl SparkleFlinger {
         composed.preview_surface.or(composed.sampling_surface)
     }
 
-    /// Close this render frame's GPU work; see [`Self::wait_for_gpu_frame_budget`].
+    /// Close this render frame's GPU work. The empty submission marks where
+    /// the frame's work ends for [`Self::wait_for_gpu_frame_budget`] and hands
+    /// wgpu every queue write the frame made, so their staging buffers never
+    /// wait on a submission that may not come. Drivers call this once on
+    /// every exit from a frame that may have done GPU work; a no-op on the
+    /// CPU backend.
     pub(crate) fn end_gpu_frame(&mut self) {
         #[cfg(feature = "wgpu")]
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {

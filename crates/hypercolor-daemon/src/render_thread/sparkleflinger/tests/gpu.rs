@@ -345,7 +345,8 @@ fn sparkleflinger_gpu_readback_failure_composes_black() {
 
 /// A frame waits for the GPU to finish the frame two back, so a device
 /// slower than the frame cadence never accumulates more than one earlier
-/// frame of queued work.
+/// frame of queued work. Frame ends that nothing waits on keep only the
+/// newest marks.
 #[cfg(feature = "wgpu")]
 #[test]
 fn gpu_frame_budget_keeps_one_earlier_frame_in_flight() {
@@ -355,7 +356,7 @@ fn gpu_frame_budget_keeps_one_earlier_frame_in_flight() {
     for _ in 0..5 {
         sparkleflinger.end_gpu_frame();
     }
-    assert_eq!(sparkleflinger.gpu_frames_in_flight_for_test(), Some(5));
+    assert_eq!(sparkleflinger.gpu_frames_in_flight_for_test(), Some(2));
 
     sparkleflinger.wait_for_gpu_frame_budget();
 

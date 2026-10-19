@@ -333,6 +333,7 @@ pub(crate) async fn execute_frame(
         Box::pin(service_scene_transactions(state, scene, frame_loop, render)).await;
     }
     if render.pending_layout_activation.is_some() {
+        render.sparkleflinger.end_gpu_frame();
         let mut render_loop = state.render_loop.write().await;
         return runtime
             .frame_policy
@@ -379,6 +380,7 @@ pub(crate) async fn execute_frame(
             )
             .await;
             frame_loop.throttle.note_sleep_frame_published();
+            render.sparkleflinger.end_gpu_frame();
             let mut render_loop = state.render_loop.write().await;
             return runtime
                 .frame_policy
@@ -399,6 +401,7 @@ pub(crate) async fn execute_frame(
         )
         .await
         {
+            render.sparkleflinger.end_gpu_frame();
             return frame;
         }
     } else {
@@ -437,6 +440,7 @@ pub(crate) async fn execute_frame(
     )
     .await
     {
+        render.sparkleflinger.end_gpu_frame();
         return frame;
     }
 
@@ -598,6 +602,7 @@ pub(crate) async fn execute_frame(
             )
             .await;
             frame_loop.throttle.note_sleep_frame_published();
+            render.sparkleflinger.end_gpu_frame();
             let mut render_loop = state.render_loop.write().await;
             return runtime
                 .frame_policy
