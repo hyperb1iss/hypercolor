@@ -20,6 +20,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 use super::super::frame_sampling::{LedSamplingStrategy, RetainedLedSamplingStrategy};
 use super::super::producer_queue::ProducerFrame;
 use super::super::scene_dependency::SceneDependencyKey;
+use super::display_retention::DisplayFrameCadence;
 use crate::performance::FullFrameCopyMetrics;
 
 #[derive(Clone)]
@@ -340,14 +341,14 @@ pub(super) struct RetainedRenderZoneFrame {
 #[derive(Clone)]
 pub(super) struct RetainedDirectZoneFrame {
     pub(super) frame: PendingDisplayZoneFrame,
-    pub(super) rendered_at_ms: u64,
+    pub(super) cadence: Option<DisplayFrameCadence>,
     pub(super) dependency_key: SceneDependencyKey,
 }
 
 #[derive(Clone)]
 pub(super) struct RetainedMaterializedZoneFrame {
     pub(super) frame: DisplayZoneCanvasFrame,
-    pub(super) rendered_at_ms: u64,
+    pub(super) cadence: Option<DisplayFrameCadence>,
     pub(super) dependency_key: SceneDependencyKey,
     pub(super) display_target: DisplayFaceTarget,
     pub(super) display_route: DisplayZoneOutputRoute,
