@@ -1480,6 +1480,9 @@ pub(crate) struct ComposeRuntime<'a> {
     pub(crate) render_zone_runtime: &'a mut ZoneRuntime,
     pub(crate) output_artifacts: &'a mut OutputArtifactsState,
     pub(crate) effect_delta_clock: &'a mut EffectDeltaClock,
+    /// Whether the LEDs published last frame were sampled per zone, so a
+    /// transition starting from them samples its incoming scene per zone.
+    pub(crate) last_published_per_zone: bool,
 }
 
 #[cfg(feature = "wgpu")]
@@ -1922,6 +1925,7 @@ impl RenderCaches {
             render_zone_runtime: &mut self.render_zone_runtime,
             output_artifacts: &mut self.output_artifacts,
             effect_delta_clock: &mut self.effect_delta_clock,
+            last_published_per_zone: self.zone_transition_planner.last_published_per_zone,
         }
     }
 

@@ -898,6 +898,7 @@ mod tests {
                 effect_delta_clock: &mut self.effect_delta_clock,
                 render_zone_runtime: &mut self.render_zone_runtime,
                 output_artifacts: &mut self.output_artifacts,
+                last_published_per_zone: false,
             }
         }
     }

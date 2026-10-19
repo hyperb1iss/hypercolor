@@ -1673,6 +1673,150 @@ fn gpu_imported_frame_composes_without_cpu_readback() {
     );
 }
 
+fn quadrant_point_output(id: &str, x: f32, y: f32) -> Output {
+    Output {
+        id: id.into(),
+        name: id.into(),
+        device_id: format!("device:{id}"),
+        zone_name: None,
+        position: NormalizedPosition::new(x, y),
+        size: NormalizedPosition::new(0.5, 0.5),
+        rotation: 0.0,
+        scale: 1.0,
+        orientation: None,
+        topology: LedTopology::Point,
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: Some(SamplingMode::Nearest),
+        edge_behavior: Some(EdgeBehavior::Clamp),
+        shape: None,
+        shape_preset: None,
+        display_order: 0,
+        attachment: None,
+        brightness: None,
+    }
+}
+
+/// A transition that samples an imported scene per zone samples a
+/// compositor snapshot of it: upright like the composed scene, and still
+/// intact after the crossfade reuses the compositor output.
+#[cfg(feature = "servo-gpu-import")]
+#[test]
+fn imported_scene_frame_snapshots_upright_for_zone_sampling() {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    let SparkleFlingerBackend::Gpu { gpu, .. } = &sparkleflinger.backend else {
+        return;
+    };
+    let (device, queue) = (gpu.device.clone(), gpu.queue.clone());
+    let (width, height) = (2, 2);
+    let preparation = sparkleflinger
+        .prepare_canvas_resize(width, height)
+        .expect("a 2x2 GPU canvas should prepare");
+    sparkleflinger.apply_canvas_resize(preparation);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("SparkleFlinger test imported scene"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    // Bottom row first: blue, yellow; then the top row: red, green.
+    let bgra_bottom_left_origin = [
+        255, 0, 0, 255, 0, 255, 255, 255, 0, 0, 255, 255, 0, 255, 0, 255,
+    ];
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &bgra_bottom_left_origin,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = Arc::new(texture);
+    let imported = ProducerFrame::Gpu(hypercolor_gpu_frame::ImportedEffectFrame {
+        width,
+        height,
+        format: hypercolor_gpu_frame::ImportedFrameFormat::Bgra8Unorm,
+        allocation_id: hypercolor_gpu_frame::ImportedFrameAllocationId::new(1),
+        content_generation: 1,
+        origin: hypercolor_gpu_frame::FrameOrigin::BottomLeft,
+        lease: hypercolor_gpu_frame::ImportedFrameLease::new(Arc::clone(&texture)),
+        texture,
+        view: Arc::new(view),
+        timings: hypercolor_gpu_frame::ImportedFrameTimings::default(),
+    });
+
+    let snapshot = sparkleflinger
+        .sampleable_imported_frame(&imported)
+        .expect("the imported frame should compose")
+        .expect("the GPU compositor should snapshot the imported frame");
+    let ProducerFrame::GpuTexture(snapshot) = snapshot else {
+        panic!("the snapshot should be a compositor texture");
+    };
+    assert_eq!(snapshot.origin, GpuTextureFrameOrigin::ImmutableSnapshot);
+
+    // The crossfade composes into the compositor output after the snapshot.
+    let mut black = Canvas::new(width, height);
+    black.fill(Rgba::new(0, 0, 0, 255));
+    sparkleflinger.compose_for_outputs(
+        CompositionPlan::single(
+            width,
+            height,
+            CompositionLayer::replace(ProducerFrame::Canvas(black)),
+        ),
+        false,
+        None,
+    );
+
+    let engine = SpatialEngine::new(SpatialLayout {
+        id: "imported-quadrants".into(),
+        name: "Imported Quadrants".into(),
+        description: None,
+        canvas_width: width,
+        canvas_height: height,
+        zones: vec![
+            quadrant_point_output("top_left", 0.25, 0.25),
+            quadrant_point_output("top_right", 0.75, 0.25),
+            quadrant_point_output("bottom_left", 0.25, 0.75),
+            quadrant_point_output("bottom_right", 0.75, 0.75),
+        ],
+        default_sampling_mode: SamplingMode::Nearest,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    });
+    let zones = sparkleflinger
+        .sample_texture_zone_plan(&snapshot, engine.sampling_plan().as_ref())
+        .expect("snapshot sampling should succeed")
+        .expect("the GPU sampler should read the snapshot");
+    let colors: Vec<_> = zones.iter().map(|zone| zone.colors[0]).collect();
+    assert_eq!(
+        colors,
+        vec![[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]],
+        "the snapshot should keep the imported frame upright",
+    );
+}
+
 #[test]
 fn gpu_compositor_passthroughs_current_output_texture() {
     let Some(mut compositor) = gpu_test_compositor() else {

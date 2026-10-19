@@ -1781,6 +1781,32 @@ impl SparkleFlinger {
         }
     }
 
+    /// An imported effect frame composed into an immutable compositor
+    /// snapshot. The GPU sampler reads only compositor-owned textures, so a
+    /// transition that samples an imported scene per zone samples this copy.
+    /// `None` when `frame` is not imported or the GPU cannot compose it.
+    #[cfg(feature = "servo-gpu-import")]
+    pub(crate) fn sampleable_imported_frame(
+        &mut self,
+        frame: &ProducerFrame,
+    ) -> Result<Option<ProducerFrame>> {
+        if !matches!(frame, ProducerFrame::Gpu(_)) || !self.supports_gpu_output_frames() {
+            return Ok(None);
+        }
+        let plan = CompositionPlan::single(
+            frame.width(),
+            frame.height(),
+            CompositionLayer::replace(frame.clone()),
+        )
+        .with_cpu_replay_cacheable(false)
+        .preserving_scene_preview();
+        let composed = self.compose_for_outputs(plan, false, None);
+        if composed.backend != CompositorBackendKind::Gpu || composed.gpu_readback_failed {
+            return Ok(None);
+        }
+        self.immutable_current_output_frame()
+    }
+
     #[cfg(feature = "wgpu")]
     pub(crate) fn immutable_current_output_frame(&mut self) -> Result<Option<ProducerFrame>> {
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {

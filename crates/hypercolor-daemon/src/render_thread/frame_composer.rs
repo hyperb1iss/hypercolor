@@ -370,6 +370,8 @@ impl ComposeContext<'_> {
                         .scene_runtime
                         .active_transition
                         .is_some(),
+                    self.compose.last_published_per_zone,
+                    self.compose.sparkleflinger,
                 );
                 let composition_start = Instant::now();
                 let compiled_plan = self.compose.composition_planner.compile_primary_frame(
@@ -862,14 +864,35 @@ mod tests;
 
 /// The single-zone scene frame a transition out of a multi-zone scene
 /// samples instead of the crossfade. Kept only while a scene transition is
-/// active, so ordinary frames never pay for the copy.
+/// active, so ordinary frames never pay for the copy. An imported effect
+/// frame is composed into a texture the sampler can read, before the
+/// crossfade takes over the compositor output, and only when the fade
+/// starts from per-zone LEDs and will sample it.
 fn led_transition_source(
     strategy: &LedSamplingStrategy,
     scene_frame: &ProducerFrame,
     transition_active: bool,
+    last_published_per_zone: bool,
+    sparkleflinger: &mut SparkleFlinger,
 ) -> Option<ProducerFrame> {
-    (transition_active && matches!(strategy, LedSamplingStrategy::SparkleFlinger(_)))
-        .then(|| scene_frame.clone())
+    if !transition_active || !matches!(strategy, LedSamplingStrategy::SparkleFlinger(_)) {
+        return None;
+    }
+    #[cfg(feature = "servo-gpu-import")]
+    if matches!(scene_frame, ProducerFrame::Gpu(_)) {
+        if !last_published_per_zone {
+            return None;
+        }
+        return sparkleflinger
+            .sampleable_imported_frame(scene_frame)
+            .unwrap_or_else(|error| {
+                debug!(%error, "Imported scene frame could not be copied for LED transition sampling");
+                None
+            });
+    }
+    #[cfg(not(feature = "servo-gpu-import"))]
+    let _ = (last_published_per_zone, sparkleflinger);
+    Some(scene_frame.clone())
 }
 
 #[cfg(test)]
