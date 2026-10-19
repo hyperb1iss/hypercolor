@@ -212,7 +212,7 @@ The daemon runs a render loop on a dedicated thread, targeting adaptive FPS (10/
 InputManager::sample_all()        → Collect audio, screen, keyboard data
 build_frame_scene_snapshot()      → Capture active scene, effect groups, and live control state
 SparkleFlinger::compose_frame()   → Each producer runs at its own cadence; the compositor latches the newest surface per producer and blends into one canonical RGBA canvas (640×480 default, configurable)
-SpatialEngine::sample()           → Map composed canvas pixels to LED positions → ZoneColors
+SpatialEngine::sample()           → Map pixels to LED positions → ZoneColors. A single-zone scene samples the composed canvas; a multi-zone scene on the GPU keeps each zone in its own texture and samples each with that zone's plan in one dispatch (Spec 86)
 BackendManager::write_frame()     → Group by device, queue async sends
 HypercolorBus::publish()          → Publish frame data, canvas preview, timing metrics
 ```

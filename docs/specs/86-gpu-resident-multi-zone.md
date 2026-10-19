@@ -395,8 +395,9 @@ Spec 64 already calls a harmless detail of a preview image.
 The target-space fetch rounds to the nearest texel. That is exact for nearest
 outputs and close for others, but Spec 48 §4.2 asks the preview to follow LED
 sampling semantics, and equal-size bilinear or area zones can differ on
-patterned content. Phase 3 closes that gap; until then the diagnostic
-snapshot reports `preview_projection_filter = nearest`.
+patterned content. Phase 3 closes that gap; until then the scene preview
+fetches nearest texels, and the diagnostic snapshot does not report the
+projection filter.
 
 ### 5.2 Zone previews
 
@@ -684,6 +685,13 @@ rev 4 design, each fixed with a test that fails without it:
 
 ### 11.3 Remaining Phase 1 work
 
-None in code. Live acceptance on the evidence rig runs against the branch
-build: the ten-minute hold with all display faces, frame `total_us` p95
-against the single-zone scene, and the diagnose checks.
+- Dedicated tests for criteria 1 (three overlapping zones), 5 (single to
+  multi with overlap), 6 (render failure recovery, and `Off` and `Hold`
+  parity), 8, 13, 14, 15, and 17, a tighter cadence bound for criterion 9,
+  and a summed-area-table allocation assertion for criterion 11.
+- Demand gating for the scene projection (§3.4, §5.1): a multi-zone scene
+  composes its projection every frame, even when no preview, capture, or
+  blended display consumes it.
+- Live acceptance on the evidence rig against the branch build: the
+  ten-minute hold with all display faces, frame `total_us` p95 against the
+  single-zone scene, and the diagnose checks.
