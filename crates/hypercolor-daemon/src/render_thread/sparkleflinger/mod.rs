@@ -691,8 +691,13 @@ pub(crate) enum PendingZoneSampling {
 #[derive(Clone, Copy)]
 #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
 pub(crate) enum ZoneSamplingRequest<'a> {
-    /// The compositor's current output, sampled with one prepared plan.
-    Output(&'a [PreparedZonePlan]),
+    /// The compositor's current output, sampled with one prepared plan, and
+    /// any zone textures sampled beside it in the same dispatch.
+    Output {
+        prepared_zones: &'a [PreparedZonePlan],
+        #[cfg(feature = "wgpu")]
+        textures: &'a [ZoneTextureSample],
+    },
     /// Retained zone textures, each sampled with its own prepared plan.
     #[cfg(feature = "wgpu")]
     ZoneTextures(&'a [ZoneTextureSample]),
@@ -1513,9 +1518,10 @@ impl SparkleFlinger {
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => {
                 let dispatch = match request {
-                    ZoneSamplingRequest::Output(prepared_zones) => {
-                        gpu.begin_sample_zone_plan_into(prepared_zones, zones)?
-                    }
+                    ZoneSamplingRequest::Output {
+                        prepared_zones,
+                        textures,
+                    } => gpu.begin_sample_output_into(prepared_zones, textures, zones)?,
                     ZoneSamplingRequest::ZoneTextures(textures) => {
                         gpu.begin_sample_zone_textures_into(textures, zones)?
                     }
@@ -1583,9 +1589,14 @@ impl SparkleFlinger {
             #[cfg(feature = "wgpu")]
             (SparkleFlingerBackend::Gpu { gpu, .. }, PendingZoneSampling::Gpu(pending)) => {
                 match request {
-                    ZoneSamplingRequest::Output(prepared_zones) => {
-                        gpu.pending_zone_sampling_matches_current_work(pending, prepared_zones)
-                    }
+                    ZoneSamplingRequest::Output {
+                        prepared_zones,
+                        textures,
+                    } => gpu.pending_zone_sampling_matches_current_work(
+                        pending,
+                        prepared_zones,
+                        textures,
+                    ),
                     ZoneSamplingRequest::ZoneTextures(textures) => {
                         gpu::GpuSparkleFlinger::pending_zone_texture_sampling_matches(
                             pending, textures,
@@ -1593,6 +1604,43 @@ impl SparkleFlinger {
                     }
                 }
             }
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+
+    /// Whether a completed sample was taken with `request`'s plans. Its
+    /// content may be a frame old, which deferred sampling accepts; its plans
+    /// must be the current ones, or its colors belong to other outputs.
+    #[cfg_attr(
+        not(feature = "wgpu"),
+        allow(
+            unused_variables,
+            reason = "GPU-only parameter still present in the CPU-only build"
+        )
+    )]
+    pub(crate) fn completed_zone_sampling_used_request_plans(
+        &self,
+        completed: &PendingZoneSampling,
+        request: ZoneSamplingRequest<'_>,
+    ) -> bool {
+        match completed {
+            #[cfg(feature = "wgpu")]
+            PendingZoneSampling::Gpu(completed) => match request {
+                ZoneSamplingRequest::Output {
+                    prepared_zones,
+                    textures,
+                } => gpu::GpuSparkleFlinger::pending_zone_sampling_used_output_plan(
+                    completed,
+                    prepared_zones,
+                    textures,
+                ),
+                ZoneSamplingRequest::ZoneTextures(textures) => {
+                    gpu::GpuSparkleFlinger::pending_zone_sampling_used_texture_plan(
+                        completed, textures,
+                    )
+                }
+            },
             #[allow(unreachable_patterns)]
             _ => false,
         }

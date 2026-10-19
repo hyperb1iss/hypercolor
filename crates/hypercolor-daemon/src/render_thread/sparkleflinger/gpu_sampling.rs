@@ -493,6 +493,7 @@ impl PendingGpuSampleReadback {
 }
 
 impl GpuSamplingPlan {
+    #[cfg(test)]
     pub(super) fn key(prepared_zones: &[PreparedZonePlan]) -> Option<GpuSamplingPlanKey> {
         Self::key_for_plans([prepared_zones])
     }

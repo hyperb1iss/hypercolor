@@ -2737,6 +2737,25 @@ async fn cpu_multi_zone_fallback_samples_unassigned_outputs_from_the_fallback_zo
     .await;
 }
 
+/// A single zone whose two layers compose on the GPU, so its frame is a
+/// texture rather than a canvas; the top layer's color wins.
+#[cfg(feature = "wgpu")]
+fn gpu_composed_primary_zone(solid_id: EffectId, top: (u8, u8, u8)) -> Zone {
+    let mut zone = primary_zone(
+        solid_id,
+        solid_color_controls(0, 0, 255),
+        test_layout(vec![strip_zone("zone_main", "mock:main", 4)]),
+    );
+    zone.layers.push(SceneLayer::from_effect(
+        SceneLayerId::new(),
+        solid_id,
+        solid_color_controls(top.0, top.1, top.2),
+        HashMap::new(),
+        None,
+    ));
+    zone
+}
+
 /// A single-zone scene whose layers compose on the GPU publishes a texture,
 /// not a canvas; its fallback outputs ride the same LED dispatch.
 #[cfg(feature = "wgpu")]
@@ -2745,18 +2764,7 @@ async fn gpu_single_zone_fallback_samples_unassigned_outputs_from_its_texture() 
     assert_unplaced_device_shows(
         RenderAccelerationMode::Gpu,
         |solid_id| {
-            let mut zone = primary_zone(
-                solid_id,
-                solid_color_controls(0, 0, 255),
-                test_layout(vec![strip_zone("zone_main", "mock:main", 4)]),
-            );
-            zone.layers.push(SceneLayer::from_effect(
-                SceneLayerId::new(),
-                solid_id,
-                solid_color_controls(0, 255, 0),
-                HashMap::new(),
-                None,
-            ));
+            let zone = gpu_composed_primary_zone(solid_id, (0, 255, 0));
             let zone_id = zone.id;
             let mut scene = make_scene("Fallback Single Zone");
             scene.zones = vec![zone];
@@ -2765,6 +2773,79 @@ async fn gpu_single_zone_fallback_samples_unassigned_outputs_from_its_texture() 
         [0, 255, 0],
     )
     .await;
+}
+
+/// A single-zone scene fading in samples its fallback outputs from its own
+/// texture for the whole transition, as the CPU backend samples its canvas,
+/// instead of leaving them dark until the fade ends.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_single_zone_fallback_samples_through_a_scene_transition() {
+    let (backend, device_id, backend_manager) = unplaced_mock_device(4).await;
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        backend_manager,
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut outgoing = make_scene("Outgoing");
+    outgoing.transition.duration_ms = 0;
+    outgoing.zones = vec![gpu_composed_primary_zone(solid_id, (255, 0, 0))];
+    outgoing.unassigned_behavior = UnassignedBehavior::Off;
+    let incoming_zone = gpu_composed_primary_zone(solid_id, (0, 255, 0));
+    let incoming_zone_id = incoming_zone.id;
+    let mut incoming = make_scene("Incoming");
+    incoming.transition.duration_ms = 60_000;
+    incoming.zones = vec![incoming_zone];
+    incoming.unassigned_behavior = UnassignedBehavior::Fallback(incoming_zone_id);
+    install_render_scenes(
+        &state,
+        vec![outgoing.clone(), incoming.clone()],
+        outgoing.id,
+    )
+    .await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_main") == Some([255, 0, 0])
+    })
+    .await;
+
+    activate_render_scene(&state, incoming.id).await;
+    let reached_green = tokio::time::timeout(WAIT_DEADLINE, async {
+        while backend.last_colors(&device_id) != Some(vec![[0, 255, 0]; 4]) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let still_fading = frame_rx
+        .borrow()
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_main")
+        .and_then(|zone| zone.colors.first().copied())
+        .is_some_and(|color| color != [0, 255, 0]);
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        reached_green.is_ok(),
+        "the unplaced device never showed the incoming zone during the fade; last write was {:?}",
+        backend.last_colors(&device_id)
+    );
+    assert!(still_fading, "the scene transition should still be running");
 }
 
 #[cfg(feature = "wgpu")]
