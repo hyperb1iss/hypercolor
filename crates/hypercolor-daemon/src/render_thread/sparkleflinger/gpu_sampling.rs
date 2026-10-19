@@ -1621,6 +1621,19 @@ impl GpuSpatialSampler {
         }
     }
 
+    /// Drop cached bind groups for every source but retained textures. The
+    /// compositor's output views change with its surfaces; a retained
+    /// texture's bind group names its own storage and stays valid.
+    pub(super) fn clear_output_bind_groups(&mut self) {
+        let retained_texture =
+            |source: GpuSampleSource| matches!(source, GpuSampleSource::Texture(_));
+        self.cached_bind_groups
+            .retain(|cached| retained_texture(cached.source));
+        for resources in &mut self.area_resources {
+            resources.retain_bind_groups(retained_texture);
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn cached_bind_group_count(&self) -> usize {
         self.cached_bind_groups.len()

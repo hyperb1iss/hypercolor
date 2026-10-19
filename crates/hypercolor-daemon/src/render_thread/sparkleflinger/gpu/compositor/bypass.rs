@@ -73,8 +73,8 @@ impl GpuSparkleFlinger {
         self.cached_preview_surfaces.clear();
         self.pending_preview_map = None;
         self.ready_preview_surface = None;
-        self.cached_sample_result = None;
-        self.spatial_sampler.clear_bind_groups();
+        self.invalidate_output_sample();
+        self.spatial_sampler.clear_output_bind_groups();
     }
 
     pub(super) fn prepare_preview_for_surfaces(
@@ -224,7 +224,7 @@ impl GpuSparkleFlinger {
         self.cached_composition_key.clone_from(&readback_key);
         if !same_output {
             self.output_generation = self.output_generation.saturating_add(1);
-            self.cached_sample_result = None;
+            self.invalidate_output_sample();
         }
 
         let mut composed = match &layer.frame {

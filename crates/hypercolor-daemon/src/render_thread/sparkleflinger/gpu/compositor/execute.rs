@@ -363,7 +363,7 @@ impl GpuSparkleFlinger {
         self.current_output = Some(current_output);
         self.cached_composition_key.clone_from(&readback_key);
         self.output_generation = self.output_generation.saturating_add(1);
-        self.cached_sample_result = None;
+        self.invalidate_output_sample();
         if !requires_cpu_sampling_canvas && !requires_preview_surface {
             self.stage_frame_in_flight_with_native_screen_leases(
                 encoder,

@@ -483,6 +483,20 @@ impl GpuSparkleFlinger {
         self.store_sample_result(content, sampling_plan, zones);
     }
 
+    /// Forget a cached sample of the compositor output once that output
+    /// changes. A zone texture sample stays: its key names the storage and
+    /// content generation of every texture it read, which composing new
+    /// output never touches.
+    pub(super) fn invalidate_output_sample(&mut self) {
+        if self
+            .cached_sample_result
+            .as_ref()
+            .is_some_and(|cached| cached.key.content.output_generation().is_some())
+        {
+            self.cached_sample_result = None;
+        }
+    }
+
     fn store_sample_result(
         &mut self,
         content: SampleContentKey,

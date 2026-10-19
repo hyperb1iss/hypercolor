@@ -1508,6 +1508,61 @@ fn gpu_pending_sample_matches_and_finishes_across_retained_bypass_frames() {
     );
 }
 
+/// Composing new output, at the same size or another, leaves an unchanged
+/// zone texture sample cached and keeps the textures' bind groups: the
+/// sample's key names the textures it read, not the output (Spec 86 §3.3).
+#[test]
+fn gpu_zone_texture_sample_survives_compositor_output_changes() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let case = SpatialEngine::new(zone_texture_layout("case", 4, 4, SamplingMode::Bilinear, 4));
+    let textures = vec![ZoneTextureSample {
+        frame: uploaded_zone_texture(
+            &compositor,
+            &patterned_canvas_with_size(4, 4, 30),
+            TEST_ZONE_TEXTURE_STORAGE_BASE + 30,
+        ),
+        prepared_zones: case.sampling_plan(),
+    }];
+    let sampled = sample_zone_textures(&mut compositor, &textures);
+    let bind_groups = compositor.spatial_sampler.cached_bind_group_count();
+    let dispatches = compositor.spatial_sampler.sample_dispatch_count();
+
+    for (width, height) in [(4, 4), (8, 2)] {
+        let plan = CompositionPlan::single(
+            width,
+            height,
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas_with_size(
+                width, height, 99,
+            ))),
+        );
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed between zone samples");
+        let mut cached = Vec::new();
+        assert!(
+            matches!(
+                compositor
+                    .begin_sample_zone_textures_into(&textures, &mut cached)
+                    .expect("an unchanged zone texture sample should resolve"),
+                GpuZoneSamplingDispatch::Ready
+            ),
+            "an unchanged zone texture sample should survive a {width}x{height} compose"
+        );
+        assert_eq!(cached, sampled);
+    }
+    assert_eq!(
+        compositor.spatial_sampler.sample_dispatch_count(),
+        dispatches
+    );
+    assert_eq!(
+        compositor.spatial_sampler.cached_bind_group_count(),
+        bind_groups,
+        "a compositor size switch should keep retained texture bind groups"
+    );
+}
+
 mod spatial;
 
 fn zone_texture_layout(
