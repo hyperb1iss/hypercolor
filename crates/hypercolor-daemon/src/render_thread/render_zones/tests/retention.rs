@@ -503,3 +503,72 @@ fn display_cadence_resyncs_after_a_stall_instead_of_bursting() {
     let every_second_tick: Vec<_> = loop_ticks(60, 75..135).step_by(2).collect();
     assert_eq!(after_stall, every_second_tick);
 }
+
+#[test]
+fn display_cadence_resyncs_to_a_render_ahead_of_its_deadline() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let zone = sample_display_zone(4, 4);
+    let display_target = zone
+        .display_target
+        .clone()
+        .expect("display zone should have a target");
+    let direct_frame = PendingDisplayZoneFrame {
+        frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
+        display_target: display_target.clone(),
+        empty_direct_shell: false,
+    };
+    let materialized_frame = sample_zone_canvas_frame(&display_target, true);
+    let display_route = sample_display_route(display_target.device_id);
+    let target_fps = HashMap::from([(zone.id, 30)]);
+    let retain = |runtime: &mut ZoneRuntime, elapsed_ms, dependency_key| {
+        runtime.retain_direct_zone_frame(
+            zone.id,
+            elapsed_ms,
+            Some(30),
+            dependency_key,
+            &direct_frame,
+        );
+        runtime.retain_materialized_zone_frame(
+            zone.id,
+            elapsed_ms,
+            Some(30),
+            dependency_key,
+            &display_target,
+            &display_route,
+            false,
+            &materialized_frame,
+        );
+    };
+    let holds = |runtime: &mut ZoneRuntime, elapsed_ms, dependency_key| {
+        let direct = runtime
+            .reuse_retained_direct_zone_frame(&zone, elapsed_ms, &target_fps, dependency_key)
+            .is_some();
+        let materialized = runtime
+            .reuse_retained_materialized_zone_frame(
+                zone.id,
+                elapsed_ms,
+                Some(30),
+                dependency_key,
+                &display_target,
+                &display_route,
+                false,
+            )
+            .is_some();
+        assert_eq!(
+            direct, materialized,
+            "display gates disagree at {elapsed_ms} ms"
+        );
+        direct
+    };
+
+    // The frame retained at 100 ms is due at 133.33 ms, but a dependency
+    // change renders the face at 110 ms. The next frame is due one interval
+    // after that render, at 143.33 ms, not one after the deadline it beat.
+    retain(&mut runtime, 100, SceneDependencyKey::new(1, 1));
+    let changed = SceneDependencyKey::new(1, 2);
+    assert!(!holds(&mut runtime, 110, changed));
+    retain(&mut runtime, 110, changed);
+
+    assert!(holds(&mut runtime, 141, changed));
+    assert!(!holds(&mut runtime, 142, changed));
+}
