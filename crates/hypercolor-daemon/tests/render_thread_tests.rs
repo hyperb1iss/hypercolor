@@ -56,6 +56,8 @@ use hypercolor_core::input::{
     InteractionSourceRole, ManagedSourceRole, ScreenSource, ScreenSourceRole, SourceKind,
     SourceRoleBinding,
 };
+#[cfg(feature = "wgpu")]
+use hypercolor_core::scene::interpolate_color;
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
@@ -70,6 +72,8 @@ use hypercolor_driver_api::{
 };
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::AudioData;
+#[cfg(feature = "wgpu")]
+use hypercolor_types::canvas::Rgb;
 use hypercolor_types::canvas::Rgba;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::control::ControlValue;
@@ -3205,6 +3209,254 @@ fn zone_led(frame: &FrameData, zone_id: &str) -> Option<[u8; 3]> {
         .iter()
         .find(|zone| zone.zone_id == zone_id)
         .and_then(|zone| zone.colors.first().copied())
+}
+
+#[cfg(feature = "wgpu")]
+fn zone_leds(frame: &FrameData, zone_id: &str) -> Option<Vec<[u8; 3]>> {
+    frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == zone_id)
+        .map(|zone| zone.colors.clone())
+}
+
+/// A four-LED strip across an output rectangle `0.4` wide centered on `x`.
+#[cfg(feature = "wgpu")]
+fn overlapping_strip(id: &str, device_id: &str, x: f32) -> Output {
+    let mut output = point_zone(id, device_id, x, 0.5);
+    output.size = NormalizedPosition { x: 0.4, y: 0.2 };
+    output.topology = LedTopology::Strip {
+        count: 4,
+        direction: StripDirection::LeftToRight,
+    };
+    output
+}
+
+/// Three zones whose output rectangles overlap each other each keep their
+/// own color on every LED, including the LEDs that sit inside another
+/// zone's rectangle. Each zone samples its own texture; sampling the
+/// composited scene would hand every overlapped LED to whichever zone
+/// composited last (Spec 86 §8 criterion 1).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_scene_samples_three_overlapping_zones_from_their_own_textures() {
+    const HELD_FRAMES: usize = 20;
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let expected = [
+        ("zone_red", [255, 0, 0], 0.35),
+        ("zone_green", [0, 255, 0], 0.5),
+        ("zone_blue", [0, 0, 255], 0.65),
+    ];
+    let mut scene = make_scene("Three Overlapping Zones");
+    scene.zones = expected
+        .iter()
+        .map(|(output_id, color, x)| {
+            custom_zone(
+                output_id,
+                solid_id,
+                solid_color_controls(color[0], color[1], color[2]),
+                test_layout(vec![overlapping_strip(output_id, output_id, *x)]),
+            )
+        })
+        .collect();
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let shows_own_colors = |frame: &FrameData| {
+        expected
+            .iter()
+            .all(|(output_id, color, _)| zone_leds(frame, output_id) == Some(vec![*color; 4]))
+    };
+    let first = wait_for_frame_where(&mut frame_rx, shows_own_colors).await;
+    let mut last_frame = first.frame_number;
+    let mut violations = Vec::new();
+    for _ in 0..HELD_FRAMES {
+        let frame = wait_for_next_frame(&mut frame_rx, last_frame).await;
+        last_frame = frame.frame_number;
+        if !shows_own_colors(&frame) {
+            violations.push(format!(
+                "frame {}: {:?}",
+                frame.frame_number,
+                expected
+                    .iter()
+                    .map(|(output_id, _, _)| zone_leds(&frame, output_id))
+                    .collect::<Vec<_>>()
+            ));
+        }
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        violations.is_empty(),
+        "overlapped LEDs lost their own zone's color:\n{}",
+        violations.join("\n")
+    );
+}
+
+/// A transition from a single-zone scene into overlapping zones blends
+/// every LED in LED space from its own old color toward its own new one:
+/// the red zone's LED fades from green toward red without passing through
+/// the blue zone composited over it, the blue zone's LED fades toward blue
+/// without passing through red, and the fade shows blended frames on the
+/// way rather than cutting over (Spec 86 §4.1, §8 criterion 5). The
+/// opposite direction is
+/// `gpu_transition_out_of_overlapping_zones_blends_each_led_from_its_own_color`.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_transition_into_overlapping_zones_blends_each_led_toward_its_own_color() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut single = make_scene("Single Zone");
+    single.transition.duration_ms = 0;
+    single.zones = vec![primary_zone(
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        test_layout(vec![
+            point_zone("zone_red", "mock:red", 0.5, 0.5),
+            point_zone("zone_blue", "mock:blue", 0.5, 0.5),
+        ]),
+    )];
+    single.unassigned_behavior = UnassignedBehavior::Off;
+    let mut zoned = make_scene("Overlapping Zones");
+    zoned.transition.duration_ms = 2_000;
+    zoned.zones = overlapping_zones(solid_id);
+    zoned.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![single.clone(), zoned.clone()], single.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([0, 255, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 255, 0])
+    })
+    .await;
+
+    activate_render_scene(&state, zoned.id).await;
+    // The scene's own blend path dips a step or two into the third channel
+    // (Oklab between pure green and pure red is not perfectly blue-free);
+    // blending through the other zone's color would go far past it.
+    let interpolation = &zoned.transition.color_interpolation;
+    let red_path_blue = blend_path_peak([0, 255, 0], [255, 0, 0], 2, interpolation);
+    let blue_path_red = blend_path_peak([0, 255, 0], [0, 0, 255], 0, interpolation);
+    let mut trace = Vec::new();
+    let mut violations = Vec::new();
+    // Frames that mix each LED's old green with its own new color.
+    let mut blended = [0_u32; 2];
+    let settled = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            frame_rx
+                .changed()
+                .await
+                .expect("frame sender should remain connected");
+            let frame = frame_rx.borrow_and_update().clone();
+            let red = zone_led(&frame, "zone_red");
+            let blue = zone_led(&frame, "zone_blue");
+            trace.push(format!("frame {}: {red:?} {blue:?}", frame.frame_number));
+            match red {
+                Some(red) if red[2] > red_path_blue => violations.push(format!(
+                    "frame {}: the red zone's LED blended through blue: {red:?}",
+                    frame.frame_number
+                )),
+                Some(red) if red[0] > 0 && red[1] > 0 => blended[0] += 1,
+                Some(_) => {}
+                None => violations.push(format!(
+                    "frame {}: the red zone's LED was not published",
+                    frame.frame_number
+                )),
+            }
+            match blue {
+                Some(blue) if blue[0] > blue_path_red => violations.push(format!(
+                    "frame {}: the blue zone's LED blended through red: {blue:?}",
+                    frame.frame_number
+                )),
+                Some(blue) if blue[1] > 0 && blue[2] > 0 => blended[1] += 1,
+                Some(_) => {}
+                None => violations.push(format!(
+                    "frame {}: the blue zone's LED was not published",
+                    frame.frame_number
+                )),
+            }
+            if red == Some([255, 0, 0]) && blue == Some([0, 0, 255]) {
+                break;
+            }
+        }
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        settled.is_ok(),
+        "the LEDs never reached the overlapping zones' own colors:\n{}",
+        trace.join("\n")
+    );
+    assert!(
+        violations.is_empty(),
+        "{}\ntrace:\n{}",
+        violations.join("\n"),
+        trace.join("\n")
+    );
+    assert!(
+        blended.iter().all(|frames| *frames > 0),
+        "the transition cut over without a blended frame ({blended:?} blended frames for the \
+         red and blue LEDs):\n{}",
+        trace.join("\n")
+    );
+}
+
+/// The most a transition blend from `from` to `to` in `interpolation` ever
+/// puts into `channel` over the whole fade.
+#[cfg(feature = "wgpu")]
+fn blend_path_peak(
+    from: [u8; 3],
+    to: [u8; 3],
+    channel: usize,
+    interpolation: &hypercolor_types::scene::ColorInterpolation,
+) -> u8 {
+    let from = Rgb::new(from[0], from[1], from[2]).to_linear();
+    let to = Rgb::new(to[0], to[1], to[2]).to_linear();
+    (0..=1_000_u16)
+        .map(|step| {
+            let mixed = interpolate_color(&from, &to, f32::from(step) / 1_000.0, interpolation)
+                .to_encoded();
+            [mixed.r, mixed.g, mixed.b][channel]
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Studio's zone previews of a GPU multi-zone scene arrive at the demanded
