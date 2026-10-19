@@ -71,8 +71,24 @@ class LatestFrameStatus:
         total_leds (int):
         total_ms (float):
         wake_late_ms (float):
+        cpu_sampled_zone_count (int | Unset): Scene zones whose LEDs sampled a CPU-backed zone frame on the CPU.
+            Zero when the frame sampled no per-zone set. Absent from older
+            daemons.
+        gpu_sampled_zone_count (int | Unset): Scene zones whose LEDs sample their own zone texture on the GPU; the
+            `gpu_sample_*` flags say whether this frame's sample landed. Zero
+            when the frame sampled no per-zone set (a single-zone scene, or the
+            CPU backend). Absent from older daemons.
+        gpu_sampling_passes (int | Unset): Texture passes the GPU sampler encoded for the frame's LEDs: one per
+            sampled zone texture, plus one when unassigned fallback outputs ride
+            along. Zero when the sample cache answered or nothing dispatched.
+            Absent from older daemons.
+        held_zone_count (int | Unset): Scene zones with no frame to sample, whose LEDs held their published
+            colors or went black. Zero when the frame sampled no per-zone set.
+            Absent from older daemons.
         producer_full_frame_copy_reason (None | str | Unset):
         publication_full_frame_copy_reason (None | str | Unset):
+        zone_composition_skips (int | Unset): Scene zones whose layers matched their held frame, so they skipped
+            composing this frame. Absent from older daemons.
     """
 
     composition_ms: float
@@ -126,8 +142,13 @@ class LatestFrameStatus:
     total_leds: int
     total_ms: float
     wake_late_ms: float
+    cpu_sampled_zone_count: int | Unset = UNSET
+    gpu_sampled_zone_count: int | Unset = UNSET
+    gpu_sampling_passes: int | Unset = UNSET
+    held_zone_count: int | Unset = UNSET
     producer_full_frame_copy_reason: None | str | Unset = UNSET
     publication_full_frame_copy_reason: None | str | Unset = UNSET
+    zone_composition_skips: int | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -235,6 +256,14 @@ class LatestFrameStatus:
 
         wake_late_ms = self.wake_late_ms
 
+        cpu_sampled_zone_count = self.cpu_sampled_zone_count
+
+        gpu_sampled_zone_count = self.gpu_sampled_zone_count
+
+        gpu_sampling_passes = self.gpu_sampling_passes
+
+        held_zone_count = self.held_zone_count
+
         producer_full_frame_copy_reason: None | str | Unset
         if isinstance(self.producer_full_frame_copy_reason, Unset):
             producer_full_frame_copy_reason = UNSET
@@ -246,6 +275,8 @@ class LatestFrameStatus:
             publication_full_frame_copy_reason = UNSET
         else:
             publication_full_frame_copy_reason = self.publication_full_frame_copy_reason
+
+        zone_composition_skips = self.zone_composition_skips
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -304,6 +335,14 @@ class LatestFrameStatus:
                 "wake_late_ms": wake_late_ms,
             }
         )
+        if cpu_sampled_zone_count is not UNSET:
+            field_dict["cpu_sampled_zone_count"] = cpu_sampled_zone_count
+        if gpu_sampled_zone_count is not UNSET:
+            field_dict["gpu_sampled_zone_count"] = gpu_sampled_zone_count
+        if gpu_sampling_passes is not UNSET:
+            field_dict["gpu_sampling_passes"] = gpu_sampling_passes
+        if held_zone_count is not UNSET:
+            field_dict["held_zone_count"] = held_zone_count
         if producer_full_frame_copy_reason is not UNSET:
             field_dict["producer_full_frame_copy_reason"] = (
                 producer_full_frame_copy_reason
@@ -312,6 +351,8 @@ class LatestFrameStatus:
             field_dict["publication_full_frame_copy_reason"] = (
                 publication_full_frame_copy_reason
             )
+        if zone_composition_skips is not UNSET:
+            field_dict["zone_composition_skips"] = zone_composition_skips
 
         return field_dict
 
@@ -424,6 +465,14 @@ class LatestFrameStatus:
 
         wake_late_ms = d.pop("wake_late_ms")
 
+        cpu_sampled_zone_count = d.pop("cpu_sampled_zone_count", UNSET)
+
+        gpu_sampled_zone_count = d.pop("gpu_sampled_zone_count", UNSET)
+
+        gpu_sampling_passes = d.pop("gpu_sampling_passes", UNSET)
+
+        held_zone_count = d.pop("held_zone_count", UNSET)
+
         def _parse_producer_full_frame_copy_reason(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -447,6 +496,8 @@ class LatestFrameStatus:
         publication_full_frame_copy_reason = _parse_publication_full_frame_copy_reason(
             d.pop("publication_full_frame_copy_reason", UNSET)
         )
+
+        zone_composition_skips = d.pop("zone_composition_skips", UNSET)
 
         latest_frame_status = cls(
             composition_ms=composition_ms,
@@ -500,8 +551,13 @@ class LatestFrameStatus:
             total_leds=total_leds,
             total_ms=total_ms,
             wake_late_ms=wake_late_ms,
+            cpu_sampled_zone_count=cpu_sampled_zone_count,
+            gpu_sampled_zone_count=gpu_sampled_zone_count,
+            gpu_sampling_passes=gpu_sampling_passes,
+            held_zone_count=held_zone_count,
             producer_full_frame_copy_reason=producer_full_frame_copy_reason,
             publication_full_frame_copy_reason=publication_full_frame_copy_reason,
+            zone_composition_skips=zone_composition_skips,
         )
 
         latest_frame_status.additional_properties = d

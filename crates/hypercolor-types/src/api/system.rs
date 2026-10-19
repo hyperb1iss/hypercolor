@@ -367,6 +367,32 @@ pub struct LatestFrameStatus {
     pub devices_written: u32,
     pub total_leds: u32,
     pub gpu_zone_sampling: bool,
+    /// Scene zones whose LEDs sample their own zone texture on the GPU; the
+    /// `gpu_sample_*` flags say whether this frame's sample landed. Zero
+    /// when the frame sampled no per-zone set (a single-zone scene, or the
+    /// CPU backend). Absent from older daemons.
+    #[serde(default)]
+    pub gpu_sampled_zone_count: u32,
+    /// Scene zones whose LEDs sampled a CPU-backed zone frame on the CPU.
+    /// Zero when the frame sampled no per-zone set. Absent from older
+    /// daemons.
+    #[serde(default)]
+    pub cpu_sampled_zone_count: u32,
+    /// Scene zones with no frame to sample, whose LEDs held their published
+    /// colors or went black. Zero when the frame sampled no per-zone set.
+    /// Absent from older daemons.
+    #[serde(default)]
+    pub held_zone_count: u32,
+    /// Texture passes the GPU sampler encoded for the frame's LEDs: one per
+    /// sampled zone texture, plus one when unassigned fallback outputs ride
+    /// along. Zero when the sample cache answered or nothing dispatched.
+    /// Absent from older daemons.
+    #[serde(default)]
+    pub gpu_sampling_passes: u32,
+    /// Scene zones whose layers matched their held frame, so they skipped
+    /// composing this frame. Absent from older daemons.
+    #[serde(default)]
+    pub zone_composition_skips: u32,
     pub gpu_sample_deferred: bool,
     pub gpu_sample_stale: bool,
     pub gpu_sample_retry_hit: bool,

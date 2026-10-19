@@ -149,7 +149,7 @@ fn gpu_sampling_matches_cpu_after_canvas_resize() {
 }
 
 #[test]
-fn gpu_sampler_rejects_gaussian_plans_without_dispatch() {
+fn gpu_sampler_matches_cpu_spatial_sampling_for_gaussian_plans() {
     let Some(mut compositor) = gpu_test_compositor() else {
         return;
     };
@@ -157,23 +157,34 @@ fn gpu_sampler_rejects_gaussian_plans_without_dispatch() {
         sigma: 1.0,
         radius: 2,
     }));
-    let plan = CompositionPlan::single(
+    let plan = CompositionPlan::with_layers(
         4,
         4,
-        CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(21))),
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(21))),
+            CompositionLayer::screen(ProducerFrame::Canvas(patterned_canvas(140)), 0.5),
+        ],
+    );
+    let expected =
+        CpuSparkleFlinger::new().compose(plan.clone(), true, full_preview_request(&plan));
+    let expected_zones = engine.sample(
+        expected
+            .sampling_canvas
+            .as_ref()
+            .expect("CPU compose should materialize a canvas"),
     );
 
-    assert!(!compositor.can_sample_zone_plan(engine.sampling_plan().as_ref()));
+    assert!(compositor.can_sample_zone_plan(engine.sampling_plan().as_ref()));
     compositor
         .compose(&plan, false, None)
-        .expect("GPU composition should still succeed before Gaussian fallback");
-    assert!(matches!(
+        .expect("GPU composition should succeed before GPU Gaussian sampling");
+    let mut sampled = Vec::new();
+    assert!(
         compositor
-            .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
-            .expect("unsupported GPU sampling mode should be non-fatal"),
-        GpuZoneSamplingDispatch::Unsupported
-    ));
-    assert_eq!(compositor.spatial_sampler.sample_dispatch_count(), 0);
+            .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
+            .expect("GPU sampler should support Gaussian plans")
+    );
+    assert_zone_colors_within(&sampled, &expected_zones, 1);
 }
 
 #[test]

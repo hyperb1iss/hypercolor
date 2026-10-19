@@ -204,7 +204,7 @@ impl GpuSparkleFlinger {
         self.output_generation = self.output_generation.saturating_add(1);
         self.cached_composition_key = None;
         self.cached_readback_surface = None;
-        self.cached_sample_result = None;
+        self.invalidate_output_sample();
         Ok(())
     }
 }

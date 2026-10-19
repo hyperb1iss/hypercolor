@@ -18,19 +18,319 @@ use hypercolor_types::canvas::{Canvas, Rgb};
 use hypercolor_types::event::FrameData;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ColorInterpolation;
+#[cfg(feature = "wgpu")]
+use hypercolor_types::scene::ZoneId;
 #[cfg(test)]
 use hypercolor_types::spatial::Output;
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::frame_composer::RenderStageStats;
-use super::pipeline_runtime::{RetainedZoneFrame, SamplingRuntime, SceneTransitionKey};
+#[cfg(feature = "wgpu")]
+use super::pipeline_runtime::GpuFallbackSampling;
+use super::pipeline_runtime::{
+    CachedTransitionLayout, RetainedZoneFrame, SamplingRuntime, SceneTransitionKey,
+};
+#[cfg(feature = "wgpu")]
+use super::producer_queue::{GpuTextureFrame, ProducerFrame};
 use super::scene_snapshot::{FrameSceneSnapshot, SceneTransitionSnapshot};
-use super::sparkleflinger::{PendingZoneSampling, ZoneSamplingDispatch};
+use super::sparkleflinger::{PendingZoneSampling, ZoneSamplingDispatch, ZoneSamplingRequest};
+#[cfg(feature = "wgpu")]
+use super::sparkleflinger::{SparkleFlinger, ZoneTextureSample};
 use super::{RenderThreadState, micros_between};
+
+/// Per-zone LED sampling for a multi-zone scene on the GPU backend: each
+/// zone's LEDs read that zone's own composed pixels with that zone's own plan
+/// (Spec 86).
+#[cfg(feature = "wgpu")]
+pub(super) struct ZoneSamplingSet {
+    /// Every scene zone's outputs merged, used to shape and route the result.
+    pub(super) layout: Arc<SpatialLayout>,
+    /// Scene zones in zone order.
+    pub(super) zones: Vec<ZoneSampling>,
+    /// The `Gpu` zones' textures in zone order: what one dispatch reads.
+    pub(super) gpu_textures: Vec<ZoneTextureSample>,
+}
+
+#[cfg(feature = "wgpu")]
+pub(super) struct ZoneSampling {
+    pub(super) prepared_zones: Arc<[PreparedZonePlan]>,
+    pub(super) source: ZoneSampleSource,
+}
+
+#[cfg(feature = "wgpu")]
+pub(super) enum ZoneSampleSource {
+    /// Sampled from the zone's snapshot in the frame's GPU dispatch.
+    Gpu,
+    /// A CPU-backed zone, already sampled on the CPU from its canvas.
+    Cpu(Vec<ZoneColors>),
+    /// A zone with nothing to sample yet (no frame, or an imported GPU frame
+    /// the sampler cannot bind): its outputs hold their published colors when
+    /// the shape matches, and are black otherwise.
+    Held,
+}
+
+/// How the zones of a frame's per-zone sampling set took their colors, by
+/// source. All zero when the frame sampled no zone set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ZoneSourceCounts {
+    pub(crate) gpu: u32,
+    pub(crate) cpu: u32,
+    pub(crate) held: u32,
+}
+
+#[cfg(feature = "wgpu")]
+impl ZoneSamplingSet {
+    pub(super) fn source_counts(&self) -> ZoneSourceCounts {
+        let mut counts = ZoneSourceCounts::default();
+        for zone in &self.zones {
+            let count = match zone.source {
+                ZoneSampleSource::Gpu => &mut counts.gpu,
+                ZoneSampleSource::Cpu(_) => &mut counts.cpu,
+                ZoneSampleSource::Held => &mut counts.held,
+            };
+            *count = count.saturating_add(1);
+        }
+        counts
+    }
+
+    fn output_shape(&self) -> impl Iterator<Item = (&str, usize)> + '_ {
+        self.zones
+            .iter()
+            .flat_map(|zone| zone.prepared_zones.iter())
+            .map(prepared_zone_shape)
+    }
+
+    fn samples_only_on_gpu(&self) -> bool {
+        self.zones
+            .iter()
+            .all(|zone| matches!(zone.source, ZoneSampleSource::Gpu))
+    }
+
+    /// Rebuild `zones` in output order from a GPU result holding only the
+    /// `Gpu` zones' colors, splicing in CPU-sampled and held zones.
+    pub(super) fn assemble_into(&self, zones: &mut Vec<ZoneColors>, published: &[ZoneColors]) {
+        if self.samples_only_on_gpu() {
+            return;
+        }
+        let mut gpu_colors = std::mem::take(zones).into_iter();
+        for zone in &self.zones {
+            match &zone.source {
+                ZoneSampleSource::Gpu => {
+                    zones.extend(gpu_colors.by_ref().take(zone.prepared_zones.len()));
+                }
+                ZoneSampleSource::Cpu(colors) => zones.extend(colors.iter().cloned()),
+                ZoneSampleSource::Held => {
+                    zones.extend(zone.prepared_zones.iter().map(|plan| {
+                        published
+                            .iter()
+                            .find(|published| {
+                                published.zone_id == plan.zone_id
+                                    && published.colors.len() == plan.sample_positions.len()
+                            })
+                            .cloned()
+                            .unwrap_or_else(|| ZoneColors {
+                                zone_id: plan.zone_id.clone(),
+                                colors: vec![[0, 0, 0]; plan.sample_positions.len()],
+                            })
+                    }));
+                }
+            }
+        }
+    }
+
+    /// Black output in the published shape, for frames whose GPU sample is
+    /// unavailable and whose published frame cannot be held.
+    fn black_into(&self, zones: &mut Vec<ZoneColors>) {
+        zones.clear();
+        zones.extend(
+            self.zones
+                .iter()
+                .flat_map(|zone| zone.prepared_zones.iter())
+                .map(|plan| ZoneColors {
+                    zone_id: plan.zone_id.clone(),
+                    colors: vec![[0, 0, 0]; plan.sample_positions.len()],
+                }),
+        );
+    }
+}
+
+/// Unassigned outputs sampled from the fallback zone's texture in the same
+/// dispatch as the scene's own LEDs (Spec 86 §4.3). Their colors are the
+/// tail of the GPU result.
+#[cfg(feature = "wgpu")]
+struct FallbackPass {
+    zone_id: ZoneId,
+    /// The textures the dispatch reads besides the compositor output: a zone
+    /// set's own textures, then the fallback zone's texture.
+    textures: Vec<ZoneTextureSample>,
+    ranges: usize,
+}
+
+#[cfg(feature = "wgpu")]
+impl FallbackPass {
+    /// The pass for `fallback` over `frame`, when `frame` is the GPU texture
+    /// the registered plan was laid out for.
+    fn new(
+        base: &[ZoneTextureSample],
+        frame: &ProducerFrame,
+        fallback: &GpuFallbackSampling,
+    ) -> Option<Self> {
+        let ProducerFrame::GpuTexture(texture) = frame else {
+            return None;
+        };
+        let layout = fallback.engine.layout();
+        let prepared_zones = fallback.engine.sampling_plan();
+        if texture.width != layout.canvas_width
+            || texture.height != layout.canvas_height
+            || prepared_zones.is_empty()
+            || !SparkleFlinger::gpu_samples_plan_modes(&prepared_zones)
+        {
+            return None;
+        }
+        let ranges = prepared_zones.len();
+        let mut textures = Vec::with_capacity(base.len().saturating_add(1));
+        textures.extend_from_slice(base);
+        textures.push(ZoneTextureSample {
+            frame: GpuTextureFrame {
+                immutable_lease: None,
+                ..texture.clone()
+            },
+            prepared_zones,
+        });
+        Some(Self {
+            zone_id: fallback.zone_id,
+            textures,
+            ranges,
+        })
+    }
+}
+
+/// What `resolve_led_sampling` samples on the GPU: the compositor's output
+/// with one engine, or a zone set's textures with their own engines.
+enum GpuSampleTarget {
+    Output {
+        engine: SpatialEngine,
+        prepared_zones: Arc<[PreparedZonePlan]>,
+        #[cfg(feature = "wgpu")]
+        fallback: Option<FallbackPass>,
+    },
+    #[cfg(feature = "wgpu")]
+    Zones {
+        set: Arc<ZoneSamplingSet>,
+        fallback: Option<FallbackPass>,
+    },
+}
+
+impl GpuSampleTarget {
+    fn layout(&self) -> Arc<SpatialLayout> {
+        match self {
+            Self::Output { engine, .. } => engine.layout(),
+            #[cfg(feature = "wgpu")]
+            Self::Zones { set, .. } => Arc::clone(&set.layout),
+        }
+    }
+
+    fn request(&self) -> ZoneSamplingRequest<'_> {
+        match self {
+            Self::Output {
+                prepared_zones,
+                #[cfg(feature = "wgpu")]
+                fallback,
+                ..
+            } => ZoneSamplingRequest::Output {
+                prepared_zones,
+                #[cfg(feature = "wgpu")]
+                textures: fallback.as_ref().map_or(&[], |pass| &pass.textures),
+            },
+            #[cfg(feature = "wgpu")]
+            Self::Zones { set, fallback } => {
+                ZoneSamplingRequest::ZoneTextures(dispatched_textures(set, fallback.as_ref()))
+            }
+        }
+    }
+
+    /// Whether `zones` has the shape of this target's published output.
+    fn output_shape_matches(&self, zones: &[ZoneColors]) -> bool {
+        match self {
+            Self::Output { prepared_zones, .. } => {
+                can_hold_zone_colors_for_prepared_sampling(prepared_zones, zones)
+            }
+            #[cfg(feature = "wgpu")]
+            Self::Zones { set, .. } => zone_shapes_match(set.output_shape(), zones),
+        }
+    }
+
+    /// Whether `zones` has the shape of one GPU sample of this target.
+    fn gpu_shape_matches(&self, zones: &[ZoneColors]) -> bool {
+        match self {
+            #[cfg(feature = "wgpu")]
+            Self::Output {
+                prepared_zones,
+                fallback: Some(pass),
+                ..
+            } => zone_shapes_match(
+                prepared_zones.iter().map(prepared_zone_shape).chain(
+                    pass.textures
+                        .iter()
+                        .flat_map(|texture| texture.prepared_zones.iter())
+                        .map(prepared_zone_shape),
+                ),
+                zones,
+            ),
+            Self::Output { prepared_zones, .. } => {
+                can_hold_zone_colors_for_prepared_sampling(prepared_zones, zones)
+            }
+            #[cfg(feature = "wgpu")]
+            Self::Zones { set, fallback } => zone_shapes_match(
+                dispatched_textures(set, fallback.as_ref())
+                    .iter()
+                    .flat_map(|texture| texture.prepared_zones.iter())
+                    .map(prepared_zone_shape),
+                zones,
+            ),
+        }
+    }
+
+    fn output_shape_signature(&self) -> u64 {
+        match self {
+            Self::Output { prepared_zones, .. } => {
+                zone_shape_signature_for_prepared_sampling(prepared_zones)
+            }
+            #[cfg(feature = "wgpu")]
+            Self::Zones { set, .. } => hash_zone_shapes(set.output_shape()),
+        }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+impl GpuSampleTarget {
+    fn fallback(&self) -> Option<&FallbackPass> {
+        match self {
+            Self::Output { fallback, .. } | Self::Zones { fallback, .. } => fallback.as_ref(),
+        }
+    }
+}
+
+/// The textures one dispatch of a zone set reads.
+#[cfg(feature = "wgpu")]
+fn dispatched_textures<'a>(
+    set: &'a ZoneSamplingSet,
+    fallback: Option<&'a FallbackPass>,
+) -> &'a [ZoneTextureSample] {
+    fallback.map_or(&set.gpu_textures, |pass| &pass.textures)
+}
+
+#[cfg(feature = "wgpu")]
+fn prepared_zone_shape(zone: &PreparedZonePlan) -> (&str, usize) {
+    (zone.zone_id.as_str(), zone.sample_positions.len())
+}
 
 #[derive(Clone)]
 pub(super) enum LedSamplingStrategy {
     SparkleFlinger(SpatialEngine),
+    /// Per-zone GPU sampling of a multi-zone scene (Spec 86).
+    #[cfg(feature = "wgpu")]
+    SparkleFlingerZones(Arc<ZoneSamplingSet>),
     PreSampled(Arc<SpatialLayout>),
     RetainedPreSampled {
         layout: Arc<SpatialLayout>,
@@ -47,6 +347,8 @@ impl LedSamplingStrategy {
     pub(super) fn sparkleflinger_engine(&self) -> Option<&SpatialEngine> {
         match self {
             Self::SparkleFlinger(spatial_engine) => Some(spatial_engine),
+            #[cfg(feature = "wgpu")]
+            Self::SparkleFlingerZones(_) => None,
             Self::PreSampled(_) | Self::RetainedPreSampled { .. } | Self::ReusePublished(_) => None,
         }
     }
@@ -76,6 +378,14 @@ impl LedSamplingStrategy {
             Self::SparkleFlinger(spatial_engine) => {
                 RetainedLedSamplingStrategy::SparkleFlinger(spatial_engine.clone())
             }
+            // A zone set's colors resolve on the GPU after the scene renders,
+            // and its snapshots move on every frame, so a retained zone set
+            // holds the published frame instead of re-sampling (Spec 86 §4.2).
+            #[cfg(feature = "wgpu")]
+            Self::SparkleFlingerZones(set) => RetainedLedSamplingStrategy::PreSampled {
+                layout: Arc::clone(&set.layout),
+                zones: Arc::new([]),
+            },
             Self::RetainedPreSampled { layout, zones } => RetainedLedSamplingStrategy::PreSampled {
                 layout: Arc::clone(layout),
                 zones: Arc::clone(zones),
@@ -133,6 +443,8 @@ pub(crate) struct LedSamplingOutcome {
     pub(crate) refresh_reused_frame_metadata: bool,
     pub(crate) reuses_published_frame: bool,
     pub(crate) zone_shape_signature: u64,
+    /// The sources of the zone set this frame's LEDs were resolved from.
+    pub(crate) zone_sources: ZoneSourceCounts,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -281,6 +593,8 @@ fn current_scene_sampled_zones<'a>(
     match led_sampling_strategy {
         LedSamplingStrategy::PreSampled(_) => Some(recycled_zones),
         LedSamplingStrategy::RetainedPreSampled { zones, .. } => Some(zones.as_ref()),
+        #[cfg(feature = "wgpu")]
+        LedSamplingStrategy::SparkleFlingerZones(_) => None,
         LedSamplingStrategy::SparkleFlinger(_) | LedSamplingStrategy::ReusePublished(_) => None,
     }
 }
@@ -317,6 +631,33 @@ fn ensure_cpu_sampling_canvas(
     }
 
     CpuSamplingCanvasStatus::Unavailable
+}
+
+/// The transition's routing layout, built once and reused while the same
+/// transition runs between the same two layouts. A fresh layout every frame
+/// would miss every downstream cache keyed by layout identity (routing,
+/// unassigned outputs, the fallback plan GPU sampling keys on).
+fn cached_transition_layout(
+    cache: &mut Option<CachedTransitionLayout>,
+    base_layout: &Arc<SpatialLayout>,
+    current_layout: &Arc<SpatialLayout>,
+    transition_key: SceneTransitionKey,
+) -> Arc<SpatialLayout> {
+    if let Some(cached) = cache.as_ref()
+        && cached.key == transition_key
+        && Arc::ptr_eq(&cached.base, base_layout)
+        && Arc::ptr_eq(&cached.current, current_layout)
+    {
+        return Arc::clone(&cached.layout);
+    }
+    let layout = build_transition_layout(base_layout, current_layout, transition_key);
+    *cache = Some(CachedTransitionLayout {
+        key: transition_key,
+        base: Arc::clone(base_layout),
+        current: Arc::clone(current_layout),
+        layout: Arc::clone(&layout),
+    });
+    layout
 }
 
 pub(crate) fn build_transition_layout(
@@ -421,12 +762,82 @@ pub(crate) fn resolve_led_sampling(
     completed_deferred_sampling: Option<PendingZoneSampling>,
     mut stale_deferred_sampling: Option<PendingZoneSampling>,
 ) -> LedSamplingOutcome {
-    let sparkleflinger_sampling_engine = match &render_stage.led_sampling_strategy {
-        LedSamplingStrategy::SparkleFlinger(spatial_engine) => Some(spatial_engine.clone()),
+    let gpu_sample_target = match &render_stage.led_sampling_strategy {
+        LedSamplingStrategy::SparkleFlinger(spatial_engine) => Some(GpuSampleTarget::Output {
+            engine: spatial_engine.clone(),
+            prepared_zones: spatial_engine.sampling_plan(),
+            #[cfg(feature = "wgpu")]
+            fallback: None,
+        }),
+        #[cfg(feature = "wgpu")]
+        LedSamplingStrategy::SparkleFlingerZones(set) => Some(GpuSampleTarget::Zones {
+            set: Arc::clone(set),
+            fallback: None,
+        }),
         LedSamplingStrategy::PreSampled(_)
         | LedSamplingStrategy::RetainedPreSampled { .. }
         | LedSamplingStrategy::ReusePublished(_) => None,
     };
+    // Whether this frame renders a multi-zone scene; retained and reused
+    // frames say nothing new.
+    let multi_zone_frame = match &render_stage.led_sampling_strategy {
+        LedSamplingStrategy::PreSampled(_) => Some(true),
+        #[cfg(feature = "wgpu")]
+        LedSamplingStrategy::SparkleFlingerZones(_) => Some(true),
+        LedSamplingStrategy::SparkleFlinger(_) => Some(false),
+        LedSamplingStrategy::RetainedPreSampled { .. } | LedSamplingStrategy::ReusePublished(_) => {
+            None
+        }
+    };
+    let transition_active = scene_snapshot.scene_runtime.active_transition.is_some();
+    // A transition out of a multi-zone scene must not sample the crossfade,
+    // whose base is a composited preview with overlap baked in: a single-zone
+    // incoming scene samples its own frame and blends in LED space instead.
+    #[cfg(feature = "wgpu")]
+    let gpu_sample_target = match gpu_sample_target {
+        Some(GpuSampleTarget::Output {
+            engine,
+            prepared_zones,
+            fallback,
+        }) if transition_active && sampling.zone_transition_planner.last_published_per_zone => {
+            match render_stage
+                .led_transition_source
+                .as_ref()
+                .and_then(|frame| one_zone_transition_set(&engine, &prepared_zones, frame))
+            {
+                Some(set) => Some(GpuSampleTarget::Zones {
+                    set: Arc::new(set),
+                    fallback: None,
+                }),
+                None => Some(GpuSampleTarget::Output {
+                    engine,
+                    prepared_zones,
+                    fallback,
+                }),
+            }
+        }
+        other => other,
+    };
+    #[cfg(feature = "wgpu")]
+    let gpu_sample_target = with_unassigned_fallback(
+        gpu_sample_target,
+        sampling
+            .output_artifacts
+            .unassigned_output_cache
+            .gpu_fallback(),
+        &render_stage.zone_canvases,
+    );
+    #[cfg(feature = "wgpu")]
+    let samples_zone_set = matches!(gpu_sample_target, Some(GpuSampleTarget::Zones { .. }));
+    #[cfg(not(feature = "wgpu"))]
+    let samples_zone_set = false;
+    #[cfg(feature = "wgpu")]
+    let zone_sources = match gpu_sample_target.as_ref() {
+        Some(GpuSampleTarget::Zones { set, .. }) => set.source_counts(),
+        _ => ZoneSourceCounts::default(),
+    };
+    #[cfg(not(feature = "wgpu"))]
+    let zone_sources = ZoneSourceCounts::default();
     let mut gpu_zone_sampling = false;
     let mut gpu_sample_deferred = false;
     let gpu_sample_stale = stale_deferred_sampling.is_some();
@@ -455,34 +866,28 @@ pub(crate) fn resolve_led_sampling(
         retained_scene_zones = Some(Arc::clone(zones));
         Arc::clone(layout)
     } else {
-        let sampling_engine = sparkleflinger_sampling_engine
+        let target = gpu_sample_target
             .as_ref()
-            .expect("SparkleFlinger-owned LED sampling requires a spatial engine");
+            .expect("SparkleFlinger-owned LED sampling requires a sampling target");
         render_stage.sampled_us = 0;
-        let prepared_zones = sampling_engine.sampling_plan();
-        let layout = sampling_engine.layout();
-        zone_shape_signature = Some(zone_shape_signature_for_prepared_sampling(
-            prepared_zones.as_ref(),
-        ));
+        let layout = target.layout();
+        zone_shape_signature = Some(target.output_shape_signature());
         (can_reuse_published_frame, can_hold_published_frame) = {
             let published_frame = state.event_bus.frame_lane().borrow();
             (
-                render_stage.screen_retained
-                    && can_hold_zone_colors_for_prepared_sampling(
-                        prepared_zones.as_ref(),
-                        &published_frame.zones,
-                    ),
-                can_hold_zone_colors_for_prepared_sampling(
-                    prepared_zones.as_ref(),
-                    &published_frame.zones,
-                ),
+                render_stage.screen_retained && target.output_shape_matches(&published_frame.zones),
+                target.output_shape_matches(&published_frame.zones),
             )
         };
-        let completed_sampling_matches_current = completed_deferred_sampling.is_some()
-            && can_hold_zone_colors_for_prepared_sampling(
-                prepared_zones.as_ref(),
-                sampling.deferred_sampling.scratch(),
-            );
+        let completed_sampling_matches_current =
+            completed_deferred_sampling
+                .as_ref()
+                .is_some_and(|completed| {
+                    target.gpu_shape_matches(sampling.deferred_sampling.scratch())
+                        && sampling
+                            .sparkleflinger
+                            .completed_zone_sampling_used_request_plans(completed, target.request())
+                });
         let mut should_queue_followup_sampling = false;
         if completed_sampling_matches_current {
             sampling
@@ -496,7 +901,7 @@ pub(crate) fn resolve_led_sampling(
         if !gpu_zone_sampling && let Some(mut pending) = stale_deferred_sampling.take() {
             if sampling
                 .sparkleflinger
-                .pending_zone_sampling_matches_current_work(&pending, prepared_zones.as_ref())
+                .pending_zone_sampling_matches_request(&pending, target.request())
             {
                 stale_sampling_matches_current = true;
                 let stale_sample_finish = Instant::now();
@@ -559,8 +964,8 @@ pub(crate) fn resolve_led_sampling(
                 crate::performance::CompositorBackendKind::Gpu
             ) {
                 let gpu_sample_start = Instant::now();
-                match sampling.sparkleflinger.begin_sample_zone_plan_into(
-                    prepared_zones.as_ref(),
+                match sampling.sparkleflinger.begin_sample_zones_into(
+                    target.request(),
                     sampling.output_artifacts.zones_mut(),
                 ) {
                     Ok(ZoneSamplingDispatch::Unsupported) => false,
@@ -579,8 +984,8 @@ pub(crate) fn resolve_led_sampling(
                             false
                         } else {
                             discard_zone_sampling_backlog(sampling);
-                            match sampling.sparkleflinger.begin_sample_zone_plan_into(
-                                prepared_zones.as_ref(),
+                            match sampling.sparkleflinger.begin_sample_zones_into(
+                                target.request(),
                                 sampling.output_artifacts.zones_mut(),
                             ) {
                                 Ok(ZoneSamplingDispatch::Ready) => true,
@@ -620,10 +1025,10 @@ pub(crate) fn resolve_led_sampling(
             )
         {
             let gpu_sample_start = Instant::now();
-            match sampling.sparkleflinger.begin_sample_zone_plan_into(
-                prepared_zones.as_ref(),
-                sampling.deferred_sampling.scratch_mut(),
-            ) {
+            match sampling
+                .sparkleflinger
+                .begin_sample_zones_into(target.request(), sampling.deferred_sampling.scratch_mut())
+            {
                 Ok(ZoneSamplingDispatch::Ready) => {
                     sampling
                         .deferred_sampling
@@ -726,84 +1131,161 @@ pub(crate) fn resolve_led_sampling(
             crate::performance::CompositorBackendKind::Gpu
         );
         let cpu_sample_start = Instant::now();
-        let sampling_engine = sparkleflinger_sampling_engine
+        let sampling_engine = match gpu_sample_target
             .as_ref()
-            .expect("CPU spatial sampling requires a SparkleFlinger-owned spatial engine");
-        let canvas_status = ensure_cpu_sampling_canvas(state, sampling, render_stage);
-        match canvas_status {
-            CpuSamplingCanvasStatus::Ready => {
-                if let Some(canvas) = render_stage.composed_frame.sampling_canvas.as_ref()
-                    && let Err(error) = sampling_engine
-                        .try_sample_into(canvas, sampling.output_artifacts.zones_mut())
-                {
-                    warn!(%error, "CPU spatial sampling fallback failed; preserving published output");
-                    if can_hold_published_frame {
+            .expect("CPU spatial sampling requires a SparkleFlinger-owned sampling target")
+        {
+            GpuSampleTarget::Output { engine, .. } => Some(engine),
+            // Zone snapshots never reach the CPU (Spec 48 §4.1): without a GPU
+            // sample, a zone set holds its published frame or goes black.
+            #[cfg(feature = "wgpu")]
+            GpuSampleTarget::Zones { set, .. } => {
+                if can_hold_published_frame {
+                    render_stage.led_sampling_strategy =
+                        LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
+                    refresh_reused_frame_metadata = true;
+                } else {
+                    set.black_into(sampling.output_artifacts.zones_mut());
+                }
+                None
+            }
+        };
+        if let Some(sampling_engine) = sampling_engine {
+            let canvas_status = ensure_cpu_sampling_canvas(state, sampling, render_stage);
+            match canvas_status {
+                CpuSamplingCanvasStatus::Ready => {
+                    if let Some(canvas) = render_stage.composed_frame.sampling_canvas.as_ref()
+                        && let Err(error) = sampling_engine
+                            .try_sample_into(canvas, sampling.output_artifacts.zones_mut())
+                    {
+                        warn!(%error, "CPU spatial sampling fallback failed; preserving published output");
+                        if can_hold_published_frame {
+                            render_stage.led_sampling_strategy =
+                                LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
+                            refresh_reused_frame_metadata = render_stage.screen_retained;
+                        }
+                    }
+                }
+                CpuSamplingCanvasStatus::Unavailable if can_hold_published_frame => {
+                    warn_cpu_sampling_canvas_unavailable(
+                        "CPU spatial sampling fallback has no resident canvas; reusing published frame",
+                    );
+                    render_stage.led_sampling_strategy =
+                        LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
+                    refresh_reused_frame_metadata = true;
+                }
+                CpuSamplingCanvasStatus::Unavailable => {
+                    warn_cpu_sampling_canvas_unavailable(
+                        "CPU spatial sampling fallback has no resident canvas; sampling a black fallback frame",
+                    );
+                    let sampling_succeeded = match Canvas::try_new(
+                        state.canvas_dims.width(),
+                        state.canvas_dims.height(),
+                    ) {
+                        Ok(black_canvas) => match sampling_engine
+                            .try_sample_into(&black_canvas, sampling.output_artifacts.zones_mut())
+                        {
+                            Ok(()) => true,
+                            Err(error) => {
+                                warn!(%error, "Black CPU spatial sampling fallback failed; preserving published output");
+                                false
+                            }
+                        },
+                        Err(error) => {
+                            warn!(%error, "Black CPU fallback canvas allocation failed; preserving published output");
+                            false
+                        }
+                    };
+                    if !sampling_succeeded && can_hold_published_frame {
                         render_stage.led_sampling_strategy =
                             LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
                         refresh_reused_frame_metadata = render_stage.screen_retained;
                     }
                 }
             }
-            CpuSamplingCanvasStatus::Unavailable if can_hold_published_frame => {
-                warn_cpu_sampling_canvas_unavailable(
-                    "CPU spatial sampling fallback has no resident canvas; reusing published frame",
-                );
-                render_stage.led_sampling_strategy =
-                    LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
-                refresh_reused_frame_metadata = true;
-            }
-            CpuSamplingCanvasStatus::Unavailable => {
-                warn_cpu_sampling_canvas_unavailable(
-                    "CPU spatial sampling fallback has no resident canvas; sampling a black fallback frame",
-                );
-                let sampling_succeeded = match Canvas::try_new(
-                    state.canvas_dims.width(),
-                    state.canvas_dims.height(),
-                ) {
-                    Ok(black_canvas) => match sampling_engine
-                        .try_sample_into(&black_canvas, sampling.output_artifacts.zones_mut())
-                    {
-                        Ok(()) => true,
-                        Err(error) => {
-                            warn!(%error, "Black CPU spatial sampling fallback failed; preserving published output");
-                            false
-                        }
-                    },
-                    Err(error) => {
-                        warn!(%error, "Black CPU fallback canvas allocation failed; preserving published output");
-                        false
-                    }
-                };
-                if !sampling_succeeded && can_hold_published_frame {
-                    render_stage.led_sampling_strategy =
-                        LedSamplingStrategy::ReusePublished(Arc::clone(&layout));
-                    refresh_reused_frame_metadata = render_stage.screen_retained;
-                }
-            }
         }
         render_stage.sampled_us = micros_between(cpu_sample_start, Instant::now());
     }
 
-    if let Some(transition) = scene_snapshot.scene_runtime.active_transition.as_ref()
-        && uses_scene_sampled_zones
-        && let Some(transition_key) = scene_transition_key(transition)
-        && let Some(current_zones) = current_scene_sampled_zones(
+    // A fresh GPU sample ends with any unassigned fallback outputs: keep
+    // their colors for the output stage. A zone set's sample covers only its
+    // `Gpu` zones; splice the CPU-sampled and held zones back into zone
+    // order.
+    #[cfg(feature = "wgpu")]
+    if gpu_zone_sampling
+        && let Some(target) = gpu_sample_target.as_ref()
+        && !matches!(
+            render_stage.led_sampling_strategy,
+            LedSamplingStrategy::ReusePublished(_)
+        )
+    {
+        if let Some(pass) = target.fallback() {
+            let zones = sampling.output_artifacts.zones_mut();
+            let fallback_colors = zones.split_off(zones.len().saturating_sub(pass.ranges));
+            sampling
+                .output_artifacts
+                .unassigned_output_cache
+                .store_gpu_fallback_colors(pass.zone_id, fallback_colors);
+        }
+        if let GpuSampleTarget::Zones { set, .. } = target {
+            let published_frame = state.event_bus.frame_lane().borrow();
+            set.assemble_into(
+                sampling.output_artifacts.zones_mut(),
+                &published_frame.zones,
+            );
+        }
+    }
+
+    let led_space_transition_zones = if !transition_active {
+        None
+    } else if uses_scene_sampled_zones {
+        match current_scene_sampled_zones(
             &render_stage.led_sampling_strategy,
             sampling.output_artifacts.zones(),
+        ) {
+            // A retained zone set keeps no colors: they resolve on the GPU
+            // after the scene renders (Spec 86 §4.2). The retained frame
+            // repeats the set's content, so the blend reads the set's latest
+            // fresh sample, or holds the published frame until one lands,
+            // instead of blending every LED toward black.
+            Some([]) if retained_scene_zones.is_some() && !layout.zones.is_empty() => {
+                retained_zone_set_transition_zones(sampling, &layout)
+            }
+            zones => zones.map(<[ZoneColors]>::to_vec),
+        }
+    } else if samples_zone_set {
+        zone_set_transition_zones(
+            sampling,
+            gpu_sample_target.as_ref(),
+            gpu_zone_sampling
+                && !matches!(
+                    render_stage.led_sampling_strategy,
+                    LedSamplingStrategy::ReusePublished(_)
+                ),
         )
-        .map(<[ZoneColors]>::to_vec)
+    } else {
+        None
+    };
+    let mut blended_in_led_space = false;
+    if let Some(transition) = scene_snapshot.scene_runtime.active_transition.as_ref()
+        && let Some(transition_key) = scene_transition_key(transition)
+        && let Some(current_zones) = led_space_transition_zones
     {
         let transition_blend_start = Instant::now();
         if sampling.zone_transition_planner.active_transition != Some(transition_key) {
             sampling.zone_transition_planner.active_transition = Some(transition_key);
-            // record_stable runs before each stable frame publishes, so the
-            // published frame still holds the last stable frame's zones here:
+            // record_published runs before each frame publishes, so the
+            // published frame still holds the previous frame's zones here:
             // capturing them lazily costs one deep copy per transition instead
-            // of one per stable frame.
+            // of one per frame.
             sampling.zone_transition_planner.transition_base = Some(
-                match sampling.zone_transition_planner.last_stable_layout.as_ref() {
-                    Some(stable_layout) => RetainedZoneFrame {
-                        layout: Arc::clone(stable_layout),
+                match sampling
+                    .zone_transition_planner
+                    .last_published_layout
+                    .as_ref()
+                {
+                    Some(published_layout) => RetainedZoneFrame {
+                        layout: Arc::clone(published_layout),
                         zones: state.event_bus.frame_lane().borrow().zones.clone(),
                     },
                     None => RetainedZoneFrame {
@@ -814,9 +1296,14 @@ pub(crate) fn resolve_led_sampling(
             );
         }
 
-        if let Some(base) = sampling.zone_transition_planner.transition_base.as_ref() {
-            let transition_layout =
-                build_transition_layout(base.layout.as_ref(), layout.as_ref(), transition_key);
+        let planner = &mut *sampling.zone_transition_planner;
+        if let Some(base) = planner.transition_base.as_ref() {
+            let transition_layout = cached_transition_layout(
+                &mut planner.transition_layout,
+                &base.layout,
+                &layout,
+                transition_key,
+            );
             blend_scene_zone_frames(
                 &base.zones,
                 &current_zones,
@@ -827,6 +1314,7 @@ pub(crate) fn resolve_led_sampling(
             );
             layout = Arc::clone(&transition_layout);
             render_stage.led_sampling_strategy = LedSamplingStrategy::PreSampled(transition_layout);
+            blended_in_led_space = true;
             render_stage.sampled_us = render_stage
                 .sampled_us
                 .saturating_add(micros_between(transition_blend_start, Instant::now()));
@@ -849,10 +1337,24 @@ pub(crate) fn resolve_led_sampling(
         }
     });
     if scene_snapshot.scene_runtime.active_transition.is_none() {
-        sampling
-            .zone_transition_planner
-            .record_stable(Arc::clone(&layout));
+        sampling.zone_transition_planner.record_stable();
     }
+    // Held LEDs are the previous frame's, so they keep its provenance. A fade
+    // that started from per-zone LEDs blends in LED space until it ends,
+    // whatever one of its frames sampled.
+    let per_zone = if blended_in_led_space {
+        Some(true)
+    } else if reuses_published_frame {
+        None
+    } else {
+        multi_zone_frame
+    };
+    let per_zone = per_zone.filter(|&per_zone| {
+        per_zone || !(transition_active && sampling.zone_transition_planner.last_published_per_zone)
+    });
+    sampling
+        .zone_transition_planner
+        .record_published(Arc::clone(&layout), per_zone);
 
     LedSamplingOutcome {
         layout,
@@ -866,7 +1368,150 @@ pub(crate) fn resolve_led_sampling(
         refresh_reused_frame_metadata,
         reuses_published_frame,
         zone_shape_signature,
+        zone_sources,
     }
+}
+
+/// The incoming scene's LED colors for a transition blend on a frame that
+/// reuses a retained zone set: the set's latest fresh sample, when it was
+/// taken for this layout.
+fn retained_zone_set_transition_zones(
+    sampling: &SamplingRuntime<'_>,
+    layout: &SpatialLayout,
+) -> Option<Vec<ZoneColors>> {
+    let latest = &sampling.zone_transition_planner.latest_zone_set_sample;
+    let sampled_this_layout = latest.len() == layout.zones.len()
+        && latest
+            .iter()
+            .zip(&layout.zones)
+            .all(|(zone, output)| zone.zone_id == output.id);
+    sampled_this_layout.then(|| latest.clone())
+}
+
+/// The incoming scene's LED colors for a transition blend when it samples a
+/// zone set: this frame's fresh sample, remembered for deferred frames, or
+/// the latest one when this frame's sample is still in flight.
+#[cfg(feature = "wgpu")]
+fn zone_set_transition_zones(
+    sampling: &mut SamplingRuntime<'_>,
+    target: Option<&GpuSampleTarget>,
+    fresh: bool,
+) -> Option<Vec<ZoneColors>> {
+    let target = target?;
+    if fresh {
+        let zones = sampling.output_artifacts.zones();
+        let latest = &mut sampling.zone_transition_planner.latest_zone_set_sample;
+        latest.clear();
+        latest.extend_from_slice(zones);
+        return Some(zones.to_vec());
+    }
+    let latest = &sampling.zone_transition_planner.latest_zone_set_sample;
+    (!latest.is_empty() && target.output_shape_matches(latest)).then(|| latest.clone())
+}
+
+#[cfg(not(feature = "wgpu"))]
+fn zone_set_transition_zones(
+    _sampling: &mut SamplingRuntime<'_>,
+    _target: Option<&GpuSampleTarget>,
+    _fresh: bool,
+) -> Option<Vec<ZoneColors>> {
+    None
+}
+
+/// Add the unassigned fallback pass the output stage registered (Spec 86
+/// §4.3). A zone set samples it beside its own textures; a single-zone scene
+/// samples it beside the compositor output, transitions included.
+#[cfg(feature = "wgpu")]
+fn with_unassigned_fallback(
+    target: Option<GpuSampleTarget>,
+    fallback: Option<&GpuFallbackSampling>,
+    zone_canvases: &[(ZoneId, ProducerFrame)],
+) -> Option<GpuSampleTarget> {
+    let Some(fallback) = fallback else {
+        return target;
+    };
+    let Some(frame) = zone_canvases
+        .iter()
+        .find(|(zone_id, _)| *zone_id == fallback.zone_id)
+        .map(|(_, frame)| frame)
+    else {
+        return target;
+    };
+    match target {
+        Some(GpuSampleTarget::Zones {
+            set,
+            fallback: None,
+        }) => {
+            let pass = FallbackPass::new(&set.gpu_textures, frame, fallback);
+            Some(GpuSampleTarget::Zones {
+                set,
+                fallback: pass,
+            })
+        }
+        Some(GpuSampleTarget::Output {
+            engine,
+            prepared_zones,
+            fallback: None,
+        }) => {
+            let pass = FallbackPass::new(&[], frame, fallback);
+            Some(GpuSampleTarget::Output {
+                engine,
+                prepared_zones,
+                fallback: pass,
+            })
+        }
+        other => other,
+    }
+}
+
+/// A single-zone scene's own frame as a one-zone set, for a transition out of
+/// a multi-zone scene: GPU frames sample on the GPU, CPU-backed frames on the
+/// CPU where their pixels already are. A GPU copy drops the snapshot lease,
+/// because the dispatch that reads it is queued this frame, before the
+/// snapshot can be reused.
+#[cfg(feature = "wgpu")]
+fn one_zone_transition_set(
+    engine: &SpatialEngine,
+    prepared_zones: &Arc<[PreparedZonePlan]>,
+    frame: &ProducerFrame,
+) -> Option<ZoneSamplingSet> {
+    let (source, gpu_textures) = match frame {
+        ProducerFrame::GpuTexture(texture)
+            if SparkleFlinger::gpu_samples_plan_modes(prepared_zones) =>
+        {
+            let texture = ZoneTextureSample {
+                frame: GpuTextureFrame {
+                    immutable_lease: None,
+                    ..texture.clone()
+                },
+                prepared_zones: Arc::clone(prepared_zones),
+            };
+            (ZoneSampleSource::Gpu, vec![texture])
+        }
+        ProducerFrame::GpuTexture(_) => return None,
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => return None,
+        cpu_frame => {
+            let canvas = match cpu_frame {
+                ProducerFrame::Canvas(canvas) => std::borrow::Cow::Borrowed(canvas),
+                ProducerFrame::Surface(surface) => {
+                    std::borrow::Cow::Owned(Canvas::from_published_surface(surface))
+                }
+                other => std::borrow::Cow::Owned(other.clone().into_cpu_render_frame()?.0),
+            };
+            let mut colors = Vec::new();
+            engine.try_sample_into(&canvas, &mut colors).ok()?;
+            (ZoneSampleSource::Cpu(colors), Vec::new())
+        }
+    };
+    Some(ZoneSamplingSet {
+        layout: engine.layout(),
+        zones: vec![ZoneSampling {
+            prepared_zones: Arc::clone(prepared_zones),
+            source,
+        }],
+        gpu_textures,
+    })
 }
 
 #[cfg(test)]
@@ -987,5 +1632,37 @@ mod tests {
         let zones = vec![zone_colors("left")];
 
         assert!(can_hold_zone_colors_for_deferred_sampling(&layout, &zones));
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn zone_sampling_set_counts_each_zone_by_its_source() {
+        use std::sync::Arc;
+
+        use super::{ZoneSampleSource, ZoneSampling, ZoneSamplingSet, ZoneSourceCounts};
+
+        let zone = |source| ZoneSampling {
+            prepared_zones: Arc::from(Vec::new()),
+            source,
+        };
+        let set = ZoneSamplingSet {
+            layout: Arc::new(test_layout(Vec::new())),
+            zones: vec![
+                zone(ZoneSampleSource::Gpu),
+                zone(ZoneSampleSource::Cpu(vec![zone_colors("cpu")])),
+                zone(ZoneSampleSource::Held),
+                zone(ZoneSampleSource::Gpu),
+            ],
+            gpu_textures: Vec::new(),
+        };
+
+        assert_eq!(
+            set.source_counts(),
+            ZoneSourceCounts {
+                gpu: 2,
+                cpu: 1,
+                held: 1,
+            }
+        );
     }
 }

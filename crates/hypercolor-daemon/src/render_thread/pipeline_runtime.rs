@@ -691,6 +691,24 @@ pub(crate) struct CachedUnassignedOutputEntry {
 pub(crate) struct UnassignedOutputCache {
     entry: Option<CachedUnassignedOutputEntry>,
     fallback_spatial_engine: Option<CachedFallbackSpatialEngine>,
+    /// The fallback plan the next LED dispatch samples beside the scene,
+    /// registered while the fallback zone's frame is a GPU texture.
+    #[cfg(feature = "wgpu")]
+    gpu_fallback: Option<GpuFallbackSampling>,
+    /// The last fallback colors a GPU dispatch returned, and their zone.
+    #[cfg(feature = "wgpu")]
+    gpu_fallback_colors: Option<(ZoneId, Vec<ZoneColors>)>,
+}
+
+/// Unassigned outputs sampled from a GPU-backed fallback zone's texture in
+/// the frame's own LED dispatch, so their colors join its readback instead
+/// of materializing the zone on the CPU (Spec 86 §4.3).
+#[cfg(feature = "wgpu")]
+#[derive(Clone)]
+pub(crate) struct GpuFallbackSampling {
+    pub(crate) zone_id: ZoneId,
+    /// The unassigned outputs laid out over the zone's texture extent.
+    pub(crate) engine: SpatialEngine,
 }
 
 struct CachedFallbackSpatialEngine {
@@ -711,7 +729,9 @@ impl UnassignedOutputCache {
         key: UnassignedOutputCacheKey,
         value: CachedUnassignedOutput,
     ) -> CachedUnassignedOutput {
-        self.fallback_spatial_engine = None;
+        // The fallback engine stays: its own cache compares the whole
+        // fallback layout by value, so it survives a source layout that only
+        // changed identity, and with it the plan identity GPU sampling keys on.
         self.entry = Some(CachedUnassignedOutputEntry {
             key,
             value: value.clone(),
@@ -722,6 +742,44 @@ impl UnassignedOutputCache {
     pub(crate) fn clear(&mut self) {
         self.entry = None;
         self.fallback_spatial_engine = None;
+        #[cfg(feature = "wgpu")]
+        {
+            self.gpu_fallback = None;
+            self.gpu_fallback_colors = None;
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn gpu_fallback(&self) -> Option<&GpuFallbackSampling> {
+        self.gpu_fallback.as_ref()
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn set_gpu_fallback(&mut self, fallback: Option<GpuFallbackSampling>) {
+        self.gpu_fallback = fallback;
+    }
+
+    /// Keep the fallback colors a GPU dispatch returned for `zone_id`.
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn store_gpu_fallback_colors(&mut self, zone_id: ZoneId, colors: Vec<ZoneColors>) {
+        self.gpu_fallback_colors = Some((zone_id, colors));
+    }
+
+    /// The last GPU-sampled fallback colors for `zone_id`, when they have the
+    /// shape of `expected` (the unassigned outputs in black).
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn gpu_fallback_colors(
+        &self,
+        zone_id: ZoneId,
+        expected: &[ZoneColors],
+    ) -> Option<&[ZoneColors]> {
+        let (sampled_zone, colors) = self.gpu_fallback_colors.as_ref()?;
+        (*sampled_zone == zone_id
+            && colors.len() == expected.len()
+            && colors.iter().zip(expected).all(|(colors, expected)| {
+                colors.zone_id == expected.zone_id && colors.colors.len() == expected.colors.len()
+            }))
+        .then_some(colors.as_slice())
     }
 
     pub(crate) fn fallback_spatial_engine(&self, layout: &SpatialLayout) -> Option<SpatialEngine> {
@@ -750,6 +808,12 @@ pub(crate) struct DeferredSamplingState {
     pending: Option<PendingZoneSampling>,
     retired: VecDeque<PendingZoneSampling>,
     scratch: Vec<ZoneColors>,
+    /// The newest retired sample that finished, with its colors. A GPU slower
+    /// than the frame cadence finishes every sample only after the next frame
+    /// retired it, so the next frame publishes this one instead of dropping
+    /// every result.
+    finished_retired: Option<(PendingZoneSampling, Vec<ZoneColors>)>,
+    retired_scratch: Vec<ZoneColors>,
 }
 
 impl DeferredSamplingState {
@@ -796,9 +860,20 @@ impl DeferredSamplingState {
                 break;
             };
             match sparkleflinger
-                .try_finish_pending_zone_sampling(&mut retired_sampling, &mut self.scratch)
+                .try_finish_pending_zone_sampling(&mut retired_sampling, &mut self.retired_scratch)
             {
-                Ok(true) => {}
+                // Retired samples finish in dispatch order, so the last one
+                // to finish is the newest.
+                Ok(true) => {
+                    let colors = match self.finished_retired.take() {
+                        Some((_, mut colors)) => {
+                            colors.clone_from(&self.retired_scratch);
+                            colors
+                        }
+                        None => self.retired_scratch.clone(),
+                    };
+                    self.finished_retired = Some((retired_sampling, colors));
+                }
                 Ok(false) => {
                     self.retired.push_back(retired_sampling);
                 }
@@ -829,6 +904,7 @@ impl DeferredSamplingState {
     }
 
     pub(crate) fn discard_backlog(&mut self, sparkleflinger: &mut SparkleFlinger) {
+        self.finished_retired = None;
         if let Some(pending) = self.pending.take() {
             sparkleflinger.discard_pending_zone_sampling(pending);
         }
@@ -1422,6 +1498,9 @@ pub(crate) struct ComposeRuntime<'a> {
     pub(crate) render_zone_runtime: &'a mut ZoneRuntime,
     pub(crate) output_artifacts: &'a mut OutputArtifactsState,
     pub(crate) effect_delta_clock: &'a mut EffectDeltaClock,
+    /// Whether the LEDs published last frame were sampled per zone, so a
+    /// transition starting from them samples its incoming scene per zone.
+    pub(crate) last_published_per_zone: bool,
 }
 
 #[cfg(feature = "wgpu")]
@@ -1609,15 +1688,24 @@ impl SamplingRuntime<'_> {
         self.finish_retired(retired_error_message);
 
         let mut work = PendingSamplingWork::default();
-        if let Some(status) = self.take_pending_status(pending_error_message) {
-            match status {
-                PendingZoneSamplingStatus::Completed(deferred_sampling) => {
-                    work.completed = Some(deferred_sampling);
-                }
-                PendingZoneSamplingStatus::Stale(deferred_sampling) => {
+        match self.take_pending_status(pending_error_message) {
+            Some(PendingZoneSamplingStatus::Completed(deferred_sampling)) => {
+                // The pending sample is the newest dispatch, so any finished
+                // retired sample is older than what this frame publishes.
+                self.deferred_sampling.finished_retired = None;
+                work.completed = Some(deferred_sampling);
+            }
+            Some(PendingZoneSamplingStatus::Stale(deferred_sampling)) => {
+                if let Some(finished) = self.take_finished_retired() {
+                    // Publish the finished sample and keep the newer one in
+                    // flight, retired, so it publishes once it finishes.
+                    self.deferred_sampling.retired.push_back(deferred_sampling);
+                    work.completed = Some(finished);
+                } else {
                     work.stale = Some(deferred_sampling);
                 }
             }
+            None => work.completed = self.take_finished_retired(),
         }
 
         work
@@ -1629,6 +1717,14 @@ impl SamplingRuntime<'_> {
     ) -> Option<PendingZoneSampling> {
         self.deferred_sampling
             .retire_or_return(self.sparkleflinger, pending)
+    }
+
+    /// The newest finished retired sample, its colors moved into the scratch
+    /// the resolver reads a completed sample from.
+    fn take_finished_retired(&mut self) -> Option<PendingZoneSampling> {
+        let (finished, colors) = self.deferred_sampling.finished_retired.take()?;
+        self.deferred_sampling.scratch = colors;
+        Some(finished)
     }
 
     pub(crate) fn discard_backlog(&mut self) {
@@ -1769,23 +1865,55 @@ pub(crate) struct RetainedZoneFrame {
 pub(crate) struct ZoneTransitionPlanner {
     pub(crate) active_transition: Option<SceneTransitionKey>,
     pub(crate) transition_base: Option<RetainedZoneFrame>,
-    /// Layout of the most recent stable (non-transition) frame. Zone colors
-    /// are deliberately not retained here: every stable frame's zones end up
-    /// in (or already are) the published frame, so the transition base
-    /// captures them lazily from the published frame when a transition starts
-    /// — one zone deep copy per transition instead of one per stable frame.
-    pub(crate) last_stable_layout: Option<Arc<SpatialLayout>>,
+    /// Layout of the most recently published frame, settled or mid-fade.
+    /// Zone colors are deliberately not retained here: every frame's zones
+    /// end up in (or already are) the published frame, so a transition's base
+    /// captures them lazily from the published frame when it starts, one zone
+    /// deep copy per transition instead of one per frame. A transition that
+    /// interrupts another starts from the blend the LEDs were showing.
+    pub(crate) last_published_layout: Option<Arc<SpatialLayout>>,
+    /// Whether the most recently published LEDs were sampled per zone: a
+    /// multi-zone scene, or a fade blended in LED space. Neither has a
+    /// faithful composited preview to crossfade from, so a transition that
+    /// starts from them, or interrupts them, blends in LED space whatever the
+    /// incoming scene is (Spec 86 §4.1).
+    pub(crate) last_published_per_zone: bool,
+    /// The latest fresh, fully assembled sample of the incoming zone set
+    /// during a transition, which deferred frames blend from.
+    pub(crate) latest_zone_set_sample: Vec<ZoneColors>,
+    /// The active transition's routing layout, kept while its endpoints hold
+    /// so every frame of the fade routes through one layout identity.
+    pub(crate) transition_layout: Option<CachedTransitionLayout>,
+}
+
+pub(crate) struct CachedTransitionLayout {
+    pub(crate) key: SceneTransitionKey,
+    pub(crate) base: Arc<SpatialLayout>,
+    pub(crate) current: Arc<SpatialLayout>,
+    pub(crate) layout: Arc<SpatialLayout>,
 }
 
 impl ZoneTransitionPlanner {
     pub(crate) fn clear(&mut self) {
         self.active_transition = None;
         self.transition_base = None;
+        self.transition_layout = None;
     }
 
-    pub(crate) fn record_stable(&mut self, layout: Arc<SpatialLayout>) {
+    /// Forget the finished transition once a settled frame publishes.
+    pub(crate) fn record_stable(&mut self) {
         self.clear();
-        self.last_stable_layout = Some(layout);
+        self.latest_zone_set_sample.clear();
+    }
+
+    /// Note what this frame publishes, for the next transition to start
+    /// from. `per_zone` is `None` for a frame that says nothing new about how
+    /// its LEDs were sampled (a retained or reused frame).
+    pub(crate) fn record_published(&mut self, layout: Arc<SpatialLayout>, per_zone: Option<bool>) {
+        self.last_published_layout = Some(layout);
+        if let Some(per_zone) = per_zone {
+            self.last_published_per_zone = per_zone;
+        }
     }
 }
 
@@ -1832,6 +1960,7 @@ impl RenderCaches {
             render_zone_runtime: &mut self.render_zone_runtime,
             output_artifacts: &mut self.output_artifacts,
             effect_delta_clock: &mut self.effect_delta_clock,
+            last_published_per_zone: self.zone_transition_planner.last_published_per_zone,
         }
     }
 
@@ -2156,6 +2285,20 @@ impl PipelineRuntime {
         interaction_routing: InteractionRoutingControl,
         progress: Option<&StartupProgress>,
     ) -> Result<Self> {
+        // The display compositor finalizes faces over the scene compositor's
+        // GPU output, so both must live on one device. Startup always hands
+        // one in; a caller that leaves it unset gets one opened here rather
+        // than two compositors that cannot read each other's textures.
+        #[cfg(feature = "wgpu")]
+        let render_gpu_device = match render_gpu_device {
+            None if render_acceleration_mode == RenderAccelerationMode::Gpu => {
+                Some(GpuRenderDevice::new_with_backend_preference(
+                    "SparkleFlinger GPU compositor",
+                    super::gpu_device::GpuBackendPreference::Default,
+                )?)
+            }
+            device => device,
+        };
         let mut sparkleflinger = SparkleFlinger::new_with_gpu_device(
             render_acceleration_mode,
             #[cfg(feature = "wgpu")]

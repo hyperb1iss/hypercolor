@@ -7,6 +7,8 @@ use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId};
 use hypercolor_types::spatial::{Output, SpatialLayout};
 
+#[cfg(feature = "wgpu")]
+use super::pipeline_runtime::GpuFallbackSampling;
 use super::pipeline_runtime::{
     CachedUnassignedOutput, UnassignedOutputCache, UnassignedOutputCacheKey,
 };
@@ -29,6 +31,9 @@ impl<'a> UnassignedOutputPlanner<'a> {
         zones: &[Zone],
         zone_canvases: &[(ZoneId, ProducerFrame)],
     ) -> Result<UnassignedOutputPlan, SpatialPlanError> {
+        // Registered again below whenever the fallback zone is GPU-backed.
+        #[cfg(feature = "wgpu")]
+        self.cache.set_gpu_fallback(None);
         if matches!(behavior, UnassignedBehavior::Hold) {
             return Ok(UnassignedOutputPlan {
                 layout,
@@ -51,7 +56,7 @@ impl<'a> UnassignedOutputPlanner<'a> {
             UnassignedBehavior::Hold => UnassignedOutputZones::None,
             UnassignedBehavior::Fallback(zone_id) => {
                 let zones = self
-                    .fallback_zone_colors(*zone_id, zones, zone_canvases, &cached.zones)?
+                    .fallback_zone_colors(*zone_id, zones, zone_canvases, &cached)?
                     .unwrap_or_else(|| cached.black_zones.iter().cloned().collect());
                 UnassignedOutputZones::Owned(zones)
             }
@@ -89,7 +94,7 @@ impl<'a> UnassignedOutputPlanner<'a> {
         fallback_zone_id: ZoneId,
         zones: &[Zone],
         zone_canvases: &[(ZoneId, ProducerFrame)],
-        unassigned_zones: &[Output],
+        unassigned: &CachedUnassignedOutput,
     ) -> Result<Option<Vec<ZoneColors>>, SpatialPlanError> {
         let Some(fallback_zone) = zones
             .iter()
@@ -97,27 +102,66 @@ impl<'a> UnassignedOutputPlanner<'a> {
         else {
             return Ok(None);
         };
-        let Some(fallback_canvas) = zone_canvases
+        let Some(fallback_frame) = zone_canvases
             .iter()
             .find(|(zone_id, _)| *zone_id == fallback_zone_id)
-            .and_then(|(_, frame)| producer_frame_canvas(frame))
+            .map(|(_, frame)| frame)
         else {
             return Ok(None);
         };
+        // A GPU-backed zone never materializes on the CPU: its fallback
+        // outputs ride the next LED dispatch against the zone's texture, and
+        // this frame takes the colors the latest dispatch returned.
+        #[cfg(feature = "wgpu")]
+        if matches!(fallback_frame, ProducerFrame::GpuTexture(_)) {
+            let engine = self.fallback_spatial_engine(
+                fallback_zone,
+                &unassigned.zones,
+                fallback_frame.width(),
+                fallback_frame.height(),
+            )?;
+            self.cache.set_gpu_fallback(Some(GpuFallbackSampling {
+                zone_id: fallback_zone_id,
+                engine,
+            }));
+            return Ok(self
+                .cache
+                .gpu_fallback_colors(fallback_zone_id, &unassigned.black_zones)
+                .map(<[ZoneColors]>::to_vec));
+        }
+        let Some(fallback_canvas) = producer_frame_canvas(fallback_frame) else {
+            return Ok(None);
+        };
+        let engine = self.fallback_spatial_engine(
+            fallback_zone,
+            &unassigned.zones,
+            fallback_canvas.width(),
+            fallback_canvas.height(),
+        )?;
+        Ok(Some(engine.sample(&fallback_canvas)))
+    }
+
+    /// The unassigned outputs laid out over a `width` x `height` image of
+    /// the fallback zone, cached while that layout holds.
+    fn fallback_spatial_engine(
+        &mut self,
+        fallback_zone: &Zone,
+        unassigned_zones: &[Output],
+        width: u32,
+        height: u32,
+    ) -> Result<SpatialEngine, SpatialPlanError> {
         let mut fallback_layout = fallback_zone.layout.clone();
         fallback_layout.zones = unassigned_zones.to_vec();
-        fallback_layout.canvas_width = fallback_canvas.width();
-        fallback_layout.canvas_height = fallback_canvas.height();
+        fallback_layout.canvas_width = width;
+        fallback_layout.canvas_height = height;
 
-        let engine = if let Some(engine) = self.cache.fallback_spatial_engine(&fallback_layout) {
-            engine
-        } else {
-            let engine = SpatialEngine::try_new(fallback_layout.clone())?;
-            self.cache
-                .store_fallback_spatial_engine(fallback_layout, engine.clone());
-            engine
-        };
-        Ok(Some(engine.sample(&fallback_canvas)))
+        if let Some(engine) = self.cache.fallback_spatial_engine(&fallback_layout) {
+            return Ok(engine);
+        }
+        let engine = SpatialEngine::try_new(fallback_layout.clone())?;
+        self.cache
+            .store_fallback_spatial_engine(fallback_layout, engine.clone());
+        Ok(engine)
     }
 }
 
@@ -413,5 +457,22 @@ mod tests {
             .sampling_plan();
 
         assert!(Arc::ptr_eq(&first_sampling_plan, &second_sampling_plan));
+
+        // A source layout that only changed identity (a transition's routing
+        // layout, say) keeps the fallback engine and its plan identity.
+        UnassignedOutputPlanner::new(&manager, &mut cache)
+            .plan(
+                Arc::new(sample_layout(&[])),
+                &UnassignedBehavior::Fallback(zone_id),
+                &authored_zones,
+                &zone_canvases,
+            )
+            .expect("an equal source layout should remain addressable");
+        let third_sampling_plan = cache
+            .fallback_spatial_engine(&fallback_layout)
+            .expect("fallback engine should survive a new layout identity")
+            .sampling_plan();
+
+        assert!(Arc::ptr_eq(&first_sampling_plan, &third_sampling_plan));
     }
 }

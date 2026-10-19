@@ -1,18 +1,75 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Arc;
+
 use anyhow::Result;
 use hypercolor_core::spatial::PreparedZonePlan;
 use hypercolor_types::event::ZoneColors;
 
 use crate::render_thread::producer_queue::GpuTextureFrame;
 use crate::render_thread::sparkleflinger::gpu_sampling::{
-    GpuSampleSource, GpuSamplingPlan, GpuSamplingPlanKey, GpuSamplingPreparation,
+    GpuSamplePass, GpuSampleSource, GpuSamplingPlan, GpuSamplingPlanKey, GpuSamplingPreparation,
     PendingGpuSampleReadback,
 };
 
 use super::{FrameInFlight, GpuCompositorOutputSurface, GpuSparkleFlinger};
 
+/// One zone's retained texture and the prepared plan its LEDs sample.
+#[derive(Clone)]
+pub(crate) struct ZoneTextureSample {
+    pub(crate) frame: GpuTextureFrame,
+    pub(crate) prepared_zones: Arc<[PreparedZonePlan]>,
+}
+
+/// What a sample read: the compositor's output at one generation, possibly
+/// with zone textures sampled beside it, or a set of zone textures at their
+/// content generations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SampleContentKey {
+    Output(u64),
+    OutputWithTextures { generation: u64, textures: u64 },
+    ZoneTextures(u64),
+}
+
+impl SampleContentKey {
+    fn for_output(generation: u64, textures: &[ZoneTextureSample]) -> Self {
+        if textures.is_empty() {
+            Self::Output(generation)
+        } else {
+            Self::OutputWithTextures {
+                generation,
+                textures: texture_content_digest(textures),
+            }
+        }
+    }
+
+    fn for_zone_textures(textures: &[ZoneTextureSample]) -> Self {
+        Self::ZoneTextures(texture_content_digest(textures))
+    }
+
+    /// The compositor output generation this sample read, if it read one.
+    const fn output_generation(self) -> Option<u64> {
+        match self {
+            Self::Output(generation) | Self::OutputWithTextures { generation, .. } => {
+                Some(generation)
+            }
+            Self::ZoneTextures(_) => None,
+        }
+    }
+}
+
+fn texture_content_digest(textures: &[ZoneTextureSample]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for texture in textures {
+        texture.frame.storage_id.hash(&mut hasher);
+        texture.frame.content_generation.hash(&mut hasher);
+    }
+    textures.len().hash(&mut hasher);
+    hasher.finish()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct CachedSampleResultKey {
-    output_generation: u64,
+    content: SampleContentKey,
     sampling_plan: GpuSamplingPlanKey,
 }
 
@@ -30,7 +87,7 @@ pub(crate) enum GpuZoneSamplingDispatch {
 }
 
 pub(crate) struct PendingGpuZoneSampling {
-    pub(super) output_generation: u64,
+    pub(super) content: SampleContentKey,
     pub(super) sampling_plan: Option<GpuSamplingPlanKey>,
     pub(super) pending_readback: PendingGpuSampleReadback,
 }
@@ -122,7 +179,7 @@ impl GpuSparkleFlinger {
         prepared_zones: &[PreparedZonePlan],
         zones: &mut Vec<ZoneColors>,
     ) -> Result<bool> {
-        match self.begin_sample_zone_plan_into(prepared_zones, zones)? {
+        match self.begin_sample_output_into(prepared_zones, &[], zones)? {
             GpuZoneSamplingDispatch::Unsupported => Ok(false),
             GpuZoneSamplingDispatch::Ready => Ok(true),
             GpuZoneSamplingDispatch::Saturated => Ok(false),
@@ -133,17 +190,31 @@ impl GpuSparkleFlinger {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn begin_sample_zone_plan_into(
         &mut self,
         prepared_zones: &[PreparedZonePlan],
         zones: &mut Vec<ZoneColors>,
     ) -> Result<GpuZoneSamplingDispatch> {
-        let sampling_plan = GpuSamplingPlan::key(prepared_zones);
+        self.begin_sample_output_into(prepared_zones, &[], zones)
+    }
+
+    /// Sample the compositor's current output with `prepared_zones`, then
+    /// each of `textures` with its own plan, in one dispatch chained after
+    /// the output's own work. Colors arrive in that order.
+    pub(crate) fn begin_sample_output_into(
+        &mut self,
+        prepared_zones: &[PreparedZonePlan],
+        textures: &[ZoneTextureSample],
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<GpuZoneSamplingDispatch> {
+        let sampling_plan = output_plan_key(prepared_zones, textures);
+        let content = SampleContentKey::for_output(self.output_generation, textures);
         if let Some(sampling_plan) = sampling_plan
             && let Some(cached) = self.cached_sample_result.as_ref()
             && cached.key
                 == (CachedSampleResultKey {
-                    output_generation: self.output_generation,
+                    content,
                     sampling_plan,
                 })
         {
@@ -180,14 +251,19 @@ impl GpuSparkleFlinger {
         let previous_submission = frame_in_flight
             .as_ref()
             .and_then(FrameInFlight::submission_index);
-        let sampling_dispatch = match self.spatial_sampler.sample_texture_into(
+        let passes = std::iter::once(GpuSamplePass {
+            source,
+            view: &source_view,
+            width: output_width,
+            height: output_height,
+            prepared_zones,
+        })
+        .chain(textures.iter().map(zone_texture_pass))
+        .collect::<Vec<_>>();
+        let sampling_dispatch = match self.spatial_sampler.sample_passes_into(
             &self.device,
             &self.queue,
-            source,
-            &source_view,
-            output_width,
-            output_height,
-            prepared_zones,
+            &passes,
             zones,
             pending_output_submission,
         ) {
@@ -235,7 +311,7 @@ impl GpuSparkleFlinger {
         }
         if let Some(pending_readback) = sampling_dispatch.pending_readback {
             return Ok(GpuZoneSamplingDispatch::Pending(PendingGpuZoneSampling {
-                output_generation: self.output_generation,
+                content,
                 sampling_plan,
                 pending_readback,
             }));
@@ -243,18 +319,7 @@ impl GpuSparkleFlinger {
         if sampling_dispatch.sampled
             && let Some(sampling_plan) = sampling_plan
         {
-            let mut cached_zones = self
-                .cached_sample_result
-                .take()
-                .map_or_else(Vec::new, |cached| cached.zones);
-            cached_zones.clone_from(zones);
-            self.cached_sample_result = Some(CachedSampleResult {
-                key: CachedSampleResultKey {
-                    output_generation: self.output_generation,
-                    sampling_plan,
-                },
-                zones: cached_zones,
-            });
+            self.store_sample_result(content, sampling_plan, zones);
         }
         if sampling_dispatch.sampled {
             Ok(GpuZoneSamplingDispatch::Ready)
@@ -275,7 +340,7 @@ impl GpuSparkleFlinger {
                 zones,
             )?;
             self.cache_finished_zone_sampling(
-                pending.output_generation,
+                pending.content,
                 pending.sampling_plan,
                 zones.as_slice(),
             );
@@ -295,11 +360,7 @@ impl GpuSparkleFlinger {
         )? {
             return Ok(false);
         }
-        self.cache_finished_zone_sampling(
-            pending.output_generation,
-            pending.sampling_plan,
-            zones.as_slice(),
-        );
+        self.cache_finished_zone_sampling(pending.content, pending.sampling_plan, zones.as_slice());
         Ok(true)
     }
 
@@ -307,13 +368,95 @@ impl GpuSparkleFlinger {
         &self,
         pending: &PendingGpuZoneSampling,
         prepared_zones: &[PreparedZonePlan],
+        textures: &[ZoneTextureSample],
     ) -> bool {
-        pending.output_generation == self.output_generation
-            && pending.sampling_plan == GpuSamplingPlan::key(prepared_zones)
+        pending.content == SampleContentKey::for_output(self.output_generation, textures)
+            && pending.sampling_plan == output_plan_key(prepared_zones, textures)
+    }
+
+    /// Whether `pending` sampled with the plans of an output request.
+    pub(crate) fn pending_zone_sampling_used_output_plan(
+        pending: &PendingGpuZoneSampling,
+        prepared_zones: &[PreparedZonePlan],
+        textures: &[ZoneTextureSample],
+    ) -> bool {
+        pending.sampling_plan == output_plan_key(prepared_zones, textures)
+    }
+
+    /// Whether `pending` sampled with the plans of a zone texture request.
+    pub(crate) fn pending_zone_sampling_used_texture_plan(
+        pending: &PendingGpuZoneSampling,
+        textures: &[ZoneTextureSample],
+    ) -> bool {
+        pending.sampling_plan == zone_texture_plan_key(textures)
+    }
+
+    pub(crate) fn pending_zone_texture_sampling_matches(
+        pending: &PendingGpuZoneSampling,
+        textures: &[ZoneTextureSample],
+    ) -> bool {
+        pending.content == SampleContentKey::for_zone_textures(textures)
+            && pending.sampling_plan == zone_texture_plan_key(textures)
+    }
+
+    /// Sample every zone texture in one dispatch, each with its own plan, and
+    /// return their LED colors in texture order.
+    ///
+    /// Zone textures are snapshots whose copies were submitted before this
+    /// call, so the dispatch needs no ordering against compositor work still
+    /// in flight and submits on its own encoder.
+    pub(crate) fn begin_sample_zone_textures_into(
+        &mut self,
+        textures: &[ZoneTextureSample],
+        zones: &mut Vec<ZoneColors>,
+    ) -> Result<GpuZoneSamplingDispatch> {
+        let content = SampleContentKey::for_zone_textures(textures);
+        let sampling_plan = zone_texture_plan_key(textures);
+        if let Some(sampling_plan) = sampling_plan
+            && let Some(cached) = self.cached_sample_result.as_ref()
+            && cached.key
+                == (CachedSampleResultKey {
+                    content,
+                    sampling_plan,
+                })
+        {
+            zones.clone_from(&cached.zones);
+            return Ok(GpuZoneSamplingDispatch::Ready);
+        }
+        let passes = textures.iter().map(zone_texture_pass).collect::<Vec<_>>();
+        let dispatch = self.spatial_sampler.sample_passes_into(
+            &self.device,
+            &self.queue,
+            &passes,
+            zones,
+            None,
+        )?;
+        if dispatch.queue_saturated {
+            return Ok(GpuZoneSamplingDispatch::Saturated);
+        }
+        if let Some(pending_readback) = dispatch.pending_readback {
+            return Ok(GpuZoneSamplingDispatch::Pending(PendingGpuZoneSampling {
+                content,
+                sampling_plan,
+                pending_readback,
+            }));
+        }
+        if !dispatch.sampled {
+            return Ok(GpuZoneSamplingDispatch::Unsupported);
+        }
+        if let Some(sampling_plan) = sampling_plan {
+            self.store_sample_result(content, sampling_plan, zones);
+        }
+        Ok(GpuZoneSamplingDispatch::Ready)
     }
 
     pub(crate) fn take_last_sample_readback_wait_blocked(&mut self) -> bool {
         self.spatial_sampler.take_last_readback_wait_blocked()
+    }
+
+    /// Sample passes the spatial sampler has encoded since it was created.
+    pub(crate) fn sample_pass_count(&self) -> usize {
+        self.spatial_sampler.sample_dispatch_count()
     }
 
     pub(crate) const fn max_pending_zone_sampling(&self) -> usize {
@@ -327,16 +470,44 @@ impl GpuSparkleFlinger {
 
     fn cache_finished_zone_sampling(
         &mut self,
-        output_generation: u64,
+        content: SampleContentKey,
         sampling_plan: Option<GpuSamplingPlanKey>,
         zones: &[ZoneColors],
     ) {
-        if output_generation != self.output_generation {
+        // An output sample is only worth caching while the compositor still
+        // holds that output; a zone-texture sample is keyed by the snapshot
+        // generations it read, so a later lookup can only hit when they match.
+        if let Some(generation) = content.output_generation()
+            && generation != self.output_generation
+        {
             return;
         }
         let Some(sampling_plan) = sampling_plan else {
             return;
         };
+        self.store_sample_result(content, sampling_plan, zones);
+    }
+
+    /// Forget a cached sample of the compositor output once that output
+    /// changes. A zone texture sample stays: its key names the storage and
+    /// content generation of every texture it read, which composing new
+    /// output never touches.
+    pub(super) fn invalidate_output_sample(&mut self) {
+        if self
+            .cached_sample_result
+            .as_ref()
+            .is_some_and(|cached| cached.key.content.output_generation().is_some())
+        {
+            self.cached_sample_result = None;
+        }
+    }
+
+    fn store_sample_result(
+        &mut self,
+        content: SampleContentKey,
+        sampling_plan: GpuSamplingPlanKey,
+        zones: &[ZoneColors],
+    ) {
         let mut cached_zones = self
             .cached_sample_result
             .take()
@@ -345,10 +516,41 @@ impl GpuSparkleFlinger {
         cached_zones.extend_from_slice(zones);
         self.cached_sample_result = Some(CachedSampleResult {
             key: CachedSampleResultKey {
-                output_generation: self.output_generation,
+                content,
                 sampling_plan,
             },
             zones: cached_zones,
         });
     }
+}
+
+fn zone_texture_pass(texture: &ZoneTextureSample) -> GpuSamplePass<'_> {
+    GpuSamplePass {
+        source: GpuSampleSource::Texture(texture.frame.storage_id),
+        view: &texture.frame.view,
+        width: texture.frame.width,
+        height: texture.frame.height,
+        prepared_zones: &texture.prepared_zones,
+    }
+}
+
+fn output_plan_key(
+    prepared_zones: &[PreparedZonePlan],
+    textures: &[ZoneTextureSample],
+) -> Option<GpuSamplingPlanKey> {
+    GpuSamplingPlan::key_for_plans(
+        std::iter::once(prepared_zones).chain(
+            textures
+                .iter()
+                .map(|texture| texture.prepared_zones.as_ref()),
+        ),
+    )
+}
+
+fn zone_texture_plan_key(textures: &[ZoneTextureSample]) -> Option<GpuSamplingPlanKey> {
+    GpuSamplingPlan::key_for_plans(
+        textures
+            .iter()
+            .map(|texture| texture.prepared_zones.as_ref()),
+    )
 }

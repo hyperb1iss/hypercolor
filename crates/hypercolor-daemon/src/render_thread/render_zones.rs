@@ -37,7 +37,6 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode};
 #[cfg(test)]
 use super::frame_sampling::LedSamplingStrategy;
 use super::layer_runtime::LayerRuntimeRegistry;
-#[cfg(test)]
 use super::producer_queue::ProducerFrame;
 use super::scene_dependency::SceneDependencyKey;
 #[cfg(test)]
@@ -100,6 +99,14 @@ pub(crate) struct ZoneRuntime {
     scene_surface_pool_initial_slots: usize,
     scene_surface_pool_max_slots: usize,
     projected_scene_layers: Vec<super::sparkleflinger::CompositionLayer>,
+    /// Each GPU-resident scene zone's last stabilized frame, which a zone
+    /// whose layers are all still loading keeps sampling (Spec 86 §2.2).
+    last_zone_frames: HashMap<ZoneId, ProducerFrame>,
+    /// The layers whose composition each zone's held frame shows.
+    zone_composition_identities: HashMap<ZoneId, model::ZoneCompositionIdentity>,
+    /// Zones in the current scene pass whose layers matched their held
+    /// frame's composition, so they reused it without composing.
+    composition_skips: u32,
     #[cfg(all(test, feature = "wgpu"))]
     projected_scene_layer_allocation_count: usize,
     reconciled_dependency_key: Option<SceneDependencyKey>,
@@ -115,6 +122,13 @@ pub(crate) struct ZoneRuntime {
     scene_height: u32,
     #[cfg(all(test, feature = "wgpu"))]
     fail_next_projected_scene_composition: bool,
+    #[cfg(all(test, feature = "wgpu"))]
+    fail_next_scene_render: bool,
+    #[cfg(all(test, feature = "wgpu"))]
+    injected_effect_layer_frames: HashMap<hypercolor_types::layer::SceneLayerId, ProducerFrame>,
+    /// Effect renders each layer still reports `Pending` for.
+    #[cfg(all(test, feature = "wgpu"))]
+    pending_effect_layers: HashMap<hypercolor_types::layer::SceneLayerId, u32>,
 }
 
 pub(crate) struct PreparedSceneResize {
@@ -214,6 +228,9 @@ impl ZoneRuntime {
             projected_scene_layer_allocation_count: 0,
             reconciled_dependency_key: None,
             retained_frame: None,
+            last_zone_frames: HashMap::new(),
+            zone_composition_identities: HashMap::new(),
+            composition_skips: 0,
             zone_sampling_scratch: Vec::new(),
             last_effect_error: None,
             recovered_effect_error: None,
@@ -225,6 +242,12 @@ impl ZoneRuntime {
             scene_height,
             #[cfg(all(test, feature = "wgpu"))]
             fail_next_projected_scene_composition: false,
+            #[cfg(all(test, feature = "wgpu"))]
+            fail_next_scene_render: false,
+            #[cfg(all(test, feature = "wgpu"))]
+            injected_effect_layer_frames: HashMap::new(),
+            #[cfg(all(test, feature = "wgpu"))]
+            pending_effect_layers: HashMap::new(),
         })
     }
 

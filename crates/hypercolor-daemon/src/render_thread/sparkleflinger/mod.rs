@@ -7,6 +7,9 @@ mod gpu_area_sat;
 #[cfg(feature = "wgpu")]
 mod gpu_sampling;
 mod transform;
+#[cfg(all(test, feature = "wgpu"))]
+pub(crate) use gpu_sampling::SAMPLE_READBACK_WITHHELD_POLLS;
+mod zone_preview;
 
 #[cfg(all(feature = "wgpu", feature = "allocation-contract-tests"))]
 #[doc(hidden)]
@@ -60,6 +63,10 @@ use crate::render_thread::sparkleflinger::gpu::{
     PendingGpuDisplayFinalize, PendingGpuZoneSampling,
 };
 use crate::startup::StartupProgress;
+#[cfg(feature = "wgpu")]
+pub(crate) use gpu::ZoneTextureSample;
+#[cfg(feature = "wgpu")]
+pub(crate) use zone_preview::ZonePreviewStage;
 
 use super::producer_queue::ProducerFrame;
 
@@ -331,6 +338,19 @@ impl CompositionLayer {
             && !self.needs_processing_for_size(width, height)
     }
 
+    /// What this layer contributes to a composition, without its pixels:
+    /// layers with equal identities compose identically.
+    pub(crate) fn identity(&self) -> Option<CompositionLayerIdentity> {
+        Some(CompositionLayerIdentity {
+            frame: self.frame.stable_identity()?,
+            mode: self.mode,
+            opacity_bits: self.opacity.to_bits(),
+            opaque_hint: self.opaque_hint,
+            transform: self.transform,
+            adjust: self.adjust,
+        })
+    }
+
     #[cfg(all(test, feature = "wgpu"))]
     pub(crate) fn gpu_frame_identity_for_test(
         &self,
@@ -353,12 +373,25 @@ impl CompositionLayer {
     }
 }
 
+/// See [`CompositionLayer::identity`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CompositionLayerIdentity {
+    frame: super::producer_queue::ProducerFrameIdentity,
+    mode: CompositionMode,
+    opacity_bits: u32,
+    opaque_hint: bool,
+    transform: Option<CompositionTransform>,
+    adjust: Option<CompositionAdjust>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CompositionPlan {
     width: u32,
     height: u32,
     layers: Vec<CompositionLayer>,
     cpu_replay_cacheable: bool,
+    /// See [`Self::preserving_scene_preview`].
+    preserves_scene_preview: bool,
 }
 
 impl CompositionPlan {
@@ -368,6 +401,7 @@ impl CompositionPlan {
             height,
             layers: vec![layer.into_base_layer()],
             cpu_replay_cacheable: true,
+            preserves_scene_preview: false,
         }
     }
 
@@ -381,12 +415,24 @@ impl CompositionPlan {
             height,
             layers,
             cpu_replay_cacheable: true,
+            preserves_scene_preview: false,
         }
     }
 
     #[must_use]
     pub fn with_cpu_replay_cacheable(mut self, cacheable: bool) -> Self {
         self.cpu_replay_cacheable = cacheable;
+        self
+    }
+
+    /// Mark a composition made for another consumer of the shared
+    /// compositor, such as a zone or display-face frame or the projected
+    /// scene, rather than the scene's own output. It leaves the scene
+    /// preview alone: it neither stages a GPU preview readback nor cancels
+    /// one in flight, and it leaves the active preview request unchanged.
+    #[must_use]
+    pub(crate) fn preserving_scene_preview(mut self) -> Self {
+        self.preserves_scene_preview = true;
         self
     }
 
@@ -432,7 +478,8 @@ impl<'a> ReusableCompositionPlan<'a> {
         Self {
             plan: Some(
                 CompositionPlan::with_layers(width, height, std::mem::take(target))
-                    .with_cpu_replay_cacheable(false),
+                    .with_cpu_replay_cacheable(false)
+                    .preserving_scene_preview(),
             ),
             target,
         }
@@ -535,6 +582,9 @@ pub struct SparkleFlinger {
     preview_surface_pool: RenderSurfacePool,
     composition_surface_pool: RenderSurfacePool,
     face_overlay_surface_pool: RenderSurfacePool,
+    /// Texture passes the GPU sampler encoded for LED sampling since the
+    /// last `take_led_sample_passes`.
+    led_sample_passes: u32,
 }
 
 pub(crate) enum SparkleFlingerCanvasPreparation {
@@ -656,6 +706,22 @@ pub(crate) enum ZoneSamplingDispatch {
 pub(crate) enum PendingZoneSampling {
     #[cfg(feature = "wgpu")]
     Gpu(PendingGpuZoneSampling),
+}
+
+/// What a zone sampling dispatch reads.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
+pub(crate) enum ZoneSamplingRequest<'a> {
+    /// The compositor's current output, sampled with one prepared plan, and
+    /// any zone textures sampled beside it in the same dispatch.
+    Output {
+        prepared_zones: &'a [PreparedZonePlan],
+        #[cfg(feature = "wgpu")]
+        textures: &'a [ZoneTextureSample],
+    },
+    /// Retained zone textures, each sampled with its own prepared plan.
+    #[cfg(feature = "wgpu")]
+    ZoneTextures(&'a [ZoneTextureSample]),
 }
 
 #[cfg(feature = "wgpu")]
@@ -851,6 +917,7 @@ impl SparkleFlinger {
             preview_surface_pool: new_preview_surface_pool(),
             composition_surface_pool: new_composition_surface_pool(),
             face_overlay_surface_pool: new_composition_surface_pool(),
+            led_sample_passes: 0,
         }
     }
 
@@ -901,6 +968,7 @@ impl SparkleFlinger {
             preview_surface_pool: new_preview_surface_pool(),
             composition_surface_pool: new_composition_surface_pool(),
             face_overlay_surface_pool: new_composition_surface_pool(),
+            led_sample_passes: 0,
         })
     }
 
@@ -918,6 +986,7 @@ impl SparkleFlinger {
         requires_cpu_sampling_canvas: bool,
         preview_surface_request: Option<PreviewSurfaceRequest>,
     ) -> ComposedFrameSet {
+        let owns_preview_request = !plan.preserves_scene_preview;
         let (composed, commit_preview_request) = match &mut self.backend {
             SparkleFlingerBackend::Cpu(backend) => (
                 backend.compose_with_surface_pools(
@@ -989,7 +1058,7 @@ impl SparkleFlinger {
                 }
             }
         };
-        if commit_preview_request {
+        if commit_preview_request && owns_preview_request {
             self.active_preview_request = preview_surface_request;
         }
         composed
@@ -1058,6 +1127,32 @@ impl SparkleFlinger {
         }
 
         composed.preview_surface.or(composed.sampling_surface)
+    }
+
+    /// Close this render frame's GPU work; see [`Self::wait_for_gpu_frame_budget`].
+    pub(crate) fn end_gpu_frame(&mut self) {
+        #[cfg(feature = "wgpu")]
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
+            gpu.end_gpu_frame();
+        }
+    }
+
+    /// Wait for the GPU to finish an earlier frame before this one queues
+    /// more work, so GPU latency stays bounded on a device slower than the
+    /// frame cadence. A no-op on the CPU backend.
+    pub(crate) fn wait_for_gpu_frame_budget(&mut self) {
+        #[cfg(feature = "wgpu")]
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
+            gpu.wait_for_gpu_frame_budget();
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn gpu_frames_in_flight_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.gpu_frames_in_flight()),
+        }
     }
 
     #[cfg(feature = "wgpu")]
@@ -1164,6 +1259,13 @@ impl SparkleFlinger {
         }
     }
 
+    /// Whether the GPU sampler can run every output's sampling mode in
+    /// `prepared_zones` (it has no Gaussian-area sampler).
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn gpu_samples_plan_modes(prepared_zones: &[PreparedZonePlan]) -> bool {
+        gpu_sampling::GpuSamplingPlan::supports_prepared_zones(prepared_zones)
+    }
+
     pub(crate) fn supports_gpu_output_frames(&self) -> bool {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => false,
@@ -1196,6 +1298,18 @@ impl SparkleFlinger {
         }
     }
 
+    /// Summed-area tables the GPU sampler has allocated for area-sampled
+    /// plans.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn summed_area_table_allocation_count_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                Some(gpu.summed_area_table_allocation_count())
+            }
+        }
+    }
+
     #[cfg(all(test, feature = "wgpu"))]
     pub(crate) fn compositor_surface_allocation_count_for_test(&self) -> Option<usize> {
         match &self.backend {
@@ -1213,6 +1327,14 @@ impl SparkleFlinger {
             SparkleFlingerBackend::Gpu { gpu, .. } => {
                 Some(gpu.projected_bind_group_creation_count())
             }
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn sample_bind_group_creation_count_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.sample_bind_group_creation_count()),
         }
     }
 
@@ -1452,28 +1574,42 @@ impl SparkleFlinger {
         clippy::unnecessary_wraps,
         reason = "the public wrapper mirrors the GPU backend signature even when only the CPU path is compiled"
     )]
-    pub(crate) fn begin_sample_zone_plan_into(
+    pub(crate) fn begin_sample_zones_into(
         &mut self,
-        prepared_zones: &[PreparedZonePlan],
+        request: ZoneSamplingRequest<'_>,
         zones: &mut Vec<ZoneColors>,
     ) -> Result<ZoneSamplingDispatch> {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => {
-                let _ = prepared_zones;
+                let _ = request;
                 let _ = zones;
                 Ok(ZoneSamplingDispatch::Unsupported)
             }
             #[cfg(feature = "wgpu")]
-            SparkleFlingerBackend::Gpu { gpu, .. } => Ok(
-                match gpu.begin_sample_zone_plan_into(prepared_zones, zones)? {
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                let passes_before = gpu.sample_pass_count();
+                let dispatch = match request {
+                    ZoneSamplingRequest::Output {
+                        prepared_zones,
+                        textures,
+                    } => gpu.begin_sample_output_into(prepared_zones, textures, zones),
+                    ZoneSamplingRequest::ZoneTextures(textures) => {
+                        gpu.begin_sample_zone_textures_into(textures, zones)
+                    }
+                };
+                let encoded = gpu.sample_pass_count().saturating_sub(passes_before);
+                self.led_sample_passes = self
+                    .led_sample_passes
+                    .saturating_add(u32::try_from(encoded).unwrap_or(u32::MAX));
+                Ok(match dispatch? {
                     GpuZoneSamplingDispatch::Unsupported => ZoneSamplingDispatch::Unsupported,
                     GpuZoneSamplingDispatch::Ready => ZoneSamplingDispatch::Ready,
                     GpuZoneSamplingDispatch::Saturated => ZoneSamplingDispatch::Saturated,
                     GpuZoneSamplingDispatch::Pending(pending) => {
                         ZoneSamplingDispatch::Pending(PendingZoneSampling::Gpu(pending))
                     }
-                },
-            ),
+                })
+            }
         }
     }
 
@@ -1518,17 +1654,68 @@ impl SparkleFlinger {
             reason = "GPU-only parameter still present in the CPU-only build"
         )
     )]
-    pub(crate) fn pending_zone_sampling_matches_current_work(
+    pub(crate) fn pending_zone_sampling_matches_request(
         &self,
         pending: &PendingZoneSampling,
-        prepared_zones: &[PreparedZonePlan],
+        request: ZoneSamplingRequest<'_>,
     ) -> bool {
         match (&self.backend, pending) {
             (SparkleFlingerBackend::Cpu(_), _) => false,
             #[cfg(feature = "wgpu")]
             (SparkleFlingerBackend::Gpu { gpu, .. }, PendingZoneSampling::Gpu(pending)) => {
-                gpu.pending_zone_sampling_matches_current_work(pending, prepared_zones)
+                match request {
+                    ZoneSamplingRequest::Output {
+                        prepared_zones,
+                        textures,
+                    } => gpu.pending_zone_sampling_matches_current_work(
+                        pending,
+                        prepared_zones,
+                        textures,
+                    ),
+                    ZoneSamplingRequest::ZoneTextures(textures) => {
+                        gpu::GpuSparkleFlinger::pending_zone_texture_sampling_matches(
+                            pending, textures,
+                        )
+                    }
+                }
             }
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+
+    /// Whether a completed sample was taken with `request`'s plans. Its
+    /// content may be a frame old, which deferred sampling accepts; its plans
+    /// must be the current ones, or its colors belong to other outputs.
+    #[cfg_attr(
+        not(feature = "wgpu"),
+        allow(
+            unused_variables,
+            reason = "GPU-only parameter still present in the CPU-only build"
+        )
+    )]
+    pub(crate) fn completed_zone_sampling_used_request_plans(
+        &self,
+        completed: &PendingZoneSampling,
+        request: ZoneSamplingRequest<'_>,
+    ) -> bool {
+        match completed {
+            #[cfg(feature = "wgpu")]
+            PendingZoneSampling::Gpu(completed) => match request {
+                ZoneSamplingRequest::Output {
+                    prepared_zones,
+                    textures,
+                } => gpu::GpuSparkleFlinger::pending_zone_sampling_used_output_plan(
+                    completed,
+                    prepared_zones,
+                    textures,
+                ),
+                ZoneSamplingRequest::ZoneTextures(textures) => {
+                    gpu::GpuSparkleFlinger::pending_zone_sampling_used_texture_plan(
+                        completed, textures,
+                    )
+                }
+            },
             #[allow(unreachable_patterns)]
             _ => false,
         }
@@ -1630,6 +1817,32 @@ impl SparkleFlinger {
         }
     }
 
+    /// An imported effect frame composed into an immutable compositor
+    /// snapshot. The GPU sampler reads only compositor-owned textures, so a
+    /// transition that samples an imported scene per zone samples this copy.
+    /// `None` when `frame` is not imported or the GPU cannot compose it.
+    #[cfg(feature = "servo-gpu-import")]
+    pub(crate) fn sampleable_imported_frame(
+        &mut self,
+        frame: &ProducerFrame,
+    ) -> Result<Option<ProducerFrame>> {
+        if !matches!(frame, ProducerFrame::Gpu(_)) || !self.supports_gpu_output_frames() {
+            return Ok(None);
+        }
+        let plan = CompositionPlan::single(
+            frame.width(),
+            frame.height(),
+            CompositionLayer::replace(frame.clone()),
+        )
+        .with_cpu_replay_cacheable(false)
+        .preserving_scene_preview();
+        let composed = self.compose_for_outputs(plan, false, None);
+        if composed.backend != CompositorBackendKind::Gpu || composed.gpu_readback_failed {
+            return Ok(None);
+        }
+        self.immutable_current_output_frame()
+    }
+
     #[cfg(feature = "wgpu")]
     pub(crate) fn immutable_current_output_frame(&mut self) -> Result<Option<ProducerFrame>> {
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
@@ -1677,12 +1890,47 @@ impl SparkleFlinger {
         }
     }
 
+    /// Leave the next scene preview map unfinished for one resolve, the way
+    /// a GPU still busy with the frame leaves it.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn defer_next_preview_map_resolve_for_test(&mut self) {
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
+            gpu.defer_next_preview_map_resolve();
+        }
+    }
+
+    /// Whether a scene preview readback is mapping and not yet finished.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn has_pending_preview_map_for_test(&self) -> bool {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => false,
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.has_pending_preview_map(),
+        }
+    }
+
+    /// Preview readback sets allocated so far, and scale bind groups built
+    /// for the current one.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn preview_resource_allocations_for_test(&self) -> Option<(usize, usize)> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.preview_resource_allocations()),
+        }
+    }
+
     pub fn submit_pending_preview_work(&mut self) -> Result<()> {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => Ok(()),
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.submit_pending_preview_work(),
         }
+    }
+
+    /// Texture passes the GPU sampler encoded for LED sampling since the
+    /// last call: one per sampled zone texture, or one for the compositor
+    /// output, and none when the sample cache answered the dispatch.
+    pub(crate) fn take_led_sample_passes(&mut self) -> u32 {
+        std::mem::take(&mut self.led_sample_passes)
     }
 
     pub(crate) fn take_last_sample_readback_wait_blocked(&mut self) -> bool {

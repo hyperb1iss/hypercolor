@@ -41,6 +41,11 @@ pub(crate) struct ActiveFrameMetricsInput<'a> {
     pub(crate) reused_inputs: bool,
     pub(crate) reused_canvas: bool,
     pub(crate) gpu_zone_sampling: bool,
+    pub(crate) gpu_sampled_zone_count: u32,
+    pub(crate) cpu_sampled_zone_count: u32,
+    pub(crate) held_zone_count: u32,
+    pub(crate) gpu_sampling_passes: u32,
+    pub(crate) zone_composition_skips: u32,
     pub(crate) gpu_sample_deferred: bool,
     pub(crate) gpu_sample_stale: bool,
     pub(crate) gpu_sample_retry_hit: bool,
@@ -121,6 +126,11 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         reused_inputs,
         reused_canvas,
         gpu_zone_sampling,
+        gpu_sampled_zone_count,
+        cpu_sampled_zone_count,
+        held_zone_count,
+        gpu_sampling_passes,
+        zone_composition_skips,
         gpu_sample_deferred,
         gpu_sample_stale,
         gpu_sample_retry_hit,
@@ -193,6 +203,11 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         retained_screen: screen_retained,
         composition_bypassed,
         gpu_zone_sampling,
+        gpu_sampled_zone_count,
+        cpu_sampled_zone_count,
+        held_zone_count,
+        gpu_sampling_passes,
+        zone_composition_skips,
         gpu_sample_deferred,
         gpu_sample_stale,
         gpu_sample_retry_hit,
@@ -319,6 +334,11 @@ pub(crate) fn build_throttle_frame_metrics(
         retained_screen: false,
         composition_bypassed: false,
         gpu_zone_sampling: false,
+        gpu_sampled_zone_count: 0,
+        cpu_sampled_zone_count: 0,
+        held_zone_count: 0,
+        gpu_sampling_passes: 0,
+        zone_composition_skips: 0,
         gpu_sample_deferred: false,
         gpu_sample_stale: false,
         gpu_sample_retry_hit: false,
@@ -577,6 +597,11 @@ mod tests {
             reused_inputs: true,
             reused_canvas: false,
             gpu_zone_sampling: true,
+            gpu_sampled_zone_count: 2,
+            cpu_sampled_zone_count: 1,
+            held_zone_count: 1,
+            gpu_sampling_passes: 3,
+            zone_composition_skips: 2,
             gpu_sample_deferred: false,
             gpu_sample_stale: true,
             gpu_sample_retry_hit: true,
@@ -630,6 +655,11 @@ mod tests {
         assert_eq!(summary.metrics.devices_written, 5);
         assert_eq!(summary.metrics.total_leds, 321);
         assert_eq!(summary.metrics.output_errors, 3);
+        assert_eq!(summary.metrics.gpu_sampled_zone_count, 2);
+        assert_eq!(summary.metrics.cpu_sampled_zone_count, 1);
+        assert_eq!(summary.metrics.held_zone_count, 1);
+        assert_eq!(summary.metrics.gpu_sampling_passes, 3);
+        assert_eq!(summary.metrics.zone_composition_skips, 2);
         assert_eq!(summary.metrics.timeline.input_done_us, 60);
         assert_eq!(summary.metrics.timeline.producer_done_us, 145);
         assert_eq!(summary.metrics.timeline.composition_done_us, 155);
@@ -681,6 +711,11 @@ mod tests {
         assert!(!metrics.retained_effect);
         assert!(!metrics.retained_screen);
         assert!(!metrics.composition_bypassed);
+        assert_eq!(metrics.gpu_sampled_zone_count, 0);
+        assert_eq!(metrics.cpu_sampled_zone_count, 0);
+        assert_eq!(metrics.held_zone_count, 0);
+        assert_eq!(metrics.gpu_sampling_passes, 0);
+        assert_eq!(metrics.zone_composition_skips, 0);
         assert_eq!(
             metrics.output_frame_source,
             OutputFrameSourceKind::CurrentFrame

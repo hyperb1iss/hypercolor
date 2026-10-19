@@ -911,6 +911,72 @@ fn gpu_sampler_keeps_new_generation_slot_leased_after_retired_readback_finishes(
 }
 
 #[test]
+fn gpu_sampler_frees_readback_slots_leased_before_a_gaussian_kernel_grows() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let small_kernel = SpatialEngine::new(sampling_layout(SamplingMode::GaussianArea {
+        sigma: 0.5,
+        radius: 1,
+    }));
+    let grown_kernel = SpatialEngine::new(sampling_layout(SamplingMode::GaussianArea {
+        sigma: 1.5,
+        radius: 3,
+    }));
+    let plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+            CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+        ],
+    );
+    compositor
+        .compose(&plan, false, None)
+        .expect("GPU composition should succeed before kernel growth");
+
+    let begin = |compositor: &mut GpuSparkleFlinger, engine: &SpatialEngine| match compositor
+        .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+        .expect("GPU sample dispatch should stay non-fatal")
+    {
+        GpuZoneSamplingDispatch::Pending(pending) => Some(pending),
+        GpuZoneSamplingDispatch::Saturated => None,
+        _ => panic!("GPU sample dispatch should defer readback completion"),
+    };
+    let before_growth = begin(&mut compositor, &small_kernel).expect("first sample should lease");
+    // Same LED count, larger kernel: only the kernel buffer is replaced.
+    let after_growth = begin(&mut compositor, &grown_kernel).expect("second sample should lease");
+    compositor
+        .finish_pending_zone_sampling(before_growth, &mut Vec::new())
+        .expect("the sample leased before the kernel grew should finish");
+    compositor
+        .finish_pending_zone_sampling(after_growth, &mut Vec::new())
+        .expect("the sample leased after the kernel grew should finish");
+
+    // New content, so the refills dispatch instead of reusing the cached
+    // sample.
+    let changed = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(200))),
+    );
+    compositor
+        .compose(&changed, false, None)
+        .expect("GPU composition should succeed after kernel growth");
+    let mut pending = Vec::new();
+    for dispatch in 0..3 {
+        pending.push(begin(&mut compositor, &grown_kernel).unwrap_or_else(|| {
+            panic!("dispatch {dispatch}: every readback slot should be free again")
+        }));
+    }
+    for sample in pending {
+        compositor
+            .finish_pending_zone_sampling(sample, &mut Vec::new())
+            .expect("refilled samples should finish");
+    }
+}
+
+#[test]
 fn gpu_sampler_refuses_a_fourth_overlapped_readback_until_a_slot_is_released() {
     let Some(mut compositor) = super::gpu_test_compositor() else {
         return;
@@ -1293,10 +1359,11 @@ fn gpu_pending_sample_stops_matching_after_layout_generation_changes() {
 
     engine.update_layout(sampling_layout(SamplingMode::Nearest));
 
-    assert!(
-        !compositor
-            .pending_zone_sampling_matches_current_work(&pending, engine.sampling_plan().as_ref())
-    );
+    assert!(!compositor.pending_zone_sampling_matches_current_work(
+        &pending,
+        engine.sampling_plan().as_ref(),
+        &[],
+    ));
     compositor.discard_pending_zone_sampling(pending);
 }
 
@@ -1472,10 +1539,11 @@ fn gpu_pending_sample_matches_and_finishes_across_retained_bypass_frames() {
         assert!(
             compositor.pending_zone_sampling_matches_current_work(
                 &pending,
-                engine.sampling_plan().as_ref()
+                engine.sampling_plan().as_ref(),
+                &[],
             ),
-            "retained bypass should preserve pending GPU sample identity: pending_output_generation={} current_output_generation={} pending_sampling_plan={:?} current_sampling_plan={:?} current_output={:?} cached_key_present={}",
-            pending.output_generation,
+            "retained bypass should preserve pending GPU sample identity: pending_content={:?} current_output_generation={} pending_sampling_plan={:?} current_sampling_plan={:?} current_output={:?} cached_key_present={}",
+            pending.content,
             compositor.output_generation,
             pending.sampling_plan,
             GpuSamplingPlan::key(engine.sampling_plan().as_ref()),
@@ -1506,4 +1574,475 @@ fn gpu_pending_sample_matches_and_finishes_across_retained_bypass_frames() {
     );
 }
 
+/// Composing new output, at the same size or another, leaves an unchanged
+/// zone texture sample cached and keeps the textures' bind groups: the
+/// sample's key names the textures it read, not the output (Spec 86 §3.3).
+#[test]
+fn gpu_zone_texture_sample_survives_compositor_output_changes() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let case = SpatialEngine::new(zone_texture_layout("case", 4, 4, SamplingMode::Bilinear, 4));
+    let textures = vec![ZoneTextureSample {
+        frame: uploaded_zone_texture(
+            &compositor,
+            &patterned_canvas_with_size(4, 4, 30),
+            TEST_ZONE_TEXTURE_STORAGE_BASE + 30,
+        ),
+        prepared_zones: case.sampling_plan(),
+    }];
+    let sampled = sample_zone_textures(&mut compositor, &textures);
+    let bind_groups = compositor.spatial_sampler.cached_bind_group_count();
+    let dispatches = compositor.spatial_sampler.sample_dispatch_count();
+
+    for (width, height) in [(4, 4), (8, 2)] {
+        let plan = CompositionPlan::single(
+            width,
+            height,
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas_with_size(
+                width, height, 99,
+            ))),
+        );
+        compositor
+            .compose(&plan, false, None)
+            .expect("GPU composition should succeed between zone samples");
+        let mut cached = Vec::new();
+        assert!(
+            matches!(
+                compositor
+                    .begin_sample_zone_textures_into(&textures, &mut cached)
+                    .expect("an unchanged zone texture sample should resolve"),
+                GpuZoneSamplingDispatch::Ready
+            ),
+            "an unchanged zone texture sample should survive a {width}x{height} compose"
+        );
+        assert_eq!(cached, sampled);
+    }
+    assert_eq!(
+        compositor.spatial_sampler.sample_dispatch_count(),
+        dispatches
+    );
+    assert_eq!(
+        compositor.spatial_sampler.cached_bind_group_count(),
+        bind_groups,
+        "a compositor size switch should keep retained texture bind groups"
+    );
+}
+
 mod spatial;
+
+fn zone_texture_layout(
+    output_id: &str,
+    width: u32,
+    height: u32,
+    mode: SamplingMode,
+    led_count: u32,
+) -> SpatialLayout {
+    let mut layout = sampling_layout_with_led_count(mode, led_count);
+    layout.canvas_width = width;
+    layout.canvas_height = height;
+    layout.zones[0].id = output_id.into();
+    layout
+}
+
+/// Upload `canvas` into a standalone texture, standing in for a zone's
+/// projection snapshot.
+fn uploaded_zone_texture(
+    compositor: &GpuSparkleFlinger,
+    canvas: &Canvas,
+    storage_id: u64,
+) -> GpuTextureFrame {
+    let extent = wgpu::Extent3d {
+        width: canvas.width(),
+        height: canvas.height(),
+        depth_or_array_layers: 1,
+    };
+    let texture = compositor.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("SparkleFlinger zone texture sampling test"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    compositor.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        canvas.as_rgba_bytes(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(canvas.width() * 4),
+            rows_per_image: Some(canvas.height()),
+        },
+        extent,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    GpuTextureFrame {
+        width: canvas.width(),
+        height: canvas.height(),
+        storage_id,
+        content_generation: 1,
+        origin: GpuTextureFrameOrigin::ProducerTexture,
+        texture,
+        view,
+        immutable_lease: None,
+        native_screen_lease: None,
+    }
+}
+
+fn sample_zone_textures(
+    compositor: &mut GpuSparkleFlinger,
+    textures: &[ZoneTextureSample],
+) -> Vec<ZoneColors> {
+    let mut sampled = Vec::new();
+    match compositor
+        .begin_sample_zone_textures_into(textures, &mut sampled)
+        .expect("zone texture sampling should dispatch")
+    {
+        GpuZoneSamplingDispatch::Pending(pending) => compositor
+            .finish_pending_zone_sampling(pending, &mut sampled)
+            .expect("zone texture sampling should finish"),
+        GpuZoneSamplingDispatch::Ready => {}
+        GpuZoneSamplingDispatch::Unsupported | GpuZoneSamplingDispatch::Saturated => {
+            panic!("zone texture sampling should admit supported plans")
+        }
+    }
+    sampled
+}
+
+/// Test storage ids sit far above the compositor's allocation counter so they
+/// never alias a real texture.
+const TEST_ZONE_TEXTURE_STORAGE_BASE: u64 = u64::MAX - 1_000;
+
+#[test]
+fn gpu_sampler_samples_each_zone_texture_with_its_own_plan() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let area = SamplingMode::AreaAverage {
+        radius_x: 1.0,
+        radius_y: 1.0,
+    };
+    // Two area zones share a 4x4 extent, so the second must rescan the
+    // summed-area table after the first has read it; the 8x2 zone needs a
+    // table of its own; the bilinear zone needs none.
+    let zones = [
+        (
+            zone_texture_layout("case", 4, 4, area.clone(), 4),
+            patterned_canvas_with_size(4, 4, 12),
+        ),
+        (
+            zone_texture_layout("strip", 8, 2, area.clone(), 6),
+            patterned_canvas_with_size(8, 2, 77),
+        ),
+        (
+            zone_texture_layout("pad", 4, 4, area, 5),
+            patterned_canvas_with_size(4, 4, 140),
+        ),
+        (
+            zone_texture_layout("keys", 6, 3, SamplingMode::Bilinear, 7),
+            patterned_canvas_with_size(6, 3, 201),
+        ),
+    ];
+    let engines = zones
+        .iter()
+        .map(|(layout, _)| SpatialEngine::new(layout.clone()))
+        .collect::<Vec<_>>();
+    let textures = zones
+        .iter()
+        .zip(&engines)
+        .zip(0_u64..)
+        .map(|(((_, canvas), engine), index)| ZoneTextureSample {
+            frame: uploaded_zone_texture(
+                &compositor,
+                canvas,
+                TEST_ZONE_TEXTURE_STORAGE_BASE + index,
+            ),
+            prepared_zones: engine.sampling_plan(),
+        })
+        .collect::<Vec<_>>();
+
+    let sampled = sample_zone_textures(&mut compositor, &textures);
+
+    let expected = zones
+        .iter()
+        .zip(&engines)
+        .flat_map(|((_, canvas), engine)| engine.sample(canvas))
+        .collect::<Vec<_>>();
+    assert_eq!(sampled, expected);
+}
+
+/// An output sample can carry zone texture passes beside it: the output's
+/// LEDs come first, then each texture's, from one dispatch (Spec 86 §4.3).
+#[test]
+fn gpu_output_sample_carries_zone_texture_passes_after_its_own_leds() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let output_canvas = patterned_canvas(12);
+    let engine = SpatialEngine::new(sampling_layout(SamplingMode::Nearest));
+    let plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(output_canvas.clone())),
+    );
+    compositor
+        .compose(&plan, false, None)
+        .expect("GPU composition should succeed before sampling");
+    let fallback = SpatialEngine::new(zone_texture_layout(
+        "fallback",
+        6,
+        3,
+        SamplingMode::Bilinear,
+        5,
+    ));
+    let fallback_canvas = patterned_canvas_with_size(6, 3, 201);
+    let textures = [ZoneTextureSample {
+        frame: uploaded_zone_texture(
+            &compositor,
+            &fallback_canvas,
+            TEST_ZONE_TEXTURE_STORAGE_BASE + 20,
+        ),
+        prepared_zones: fallback.sampling_plan(),
+    }];
+
+    let mut sampled = Vec::new();
+    match compositor
+        .begin_sample_output_into(engine.sampling_plan().as_ref(), &textures, &mut sampled)
+        .expect("output sampling with a texture pass should dispatch")
+    {
+        GpuZoneSamplingDispatch::Pending(pending) => compositor
+            .finish_pending_zone_sampling(pending, &mut sampled)
+            .expect("output sampling with a texture pass should finish"),
+        GpuZoneSamplingDispatch::Ready => {}
+        GpuZoneSamplingDispatch::Unsupported | GpuZoneSamplingDispatch::Saturated => {
+            panic!("output sampling should admit supported plans")
+        }
+    }
+
+    let mut expected = engine.sample(&output_canvas);
+    expected.extend(fallback.sample(&fallback_canvas));
+    assert_eq!(sampled, expected);
+}
+
+/// A completed sample counts only for the plans it was taken with: one taken
+/// with another fallback plan beside the output belongs to other outputs,
+/// even when every shape matches.
+#[test]
+fn gpu_output_sample_matches_only_the_texture_plans_it_was_taken_with() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let engine = SpatialEngine::new(sampling_layout(SamplingMode::Nearest));
+    let plan = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+    );
+    compositor
+        .compose(&plan, false, None)
+        .expect("GPU composition should succeed before sampling");
+    let fallback_layout = zone_texture_layout("fallback", 6, 3, SamplingMode::Bilinear, 5);
+    let first_fallback = SpatialEngine::new(fallback_layout.clone());
+    let second_fallback = SpatialEngine::new(fallback_layout);
+    let texture = uploaded_zone_texture(
+        &compositor,
+        &patterned_canvas_with_size(6, 3, 201),
+        TEST_ZONE_TEXTURE_STORAGE_BASE + 21,
+    );
+    let first = [ZoneTextureSample {
+        frame: texture.clone(),
+        prepared_zones: first_fallback.sampling_plan(),
+    }];
+    let second = [ZoneTextureSample {
+        frame: texture,
+        prepared_zones: second_fallback.sampling_plan(),
+    }];
+    let prepared_zones = engine.sampling_plan();
+
+    let pending = match compositor
+        .begin_sample_output_into(prepared_zones.as_ref(), &first, &mut Vec::new())
+        .expect("output sampling with a texture pass should dispatch")
+    {
+        GpuZoneSamplingDispatch::Pending(pending) => pending,
+        _ => panic!("output sampling should defer readback completion"),
+    };
+
+    assert!(GpuSparkleFlinger::pending_zone_sampling_used_output_plan(
+        &pending,
+        prepared_zones.as_ref(),
+        &first,
+    ));
+    assert!(!GpuSparkleFlinger::pending_zone_sampling_used_output_plan(
+        &pending,
+        prepared_zones.as_ref(),
+        &second,
+    ));
+    assert!(!GpuSparkleFlinger::pending_zone_sampling_used_output_plan(
+        &pending,
+        prepared_zones.as_ref(),
+        &[],
+    ));
+    compositor.discard_pending_zone_sampling(pending);
+}
+
+#[test]
+fn gpu_zone_texture_samples_cache_by_content_generation() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let case = SpatialEngine::new(zone_texture_layout("case", 4, 4, SamplingMode::Bilinear, 4));
+    let pad = SpatialEngine::new(zone_texture_layout("pad", 8, 2, SamplingMode::Nearest, 6));
+    let mut textures = vec![
+        ZoneTextureSample {
+            frame: uploaded_zone_texture(
+                &compositor,
+                &patterned_canvas_with_size(4, 4, 30),
+                TEST_ZONE_TEXTURE_STORAGE_BASE + 10,
+            ),
+            prepared_zones: case.sampling_plan(),
+        },
+        ZoneTextureSample {
+            frame: uploaded_zone_texture(
+                &compositor,
+                &patterned_canvas_with_size(8, 2, 90),
+                TEST_ZONE_TEXTURE_STORAGE_BASE + 11,
+            ),
+            prepared_zones: pad.sampling_plan(),
+        },
+    ];
+
+    let mut sampled = Vec::new();
+    let GpuZoneSamplingDispatch::Pending(pending) = compositor
+        .begin_sample_zone_textures_into(&textures, &mut sampled)
+        .expect("first zone texture sample should dispatch")
+    else {
+        panic!("a fresh zone texture sample should stage a readback");
+    };
+    assert!(GpuSparkleFlinger::pending_zone_texture_sampling_matches(
+        &pending, &textures
+    ));
+    compositor
+        .finish_pending_zone_sampling(pending, &mut sampled)
+        .expect("first zone texture sample should finish");
+    let dispatches = compositor.spatial_sampler.sample_dispatch_count();
+
+    let mut cached = Vec::new();
+    assert!(matches!(
+        compositor
+            .begin_sample_zone_textures_into(&textures, &mut cached)
+            .expect("an unchanged zone texture sample should resolve"),
+        GpuZoneSamplingDispatch::Ready
+    ));
+    assert_eq!(cached, sampled);
+    assert_eq!(
+        compositor.spatial_sampler.sample_dispatch_count(),
+        dispatches,
+        "unchanged zone textures should reuse the cached sample"
+    );
+
+    textures[1].frame.content_generation += 1;
+    let mut resampled = Vec::new();
+    let GpuZoneSamplingDispatch::Pending(pending) = compositor
+        .begin_sample_zone_textures_into(&textures, &mut resampled)
+        .expect("a changed zone texture should dispatch")
+    else {
+        panic!("a changed zone texture should stage a readback");
+    };
+    let previous_generation = {
+        let mut stale = textures.clone();
+        stale[1].frame.content_generation -= 1;
+        stale
+    };
+    assert!(!GpuSparkleFlinger::pending_zone_texture_sampling_matches(
+        &pending,
+        &previous_generation
+    ));
+    compositor
+        .finish_pending_zone_sampling(pending, &mut resampled)
+        .expect("changed zone texture sample should finish");
+    assert_eq!(resampled, sampled);
+    assert!(compositor.spatial_sampler.sample_dispatch_count() > dispatches);
+}
+
+#[test]
+fn gpu_sampler_gaussian_zone_textures_match_the_cpu_sampler() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    // Radius 0, an interior kernel, and kernels that clamp at the canvas edge,
+    // across two extents so passes rebase their kernel offsets.
+    let zones = [
+        (
+            zone_texture_layout(
+                "tight",
+                6,
+                4,
+                SamplingMode::GaussianArea {
+                    sigma: 1.0,
+                    radius: 0,
+                },
+                5,
+            ),
+            patterned_canvas_with_size(6, 4, 9),
+        ),
+        (
+            zone_texture_layout(
+                "soft",
+                8,
+                8,
+                SamplingMode::GaussianArea {
+                    sigma: 1.5,
+                    radius: 2,
+                },
+                8,
+            ),
+            patterned_canvas_with_size(8, 8, 71),
+        ),
+        (
+            zone_texture_layout(
+                "wide",
+                5,
+                3,
+                SamplingMode::GaussianArea {
+                    sigma: 3.0,
+                    radius: 4,
+                },
+                6,
+            ),
+            patterned_canvas_with_size(5, 3, 188),
+        ),
+    ];
+    let engines = zones
+        .iter()
+        .map(|(layout, _)| SpatialEngine::new(layout.clone()))
+        .collect::<Vec<_>>();
+    let textures = zones
+        .iter()
+        .zip(&engines)
+        .zip(20_u64..)
+        .map(|(((_, canvas), engine), index)| ZoneTextureSample {
+            frame: uploaded_zone_texture(
+                &compositor,
+                canvas,
+                TEST_ZONE_TEXTURE_STORAGE_BASE + index,
+            ),
+            prepared_zones: engine.sampling_plan(),
+        })
+        .collect::<Vec<_>>();
+
+    let sampled = sample_zone_textures(&mut compositor, &textures);
+
+    let expected = zones
+        .iter()
+        .zip(&engines)
+        .flat_map(|((_, canvas), engine)| engine.sample(canvas))
+        .collect::<Vec<_>>();
+    assert_eq!(sampled, expected);
+}

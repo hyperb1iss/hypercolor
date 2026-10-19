@@ -608,8 +608,16 @@ fn red_gif_bytes() -> Vec<u8> {
 }
 
 mod device_surfaces;
+#[cfg(feature = "wgpu")]
+mod gpu_layer_latch;
+#[cfg(feature = "wgpu")]
+mod gpu_zone_acceptance;
 mod invalidation;
 mod layers;
+#[cfg(feature = "wgpu")]
+mod pipeline_acceptance;
 mod projection;
 mod retention;
 mod scene_outputs;
+#[cfg(feature = "wgpu")]
+mod zone_previews;

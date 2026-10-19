@@ -13,16 +13,21 @@ use hypercolor_types::scene::Zone;
 
 use super::ZoneRuntime;
 use super::effect_errors::render_layer_effect_error;
+#[cfg(feature = "wgpu")]
+use super::frame_helpers::upload_off_extent_canvas;
 use super::frame_helpers::{
     color_fill_frame, composed_frame_to_producer_frame, composition_layer_for_scene_layer,
     media_layer_producer_frame, passthrough_effect_layer, producer_frame_is_gpu,
     screen_region_layer_frame, transparent_black_frame,
 };
-use super::model::{CachedMediaProducer, MediaLayerFrame, ZoneFrameContext, ZoneFrameRequirements};
+use super::model::{
+    CachedMediaProducer, MediaLayerFrame, ZoneCompositionIdentity, ZoneFrameContext,
+    ZoneFrameRequirements,
+};
 use crate::render_thread::binding_eval::evaluate_layer_runtime;
 use crate::render_thread::producer_queue::{ProducerFrame, record_producer_frame};
 use crate::render_thread::sparkleflinger::{
-    CompositionPlan, PreviewSurfaceRequest, SparkleFlinger,
+    CompositionLayer, CompositionPlan, PreviewSurfaceRequest, SparkleFlinger,
 };
 
 impl ZoneRuntime {
@@ -39,8 +44,7 @@ impl ZoneRuntime {
         sparkleflinger: &mut SparkleFlinger,
         requirements: ZoneFrameRequirements,
     ) -> Result<Option<ProducerFrame>> {
-        let mut composition_layers = Vec::new();
-        let mut gpu_source_layers = Vec::new();
+        let mut layer_frames = Vec::new();
         for layer in &zone.layers {
             if !layer.enabled {
                 continue;
@@ -186,6 +190,26 @@ impl ZoneRuntime {
                     LayerHealth::Active,
                 );
             }
+            layer_frames.push((layer_runtime, frame));
+        }
+
+        // A plan that can only compose on the GPU, because the zone asks for
+        // no CPU output or a layer is a GPU texture the CPU compositor cannot
+        // read, loses its whole frame to one canvas off the zone's extent.
+        #[cfg(feature = "wgpu")]
+        if requirements.requires_gpu_output()
+            || layer_frames
+                .iter()
+                .any(|(_, frame)| producer_frame_is_gpu(frame))
+        {
+            for (layer_runtime, frame) in &mut layer_frames {
+                upload_off_extent_canvas(frame, layer_runtime.id, zone, sparkleflinger);
+            }
+        }
+
+        let mut composition_layers = Vec::with_capacity(layer_frames.len());
+        let mut gpu_source_layers = Vec::new();
+        for (layer_runtime, frame) in layer_frames {
             if producer_frame_is_gpu(&frame) {
                 gpu_source_layers.push(layer_runtime.id);
             }
@@ -196,6 +220,17 @@ impl ZoneRuntime {
         if composition_layers.is_empty() {
             return Ok(None);
         }
+        if requirements.reuse_unchanged_composition
+            && let Some(held) = self.unchanged_zone_frame(zone, &composition_layers)
+        {
+            self.composition_skips = self.composition_skips.saturating_add(1);
+            return Ok(Some(held));
+        }
+        let composition_identity = if requirements.reuse_unchanged_composition {
+            ZoneCompositionIdentity::of(zone, &composition_layers)
+        } else {
+            None
+        };
 
         let plan = if composition_layers.len() == 1 {
             let layer = composition_layers
@@ -211,7 +246,8 @@ impl ZoneRuntime {
             )
         };
         let composed = sparkleflinger.compose_for_outputs(
-            plan.with_cpu_replay_cacheable(false),
+            plan.with_cpu_replay_cacheable(false)
+                .preserving_scene_preview(),
             requirements.requires_cpu_sampling_canvas,
             requirements
                 .requires_published_surface
@@ -232,11 +268,32 @@ impl ZoneRuntime {
                 );
             }
         }
-        Ok(composed_frame_to_producer_frame(
-            composed,
-            sparkleflinger,
-            false,
-        ))
+        let frame = composed_frame_to_producer_frame(composed, sparkleflinger, false);
+        if requirements.reuse_unchanged_composition {
+            match (&frame, composition_identity) {
+                (Some(_), Some(identity)) => {
+                    self.zone_composition_identities.insert(zone.id, identity);
+                }
+                _ => {
+                    self.zone_composition_identities.remove(&zone.id);
+                }
+            }
+        }
+        Ok(frame)
+    }
+
+    /// The zone's held frame when its layers match the ones that produced it,
+    /// so composing again would draw the same pixels.
+    fn unchanged_zone_frame(
+        &self,
+        zone: &Zone,
+        layers: &[CompositionLayer],
+    ) -> Option<ProducerFrame> {
+        self.zone_composition_identities
+            .get(&zone.id)
+            .is_some_and(|identity| identity.matches(zone, layers))
+            .then(|| self.last_zone_frames.get(&zone.id).cloned())
+            .flatten()
     }
 
     fn render_media_layer_frame(
@@ -376,12 +433,59 @@ impl ZoneRuntime {
         Ok(())
     }
 
+    /// Stands in for one Servo render of `layer_id`: the next effect render
+    /// of that layer returns `frame` instead of asking the effect pool.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn inject_effect_layer_frame_for_test(
+        &mut self,
+        layer_id: SceneLayerId,
+        frame: ProducerFrame,
+    ) {
+        self.injected_effect_layer_frames.insert(layer_id, frame);
+    }
+
+    /// Stands in for a Servo page still loading: the next effect render of
+    /// `layer_id` reports `Pending`, and the one after it renders as usual.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn pend_effect_layer_once_for_test(&mut self, layer_id: SceneLayerId) {
+        self.pend_effect_layer_renders_for_test(layer_id, 1);
+    }
+
+    /// Stands in for a Servo page that stays loading: the next `renders`
+    /// effect renders of `layer_id` report `Pending`. A GPU-resident scene
+    /// zone whose layers are all pending polls them twice in one frame, so
+    /// `2 * n` keeps such a zone without a frame for `n` frames.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn pend_effect_layer_renders_for_test(
+        &mut self,
+        layer_id: SceneLayerId,
+        renders: u32,
+    ) {
+        if renders == 0 {
+            self.pending_effect_layers.remove(&layer_id);
+        } else {
+            self.pending_effect_layers.insert(layer_id, renders);
+        }
+    }
+
     fn render_effect_layer_frame(
         &mut self,
         zone: &Zone,
         layer: &SceneLayer,
         context: ZoneFrameContext<'_>,
     ) -> Result<Option<ProducerFrame>> {
+        #[cfg(all(test, feature = "wgpu"))]
+        if let Some(remaining) = self.pending_effect_layers.get_mut(&layer.id) {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                self.pending_effect_layers.remove(&layer.id);
+            }
+            return Ok(None);
+        }
+        #[cfg(all(test, feature = "wgpu"))]
+        if let Some(frame) = self.injected_effect_layer_frames.remove(&layer.id) {
+            return Ok(Some(frame));
+        }
         let device_surfaces = self.device_surfaces_for(zone);
         let sources = FrameDataSources {
             device_surfaces: device_surfaces.as_ref(),

@@ -836,6 +836,11 @@ async fn metrics_message_includes_latest_frame_timeline() {
             retained_screen: false,
             composition_bypassed: false,
             gpu_zone_sampling: true,
+            gpu_sampled_zone_count: 2,
+            cpu_sampled_zone_count: 1,
+            held_zone_count: 1,
+            gpu_sampling_passes: 3,
+            zone_composition_skips: 2,
             gpu_sample_deferred: true,
             gpu_sample_stale: true,
             gpu_sample_retry_hit: true,
@@ -943,6 +948,11 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["timeline"]["devices_written"], 7);
     assert_eq!(json["timeline"]["total_leds"], 512);
     assert_eq!(json["timeline"]["gpu_zone_sampling"], true);
+    assert_eq!(json["timeline"]["gpu_sampled_zone_count"], 2);
+    assert_eq!(json["timeline"]["cpu_sampled_zone_count"], 1);
+    assert_eq!(json["timeline"]["held_zone_count"], 1);
+    assert_eq!(json["timeline"]["gpu_sampling_passes"], 3);
+    assert_eq!(json["timeline"]["zone_composition_skips"], 2);
     assert_eq!(json["timeline"]["gpu_sample_deferred"], true);
     assert_eq!(json["timeline"]["gpu_sample_stale"], true);
     assert_eq!(json["timeline"]["gpu_sample_retry_hit"], true);
@@ -963,6 +973,11 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["pacing"]["publish_avg_ms"], 0.18);
     assert_eq!(json["pacing"]["publish_p95_ms"], 0.18);
     assert_eq!(json["pacing"]["gpu_zone_sampling"], 1);
+    assert_eq!(json["pacing"]["gpu_sampled_zone_count"], 2);
+    assert_eq!(json["pacing"]["cpu_sampled_zone_count"], 1);
+    assert_eq!(json["pacing"]["held_zone_count"], 1);
+    assert_eq!(json["pacing"]["gpu_sampling_passes"], 3);
+    assert_eq!(json["pacing"]["zone_composition_skips"], 2);
     assert_eq!(json["pacing"]["gpu_sample_deferred"], 1);
     assert_eq!(json["pacing"]["gpu_sample_stale"], 1);
     assert_eq!(json["pacing"]["gpu_sample_retry_hit"], 1);

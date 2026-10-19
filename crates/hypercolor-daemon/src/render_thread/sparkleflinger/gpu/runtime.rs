@@ -135,12 +135,14 @@ impl GpuSparkleFlinger {
             media_texture_pools: HashMap::new(),
             media_texture_epoch: 0,
             projected_zone_snapshots: HashMap::new(),
+            zone_preview_lanes: HashMap::new(),
             immutable_scene_snapshots: Vec::new(),
             current_output: None,
             cached_composition_key: None,
             cached_readback_surface: None,
             cached_preview_surfaces: Vec::with_capacity(MAX_CACHED_PREVIEW_SURFACES),
             frame_in_flight: None,
+            gpu_frame_ends: std::collections::VecDeque::new(),
             pending_preview_map: None,
             ready_preview_surface: None,
             sampling_latch: SamplingReadbackLatch::default(),
@@ -152,6 +154,8 @@ impl GpuSparkleFlinger {
             native_screen_lease_retirements: SubmissionRetirementQueue::default(),
             #[cfg(test)]
             superseded_frame_count: 0,
+            #[cfg(test)]
+            zone_preview_stage_count: 0,
             #[cfg(test)]
             preview_surface_allocation_count: 0,
             #[cfg(test)]

@@ -390,6 +390,14 @@ fn render_checks(inputs: &DiagnosticsInputs) -> Vec<DiagnoseCheck> {
         status: status.to_owned(),
         detail,
     });
+
+    let (status, detail) = render_multi_zone_sampling_status(performance.latest_frame.as_ref());
+    checks.push(DiagnoseCheck {
+        category: "render".to_owned(),
+        name: "multi_zone_sampling".to_owned(),
+        status: status.to_owned(),
+        detail,
+    });
     checks.push(DiagnoseCheck {
         category: "render".to_owned(),
         name: "recent_output_sources".to_owned(),
@@ -665,6 +673,54 @@ fn render_led_freshness_status(
     )
 }
 
+/// Whether every zone of the latest frame's per-zone sampling set had a
+/// frame to sample (Spec 86 §7).
+///
+/// A held zone has no samplable frame, so its LEDs hold their published
+/// colors or go black. The frame metrics carry counts, not zone names, so
+/// the warning reports how many zones held. Frames that sampled no zone
+/// set (a single-zone scene, or the CPU backend) pass as not applicable.
+fn render_multi_zone_sampling_status(
+    latest_frame: Option<&LatestFrameMetrics>,
+) -> (&'static str, String) {
+    let Some(frame) = latest_frame else {
+        return ("warning", "no completed frame recorded".to_owned());
+    };
+
+    let zones = frame
+        .gpu_sampled_zone_count
+        .saturating_add(frame.cpu_sampled_zone_count)
+        .saturating_add(frame.held_zone_count);
+    if zones == 0 {
+        return (
+            "pass",
+            format!(
+                "not applicable: the latest frame sampled no per-zone set, compositor_backend={}",
+                frame.compositor_backend.as_str()
+            ),
+        );
+    }
+
+    let counts = format!(
+        "gpu_sampled_zones={}, cpu_sampled_zones={}, held_zones={}, gpu_sampling_passes={}, zone_composition_skips={}",
+        frame.gpu_sampled_zone_count,
+        frame.cpu_sampled_zone_count,
+        frame.held_zone_count,
+        frame.gpu_sampling_passes,
+        frame.zone_composition_skips
+    );
+    if frame.held_zone_count == 0 {
+        return ("pass", counts);
+    }
+    (
+        "warning",
+        format!(
+            "{} of {zones} zone(s) had no frame to sample and held their published colors or went black: {counts}",
+            frame.held_zone_count
+        ),
+    )
+}
+
 fn build_diagnose_snapshot(inputs: &DiagnosticsInputs) -> DiagnoseSnapshot {
     DiagnoseSnapshot {
         input: inputs.input.clone(),
@@ -699,6 +755,11 @@ fn build_render_snapshot(
                 devices_written: frame.devices_written,
                 total_leds: frame.total_leds,
                 gpu_zone_sampling: frame.gpu_zone_sampling,
+                gpu_sampled_zone_count: frame.gpu_sampled_zone_count,
+                cpu_sampled_zone_count: frame.cpu_sampled_zone_count,
+                held_zone_count: frame.held_zone_count,
+                gpu_sampling_passes: frame.gpu_sampling_passes,
+                zone_composition_skips: frame.zone_composition_skips,
                 gpu_sample_deferred: frame.gpu_sample_deferred,
                 gpu_sample_stale: frame.gpu_sample_stale,
                 gpu_sample_retry_hit: frame.gpu_sample_retry_hit,
@@ -928,13 +989,17 @@ fn servo_memory_failure(detail: String) -> DiagnoseCheck {
 
 #[cfg(test)]
 mod tests {
-    use crate::performance::{FrameTimeline, LatestFrameMetrics, OutputFrameSourceKind};
+    use crate::performance::{
+        CompositorBackendKind, FrameTimeline, LatestFrameMetrics, OutputFrameSourceKind,
+        PerformanceSnapshot,
+    };
 
     use hypercolor_types::api::system::{SoftwareConflict, SoftwareConflictsStatus};
 
     use super::{
-        build_device_output_snapshot, conflicts_check, render_frame_liveness_status,
-        render_led_freshness_status,
+        build_device_output_snapshot, build_render_snapshot, conflicts_check,
+        render_frame_liveness_status, render_led_freshness_status,
+        render_multi_zone_sampling_status,
     };
     use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
     use hypercolor_types::device::DeviceId;
@@ -1014,6 +1079,97 @@ mod tests {
             item.transport_completed + item.transport_failed + item.transport_declined
         );
         assert_eq!(snapshot.errors_total, 0, "a decline is not an error");
+    }
+
+    #[test]
+    fn render_snapshot_reports_the_zone_sampling_counters() {
+        let snapshot = build_render_snapshot(
+            &PerformanceSnapshot {
+                latest_frame: Some(LatestFrameMetrics {
+                    gpu_sampled_zone_count: 2,
+                    cpu_sampled_zone_count: 1,
+                    held_zone_count: 1,
+                    gpu_sampling_passes: 3,
+                    zone_composition_skips: 2,
+                    ..LatestFrameMetrics::default()
+                }),
+                ..PerformanceSnapshot::default()
+            },
+            0.0,
+        );
+
+        let frame = snapshot
+            .latest_frame
+            .expect("a recorded frame should be reported");
+        assert_eq!(frame.gpu_sampled_zone_count, 2);
+        assert_eq!(frame.cpu_sampled_zone_count, 1);
+        assert_eq!(frame.held_zone_count, 1);
+        assert_eq!(frame.gpu_sampling_passes, 3);
+        assert_eq!(frame.zone_composition_skips, 2);
+    }
+
+    #[test]
+    fn multi_zone_sampling_passes_when_every_zone_samples_on_the_gpu() {
+        let (status, detail) = render_multi_zone_sampling_status(Some(&LatestFrameMetrics {
+            compositor_backend: CompositorBackendKind::Gpu,
+            gpu_sampled_zone_count: 2,
+            gpu_sampling_passes: 3,
+            zone_composition_skips: 1,
+            ..LatestFrameMetrics::default()
+        }));
+
+        assert_eq!(status, "pass");
+        assert_eq!(
+            detail,
+            "gpu_sampled_zones=2, cpu_sampled_zones=0, held_zones=0, gpu_sampling_passes=3, zone_composition_skips=1"
+        );
+    }
+
+    #[test]
+    fn multi_zone_sampling_warns_with_the_held_zone_count() {
+        let (status, detail) = render_multi_zone_sampling_status(Some(&LatestFrameMetrics {
+            compositor_backend: CompositorBackendKind::Gpu,
+            gpu_sampled_zone_count: 1,
+            cpu_sampled_zone_count: 1,
+            held_zone_count: 1,
+            gpu_sampling_passes: 1,
+            ..LatestFrameMetrics::default()
+        }));
+
+        assert_eq!(status, "warning");
+        assert!(
+            detail.starts_with("1 of 3 zone(s) had no frame to sample"),
+            "{detail}"
+        );
+        assert!(detail.contains("held_zones=1"), "{detail}");
+    }
+
+    #[test]
+    fn multi_zone_sampling_is_not_applicable_without_a_zone_set() {
+        for backend in [CompositorBackendKind::Cpu, CompositorBackendKind::Gpu] {
+            let (status, detail) = render_multi_zone_sampling_status(Some(&LatestFrameMetrics {
+                compositor_backend: backend,
+                gpu_zone_sampling: true,
+                ..LatestFrameMetrics::default()
+            }));
+
+            assert_eq!(status, "pass");
+            assert_eq!(
+                detail,
+                format!(
+                    "not applicable: the latest frame sampled no per-zone set, compositor_backend={}",
+                    backend.as_str()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn multi_zone_sampling_warns_without_a_frame() {
+        let (status, detail) = render_multi_zone_sampling_status(None);
+
+        assert_eq!(status, "warning");
+        assert_eq!(detail, "no completed frame recorded");
     }
 
     #[test]

@@ -599,7 +599,7 @@ fn projected_contributors_refresh_current_cpu_replay() {
     let mut output = super::super::render_pass::RenderedZonePassOutput::default();
 
     let projected = runtime
-        .render_scene_contributor_frames(context, &mut sparkleflinger, true, &mut output)
+        .render_scene_contributor_frames(context, &mut sparkleflinger, true, true, &mut output)
         .expect("projected contributor should render");
 
     assert!(!projected.layers.is_empty());
@@ -714,8 +714,10 @@ fn projected_composition_preserves_zone_and_zone_overlap_order() {
     assert_eq!(actual.get_pixel(0, 7), Rgba::BLACK);
 }
 
+/// The projected scene feeds previews only, so bilinear zones project like
+/// any affine zone; their LEDs sample their own textures (Spec 86 §5.1).
 #[test]
-fn projected_composition_rejects_bilinear_zones() {
+fn projected_composition_admits_bilinear_zones_for_preview() {
     let mut output = point_zone("zone_bilinear_projection");
     output.sampling_mode = Some(SamplingMode::Bilinear);
     let mut zone = sample_zone(4, 4);
@@ -731,7 +733,7 @@ fn projected_composition_rejects_bilinear_zones() {
             4,
             4,
         )
-        .is_none()
+        .is_some()
     );
 }
 
@@ -921,7 +923,7 @@ fn two_gpu_resident_zones_produce_stable_projected_scene_frame() {
     let mut output = super::super::render_pass::RenderedZonePassOutput::default();
 
     let projected = runtime
-        .render_scene_contributor_frames(context, &mut sparkleflinger, true, &mut output)
+        .render_scene_contributor_frames(context, &mut sparkleflinger, true, true, &mut output)
         .expect("GPU-resident zones should render for projection");
     let identities = projected
         .layers
@@ -971,7 +973,13 @@ fn two_gpu_resident_zones_produce_stable_projected_scene_frame() {
 
     let mut second_output = super::super::render_pass::RenderedZonePassOutput::default();
     let second = runtime
-        .render_scene_contributor_frames(context, &mut sparkleflinger, true, &mut second_output)
+        .render_scene_contributor_frames(
+            context,
+            &mut sparkleflinger,
+            true,
+            true,
+            &mut second_output,
+        )
         .expect("projected zone snapshots should remain reusable");
     let second_identities = second
         .layers
@@ -985,9 +993,11 @@ fn two_gpu_resident_zones_produce_stable_projected_scene_frame() {
         .collect::<Vec<_>>();
 
     assert_eq!(second_identities.len(), identities.len());
+    // Unchanged layers reuse each zone's snapshot without composing again,
+    // so its storage and content generation both hold (Spec 86 §2.1).
     for (first, second) in identities.iter().zip(&second_identities) {
         assert_eq!(first.0, second.0);
-        assert!(second.1 > first.1);
+        assert_eq!(first.1, second.1);
     }
     let second_scene = runtime
         .compose_projected_scene_frame(second.layers, &mut sparkleflinger)
@@ -1149,7 +1159,7 @@ fn projected_bind_groups_retire_by_exact_source_lease_and_surface_generation() {
     };
     let mut output = super::super::render_pass::RenderedZonePassOutput::default();
     let mut projected = runtime
-        .render_scene_contributor_frames(context, &mut sparkleflinger, true, &mut output)
+        .render_scene_contributor_frames(context, &mut sparkleflinger, true, true, &mut output)
         .expect("projected contributors should render");
     let stale_layer = projected
         .layers
@@ -1574,10 +1584,13 @@ fn failed_gpu_projection_reuses_last_good_scene_across_dependency_change() {
     assert_eq!(first_frame.origin, GpuTextureFrameOrigin::ImmutableSnapshot);
     let first_identity = (first_frame.storage_id, first_frame.content_generation);
     let first_pixels = sample_full_gpu_canvas(&mut sparkleflinger, 4, 4);
-    let LedSamplingStrategy::SparkleFlinger(first_led_engine) = &first.led_sampling_strategy else {
-        panic!("initial GPU scene should retain its SAT sampling plan")
-    };
-    let first_leds = sample_gpu_plan(&mut sparkleflinger, first_led_engine);
+    assert!(
+        matches!(
+            first.led_sampling_strategy,
+            LedSamplingStrategy::SparkleFlingerZones(_)
+        ),
+        "a GPU multi-zone scene should sample each zone's own texture"
+    );
 
     let mut intervening = Canvas::new(4, 4);
     intervening.fill(Rgba::new(0, 255, 0, 255));
@@ -1622,13 +1635,14 @@ fn failed_gpu_projection_reuses_last_good_scene_across_dependency_change() {
         sample_full_gpu_canvas(&mut sparkleflinger, 4, 4),
         first_pixels
     );
-    let LedSamplingStrategy::SparkleFlinger(retained_led_engine) = &retained.led_sampling_strategy
-    else {
-        panic!("retained GPU scene should preserve its SAT sampling plan")
-    };
-    assert_eq!(
-        sample_gpu_plan(&mut sparkleflinger, retained_led_engine),
-        first_leds
+    // A retained zone set never re-samples snapshots that have moved on; it
+    // holds the published frame (Spec 86 §4.2).
+    assert!(
+        matches!(
+            &retained.led_sampling_strategy,
+            LedSamplingStrategy::RetainedPreSampled { zones, .. } if zones.is_empty()
+        ),
+        "a retained zone set should hold the published frame"
     );
     assert!(runtime.reuse_scene(changed_dependency_key).is_none());
 }
@@ -1715,8 +1729,8 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
-        Some(stable_allocations + 3),
-        "scene resize should allocate only its two immutable generations"
+        Some(stable_allocations + 4),
+        "scene resize should allocate only its three immutable generations"
     );
 
     let prepared = sparkleflinger.prepare_projected_scene_resources(
@@ -1729,20 +1743,23 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
-        Some(stable_allocations + 3)
+        Some(stable_allocations + 4)
     );
     let prepared =
         sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true, 8, 8, None);
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
-        Some(stable_allocations + 4)
+        Some(stable_allocations + 5)
     );
 }
 
+/// Bilinear and wrapping layouts stay GPU-resident: each zone keeps its own
+/// texture and samples it on the GPU, and the scene still projects for the
+/// preview (Spec 86 §2, §5.1).
 #[cfg(feature = "wgpu")]
 #[test]
-fn unsupported_filter_and_wrap_skip_gpu_projection_without_rejecting_scene() {
+fn bilinear_and_wrap_zones_stay_gpu_resident_with_per_zone_sampling() {
     let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
         return;
     };
@@ -1750,9 +1767,6 @@ fn unsupported_filter_and_wrap_skip_gpu_projection_without_rejecting_scene() {
     let mut zones = gpu_projection_zones();
     zones[0].layout.zones[0].sampling_mode = Some(SamplingMode::Bilinear);
     zones[1].layout.zones[0].edge_behavior = Some(EdgeBehavior::Wrap);
-    let allocations_before = sparkleflinger
-        .snapshot_texture_allocation_count_for_test()
-        .expect("required GPU compositor should expose snapshot allocations");
     let mut runtime = ZoneRuntime::new(4, 4);
     let mut zone_colors = Vec::new();
 
@@ -1767,24 +1781,20 @@ fn unsupported_filter_and_wrap_skip_gpu_projection_without_rejecting_scene() {
         None,
         &mut sparkleflinger,
     )
-    .expect("unsupported GPU projection geometry must retain the valid CPU path");
+    .expect("bilinear and wrapping zones should render on the GPU");
 
-    assert!(!matches!(
-        rendered.scene_frame,
-        ProducerFrame::GpuTexture(_)
-    ));
-    assert_eq!(
-        sparkleflinger.snapshot_texture_allocation_count_for_test(),
-        Some(allocations_before)
-    );
+    assert!(matches!(rendered.scene_frame, ProducerFrame::GpuTexture(_)));
     assert!(zones.iter().all(|zone| {
-        !sparkleflinger.has_projected_zone_resource(
+        sparkleflinger.has_projected_zone_resource(
             zone.id,
             zone.layout.canvas_width,
             zone.layout.canvas_height,
         )
     }));
-    assert_eq!(runtime.scene_cpu_backing_bytes(), 192);
+    let LedSamplingStrategy::SparkleFlingerZones(set) = &rendered.led_sampling_strategy else {
+        panic!("bilinear and wrapping zones should sample their own textures");
+    };
+    assert_eq!(set.gpu_textures.len(), zones.len());
 }
 
 #[cfg(feature = "wgpu")]
@@ -2181,7 +2191,7 @@ fn render_projected_layers_for_test(
     };
     let mut output = super::super::render_pass::RenderedZonePassOutput::default();
     runtime
-        .render_scene_contributor_frames(context, sparkleflinger, true, &mut output)
+        .render_scene_contributor_frames(context, sparkleflinger, true, true, &mut output)
         .expect("projected contributors should render")
         .layers
 }

@@ -37,9 +37,12 @@ fn sparkleflinger_uploads_canvas_as_gpu_texture_frame() {
     );
 }
 
+/// The one-frame sampling readback latch, which CPU sampling of a GPU frame
+/// still relies on when a plan exceeds the GPU sampler's device limits,
+/// resolves the GPU-composed canvas a frame later.
 #[cfg(feature = "wgpu")]
 #[test]
-fn sparkleflinger_gaussian_zones_sample_latched_gpu_canvas() {
+fn sparkleflinger_sampling_latch_resolves_a_gpu_composed_canvas() {
     use hypercolor_core::spatial::SpatialEngine;
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition as SpatialPosition, Output, SamplingMode,
@@ -86,13 +89,6 @@ fn sparkleflinger_gaussian_zones_sample_latched_gpu_canvas() {
         default_edge_behavior: EdgeBehavior::Clamp,
         version: 1,
     });
-    // Gaussian zones reject GPU sampling by design, so this layout forces
-    // the CPU sampling path that depends on the readback latch.
-    assert!(
-        !sparkleflinger.can_sample_zone_plan(engine.sampling_plan().as_ref()),
-        "GaussianArea zones should stay rejected by the GPU zone sampler",
-    );
-
     let mut content = Canvas::new(4, 4);
     content.fill(Rgba::new(64, 160, 224, 255));
     let frame = sparkleflinger
@@ -345,4 +341,23 @@ fn sparkleflinger_gpu_readback_failure_composes_black() {
             .rgba_bytes(),
         &[0, 0, 0, 255],
     );
+}
+
+/// A frame waits for the GPU to finish the frame two back, so a device
+/// slower than the frame cadence never accumulates more than one earlier
+/// frame of queued work.
+#[cfg(feature = "wgpu")]
+#[test]
+fn gpu_frame_budget_keeps_one_earlier_frame_in_flight() {
+    let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+        return;
+    };
+    for _ in 0..5 {
+        sparkleflinger.end_gpu_frame();
+    }
+    assert_eq!(sparkleflinger.gpu_frames_in_flight_for_test(), Some(5));
+
+    sparkleflinger.wait_for_gpu_frame_budget();
+
+    assert_eq!(sparkleflinger.gpu_frames_in_flight_for_test(), Some(1));
 }

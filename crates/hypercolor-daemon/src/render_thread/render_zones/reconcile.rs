@@ -10,7 +10,7 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 use super::super::layer_runtime::PreparedLayerRuntimeRegistry;
 use super::ZoneRuntime;
-use super::projection::{build_zone_projection, projection_supports_composition};
+use super::projection::build_zone_projection;
 use super::zone_state::{
     combine_led_zone_layouts, combined_led_state, desired_media_asset_ids,
     zone_contributes_to_scene_canvas, zone_publishes_direct_canvas,
@@ -325,7 +325,6 @@ impl ZoneRuntime {
         retained_direct_zone_frames.try_reserve(direct_zone_ids.len())?;
         let mut retained_materialized_zone_frames = HashMap::new();
         retained_materialized_zone_frames.try_reserve(direct_zone_ids.len())?;
-        let mut gpu_projection_eligible = !scene_zone_ids.is_empty();
         let mut projected_scene_layer_capacity = 1_usize;
 
         for zone in zones {
@@ -354,7 +353,6 @@ impl ZoneRuntime {
                     .get(&zone.id)
                     .or_else(|| self.scene_projection_cache.get(&zone.id))
                     .expect("scene contributors must have prepared projection metadata");
-                gpu_projection_eligible &= projection_supports_composition(projection);
                 projected_scene_layer_capacity = projected_scene_layer_capacity
                     .checked_add(projection.zones.len())
                     .context("projected scene layer cardinality overflowed")?;
@@ -383,14 +381,17 @@ impl ZoneRuntime {
             }
         }
 
-        let projected_zone_texture_requirements = if gpu_projection_eligible {
+        // Every scene zone gets a retained GPU texture: zone textures are the
+        // LED sampling source for multi-zone scenes whatever the layouts'
+        // sampling modes (Spec 86 §2).
+        let projected_zone_texture_requirements = if scene_canvas_requirements.is_empty() {
+            projected_scene_layer_capacity = 0;
+            Vec::new()
+        } else {
             let mut requirements = Vec::new();
             requirements.try_reserve_exact(scene_canvas_requirements.len())?;
             requirements.extend(scene_canvas_requirements.iter().copied());
             requirements
-        } else {
-            projected_scene_layer_capacity = 0;
-            Vec::new()
         };
 
         Ok(PreparedZoneReconcile {
@@ -501,6 +502,10 @@ impl ZoneRuntime {
             }
         }
         self.scene_projection_cache = scene_projection_cache;
+        // Zone textures may have been replaced or resized; a held frame must
+        // never outlive the resources it was stabilized into.
+        self.last_zone_frames.clear();
+        self.zone_composition_identities.clear();
         self.direct_surface_pools = direct_surface_pools;
         self.retained_direct_zone_frames = retained_direct_zone_frames;
         self.retained_materialized_zone_frames = retained_materialized_zone_frames;

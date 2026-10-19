@@ -1054,18 +1054,29 @@ jobs:
 
       # Alone in its own step so no other test's shader compiles compete
       # with the measurement for CPU.
+      # Both steps build one feature set, so the library compiles once.
       - name: Check SparkleFlinger pipeline warmup budget
         run: >-
           ./scripts/cargo-cache-build.ps1 cargo nextest run --locked --no-tests=fail
-          -p hypercolor-daemon --no-default-features --features wgpu --lib
+          -p hypercolor-daemon --no-default-features --features wgpu,persistence-test-hooks --lib
           -E 'test(gpu_pipeline_warmup_fits_daemon_startup_budget)' --no-capture
 
+      # Zone rendering, composer, and scene snapshot tests drive SparkleFlinger
+      # end to end (per-zone projection, zone texture sampling, zone previews),
+      # and the render thread integration tests cover LED output through
+      # transitions, fallback, and resizes, so they gate here too instead of
+      # skipping on adapterless runners. The preview cadence test measures
+      # delivered frame rate, which a software rasterizer says nothing about.
       - name: Run SparkleFlinger GPU tests on WARP
         run: >-
           ./scripts/cargo-cache-build.ps1 cargo nextest run --locked --no-tests=fail --no-fail-fast
-          -p hypercolor-daemon --no-default-features --features wgpu --lib
-          -E 'test(sparkleflinger::gpu::)
-          and not test(gpu_pipeline_warmup_fits_daemon_startup_budget)'
+          -p hypercolor-daemon --no-default-features --features wgpu,persistence-test-hooks
+          --lib --test render_thread_tests
+          -E '(test(sparkleflinger::) or test(render_zones::tests::)
+          or test(frame_composer::) or test(composition_planner::)
+          or binary(render_thread_tests))
+          and not test(gpu_pipeline_warmup_fits_daemon_startup_budget)
+          and not test(previews_hold_their_cadence)'
 
       - name: Save Rust build caches
         if: always()

@@ -76,7 +76,7 @@ impl GpuSparkleFlinger {
                 source_height,
                 request,
                 scale_views,
-                false,
+                None,
             )?,
         };
         self.commit_preview_surface_change(prepared);

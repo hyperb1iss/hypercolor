@@ -18,6 +18,12 @@ pub(super) struct GpuAreaPipeline {
     vertical_add: wgpu::ComputePipeline,
     hierarchy_scan: wgpu::ComputePipeline,
     hierarchy_add: wgpu::ComputePipeline,
+    /// Summed-area tables this pipeline has allocated.
+    #[cfg(test)]
+    allocation_count: std::cell::Cell<usize>,
+    /// Summed-area bind groups this pipeline has created.
+    #[cfg(test)]
+    bind_group_creation_count: std::cell::Cell<usize>,
 }
 
 pub(super) struct GpuAreaResources {
@@ -29,7 +35,7 @@ pub(super) struct GpuAreaResources {
     horizontal_sums: GpuAreaHierarchy,
     vertical_sums: GpuAreaHierarchy,
     params: wgpu::Buffer,
-    bind_groups: [Option<wgpu::BindGroup>; 3],
+    bind_groups: Vec<(GpuSampleSource, wgpu::BindGroup)>,
 }
 
 struct GpuAreaHierarchy {
@@ -157,7 +163,21 @@ impl GpuAreaPipeline {
                 "SparkleFlinger GPU area hierarchy add",
                 "add_sum_offsets",
             ),
+            #[cfg(test)]
+            allocation_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            bind_group_creation_count: std::cell::Cell::new(0),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn allocation_count(&self) -> usize {
+        self.allocation_count.get()
+    }
+
+    #[cfg(test)]
+    pub(super) fn bind_group_creation_count(&self) -> usize {
+        self.bind_group_creation_count.get()
     }
 
     pub(super) fn try_prepare(
@@ -190,6 +210,9 @@ impl GpuAreaPipeline {
                 "GPU area resources failed device validation: {error}"
             )));
         }
+        #[cfg(test)]
+        self.allocation_count
+            .set(self.allocation_count.get().saturating_add(1));
         Ok(resources)
     }
 
@@ -201,7 +224,18 @@ impl GpuAreaPipeline {
         resources: &mut GpuAreaResources,
         encoder: &mut wgpu::CommandEncoder,
     ) {
+        #[cfg(test)]
+        let cached_bind_groups = resources.bind_groups.len();
         let bind_group = resources.bind_group(device, &self.bind_group_layout, source, source_view);
+        #[cfg(test)]
+        self.bind_group_creation_count.set(
+            self.bind_group_creation_count.get().saturating_add(
+                resources
+                    .bind_groups
+                    .len()
+                    .saturating_sub(cached_bind_groups),
+            ),
+        );
         encode_pass(
             encoder,
             "SparkleFlinger GPU area horizontal tile scan",
@@ -299,7 +333,7 @@ impl GpuAreaResources {
             horizontal_sums,
             vertical_sums,
             params,
-            bind_groups: std::array::from_fn(|_| None),
+            bind_groups: Vec::with_capacity(2),
         }
     }
 
@@ -312,7 +346,11 @@ impl GpuAreaResources {
     }
 
     pub(super) fn clear_bind_groups(&mut self) {
-        self.bind_groups.fill(None);
+        self.bind_groups.clear();
+    }
+
+    pub(super) fn retain_bind_groups(&mut self, keep: impl Fn(GpuSampleSource) -> bool) {
+        self.bind_groups.retain(|(source, _)| keep(*source));
     }
 
     fn bind_group(
@@ -322,8 +360,11 @@ impl GpuAreaResources {
         source: GpuSampleSource,
         source_view: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
-        let index = source.index();
-        if let Some(bind_group) = &self.bind_groups[index] {
+        if let Some((_, bind_group)) = self
+            .bind_groups
+            .iter()
+            .find(|(cached, _)| *cached == source)
+        {
             return bind_group.clone();
         }
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -340,7 +381,7 @@ impl GpuAreaResources {
                 buffer_entry(4, &self.params),
             ],
         });
-        self.bind_groups[index] = Some(bind_group.clone());
+        self.bind_groups.push((source, bind_group.clone()));
         bind_group
     }
 }

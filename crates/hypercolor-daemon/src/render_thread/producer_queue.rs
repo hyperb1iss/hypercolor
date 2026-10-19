@@ -390,6 +390,35 @@ impl ProducerFrame {
         }
     }
 
+    /// What this frame shows, without its pixels: two frames with equal
+    /// identities show the same pixels. A plain canvas has none, because a
+    /// reused canvas buffer can change content under the same storage.
+    pub(crate) fn stable_identity(&self) -> Option<ProducerFrameIdentity> {
+        match self {
+            Self::Canvas(_) | Self::ScreenPublication(_) => None,
+            Self::Surface(surface) => Some(ProducerFrameIdentity::Surface {
+                width: surface.width(),
+                height: surface.height(),
+                generation: surface.generation(),
+                storage: surface.storage_identity(),
+            }),
+            #[cfg(feature = "servo-gpu-import")]
+            Self::Gpu(frame) => Some(ProducerFrameIdentity::Imported {
+                width: frame.width,
+                height: frame.height,
+                allocation: frame.allocation_id,
+                content_generation: frame.content_generation,
+            }),
+            #[cfg(feature = "wgpu")]
+            Self::GpuTexture(frame) => Some(ProducerFrameIdentity::GpuTexture {
+                width: frame.width,
+                height: frame.height,
+                storage_id: frame.storage_id,
+                content_generation: frame.content_generation,
+            }),
+        }
+    }
+
     fn stable_identity_matches(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Canvas(left), Self::Canvas(right)) => {
@@ -423,6 +452,31 @@ impl ProducerFrame {
             _ => false,
         }
     }
+}
+
+/// See [`ProducerFrame::stable_identity`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProducerFrameIdentity {
+    Surface {
+        width: u32,
+        height: u32,
+        generation: u64,
+        storage: hypercolor_types::canvas::PublishedSurfaceStorageIdentity,
+    },
+    #[cfg(feature = "servo-gpu-import")]
+    Imported {
+        width: u32,
+        height: u32,
+        allocation: hypercolor_gpu_frame::ImportedFrameAllocationId,
+        content_generation: u64,
+    },
+    #[cfg(feature = "wgpu")]
+    GpuTexture {
+        width: u32,
+        height: u32,
+        storage_id: u64,
+        content_generation: u64,
+    },
 }
 
 pub(crate) fn producer_frame_counts() -> ProducerFrameCounts {

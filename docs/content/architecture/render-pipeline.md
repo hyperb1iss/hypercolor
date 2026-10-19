@@ -84,6 +84,8 @@ There is no GPU **shader-effect** renderer today: the effect-renderer lane downg
 
 `SpatialEngine::sample(&canvas)` maps the composed canvas pixels to physical LED positions.
 
+That is the whole story for a single-zone scene. A scene with several zones on the GPU compositor keeps each zone in its own retained GPU texture, and its LEDs sample each zone's texture with that zone's own plan in one GPU dispatch and one readback. Zones that overlap never read each other's pixels, and the composed scene canvas becomes a preview of the zones rather than the LED source. On the CPU compositor each zone samples its own canvas. [Spec 86](https://github.com/hyperb1iss/hypercolor/blob/main/docs/specs/86-gpu-resident-multi-zone.md) has the details.
+
 ```text
 SpatialLayout  →  SpatialEngine  →  Vec<ZoneColors>
 (zone defs)       (precomputed       (RGB per LED)

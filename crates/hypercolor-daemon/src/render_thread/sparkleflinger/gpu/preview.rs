@@ -9,13 +9,18 @@ mod readback_runtime;
 mod runtime;
 mod surfaces;
 
-use surfaces::encode_preview_scale_params;
+pub(super) use surfaces::encode_preview_scale_params;
 pub(super) use surfaces::{
     bypass_preview_surface, preview_request_matches_plan, preview_requires_scale,
 };
 
 const MAX_CACHED_PREVIEW_READBACK_POOLS: usize = 3;
 const PREVIEW_READBACK_SLOT_COUNT: usize = 2;
+/// Scale bind groups kept for compositor surface sets other than the
+/// current one. A multi-zone frame moves the shared compositor through one
+/// surface set per zone and display-face extent, and the scene preview's
+/// bind groups wait here for the scene's set to come back.
+const MAX_PARKED_PREVIEW_SCALE_OUTPUTS: usize = 8;
 
 pub(super) struct GpuPreviewSurfaceSet {
     pub(super) width: u32,
@@ -23,7 +28,9 @@ pub(super) struct GpuPreviewSurfaceSet {
     pub(super) capacity_width: u32,
     pub(super) capacity_height: u32,
     pub(super) padded_bytes_per_row: u32,
+    /// Scale bind groups over the current compositor surface set's views.
     scale_output: Option<GpuPreviewScaleOutput>,
+    parked_scale_outputs: Vec<ParkedPreviewScaleOutput>,
     readbacks: [wgpu::Buffer; PREVIEW_READBACK_SLOT_COUNT],
     next_readback_slot: usize,
     pub(super) readback_surfaces: RenderSurfacePool,
@@ -48,6 +55,13 @@ pub(super) struct GpuPreviewScaleBindGroups {
 struct GpuPreviewScaleOutput {
     buffer: wgpu::Buffer,
     bind_groups: GpuPreviewScaleBindGroups,
+}
+
+/// A scale output bound to the views of the compositor surface set with
+/// this generation, waiting for that set to become current again.
+struct ParkedPreviewScaleOutput {
+    surface_set_generation: u64,
+    output: GpuPreviewScaleOutput,
 }
 
 pub(super) struct PreparedPreviewSurfaceChange(PreparedPreviewSurfaceChangeKind);

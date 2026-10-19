@@ -8,7 +8,8 @@ use super::super::producer_queue::{ProducerFrame, record_producer_frame};
 use super::super::sparkleflinger::{CompositionLayer, SparkleFlinger};
 use super::ZoneRuntime;
 use super::frame_helpers::{
-    copy_producer_frame_to_canvas, passthrough_effect_layer, transparent_black_frame,
+    copy_producer_frame_to_canvas, passthrough_effect_layer, producer_frame_is_gpu,
+    transparent_black_frame,
 };
 use super::model::{
     PendingDisplayZoneFrame, RenderSceneContext, RenderedZoneSet, ZoneFrameContext,
@@ -23,11 +24,17 @@ pub(super) struct RenderedZonePassOutput {
     pub(super) rendered_zones: RenderedZoneSet,
     pub(super) render_us: u32,
     pub(super) producer_full_frame_copy: FullFrameCopyMetrics,
+    /// Scene zones that reused their held frame because their composition
+    /// key matched (Spec 86 §2.1).
+    pub(super) zone_composition_skips: u32,
 }
 
 pub(super) struct ProjectedSceneFrames {
     pub(super) layers: Vec<CompositionLayer>,
     pub(super) cpu_replay_complete: bool,
+    /// Each GPU-resident scene zone's frame this pass, in zone order: the
+    /// sources its LEDs sample from (Spec 86 §3).
+    pub(super) zone_frames: Vec<(ZoneId, ProducerFrame)>,
 }
 
 impl Default for ProjectedSceneFrames {
@@ -35,6 +42,7 @@ impl Default for ProjectedSceneFrames {
         Self {
             layers: Vec::new(),
             cpu_replay_complete: true,
+            zone_frames: Vec::new(),
         }
     }
 }
@@ -82,6 +90,7 @@ impl ZoneRuntime {
                 ZoneFrameRequirements {
                     requires_cpu_sampling_canvas: true,
                     requires_published_surface: true,
+                    reuse_unchanged_composition: false,
                 },
             )?
             else {
@@ -104,10 +113,12 @@ impl ZoneRuntime {
         &mut self,
         context: RenderSceneContext<'_>,
         sparkleflinger: &mut SparkleFlinger,
+        gpu_resident: bool,
         project_scene_with_sparkleflinger: bool,
         output: &mut RenderedZonePassOutput,
     ) -> Result<ProjectedSceneFrames> {
         let mut projected_scene = ProjectedSceneFrames::default();
+        self.composition_skips = 0;
         if project_scene_with_sparkleflinger {
             projected_scene.layers = std::mem::take(&mut self.projected_scene_layers);
             projected_scene.layers.clear();
@@ -134,20 +145,40 @@ impl ZoneRuntime {
                     context.zone_context(),
                     sparkleflinger,
                     ZoneFrameRequirements {
-                        requires_cpu_sampling_canvas: !project_scene_with_sparkleflinger,
+                        requires_cpu_sampling_canvas: !gpu_resident,
                         requires_published_surface: false,
+                        reuse_unchanged_composition: gpu_resident,
                     },
                 )?;
-                if frame.is_none() && project_scene_with_sparkleflinger {
+                // A zone whose layers were all still loading gets one more
+                // poll. On a compositor that hands back GPU frames it stays
+                // GPU-resident: a CPU canvas would come from the shared
+                // readback latch, a whole-image readback that can hold another
+                // zone's pixels (Spec 48 §4.1).
+                if frame.is_none() && gpu_resident {
+                    let requires_cpu_sampling_canvas = !sparkleflinger.supports_gpu_output_frames();
                     frame = self.render_zone_frame(
                         zone,
                         context.zone_context(),
                         sparkleflinger,
                         ZoneFrameRequirements {
-                            requires_cpu_sampling_canvas: true,
+                            requires_cpu_sampling_canvas,
                             requires_published_surface: false,
+                            reuse_unchanged_composition: false,
                         },
                     )?;
+                }
+                if gpu_resident {
+                    self.place_gpu_resident_zone_frame(
+                        zone,
+                        frame,
+                        sparkleflinger,
+                        project_scene_with_sparkleflinger,
+                        &mut projected_scene,
+                        output,
+                    )?;
+                    output.record_render_elapsed(render_start);
+                    continue;
                 }
                 let Some(frame) = frame else {
                     if let Some(target) = self.target_canvases.get_mut(&zone.id) {
@@ -216,7 +247,79 @@ impl ZoneRuntime {
             self.projected_scene_layers = projected_scene.layers;
             return Err(error);
         }
+        output.zone_composition_skips = std::mem::take(&mut self.composition_skips);
         Ok(projected_scene)
+    }
+
+    /// Stabilize a GPU-resident zone's frame into its snapshot, project it
+    /// into the scene canvas, and record it as the zone's sampling source.
+    ///
+    /// A zone whose layers produced nothing this pass keeps its last
+    /// stabilized frame; a zone that never produced one contributes no
+    /// source, and its outputs hold their published colors (Spec 86 §2.2).
+    fn place_gpu_resident_zone_frame(
+        &mut self,
+        zone: &Zone,
+        frame: Option<ProducerFrame>,
+        sparkleflinger: &mut SparkleFlinger,
+        project_scene_with_sparkleflinger: bool,
+        projected_scene: &mut ProjectedSceneFrames,
+        output: &mut RenderedZonePassOutput,
+    ) -> Result<()> {
+        let frame = if let Some(frame) = frame {
+            let frame = sparkleflinger.stabilize_projected_zone_frame(zone.id, frame)?;
+            match held_zone_frame(&frame) {
+                Some(held) => self.last_zone_frames.insert(zone.id, held),
+                None => self.last_zone_frames.remove(&zone.id),
+            };
+            frame
+        } else if let Some(frame) = self.last_zone_frames.get(&zone.id).cloned() {
+            frame
+        } else {
+            return Ok(());
+        };
+        let projected = project_scene_with_sparkleflinger
+            && self
+                .scene_projection_cache
+                .get(&zone.id)
+                .is_some_and(|projection| {
+                    append_projection_composition_layers_for_zone(
+                        &mut projected_scene.layers,
+                        &frame,
+                        zone,
+                        projection,
+                        self.scene_width,
+                        self.scene_height,
+                    )
+                });
+        // The CPU scene reconstruction is the fallback when GPU projection
+        // fails or a zone cannot be projected. It can only replay frames that
+        // are already CPU-backed; GPU frames never materialize there.
+        let mut replayed = false;
+        if !producer_frame_is_gpu(&frame)
+            && let Some(target) = self.target_canvases.get_mut(&zone.id)
+        {
+            replayed = copy_producer_frame_to_canvas(
+                frame.clone(),
+                target,
+                &mut output.producer_full_frame_copy,
+            )?;
+        }
+        if !replayed
+            && !projected
+            && let Some(target) = self.target_canvases.get_mut(&zone.id)
+        {
+            target.clear();
+        }
+        if projected && !replayed {
+            projected_scene.cpu_replay_complete = false;
+        }
+        output.rendered_zones.push_fresh_scene_zone_frame(
+            zone.id,
+            held_zone_frame(&frame).unwrap_or_else(|| frame.clone()),
+        );
+        projected_scene.zone_frames.push((zone.id, frame));
+        Ok(())
     }
 
     pub(super) fn render_display_zone_frames(
@@ -281,5 +384,24 @@ impl ZoneRuntime {
         }
 
         Ok(())
+    }
+}
+
+/// The copy of a zone's frame kept for passes in which its layers produce
+/// nothing, when keeping it costs only a handle copy. A GPU copy drops the
+/// snapshot lease: it only ever stands in for this zone's own snapshot,
+/// which lives until the next reconcile clears the copy, and holding the
+/// lease would keep retired projection resources accounted as in use.
+fn held_zone_frame(frame: &ProducerFrame) -> Option<ProducerFrame> {
+    match frame {
+        #[cfg(feature = "wgpu")]
+        ProducerFrame::GpuTexture(texture) => Some(ProducerFrame::GpuTexture(
+            super::super::producer_queue::GpuTextureFrame {
+                immutable_lease: None,
+                ..texture.clone()
+            },
+        )),
+        ProducerFrame::Surface(_) => Some(frame.clone()),
+        _ => None,
     }
 }

@@ -1,3 +1,4 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{
     Arc,
     mpsc::{self, TryRecvError},
@@ -16,6 +17,7 @@ use crate::startup::StartupProgress;
 const SAMPLE_WORKGROUP_SIZE: u32 = 64;
 const SAMPLE_PARAM_BYTES: usize = 16;
 const SAMPLE_POINT_BYTES: u64 = 32;
+const GAUSSIAN_KERNEL_WORD_BYTES: u64 = 4;
 const SAMPLE_READBACK_SLOT_COUNT: usize = 3;
 const SAMPLE_READBACK_WAIT_STEP: Duration = Duration::from_millis(50);
 const SAMPLE_READBACK_WAIT_BUDGET: Duration = Duration::from_secs(2);
@@ -28,6 +30,7 @@ pub(super) enum GpuSampleMethod {
     Nearest = 0,
     Bilinear = 1,
     Area = 2,
+    Gaussian = 3,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -89,14 +92,56 @@ pub(super) struct GpuZoneRange {
 #[derive(Debug, Clone)]
 pub(super) struct GpuSamplingPlan {
     pub(super) points: Vec<GpuSamplePoint>,
+    /// Gaussian kernels the points reference: per kernel, the weight sum as
+    /// low and high words, then one weight per tap.
+    pub(super) kernels: Vec<u32>,
     pub(super) zones: Arc<[GpuZoneRange]>,
 }
 
+/// Identity of the prepared plans a dispatch samples, in pass order.
+///
+/// Each pass contributes its plan's pointer, length, and generation, and
+/// generations are unique across every engine in the process, so equal keys
+/// name the same plans in the same order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct GpuSamplingPlanKey {
-    ptr: usize,
+    digest: u64,
     len: usize,
-    generation: u64,
+}
+
+/// One texture a dispatch reads, with the prepared plan its LEDs sample.
+pub(super) struct GpuSamplePass<'a> {
+    pub(super) source: GpuSampleSource,
+    pub(super) view: &'a wgpu::TextureView,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) prepared_zones: &'a [PreparedZonePlan],
+}
+
+/// The extent and plan of one pass, which is all admission needs.
+#[derive(Clone, Copy)]
+pub(super) struct GpuSamplePassPlan<'a> {
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) prepared_zones: &'a [PreparedZonePlan],
+}
+
+impl<'a> GpuSamplePass<'a> {
+    const fn plan(&self) -> GpuSamplePassPlan<'a> {
+        GpuSamplePassPlan {
+            width: self.width,
+            height: self.height,
+            prepared_zones: self.prepared_zones,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CachedGpuSamplePass {
+    point_offset: u32,
+    point_count: u32,
+    dispatch_workgroups: u32,
+    uses_area: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -104,7 +149,8 @@ struct CachedGpuSamplingPlan {
     key: GpuSamplingPlanKey,
     plan: GpuSamplingPlan,
     encoded_points: Vec<u8>,
-    dispatch_workgroups: u32,
+    encoded_kernels: Vec<u8>,
+    passes: Vec<CachedGpuSamplePass>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +161,7 @@ struct UploadedGpuSamplingPlan {
 
 struct CachedGpuSamplingBindGroup {
     source: GpuSampleSource,
+    pass_index: usize,
     buffer_generation: u64,
     area_generation: u64,
     bind_group: wgpu::BindGroup,
@@ -123,8 +170,33 @@ struct CachedGpuSamplingBindGroup {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct GpuSamplingAdmissionKey {
     plan: GpuSamplingPlanKey,
+    /// The first pass's extent, kept for diagnostics.
     width: u32,
     height: u32,
+    /// Every pass's extent, in pass order.
+    pass_extents: u64,
+}
+
+impl GpuSamplingAdmissionKey {
+    fn for_passes<'a>(
+        plan: GpuSamplingPlanKey,
+        passes: impl IntoIterator<Item = GpuSamplePassPlan<'a>>,
+    ) -> Self {
+        let mut hasher = DefaultHasher::new();
+        let mut first = None;
+        for pass in passes {
+            first.get_or_insert((pass.width, pass.height));
+            pass.width.hash(&mut hasher);
+            pass.height.hash(&mut hasher);
+        }
+        let (width, height) = first.unwrap_or_default();
+        Self {
+            plan,
+            width,
+            height,
+            pass_extents: hasher.finish(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -184,6 +256,29 @@ impl GpuSamplingRetry {
     }
 }
 
+/// Resident summed-area tables kept for extents the admitted plan does not
+/// currently need.
+const MAX_RESIDENT_AREA_EXTENTS: usize = 2;
+
+struct GpuSampleParamsBuffer {
+    buffer: wgpu::Buffer,
+    cached: Option<[u8; SAMPLE_PARAM_BYTES]>,
+}
+
+impl GpuSampleParamsBuffer {
+    fn new(device: &wgpu::Device) -> Self {
+        Self {
+            buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("SparkleFlinger GPU sample params"),
+                size: SAMPLE_PARAM_BYTES as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            cached: None,
+        }
+    }
+}
+
 struct PreparedGpuSampleBuffers {
     points: wgpu::Buffer,
     output: wgpu::Buffer,
@@ -196,6 +291,7 @@ struct GpuSampleGeometry {
     sample_count: usize,
     point_bytes: u64,
     output_bytes: u64,
+    #[cfg(test)]
     dispatch_workgroups: u32,
 }
 
@@ -227,15 +323,17 @@ impl GpuSampleGeometry {
             sample_count,
             point_bytes,
             output_bytes,
+            #[cfg(test)]
             dispatch_workgroups,
         })
     }
 }
 
-enum PreparedGpuArea {
-    NotNeeded,
-    Reuse,
-    Replace(GpuAreaResources),
+/// Summed-area tables an admitted plan needs, one per distinct texture extent
+/// among its area-sampled passes.
+struct PreparedGpuArea {
+    needed: Vec<(u32, u32)>,
+    added: Vec<GpuAreaResources>,
 }
 
 pub(crate) struct GpuSamplingPreparation(GpuSamplingPreparationKind);
@@ -252,6 +350,7 @@ enum GpuSamplingPreparationKind {
         admission: GpuSamplingAdmissionKey,
         plan: CachedGpuSamplingPlan,
         buffers: Option<PreparedGpuSampleBuffers>,
+        kernels: Option<wgpu::Buffer>,
         area: PreparedGpuArea,
     },
 }
@@ -311,12 +410,14 @@ impl GpuSamplingPreparation {
         admission: GpuSamplingAdmissionKey,
         plan: CachedGpuSamplingPlan,
         buffers: Option<PreparedGpuSampleBuffers>,
+        kernels: Option<wgpu::Buffer>,
         area: PreparedGpuArea,
     ) -> Self {
         Self(GpuSamplingPreparationKind::Replace {
             admission,
             plan,
             buffers,
+            kernels,
             area,
         })
     }
@@ -328,14 +429,19 @@ pub(super) enum GpuSampleSource {
     Back,
     /// A diagnostic texture sampled without replacing the live output.
     Diagnostic,
+    /// A retained texture outside the compositor's output pair, named by its
+    /// storage id (a zone's projection snapshot).
+    Texture(u64),
 }
 
 impl GpuSampleSource {
-    pub(super) const fn index(self) -> usize {
+    /// Whether a cache entry for this source should survive a dispatch that
+    /// reads `current`. Retained textures come and go with their zones, so
+    /// their entries live only while a dispatch still reads them.
+    fn retained_by(self, current: &[GpuSamplePass<'_>]) -> bool {
         match self {
-            Self::Front => 0,
-            Self::Back => 1,
-            Self::Diagnostic => 2,
+            Self::Texture(_) => current.iter().any(|pass| pass.source == self),
+            Self::Front | Self::Back | Self::Diagnostic => true,
         }
     }
 }
@@ -361,7 +467,16 @@ pub(super) struct PendingGpuSampleReadback {
     receiver: Option<mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>>,
     map_ready: bool,
     lease: ReadbackLease,
+    /// Non-blocking polls that still report this readback unfinished, so
+    /// tests can stand in for a GPU slower than the frame cadence.
+    #[cfg(test)]
+    withheld_polls: u32,
 }
+
+/// Non-blocking polls each new readback reports unfinished.
+#[cfg(test)]
+pub(crate) static SAMPLE_READBACK_WITHHELD_POLLS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 
 impl PendingGpuSampleReadback {
     #[cfg(test)]
@@ -387,19 +502,76 @@ impl PendingGpuSampleReadback {
 }
 
 impl GpuSamplingPlan {
+    #[cfg(test)]
     pub(super) fn key(prepared_zones: &[PreparedZonePlan]) -> Option<GpuSamplingPlanKey> {
-        Self::supports_prepared_zones(prepared_zones).then_some(GpuSamplingPlanKey {
-            ptr: prepared_zones.as_ptr() as usize,
-            len: prepared_zones.len(),
-            generation: plan_generation(prepared_zones),
+        Self::key_for_plans([prepared_zones])
+    }
+
+    /// Key for several prepared plans sampled in order, or `None` when any of
+    /// them uses a mode the GPU sampler cannot run.
+    pub(super) fn key_for_plans<'a>(
+        plans: impl IntoIterator<Item = &'a [PreparedZonePlan]>,
+    ) -> Option<GpuSamplingPlanKey> {
+        let mut hasher = DefaultHasher::new();
+        let mut len = 0_usize;
+        for prepared_zones in plans {
+            if !Self::supports_prepared_zones(prepared_zones) {
+                return None;
+            }
+            (prepared_zones.as_ptr() as usize).hash(&mut hasher);
+            prepared_zones.len().hash(&mut hasher);
+            plan_generation(prepared_zones).hash(&mut hasher);
+            len = len.saturating_add(prepared_zones.len());
+        }
+        Some(GpuSamplingPlanKey {
+            digest: hasher.finish(),
+            len,
         })
+    }
+
+    /// Concatenate several prepared plans into one sampling plan, returning
+    /// it with each pass's point range in the concatenated buffer.
+    fn from_pass_plans(passes: &[GpuSamplePassPlan<'_>]) -> Option<(Self, Vec<(usize, usize)>)> {
+        let mut points = Vec::new();
+        let mut kernels = Vec::new();
+        let mut zones = Vec::new();
+        let mut ranges = Vec::with_capacity(passes.len());
+        for pass in passes {
+            let pass_plan = Self::from_prepared_zones(pass.prepared_zones)?;
+            let offset = points.len();
+            let kernel_base = u32::try_from(kernels.len()).ok()?;
+            ranges.push((offset, pass_plan.points.len()));
+            points.extend(pass_plan.points.into_iter().map(|mut point| {
+                if point.method == GpuSampleMethod::Gaussian {
+                    point.radius_y = point.radius_y.saturating_add(kernel_base);
+                }
+                point
+            }));
+            kernels.extend(pass_plan.kernels);
+            zones.extend(pass_plan.zones.iter().map(|zone| GpuZoneRange {
+                zone_id: zone.zone_id.clone(),
+                start: zone.start.saturating_add(offset),
+                len: zone.len,
+            }));
+        }
+        Some((
+            Self {
+                points,
+                kernels,
+                zones: zones.into(),
+            },
+            ranges,
+        ))
     }
 
     pub(super) fn supports_prepared_zones(prepared_zones: &[PreparedZonePlan]) -> bool {
         prepared_zones.iter().all(|zone| {
             matches!(
                 zone.sampling_mode,
-                SamplingMode::Nearest | SamplingMode::Bilinear | SamplingMode::AreaAverage { .. }
+                SamplingMode::Nearest
+                    | SamplingMode::Bilinear
+                    | SamplingMode::AreaAverage { .. }
+                    | SamplingMode::GaussianArea { .. }
             )
         })
     }
@@ -410,6 +582,7 @@ impl GpuSamplingPlan {
             .map(|zone| zone.sample_positions.len())
             .sum();
         let mut points = Vec::with_capacity(total_points);
+        let mut kernels = Vec::new();
         let mut zones = Vec::with_capacity(prepared_zones.len());
 
         for zone in prepared_zones {
@@ -456,6 +629,23 @@ impl GpuSamplingPlan {
                         },
                     ));
                 }
+                (SamplingMode::GaussianArea { .. }, PreparedZoneSamples::Gaussian(samples)) => {
+                    let kernel = u32::try_from(kernels.len()).ok()?;
+                    let weight_sum = samples.weight_sum;
+                    kernels.push(low_word(weight_sum));
+                    kernels.push(high_word(weight_sum));
+                    kernels.extend(samples.weights.iter().copied().map(u32::from));
+                    points.extend(zone.sample_positions.iter().zip(&samples.samples).map(
+                        |(position, sample)| {
+                            gpu_sample_point(
+                                position,
+                                GpuSampleMethod::Gaussian,
+                                sample.attenuation,
+                                Some((sample.center_x, sample.center_y, sample.radius, kernel)),
+                            )
+                        },
+                    ));
+                }
                 _ => return None,
             }
             zones.push(GpuZoneRange {
@@ -467,35 +657,62 @@ impl GpuSamplingPlan {
 
         Some(Self {
             points,
+            kernels,
             zones: zones.into(),
         })
     }
+}
+
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "splitting a u64 into its two u32 words"
+)]
+const fn low_word(value: u64) -> u32 {
+    value as u32
+}
+
+const fn high_word(value: u64) -> u32 {
+    low_word(value >> 32)
 }
 
 pub(super) struct GpuSpatialSampler {
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
     area_pipeline: GpuAreaPipeline,
-    area_resources: Option<GpuAreaResources>,
+    /// One summed-area table per distinct extent the admitted plan
+    /// area-samples.
+    area_resources: Vec<GpuAreaResources>,
     area_generation: u64,
     admitted_plan: Option<GpuSamplingAdmissionKey>,
     deterministic_fallback_plan: Option<GpuSamplingAdmissionKey>,
     transient_retry: Option<GpuSamplingRetry>,
     dummy_summed_area_buffer: wgpu::Buffer,
-    params_buffer: wgpu::Buffer,
-    cached_params: Option<[u8; SAMPLE_PARAM_BYTES]>,
+    dummy_gaussian_kernel_buffer: wgpu::Buffer,
+    gaussian_kernel_buffer: Option<wgpu::Buffer>,
+    gaussian_kernel_capacity: usize,
+    /// One params uniform per pass. Queue writes land before the submit
+    /// that reads them, so passes in one submission cannot share a buffer.
+    params_buffers: Vec<GpuSampleParamsBuffer>,
     points_buffer: Option<wgpu::Buffer>,
     output_buffer: Option<wgpu::Buffer>,
     readback_buffers: Option<[wgpu::Buffer; SAMPLE_READBACK_SLOT_COUNT]>,
     readback_slots_in_use: [bool; SAMPLE_READBACK_SLOT_COUNT],
     next_readback_slot: usize,
+    /// Advances only when the readback ring is replaced, so a lease taken
+    /// before a kernel or bind group rebuild still frees its slot.
+    readback_generation: u64,
+    /// Sample bind groups this sampler has created.
+    #[cfg(test)]
+    bind_group_creation_count: usize,
     capacity: usize,
     buffer_generation: u64,
     cached_plan: Option<CachedGpuSamplingPlan>,
     uploaded_plan: Option<UploadedGpuSamplingPlan>,
     cached_bind_groups: Vec<CachedGpuSamplingBindGroup>,
     last_readback_wait_blocked: bool,
-    #[cfg(test)]
+    /// Sample passes encoded since construction, one per pass with points
+    /// to sample. Frame telemetry reads the delta around each LED dispatch.
     sample_dispatch_count: usize,
     #[cfg(test)]
     sample_param_write_count: usize,
@@ -565,6 +782,16 @@ impl GpuSpatialSampler {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -588,15 +815,16 @@ impl GpuSpatialSampler {
                 cache: None,
             },
         );
-        let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("SparkleFlinger GPU sample params"),
-            size: SAMPLE_PARAM_BYTES as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let params_buffer = GpuSampleParamsBuffer::new(device);
         let dummy_summed_area_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SparkleFlinger GPU empty summed-area table"),
             size: SAT_VALUE_BYTES,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let dummy_gaussian_kernel_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger GPU empty Gaussian kernels"),
+            size: GAUSSIAN_KERNEL_WORD_BYTES,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -605,26 +833,30 @@ impl GpuSpatialSampler {
             bind_group_layout,
             pipeline,
             area_pipeline: GpuAreaPipeline::new(device, progress),
-            area_resources: None,
+            area_resources: Vec::new(),
             area_generation: 0,
             admitted_plan: None,
             deterministic_fallback_plan: None,
             transient_retry: None,
             dummy_summed_area_buffer,
-            params_buffer,
-            cached_params: None,
+            dummy_gaussian_kernel_buffer,
+            gaussian_kernel_buffer: None,
+            gaussian_kernel_capacity: 0,
+            params_buffers: vec![params_buffer],
             points_buffer: None,
             output_buffer: None,
             readback_buffers: None,
             readback_slots_in_use: [false; SAMPLE_READBACK_SLOT_COUNT],
             next_readback_slot: 0,
+            readback_generation: 0,
+            #[cfg(test)]
+            bind_group_creation_count: 0,
             capacity: 0,
             buffer_generation: 0,
             cached_plan: None,
             uploaded_plan: None,
             cached_bind_groups: Vec::with_capacity(3),
             last_readback_wait_blocked: false,
-            #[cfg(test)]
             sample_dispatch_count: 0,
             #[cfg(test)]
             sample_param_write_count: 0,
@@ -657,14 +889,30 @@ impl GpuSpatialSampler {
         height: u32,
         prepared_zones: &[PreparedZonePlan],
     ) -> GpuSamplingPreparation {
-        let Some(plan_key) = GpuSamplingPlan::key(prepared_zones) else {
+        self.prepare_passes(
+            device,
+            &[GpuSamplePassPlan {
+                width,
+                height,
+                prepared_zones,
+            }],
+        )
+    }
+
+    /// Admit several passes as one dispatch: their plans concatenate into one
+    /// points buffer and one output buffer, and each pass reads its own
+    /// texture through its own params uniform.
+    pub(super) fn prepare_passes(
+        &mut self,
+        device: &wgpu::Device,
+        passes: &[GpuSamplePassPlan<'_>],
+    ) -> GpuSamplingPreparation {
+        let Some(plan_key) =
+            GpuSamplingPlan::key_for_plans(passes.iter().map(|pass| pass.prepared_zones))
+        else {
             return GpuSamplingPreparation::unsupported();
         };
-        let admission = GpuSamplingAdmissionKey {
-            plan: plan_key,
-            width,
-            height,
-        };
+        let admission = GpuSamplingAdmissionKey::for_passes(plan_key, passes.iter().copied());
         if self.admitted_plan == Some(admission) {
             return GpuSamplingPreparation::reuse(admission);
         }
@@ -684,7 +932,7 @@ impl GpuSpatialSampler {
         {
             return GpuSamplingPreparation::wait_for_retry(retry.clone());
         }
-        let Some(plan) = GpuSamplingPlan::from_prepared_zones(prepared_zones) else {
+        let Some((plan, ranges)) = GpuSamplingPlan::from_pass_plans(passes) else {
             return GpuSamplingPreparation::unsupported();
         };
         let sample_count = plan.points.len();
@@ -712,21 +960,53 @@ impl GpuSpatialSampler {
         } else {
             None
         };
-        let uses_area = plan
-            .points
-            .iter()
-            .any(|point| point.method == GpuSampleMethod::Area);
-        let area = if !uses_area {
-            PreparedGpuArea::NotNeeded
-        } else if self
-            .area_resources
-            .as_ref()
-            .is_some_and(|resources| resources.matches(width, height))
-        {
-            PreparedGpuArea::Reuse
-        } else {
-            match self.area_pipeline.try_prepare(device, width, height) {
-                Ok(resources) => PreparedGpuArea::Replace(resources),
+        let mut cached_passes = Vec::with_capacity(passes.len());
+        let mut area = PreparedGpuArea {
+            needed: Vec::new(),
+            added: Vec::new(),
+        };
+        for (pass, &(offset, count)) in passes.iter().zip(&ranges) {
+            let (Ok(point_offset), Ok(point_count)) = (u32::try_from(offset), u32::try_from(count))
+            else {
+                return GpuSamplingPreparation::cpu_fallback(
+                    admission,
+                    GpuSamplingPreparationFailure::deterministic(
+                        "GPU sample pass range exceeds u32 addressability",
+                    ),
+                    None,
+                );
+            };
+            let uses_area = plan
+                .points
+                .get(offset..offset.saturating_add(count))
+                .is_some_and(|points| {
+                    points
+                        .iter()
+                        .any(|point| point.method == GpuSampleMethod::Area)
+                });
+            cached_passes.push(CachedGpuSamplePass {
+                point_offset,
+                point_count,
+                dispatch_workgroups: point_count.div_ceil(SAMPLE_WORKGROUP_SIZE),
+                uses_area,
+            });
+            let extent = (pass.width, pass.height);
+            if !uses_area || area.needed.contains(&extent) {
+                continue;
+            }
+            area.needed.push(extent);
+            if self
+                .area_resources
+                .iter()
+                .any(|resources| resources.matches(pass.width, pass.height))
+            {
+                continue;
+            }
+            match self
+                .area_pipeline
+                .try_prepare(device, pass.width, pass.height)
+            {
+                Ok(resources) => area.added.push(resources),
                 Err(error) => {
                     return GpuSamplingPreparation::cpu_fallback(
                         admission,
@@ -734,6 +1014,16 @@ impl GpuSpatialSampler {
                         self.transient_retry.as_ref(),
                     );
                 }
+            }
+        }
+        let kernels = match self.prepare_gaussian_kernel_buffer(device, plan.kernels.len()) {
+            Ok(kernels) => kernels,
+            Err(error) => {
+                return GpuSamplingPreparation::cpu_fallback(
+                    admission,
+                    error,
+                    self.transient_retry.as_ref(),
+                );
             }
         };
         if self.take_plan_preparation_failure_injection() {
@@ -746,15 +1036,18 @@ impl GpuSpatialSampler {
             );
         }
         let encoded_points = encode_points(&plan);
+        let encoded_kernels = encode_kernels(&plan);
         GpuSamplingPreparation::replace(
             admission,
             CachedGpuSamplingPlan {
                 key: plan_key,
                 plan,
                 encoded_points,
-                dispatch_workgroups: geometry.dispatch_workgroups,
+                encoded_kernels,
+                passes: cached_passes,
             },
             buffers,
+            kernels,
             area,
         )
     }
@@ -807,29 +1100,60 @@ impl GpuSpatialSampler {
                 admission,
                 plan,
                 buffers,
+                kernels,
                 area,
             } => {
+                if let Some(kernels) = kernels {
+                    self.gaussian_kernel_capacity = plan.plan.kernels.len();
+                    self.gaussian_kernel_buffer = Some(kernels);
+                    self.buffer_generation = self.buffer_generation.saturating_add(1);
+                    self.uploaded_plan = None;
+                    self.cached_bind_groups.clear();
+                }
                 if let Some(buffers) = buffers {
                     self.points_buffer = Some(buffers.points);
                     self.output_buffer = Some(buffers.output);
                     self.readback_buffers = Some(buffers.readbacks);
                     self.readback_slots_in_use = [false; SAMPLE_READBACK_SLOT_COUNT];
                     self.next_readback_slot = 0;
+                    self.readback_generation = self.readback_generation.saturating_add(1);
                     self.capacity = buffers.capacity;
                     self.buffer_generation = self.buffer_generation.saturating_add(1);
                     self.uploaded_plan = None;
                     self.cached_bind_groups.clear();
                 }
-                if let PreparedGpuArea::Replace(resources) = area {
-                    self.area_resources = Some(resources);
-                    self.area_generation = self.area_generation.saturating_add(1);
-                    self.cached_bind_groups.clear();
-                }
+                self.apply_area_resources(area);
                 self.cached_plan = Some(plan);
                 self.admitted_plan = Some(admission);
                 self.deterministic_fallback_plan = None;
                 self.transient_retry = None;
             }
+        }
+    }
+
+    /// Install newly prepared summed-area tables. Extents the new plan does
+    /// not need stay resident up to a small bound, so plans that alternate
+    /// (a diagnostic sample between live frames, a zone toggling area mode)
+    /// do not reallocate a table every frame.
+    fn apply_area_resources(&mut self, area: PreparedGpuArea) {
+        let added = !area.added.is_empty();
+        self.area_resources.extend(area.added);
+        let mut evicted = false;
+        while self.area_resources.len() > MAX_RESIDENT_AREA_EXTENTS.max(area.needed.len()) {
+            let Some(index) = self.area_resources.iter().position(|resources| {
+                !area
+                    .needed
+                    .iter()
+                    .any(|&(width, height)| resources.matches(width, height))
+            }) else {
+                break;
+            };
+            self.area_resources.remove(index);
+            evicted = true;
+        }
+        if added || evicted {
+            self.area_generation = self.area_generation.saturating_add(1);
+            self.cached_bind_groups.clear();
         }
     }
 
@@ -866,10 +1190,6 @@ impl GpuSpatialSampler {
         }
     }
 
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "callers dispatch uniformly with `?`; the GPU sampling path may fall back to fallible code without changing the signature"
-    )]
     pub(super) fn sample_texture_into(
         &mut self,
         device: &wgpu::Device,
@@ -882,13 +1202,44 @@ impl GpuSpatialSampler {
         zones: &mut Vec<ZoneColors>,
         encoder: Option<wgpu::CommandEncoder>,
     ) -> Result<GpuSamplingDispatch> {
-        let admission = GpuSamplingPlan::key(prepared_zones).map(|plan| GpuSamplingAdmissionKey {
-            plan,
-            width,
-            height,
+        self.sample_passes_into(
+            device,
+            queue,
+            &[GpuSamplePass {
+                source,
+                view: source_view,
+                width,
+                height,
+                prepared_zones,
+            }],
+            zones,
+            encoder,
+        )
+    }
+
+    /// Sample every pass in one submission and stage one readback of all
+    /// their LED colors, which arrive in pass order.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "callers dispatch uniformly with `?`; the GPU sampling path may fall back to fallible code without changing the signature"
+    )]
+    pub(super) fn sample_passes_into(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        passes: &[GpuSamplePass<'_>],
+        zones: &mut Vec<ZoneColors>,
+        encoder: Option<wgpu::CommandEncoder>,
+    ) -> Result<GpuSamplingDispatch> {
+        let admission = GpuSamplingPlan::key_for_plans(
+            passes.iter().map(|pass| pass.prepared_zones),
+        )
+        .map(|plan| {
+            GpuSamplingAdmissionKey::for_passes(plan, passes.iter().map(GpuSamplePass::plan))
         });
         if self.admitted_plan != admission {
-            let preparation = self.prepare_plan(device, width, height, prepared_zones);
+            let pass_plans = passes.iter().map(GpuSamplePass::plan).collect::<Vec<_>>();
+            let preparation = self.prepare_passes(device, &pass_plans);
             self.apply_preparation(preparation);
         }
         if admission.is_none() || self.admitted_plan != admission {
@@ -899,17 +1250,10 @@ impl GpuSpatialSampler {
                 pending_readback: None,
             });
         }
-        let uses_area = self.cached_plan.as_ref().is_some_and(|cached| {
-            cached
-                .plan
-                .points
-                .iter()
-                .any(|point| point.method == GpuSampleMethod::Area)
-        });
-        let (sample_count, dispatch_workgroups) =
-            self.cached_plan.as_ref().map_or((0, 0), |cached| {
-                (cached.plan.points.len(), cached.dispatch_workgroups)
-            });
+        let sample_count = self
+            .cached_plan
+            .as_ref()
+            .map_or(0, |cached| cached.plan.points.len());
         let Some(points_buffer) = self.points_buffer.clone() else {
             zones.clear();
             return Ok(GpuSamplingDispatch {
@@ -929,54 +1273,72 @@ impl GpuSpatialSampler {
             });
         };
         self.ensure_points_uploaded(queue, &points_buffer);
-        let params = encode_sample_params(width, height, sample_count);
-        if self.cached_params != Some(params) {
-            queue.write_buffer(&self.params_buffer, 0, &params);
-            self.cached_params = Some(params);
-            #[cfg(test)]
-            {
-                self.sample_param_write_count = self.sample_param_write_count.saturating_add(1);
-            }
-        }
 
         let mut encoder = encoder.unwrap_or_else(|| {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("SparkleFlinger GPU sample encoder"),
             })
         });
-        if uses_area {
-            let area_pipeline = &self.area_pipeline;
-            let area_resources = self
-                .area_resources
-                .as_mut()
-                .expect("GPU area resources should be admitted before encoding");
-            area_pipeline.encode(device, source, source_view, area_resources, &mut encoder);
-        }
-        let summed_area_buffer = self.area_resources.as_ref().map_or_else(
-            || self.dummy_summed_area_buffer.clone(),
-            |resources| resources.summed_area_buffer().clone(),
-        );
-        let bind_group = self.bind_group_for(
-            device,
-            source,
-            source_view,
-            &points_buffer,
-            &output_buffer,
-            &summed_area_buffer,
-        );
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("SparkleFlinger GPU sample pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(dispatch_workgroups, 1, 1);
-        }
-        #[cfg(test)]
-        {
+        for (pass_index, pass) in passes.iter().enumerate() {
+            let cached_pass = self
+                .cached_plan
+                .as_ref()
+                .and_then(|cached| cached.passes.get(pass_index).copied())
+                .expect("every pass should be admitted with the plan");
+            if cached_pass.point_count == 0 {
+                continue;
+            }
+            self.write_pass_params(
+                device,
+                queue,
+                pass_index,
+                encode_sample_params(
+                    pass.width,
+                    pass.height,
+                    cached_pass.point_count,
+                    cached_pass.point_offset,
+                ),
+            );
+            let summed_area_buffer = if cached_pass.uses_area {
+                let area_resources = self
+                    .area_resources
+                    .iter_mut()
+                    .find(|resources| resources.matches(pass.width, pass.height))
+                    .expect("GPU area resources should be admitted before encoding");
+                // A pass reads the table only after its own scan; the next
+                // pass at this extent rescans after this one has read it.
+                self.area_pipeline.encode(
+                    device,
+                    pass.source,
+                    pass.view,
+                    area_resources,
+                    &mut encoder,
+                );
+                area_resources.summed_area_buffer().clone()
+            } else {
+                self.dummy_summed_area_buffer.clone()
+            };
+            let bind_group = self.bind_group_for(
+                device,
+                pass.source,
+                pass_index,
+                pass.view,
+                &points_buffer,
+                &output_buffer,
+                &summed_area_buffer,
+            );
+            {
+                let mut compute = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("SparkleFlinger GPU sample pass"),
+                    timestamp_writes: None,
+                });
+                compute.set_pipeline(&self.pipeline);
+                compute.set_bind_group(0, &bind_group, &[]);
+                compute.dispatch_workgroups(cached_pass.dispatch_workgroups, 1, 1);
+            }
             self.sample_dispatch_count = self.sample_dispatch_count.saturating_add(1);
         }
+        self.retain_bind_groups_for(passes);
         let output_bytes = sample_output_bytes(sample_count);
         #[cfg(test)]
         {
@@ -1023,6 +1385,60 @@ impl GpuSpatialSampler {
                 readback_lease,
             )),
         })
+    }
+
+    /// A larger Gaussian kernel buffer when the plan's kernels outgrow the
+    /// current one; `None` keeps the current buffer.
+    fn prepare_gaussian_kernel_buffer(
+        &self,
+        device: &wgpu::Device,
+        words: usize,
+    ) -> std::result::Result<Option<wgpu::Buffer>, GpuSamplingPreparationFailure> {
+        if words <= self.gaussian_kernel_capacity {
+            return Ok(None);
+        }
+        let bytes = u64::try_from(words)
+            .ok()
+            .and_then(|words| words.checked_mul(GAUSSIAN_KERNEL_WORD_BYTES))
+            .ok_or_else(|| {
+                GpuSamplingPreparationFailure::deterministic(
+                    "GPU Gaussian kernel buffer size overflowed",
+                )
+            })?;
+        let limits = device.limits();
+        if bytes > limits.max_buffer_size || bytes > limits.max_storage_buffer_binding_size {
+            return Err(GpuSamplingPreparationFailure::deterministic(
+                "GPU Gaussian kernels exceed the device buffer limits",
+            ));
+        }
+        Ok(Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("SparkleFlinger GPU Gaussian kernels"),
+            size: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })))
+    }
+
+    fn write_pass_params(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass_index: usize,
+        params: [u8; SAMPLE_PARAM_BYTES],
+    ) {
+        while self.params_buffers.len() <= pass_index {
+            self.params_buffers.push(GpuSampleParamsBuffer::new(device));
+        }
+        let slot = &mut self.params_buffers[pass_index];
+        if slot.cached == Some(params) {
+            return;
+        }
+        queue.write_buffer(&slot.buffer, 0, &params);
+        slot.cached = Some(params);
+        #[cfg(test)]
+        {
+            self.sample_param_write_count = self.sample_param_write_count.saturating_add(1);
+        }
     }
 
     pub(super) fn finish_pending_readback(
@@ -1090,7 +1506,7 @@ impl GpuSpatialSampler {
                 self.next_readback_slot = (slot + 1) % SAMPLE_READBACK_SLOT_COUNT;
                 return Some((
                     ReadbackLease {
-                        generation: self.buffer_generation,
+                        generation: self.readback_generation,
                         slot,
                     },
                     readback_buffers[slot].clone(),
@@ -1101,7 +1517,7 @@ impl GpuSpatialSampler {
     }
 
     fn release_readback_slot(&mut self, lease: ReadbackLease) {
-        if lease.generation == self.buffer_generation && lease.slot < SAMPLE_READBACK_SLOT_COUNT {
+        if lease.generation == self.readback_generation && lease.slot < SAMPLE_READBACK_SLOT_COUNT {
             self.readback_slots_in_use[lease.slot] = false;
         }
     }
@@ -1120,13 +1536,23 @@ impl GpuSpatialSampler {
         }
 
         queue.write_buffer(points_buffer, 0, &cached_plan.encoded_points);
+        if !cached_plan.encoded_kernels.is_empty()
+            && let Some(kernels) = self.gaussian_kernel_buffer.as_ref()
+        {
+            queue.write_buffer(kernels, 0, &cached_plan.encoded_kernels);
+        }
         self.uploaded_plan = Some(upload);
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a sample bind group is exactly these resources; bundling them would only rename the list"
+    )]
     fn bind_group_for(
         &mut self,
         device: &wgpu::Device,
         source: GpuSampleSource,
+        pass_index: usize,
         source_view: &wgpu::TextureView,
         points_buffer: &wgpu::Buffer,
         output_buffer: &wgpu::Buffer,
@@ -1134,12 +1560,14 @@ impl GpuSpatialSampler {
     ) -> wgpu::BindGroup {
         if let Some(cached) = self.cached_bind_groups.iter().find(|cached| {
             cached.source == source
+                && cached.pass_index == pass_index
                 && cached.buffer_generation == self.buffer_generation
                 && cached.area_generation == self.area_generation
         }) {
             return cached.bind_group.clone();
         }
 
+        let params_buffer = &self.params_buffers[pass_index].buffer;
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SparkleFlinger GPU sample bind group"),
             layout: &self.bind_group_layout,
@@ -1158,27 +1586,71 @@ impl GpuSpatialSampler {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: self.params_buffer.as_entire_binding(),
+                    resource: params_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: summed_area_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self
+                        .gaussian_kernel_buffer
+                        .as_ref()
+                        .unwrap_or(&self.dummy_gaussian_kernel_buffer)
+                        .as_entire_binding(),
+                },
             ],
         });
         self.cached_bind_groups.push(CachedGpuSamplingBindGroup {
             source,
+            pass_index,
             buffer_generation: self.buffer_generation,
             area_generation: self.area_generation,
             bind_group: bind_group.clone(),
         });
+        #[cfg(test)]
+        {
+            self.bind_group_creation_count = self.bind_group_creation_count.saturating_add(1);
+        }
         bind_group
+    }
+
+    /// Drop cached bind groups for retained textures this dispatch no longer
+    /// reads at the same pass, so zone snapshots that were replaced or
+    /// removed release their views.
+    fn retain_bind_groups_for(&mut self, passes: &[GpuSamplePass<'_>]) {
+        self.cached_bind_groups
+            .retain(|cached| match cached.source {
+                GpuSampleSource::Texture(_) => passes
+                    .get(cached.pass_index)
+                    .is_some_and(|pass| pass.source == cached.source),
+                GpuSampleSource::Front | GpuSampleSource::Back | GpuSampleSource::Diagnostic => {
+                    true
+                }
+            });
+        for resources in &mut self.area_resources {
+            resources.retain_bind_groups(|source| source.retained_by(passes));
+        }
     }
 
     pub(super) fn clear_bind_groups(&mut self) {
         self.cached_bind_groups.clear();
-        if let Some(resources) = &mut self.area_resources {
+        for resources in &mut self.area_resources {
             resources.clear_bind_groups();
+        }
+    }
+
+    /// Drop cached bind groups for every source but retained textures. The
+    /// compositor's output views change with its surfaces; a retained
+    /// texture's bind group names its own storage and stays valid.
+    pub(super) fn clear_output_bind_groups(&mut self) {
+        let retained_texture =
+            |source: GpuSampleSource| matches!(source, GpuSampleSource::Texture(_));
+        self.cached_bind_groups
+            .retain(|cached| retained_texture(cached.source));
+        for resources in &mut self.area_resources {
+            resources.retain_bind_groups(retained_texture);
         }
     }
 
@@ -1187,7 +1659,6 @@ impl GpuSpatialSampler {
         self.cached_bind_groups.len()
     }
 
-    #[cfg(test)]
     pub(super) fn sample_dispatch_count(&self) -> usize {
         self.sample_dispatch_count
     }
@@ -1210,6 +1681,20 @@ impl GpuSpatialSampler {
     #[cfg(test)]
     pub(super) const fn area_generation(&self) -> u64 {
         self.area_generation
+    }
+
+    /// Summed-area tables allocated since the sampler was created.
+    #[cfg(test)]
+    pub(super) fn area_resource_allocation_count(&self) -> usize {
+        self.area_pipeline.allocation_count()
+    }
+
+    /// Sample and summed-area bind groups created since the sampler was
+    /// created.
+    #[cfg(test)]
+    pub(super) fn bind_group_creation_count(&self) -> usize {
+        self.bind_group_creation_count
+            .saturating_add(self.area_pipeline.bind_group_creation_count())
     }
 
     #[cfg(test)]
@@ -1290,6 +1775,13 @@ fn encode_points(plan: &GpuSamplingPlan) -> Vec<u8> {
     bytes
 }
 
+fn encode_kernels(plan: &GpuSamplingPlan) -> Vec<u8> {
+    plan.kernels
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect()
+}
+
 fn gpu_sample_point(
     position: &hypercolor_types::spatial::NormalizedPosition,
     method: GpuSampleMethod,
@@ -1299,15 +1791,17 @@ fn gpu_sample_point(
     GpuSamplePoint::new(position.x, position.y, method, attenuation, area)
 }
 
-fn encode_sample_params(width: u32, height: u32, sample_count: usize) -> [u8; SAMPLE_PARAM_BYTES] {
+fn encode_sample_params(
+    width: u32,
+    height: u32,
+    sample_count: u32,
+    point_offset: u32,
+) -> [u8; SAMPLE_PARAM_BYTES] {
     let mut bytes = [0_u8; SAMPLE_PARAM_BYTES];
     bytes[0..4].copy_from_slice(&width.to_le_bytes());
     bytes[4..8].copy_from_slice(&height.to_le_bytes());
-    bytes[8..12].copy_from_slice(
-        &u32::try_from(sample_count)
-            .unwrap_or(u32::MAX)
-            .to_le_bytes(),
-    );
+    bytes[8..12].copy_from_slice(&sample_count.to_le_bytes());
+    bytes[12..16].copy_from_slice(&point_offset.to_le_bytes());
     bytes
 }
 
@@ -1343,6 +1837,8 @@ fn begin_zone_color_readback(
         receiver: Some(receiver),
         map_ready: false,
         lease,
+        #[cfg(test)]
+        withheld_polls: SAMPLE_READBACK_WITHHELD_POLLS.load(std::sync::atomic::Ordering::Relaxed),
     }
 }
 
@@ -1352,6 +1848,11 @@ fn poll_zone_color_readback_ready(
 ) -> Result<bool> {
     if pending_readback.map_ready {
         return Ok(true);
+    }
+    #[cfg(test)]
+    if pending_readback.withheld_polls > 0 {
+        pending_readback.withheld_polls -= 1;
+        return Ok(false);
     }
     device
         .poll(wgpu::PollType::Poll)
@@ -1628,15 +2129,24 @@ mod tests {
     #[test]
     fn gpu_area_query_shader_has_no_radius_proportional_loop() {
         let shader = include_str!("sample.wgsl");
+        let area_start = shader
+            .find("fn sample_area_linear_u16")
+            .expect("the area query should be a named shader function");
+        let area_body = shader[area_start..]
+            .split("\nfn ")
+            .next()
+            .expect("the area query should have a body");
 
-        assert!(shader.contains("rectangle_sum"));
-        assert!(!shader.contains("radius_i"));
-        assert!(!shader.contains("var dx"));
-        assert!(!shader.contains("var dy"));
+        assert!(area_body.contains("rectangle_sum"));
+        assert!(!area_body.contains("radius_i"));
+        assert!(!area_body.contains("var dx"));
+        assert!(!area_body.contains("var dy"));
+        assert!(!area_body.contains("for ("));
+        assert!(!area_body.contains("loop"));
     }
 
     #[test]
-    fn gpu_sampling_plan_rejects_gaussian_without_aliasing() {
+    fn gpu_sampling_plan_encodes_gaussian_kernels_without_aliasing() {
         let gaussian = SpatialEngine::new(test_layout(SamplingMode::GaussianArea {
             sigma: 1.0,
             radius: 2,
@@ -1644,9 +2154,18 @@ mod tests {
         let sampling_plan = gaussian.sampling_plan();
         let prepared_zones = sampling_plan.as_ref();
 
-        assert!(!GpuSamplingPlan::supports_prepared_zones(prepared_zones));
-        assert!(GpuSamplingPlan::key(prepared_zones).is_none());
-        assert!(GpuSamplingPlan::from_prepared_zones(prepared_zones).is_none());
+        assert!(GpuSamplingPlan::supports_prepared_zones(prepared_zones));
+        assert!(GpuSamplingPlan::key(prepared_zones).is_some());
+        let plan = GpuSamplingPlan::from_prepared_zones(prepared_zones)
+            .expect("Gaussian plans should encode for the GPU");
+        assert!(
+            plan.points
+                .iter()
+                .all(|point| point.method == GpuSampleMethod::Gaussian),
+            "Gaussian outputs must not be lowered to another sampling method"
+        );
+        // Weight sum (two words) plus a 5x5 kernel.
+        assert_eq!(plan.kernels.len(), 2 + 25);
     }
 
     #[test]
@@ -1662,6 +2181,5 @@ mod tests {
             GpuSamplingPlan::key(second_plan.as_ref()).expect("bilinear plan should be supported");
 
         assert_ne!(first_key, second_key);
-        assert_ne!(first_key.generation, second_key.generation);
     }
 }

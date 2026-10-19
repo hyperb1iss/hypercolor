@@ -75,7 +75,7 @@ fn screen_plan_turnover_clears_stale_queue_once_per_generation() {
 }
 
 #[test]
-fn composer_requires_cpu_sampling_canvas_for_gaussian_gpu_sampling_plan() {
+fn composer_keeps_gaussian_gpu_sampling_plan_on_the_gpu() {
     let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
         return;
     };
@@ -117,7 +117,7 @@ fn composer_requires_cpu_sampling_canvas_for_gaussian_gpu_sampling_plan() {
         version: 1,
     });
 
-    assert!(requires_cpu_sampling_canvas(
+    assert!(!requires_cpu_sampling_canvas(
         sparkleflinger.can_sample_zone_plan(spatial_engine.sampling_plan().as_ref())
     ));
 }

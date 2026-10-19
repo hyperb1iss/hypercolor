@@ -26,7 +26,11 @@ fn gpu_media_upload_reuses_source_size_texture_ring() {
         .expect("media upload should retain a source-size texture pool");
     assert_eq!(pool.textures.len(), 1);
 
+    let mut canvas = canvas;
+    let mut blue = 160_u8;
     for _ in 1..(MEDIA_UPLOAD_TEXTURE_RING_LEN * 2) {
+        blue = blue.wrapping_add(1);
+        canvas.fill(Rgba::new(32, 96, blue, 255));
         let Some(frame) = compositor.upload_media_canvas_frame(source, &canvas) else {
             panic!("media upload should return a GPU texture frame");
         };
@@ -39,6 +43,49 @@ fn gpu_media_upload_reuses_source_size_texture_ring() {
         .get(&key)
         .expect("media upload should retain a source-size texture pool");
     assert_eq!(pool.textures.len(), MEDIA_UPLOAD_TEXTURE_RING_LEN);
+}
+
+#[test]
+fn gpu_media_upload_writes_unchanged_canvas_storage_once() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let source = MediaTextureSourceKey::for_test(7);
+    let mut canvas = solid_canvas_with_size(4, 4, Rgba::new(32, 96, 160, 255));
+    let first = compositor
+        .upload_media_canvas_frame(source, &canvas)
+        .expect("media upload should return a GPU texture frame");
+
+    // A still image hands the same canvas storage every frame.
+    for _ in 0..MEDIA_UPLOAD_TEXTURE_RING_LEN * 2 {
+        let held = compositor
+            .upload_media_canvas_frame(source, &canvas.clone())
+            .expect("an unchanged canvas should keep its uploaded frame");
+        assert_eq!(held.storage_id, first.storage_id);
+        assert_eq!(held.content_generation, first.content_generation);
+    }
+    let key = MediaUploadTextureKey {
+        source,
+        width: 4,
+        height: 4,
+    };
+    assert_eq!(
+        compositor
+            .media_texture_pools
+            .get(&key)
+            .expect("media upload should retain a source-size texture pool")
+            .textures
+            .len(),
+        1,
+        "an unchanged canvas should not advance the texture ring"
+    );
+
+    canvas.fill(Rgba::new(200, 16, 64, 255));
+    let changed = compositor
+        .upload_media_canvas_frame(source, &canvas)
+        .expect("changed pixels should upload a new frame");
+    assert_ne!(changed.storage_id, first.storage_id);
+    assert!(changed.content_generation > first.content_generation);
 }
 
 #[test]
@@ -116,11 +163,16 @@ fn gpu_reused_storage_advances_content_freshness_and_copy_identity() {
         ProducerFrameState::Retained
     );
 
+    let mut canvas = canvas;
+    let mut blue = 160_u8;
     for _ in 1..MEDIA_UPLOAD_TEXTURE_RING_LEN {
+        blue = blue.wrapping_add(1);
+        canvas.fill(Rgba::new(32, 96, blue, 255));
         compositor
             .upload_media_canvas_frame(source, &canvas)
             .expect("ring fill should return a GPU texture frame");
     }
+    canvas.fill(Rgba::new(32, 96, blue.wrapping_add(1), 255));
     let reused = compositor
         .upload_media_canvas_frame(source, &canvas)
         .expect("ring reuse should return a GPU texture frame");

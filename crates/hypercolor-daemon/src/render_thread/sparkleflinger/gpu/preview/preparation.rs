@@ -17,15 +17,44 @@ impl GpuSparkleFlinger {
         request: PreviewSurfaceRequest,
         scale_views: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
     ) -> Result<GpuPreviewSurfaceSet> {
-        let prepared =
-            self.prepare_preview_surface_change(request.width, request.height, scale_views, true)?;
-        let PreparedPreviewSurfaceChangeKind::Replace(replacement) = prepared.0 else {
-            unreachable!("forced preview preparation must create a replacement")
-        };
         debug_assert_eq!(
             scale_views.is_some(),
             preview_requires_scale(request, source_width, source_height)
         );
+        let fail_scale_output =
+            scale_views.is_some() && self.take_preview_scale_output_failure_injection();
+        self.new_preview_surface_set(
+            request.width,
+            request.height,
+            scale_views,
+            fail_scale_output,
+        )
+    }
+
+    fn new_preview_surface_set(
+        &self,
+        width: u32,
+        height: u32,
+        scale_views: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
+        fail_scale_output: bool,
+    ) -> Result<GpuPreviewSurfaceSet> {
+        let mut replacement = GpuPreviewSurfaceSet::try_new(&self.device, width, height)?;
+        if let Some((front_view, back_view)) = scale_views {
+            replacement.scale_output = Some(GpuPreviewScaleOutput::try_new(
+                &self.device,
+                &self.pipeline,
+                front_view,
+                back_view,
+                replacement.capacity_width,
+                replacement.capacity_height,
+                self.max_storage_buffer_binding_size,
+                fail_scale_output,
+            )?);
+            #[cfg(test)]
+            {
+                replacement.preview_bind_group_count = 2;
+            }
+        }
         Ok(replacement)
     }
 
@@ -59,95 +88,72 @@ impl GpuSparkleFlinger {
         }
     }
 
+    /// Prepare the preview readback surfaces for a `width` x `height`
+    /// preview. `incoming_surface_set` names the compositor surface set the
+    /// preview will scale from when it differs from the current one: its
+    /// parked scale bind groups come back when the compositor switches to
+    /// it, so only a set without any needs new ones. The readback buffers
+    /// are kept whenever they fit the request.
     fn prepare_preview_surface_change(
         &mut self,
         width: u32,
         height: u32,
         scale_views: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
-        force_replace: bool,
+        incoming_surface_set: Option<u64>,
     ) -> Result<PreparedPreviewSurfaceChange> {
+        let reused_surfaces = self
+            .preview_surfaces
+            .as_ref()
+            .filter(|surfaces| surfaces.fits_request(width, height));
         let needs_scale_output = scale_views.is_some()
-            && (force_replace
-                || self.preview_surfaces.as_ref().is_none_or(|surfaces| {
-                    !surfaces.fits_request(width, height) || surfaces.scale_output.is_none()
-                }));
+            && reused_surfaces.is_none_or(|surfaces| match incoming_surface_set {
+                Some(generation) => !surfaces.has_parked_scale_output(generation),
+                None => surfaces.scale_output.is_none(),
+            });
         let fail_scale_output =
             needs_scale_output && self.take_preview_scale_output_failure_injection();
 
-        if !force_replace
-            && let Some(surfaces) = self.preview_surfaces.as_ref()
-            && surfaces.width == width
-            && surfaces.height == height
-        {
-            let scale_output = scale_views
-                .filter(|_| surfaces.scale_output.is_none())
-                .map(|(front_view, back_view)| {
-                    GpuPreviewScaleOutput::try_new(
-                        &self.device,
-                        &self.pipeline,
-                        front_view,
-                        back_view,
-                        surfaces.capacity_width,
-                        surfaces.capacity_height,
-                        self.max_storage_buffer_binding_size,
-                        fail_scale_output,
-                    )
-                })
-                .transpose()?;
+        let Some(surfaces) = self
+            .preview_surfaces
+            .as_ref()
+            .filter(|surfaces| surfaces.fits_request(width, height))
+        else {
+            return self
+                .new_preview_surface_set(width, height, scale_views, fail_scale_output)
+                .map(|replacement| {
+                    PreparedPreviewSurfaceChange(PreparedPreviewSurfaceChangeKind::Replace(
+                        replacement,
+                    ))
+                });
+        };
+        let scale_output = scale_views
+            .filter(|_| needs_scale_output)
+            .map(|(front_view, back_view)| {
+                GpuPreviewScaleOutput::try_new(
+                    &self.device,
+                    &self.pipeline,
+                    front_view,
+                    back_view,
+                    surfaces.capacity_width,
+                    surfaces.capacity_height,
+                    self.max_storage_buffer_binding_size,
+                    fail_scale_output,
+                )
+            })
+            .transpose()?;
+        if surfaces.width == width && surfaces.height == height {
             return Ok(PreparedPreviewSurfaceChange(
                 PreparedPreviewSurfaceChangeKind::Unchanged { scale_output },
             ));
         }
-
-        if !force_replace
-            && let Some(surfaces) = self.preview_surfaces.as_ref()
-            && surfaces.fits_request(width, height)
-        {
-            let readback_surfaces = surfaces.prepare_reconfiguration(width, height)?;
-            let scale_output = scale_views
-                .filter(|_| surfaces.scale_output.is_none())
-                .map(|(front_view, back_view)| {
-                    GpuPreviewScaleOutput::try_new(
-                        &self.device,
-                        &self.pipeline,
-                        front_view,
-                        back_view,
-                        surfaces.capacity_width,
-                        surfaces.capacity_height,
-                        self.max_storage_buffer_binding_size,
-                        fail_scale_output,
-                    )
-                })
-                .transpose()?;
-            return Ok(PreparedPreviewSurfaceChange(
-                PreparedPreviewSurfaceChangeKind::Reconfigure {
-                    width,
-                    height,
-                    readback_surfaces,
-                    scale_output,
-                },
-            ));
-        }
-
-        let mut replacement = GpuPreviewSurfaceSet::try_new(&self.device, width, height)?;
-        if let Some((front_view, back_view)) = scale_views {
-            replacement.scale_output = Some(GpuPreviewScaleOutput::try_new(
-                &self.device,
-                &self.pipeline,
-                front_view,
-                back_view,
-                replacement.capacity_width,
-                replacement.capacity_height,
-                self.max_storage_buffer_binding_size,
-                fail_scale_output,
-            )?);
-            #[cfg(test)]
-            {
-                replacement.preview_bind_group_count = 2;
-            }
-        }
+        let readback_surfaces = surfaces.prepare_reconfiguration(width, height)?;
         Ok(PreparedPreviewSurfaceChange(
-            PreparedPreviewSurfaceChangeKind::Replace(replacement),
+            PreparedPreviewSurfaceChangeKind::Reconfigure {
+                width,
+                height,
+                readback_surfaces,
+                scale_output,
+            },
         ))
     }
 
@@ -157,7 +163,7 @@ impl GpuSparkleFlinger {
         source_height: u32,
         request: PreviewSurfaceRequest,
         scale_views: Option<(wgpu::TextureView, wgpu::TextureView)>,
-        force_replace: bool,
+        incoming_surface_set: Option<u64>,
     ) -> Result<PreparedPreviewSurfaceChange> {
         super::super::ensure_readback_buffer_capacity(
             self.max_buffer_size,
@@ -187,7 +193,7 @@ impl GpuSparkleFlinger {
             scale_views
                 .as_ref()
                 .map(|(front_view, back_view)| (front_view, back_view)),
-            force_replace,
+            incoming_surface_set,
         )
     }
 

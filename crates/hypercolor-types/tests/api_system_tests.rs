@@ -1,7 +1,7 @@
 use hypercolor_types::api::system::{
     AudioDeviceInfo, AudioDevicesResponse, DaemonStartupPhase, DaemonStartupProgress,
-    HEALTH_STATUS_STARTING, HealthChecks, HealthResponse, InputSourceStatus, MacosCapabilityOwner,
-    MacosDaemonOwnershipStatus, ServerInfo, SystemResource, SystemStatus,
+    HEALTH_STATUS_STARTING, HealthChecks, HealthResponse, InputSourceStatus, LatestFrameStatus,
+    MacosCapabilityOwner, MacosDaemonOwnershipStatus, ServerInfo, SystemResource, SystemStatus,
 };
 
 #[test]
@@ -163,4 +163,39 @@ fn an_unknown_startup_phase_from_a_newer_daemon_still_decodes() {
             .expect("unknown phases decode");
     assert_eq!(progress.phase, DaemonStartupPhase::Unknown);
     assert_eq!(progress.sequence, 2);
+}
+
+#[test]
+fn latest_frame_status_from_a_daemon_without_zone_sampling_counters_decodes() {
+    let mut wire = serde_json::to_value(LatestFrameStatus {
+        gpu_sampled_zone_count: 2,
+        cpu_sampled_zone_count: 1,
+        held_zone_count: 1,
+        gpu_sampling_passes: 3,
+        zone_composition_skips: 2,
+        ..LatestFrameStatus::default()
+    })
+    .expect("latest frame status serializes");
+    assert_eq!(wire["gpu_sampled_zone_count"], 2);
+    assert_eq!(wire["gpu_sampling_passes"], 3);
+    let fields = wire
+        .as_object_mut()
+        .expect("latest frame status is a JSON object");
+    for field in [
+        "gpu_sampled_zone_count",
+        "cpu_sampled_zone_count",
+        "held_zone_count",
+        "gpu_sampling_passes",
+        "zone_composition_skips",
+    ] {
+        assert!(fields.remove(field).is_some(), "{field} should serialize");
+    }
+
+    let decoded: LatestFrameStatus =
+        serde_json::from_value(wire).expect("an older latest frame status decodes");
+    assert_eq!(decoded.gpu_sampled_zone_count, 0);
+    assert_eq!(decoded.cpu_sampled_zone_count, 0);
+    assert_eq!(decoded.held_zone_count, 0);
+    assert_eq!(decoded.gpu_sampling_passes, 0);
+    assert_eq!(decoded.zone_composition_skips, 0);
 }

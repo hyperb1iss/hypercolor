@@ -39,6 +39,7 @@ mod snapshot;
 mod source;
 mod submission;
 mod telemetry;
+mod zone_preview;
 
 #[cfg(test)]
 use canvas::GpuCanvasFallbackReason;
@@ -70,13 +71,14 @@ pub(crate) use probe::{GpuCompositorProbe, probe_render_device};
 pub(crate) use projected::{GpuProjectedScenePreparation, GpuProjectedSceneResourceError};
 use readback::{CachedReadbackKey, CachedReadbackSurface};
 use sampler::CachedSampleResult;
-pub(crate) use sampler::{GpuZoneSamplingDispatch, PendingGpuZoneSampling};
+pub(crate) use sampler::{GpuZoneSamplingDispatch, PendingGpuZoneSampling, ZoneTextureSample};
 use screen_upload::{
     ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadResidencyPolicy,
 };
 use source::{CachedSourceUpload, SourceCopyBindGroupCache};
 use submission::FrameInFlight;
 pub(crate) use telemetry::{GpuSparkleFlingerTelemetrySnapshot, record_gpu_display_finalize_latch};
+use zone_preview::GpuZonePreviewLane;
 
 pub(crate) fn gpu_sparkleflinger_telemetry_snapshot() -> GpuSparkleFlingerTelemetrySnapshot {
     telemetry::gpu_sparkleflinger_telemetry_snapshot()
@@ -91,10 +93,12 @@ const DISPLAY_FINALIZE_PARAM_BYTES: usize = 96;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 // A render owns the previous retained generation until the replacement frame
-// is snapshotted, then retention atomically drops it. Scene GPU frames are not
-// published outside that serial frame executor, so exactly two generations
-// cover every in-engine lease overlap without render-path allocation.
-const IMMUTABLE_SCENE_GENERATIONS_IN_FLIGHT: usize = 2;
+// is snapshotted, then retention atomically drops it, and a scene transition
+// holds its frozen base generation (the outgoing scene, or an interrupted
+// blend) for the whole fade. Scene GPU frames are not published outside that
+// serial frame executor, so three generations cover every in-engine lease
+// overlap without render-path allocation.
+const IMMUTABLE_SCENE_GENERATIONS_IN_FLIGHT: usize = 3;
 static NEXT_GPU_TEXTURE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_GPU_SURFACE_SET_GENERATION: AtomicU64 = AtomicU64::new(1);
 #[allow(
@@ -190,6 +194,9 @@ pub(crate) struct GpuSparkleFlinger {
     _render_device: GpuRenderDevice,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// The queue position each recent render frame ended at, oldest first,
+    /// so a frame waits for the GPU instead of piling up work behind it.
+    gpu_frame_ends: std::collections::VecDeque<wgpu::SubmissionIndex>,
     probe: GpuCompositorProbe,
     max_buffer_size: u64,
     max_storage_buffer_binding_size: u64,
@@ -205,6 +212,7 @@ pub(crate) struct GpuSparkleFlinger {
     media_texture_pools: HashMap<MediaUploadTextureKey, MediaUploadTexturePool>,
     media_texture_epoch: u64,
     projected_zone_snapshots: HashMap<ZoneId, Option<GpuProjectionSnapshot>>,
+    zone_preview_lanes: HashMap<ZoneId, GpuZonePreviewLane>,
     immutable_scene_snapshots: Vec<GpuImmutableSceneSnapshot>,
     current_output: Option<GpuCompositorOutputSurface>,
     cached_composition_key: Option<CachedReadbackKey>,
@@ -225,6 +233,8 @@ pub(crate) struct GpuSparkleFlinger {
         SubmissionRetirementQueue<wgpu::SubmissionIndex, NativeScreenTextureLease>,
     #[cfg(test)]
     superseded_frame_count: usize,
+    #[cfg(test)]
+    zone_preview_stage_count: usize,
     #[cfg(test)]
     preview_surface_allocation_count: usize,
     #[cfg(test)]

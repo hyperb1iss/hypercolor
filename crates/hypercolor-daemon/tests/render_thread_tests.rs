@@ -17,6 +17,8 @@ use tokio::sync::{Mutex, Notify, RwLock, watch};
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, HypercolorBus, PreviewKind};
+#[cfg(feature = "wgpu")]
+use hypercolor_core::bus::{DisplayZoneOutputRoute, DisplayZoneViewport, ZonePreviewFrame};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy, UsbProtocolConfigStore,
@@ -54,6 +56,8 @@ use hypercolor_core::input::{
     InteractionSourceRole, ManagedSourceRole, ScreenSource, ScreenSourceRole, SourceKind,
     SourceRoleBinding,
 };
+#[cfg(feature = "wgpu")]
+use hypercolor_core::scene::interpolate_color;
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
@@ -68,9 +72,13 @@ use hypercolor_driver_api::{
 };
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::AudioData;
+#[cfg(feature = "wgpu")]
+use hypercolor_types::canvas::Rgb;
 use hypercolor_types::canvas::Rgba;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::control::ControlValue;
+#[cfg(feature = "wgpu")]
+use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::event::{
@@ -88,10 +96,14 @@ use hypercolor_types::spatial::{
 };
 
 use hypercolor_daemon::SceneTransactionQueue;
+#[cfg(feature = "wgpu")]
+use hypercolor_daemon::canvas_capture::{CanvasCaptureRequest, CanvasImageFormat, capture_canvas};
 use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::output_power::{OutputPower, OutputPowerState};
 use hypercolor_daemon::performance::PerformanceTracker;
+#[cfg(feature = "wgpu")]
+use hypercolor_daemon::preview_runtime::ZonePreviewFrameReceiver;
 use hypercolor_daemon::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
 use hypercolor_daemon::render_thread::{
     CanvasDims, InputPublicationConsumer, InputPublicationDemand,
@@ -2500,6 +2512,2161 @@ async fn multi_zone_scene_publishes_authoritative_canvas_and_scene_canvas() {
         );
         assert_eq!(frame.surface().get_pixel(160, 100), Rgba::new(0, 0, 0, 255));
     }
+}
+
+/// Two zones whose outputs sit at the same scene position each keep their
+/// own color on the GPU compositor: LEDs sample each zone's own texture, not
+/// the composited scene (Spec 86, Spec 64 §2.3).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_scene_samples_overlapping_zones_from_their_own_textures() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut scene = make_scene("Overlapping Zones");
+    scene.zones = overlapping_zones(solid_id);
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let frame = wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([255, 0, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 0, 255])
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert_eq!(zone_led(&frame, "zone_red"), Some([255, 0, 0]));
+    assert_eq!(zone_led(&frame, "zone_blue"), Some([0, 0, 255]));
+}
+
+/// A transition out of a multi-zone scene blends every LED from its own old
+/// color, even where zones overlap: the red zone's LED fades toward green
+/// without passing through the blue zone composited over it (Spec 86 §4.1).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_transition_out_of_overlapping_zones_blends_each_led_from_its_own_color() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut zoned = make_scene("Overlapping Zones");
+    zoned.transition.duration_ms = 0;
+    zoned.zones = overlapping_zones(solid_id);
+    zoned.unassigned_behavior = UnassignedBehavior::Off;
+    let mut single = make_scene("Single Zone");
+    single.transition.duration_ms = 60_000;
+    single.zones = vec![primary_zone(
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        test_layout(vec![
+            point_zone("zone_red", "mock:red", 0.5, 0.5),
+            point_zone("zone_blue", "mock:blue", 0.5, 0.5),
+        ]),
+    )];
+    single.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![zoned.clone(), single.clone()], zoned.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([255, 0, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 0, 255])
+    })
+    .await;
+
+    activate_render_scene(&state, single.id).await;
+    let blended = wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red").is_some_and(|color| color[1] > 0 && color != [0, 255, 0])
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    let red = zone_led(&blended, "zone_red").expect("the red zone's LED should publish");
+    let blue = zone_led(&blended, "zone_blue").expect("the blue zone's LED should publish");
+    assert_eq!(
+        red[2], 0,
+        "the red zone's LED blended through blue: {red:?}"
+    );
+    assert!(
+        red[0] > 0,
+        "the red zone's LED lost its own base color: {red:?}"
+    );
+    assert_eq!(
+        blue[0], 0,
+        "the blue zone's LED blended through red: {blue:?}"
+    );
+}
+
+/// A transition out of overlapping zones into a single zone whose layers
+/// compose on the GPU blends each LED from its own color too. The incoming
+/// texture's first LED sample is still in flight when the fade starts, so
+/// that frame holds the published LEDs; holding them must not forget they
+/// were sampled per zone and fall back to the overlap-baked crossfade.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_transition_out_of_overlapping_zones_into_a_gpu_scene_blends_each_led_from_its_own_color()
+ {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut zoned = make_scene("Overlapping Zones");
+    zoned.transition.duration_ms = 0;
+    zoned.zones = overlapping_zones(solid_id);
+    zoned.unassigned_behavior = UnassignedBehavior::Off;
+    let mut primary = primary_zone(
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        test_layout(vec![
+            point_zone("zone_red", "mock:red", 0.5, 0.5),
+            point_zone("zone_blue", "mock:blue", 0.5, 0.5),
+        ]),
+    );
+    primary.layers.push(SceneLayer::from_effect(
+        SceneLayerId::new(),
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        HashMap::new(),
+        None,
+    ));
+    let mut single = make_scene("Single GPU Zone");
+    single.transition.duration_ms = 60_000;
+    single.zones = vec![primary];
+    single.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![zoned.clone(), single.clone()], zoned.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([255, 0, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 0, 255])
+    })
+    .await;
+
+    activate_render_scene(&state, single.id).await;
+    let blended = wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red").is_some_and(|color| color[1] > 0 && color != [0, 255, 0])
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    let red = zone_led(&blended, "zone_red").expect("the red zone's LED should publish");
+    let blue = zone_led(&blended, "zone_blue").expect("the blue zone's LED should publish");
+    assert_eq!(
+        red[2], 0,
+        "the red zone's LED blended through blue: {red:?}"
+    );
+    assert!(
+        red[0] > 0,
+        "the red zone's LED lost its own base color: {red:?}"
+    );
+    assert_eq!(
+        blue[0], 0,
+        "the blue zone's LED blended through red: {blue:?}"
+    );
+}
+
+/// A transition into a multi-zone scene whose content holds still blends
+/// every LED from its own old color toward its own new color on the GPU.
+/// Frames that reuse the retained scene keep no zone colors of their own,
+/// because a zone set's colors resolve on the GPU after the scene renders;
+/// blending from those empty colors would fade every LED toward black and
+/// pop back when the transition ends (Spec 86 §4.1, §4.2).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_transition_into_a_still_multi_zone_scene_keeps_every_led_lit() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut first = make_scene("Red And Blue");
+    first.transition.duration_ms = 0;
+    first.zones = overlapping_zones(solid_id);
+    first.unassigned_behavior = UnassignedBehavior::Off;
+    let mut second = make_scene("Green And Yellow");
+    second.transition.duration_ms = 1_500;
+    second.zones = vec![
+        custom_zone(
+            "Green",
+            solid_id,
+            solid_color_controls(0, 255, 0),
+            test_layout(vec![point_zone("zone_red", "mock:red", 0.5, 0.5)]),
+        ),
+        custom_zone(
+            "Yellow",
+            solid_id,
+            solid_color_controls(255, 255, 0),
+            test_layout(vec![point_zone("zone_blue", "mock:blue", 0.5, 0.5)]),
+        ),
+    ];
+    second.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![first.clone(), second.clone()], first.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([255, 0, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 0, 255])
+    })
+    .await;
+
+    activate_render_scene(&state, second.id).await;
+    let mut darkest = [255_u8; 2];
+    let mut saw_blend = false;
+    let mut trace = Vec::new();
+    let settled = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            frame_rx
+                .changed()
+                .await
+                .expect("frame sender should remain connected");
+            let frame = frame_rx.borrow_and_update().clone();
+            let red = zone_led(&frame, "zone_red");
+            let blue = zone_led(&frame, "zone_blue");
+            trace.push(format!("frame {}: {red:?} {blue:?}", frame.frame_number));
+            for (darkest, led) in darkest.iter_mut().zip([red, blue]) {
+                let brightest_channel = led.map_or(0, |color| color.into_iter().max().unwrap_or(0));
+                *darkest = (*darkest).min(brightest_channel);
+            }
+            saw_blend |= red.is_some_and(|color| color != [255, 0, 0] && color != [0, 255, 0]);
+            if red == Some([0, 255, 0]) && blue == Some([255, 255, 0]) {
+                break;
+            }
+        }
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        settled.is_ok(),
+        "the LEDs never reached the second scene's colors:\n{}",
+        trace.join("\n")
+    );
+    assert!(
+        saw_blend,
+        "no frame showed the transition between the two scenes:\n{}",
+        trace.join("\n")
+    );
+    assert!(
+        darkest.iter().all(|channel| *channel >= 96),
+        "an LED dimmed to {darkest:?} at its darkest during the transition:\n{}",
+        trace.join("\n")
+    );
+}
+
+/// A mock device mapped to the router with no layout output of its own, so
+/// every scene leaves its LEDs unassigned.
+#[cfg(feature = "wgpu")]
+async fn unplaced_mock_device(
+    led_count: u32,
+) -> (Arc<MockDeviceBackend>, DeviceId, BackendManager) {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Unplaced Strip".into(),
+        led_count,
+        topology: LedTopology::Strip {
+            count: led_count,
+            direction: StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+    let backend = Arc::new(MockDeviceBackend::new().with_device(&mock_config));
+    backend.connect(&device_id).await.expect("connect");
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(backend.clone());
+    backend_manager.map_device_with_segment(
+        "mock:unplaced",
+        "mock",
+        device_id,
+        Some(hypercolor_core::device::SegmentRange::new(
+            0,
+            usize::try_from(led_count).expect("LED count fits usize"),
+        )),
+    );
+    (backend, device_id, backend_manager)
+}
+
+/// Render `scene` until the unplaced device receives `expected` on every LED.
+#[cfg(feature = "wgpu")]
+async fn assert_unplaced_device_shows(
+    mode: RenderAccelerationMode,
+    scene: impl FnOnce(EffectId) -> (hypercolor_types::scene::Scene, ZoneId),
+    expected: [u8; 3],
+) {
+    let (backend, device_id, backend_manager) = unplaced_mock_device(4).await;
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        backend_manager,
+    );
+    state.render_acceleration_mode = mode;
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let (mut scene, fallback_zone) = scene(solid_id);
+    scene.unassigned_behavior = UnassignedBehavior::Fallback(fallback_zone);
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let unplaced_shows_expected = || {
+        backend
+            .last_colors(&device_id)
+            .is_some_and(|colors| colors == vec![expected; 4])
+    };
+    tokio::time::timeout(WAIT_DEADLINE, async {
+        while !unplaced_shows_expected() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the unplaced device never showed {expected:?}; last write was {:?}",
+            backend.last_colors(&device_id)
+        )
+    });
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
+/// `Fallback(zone)` on a GPU multi-zone scene samples the unassigned outputs
+/// from that zone's own texture in the LED dispatch: the unplaced device
+/// shows the red zone even though the blue zone composites over it in the
+/// scene canvas (Spec 86 §4.3).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_fallback_samples_unassigned_outputs_from_the_fallback_zone() {
+    assert_unplaced_device_shows(
+        RenderAccelerationMode::Gpu,
+        |solid_id| {
+            let mut scene = make_scene("Fallback Zones");
+            scene.zones = overlapping_zones(solid_id);
+            let red_zone = scene.zones[0].id;
+            (scene, red_zone)
+        },
+        [255, 0, 0],
+    )
+    .await;
+}
+
+/// The CPU backend gives the same unassigned output for the same scene.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn cpu_multi_zone_fallback_samples_unassigned_outputs_from_the_fallback_zone() {
+    assert_unplaced_device_shows(
+        RenderAccelerationMode::Cpu,
+        |solid_id| {
+            let mut scene = make_scene("Fallback Zones");
+            scene.zones = overlapping_zones(solid_id);
+            let red_zone = scene.zones[0].id;
+            (scene, red_zone)
+        },
+        [255, 0, 0],
+    )
+    .await;
+}
+
+/// A single zone whose two layers compose on the GPU, so its frame is a
+/// texture rather than a canvas; the top layer's color wins.
+#[cfg(feature = "wgpu")]
+fn gpu_composed_primary_zone(solid_id: EffectId, top: (u8, u8, u8)) -> Zone {
+    let mut zone = primary_zone(
+        solid_id,
+        solid_color_controls(0, 0, 255),
+        test_layout(vec![strip_zone("zone_main", "mock:main", 4)]),
+    );
+    zone.layers.push(SceneLayer::from_effect(
+        SceneLayerId::new(),
+        solid_id,
+        solid_color_controls(top.0, top.1, top.2),
+        HashMap::new(),
+        None,
+    ));
+    zone
+}
+
+/// A single-zone scene whose layers compose on the GPU publishes a texture,
+/// not a canvas; its fallback outputs ride the same LED dispatch.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_single_zone_fallback_samples_unassigned_outputs_from_its_texture() {
+    assert_unplaced_device_shows(
+        RenderAccelerationMode::Gpu,
+        |solid_id| {
+            let zone = gpu_composed_primary_zone(solid_id, (0, 255, 0));
+            let zone_id = zone.id;
+            let mut scene = make_scene("Fallback Single Zone");
+            scene.zones = vec![zone];
+            (scene, zone_id)
+        },
+        [0, 255, 0],
+    )
+    .await;
+}
+
+/// A single-zone scene fading in samples its fallback outputs from its own
+/// texture for the whole transition, as the CPU backend samples its canvas,
+/// instead of leaving them dark until the fade ends.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_single_zone_fallback_samples_through_a_scene_transition() {
+    let (backend, device_id, backend_manager) = unplaced_mock_device(4).await;
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        backend_manager,
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut outgoing = make_scene("Outgoing");
+    outgoing.transition.duration_ms = 0;
+    outgoing.zones = vec![gpu_composed_primary_zone(solid_id, (255, 0, 0))];
+    outgoing.unassigned_behavior = UnassignedBehavior::Off;
+    let incoming_zone = gpu_composed_primary_zone(solid_id, (0, 255, 0));
+    let incoming_zone_id = incoming_zone.id;
+    let mut incoming = make_scene("Incoming");
+    incoming.transition.duration_ms = 60_000;
+    incoming.zones = vec![incoming_zone];
+    incoming.unassigned_behavior = UnassignedBehavior::Fallback(incoming_zone_id);
+    install_render_scenes(
+        &state,
+        vec![outgoing.clone(), incoming.clone()],
+        outgoing.id,
+    )
+    .await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_main") == Some([255, 0, 0])
+    })
+    .await;
+
+    activate_render_scene(&state, incoming.id).await;
+    let reached_green = tokio::time::timeout(WAIT_DEADLINE, async {
+        while backend.last_colors(&device_id) != Some(vec![[0, 255, 0]; 4]) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let still_fading = frame_rx
+        .borrow()
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_main")
+        .and_then(|zone| zone.colors.first().copied())
+        .is_some_and(|color| color != [0, 255, 0]);
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        reached_green.is_ok(),
+        "the unplaced device never showed the incoming zone during the fade; last write was {:?}",
+        backend.last_colors(&device_id)
+    );
+    assert!(still_fading, "the scene transition should still be running");
+}
+
+/// A fade between two multi-zone scenes blends in LED space, and the
+/// incoming scene keeps animating through it: an unplaced device on the
+/// incoming rainbow zone's fallback keeps changing color mid-fade instead of
+/// freezing on its first sample (Spec 86 §4.1, §4.3).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_fallback_keeps_animating_through_a_led_space_fade() {
+    let (backend, device_id, backend_manager) = unplaced_mock_device(4).await;
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        backend_manager,
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let (solid_id, rainbow_id) = {
+        let registry = state.effect_registry.read().await;
+        (
+            builtin_effect_id(&registry, "solid_color"),
+            builtin_effect_id(&registry, "rainbow"),
+        )
+    };
+
+    let mut outgoing = make_scene("Outgoing Zones");
+    outgoing.transition.duration_ms = 0;
+    outgoing.zones = overlapping_zones(solid_id);
+    outgoing.unassigned_behavior = UnassignedBehavior::Off;
+    let rainbow_zone = custom_zone(
+        "Rainbow",
+        rainbow_id,
+        HashMap::new(),
+        test_layout(vec![point_zone("zone_rainbow", "mock:rainbow", 0.5, 0.5)]),
+    );
+    let rainbow_zone_id = rainbow_zone.id;
+    let mut incoming = make_scene("Incoming Zones");
+    incoming.transition.duration_ms = 60_000;
+    incoming.zones = vec![
+        rainbow_zone,
+        custom_zone(
+            "Green",
+            solid_id,
+            solid_color_controls(0, 255, 0),
+            test_layout(vec![point_zone("zone_green", "mock:green", 0.5, 0.5)]),
+        ),
+    ];
+    incoming.unassigned_behavior = UnassignedBehavior::Fallback(rainbow_zone_id);
+    install_render_scenes(
+        &state,
+        vec![outgoing.clone(), incoming.clone()],
+        outgoing.id,
+    )
+    .await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([255, 0, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 0, 255])
+    })
+    .await;
+
+    activate_render_scene(&state, incoming.id).await;
+    let lit = || {
+        backend
+            .last_colors(&device_id)
+            .filter(|colors| colors.iter().any(|color| *color != [0, 0, 0]))
+    };
+    let first_lit = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            if let Some(colors) = lit() {
+                break colors;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    // A live fallback follows the rainbow; a frozen one repeats its first
+    // sample. Wait for fifteen distinct fallback colors under a deadline
+    // rather than a frame count, since a slow GPU publishes several frames
+    // per fresh sample.
+    let mut seen = first_lit.iter().cloned().collect::<Vec<_>>();
+    let observed_frames = tokio::time::timeout(WAIT_DEADLINE, async {
+        while seen.len() < 15 {
+            frame_rx
+                .changed()
+                .await
+                .expect("frame sender should remain connected");
+            frame_rx.borrow_and_update();
+            if let Some(colors) = lit()
+                && !seen.contains(&colors)
+            {
+                seen.push(colors);
+            }
+        }
+    })
+    .await;
+    let animated = observed_frames.is_ok();
+    let still_fading = frame_rx
+        .borrow()
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_green")
+        .and_then(|zone| zone.colors.first().copied())
+        .is_some_and(|color| color != [0, 255, 0]);
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        first_lit.is_ok(),
+        "the fallback device never lit during the fade"
+    );
+    assert!(
+        animated,
+        "the fallback device froze during the fade: {} distinct colors within {WAIT_DEADLINE:?}",
+        seen.len()
+    );
+    assert!(still_fading, "the scene transition should still be running");
+}
+
+/// A transition that interrupts a fade into overlapping zones starts from
+/// the per-zone blend the LEDs were showing, not from the composited
+/// crossfade: going single to multi to single, the red zone's LED never
+/// picks up the blue zone composited over it, even though no multi-zone
+/// frame ever settled (Spec 86 §4.1).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_interrupted_fade_through_overlapping_zones_keeps_each_led_its_own() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let single_zone_scene = |name: &str| {
+        let mut scene = make_scene(name);
+        scene.zones = vec![primary_zone(
+            solid_id,
+            solid_color_controls(0, 255, 0),
+            test_layout(vec![
+                point_zone("zone_red", "mock:red", 0.5, 0.5),
+                point_zone("zone_blue", "mock:blue", 0.5, 0.5),
+            ]),
+        )];
+        scene.unassigned_behavior = UnassignedBehavior::Off;
+        scene
+    };
+
+    let mut settled = single_zone_scene("Settled");
+    settled.transition.duration_ms = 0;
+    let mut zoned = make_scene("Overlapping Zones");
+    zoned.transition.duration_ms = 60_000;
+    zoned.zones = overlapping_zones(solid_id);
+    zoned.unassigned_behavior = UnassignedBehavior::Off;
+    let mut interrupting = single_zone_scene("Interrupting");
+    interrupting.transition.duration_ms = 60_000;
+    install_render_scenes(
+        &state,
+        vec![settled.clone(), zoned.clone(), interrupting.clone()],
+        settled.id,
+    )
+    .await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([0, 255, 0])
+    })
+    .await;
+
+    activate_render_scene(&state, zoned.id).await;
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red").is_some_and(|color| color[0] > 0)
+            && zone_led(frame, "zone_blue").is_some_and(|color| color[2] > 0)
+    })
+    .await;
+
+    activate_render_scene(&state, interrupting.id).await;
+    let mut observed = Vec::new();
+    let collected = tokio::time::timeout(WAIT_DEADLINE, async {
+        while observed.len() < 30 {
+            if frame_rx.changed().await.is_err() {
+                break;
+            }
+            let frame = frame_rx.borrow_and_update().clone();
+            if let (Some(red), Some(blue)) =
+                (zone_led(&frame, "zone_red"), zone_led(&frame, "zone_blue"))
+            {
+                observed.push((red, blue));
+            }
+        }
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        collected.is_ok(),
+        "the interrupting fade stopped publishing frames"
+    );
+    for (red, blue) in &observed {
+        assert_eq!(red[2], 0, "the red zone's LED picked up blue: {observed:?}");
+        assert_eq!(
+            blue[0], 0,
+            "the blue zone's LED picked up red: {observed:?}"
+        );
+    }
+}
+
+#[cfg(feature = "wgpu")]
+fn overlapping_zones(solid_id: EffectId) -> Vec<Zone> {
+    vec![
+        custom_zone(
+            "Red",
+            solid_id,
+            solid_color_controls(255, 0, 0),
+            test_layout(vec![point_zone("zone_red", "mock:red", 0.5, 0.5)]),
+        ),
+        custom_zone(
+            "Blue",
+            solid_id,
+            solid_color_controls(0, 0, 255),
+            test_layout(vec![point_zone("zone_blue", "mock:blue", 0.5, 0.5)]),
+        ),
+    ]
+}
+
+#[cfg(feature = "wgpu")]
+fn zone_led(frame: &FrameData, zone_id: &str) -> Option<[u8; 3]> {
+    frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == zone_id)
+        .and_then(|zone| zone.colors.first().copied())
+}
+
+#[cfg(feature = "wgpu")]
+fn zone_leds(frame: &FrameData, zone_id: &str) -> Option<Vec<[u8; 3]>> {
+    frame
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == zone_id)
+        .map(|zone| zone.colors.clone())
+}
+
+/// A four-LED strip across an output rectangle `0.4` wide centered on `x`.
+#[cfg(feature = "wgpu")]
+fn overlapping_strip(id: &str, device_id: &str, x: f32) -> Output {
+    let mut output = point_zone(id, device_id, x, 0.5);
+    output.size = NormalizedPosition { x: 0.4, y: 0.2 };
+    output.topology = LedTopology::Strip {
+        count: 4,
+        direction: StripDirection::LeftToRight,
+    };
+    output
+}
+
+/// Three zones whose output rectangles overlap each other each keep their
+/// own color on every LED, including the LEDs that sit inside another
+/// zone's rectangle. Each zone samples its own texture; sampling the
+/// composited scene would hand every overlapped LED to whichever zone
+/// composited last (Spec 86 §8 criterion 1).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_scene_samples_three_overlapping_zones_from_their_own_textures() {
+    const HELD_FRAMES: usize = 20;
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let expected = [
+        ("zone_red", [255, 0, 0], 0.35),
+        ("zone_green", [0, 255, 0], 0.5),
+        ("zone_blue", [0, 0, 255], 0.65),
+    ];
+    let mut scene = make_scene("Three Overlapping Zones");
+    scene.zones = expected
+        .iter()
+        .map(|(output_id, color, x)| {
+            custom_zone(
+                output_id,
+                solid_id,
+                solid_color_controls(color[0], color[1], color[2]),
+                test_layout(vec![overlapping_strip(output_id, output_id, *x)]),
+            )
+        })
+        .collect();
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let shows_own_colors = |frame: &FrameData| {
+        expected
+            .iter()
+            .all(|(output_id, color, _)| zone_leds(frame, output_id) == Some(vec![*color; 4]))
+    };
+    let first = wait_for_frame_where(&mut frame_rx, shows_own_colors).await;
+    let mut last_frame = first.frame_number;
+    let mut violations = Vec::new();
+    for _ in 0..HELD_FRAMES {
+        let frame = wait_for_next_frame(&mut frame_rx, last_frame).await;
+        last_frame = frame.frame_number;
+        if !shows_own_colors(&frame) {
+            violations.push(format!(
+                "frame {}: {:?}",
+                frame.frame_number,
+                expected
+                    .iter()
+                    .map(|(output_id, _, _)| zone_leds(&frame, output_id))
+                    .collect::<Vec<_>>()
+            ));
+        }
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        violations.is_empty(),
+        "overlapped LEDs lost their own zone's color:\n{}",
+        violations.join("\n")
+    );
+}
+
+/// A transition from a single-zone scene into overlapping zones blends
+/// every LED in LED space from its own old color toward its own new one:
+/// the red zone's LED fades from green toward red without passing through
+/// the blue zone composited over it, the blue zone's LED fades toward blue
+/// without passing through red, and the fade shows blended frames on the
+/// way rather than cutting over (Spec 86 §4.1, §8 criterion 5). The
+/// opposite direction is
+/// `gpu_transition_out_of_overlapping_zones_blends_each_led_from_its_own_color`.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_transition_into_overlapping_zones_blends_each_led_toward_its_own_color() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut single = make_scene("Single Zone");
+    single.transition.duration_ms = 0;
+    single.zones = vec![primary_zone(
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        test_layout(vec![
+            point_zone("zone_red", "mock:red", 0.5, 0.5),
+            point_zone("zone_blue", "mock:blue", 0.5, 0.5),
+        ]),
+    )];
+    single.unassigned_behavior = UnassignedBehavior::Off;
+    let mut zoned = make_scene("Overlapping Zones");
+    zoned.transition.duration_ms = 2_000;
+    zoned.zones = overlapping_zones(solid_id);
+    zoned.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![single.clone(), zoned.clone()], single.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([0, 255, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 255, 0])
+    })
+    .await;
+
+    activate_render_scene(&state, zoned.id).await;
+    // The scene's own blend path dips a step or two into the third channel
+    // (Oklab between pure green and pure red is not perfectly blue-free);
+    // blending through the other zone's color would go far past it.
+    let interpolation = &zoned.transition.color_interpolation;
+    let red_path_blue = blend_path_peak([0, 255, 0], [255, 0, 0], 2, interpolation);
+    let blue_path_red = blend_path_peak([0, 255, 0], [0, 0, 255], 0, interpolation);
+    let mut trace = Vec::new();
+    let mut violations = Vec::new();
+    // Frames that mix each LED's old green with its own new color.
+    let mut blended = [0_u32; 2];
+    let settled = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            frame_rx
+                .changed()
+                .await
+                .expect("frame sender should remain connected");
+            let frame = frame_rx.borrow_and_update().clone();
+            let red = zone_led(&frame, "zone_red");
+            let blue = zone_led(&frame, "zone_blue");
+            trace.push(format!("frame {}: {red:?} {blue:?}", frame.frame_number));
+            match red {
+                Some(red) if red[2] > red_path_blue => violations.push(format!(
+                    "frame {}: the red zone's LED blended through blue: {red:?}",
+                    frame.frame_number
+                )),
+                Some(red) if red[0] > 0 && red[1] > 0 => blended[0] += 1,
+                Some(_) => {}
+                None => violations.push(format!(
+                    "frame {}: the red zone's LED was not published",
+                    frame.frame_number
+                )),
+            }
+            match blue {
+                Some(blue) if blue[0] > blue_path_red => violations.push(format!(
+                    "frame {}: the blue zone's LED blended through red: {blue:?}",
+                    frame.frame_number
+                )),
+                Some(blue) if blue[1] > 0 && blue[2] > 0 => blended[1] += 1,
+                Some(_) => {}
+                None => violations.push(format!(
+                    "frame {}: the blue zone's LED was not published",
+                    frame.frame_number
+                )),
+            }
+            if red == Some([255, 0, 0]) && blue == Some([0, 0, 255]) {
+                break;
+            }
+        }
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        settled.is_ok(),
+        "the LEDs never reached the overlapping zones' own colors:\n{}",
+        trace.join("\n")
+    );
+    assert!(
+        violations.is_empty(),
+        "{}\ntrace:\n{}",
+        violations.join("\n"),
+        trace.join("\n")
+    );
+    assert!(
+        blended.iter().all(|frames| *frames > 0),
+        "the transition cut over without a blended frame ({blended:?} blended frames for the \
+         red and blue LEDs):\n{}",
+        trace.join("\n")
+    );
+}
+
+/// The most a transition blend from `from` to `to` in `interpolation` ever
+/// puts into `channel` over the whole fade.
+#[cfg(feature = "wgpu")]
+fn blend_path_peak(
+    from: [u8; 3],
+    to: [u8; 3],
+    channel: usize,
+    interpolation: &hypercolor_types::scene::ColorInterpolation,
+) -> u8 {
+    let from = Rgb::new(from[0], from[1], from[2]).to_linear();
+    let to = Rgb::new(to[0], to[1], to[2]).to_linear();
+    (0..=1_000_u16)
+        .map(|step| {
+            let mixed = interpolate_color(&from, &to, f32::from(step) / 1_000.0, interpolation)
+                .to_encoded();
+            [mixed.r, mixed.g, mixed.b][channel]
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// What an unplaced device shows once a multi-zone scene whose unassigned
+/// behavior is `behavior` replaces a scene whose `Fallback(zone)` lit it red.
+#[cfg(feature = "wgpu")]
+async fn unplaced_device_after_switching_to(
+    mode: RenderAccelerationMode,
+    behavior: UnassignedBehavior,
+) -> Option<Vec<[u8; 3]>> {
+    const SETTLE_FRAMES: u32 = 10;
+    let (backend, device_id, backend_manager) = unplaced_mock_device(4).await;
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        backend_manager,
+    );
+    state.render_acceleration_mode = mode;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let mut lit = make_scene("Fallback Zones");
+    lit.transition.duration_ms = 0;
+    lit.zones = overlapping_zones(solid_id);
+    lit.unassigned_behavior = UnassignedBehavior::Fallback(lit.zones[0].id);
+    let mut next = make_scene("Unassigned Zones");
+    next.transition.duration_ms = 0;
+    next.zones = vec![
+        custom_zone(
+            "Green",
+            solid_id,
+            solid_color_controls(0, 255, 0),
+            test_layout(vec![point_zone("zone_green", "mock:green", 0.5, 0.5)]),
+        ),
+        custom_zone(
+            "Yellow",
+            solid_id,
+            solid_color_controls(255, 255, 0),
+            test_layout(vec![point_zone("zone_yellow", "mock:yellow", 0.5, 0.5)]),
+        ),
+    ];
+    next.unassigned_behavior = behavior;
+    install_render_scenes(&state, vec![lit.clone(), next.clone()], lit.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(WAIT_DEADLINE, async {
+        while backend.last_colors(&device_id) != Some(vec![[255, 0, 0]; 4]) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "{mode:?}: the fallback never lit the unplaced device; last write was {:?}",
+            backend.last_colors(&device_id)
+        )
+    });
+    activate_render_scene(&state, next.id).await;
+    let switched = wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_green") == Some([0, 255, 0])
+            && zone_led(frame, "zone_yellow") == Some([255, 255, 0])
+    })
+    .await;
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        frame.frame_number >= switched.frame_number + SETTLE_FRAMES
+    })
+    .await;
+    let shown = backend.last_colors(&device_id);
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    shown
+}
+
+/// `Off` and `Hold` on a GPU multi-zone scene leave unassigned outputs the
+/// way the CPU backend does: `Off` turns an unplaced device black and
+/// `Hold` keeps the colors an earlier scene's fallback gave it, on both
+/// backends (Spec 86 §4.3, §8 criterion 6). `Fallback(zone)` parity is
+/// `gpu_multi_zone_fallback_samples_unassigned_outputs_from_the_fallback_zone`.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_off_and_hold_match_the_cpu_backend() {
+    for (behavior, expected) in [
+        (UnassignedBehavior::Off, vec![[0, 0, 0]; 4]),
+        (UnassignedBehavior::Hold, vec![[255, 0, 0]; 4]),
+    ] {
+        let gpu =
+            unplaced_device_after_switching_to(RenderAccelerationMode::Gpu, behavior.clone()).await;
+        let cpu =
+            unplaced_device_after_switching_to(RenderAccelerationMode::Cpu, behavior.clone()).await;
+        assert_eq!(
+            gpu, cpu,
+            "{behavior:?}: the GPU backend left unassigned outputs unlike the CPU backend"
+        );
+        assert_eq!(gpu, Some(expected), "{behavior:?}");
+    }
+}
+
+/// A one-layer zone stack filling its zone with `rgba` (linear).
+#[cfg(feature = "wgpu")]
+fn color_fill_layers(rgba: [f32; 4]) -> Vec<SceneLayer> {
+    vec![SceneLayer {
+        id: SceneLayerId::new(),
+        name: None,
+        source: hypercolor_types::layer::LayerSource::ColorFill { rgba },
+        blend: hypercolor_types::layer::BlendMode::Replace,
+        opacity: 1.0,
+        transform: hypercolor_types::layer::LayerTransform::default(),
+        adjust: hypercolor_types::layer::LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }]
+}
+
+/// The pixel at `(x, y)` of a captured PNG frame.
+#[cfg(feature = "wgpu")]
+fn captured_pixel(
+    frame: &hypercolor_daemon::canvas_capture::CapturedCanvasFrame,
+    x: u32,
+    y: u32,
+) -> [u8; 4] {
+    image::load_from_memory(&frame.bytes)
+        .expect("captured canvas should decode")
+        .to_rgba8()
+        .get_pixel(x, y)
+        .0
+}
+
+/// A Gaussian zone beside a Bilinear zone reaches every scene consumer of a
+/// GPU multi-zone scene, including consumers that arrive late: the UI scene
+/// preview, a canvas capture, and a blended display face first subscribe
+/// after the Gaussian zone has settled into reusing its held composition,
+/// and subscribe again after its color changed while nothing watched the
+/// scene (Spec 86 §5.1, §8 criterion 13 as amended by §11.1).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_gaussian_zone_reaches_scene_consumers_that_arrive_late() {
+    const PREVIEW_SIZE: (u32, u32) = (160, 100);
+    const SETTLE_FRAMES: u32 = 10;
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let display_id = DeviceId::new();
+    // A color fill has a stable identity, so once composed the Gaussian zone
+    // reuses its held composition on every frame.
+    let mut ambient = custom_zone(
+        "Ambient",
+        solid_id,
+        HashMap::new(),
+        test_layout(vec![region_zone(
+            "zone_ambient",
+            "mock:ambient",
+            (0.25, 0.5),
+            (0.5, 1.0),
+        )]),
+    );
+    ambient.layers = color_fill_layers([0.0, 1.0, 0.0, 1.0]);
+    ambient.layout.default_sampling_mode = SamplingMode::GaussianArea {
+        sigma: 2.0,
+        radius: 3,
+    };
+    let mut accent = custom_zone(
+        "Accent",
+        solid_id,
+        solid_color_controls(0, 0, 255),
+        test_layout(vec![region_zone(
+            "zone_accent",
+            "mock:accent",
+            (0.75, 0.5),
+            (0.5, 1.0),
+        )]),
+    );
+    accent.layout.canvas_width = 160;
+    accent.layout.canvas_height = 100;
+    let face_id = ZoneId::new();
+    let mut face_layout = test_layout(Vec::new());
+    face_layout.canvas_width = 480;
+    face_layout.canvas_height = 480;
+    let mut face = display_zone(
+        face_id,
+        display_id,
+        solid_id,
+        solid_color_controls(0, 0, 255),
+        face_layout,
+    );
+    face.layers[0].blend = hypercolor_types::layer::BlendMode::Alpha;
+    let target = face
+        .display_target
+        .as_mut()
+        .expect("display zone should carry a display target");
+    target.blend_mode = hypercolor_types::layer::BlendMode::Alpha;
+    target.opacity = 0.5;
+    let mut scene = make_scene("Gaussian Beside Bilinear");
+    scene.transition.duration_ms = 0;
+    scene.zones = vec![ambient, accent, face];
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let blue = Rgba::new(0, 0, 255, 255);
+    for (phase, ambient_led, ambient_fill) in [
+        ("after settling", [0, 255, 0], None),
+        (
+            "after changing with no consumer",
+            [255, 0, 0],
+            Some([1.0, 0.0, 0.0, 1.0]),
+        ),
+    ] {
+        if let Some(rgba) = ambient_fill {
+            let mut changed = scene.clone();
+            changed.zones[0].layers = color_fill_layers(rgba);
+            let mut mutation = state.scene_manager.begin_mutation().await;
+            mutation
+                .update_scene(changed)
+                .expect("the Gaussian zone's color should update");
+            commit_render_mutation(&state, mutation).await;
+        }
+        let ambient = Rgba::new(ambient_led[0], ambient_led[1], ambient_led[2], 255);
+        // No consumer watches the scene while its LEDs settle.
+        let lit = wait_for_frame_where(&mut frame_rx, |frame| {
+            zone_led(frame, "zone_ambient") == Some(ambient_led)
+                && zone_led(frame, "zone_accent") == Some([0, 0, 255])
+        })
+        .await;
+        wait_for_frame_where(&mut frame_rx, |frame| {
+            frame.frame_number >= lit.frame_number + SETTLE_FRAMES
+        })
+        .await;
+
+        let mut preview_rx = state.preview_runtime.canvas_receiver();
+        preview_rx.update_demand(PreviewStreamDemand {
+            fps: 30,
+            format: PreviewPixelFormat::Rgb,
+            width: PREVIEW_SIZE.0,
+            height: PREVIEW_SIZE.1,
+        });
+        let mut last_preview = None;
+        let preview = tokio::time::timeout(WAIT_DEADLINE, async {
+            loop {
+                {
+                    let frame = preview_rx.borrow_and_update();
+                    if (frame.width, frame.height) == PREVIEW_SIZE {
+                        let pixels = (
+                            rgba_at(&frame, PREVIEW_SIZE.0 / 4, PREVIEW_SIZE.1 / 2),
+                            rgba_at(&frame, PREVIEW_SIZE.0 * 3 / 4, PREVIEW_SIZE.1 / 2),
+                        );
+                        if pixels == (ambient, blue) {
+                            break pixels;
+                        }
+                        last_preview = Some(pixels);
+                    }
+                }
+                preview_rx
+                    .changed()
+                    .await
+                    .expect("scene preview stream should stay open");
+            }
+        })
+        .await;
+        assert!(
+            preview.is_ok(),
+            "{phase}: the scene preview never showed the Gaussian zone's {ambient:?} beside \
+             the Bilinear zone; last (left, right) was {last_preview:?}"
+        );
+
+        // A frame published at the preview's smaller size can still be the
+        // newest when the capture subscribes, so capture until one arrives
+        // at the canvas's own size.
+        let native = (state.canvas_dims.width(), state.canvas_dims.height());
+        let capture = tokio::time::timeout(WAIT_DEADLINE, async {
+            loop {
+                let capture = capture_canvas(
+                    &state.preview_runtime,
+                    CanvasCaptureRequest {
+                        frames: 1,
+                        interval: Duration::ZERO,
+                        width: 0,
+                        height: 0,
+                        format: CanvasImageFormat::Png,
+                    },
+                )
+                .await
+                .expect("canvas capture should succeed while the scene runs");
+                if capture
+                    .first()
+                    .is_some_and(|frame| (frame.source_width, frame.source_height) == native)
+                {
+                    break capture;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{phase}: no canvas capture arrived at {native:?}"));
+        let captured = capture.first().expect("capture should return a frame");
+        assert_eq!(
+            (
+                captured_pixel(captured, 80, 100),
+                captured_pixel(captured, 240, 100)
+            ),
+            (
+                [ambient_led[0], ambient_led[1], ambient_led[2], 255],
+                [0, 0, 255, 255]
+            ),
+            "{phase}: the canvas capture should show both zones"
+        );
+
+        state
+            .event_bus
+            .upsert_display_zone_output_route(face_id, left_half_face_route(display_id));
+        let mut face_rx = state.event_bus.zone_canvas_sender(face_id).subscribe();
+        // The face mixes its blue half and half over the Gaussian zone.
+        let backdrop_channel = usize::from(ambient_led[1] > 0);
+        let other_channel = 1 - backdrop_channel;
+        let mut last_center = None;
+        let face_center = tokio::time::timeout(WAIT_DEADLINE, async {
+            loop {
+                let center = display_center(&face_rx.borrow_and_update());
+                if let Some(center) = center
+                    && center[backdrop_channel] > 24
+                    && center[other_channel] <= 24
+                    && center[2] > 24
+                {
+                    break center;
+                }
+                last_center = center;
+                face_rx
+                    .changed()
+                    .await
+                    .expect("face stream should stay open");
+            }
+        })
+        .await;
+        assert!(
+            face_center.is_ok(),
+            "{phase}: the blended face never showed the Gaussian zone behind it; last center \
+             was {last_center:?}"
+        );
+
+        // Every consumer leaves before the scene changes again.
+        drop(preview_rx);
+        drop(face_rx);
+        state.event_bus.remove_display_zone_output_route(face_id);
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
+/// Studio's zone previews of a GPU multi-zone scene arrive at the demanded
+/// size with each zone's own pixels, scaled from that zone's GPU texture
+/// rather than materialized on the CPU (Spec 86 §5.2).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_scene_publishes_zone_previews_at_the_demanded_size() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut scene = make_scene("Zone Previews");
+    scene.zones = overlapping_zones(solid_id);
+    scene.zones[1].layout.canvas_width = 160;
+    scene.zones[1].layout.canvas_height = 100;
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    let red_zone = scene.zones[0].id;
+    let blue_zone = scene.zones[1].id;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    let mut previews_rx = state.preview_runtime.zone_preview_receiver();
+    previews_rx.update_demand(PreviewStreamDemand {
+        fps: 30,
+        format: PreviewPixelFormat::Rgb,
+        width: 32,
+        height: 20,
+    });
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let previews = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            {
+                let previews = previews_rx.borrow_and_update();
+                if previews.len() == 2
+                    && previews
+                        .iter()
+                        .all(|preview| (preview.frame.width, preview.frame.height) == (32, 20))
+                {
+                    break previews.clone();
+                }
+            }
+            previews_rx
+                .changed()
+                .await
+                .expect("zone preview stream should stay open");
+        }
+    })
+    .await
+    .expect("GPU zone previews should publish within timeout");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    for (zone_id, color) in [
+        (red_zone, Rgba::new(255, 0, 0, 255)),
+        (blue_zone, Rgba::new(0, 0, 255, 255)),
+    ] {
+        let preview = previews
+            .iter()
+            .find(|preview| preview.zone_id == zone_id)
+            .expect("every LED zone should publish a preview");
+        assert_eq!(preview.scene_id, scene.id);
+        assert_eq!((preview.frame.width, preview.frame.height), (32, 20));
+        assert_eq!(preview.frame.surface().get_pixel(0, 0), color);
+        assert_eq!(preview.frame.surface().get_pixel(31, 19), color);
+    }
+}
+
+/// Watch every frame this receiver observes until `stop` fires, recording
+/// each one in which a zone's LED shows anything but its own color.
+#[cfg(feature = "wgpu")]
+fn spawn_zone_color_watch(
+    mut frame_rx: watch::Receiver<FrameData>,
+    expected: Vec<(&'static str, [u8; 3])>,
+    stop: Arc<Notify>,
+) -> tokio::task::JoinHandle<(u32, Vec<String>)> {
+    tokio::spawn(async move {
+        let mut observed = 0_u32;
+        let mut violations = Vec::new();
+        loop {
+            tokio::select! {
+                () = stop.notified() => break,
+                changed = frame_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let frame = frame_rx.borrow_and_update().clone();
+                    observed += 1;
+                    for (zone_id, color) in &expected {
+                        let actual = zone_led(&frame, zone_id);
+                        if actual != Some(*color) {
+                            violations.push(format!(
+                                "frame {}: {zone_id} showed {actual:?}, expected {color:?}",
+                                frame.frame_number
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        (observed, violations)
+    })
+}
+
+/// Wait for a zone preview of every zone in `zones` published after
+/// `after_frame` at `size`.
+#[cfg(feature = "wgpu")]
+async fn wait_for_zone_previews_after(
+    previews_rx: &mut ZonePreviewFrameReceiver,
+    after_frame: u32,
+    zones: &[ZoneId],
+    size: (u32, u32),
+) -> Arc<[ZonePreviewFrame]> {
+    let mut last_seen = String::from("no zone previews observed");
+    let landed = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            {
+                let previews = previews_rx.borrow_and_update();
+                let fresh = |zone_id: &ZoneId| {
+                    previews.iter().any(|preview| {
+                        preview.zone_id == *zone_id
+                            && preview.frame.frame_number > after_frame
+                            && (preview.frame.width, preview.frame.height) == size
+                    })
+                };
+                if zones.iter().all(fresh) {
+                    break Arc::clone(&previews);
+                }
+                last_seen = previews
+                    .iter()
+                    .map(|preview| {
+                        format!(
+                            "{} {}x{} at frame {}",
+                            preview.zone_id,
+                            preview.frame.width,
+                            preview.frame.height,
+                            preview.frame.frame_number
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+            }
+            previews_rx
+                .changed()
+                .await
+                .expect("zone preview stream should stay open");
+        }
+    })
+    .await;
+    landed.unwrap_or_else(|_| {
+        panic!("zone previews after frame {after_frame} never landed at {size:?}: {last_seen}")
+    })
+}
+
+/// A zone-preview subscriber asking for `size` at 30 fps.
+#[cfg(feature = "wgpu")]
+fn sized_zone_preview_receiver(
+    state: &RenderThreadState,
+    size: (u32, u32),
+) -> ZonePreviewFrameReceiver {
+    let mut previews_rx = state.preview_runtime.zone_preview_receiver();
+    previews_rx.update_demand(PreviewStreamDemand {
+        fps: 30,
+        format: PreviewPixelFormat::Rgb,
+        width: size.0,
+        height: size.1,
+    });
+    previews_rx
+}
+
+/// A live canvas resize while a GPU multi-zone scene runs keeps every zone
+/// sampling its own texture: each zone's LEDs hold their own colors on
+/// every frame across and after two resizes (overlapping zones would read
+/// each other's colors if they sampled the scene canvas), the scene canvas
+/// comes back at each new size, and fresh zone previews still arrive scaled
+/// on the GPU, which only GPU-resident zones publish (Spec 86 §8 criterion
+/// 16).
+///
+/// Publishing the active layout at new canvas dimensions queues the same
+/// render-thread layout transaction that a `daemon.canvas_width` or
+/// `daemon.canvas_height` config change queues through
+/// `resize_active_canvas`.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resizes() {
+    const PREVIEW_SIZE: (u32, u32) = (32, 20);
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let mut scene_canvas_rx = state.event_bus.scene_canvas_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut scene = make_scene("Resized Zones");
+    // Activate without a transition so every frame shows the zones' own
+    // colors; transitions have their own coverage.
+    scene.transition.duration_ms = 0;
+    scene.zones = overlapping_zones(solid_id);
+    scene.zones[1].layout.canvas_width = 160;
+    scene.zones[1].layout.canvas_height = 100;
+    let mut green = custom_zone(
+        "Green",
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        test_layout(vec![point_zone("zone_green", "mock:green", 0.2, 0.5)]),
+    );
+    green.layout.canvas_width = 480;
+    green.layout.canvas_height = 270;
+    scene.zones.push(green);
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    let led_zones = scene.zones.iter().map(|zone| zone.id).collect::<Vec<_>>();
+    let zone_colors = [
+        Rgba::new(255, 0, 0, 255),
+        Rgba::new(0, 0, 255, 255),
+        Rgba::new(0, 255, 0, 255),
+    ];
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    let mut previews_rx = sized_zone_preview_receiver(&state, PREVIEW_SIZE);
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let expected = vec![
+        ("zone_red", [255, 0, 0]),
+        ("zone_blue", [0, 0, 255]),
+        ("zone_green", [0, 255, 0]),
+    ];
+    let shows_every_zone = |frame: &FrameData| {
+        expected
+            .iter()
+            .all(|(zone_id, color)| zone_led(frame, zone_id) == Some(*color))
+    };
+    let settled = wait_for_frame_where(&mut frame_rx, shows_every_zone).await;
+    wait_for_zone_previews_after(&mut previews_rx, 0, &led_zones, PREVIEW_SIZE).await;
+
+    let stop = Arc::new(Notify::new());
+    let color_watch = spawn_zone_color_watch(
+        state.event_bus.frame_receiver(),
+        expected.clone(),
+        Arc::clone(&stop),
+    );
+    let mut last_frame = settled.frame_number;
+    for (width, height) in [(640, 400), (200, 120)] {
+        drop(previews_rx);
+        wait_until("zone previews to clear without a subscriber", || {
+            state.event_bus.zone_preview_lane().borrow().is_empty()
+        })
+        .await;
+        let mut resized = test_layout(Vec::new());
+        resized.canvas_width = width;
+        resized.canvas_height = height;
+        publish_layout(&state, resized).await;
+        assert_eq!(
+            (state.canvas_dims.width(), state.canvas_dims.height()),
+            (width, height),
+            "the render thread commits the resize before the layout publication returns"
+        );
+        let resized_frame = wait_for_frame_where(&mut frame_rx, |frame| {
+            frame.frame_number > last_frame && shows_every_zone(frame)
+        })
+        .await;
+        last_frame = resized_frame.frame_number;
+
+        let blue = Rgba::new(0, 0, 255, 255);
+        let green = Rgba::new(0, 255, 0, 255);
+        wait_for_canvas_where(&mut scene_canvas_rx, |canvas| {
+            (canvas.width, canvas.height) == (width, height)
+                && canvas.surface().get_pixel(width / 2, height / 2) == blue
+                && canvas.surface().get_pixel(width / 5, height / 2) == green
+        })
+        .await;
+
+        previews_rx = sized_zone_preview_receiver(&state, PREVIEW_SIZE);
+        let previews =
+            wait_for_zone_previews_after(&mut previews_rx, last_frame, &led_zones, PREVIEW_SIZE)
+                .await;
+        for (zone_id, color) in led_zones.iter().zip(zone_colors) {
+            let preview = previews
+                .iter()
+                .find(|preview| preview.zone_id == *zone_id)
+                .expect("every LED zone should publish a preview");
+            assert_eq!(
+                preview.frame.surface().get_pixel(0, 0),
+                color,
+                "zone {zone_id} previews its own texture after the {width}x{height} resize"
+            );
+        }
+    }
+    stop.notify_one();
+    let (observed, violations) = color_watch
+        .await
+        .expect("the zone color watch should finish cleanly");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(observed > 0, "the zone color watch saw no frames");
+    assert!(
+        violations.is_empty(),
+        "{} of {observed} observed frames lost a zone's own color across the resizes:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+}
+
+/// An output covering a `size` region of its zone canvas centered on
+/// `position`, with one LED sampling the middle of it.
+#[cfg(feature = "wgpu")]
+fn region_zone(id: &str, device_id: &str, position: (f32, f32), size: (f32, f32)) -> Output {
+    let mut output = point_zone(id, device_id, position.0, position.1);
+    output.size = NormalizedPosition {
+        x: size.0,
+        y: size.1,
+    };
+    output
+}
+
+/// A GPU multi-zone scene beside a blended LCD face: a solid left zone at
+/// the scene's size, a rainbow right zone at half size, and a green face
+/// whose layer blends (so it composes on the shared compositor at its own
+/// 480x480 extent every frame) and whose display target mixes it half and
+/// half over the scene backdrop.
+#[cfg(feature = "wgpu")]
+fn blended_face_scene(
+    name: &str,
+    solid_id: EffectId,
+    rainbow_id: EffectId,
+    left: [u8; 3],
+    display_id: DeviceId,
+) -> (Scene, ZoneId) {
+    let mut left_zone = custom_zone(
+        "Left",
+        solid_id,
+        solid_color_controls(left[0], left[1], left[2]),
+        test_layout(vec![region_zone(
+            "zone_left",
+            "mock:left",
+            (0.25, 0.5),
+            (0.5, 1.0),
+        )]),
+    );
+    left_zone.layout.canvas_width = 320;
+    left_zone.layout.canvas_height = 200;
+    let mut right_zone = custom_zone(
+        "Right",
+        rainbow_id,
+        HashMap::new(),
+        test_layout(vec![region_zone(
+            "zone_right",
+            "mock:right",
+            (0.75, 0.5),
+            (0.5, 1.0),
+        )]),
+    );
+    right_zone.layout.canvas_width = 160;
+    right_zone.layout.canvas_height = 100;
+    let face_id = ZoneId::new();
+    let mut face_layout = test_layout(Vec::new());
+    face_layout.canvas_width = 480;
+    face_layout.canvas_height = 480;
+    let mut face = display_zone(
+        face_id,
+        display_id,
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        face_layout,
+    );
+    face.layers[0].blend = hypercolor_types::layer::BlendMode::Alpha;
+    let target = face
+        .display_target
+        .as_mut()
+        .expect("display zone should carry a display target");
+    target.blend_mode = hypercolor_types::layer::BlendMode::Alpha;
+    target.opacity = 0.5;
+
+    let mut scene = make_scene(name);
+    scene.zones = vec![left_zone, right_zone, face];
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    (scene, face_id)
+}
+
+/// A finalized face route that shows the left half of the scene, where the
+/// solid zone sits, behind the face.
+#[cfg(feature = "wgpu")]
+fn left_half_face_route(display_id: DeviceId) -> DisplayZoneOutputRoute {
+    DisplayZoneOutputRoute {
+        device_id: display_id,
+        width: 240,
+        height: 240,
+        circular: false,
+        brightness: 1.0,
+        frame_format: DisplayFrameFormat::Rgb,
+        viewport: DisplayZoneViewport {
+            position: NormalizedPosition { x: 0.25, y: 0.5 },
+            size: NormalizedPosition { x: 0.5, y: 1.0 },
+            rotation: 0.0,
+            scale: 1.0,
+            edge_behavior: EdgeBehavior::Clamp,
+        },
+    }
+}
+
+#[cfg(feature = "wgpu")]
+fn rgba_at(frame: &CanvasFrame, x: u32, y: u32) -> Rgba {
+    frame.surface().get_pixel(x, y)
+}
+
+#[cfg(feature = "wgpu")]
+fn display_center(frame: &DisplayZoneFrame) -> Option<[u8; 4]> {
+    let DisplayZoneFrame::Canvas(frame) = frame else {
+        return None;
+    };
+    if frame.width == 0 || frame.height == 0 {
+        return None;
+    }
+    let pixel = frame.surface().get_pixel(frame.width / 2, frame.height / 2);
+    Some([pixel.r, pixel.g, pixel.b, pixel.a])
+}
+
+#[cfg(feature = "wgpu")]
+/// Mixes red and blue the way a frame partway through a red-to-blue
+/// transition does.
+fn mid_red_to_blue(r: u8, b: u8) -> bool {
+    r > 24 && b > 24
+}
+
+/// Counts of what one observation window received.
+#[cfg(feature = "wgpu")]
+#[derive(Default, Debug)]
+struct PreviewCadence {
+    render_frames: u32,
+    scene_previews: u32,
+    scene_previews_mid_transition: u32,
+    zone_previews: u32,
+    face_frames: u32,
+    face_frames_mid_transition: u32,
+    failures: Vec<String>,
+}
+
+/// Studio zone previews, the UI scene preview, canvas captures, and a
+/// blended display face of a GPU multi-zone scene hold their cadence while
+/// the face and the zones compose at three sizes on the shared compositor
+/// every frame, and the scene preview and the face backdrop are lit and
+/// show a multi-zone to multi-zone transition as it runs (Spec 86 §8
+/// criterion 9).
+///
+/// Real GPU timing decides whether a preview readback finishes inside its
+/// own frame, so this test cannot force one to land late; the render-zone
+/// test `late_scene_preview_readbacks_still_land_while_zones_resize_the_compositor`
+/// does that with a GPU that runs a frame behind.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_previews_hold_their_cadence_through_a_transition_beside_a_blended_face() {
+    const SCENE_PREVIEW_SIZE: (u32, u32) = (160, 100);
+    const ZONE_PREVIEW_SIZE: (u32, u32) = (32, 20);
+    const PREVIEW_FPS: u32 = 30;
+    const WINDOW: Duration = Duration::from_millis(1500);
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let (solid_id, rainbow_id) = {
+        let registry = state.effect_registry.read().await;
+        (
+            builtin_effect_id(&registry, "solid_color"),
+            builtin_effect_id(&registry, "rainbow"),
+        )
+    };
+    let display_id = DeviceId::new();
+    let (red_scene, red_face) =
+        blended_face_scene("Red Zones", solid_id, rainbow_id, [255, 0, 0], display_id);
+    let (mut blue_scene, blue_face) =
+        blended_face_scene("Blue Zones", solid_id, rainbow_id, [0, 0, 255], display_id);
+    blue_scene.transition.duration_ms = 6_000;
+    let blue_zones = blue_scene.zones[..2]
+        .iter()
+        .map(|zone| zone.id)
+        .collect::<Vec<_>>();
+    // The display output worker publishes a route for each live face; the
+    // render thread prunes the routes of faces whose scene is not live.
+    state
+        .event_bus
+        .upsert_display_zone_output_route(red_face, left_half_face_route(display_id));
+    install_render_scenes(
+        &state,
+        vec![red_scene.clone(), blue_scene.clone()],
+        red_scene.id,
+    )
+    .await;
+
+    let mut preview_rx = state.preview_runtime.canvas_receiver();
+    preview_rx.update_demand(PreviewStreamDemand {
+        fps: PREVIEW_FPS,
+        format: PreviewPixelFormat::Rgb,
+        width: SCENE_PREVIEW_SIZE.0,
+        height: SCENE_PREVIEW_SIZE.1,
+    });
+    let mut zone_previews_rx = sized_zone_preview_receiver(&state, ZONE_PREVIEW_SIZE);
+    let mut red_face_rx = state.event_bus.zone_canvas_sender(red_face).subscribe();
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    // The settled red scene: a lit, transport-sized scene preview and a face
+    // that shows the red zone through its half-transparent green.
+    let preview = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            {
+                let frame = preview_rx.borrow_and_update();
+                if (frame.width, frame.height) == SCENE_PREVIEW_SIZE
+                    && rgba_at(&frame, SCENE_PREVIEW_SIZE.0 / 4, SCENE_PREVIEW_SIZE.1 / 2)
+                        == Rgba::new(255, 0, 0, 255)
+                {
+                    break frame.clone();
+                }
+            }
+            preview_rx
+                .changed()
+                .await
+                .expect("scene preview stream should stay open");
+        }
+    })
+    .await
+    .expect("the scaled scene preview should show the red zone");
+    assert_ne!(
+        rgba_at(
+            &preview,
+            SCENE_PREVIEW_SIZE.0 * 3 / 4,
+            SCENE_PREVIEW_SIZE.1 / 2
+        ),
+        Rgba::new(0, 0, 0, 255),
+        "the rainbow zone should light the right half of the scene preview"
+    );
+    let red_face_center = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            if let Some(center) = display_center(&red_face_rx.borrow_and_update())
+                && center[0] > 24
+                && center[1] > 24
+            {
+                break center;
+            }
+            red_face_rx
+                .changed()
+                .await
+                .expect("face stream should stay open");
+        }
+    })
+    .await
+    .expect("the blended face should show the red zone behind its green");
+    assert_eq!(
+        red_face_center[2], 0,
+        "the face backdrop should be the red zone, not the blue one: {red_face_center:?}"
+    );
+
+    // The red face's stream closes once its scene leaves; the blue face's
+    // stream opens when its scene goes live.
+    drop(red_face_rx);
+    activate_render_scene(&state, blue_scene.id).await;
+    let mut blue_face_rx = state.event_bus.zone_canvas_sender(blue_face).subscribe();
+    tokio::time::timeout(WAIT_DEADLINE, blue_face_rx.changed())
+        .await
+        .expect("the blue face should go live")
+        .expect("face stream should stay open");
+    state
+        .event_bus
+        .upsert_display_zone_output_route(blue_face, left_half_face_route(display_id));
+    tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            if display_center(&blue_face_rx.borrow_and_update())
+                .is_some_and(|center| center[0] > 24 && center[1] < 250)
+            {
+                break;
+            }
+            blue_face_rx
+                .changed()
+                .await
+                .expect("face stream should stay open");
+        }
+    })
+    .await
+    .expect("the blue face should finalize over the transitioning backdrop");
+    wait_for_zone_previews_after(&mut zone_previews_rx, 0, &blue_zones, ZONE_PREVIEW_SIZE).await;
+
+    let start_frame = frame_rx.borrow_and_update().frame_number;
+    let started = std::time::Instant::now();
+    let mut cadence = PreviewCadence::default();
+    let window = tokio::time::sleep(WINDOW);
+    tokio::pin!(window);
+    loop {
+        tokio::select! {
+            () = &mut window => break,
+            changed = preview_rx.changed() => {
+                changed.expect("scene preview stream should stay open");
+                let frame = preview_rx.borrow_and_update().clone();
+                cadence.scene_previews += 1;
+                if (frame.width, frame.height) != SCENE_PREVIEW_SIZE {
+                    cadence.failures.push(format!(
+                        "scene preview {} arrived at {}x{}",
+                        frame.frame_number, frame.width, frame.height
+                    ));
+                    continue;
+                }
+                let left = rgba_at(&frame, SCENE_PREVIEW_SIZE.0 / 4, SCENE_PREVIEW_SIZE.1 / 2);
+                if left == Rgba::new(0, 0, 0, 255) {
+                    cadence.failures.push(format!("scene preview {} went black", frame.frame_number));
+                }
+                if mid_red_to_blue(left.r, left.b) {
+                    cadence.scene_previews_mid_transition += 1;
+                }
+            }
+            changed = zone_previews_rx.changed() => {
+                changed.expect("zone preview stream should stay open");
+                let previews = Arc::clone(&zone_previews_rx.borrow_and_update());
+                cadence.zone_previews += 1;
+                for preview in previews.iter().filter(|preview| blue_zones.contains(&preview.zone_id)) {
+                    if (preview.frame.width, preview.frame.height) != ZONE_PREVIEW_SIZE {
+                        cadence.failures.push(format!(
+                            "zone {} previewed at {}x{}",
+                            preview.zone_id, preview.frame.width, preview.frame.height
+                        ));
+                    }
+                }
+            }
+            changed = blue_face_rx.changed() => {
+                changed.expect("face stream should stay open");
+                let center = display_center(&blue_face_rx.borrow_and_update());
+                cadence.face_frames += 1;
+                match center {
+                    Some(center) if center[0] <= 24 && center[2] <= 24 => cadence.failures.push(
+                        format!("the face lost its backdrop: center {center:?}"),
+                    ),
+                    Some(center) if mid_red_to_blue(center[0], center[2]) => {
+                        cadence.face_frames_mid_transition += 1;
+                    }
+                    Some(_) => {}
+                    None => cadence.failures.push("the face published an empty frame".to_owned()),
+                }
+            }
+        }
+    }
+    let elapsed = started.elapsed();
+    cadence.render_frames = frame_rx
+        .borrow_and_update()
+        .frame_number
+        .saturating_sub(start_frame);
+
+    let capture = capture_canvas(
+        &state.preview_runtime,
+        CanvasCaptureRequest {
+            frames: 6,
+            interval: Duration::from_millis(50),
+            width: 0,
+            height: 0,
+            format: CanvasImageFormat::Png,
+        },
+    )
+    .await
+    .expect("canvas capture should succeed while the scene runs");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    assert!(
+        cadence.failures.is_empty(),
+        "previews went wrong during the transition: {:#?}",
+        cadence
+    );
+    let window_ms = u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX);
+    // What each lane's throttle can deliver from the frames that actually
+    // rendered, so a loaded machine that slows the render loop lowers the
+    // ask instead of failing the test. The previews publish once per 1/30 s
+    // slot that a rendered frame lands in. The face publishes once 1/30 s
+    // has passed since its last frame, which a loop at or under its 60 fps
+    // ceiling allows at least every second rendered frame; between 30 and
+    // 60 fps that is fewer chances than the previews get.
+    let window_demand = window_ms * PREVIEW_FPS / 1000;
+    let slot_demand = window_demand.min(cadence.render_frames);
+    let face_demand = window_demand.min(cadence.render_frames / 2);
+    // Three quarters of that absorbs the window's edges and render jitter
+    // that lands two frames in one slot, and still fails a lane that loses
+    // every other frame, as the readback cancellations of Spec 86 §11.2 did;
+    // a bound of one half accepted a lane at half rate.
+    for (lane, delivered, demanded) in [
+        ("scene preview", cadence.scene_previews, slot_demand),
+        ("zone preview", cadence.zone_previews, slot_demand),
+        ("blended face", cadence.face_frames, face_demand),
+    ] {
+        assert!(
+            delivered * 4 >= demanded * 3,
+            "the {lane} delivered {delivered} frames where its cadence asks for {demanded} \
+             over {} rendered frames: {cadence:#?}",
+            cadence.render_frames
+        );
+    }
+    assert!(
+        cadence.scene_previews_mid_transition > 0,
+        "no scene preview showed the red-to-blue transition: {cadence:#?}"
+    );
+    assert!(
+        cadence.face_frames_mid_transition > 0,
+        "no face frame showed the transition behind it: {cadence:#?}"
+    );
+    assert_eq!(
+        capture.len(),
+        6,
+        "a canvas capture burst should not stop early"
+    );
+    for frame in &capture {
+        assert!(
+            frame.fresh,
+            "capture frame {} was stale",
+            frame.frame_number
+        );
+        assert_eq!((frame.source_width, frame.source_height), (320, 200));
+    }
+    assert!(
+        capture
+            .windows(2)
+            .all(|pair| pair[1].frame_number > pair[0].frame_number),
+        "capture frames should advance: {:?}",
+        capture
+            .iter()
+            .map(|frame| frame.frame_number)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]

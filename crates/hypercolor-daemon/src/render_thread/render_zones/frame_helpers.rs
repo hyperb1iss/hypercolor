@@ -206,6 +206,34 @@ pub(super) fn media_layer_producer_frame(
     ProducerFrame::Canvas(canvas)
 }
 
+/// Upload `frame` into the layer's media texture ring when it is a CPU
+/// canvas off the zone's extent.
+///
+/// The GPU compositor scales GPU textures into a zone but takes CPU frames
+/// only at the zone's own extent, and refuses the whole plan otherwise. A
+/// screen-region crop and a media frame at its intrinsic size are CPU
+/// canvases of their own extent, so a plan that has to compose on the GPU
+/// carries them as textures instead of losing its frame.
+#[cfg(feature = "wgpu")]
+pub(super) fn upload_off_extent_canvas(
+    frame: &mut ProducerFrame,
+    layer_id: SceneLayerId,
+    zone: &Zone,
+    sparkleflinger: &mut SparkleFlinger,
+) {
+    let ProducerFrame::Canvas(canvas) = frame else {
+        return;
+    };
+    if canvas.width() == zone.layout.canvas_width && canvas.height() == zone.layout.canvas_height {
+        return;
+    }
+    if let Some(uploaded) = sparkleflinger
+        .upload_media_canvas_frame(MediaTextureSourceKey::from_media_layer(layer_id), canvas)
+    {
+        *frame = ProducerFrame::GpuTexture(uploaded);
+    }
+}
+
 #[cfg(feature = "wgpu")]
 pub(super) fn media_mime_prefers_gpu_texture(mime_type: &str) -> bool {
     matches!(

@@ -6,7 +6,7 @@ use hypercolor_types::canvas::PublishedSurface;
 
 use super::super::GpuSparkleFlinger;
 use super::{PendingPreviewMap, PendingPreviewReadback};
-use crate::render_thread::sparkleflinger::PreviewSurfaceRequest;
+use crate::render_thread::sparkleflinger::{CompositionPlan, PreviewSurfaceRequest};
 
 impl GpuSparkleFlinger {
     pub(crate) fn resolve_preview_surface(&mut self) -> Result<Option<PublishedSurface>> {
@@ -14,6 +14,12 @@ impl GpuSparkleFlinger {
 
         if self.pending_preview_map.is_some() {
             if let Some(surface) = self.try_finish_pending_preview_map()? {
+                // Map the preview queued behind this one right away, so it is
+                // already in flight, and survives, when the next frame's zone
+                // and face compositions run.
+                if let Err(error) = self.submit_pending_preview_work() {
+                    tracing::debug!(%error, "GPU queued preview map could not begin early");
+                }
                 return Ok(Some(surface));
             }
             return Ok(None);
@@ -100,6 +106,22 @@ impl GpuSparkleFlinger {
         self.discard_pending_preview_map();
     }
 
+    /// Retire the preview work `plan`'s composition supersedes when it
+    /// stages no GPU preview of its own. A scene composition that wants no
+    /// preview this frame cancels a scene preview map in flight as well; a
+    /// composition for another consumer of the shared compositor, such as a
+    /// zone or display-face frame, leaves that map to land.
+    pub(in crate::render_thread::sparkleflinger::gpu) fn retire_superseded_preview_work(
+        &mut self,
+        plan: &CompositionPlan,
+    ) {
+        if plan.preserves_scene_preview {
+            self.clear_superseded_preview_outputs();
+        } else {
+            self.discard_superseded_preview_work();
+        }
+    }
+
     pub(crate) fn discard_preview_work(&mut self) {
         self.discard_superseded_preview_work();
     }
@@ -124,8 +146,27 @@ impl GpuSparkleFlinger {
     }
 
     #[cfg(test)]
-    pub(in crate::render_thread::sparkleflinger::gpu) fn defer_next_preview_map_resolve(&mut self) {
+    pub(in crate::render_thread::sparkleflinger) fn defer_next_preview_map_resolve(&mut self) {
         self.defer_preview_map_resolve_once = true;
+    }
+
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger) fn has_pending_preview_map(&self) -> bool {
+        self.pending_preview_map.is_some()
+    }
+
+    /// Preview readback sets allocated so far, and scale bind groups built
+    /// for the current set.
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger) fn preview_resource_allocations(
+        &self,
+    ) -> (usize, usize) {
+        (
+            self.preview_surface_allocation_count,
+            self.preview_surfaces
+                .as_ref()
+                .map_or(0, |surfaces| surfaces.preview_bind_group_count),
+        )
     }
 
     pub(in crate::render_thread::sparkleflinger::gpu) fn begin_pending_preview_map(

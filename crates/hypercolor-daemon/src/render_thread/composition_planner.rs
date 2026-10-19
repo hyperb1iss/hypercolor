@@ -552,6 +552,53 @@ mod tests {
         assert_eq!(interrupted_pixel, blended_pixel.as_slice());
     }
 
+    /// A fade holds its frozen base for the whole transition while each
+    /// render holds the previous retained generation until the next one is
+    /// snapshotted, so every frame of a fade still finds a snapshot slot.
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn transition_base_leaves_room_for_retained_and_incoming_snapshots() {
+        let Ok(mut sparkleflinger) = SparkleFlinger::new(RenderAccelerationMode::Gpu) else {
+            return;
+        };
+        let preparation = sparkleflinger
+            .prepare_canvas_resize(2, 2)
+            .expect("GPU fade test canvas should prepare");
+        if !preparation.gpu_output_admitted() {
+            return;
+        }
+        sparkleflinger.apply_canvas_resize(preparation);
+        let snapshot = |sparkleflinger: &mut SparkleFlinger, color| {
+            sparkleflinger.compose_for_outputs(
+                CompositionPlan::single(
+                    2,
+                    2,
+                    CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(color))),
+                ),
+                false,
+                None,
+            );
+            sparkleflinger
+                .immutable_current_output_frame()
+                .expect("a fade frame should snapshot beside the base and the retained frame")
+                .expect("the fade frame snapshot should exist")
+        };
+
+        let transition_base = snapshot(&mut sparkleflinger, Rgba::new(255, 0, 0, 255));
+        let mut retained = snapshot(&mut sparkleflinger, Rgba::new(0, 0, 255, 255));
+        for color in [
+            Rgba::new(0, 255, 0, 255),
+            Rgba::new(255, 255, 0, 255),
+            Rgba::new(0, 255, 255, 255),
+        ] {
+            // Retention drops the previous generation once its replacement
+            // exists.
+            retained = snapshot(&mut sparkleflinger, color);
+        }
+        assert_ne!(retained.width(), 0);
+        assert_ne!(transition_base.width(), 0);
+    }
+
     #[cfg(feature = "wgpu")]
     #[test]
     fn interruption_releases_gpu_slots_for_frozen_and_incoming_frames() {
