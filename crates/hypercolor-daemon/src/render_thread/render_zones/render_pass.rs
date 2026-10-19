@@ -150,13 +150,17 @@ impl ZoneRuntime {
                         reuse_unchanged_composition: gpu_resident,
                     },
                 )?;
+                // A zone whose layers were all still loading gets one more
+                // poll. It stays GPU-resident: a CPU canvas would come from the
+                // compositor's shared readback latch, a whole-image readback
+                // that can hold another zone's pixels (Spec 48 §4.1).
                 if frame.is_none() && gpu_resident {
                     frame = self.render_zone_frame(
                         zone,
                         context.zone_context(),
                         sparkleflinger,
                         ZoneFrameRequirements {
-                            requires_cpu_sampling_canvas: true,
+                            requires_cpu_sampling_canvas: false,
                             requires_published_surface: false,
                             reuse_unchanged_composition: false,
                         },

@@ -423,12 +423,23 @@ impl ZoneRuntime {
         self.injected_effect_layer_frames.insert(layer_id, frame);
     }
 
+    /// Stands in for a Servo page still loading: the next effect render of
+    /// `layer_id` reports `Pending`, and the one after it renders as usual.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn pend_effect_layer_once_for_test(&mut self, layer_id: SceneLayerId) {
+        self.pending_effect_layers.insert(layer_id);
+    }
+
     fn render_effect_layer_frame(
         &mut self,
         zone: &Zone,
         layer: &SceneLayer,
         context: ZoneFrameContext<'_>,
     ) -> Result<Option<ProducerFrame>> {
+        #[cfg(all(test, feature = "wgpu"))]
+        if self.pending_effect_layers.remove(&layer.id) {
+            return Ok(None);
+        }
         #[cfg(all(test, feature = "wgpu"))]
         if let Some(frame) = self.injected_effect_layer_frames.remove(&layer.id) {
             return Ok(Some(frame));
