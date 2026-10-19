@@ -27,7 +27,9 @@ use hypercolor_types::spatial::SpatialLayout;
 use super::frame_composer::RenderStageStats;
 #[cfg(feature = "wgpu")]
 use super::pipeline_runtime::GpuFallbackSampling;
-use super::pipeline_runtime::{RetainedZoneFrame, SamplingRuntime, SceneTransitionKey};
+use super::pipeline_runtime::{
+    CachedTransitionLayout, RetainedZoneFrame, SamplingRuntime, SceneTransitionKey,
+};
 #[cfg(feature = "wgpu")]
 use super::producer_queue::{GpuTextureFrame, ProducerFrame};
 use super::scene_snapshot::{FrameSceneSnapshot, SceneTransitionSnapshot};
@@ -629,6 +631,33 @@ fn ensure_cpu_sampling_canvas(
     }
 
     CpuSamplingCanvasStatus::Unavailable
+}
+
+/// The transition's routing layout, built once and reused while the same
+/// transition runs between the same two layouts. A fresh layout every frame
+/// would miss every downstream cache keyed by layout identity (routing,
+/// unassigned outputs, the fallback plan GPU sampling keys on).
+fn cached_transition_layout(
+    cache: &mut Option<CachedTransitionLayout>,
+    base_layout: &Arc<SpatialLayout>,
+    current_layout: &Arc<SpatialLayout>,
+    transition_key: SceneTransitionKey,
+) -> Arc<SpatialLayout> {
+    if let Some(cached) = cache.as_ref()
+        && cached.key == transition_key
+        && Arc::ptr_eq(&cached.base, base_layout)
+        && Arc::ptr_eq(&cached.current, current_layout)
+    {
+        return Arc::clone(&cached.layout);
+    }
+    let layout = build_transition_layout(base_layout, current_layout, transition_key);
+    *cache = Some(CachedTransitionLayout {
+        key: transition_key,
+        base: Arc::clone(base_layout),
+        current: Arc::clone(current_layout),
+        layout: Arc::clone(&layout),
+    });
+    layout
 }
 
 pub(crate) fn build_transition_layout(
@@ -1262,9 +1291,14 @@ pub(crate) fn resolve_led_sampling(
             );
         }
 
-        if let Some(base) = sampling.zone_transition_planner.transition_base.as_ref() {
-            let transition_layout =
-                build_transition_layout(base.layout.as_ref(), layout.as_ref(), transition_key);
+        let planner = &mut *sampling.zone_transition_planner;
+        if let Some(base) = planner.transition_base.as_ref() {
+            let transition_layout = cached_transition_layout(
+                &mut planner.transition_layout,
+                &base.layout,
+                &layout,
+                transition_key,
+            );
             blend_scene_zone_frames(
                 &base.zones,
                 &current_zones,

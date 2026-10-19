@@ -729,7 +729,9 @@ impl UnassignedOutputCache {
         key: UnassignedOutputCacheKey,
         value: CachedUnassignedOutput,
     ) -> CachedUnassignedOutput {
-        self.fallback_spatial_engine = None;
+        // The fallback engine stays: its own cache compares the whole
+        // fallback layout by value, so it survives a source layout that only
+        // changed identity, and with it the plan identity GPU sampling keys on.
         self.entry = Some(CachedUnassignedOutputEntry {
             key,
             value: value.clone(),
@@ -1839,12 +1841,23 @@ pub(crate) struct ZoneTransitionPlanner {
     /// The latest fresh, fully assembled sample of the incoming zone set
     /// during a transition, which deferred frames blend from.
     pub(crate) latest_zone_set_sample: Vec<ZoneColors>,
+    /// The active transition's routing layout, kept while its endpoints hold
+    /// so every frame of the fade routes through one layout identity.
+    pub(crate) transition_layout: Option<CachedTransitionLayout>,
+}
+
+pub(crate) struct CachedTransitionLayout {
+    pub(crate) key: SceneTransitionKey,
+    pub(crate) base: Arc<SpatialLayout>,
+    pub(crate) current: Arc<SpatialLayout>,
+    pub(crate) layout: Arc<SpatialLayout>,
 }
 
 impl ZoneTransitionPlanner {
     pub(crate) fn clear(&mut self) {
         self.active_transition = None;
         self.transition_base = None;
+        self.transition_layout = None;
     }
 
     pub(crate) fn record_stable(&mut self, layout: Arc<SpatialLayout>, multi_zone: Option<bool>) {

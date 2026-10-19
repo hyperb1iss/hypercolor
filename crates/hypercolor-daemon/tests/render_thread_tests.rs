@@ -2951,6 +2951,122 @@ async fn gpu_single_zone_fallback_samples_through_a_scene_transition() {
     assert!(still_fading, "the scene transition should still be running");
 }
 
+/// A fade between two multi-zone scenes blends in LED space, and the
+/// incoming scene keeps animating through it: an unplaced device on the
+/// incoming rainbow zone's fallback keeps changing color mid-fade instead of
+/// freezing on its first sample (Spec 86 §4.1, §4.3).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_fallback_keeps_animating_through_a_led_space_fade() {
+    let (backend, device_id, backend_manager) = unplaced_mock_device(4).await;
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        backend_manager,
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let (solid_id, rainbow_id) = {
+        let registry = state.effect_registry.read().await;
+        (
+            builtin_effect_id(&registry, "solid_color"),
+            builtin_effect_id(&registry, "rainbow"),
+        )
+    };
+
+    let mut outgoing = make_scene("Outgoing Zones");
+    outgoing.transition.duration_ms = 0;
+    outgoing.zones = overlapping_zones(solid_id);
+    outgoing.unassigned_behavior = UnassignedBehavior::Off;
+    let rainbow_zone = custom_zone(
+        "Rainbow",
+        rainbow_id,
+        HashMap::new(),
+        test_layout(vec![point_zone("zone_rainbow", "mock:rainbow", 0.5, 0.5)]),
+    );
+    let rainbow_zone_id = rainbow_zone.id;
+    let mut incoming = make_scene("Incoming Zones");
+    incoming.transition.duration_ms = 60_000;
+    incoming.zones = vec![
+        rainbow_zone,
+        custom_zone(
+            "Green",
+            solid_id,
+            solid_color_controls(0, 255, 0),
+            test_layout(vec![point_zone("zone_green", "mock:green", 0.5, 0.5)]),
+        ),
+    ];
+    incoming.unassigned_behavior = UnassignedBehavior::Fallback(rainbow_zone_id);
+    install_render_scenes(
+        &state,
+        vec![outgoing.clone(), incoming.clone()],
+        outgoing.id,
+    )
+    .await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([255, 0, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 0, 255])
+    })
+    .await;
+
+    activate_render_scene(&state, incoming.id).await;
+    let lit = || {
+        backend
+            .last_colors(&device_id)
+            .filter(|colors| colors.iter().any(|color| *color != [0, 0, 0]))
+    };
+    let first_lit = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            if let Some(colors) = lit() {
+                break colors;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    // A live fallback follows the rainbow every frame; a frozen one repeats
+    // its first sample, so count what one second of the fade delivers.
+    let mut seen = first_lit.iter().cloned().collect::<Vec<_>>();
+    let window_end = tokio::time::Instant::now() + Duration::from_secs(1);
+    while tokio::time::Instant::now() < window_end {
+        if let Some(colors) = lit()
+            && !seen.contains(&colors)
+        {
+            seen.push(colors);
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let animated = seen.len() >= 10;
+    let still_fading = frame_rx
+        .borrow()
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_green")
+        .and_then(|zone| zone.colors.first().copied())
+        .is_some_and(|color| color != [0, 255, 0]);
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        first_lit.is_ok(),
+        "the fallback device never lit during the fade"
+    );
+    assert!(
+        animated,
+        "the fallback device froze during the fade: {} distinct colors in one second",
+        seen.len()
+    );
+    assert!(still_fading, "the scene transition should still be running");
+}
+
 #[cfg(feature = "wgpu")]
 fn overlapping_zones(solid_id: EffectId) -> Vec<Zone> {
     vec![

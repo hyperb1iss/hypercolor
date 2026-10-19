@@ -457,5 +457,22 @@ mod tests {
             .sampling_plan();
 
         assert!(Arc::ptr_eq(&first_sampling_plan, &second_sampling_plan));
+
+        // A source layout that only changed identity (a transition's routing
+        // layout, say) keeps the fallback engine and its plan identity.
+        UnassignedOutputPlanner::new(&manager, &mut cache)
+            .plan(
+                Arc::new(sample_layout(&[])),
+                &UnassignedBehavior::Fallback(zone_id),
+                &authored_zones,
+                &zone_canvases,
+            )
+            .expect("an equal source layout should remain addressable");
+        let third_sampling_plan = cache
+            .fallback_spatial_engine(&fallback_layout)
+            .expect("fallback engine should survive a new layout identity")
+            .sampling_plan();
+
+        assert!(Arc::ptr_eq(&first_sampling_plan, &third_sampling_plan));
     }
 }
