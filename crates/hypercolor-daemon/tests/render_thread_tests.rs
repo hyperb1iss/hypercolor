@@ -3067,6 +3067,105 @@ async fn gpu_multi_zone_fallback_keeps_animating_through_a_led_space_fade() {
     assert!(still_fading, "the scene transition should still be running");
 }
 
+/// A transition that interrupts a fade into overlapping zones starts from
+/// the per-zone blend the LEDs were showing, not from the composited
+/// crossfade: going single to multi to single, the red zone's LED never
+/// picks up the blue zone composited over it, even though no multi-zone
+/// frame ever settled (Spec 86 §4.1).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_interrupted_fade_through_overlapping_zones_keeps_each_led_its_own() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let single_zone_scene = |name: &str| {
+        let mut scene = make_scene(name);
+        scene.zones = vec![primary_zone(
+            solid_id,
+            solid_color_controls(0, 255, 0),
+            test_layout(vec![
+                point_zone("zone_red", "mock:red", 0.5, 0.5),
+                point_zone("zone_blue", "mock:blue", 0.5, 0.5),
+            ]),
+        )];
+        scene.unassigned_behavior = UnassignedBehavior::Off;
+        scene
+    };
+
+    let mut settled = single_zone_scene("Settled");
+    settled.transition.duration_ms = 0;
+    let mut zoned = make_scene("Overlapping Zones");
+    zoned.transition.duration_ms = 60_000;
+    zoned.zones = overlapping_zones(solid_id);
+    zoned.unassigned_behavior = UnassignedBehavior::Off;
+    let mut interrupting = single_zone_scene("Interrupting");
+    interrupting.transition.duration_ms = 60_000;
+    install_render_scenes(
+        &state,
+        vec![settled.clone(), zoned.clone(), interrupting.clone()],
+        settled.id,
+    )
+    .await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([0, 255, 0])
+    })
+    .await;
+
+    activate_render_scene(&state, zoned.id).await;
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red").is_some_and(|color| color[0] > 0)
+            && zone_led(frame, "zone_blue").is_some_and(|color| color[2] > 0)
+    })
+    .await;
+
+    activate_render_scene(&state, interrupting.id).await;
+    let mut observed = Vec::new();
+    let collected = tokio::time::timeout(WAIT_DEADLINE, async {
+        while observed.len() < 30 {
+            if frame_rx.changed().await.is_err() {
+                break;
+            }
+            let frame = frame_rx.borrow_and_update().clone();
+            if let (Some(red), Some(blue)) =
+                (zone_led(&frame, "zone_red"), zone_led(&frame, "zone_blue"))
+            {
+                observed.push((red, blue));
+            }
+        }
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        collected.is_ok(),
+        "the interrupting fade stopped publishing frames"
+    );
+    for (red, blue) in &observed {
+        assert_eq!(red[2], 0, "the red zone's LED picked up blue: {observed:?}");
+        assert_eq!(
+            blue[0], 0,
+            "the blue zone's LED picked up red: {observed:?}"
+        );
+    }
+}
+
 #[cfg(feature = "wgpu")]
 fn overlapping_zones(solid_id: EffectId) -> Vec<Zone> {
     vec![

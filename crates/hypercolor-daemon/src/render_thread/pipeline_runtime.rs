@@ -1827,17 +1827,19 @@ pub(crate) struct RetainedZoneFrame {
 pub(crate) struct ZoneTransitionPlanner {
     pub(crate) active_transition: Option<SceneTransitionKey>,
     pub(crate) transition_base: Option<RetainedZoneFrame>,
-    /// Layout of the most recent stable (non-transition) frame. Zone colors
-    /// are deliberately not retained here: every stable frame's zones end up
-    /// in (or already are) the published frame, so the transition base
-    /// captures them lazily from the published frame when a transition starts
-    /// — one zone deep copy per transition instead of one per stable frame.
-    pub(crate) last_stable_layout: Option<Arc<SpatialLayout>>,
-    /// Whether the most recent stable frame came from a multi-zone scene,
-    /// whose composited preview is not a faithful LED base: a transition out
-    /// of it blends in LED space whatever the incoming scene is (Spec 86
-    /// §4.1).
-    pub(crate) last_stable_multi_zone: bool,
+    /// Layout of the most recently published frame, settled or mid-fade.
+    /// Zone colors are deliberately not retained here: every frame's zones
+    /// end up in (or already are) the published frame, so a transition's base
+    /// captures them lazily from the published frame when it starts, one zone
+    /// deep copy per transition instead of one per frame. A transition that
+    /// interrupts another starts from the blend the LEDs were showing.
+    pub(crate) last_published_layout: Option<Arc<SpatialLayout>>,
+    /// Whether the most recently published LEDs were sampled per zone: a
+    /// multi-zone scene, or a fade blended in LED space. Neither has a
+    /// faithful composited preview to crossfade from, so a transition that
+    /// starts from them, or interrupts them, blends in LED space whatever the
+    /// incoming scene is (Spec 86 §4.1).
+    pub(crate) last_published_per_zone: bool,
     /// The latest fresh, fully assembled sample of the incoming zone set
     /// during a transition, which deferred frames blend from.
     pub(crate) latest_zone_set_sample: Vec<ZoneColors>,
@@ -1860,13 +1862,20 @@ impl ZoneTransitionPlanner {
         self.transition_layout = None;
     }
 
-    pub(crate) fn record_stable(&mut self, layout: Arc<SpatialLayout>, multi_zone: Option<bool>) {
+    /// Forget the finished transition once a settled frame publishes.
+    pub(crate) fn record_stable(&mut self) {
         self.clear();
-        self.last_stable_layout = Some(layout);
-        if let Some(multi_zone) = multi_zone {
-            self.last_stable_multi_zone = multi_zone;
-        }
         self.latest_zone_set_sample.clear();
+    }
+
+    /// Note what this frame publishes, for the next transition to start
+    /// from. `per_zone` is `None` for a frame that says nothing new about how
+    /// its LEDs were sampled (a retained or reused frame).
+    pub(crate) fn record_published(&mut self, layout: Arc<SpatialLayout>, per_zone: Option<bool>) {
+        self.last_published_layout = Some(layout);
+        if let Some(per_zone) = per_zone {
+            self.last_published_per_zone = per_zone;
+        }
     }
 }
 

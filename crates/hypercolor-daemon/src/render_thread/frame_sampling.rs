@@ -799,7 +799,7 @@ pub(crate) fn resolve_led_sampling(
             engine,
             prepared_zones,
             fallback,
-        }) if transition_active && sampling.zone_transition_planner.last_stable_multi_zone => {
+        }) if transition_active && sampling.zone_transition_planner.last_published_per_zone => {
             match render_stage
                 .led_transition_source
                 .as_ref()
@@ -1266,6 +1266,7 @@ pub(crate) fn resolve_led_sampling(
     } else {
         None
     };
+    let mut blended_in_led_space = false;
     if let Some(transition) = scene_snapshot.scene_runtime.active_transition.as_ref()
         && let Some(transition_key) = scene_transition_key(transition)
         && let Some(current_zones) = led_space_transition_zones
@@ -1273,14 +1274,18 @@ pub(crate) fn resolve_led_sampling(
         let transition_blend_start = Instant::now();
         if sampling.zone_transition_planner.active_transition != Some(transition_key) {
             sampling.zone_transition_planner.active_transition = Some(transition_key);
-            // record_stable runs before each stable frame publishes, so the
-            // published frame still holds the last stable frame's zones here:
+            // record_published runs before each frame publishes, so the
+            // published frame still holds the previous frame's zones here:
             // capturing them lazily costs one deep copy per transition instead
-            // of one per stable frame.
+            // of one per frame.
             sampling.zone_transition_planner.transition_base = Some(
-                match sampling.zone_transition_planner.last_stable_layout.as_ref() {
-                    Some(stable_layout) => RetainedZoneFrame {
-                        layout: Arc::clone(stable_layout),
+                match sampling
+                    .zone_transition_planner
+                    .last_published_layout
+                    .as_ref()
+                {
+                    Some(published_layout) => RetainedZoneFrame {
+                        layout: Arc::clone(published_layout),
                         zones: state.event_bus.frame_lane().borrow().zones.clone(),
                     },
                     None => RetainedZoneFrame {
@@ -1309,6 +1314,7 @@ pub(crate) fn resolve_led_sampling(
             );
             layout = Arc::clone(&transition_layout);
             render_stage.led_sampling_strategy = LedSamplingStrategy::PreSampled(transition_layout);
+            blended_in_led_space = true;
             render_stage.sampled_us = render_stage
                 .sampled_us
                 .saturating_add(micros_between(transition_blend_start, Instant::now()));
@@ -1331,10 +1337,16 @@ pub(crate) fn resolve_led_sampling(
         }
     });
     if scene_snapshot.scene_runtime.active_transition.is_none() {
-        sampling
-            .zone_transition_planner
-            .record_stable(Arc::clone(&layout), multi_zone_frame);
+        sampling.zone_transition_planner.record_stable();
     }
+    sampling.zone_transition_planner.record_published(
+        Arc::clone(&layout),
+        if blended_in_led_space {
+            Some(true)
+        } else {
+            multi_zone_frame
+        },
+    );
 
     LedSamplingOutcome {
         layout,
