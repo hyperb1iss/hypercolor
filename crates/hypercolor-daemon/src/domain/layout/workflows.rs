@@ -10,6 +10,7 @@ use hypercolor_types::identity::LayoutId;
 use hypercolor_types::spatial::{SamplingMode, SpatialLayout};
 
 use crate::domain::DomainError;
+use crate::scene_transactions::LayoutUpdateGuard;
 
 use super::{
     LayoutContext, LayoutMutationResult, LayoutMutationTestOperation, LayoutMutationTestPoint,
@@ -328,6 +329,99 @@ impl LayoutContext {
             },
             persistence,
         })
+    }
+
+    /// Give the active layout the outputs of a primary zone that follows it.
+    ///
+    /// Without a custom LED zone, effect applies, layout publications, and
+    /// the startup restore all rewrite the primary zone from the active
+    /// layout, so a placement saved on that zone has to land in the layout
+    /// itself. The layout keeps its id, name, description, canvas size,
+    /// sampling defaults, and version, and takes the zone's outputs in the
+    /// zone's order. The store entry is replaced and persisted first, then
+    /// published under the caller's guard; a failed publication restores
+    /// the previous entry. Returns whether a new layout was published.
+    ///
+    /// The caller runs connectivity convergence only after releasing the
+    /// guard, because that pass takes the guard itself.
+    ///
+    /// # Errors
+    ///
+    /// Persistence and publication failures, after the store entry has
+    /// been rolled back.
+    pub(crate) async fn adopt_primary_zone_layout_under_guard(
+        &self,
+        guard: &LayoutUpdateGuard,
+        zone_layout: &SpatialLayout,
+        runtime: &LayoutRuntime,
+    ) -> Result<bool, DomainError> {
+        let current = self.current();
+        if current.zones == zone_layout.zones {
+            return Ok(false);
+        }
+        let previous_zones = current.zones.clone();
+        let mut updated = current;
+        updated.zones.clone_from(&zone_layout.zones);
+        let layout_id = updated.id.clone();
+        let previous_entry = self
+            .catalog
+            .entries()
+            .write()
+            .await
+            .insert(layout_id.clone(), updated.clone());
+
+        if let Err(error) = self.catalog.persist().await {
+            let rollback = self
+                .restore_catalog_entry(&layout_id, previous_entry)
+                .await
+                .err()
+                .map(|error| format!("layout store rollback failed: {error}"));
+            return Err(layout_store_persistence_error(
+                "zone layout save",
+                error,
+                rollback,
+            ));
+        }
+        if let Err(error) = self
+            .admit_persisted_update_under_guard(guard, updated.clone(), runtime)
+            .await
+        {
+            if let Err(rollback_error) =
+                self.restore_catalog_entry(&layout_id, previous_entry).await
+            {
+                tracing::warn!(
+                    layout_id,
+                    %rollback_error,
+                    "layout store rollback failed after a rejected zone layout publication"
+                );
+            }
+            return Err(layout_update_domain_error(error));
+        }
+
+        self.exclusions
+            .reconcile_layout(&layout_id, &previous_zones, &updated.zones)
+            .await;
+        self.publish_layout_changed(None, layout_id);
+        Ok(true)
+    }
+
+    async fn restore_catalog_entry(
+        &self,
+        layout_id: &str,
+        previous: Option<SpatialLayout>,
+    ) -> anyhow::Result<()> {
+        {
+            let mut layouts = self.catalog.entries().write().await;
+            match previous {
+                Some(previous) => {
+                    layouts.insert(layout_id.to_owned(), previous);
+                }
+                None => {
+                    layouts.remove(layout_id);
+                }
+            }
+        }
+        self.catalog.persist().await
     }
 
     pub(crate) async fn preview(
