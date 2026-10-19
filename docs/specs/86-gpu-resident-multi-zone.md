@@ -656,8 +656,34 @@ Lightpad and the LUMI keys raised ripples over the bubbles on both blocks.
   while their shape matches, so a newly chosen fallback zone shows black for
   a frame rather than the previous zone's pixels.
 
-### 11.2 Remaining Phase 1 work
+- **Telemetry (§7).** With no `Unsupported` source, `held_zone_count`
+  takes the place of `unsupported_zone_count`, and `multi_zone_sampling`
+  warns when a frame held zones (a zone with nothing to sample yet) rather
+  than when one was unsupported. The counters describe the frame's zone set;
+  `gpu_zone_sampling` and the `gpu_sample_*` flags still report whether its
+  readback landed.
 
-- §7 telemetry counters and the `multi_zone_sampling` diagnose check.
-- Acceptance criterion 9 (preview cadence across compositor size switches)
-  and criterion 16 (live canvas resize) have no dedicated tests yet.
+### 11.2 Defects found while closing Phase 1
+
+Writing the remaining acceptance tests turned up defects outside the
+rev 4 design, each fixed with a test that fails without it:
+
+- Every compositor size switch and every zone, face, or projection compose
+  cancelled the scene preview's pending readback, so a preview that did not
+  finish within its own frame never landed (criterion 9).
+- A GPU-mode renderer without an explicit device opened separate devices for
+  the scene and display compositors, so blended faces went over black.
+- A transition into a retained multi-zone scene blended every LED toward
+  black, because a retained zone set keeps no colors.
+- The immutable scene snapshot pool held two generations, but a fade holds a
+  third (its frozen base), so every projected compose of a multi-zone fade
+  failed and the incoming scene froze until the fade ended. The pool now
+  admits three.
+- The sample cache never hit across frames, because composing any output
+  cleared it, and compositor size switches rebuilt zone texture bind groups.
+
+### 11.3 Remaining Phase 1 work
+
+None in code. Live acceptance on the evidence rig runs against the branch
+build: the ten-minute hold with all display faces, frame `total_us` p95
+against the single-zone scene, and the diagnose checks.
