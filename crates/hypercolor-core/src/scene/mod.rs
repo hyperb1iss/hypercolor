@@ -1705,6 +1705,18 @@ pub fn default_primary_zone(mut layout: SpatialLayout) -> Zone {
     }
 }
 
+/// Whether the scene's primary zone covers the full scope and so follows
+/// the active spatial layout.
+///
+/// Until a custom LED zone exists, effect applies and layout publications
+/// rewrite the primary zone's layout from the active layout, so a placement
+/// that should last belongs in that layout. Once a custom LED zone claims
+/// outputs, the primary zone's layout is scene-local.
+#[must_use]
+pub fn primary_zone_follows_active_layout(scene: &Scene) -> bool {
+    !scene_has_custom_led_zones(scene)
+}
+
 fn bump_zones_revision(scene: &mut Scene) {
     scene.zones_revision = scene.zones_revision.saturating_add(1);
 }
