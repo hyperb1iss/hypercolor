@@ -16,9 +16,9 @@ use tokio::sync::{Mutex, Notify, RwLock, watch};
 
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::ComponentRegistry;
-#[cfg(feature = "wgpu")]
-use hypercolor_core::bus::ZonePreviewFrame;
 use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, HypercolorBus, PreviewKind};
+#[cfg(feature = "wgpu")]
+use hypercolor_core::bus::{DisplayZoneOutputRoute, DisplayZoneViewport, ZonePreviewFrame};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy, UsbProtocolConfigStore,
@@ -73,6 +73,8 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Rgba;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::control::ControlValue;
+#[cfg(feature = "wgpu")]
+use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::event::{
@@ -90,6 +92,8 @@ use hypercolor_types::spatial::{
 };
 
 use hypercolor_daemon::SceneTransactionQueue;
+#[cfg(feature = "wgpu")]
+use hypercolor_daemon::canvas_capture::{CanvasCaptureRequest, CanvasImageFormat, capture_canvas};
 use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::output_power::{OutputPower, OutputPowerState};
@@ -3297,6 +3301,423 @@ async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resiz
         "{} of {observed} observed frames lost a zone's own color across the resizes:\n{}",
         violations.len(),
         violations.join("\n")
+    );
+}
+
+/// An output covering a `size` region of its zone canvas centered on
+/// `position`, with one LED sampling the middle of it.
+#[cfg(feature = "wgpu")]
+fn region_zone(id: &str, device_id: &str, position: (f32, f32), size: (f32, f32)) -> Output {
+    let mut output = point_zone(id, device_id, position.0, position.1);
+    output.size = NormalizedPosition {
+        x: size.0,
+        y: size.1,
+    };
+    output
+}
+
+/// A GPU multi-zone scene beside a blended LCD face: a solid left zone at
+/// the scene's size, a rainbow right zone at half size, and a green face
+/// whose layer blends (so it composes on the shared compositor at its own
+/// 480x480 extent every frame) and whose display target mixes it half and
+/// half over the scene backdrop.
+#[cfg(feature = "wgpu")]
+fn blended_face_scene(
+    name: &str,
+    solid_id: EffectId,
+    rainbow_id: EffectId,
+    left: [u8; 3],
+    display_id: DeviceId,
+) -> (Scene, ZoneId) {
+    let mut left_zone = custom_zone(
+        "Left",
+        solid_id,
+        solid_color_controls(left[0], left[1], left[2]),
+        test_layout(vec![region_zone(
+            "zone_left",
+            "mock:left",
+            (0.25, 0.5),
+            (0.5, 1.0),
+        )]),
+    );
+    left_zone.layout.canvas_width = 320;
+    left_zone.layout.canvas_height = 200;
+    let mut right_zone = custom_zone(
+        "Right",
+        rainbow_id,
+        HashMap::new(),
+        test_layout(vec![region_zone(
+            "zone_right",
+            "mock:right",
+            (0.75, 0.5),
+            (0.5, 1.0),
+        )]),
+    );
+    right_zone.layout.canvas_width = 160;
+    right_zone.layout.canvas_height = 100;
+    let face_id = ZoneId::new();
+    let mut face_layout = test_layout(Vec::new());
+    face_layout.canvas_width = 480;
+    face_layout.canvas_height = 480;
+    let mut face = display_zone(
+        face_id,
+        display_id,
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        face_layout,
+    );
+    face.layers[0].blend = hypercolor_types::layer::BlendMode::Alpha;
+    let target = face
+        .display_target
+        .as_mut()
+        .expect("display zone should carry a display target");
+    target.blend_mode = hypercolor_types::layer::BlendMode::Alpha;
+    target.opacity = 0.5;
+
+    let mut scene = make_scene(name);
+    scene.zones = vec![left_zone, right_zone, face];
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    (scene, face_id)
+}
+
+/// A finalized face route that shows the left half of the scene, where the
+/// solid zone sits, behind the face.
+#[cfg(feature = "wgpu")]
+fn left_half_face_route(display_id: DeviceId) -> DisplayZoneOutputRoute {
+    DisplayZoneOutputRoute {
+        device_id: display_id,
+        width: 240,
+        height: 240,
+        circular: false,
+        brightness: 1.0,
+        frame_format: DisplayFrameFormat::Rgb,
+        viewport: DisplayZoneViewport {
+            position: NormalizedPosition { x: 0.25, y: 0.5 },
+            size: NormalizedPosition { x: 0.5, y: 1.0 },
+            rotation: 0.0,
+            scale: 1.0,
+            edge_behavior: EdgeBehavior::Clamp,
+        },
+    }
+}
+
+#[cfg(feature = "wgpu")]
+fn rgba_at(frame: &CanvasFrame, x: u32, y: u32) -> Rgba {
+    frame.surface().get_pixel(x, y)
+}
+
+#[cfg(feature = "wgpu")]
+fn display_center(frame: &DisplayZoneFrame) -> Option<[u8; 4]> {
+    let DisplayZoneFrame::Canvas(frame) = frame else {
+        return None;
+    };
+    if frame.width == 0 || frame.height == 0 {
+        return None;
+    }
+    let pixel = frame.surface().get_pixel(frame.width / 2, frame.height / 2);
+    Some([pixel.r, pixel.g, pixel.b, pixel.a])
+}
+
+#[cfg(feature = "wgpu")]
+/// Mixes red and blue the way a frame partway through a red-to-blue
+/// transition does.
+fn mid_red_to_blue(r: u8, b: u8) -> bool {
+    r > 24 && b > 24
+}
+
+/// Counts of what one observation window received.
+#[cfg(feature = "wgpu")]
+#[derive(Default, Debug)]
+struct PreviewCadence {
+    render_frames: u32,
+    scene_previews: u32,
+    scene_previews_mid_transition: u32,
+    zone_previews: u32,
+    face_frames: u32,
+    face_frames_mid_transition: u32,
+    failures: Vec<String>,
+}
+
+/// Studio zone previews, the UI scene preview, canvas captures, and a
+/// blended display face of a GPU multi-zone scene hold their cadence while
+/// the face and the zones compose at three sizes on the shared compositor
+/// every frame, and the scene preview and the face backdrop are lit and
+/// show a multi-zone to multi-zone transition as it runs (Spec 86 §8
+/// criterion 9).
+///
+/// Real GPU timing decides whether a preview readback finishes inside its
+/// own frame, so this test cannot force one to land late; the render-zone
+/// test `late_scene_preview_readbacks_still_land_while_zones_resize_the_compositor`
+/// does that with a GPU that runs a frame behind.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_previews_hold_their_cadence_through_a_transition_beside_a_blended_face() {
+    const SCENE_PREVIEW_SIZE: (u32, u32) = (160, 100);
+    const ZONE_PREVIEW_SIZE: (u32, u32) = (32, 20);
+    const PREVIEW_FPS: u32 = 30;
+    const WINDOW: Duration = Duration::from_millis(1500);
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let (solid_id, rainbow_id) = {
+        let registry = state.effect_registry.read().await;
+        (
+            builtin_effect_id(&registry, "solid_color"),
+            builtin_effect_id(&registry, "rainbow"),
+        )
+    };
+    let display_id = DeviceId::new();
+    let (red_scene, red_face) =
+        blended_face_scene("Red Zones", solid_id, rainbow_id, [255, 0, 0], display_id);
+    let (mut blue_scene, blue_face) =
+        blended_face_scene("Blue Zones", solid_id, rainbow_id, [0, 0, 255], display_id);
+    blue_scene.transition.duration_ms = 6_000;
+    let blue_zones = blue_scene.zones[..2]
+        .iter()
+        .map(|zone| zone.id)
+        .collect::<Vec<_>>();
+    // The display output worker publishes a route for each live face; the
+    // render thread prunes the routes of faces whose scene is not live.
+    state
+        .event_bus
+        .upsert_display_zone_output_route(red_face, left_half_face_route(display_id));
+    install_render_scenes(
+        &state,
+        vec![red_scene.clone(), blue_scene.clone()],
+        red_scene.id,
+    )
+    .await;
+
+    let mut preview_rx = state.preview_runtime.canvas_receiver();
+    preview_rx.update_demand(PreviewStreamDemand {
+        fps: PREVIEW_FPS,
+        format: PreviewPixelFormat::Rgb,
+        width: SCENE_PREVIEW_SIZE.0,
+        height: SCENE_PREVIEW_SIZE.1,
+    });
+    let mut zone_previews_rx = sized_zone_preview_receiver(&state, ZONE_PREVIEW_SIZE);
+    let mut red_face_rx = state.event_bus.zone_canvas_sender(red_face).subscribe();
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    // The settled red scene: a lit, transport-sized scene preview and a face
+    // that shows the red zone through its half-transparent green.
+    let preview = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            {
+                let frame = preview_rx.borrow_and_update();
+                if (frame.width, frame.height) == SCENE_PREVIEW_SIZE
+                    && rgba_at(&frame, SCENE_PREVIEW_SIZE.0 / 4, SCENE_PREVIEW_SIZE.1 / 2)
+                        == Rgba::new(255, 0, 0, 255)
+                {
+                    break frame.clone();
+                }
+            }
+            preview_rx
+                .changed()
+                .await
+                .expect("scene preview stream should stay open");
+        }
+    })
+    .await
+    .expect("the scaled scene preview should show the red zone");
+    assert_ne!(
+        rgba_at(
+            &preview,
+            SCENE_PREVIEW_SIZE.0 * 3 / 4,
+            SCENE_PREVIEW_SIZE.1 / 2
+        ),
+        Rgba::new(0, 0, 0, 255),
+        "the rainbow zone should light the right half of the scene preview"
+    );
+    let red_face_center = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            if let Some(center) = display_center(&red_face_rx.borrow_and_update())
+                && center[0] > 24
+                && center[1] > 24
+            {
+                break center;
+            }
+            red_face_rx
+                .changed()
+                .await
+                .expect("face stream should stay open");
+        }
+    })
+    .await
+    .expect("the blended face should show the red zone behind its green");
+    assert_eq!(
+        red_face_center[2], 0,
+        "the face backdrop should be the red zone, not the blue one: {red_face_center:?}"
+    );
+
+    // The red face's stream closes once its scene leaves; the blue face's
+    // stream opens when its scene goes live.
+    drop(red_face_rx);
+    activate_render_scene(&state, blue_scene.id).await;
+    let mut blue_face_rx = state.event_bus.zone_canvas_sender(blue_face).subscribe();
+    tokio::time::timeout(WAIT_DEADLINE, blue_face_rx.changed())
+        .await
+        .expect("the blue face should go live")
+        .expect("face stream should stay open");
+    state
+        .event_bus
+        .upsert_display_zone_output_route(blue_face, left_half_face_route(display_id));
+    tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            if display_center(&blue_face_rx.borrow_and_update())
+                .is_some_and(|center| center[0] > 24 && center[1] < 250)
+            {
+                break;
+            }
+            blue_face_rx
+                .changed()
+                .await
+                .expect("face stream should stay open");
+        }
+    })
+    .await
+    .expect("the blue face should finalize over the transitioning backdrop");
+    wait_for_zone_previews_after(&mut zone_previews_rx, 0, &blue_zones, ZONE_PREVIEW_SIZE).await;
+
+    let start_frame = frame_rx.borrow_and_update().frame_number;
+    let started = std::time::Instant::now();
+    let mut cadence = PreviewCadence::default();
+    let window = tokio::time::sleep(WINDOW);
+    tokio::pin!(window);
+    loop {
+        tokio::select! {
+            () = &mut window => break,
+            changed = preview_rx.changed() => {
+                changed.expect("scene preview stream should stay open");
+                let frame = preview_rx.borrow_and_update().clone();
+                cadence.scene_previews += 1;
+                if (frame.width, frame.height) != SCENE_PREVIEW_SIZE {
+                    cadence.failures.push(format!(
+                        "scene preview {} arrived at {}x{}",
+                        frame.frame_number, frame.width, frame.height
+                    ));
+                    continue;
+                }
+                let left = rgba_at(&frame, SCENE_PREVIEW_SIZE.0 / 4, SCENE_PREVIEW_SIZE.1 / 2);
+                if left == Rgba::new(0, 0, 0, 255) {
+                    cadence.failures.push(format!("scene preview {} went black", frame.frame_number));
+                }
+                if mid_red_to_blue(left.r, left.b) {
+                    cadence.scene_previews_mid_transition += 1;
+                }
+            }
+            changed = zone_previews_rx.changed() => {
+                changed.expect("zone preview stream should stay open");
+                let previews = Arc::clone(&zone_previews_rx.borrow_and_update());
+                cadence.zone_previews += 1;
+                for preview in previews.iter().filter(|preview| blue_zones.contains(&preview.zone_id)) {
+                    if (preview.frame.width, preview.frame.height) != ZONE_PREVIEW_SIZE {
+                        cadence.failures.push(format!(
+                            "zone {} previewed at {}x{}",
+                            preview.zone_id, preview.frame.width, preview.frame.height
+                        ));
+                    }
+                }
+            }
+            changed = blue_face_rx.changed() => {
+                changed.expect("face stream should stay open");
+                let center = display_center(&blue_face_rx.borrow_and_update());
+                cadence.face_frames += 1;
+                match center {
+                    Some(center) if center[0] <= 24 && center[2] <= 24 => cadence.failures.push(
+                        format!("the face lost its backdrop: center {center:?}"),
+                    ),
+                    Some(center) if mid_red_to_blue(center[0], center[2]) => {
+                        cadence.face_frames_mid_transition += 1;
+                    }
+                    Some(_) => {}
+                    None => cadence.failures.push("the face published an empty frame".to_owned()),
+                }
+            }
+        }
+    }
+    let elapsed = started.elapsed();
+    cadence.render_frames = frame_rx
+        .borrow_and_update()
+        .frame_number
+        .saturating_sub(start_frame);
+
+    let capture = capture_canvas(
+        &state.preview_runtime,
+        CanvasCaptureRequest {
+            frames: 6,
+            interval: Duration::from_millis(50),
+            width: 0,
+            height: 0,
+            format: CanvasImageFormat::Png,
+        },
+    )
+    .await
+    .expect("canvas capture should succeed while the scene runs");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    assert!(
+        cadence.failures.is_empty(),
+        "previews went wrong during the transition: {:#?}",
+        cadence
+    );
+    let window_ms = u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX);
+    let demanded = (window_ms * PREVIEW_FPS / 1000).min(cadence.render_frames);
+    for (lane, delivered) in [
+        ("scene preview", cadence.scene_previews),
+        ("zone preview", cadence.zone_previews),
+        ("blended face", cadence.face_frames),
+    ] {
+        assert!(
+            delivered * 2 >= demanded,
+            "the {lane} delivered {delivered} frames where its cadence asks for {demanded} \
+             over {} rendered frames: {cadence:#?}",
+            cadence.render_frames
+        );
+    }
+    assert!(
+        cadence.scene_previews_mid_transition > 0,
+        "no scene preview showed the red-to-blue transition: {cadence:#?}"
+    );
+    assert!(
+        cadence.face_frames_mid_transition > 0,
+        "no face frame showed the transition behind it: {cadence:#?}"
+    );
+    assert_eq!(
+        capture.len(),
+        6,
+        "a canvas capture burst should not stop early"
+    );
+    for frame in &capture {
+        assert!(
+            frame.fresh,
+            "capture frame {} was stale",
+            frame.frame_number
+        );
+        assert_eq!((frame.source_width, frame.source_height), (320, 200));
+    }
+    assert!(
+        capture
+            .windows(2)
+            .all(|pair| pair[1].frame_number > pair[0].frame_number),
+        "capture frames should advance: {:?}",
+        capture
+            .iter()
+            .map(|frame| frame.frame_number)
+            .collect::<Vec<_>>()
     );
 }
 
