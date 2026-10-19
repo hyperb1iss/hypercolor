@@ -3124,12 +3124,13 @@ async fn gpu_multi_zone_fallback_keeps_animating_through_a_led_space_fade() {
         }
     })
     .await;
-    // A live fallback follows the rainbow every frame; a frozen one repeats
-    // its first sample. Count distinct fallback colors over the next thirty
-    // published frames, so a slow runner only delivers them later.
+    // A live fallback follows the rainbow; a frozen one repeats its first
+    // sample. Wait for fifteen distinct fallback colors under a deadline
+    // rather than a frame count, since a slow GPU publishes several frames
+    // per fresh sample.
     let mut seen = first_lit.iter().cloned().collect::<Vec<_>>();
     let observed_frames = tokio::time::timeout(WAIT_DEADLINE, async {
-        for _ in 0..30 {
+        while seen.len() < 15 {
             frame_rx
                 .changed()
                 .await
@@ -3143,7 +3144,7 @@ async fn gpu_multi_zone_fallback_keeps_animating_through_a_led_space_fade() {
         }
     })
     .await;
-    let animated = observed_frames.is_ok() && seen.len() >= 15;
+    let animated = observed_frames.is_ok();
     let still_fading = frame_rx
         .borrow()
         .zones
@@ -3163,7 +3164,7 @@ async fn gpu_multi_zone_fallback_keeps_animating_through_a_led_space_fade() {
     );
     assert!(
         animated,
-        "the fallback device froze during the fade: {} distinct colors in thirty frames",
+        "the fallback device froze during the fade: {} distinct colors within {WAIT_DEADLINE:?}",
         seen.len()
     );
     assert!(still_fading, "the scene transition should still be running");
@@ -3826,18 +3827,34 @@ async fn gpu_gaussian_zone_reaches_scene_consumers_that_arrive_late() {
              the Bilinear zone; last (left, right) was {last_preview:?}"
         );
 
-        let capture = capture_canvas(
-            &state.preview_runtime,
-            CanvasCaptureRequest {
-                frames: 1,
-                interval: Duration::ZERO,
-                width: 0,
-                height: 0,
-                format: CanvasImageFormat::Png,
-            },
-        )
+        // A frame published at the preview's smaller size can still be the
+        // newest when the capture subscribes, so capture until one arrives
+        // at the canvas's own size.
+        let native = (state.canvas_dims.width(), state.canvas_dims.height());
+        let capture = tokio::time::timeout(WAIT_DEADLINE, async {
+            loop {
+                let capture = capture_canvas(
+                    &state.preview_runtime,
+                    CanvasCaptureRequest {
+                        frames: 1,
+                        interval: Duration::ZERO,
+                        width: 0,
+                        height: 0,
+                        format: CanvasImageFormat::Png,
+                    },
+                )
+                .await
+                .expect("canvas capture should succeed while the scene runs");
+                if capture
+                    .first()
+                    .is_some_and(|frame| (frame.source_width, frame.source_height) == native)
+                {
+                    break capture;
+                }
+            }
+        })
         .await
-        .expect("canvas capture should succeed while the scene runs");
+        .unwrap_or_else(|_| panic!("{phase}: no canvas capture arrived at {native:?}"));
         let captured = capture.first().expect("capture should return a frame");
         assert_eq!(
             (

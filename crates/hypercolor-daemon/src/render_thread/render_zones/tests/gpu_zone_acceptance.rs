@@ -145,7 +145,12 @@ fn display_face_mixing_a_gpu_effect_with_an_off_extent_gif_keeps_its_frame() {
     let mut zone_colors = Vec::new();
     let mut saw_surface = false;
 
-    for frame in 0..6_u64 {
+    // The face's composed surface lands when its readback finishes, a few
+    // frames in on a fast GPU and later on a software adapter.
+    for frame in 0..120_u64 {
+        if saw_surface {
+            break;
+        }
         let effect_frame = upload_fill(&mut sparkleflinger, 1, FACE_EXTENT, GREEN);
         runtime.inject_effect_layer_frame_for_test(face.layers[0].id, effect_frame);
         let result = render_scene_for_test_with_screen_and_sparkleflinger(

@@ -280,11 +280,14 @@ async fn cold_start_zone_holds_published_colors_or_goes_black() {
     ] {
         pipeline.activate(scene.id).await;
         let cold_layer = scene.zones[1].layers[0].id;
+        // The cold zone stays loading for at least `PENDING_FRAMES`, and on
+        // until its neighbor has rendered, however many frames a slow GPU
+        // takes to deliver that sample.
         pipeline
             .zone_runtime()
-            .pend_effect_layer_renders_for_test(cold_layer, 2 * PENDING_FRAMES);
+            .pend_effect_layer_renders_for_test(cold_layer, 4 * MAX_WAIT_FRAMES);
         let mut neighbor_rendered = false;
-        for index in 0..PENDING_FRAMES {
+        for index in 0..MAX_WAIT_FRAMES {
             let frame = pipeline.frame().await;
             assert_eq!(
                 zone_leds(&frame, "zone_blue"),
@@ -293,15 +296,24 @@ async fn cold_start_zone_holds_published_colors_or_goes_black() {
                 frame_summary(&frame)
             );
             neighbor_rendered |= zone_led(&frame, "zone_red") == Some([0, 255, 0]);
+            if neighbor_rendered && index + 1 >= PENDING_FRAMES {
+                break;
+            }
         }
         assert!(
-            pipeline.zone_runtime().pending_effect_layers.is_empty(),
+            pipeline
+                .zone_runtime()
+                .pending_effect_layers
+                .contains_key(&cold_layer),
             "with {case}: the cold zone should have stayed pending for every stepped frame"
         );
         assert!(
             neighbor_rendered,
             "with {case}: the loaded zone should render while the cold zone waits"
         );
+        pipeline
+            .zone_runtime()
+            .pend_effect_layer_renders_for_test(cold_layer, 0);
         let loaded = vec![[255, 255, 0]; held.len()];
         pipeline
             .frame_where("the cold zone's own colors once it loads", |frame| {

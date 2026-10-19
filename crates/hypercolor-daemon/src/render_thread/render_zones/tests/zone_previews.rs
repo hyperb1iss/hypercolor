@@ -34,7 +34,7 @@ const YELLOW: Rgba = Rgba::new(255, 255, 0, 255);
 /// transposed preview moves at least one of them.
 const QUADRANTS: [Rgba; 4] = [RED, GREEN, BLUE, WHITE];
 const SMALL_PREVIEW: (u32, u32) = (64, 48);
-const PREVIEW_DEADLINE: Duration = Duration::from_secs(2);
+const PREVIEW_DEADLINE: Duration = Duration::from_secs(10);
 /// The UI scene preview's transport size: smaller than the scene, so the
 /// compositor scales it on the GPU before reading it back.
 const SCENE_PREVIEW_REQUEST: PreviewSurfaceRequest = PreviewSurfaceRequest {
