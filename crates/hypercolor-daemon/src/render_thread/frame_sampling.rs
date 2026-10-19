@@ -1339,14 +1339,22 @@ pub(crate) fn resolve_led_sampling(
     if scene_snapshot.scene_runtime.active_transition.is_none() {
         sampling.zone_transition_planner.record_stable();
     }
-    sampling.zone_transition_planner.record_published(
-        Arc::clone(&layout),
-        if blended_in_led_space {
-            Some(true)
-        } else {
-            multi_zone_frame
-        },
-    );
+    // Held LEDs are the previous frame's, so they keep its provenance. A fade
+    // that started from per-zone LEDs blends in LED space until it ends,
+    // whatever one of its frames sampled.
+    let per_zone = if blended_in_led_space {
+        Some(true)
+    } else if reuses_published_frame {
+        None
+    } else {
+        multi_zone_frame
+    };
+    let per_zone = per_zone.filter(|&per_zone| {
+        per_zone || !(transition_active && sampling.zone_transition_planner.last_published_per_zone)
+    });
+    sampling
+        .zone_transition_planner
+        .record_published(Arc::clone(&layout), per_zone);
 
     LedSamplingOutcome {
         layout,

@@ -2628,6 +2628,89 @@ async fn gpu_transition_out_of_overlapping_zones_blends_each_led_from_its_own_co
     );
 }
 
+/// A transition out of overlapping zones into a single zone whose layers
+/// compose on the GPU blends each LED from its own color too. The incoming
+/// texture's first LED sample is still in flight when the fade starts, so
+/// that frame holds the published LEDs; holding them must not forget they
+/// were sampled per zone and fall back to the overlap-baked crossfade.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_transition_out_of_overlapping_zones_into_a_gpu_scene_blends_each_led_from_its_own_color()
+ {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut zoned = make_scene("Overlapping Zones");
+    zoned.transition.duration_ms = 0;
+    zoned.zones = overlapping_zones(solid_id);
+    zoned.unassigned_behavior = UnassignedBehavior::Off;
+    let mut primary = primary_zone(
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        test_layout(vec![
+            point_zone("zone_red", "mock:red", 0.5, 0.5),
+            point_zone("zone_blue", "mock:blue", 0.5, 0.5),
+        ]),
+    );
+    primary.layers.push(SceneLayer::from_effect(
+        SceneLayerId::new(),
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        HashMap::new(),
+        None,
+    ));
+    let mut single = make_scene("Single GPU Zone");
+    single.transition.duration_ms = 60_000;
+    single.zones = vec![primary];
+    single.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![zoned.clone(), single.clone()], zoned.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([255, 0, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 0, 255])
+    })
+    .await;
+
+    activate_render_scene(&state, single.id).await;
+    let blended = wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red").is_some_and(|color| color[1] > 0 && color != [0, 255, 0])
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    let red = zone_led(&blended, "zone_red").expect("the red zone's LED should publish");
+    let blue = zone_led(&blended, "zone_blue").expect("the blue zone's LED should publish");
+    assert_eq!(
+        red[2], 0,
+        "the red zone's LED blended through blue: {red:?}"
+    );
+    assert!(
+        red[0] > 0,
+        "the red zone's LED lost its own base color: {red:?}"
+    );
+    assert_eq!(
+        blue[0], 0,
+        "the blue zone's LED blended through red: {blue:?}"
+    );
+}
+
 /// A transition into a multi-zone scene whose content holds still blends
 /// every LED from its own old color toward its own new color on the GPU.
 /// Frames that reuse the retained scene keep no zone colors of their own,
