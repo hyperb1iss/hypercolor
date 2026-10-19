@@ -284,6 +284,16 @@ impl DeviceLifecycleManager {
         self.connect_in_flight.contains_key(&device_id)
     }
 
+    /// When the connect this manager is waiting on for `device_id` was
+    /// issued, or `None` when no connect is in flight.
+    ///
+    /// A device retired meanwhile has none, and a reissued connect carries
+    /// a later instant, so a connect can tell whether it is still wanted.
+    #[must_use]
+    pub fn connect_in_flight_since(&self, device_id: DeviceId) -> Option<Instant> {
+        self.connect_in_flight.get(&device_id).copied()
+    }
+
     /// Transition a device to connected after a successful backend connect.
     pub fn on_connected(
         &mut self,

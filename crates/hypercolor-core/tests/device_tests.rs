@@ -2015,6 +2015,61 @@ async fn orchestrator_full_scan_empty() {
     assert_eq!(report.total_known, 0);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orchestrator_cancellation_drains_a_scanner_that_is_mid_work() {
+    let registry = DeviceRegistry::new();
+    let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
+    let started = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new(AtomicBool::new(false));
+    let (scanner_started, scanner_release, scanner_finished) = (
+        Arc::clone(&started),
+        Arc::clone(&release),
+        Arc::clone(&finished),
+    );
+    orchestrator.add_source("busy", async move {
+        scanner_started.store(true, Ordering::Release);
+        // Busy inside one poll, so an abort cannot land until it returns.
+        while !scanner_release.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        scanner_finished.store(true, Ordering::Release);
+        Ok::<_, anyhow::Error>(vec![DiscoveredDevice {
+            fingerprint: DeviceFingerprint::from_persisted("test:busy".to_owned()),
+            connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+            info: mock_device_info("Busy"),
+            metadata: HashMap::new(),
+            claim: None,
+        }])
+    });
+
+    let cancel = Arc::new(tokio::sync::Notify::new());
+    let cancel_signal = Arc::clone(&cancel);
+    let scan = tokio::spawn(async move {
+        orchestrator
+            .full_scan_with_progress_until(cancel_signal.notified(), |_| async {})
+            .await
+    });
+    while !started.load(Ordering::Acquire) {
+        tokio::task::yield_now().await;
+    }
+    cancel.notify_one();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !scan.is_finished(),
+        "cancellation returned before the scanner stopped"
+    );
+
+    release.store(true, Ordering::Release);
+    let report = tokio::time::timeout(Duration::from_secs(2), scan)
+        .await
+        .expect("cancelled scan returns once the scanner stops")
+        .expect("scan task");
+    assert!(report.is_none());
+    assert!(finished.load(Ordering::Acquire));
+    assert_eq!(registry.len().await, 0, "a cancelled batch merges nothing");
+}
+
 #[tokio::test]
 async fn orchestrator_registers_scanners() {
     let registry = DeviceRegistry::new();

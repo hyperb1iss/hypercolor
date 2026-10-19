@@ -347,6 +347,9 @@ impl DaemonState {
         if let Some(handle) = self.discovery_task.take() {
             handle.abort();
         }
+        // Driver-requested scans run in their own lanes; stop them before
+        // device cleanup so none can activate a device after it.
+        self.discovery_runtime().target_lanes.shut_down().await;
         if let Some(handle) = self.driver_reconcile_task.take() {
             handle.abort();
         }

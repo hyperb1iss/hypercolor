@@ -10,8 +10,9 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::network::{config_key_touches_drivers, reconcile_driver_output_backends};
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryConnectBehavior,
-    DriverConfigView, DriverDescriptor, DriverError, DriverHost, DriverModule, OutputBinding,
+    BackendInfo, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
+    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverDescriptor, DriverError,
+    DriverHost, DriverModule, OutputBinding,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
@@ -125,6 +126,42 @@ impl DeviceBackend for FixtureBackend {
 
     async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         Ok(())
+    }
+}
+
+static COUNTING_DISCOVERY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "counting-discovery",
+    "Counting Discovery",
+    DriverTransportKind::Bridge,
+    true,
+    false,
+);
+
+/// Discovery-only driver that counts how often the host scans it.
+struct CountingDiscoveryDriver {
+    scans: Arc<AtomicUsize>,
+}
+
+impl DriverModule for CountingDiscoveryDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &COUNTING_DISCOVERY_DESCRIPTOR
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl DiscoveryCapability for CountingDiscoveryDriver {
+    async fn discover(
+        &self,
+        _host: &dyn DriverHost,
+        _request: &DiscoveryRequest,
+        _config: DriverConfigView<'_>,
+    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+        self.scans.fetch_add(1, Ordering::Relaxed);
+        Ok(Vec::new())
     }
 }
 
@@ -341,6 +378,41 @@ async fn retained_runtime_does_not_keep_daemon_state_alive() {
             .await
             .is_err()
     );
+    assert!(retained.request_discovery("fixture-bridge").await.is_err());
+}
+
+#[tokio::test]
+async fn retained_runtime_requests_a_driver_scoped_discovery() {
+    let scans = Arc::new(AtomicUsize::new(0));
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(CountingDiscoveryDriver {
+            scans: Arc::clone(&scans),
+        })
+        .expect("counting driver should register");
+    let (state, _tmp) = isolated_state(registry);
+    let retained = state
+        .driver_host()
+        .runtime_handle()
+        .expect("owned runtime handle");
+
+    retained
+        .request_discovery("counting-discovery")
+        .await
+        .expect("discovery request should be scheduled");
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while scans.load(Ordering::Relaxed) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the requested driver is scanned");
+
+    let error = retained
+        .request_discovery("no-such-driver")
+        .await
+        .expect_err("an unknown driver cannot be scanned");
+    assert!(error.to_string().contains("no-such-driver"), "{error}");
 }
 
 #[tokio::test]
