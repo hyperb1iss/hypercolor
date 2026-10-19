@@ -41,7 +41,7 @@ Output is a styled table by default. Use `--format plain` for a one-line text su
 
 ## Step 2: read the render checks
 
-The `render` category has four checks for FPS problems.
+The `render` category has five checks for FPS and LED output problems.
 
 ### `render_loop`
 
@@ -84,6 +84,21 @@ Key flags to watch:
 - `gpu_sample_queue_saturated=true`: the GPU import slot pool is exhausted; multiple frames are queued behind a single GPU fence.
 - `output_source`: `current_frame` is healthy. `published_frame` or `routed_reuse` means the loop is serving a cached frame because the current render is not keeping up.
 - `sample_us` / `push_us`: time in microseconds for spatial sampling (canvas to LED positions) and writing to devices. Elevated `push_us` across many devices points to USB saturation (step 3).
+
+### `multi_zone_sampling`
+
+```
+multi_zone_sampling   gpu_sampled_zones=2, cpu_sampled_zones=0, held_zones=0, gpu_sampling_passes=3, zone_composition_skips=1
+```
+
+On the GPU compositor, a scene with more than one zone samples each zone's LEDs from that zone's own texture. This check counts the latest frame's zones by how they sampled:
+
+- `held_zones`: zones with no frame to sample, whose LEDs hold their last colors or go black. Any held zone turns the check into a warning. A zone still loading its first frame holds briefly; a zone that stays held has a layer that never produces a frame the sampler can read.
+- `cpu_sampled_zones`: zones whose frames were already on the CPU and sampled there.
+- `gpu_sampling_passes`: texture passes the GPU sampler encoded this frame, one per zone texture plus one when unassigned outputs fall back to a zone. Zero means the sample cache answered.
+- `zone_composition_skips`: zones whose layers did not change, so they reused the previous frame's composition.
+
+A single-zone scene or the CPU compositor samples no per-zone set, so the check passes as not applicable.
 
 ### `recent_output_sources`
 
