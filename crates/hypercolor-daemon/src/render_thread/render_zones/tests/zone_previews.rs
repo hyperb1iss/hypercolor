@@ -196,9 +196,11 @@ impl PreviewScene {
     ) -> (ZoneResult, Vec<(ZoneId, PublishedSurface)>) {
         let deadline = Instant::now() + PREVIEW_DEADLINE;
         loop {
+            self.sparkleflinger.wait_for_gpu_frame_budget();
             let result = self.render();
             self.stage(demand, &result);
             let previews = self.collect(demand, &result);
+            self.sparkleflinger.end_gpu_frame();
             if done(&previews) {
                 return (result, previews);
             }
