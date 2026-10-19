@@ -93,10 +93,12 @@ const DISPLAY_FINALIZE_PARAM_BYTES: usize = 96;
 const PREVIEW_SCALE_PARAM_BYTES: usize = 16;
 const MAX_CACHED_PREVIEW_SURFACES: usize = 3;
 // A render owns the previous retained generation until the replacement frame
-// is snapshotted, then retention atomically drops it. Scene GPU frames are not
-// published outside that serial frame executor, so exactly two generations
-// cover every in-engine lease overlap without render-path allocation.
-const IMMUTABLE_SCENE_GENERATIONS_IN_FLIGHT: usize = 2;
+// is snapshotted, then retention atomically drops it, and a scene transition
+// holds its frozen base generation (the outgoing scene, or an interrupted
+// blend) for the whole fade. Scene GPU frames are not published outside that
+// serial frame executor, so three generations cover every in-engine lease
+// overlap without render-path allocation.
+const IMMUTABLE_SCENE_GENERATIONS_IN_FLIGHT: usize = 3;
 static NEXT_GPU_TEXTURE_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_GPU_SURFACE_SET_GENERATION: AtomicU64 = AtomicU64::new(1);
 #[allow(

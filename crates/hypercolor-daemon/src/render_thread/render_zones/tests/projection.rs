@@ -1729,8 +1729,8 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
-        Some(stable_allocations + 3),
-        "scene resize should allocate only its two immutable generations"
+        Some(stable_allocations + 4),
+        "scene resize should allocate only its three immutable generations"
     );
 
     let prepared = sparkleflinger.prepare_projected_scene_resources(
@@ -1743,14 +1743,14 @@ fn projected_scene_resources_allocate_only_during_admission_changes() {
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
-        Some(stable_allocations + 3)
+        Some(stable_allocations + 4)
     );
     let prepared =
         sparkleflinger.prepare_projected_scene_resources(&resized_requirements, true, 8, 8, None);
     sparkleflinger.apply_projected_scene_resources(prepared);
     assert_eq!(
         sparkleflinger.snapshot_texture_allocation_count_for_test(),
-        Some(stable_allocations + 4)
+        Some(stable_allocations + 5)
     );
 }
 

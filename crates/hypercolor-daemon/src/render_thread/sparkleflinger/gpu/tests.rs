@@ -1892,7 +1892,7 @@ fn gpu_compositor_rejects_every_cached_surface_texture_before_reactivation() {
 }
 
 #[test]
-fn immutable_scene_pool_covers_two_overlapping_generations_without_growth() {
+fn immutable_scene_pool_covers_three_overlapping_generations_without_growth() {
     let mut compositor = match GpuSparkleFlinger::new() {
         Ok(compositor) => compositor,
         Err(_) => return,
@@ -1933,7 +1933,6 @@ fn immutable_scene_pool_covers_two_overlapping_generations_without_growth() {
         .expect("second generation should snapshot")
         .expect("second generation should exist");
     assert_ne!(first.storage_id, second.storage_id);
-
     compositor
         .compose(
             &CompositionPlan::single(
@@ -1944,10 +1943,28 @@ fn immutable_scene_pool_covers_two_overlapping_generations_without_growth() {
             false,
             None,
         )
-        .expect("third current output should compose");
+        .expect("third generation should compose");
+    let third = compositor
+        .snapshot_current_output_frame()
+        .expect("a transition base beside two render generations should snapshot")
+        .expect("third generation should exist");
+    assert_ne!(third.storage_id, first.storage_id);
+    assert_ne!(third.storage_id, second.storage_id);
+
+    compositor
+        .compose(
+            &CompositionPlan::single(
+                4,
+                4,
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(43))),
+            ),
+            false,
+            None,
+        )
+        .expect("fourth current output should compose");
     assert!(
         compositor.snapshot_current_output_frame().is_err(),
-        "a third overlapping lease is outside the serial executor ownership bound"
+        "a fourth overlapping lease is outside the serial executor ownership bound"
     );
     let first_storage_id = first.storage_id;
     drop(first);
