@@ -580,6 +580,7 @@ impl DaemonState {
                 warn!(selector, scene_id = %scene_id, %error, "Failed to activate configured startup scene");
                 return;
             }
+            mutation.realign_primary_layout(self.spatial_engine.snapshot().layout().as_ref());
             if let Err(error) = self.scene_manager.commit_mutation(mutation).await {
                 warn!(selector, scene_id = %scene_id, %error, "Failed to commit configured startup scene");
                 return;

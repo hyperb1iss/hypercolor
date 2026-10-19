@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use hypercolor_core::scene::{
     OutputPlacement, SceneManager, ZoneMetaPatch, ZoneMutationError, make_scene,
+    primary_zone_follows_active_layout,
 };
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
@@ -605,6 +606,41 @@ fn layout_sync_preserves_primary_assignment_when_custom_zones_exist() {
         .expect("primary zone should exist");
     assert!(!changed);
     assert_eq!(after, before);
+}
+
+#[test]
+fn primary_zone_follows_active_layout_until_a_custom_led_zone_exists() {
+    let mut manager = SceneManager::with_default();
+    let scene_id = SceneId::DEFAULT;
+    manager
+        .upsert_primary_zone(
+            &sample_effect("Primary"),
+            HashMap::new(),
+            None,
+            sample_layout("primary-zone"),
+        )
+        .expect("primary should be created");
+    let follows = |manager: &SceneManager| {
+        primary_zone_follows_active_layout(
+            manager
+                .active_scene()
+                .expect("default scene should be active"),
+        )
+    };
+    assert!(follows(&manager));
+
+    let custom = manager
+        .create_zone(&scene_id, "Custom".to_owned(), None, (320, 200))
+        .expect("custom zone should be created");
+    assert!(
+        !follows(&manager),
+        "an empty custom LED zone already makes the primary layout scene-local"
+    );
+
+    manager
+        .delete_zone(&scene_id, custom)
+        .expect("custom zone should delete");
+    assert!(follows(&manager));
 }
 
 #[test]

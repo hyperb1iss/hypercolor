@@ -7,9 +7,10 @@ use hypercolor_types::api::layouts::{
     LayoutSummary, PreviewLayoutResponse, UpdateLayoutRequest,
 };
 use hypercolor_types::identity::LayoutId;
-use hypercolor_types::spatial::{SamplingMode, SpatialLayout};
+use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
 
 use crate::domain::DomainError;
+use crate::scene_transactions::LayoutUpdateGuard;
 
 use super::{
     LayoutContext, LayoutMutationResult, LayoutMutationTestOperation, LayoutMutationTestPoint,
@@ -330,6 +331,124 @@ impl LayoutContext {
         })
     }
 
+    /// Carry a Studio save on a primary zone that follows the active
+    /// layout into that layout.
+    ///
+    /// Effect applies, layout publications, and the startup restore
+    /// rebuild such a zone from the active layout, so a placement saved
+    /// only on the zone is lost at the next rebuild. Only what the save
+    /// changed travels: for every output whose placement differs between
+    /// `before` and `after`, the placement fields are copied by output id
+    /// onto the stored entry and onto the published layout, wherever each
+    /// already holds that output. Outputs the zone holds that neither
+    /// layout knows (members assigned in Studio) are added to both, as the
+    /// startup restore would. Nothing is removed, output order and every
+    /// other field stay as they were, auto-layout exclusions are left
+    /// alone, and a stored edit that was never applied stays stored and
+    /// unapplied. An active layout with no stored entry is only published.
+    ///
+    /// The stored entry is persisted first, then the published layout goes
+    /// out under the caller's guard; a rejected publication restores the
+    /// stored entry. Returns whether a layout was published. The caller
+    /// runs connectivity convergence only after releasing the guard,
+    /// because that pass takes the guard itself.
+    ///
+    /// # Errors
+    ///
+    /// Persistence and publication failures, after the stored entry has
+    /// been rolled back, or naming the rollback failure as well when it
+    /// could not be.
+    pub(crate) async fn mirror_primary_zone_save_under_guard(
+        &self,
+        guard: &LayoutUpdateGuard,
+        before: &[Output],
+        after: &[Output],
+        runtime: &LayoutRuntime,
+    ) -> Result<bool, DomainError> {
+        let current = self.current();
+        let layout_id = current.id.clone();
+        let stored = self.catalog.entries().read().await.get(&layout_id).cloned();
+
+        let mut published = current.clone();
+        let mut stored_next = stored.clone();
+        for saved in after {
+            let moved = before
+                .iter()
+                .find(|output| output.id == saved.id)
+                .is_none_or(|output| placement_differs(output, saved));
+            let in_published = copy_placement_if_held(&mut published, saved, moved);
+            let in_stored = stored_next
+                .as_mut()
+                .is_some_and(|layout| copy_placement_if_held(layout, saved, moved));
+            if !in_published && !in_stored {
+                published.zones.push(saved.clone());
+                if let Some(layout) = stored_next.as_mut() {
+                    layout.zones.push(saved.clone());
+                }
+            }
+        }
+
+        let stored_changed = stored_next != stored;
+        let published_changed = published != current;
+        if stored_changed && let Some(layout) = stored_next {
+            self.catalog
+                .entries()
+                .write()
+                .await
+                .insert(layout_id.clone(), layout);
+            if let Err(error) = self.catalog.persist().await {
+                let rollback = self
+                    .restore_catalog_entry(&layout_id, stored.clone())
+                    .await
+                    .err()
+                    .map(|error| format!("layout store rollback failed: {error}"));
+                return Err(layout_store_persistence_error(
+                    "zone layout save",
+                    error,
+                    rollback,
+                ));
+            }
+        }
+        if published_changed
+            && let Err(error) = self
+                .admit_persisted_update_under_guard(guard, published, runtime)
+                .await
+        {
+            if stored_changed
+                && let Err(rollback_error) = self.restore_catalog_entry(&layout_id, stored).await
+            {
+                return Err(DomainError::Internal(anyhow::anyhow!(
+                    "{error}; layout store rollback failed: {rollback_error}"
+                )));
+            }
+            return Err(layout_update_domain_error(error));
+        }
+
+        if stored_changed || published_changed {
+            self.publish_layout_changed(None, layout_id);
+        }
+        Ok(published_changed)
+    }
+
+    async fn restore_catalog_entry(
+        &self,
+        layout_id: &str,
+        previous: Option<SpatialLayout>,
+    ) -> anyhow::Result<()> {
+        {
+            let mut layouts = self.catalog.entries().write().await;
+            match previous {
+                Some(previous) => {
+                    layouts.insert(layout_id.to_owned(), previous);
+                }
+                None => {
+                    layouts.remove(layout_id);
+                }
+            }
+        }
+        self.catalog.persist().await
+    }
+
     pub(crate) async fn preview(
         &self,
         layout: SpatialLayout,
@@ -639,4 +758,30 @@ impl LayoutContext {
         drop(guard);
         active_layout_error.map_or(Ok(()), Err)
     }
+}
+
+/// Whether the fields a zone layout save carries differ between two copies
+/// of one output.
+fn placement_differs(before: &Output, after: &Output) -> bool {
+    before.position != after.position
+        || before.size != after.size
+        || before.rotation.to_bits() != after.rotation.to_bits()
+        || before.scale.to_bits() != after.scale.to_bits()
+        || before.orientation != after.orientation
+}
+
+/// Copy a saved placement onto `layout`'s copy of the output when `moved`.
+/// Returns whether `layout` holds the output at all.
+fn copy_placement_if_held(layout: &mut SpatialLayout, saved: &Output, moved: bool) -> bool {
+    let Some(output) = layout.zones.iter_mut().find(|output| output.id == saved.id) else {
+        return false;
+    };
+    if moved {
+        output.position = saved.position;
+        output.size = saved.size;
+        output.rotation = saved.rotation;
+        output.scale = saved.scale;
+        output.orientation = saved.orientation;
+    }
+    true
 }

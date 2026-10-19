@@ -146,6 +146,7 @@ pub async fn activate_selected_fields(
             SceneChangeReason::UserActivate,
         )?;
         mutation.sync_active_display_surfaces(&display);
+        mutation.realign_primary_layout(&ctx.layout.current());
         let admitted = mutation
             .scenes()
             .get(&expected.scene.id)

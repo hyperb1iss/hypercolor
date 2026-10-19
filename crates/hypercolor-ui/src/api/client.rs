@@ -689,9 +689,32 @@ where
     Req: Serialize + ?Sized,
     Res: DeserializeOwned,
 {
+    Ok(
+        send_json_versioned_with_revision(method, url, body, if_match)
+            .await?
+            .map(|(data, _)| data),
+    )
+}
+
+/// [`send_json_versioned`], also returning the revision the daemon sent in
+/// `ETag`. One write can move the revision by more than one, so a caller
+/// that guards its next write should carry this rather than add one.
+pub async fn send_json_versioned_with_revision<Req, Res>(
+    method: HttpMethod,
+    url: &str,
+    body: Option<&Req>,
+    if_match: Option<u64>,
+) -> ApiResult<MutationOutcome<(Res, Option<u64>)>>
+where
+    Req: Serialize + ?Sized,
+    Res: DeserializeOwned,
+{
     let resp = send_request(method, url, body, if_match).await?;
     match resp.status {
-        200..=299 => Ok(MutationOutcome::Applied(parse_envelope(&resp)?)),
+        200..=299 => Ok(MutationOutcome::Applied((
+            parse_envelope(&resp)?,
+            etag_revision(&resp),
+        ))),
         412 => {
             let body: serde_json::Value =
                 serde_json::from_slice(&resp.body).map_err(|e| ApiError::Parse(e.to_string()))?;
@@ -704,6 +727,14 @@ where
         }
         _ => Err(http_error(&resp)),
     }
+}
+
+/// Read the scene revision a successful mutation reported in `ETag`.
+fn etag_revision(resp: &HttpResponse) -> Option<u64> {
+    resp.headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case("etag"))
+        .and_then(|header| header.value.trim().trim_matches('"').parse().ok())
 }
 
 /// Extract the authoritative version token from a `412` response body.
@@ -916,9 +947,9 @@ pub async fn delete_empty(url: &str) -> ApiResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApiError, DaemonTransport, MutationOutcome, authorization_token,
+        ApiError, DaemonTransport, HttpHeader, HttpResponse, MutationOutcome, authorization_token,
         begin_native_daemon_verification, clear_verified_daemon_connection, daemon_url,
-        extract_error_message, install_verified_daemon_connection,
+        etag_revision, extract_error_message, install_verified_daemon_connection,
         parse_dev_control_credential_fragment, reset_daemon_transport_for_test,
         stale_current_version, validate_relative_path,
     };
@@ -1027,6 +1058,25 @@ mod tests {
             stale_current_version(&serde_json::json!({ "current": 17 })),
             None
         );
+    }
+
+    #[test]
+    fn etag_revision_reads_the_quoted_scene_revision() {
+        let response = |headers: &[(&str, &str)]| HttpResponse {
+            status: 200,
+            headers: headers
+                .iter()
+                .map(|(name, value)| HttpHeader {
+                    name: (*name).to_owned(),
+                    value: (*value).to_owned(),
+                })
+                .collect(),
+            body: Vec::new(),
+        };
+        assert_eq!(etag_revision(&response(&[("etag", "\"18\"")])), Some(18));
+        assert_eq!(etag_revision(&response(&[("ETag", "19")])), Some(19));
+        assert_eq!(etag_revision(&response(&[("etag", "W/\"x\"")])), None);
+        assert_eq!(etag_revision(&response(&[])), None);
     }
 
     #[test]
