@@ -2224,6 +2224,20 @@ impl PipelineRuntime {
         interaction_routing: InteractionRoutingControl,
         progress: Option<&StartupProgress>,
     ) -> Result<Self> {
+        // The display compositor finalizes faces over the scene compositor's
+        // GPU output, so both must live on one device. Startup always hands
+        // one in; a caller that leaves it unset gets one opened here rather
+        // than two compositors that cannot read each other's textures.
+        #[cfg(feature = "wgpu")]
+        let render_gpu_device = match render_gpu_device {
+            None if render_acceleration_mode == RenderAccelerationMode::Gpu => {
+                Some(GpuRenderDevice::new_with_backend_preference(
+                    "SparkleFlinger GPU compositor",
+                    super::gpu_device::GpuBackendPreference::Default,
+                )?)
+            }
+            device => device,
+        };
         let mut sparkleflinger = SparkleFlinger::new_with_gpu_device(
             render_acceleration_mode,
             #[cfg(feature = "wgpu")]
