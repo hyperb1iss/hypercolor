@@ -142,6 +142,7 @@ impl GpuSparkleFlinger {
             cached_readback_surface: None,
             cached_preview_surfaces: Vec::with_capacity(MAX_CACHED_PREVIEW_SURFACES),
             frame_in_flight: None,
+            gpu_frame_ends: std::collections::VecDeque::new(),
             pending_preview_map: None,
             ready_preview_surface: None,
             sampling_latch: SamplingReadbackLatch::default(),

@@ -338,6 +338,7 @@ pub(crate) async fn execute_frame(
             .frame_policy
             .complete_throttled_frame(&mut render_loop, Duration::ZERO);
     }
+    render.sparkleflinger.wait_for_gpu_frame_budget();
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,
         &mut scene.snapshot_cache,
@@ -695,6 +696,7 @@ pub(crate) async fn execute_frame(
             "Retired GPU spatial sampling late finalize failed; dropping stale deferred sample result",
         );
     }
+    render.sparkleflinger.end_gpu_frame();
 
     let postprocess_start = Instant::now();
     let cpu_readback_skipped = matches!(

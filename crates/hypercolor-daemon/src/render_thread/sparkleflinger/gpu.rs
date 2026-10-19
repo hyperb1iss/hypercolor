@@ -194,6 +194,9 @@ pub(crate) struct GpuSparkleFlinger {
     _render_device: GpuRenderDevice,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// The queue position each recent render frame ended at, oldest first,
+    /// so a frame waits for the GPU instead of piling up work behind it.
+    gpu_frame_ends: std::collections::VecDeque<wgpu::SubmissionIndex>,
     probe: GpuCompositorProbe,
     max_buffer_size: u64,
     max_storage_buffer_binding_size: u64,

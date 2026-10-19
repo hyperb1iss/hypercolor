@@ -187,7 +187,55 @@ impl FrameInFlight {
     }
 }
 
+/// Render frames whose GPU work may still be queued when the next frame
+/// starts. A frame waits for the one this many frames back, so a GPU slower
+/// than the frame cadence slows the render loop, and the frame rate adapts,
+/// instead of queueing work it never catches up on.
+const MAX_GPU_FRAMES_IN_FLIGHT: usize = 2;
+
+/// Longest a frame waits for an earlier frame's GPU work before going on
+/// anyway, so a wedged device cannot stall the render loop.
+const GPU_FRAME_WAIT_LIMIT: Duration = Duration::from_millis(250);
+
 impl GpuSparkleFlinger {
+    /// Mark where this render frame's GPU work ends in the queue. The empty
+    /// submission also hands wgpu every queue write the frame made, which it
+    /// otherwise stages until some later submission.
+    pub(in crate::render_thread::sparkleflinger) fn end_gpu_frame(&mut self) {
+        let frame_end = self.queue.submit(std::iter::empty());
+        self.gpu_frame_ends.push_back(frame_end);
+    }
+
+    /// Wait until no more than `MAX_GPU_FRAMES_IN_FLIGHT - 1` earlier frames
+    /// still have GPU work queued.
+    pub(in crate::render_thread::sparkleflinger) fn wait_for_gpu_frame_budget(&mut self) {
+        while self.gpu_frame_ends.len() >= MAX_GPU_FRAMES_IN_FLIGHT {
+            let Some(frame_end) = self.gpu_frame_ends.pop_front() else {
+                break;
+            };
+            match self.device.poll(wgpu::PollType::Wait {
+                submission_index: Some(frame_end),
+                timeout: Some(GPU_FRAME_WAIT_LIMIT),
+            }) {
+                Ok(_) => {}
+                Err(wgpu::PollError::Timeout) => {
+                    tracing::debug!(
+                        limit_ms = GPU_FRAME_WAIT_LIMIT.as_millis(),
+                        "GPU frame work outlasted the in-flight wait; continuing"
+                    );
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "GPU frame in-flight wait failed");
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger) fn gpu_frames_in_flight(&self) -> usize {
+        self.gpu_frame_ends.len()
+    }
+
     pub(in crate::render_thread::sparkleflinger::gpu) fn flush_pending_output_submission(
         &mut self,
     ) -> Result<()> {

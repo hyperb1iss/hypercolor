@@ -1129,6 +1129,32 @@ impl SparkleFlinger {
         composed.preview_surface.or(composed.sampling_surface)
     }
 
+    /// Close this render frame's GPU work; see [`Self::wait_for_gpu_frame_budget`].
+    pub(crate) fn end_gpu_frame(&mut self) {
+        #[cfg(feature = "wgpu")]
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
+            gpu.end_gpu_frame();
+        }
+    }
+
+    /// Wait for the GPU to finish an earlier frame before this one queues
+    /// more work, so GPU latency stays bounded on a device slower than the
+    /// frame cadence. A no-op on the CPU backend.
+    pub(crate) fn wait_for_gpu_frame_budget(&mut self) {
+        #[cfg(feature = "wgpu")]
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
+            gpu.wait_for_gpu_frame_budget();
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn gpu_frames_in_flight_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.gpu_frames_in_flight()),
+        }
+    }
+
     #[cfg(feature = "wgpu")]
     pub(crate) fn begin_media_upload_frame(&mut self) {
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
