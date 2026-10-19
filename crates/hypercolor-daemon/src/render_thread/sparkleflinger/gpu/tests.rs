@@ -2330,6 +2330,159 @@ fn gpu_compositor_skips_cpu_readback_when_canvas_is_not_required() {
     assert!(!composed.bypassed);
 }
 
+const QUEUE_WRITE_STAGING_FRAMES: u8 = 48;
+
+/// Staging buffers live on the compositor's device once its GPU work drains.
+///
+/// wgpu-core labels the buffer behind every `write_texture`/`write_buffer`
+/// "(wgpu internal) Staging" and keeps it until a submit carries the write
+/// and the GPU passes it. `None` when the backend keeps no allocator report.
+fn live_queue_write_staging(compositor: &GpuSparkleFlinger) -> Option<usize> {
+    compositor
+        .device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(5)),
+        })
+        .expect("submitted GPU work should drain before staging is counted");
+    let report = compositor.device.generate_allocator_report()?;
+    Some(
+        report
+            .allocations
+            .iter()
+            .filter(|allocation| allocation.name.contains("Staging"))
+            .count(),
+    )
+}
+
+/// Run frames the way the render thread does, each ending in
+/// `end_gpu_frame`, and require queue-write staging to stay flat: one frame
+/// leaking its uploads leaks them on every frame after it.
+fn assert_frames_release_queue_write_staging(
+    case: &str,
+    mut compose_frame: impl FnMut(&mut GpuSparkleFlinger, u8),
+) {
+    let Some(mut compositor) = gpu_test_compositor() else {
+        return;
+    };
+    let Some(baseline) = live_queue_write_staging(&compositor) else {
+        eprintln!("{case}: this backend keeps no allocator report; skipping");
+        return;
+    };
+    for frame in 0..QUEUE_WRITE_STAGING_FRAMES {
+        compose_frame(&mut compositor, frame);
+        compositor.end_gpu_frame();
+    }
+    let live =
+        live_queue_write_staging(&compositor).expect("the allocator report should stay available");
+    assert!(
+        live <= baseline + 2,
+        "{case}: {live} queue-write staging buffers live after {QUEUE_WRITE_STAGING_FRAMES} \
+         frames (baseline {baseline})"
+    );
+}
+
+fn changing_canvas_plan(frame: u8) -> CompositionPlan {
+    CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(frame))),
+    )
+}
+
+#[test]
+fn bypassed_canvas_frames_without_consumers_release_upload_staging() {
+    // The device-less daemon: no LED zones to sample and no preview, so
+    // nothing in the frame submits after the bypass upload.
+    assert_frames_release_queue_write_staging("bypass, no consumers", |compositor, frame| {
+        let composed = compositor
+            .compose(&changing_canvas_plan(frame), false, None)
+            .expect("a single CPU canvas should bypass composition");
+        assert!(composed.bypassed);
+    });
+}
+
+#[test]
+fn bypassed_canvas_frames_with_full_size_preview_release_upload_staging() {
+    // A full-size preview takes the CPU canvas straight from the bypass and
+    // submits nothing either.
+    assert_frames_release_queue_write_staging("bypass, full-size preview", |compositor, frame| {
+        let plan = changing_canvas_plan(frame);
+        let composed = compositor
+            .compose(&plan, false, full_preview_request(&plan))
+            .expect("a full-size preview should keep the bypass");
+        assert!(composed.bypassed);
+        assert!(composed.preview_surface.is_some());
+    });
+}
+
+#[test]
+fn bypassed_canvas_frames_sampled_on_the_cpu_release_upload_staging() {
+    assert_frames_release_queue_write_staging("bypass, CPU sampling", |compositor, frame| {
+        let composed = compositor
+            .compose(&changing_canvas_plan(frame), true, None)
+            .expect("CPU sampling should keep the bypass");
+        assert!(composed.bypassed);
+        assert!(composed.sampling_canvas.is_some());
+    });
+}
+
+#[test]
+fn composed_frames_without_consumers_release_upload_staging() {
+    // The encoder of an unconsumed composition is staged, then superseded
+    // and dropped by the next frame, so it never carries the frame's writes.
+    assert_frames_release_queue_write_staging("composition, no consumers", |compositor, frame| {
+        let plan = CompositionPlan::with_layers(
+            4,
+            4,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(frame))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(patterned_canvas(frame.wrapping_add(97))),
+                    0.35,
+                ),
+            ],
+        );
+        let composed = compositor
+            .compose(&plan, false, None)
+            .expect("two CPU layers should compose on the GPU");
+        assert!(!composed.bypassed);
+    });
+}
+
+#[test]
+fn static_base_with_animated_overlay_releases_upload_staging() {
+    // The base canvas never changes, so its front upload is cached and
+    // skipped; the overlay changes every frame and uploads through
+    // create_buffer_init, whose mapped-at-creation staging also waits in
+    // the queue's pending writes. Compose params stay byte-identical, so
+    // the uniform ring is not written either.
+    let base = patterned_canvas(7);
+    let base_keepalive = base.clone();
+    assert!(base.is_shared());
+    assert_frames_release_queue_write_staging(
+        "static base + animated overlay, no consumers",
+        |compositor, frame| {
+            let _ = &base_keepalive;
+            let plan = CompositionPlan::with_layers(
+                4,
+                4,
+                vec![
+                    CompositionLayer::replace(ProducerFrame::Canvas(base.clone())),
+                    CompositionLayer::alpha(
+                        ProducerFrame::Canvas(patterned_canvas(frame.wrapping_add(97))),
+                        0.35,
+                    ),
+                ],
+            );
+            let composed = compositor
+                .compose(&plan, false, None)
+                .expect("two CPU layers should compose on the GPU");
+            assert!(!composed.bypassed);
+        },
+    );
+}
+
 #[test]
 fn gpu_steady_state_animated_compose_keeps_params_in_uniform_ring() {
     let Some(mut compositor) = gpu_test_compositor() else {

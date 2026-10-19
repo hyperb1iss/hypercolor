@@ -687,7 +687,7 @@ fn stored_active_layout(rig: &Rig) -> SpatialLayout {
 
 fn strip_c_on_another_device() -> Output {
     let mut strip_c = strip("strip-c", "ch1");
-    strip_c.device_id = "mock:other".to_owned();
+    "mock:other".clone_into(&mut strip_c.device_id);
     strip_c
 }
 

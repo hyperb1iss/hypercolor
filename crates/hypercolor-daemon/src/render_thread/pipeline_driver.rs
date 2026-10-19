@@ -103,6 +103,7 @@ async fn handle_inactive_render_loop(
             &mut runtime.render,
         )
         .await;
+        runtime.render.sparkleflinger.end_gpu_frame();
     }
 
     runtime.frame_loop.clear_input_demands();

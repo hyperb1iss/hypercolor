@@ -200,10 +200,15 @@ const GPU_FRAME_WAIT_LIMIT: Duration = Duration::from_millis(250);
 impl GpuSparkleFlinger {
     /// Mark where this render frame's GPU work ends in the queue. The empty
     /// submission also hands wgpu every queue write the frame made, which it
-    /// otherwise stages until some later submission.
+    /// otherwise stages until some later submission. Only the newest marks
+    /// are kept, so a driver that never waits on them, such as an
+    /// interactive preview, does not accumulate them.
     pub(in crate::render_thread::sparkleflinger) fn end_gpu_frame(&mut self) {
         let frame_end = self.queue.submit(std::iter::empty());
         self.gpu_frame_ends.push_back(frame_end);
+        while self.gpu_frame_ends.len() > MAX_GPU_FRAMES_IN_FLIGHT {
+            self.gpu_frame_ends.pop_front();
+        }
     }
 
     /// Wait until no more than `MAX_GPU_FRAMES_IN_FLIGHT - 1` earlier frames
