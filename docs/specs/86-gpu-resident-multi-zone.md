@@ -697,6 +697,22 @@ without it:
   published nothing. Off-extent canvases now upload into the layer's media
   texture ring whenever the plan needs the GPU, and an unchanged canvas
   uploads once.
+- Readback leases carried the sampler's buffer generation, which also
+  advances when a Gaussian kernel grows while the readback ring is kept, so
+  a sample in flight across the growth never freed its slot. Three growths
+  exhausted the ring and froze changing GPU content on the LEDs. Leases now
+  carry a generation that advances only when the ring is replaced.
+- A fade from overlapping zones into a GPU-composed single zone held the
+  published LEDs while its first incoming sample was in flight, and
+  recorded the incoming scene's single-zone provenance for them. The next
+  frame sampled the overlap-baked crossfade. Held LEDs now keep their own
+  provenance, and a fade that starts per zone stays in LED space until it
+  ends.
+- A fade into a scene-sized HTML effect sampled the crossfade too, because
+  the GPU sampler cannot read an imported Servo texture. The composer now
+  copies the imported frame into an immutable compositor snapshot for the
+  fade to sample. Its test covers the snapshot; the composer wiring has no
+  end-to-end test for the same reason as criterion 8 below.
 
 ### 11.3 Remaining Phase 1 work
 
