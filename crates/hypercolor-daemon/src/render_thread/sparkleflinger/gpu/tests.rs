@@ -1673,6 +1673,7 @@ fn gpu_imported_frame_composes_without_cpu_readback() {
     );
 }
 
+#[cfg(feature = "servo-gpu-import")]
 fn quadrant_point_output(id: &str, x: f32, y: f32) -> Output {
     Output {
         id: id.into(),
