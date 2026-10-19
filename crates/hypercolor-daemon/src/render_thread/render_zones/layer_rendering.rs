@@ -202,6 +202,7 @@ impl ZoneRuntime {
         if requirements.reuse_unchanged_composition
             && let Some(held) = self.unchanged_zone_frame(zone, &composition_layers)
         {
+            self.composition_skips = self.composition_skips.saturating_add(1);
             return Ok(Some(held));
         }
         let composition_identity = if requirements.reuse_unchanged_composition {

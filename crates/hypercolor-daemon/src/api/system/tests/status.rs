@@ -85,6 +85,11 @@ async fn status_includes_latest_frame_surface_stats() {
             retained_screen: false,
             composition_bypassed: false,
             gpu_zone_sampling: true,
+            gpu_sampled_zone_count: 2,
+            cpu_sampled_zone_count: 1,
+            held_zone_count: 1,
+            gpu_sampling_passes: 3,
+            zone_composition_skips: 2,
             gpu_sample_deferred: true,
             gpu_sample_stale: true,
             gpu_sample_retry_hit: true,
@@ -299,6 +304,11 @@ async fn status_includes_latest_frame_surface_stats() {
     assert_eq!(json["data"]["latest_frame"]["devices_written"], 3);
     assert_eq!(json["data"]["latest_frame"]["total_leds"], 144);
     assert_eq!(json["data"]["latest_frame"]["gpu_zone_sampling"], true);
+    assert_eq!(json["data"]["latest_frame"]["gpu_sampled_zone_count"], 2);
+    assert_eq!(json["data"]["latest_frame"]["cpu_sampled_zone_count"], 1);
+    assert_eq!(json["data"]["latest_frame"]["held_zone_count"], 1);
+    assert_eq!(json["data"]["latest_frame"]["gpu_sampling_passes"], 3);
+    assert_eq!(json["data"]["latest_frame"]["zone_composition_skips"], 2);
     assert_eq!(json["data"]["latest_frame"]["gpu_sample_deferred"], true);
     assert_eq!(json["data"]["latest_frame"]["gpu_sample_stale"], true);
     assert_eq!(json["data"]["latest_frame"]["gpu_sample_retry_hit"], true);

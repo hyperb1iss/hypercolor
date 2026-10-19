@@ -564,6 +564,9 @@ pub struct SparkleFlinger {
     preview_surface_pool: RenderSurfacePool,
     composition_surface_pool: RenderSurfacePool,
     face_overlay_surface_pool: RenderSurfacePool,
+    /// Texture passes the GPU sampler encoded for LED sampling since the
+    /// last `take_led_sample_passes`.
+    led_sample_passes: u32,
 }
 
 pub(crate) enum SparkleFlingerCanvasPreparation {
@@ -896,6 +899,7 @@ impl SparkleFlinger {
             preview_surface_pool: new_preview_surface_pool(),
             composition_surface_pool: new_composition_surface_pool(),
             face_overlay_surface_pool: new_composition_surface_pool(),
+            led_sample_passes: 0,
         }
     }
 
@@ -946,6 +950,7 @@ impl SparkleFlinger {
             preview_surface_pool: new_preview_surface_pool(),
             composition_surface_pool: new_composition_surface_pool(),
             face_overlay_surface_pool: new_composition_surface_pool(),
+            led_sample_passes: 0,
         })
     }
 
@@ -1517,16 +1522,21 @@ impl SparkleFlinger {
             }
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => {
+                let passes_before = gpu.sample_pass_count();
                 let dispatch = match request {
                     ZoneSamplingRequest::Output {
                         prepared_zones,
                         textures,
-                    } => gpu.begin_sample_output_into(prepared_zones, textures, zones)?,
+                    } => gpu.begin_sample_output_into(prepared_zones, textures, zones),
                     ZoneSamplingRequest::ZoneTextures(textures) => {
-                        gpu.begin_sample_zone_textures_into(textures, zones)?
+                        gpu.begin_sample_zone_textures_into(textures, zones)
                     }
                 };
-                Ok(match dispatch {
+                let encoded = gpu.sample_pass_count().saturating_sub(passes_before);
+                self.led_sample_passes = self
+                    .led_sample_passes
+                    .saturating_add(u32::try_from(encoded).unwrap_or(u32::MAX));
+                Ok(match dispatch? {
                     GpuZoneSamplingDispatch::Unsupported => ZoneSamplingDispatch::Unsupported,
                     GpuZoneSamplingDispatch::Ready => ZoneSamplingDispatch::Ready,
                     GpuZoneSamplingDispatch::Saturated => ZoneSamplingDispatch::Saturated,
@@ -1795,6 +1805,13 @@ impl SparkleFlinger {
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.submit_pending_preview_work(),
         }
+    }
+
+    /// Texture passes the GPU sampler encoded for LED sampling since the
+    /// last call: one per sampled zone texture, or one for the compositor
+    /// output, and none when the sample cache answered the dispatch.
+    pub(crate) fn take_led_sample_passes(&mut self) -> u32 {
+        std::mem::take(&mut self.led_sample_passes)
     }
 
     pub(crate) fn take_last_sample_readback_wait_blocked(&mut self) -> bool {

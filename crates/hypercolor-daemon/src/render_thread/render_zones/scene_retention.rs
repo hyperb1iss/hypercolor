@@ -54,6 +54,7 @@ fn zone_result_from_retained(retained: &RetainedRenderZoneFrame) -> ZoneResult {
         active_display_zone_ids: retained.active_display_zone_ids.clone(),
         led_sampling_strategy: LedSamplingStrategy::from_retained(&retained.led_sampling_strategy),
         producer_full_frame_copy: FullFrameCopyMetrics::default(),
+        zone_composition_skips: 0,
         render_us: 0,
         sample_us: 0,
         scene_compose_us: 0,

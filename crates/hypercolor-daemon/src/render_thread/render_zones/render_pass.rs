@@ -24,6 +24,9 @@ pub(super) struct RenderedZonePassOutput {
     pub(super) rendered_zones: RenderedZoneSet,
     pub(super) render_us: u32,
     pub(super) producer_full_frame_copy: FullFrameCopyMetrics,
+    /// Scene zones that reused their held frame because their composition
+    /// key matched (Spec 86 §2.1).
+    pub(super) zone_composition_skips: u32,
 }
 
 pub(super) struct ProjectedSceneFrames {
@@ -115,6 +118,7 @@ impl ZoneRuntime {
         output: &mut RenderedZonePassOutput,
     ) -> Result<ProjectedSceneFrames> {
         let mut projected_scene = ProjectedSceneFrames::default();
+        self.composition_skips = 0;
         if project_scene_with_sparkleflinger {
             projected_scene.layers = std::mem::take(&mut self.projected_scene_layers);
             projected_scene.layers.clear();
@@ -237,6 +241,7 @@ impl ZoneRuntime {
             self.projected_scene_layers = projected_scene.layers;
             return Err(error);
         }
+        output.zone_composition_skips = std::mem::take(&mut self.composition_skips);
         Ok(projected_scene)
     }
 

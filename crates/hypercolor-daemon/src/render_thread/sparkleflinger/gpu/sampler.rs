@@ -454,6 +454,11 @@ impl GpuSparkleFlinger {
         self.spatial_sampler.take_last_readback_wait_blocked()
     }
 
+    /// Sample passes the spatial sampler has encoded since it was created.
+    pub(crate) fn sample_pass_count(&self) -> usize {
+        self.spatial_sampler.sample_dispatch_count()
+    }
+
     pub(crate) const fn max_pending_zone_sampling(&self) -> usize {
         self.spatial_sampler.max_pending_readbacks()
     }

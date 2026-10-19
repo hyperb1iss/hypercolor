@@ -60,6 +60,8 @@ pub(crate) struct ZoneResult {
     pub active_display_zone_ids: Vec<ZoneId>,
     pub led_sampling_strategy: LedSamplingStrategy,
     pub producer_full_frame_copy: FullFrameCopyMetrics,
+    /// Scene zones that reused their held frame instead of composing.
+    pub zone_composition_skips: u32,
     pub render_us: u32,
     pub sample_us: u32,
     pub scene_compose_us: u32,

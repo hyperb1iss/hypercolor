@@ -104,6 +104,9 @@ pub(crate) struct ZoneRuntime {
     last_zone_frames: HashMap<ZoneId, ProducerFrame>,
     /// The layers whose composition each zone's held frame shows.
     zone_composition_identities: HashMap<ZoneId, model::ZoneCompositionIdentity>,
+    /// Zones in the current scene pass whose layers matched their held
+    /// frame's composition, so they reused it without composing.
+    composition_skips: u32,
     #[cfg(all(test, feature = "wgpu"))]
     projected_scene_layer_allocation_count: usize,
     reconciled_dependency_key: Option<SceneDependencyKey>,
@@ -222,6 +225,7 @@ impl ZoneRuntime {
             retained_frame: None,
             last_zone_frames: HashMap::new(),
             zone_composition_identities: HashMap::new(),
+            composition_skips: 0,
             zone_sampling_scratch: Vec::new(),
             last_effect_error: None,
             recovered_effect_error: None,

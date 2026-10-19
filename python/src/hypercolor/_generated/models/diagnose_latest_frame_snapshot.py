@@ -7,6 +7,8 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from typing_extensions import Self
 
+from ..types import UNSET, Unset
+
 T = TypeVar("T", bound="DiagnoseLatestFrameSnapshot")
 
 
@@ -45,6 +47,22 @@ class DiagnoseLatestFrameSnapshot:
         sample_us (int):
         total_leds (int):
         total_us (int):
+        cpu_sampled_zone_count (int | Unset): Scene zones whose LEDs sampled a CPU-backed zone frame on the CPU.
+            Zero when the frame sampled no per-zone set. Absent from older
+            daemons.
+        gpu_sampled_zone_count (int | Unset): Scene zones whose LEDs sample their own zone texture on the GPU; the
+            `gpu_sample_*` flags say whether this frame's sample landed. Zero
+            when the frame sampled no per-zone set (a single-zone scene, or the
+            CPU backend). Absent from older daemons.
+        gpu_sampling_passes (int | Unset): Texture passes the GPU sampler encoded for the frame's LEDs: one per
+            sampled zone texture, plus one when unassigned fallback outputs ride
+            along. Zero when the sample cache answered or nothing dispatched.
+            Absent from older daemons.
+        held_zone_count (int | Unset): Scene zones with no frame to sample, whose LEDs held their published
+            colors or went black. Zero when the frame sampled no per-zone set.
+            Absent from older daemons.
+        zone_composition_skips (int | Unset): Scene zones whose layers matched their held frame, so they skipped
+            composing this frame. Absent from older daemons.
     """
 
     composition_us: int
@@ -78,6 +96,11 @@ class DiagnoseLatestFrameSnapshot:
     sample_us: int
     total_leds: int
     total_us: int
+    cpu_sampled_zone_count: int | Unset = UNSET
+    gpu_sampled_zone_count: int | Unset = UNSET
+    gpu_sampling_passes: int | Unset = UNSET
+    held_zone_count: int | Unset = UNSET
+    zone_composition_skips: int | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -145,6 +168,16 @@ class DiagnoseLatestFrameSnapshot:
 
         total_us = self.total_us
 
+        cpu_sampled_zone_count = self.cpu_sampled_zone_count
+
+        gpu_sampled_zone_count = self.gpu_sampled_zone_count
+
+        gpu_sampling_passes = self.gpu_sampling_passes
+
+        held_zone_count = self.held_zone_count
+
+        zone_composition_skips = self.zone_composition_skips
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -182,6 +215,16 @@ class DiagnoseLatestFrameSnapshot:
                 "total_us": total_us,
             }
         )
+        if cpu_sampled_zone_count is not UNSET:
+            field_dict["cpu_sampled_zone_count"] = cpu_sampled_zone_count
+        if gpu_sampled_zone_count is not UNSET:
+            field_dict["gpu_sampled_zone_count"] = gpu_sampled_zone_count
+        if gpu_sampling_passes is not UNSET:
+            field_dict["gpu_sampling_passes"] = gpu_sampling_passes
+        if held_zone_count is not UNSET:
+            field_dict["held_zone_count"] = held_zone_count
+        if zone_composition_skips is not UNSET:
+            field_dict["zone_composition_skips"] = zone_composition_skips
 
         return field_dict
 
@@ -252,6 +295,16 @@ class DiagnoseLatestFrameSnapshot:
 
         total_us = d.pop("total_us")
 
+        cpu_sampled_zone_count = d.pop("cpu_sampled_zone_count", UNSET)
+
+        gpu_sampled_zone_count = d.pop("gpu_sampled_zone_count", UNSET)
+
+        gpu_sampling_passes = d.pop("gpu_sampling_passes", UNSET)
+
+        held_zone_count = d.pop("held_zone_count", UNSET)
+
+        zone_composition_skips = d.pop("zone_composition_skips", UNSET)
+
         diagnose_latest_frame_snapshot = cls(
             composition_us=composition_us,
             compositor_backend=compositor_backend,
@@ -284,6 +337,11 @@ class DiagnoseLatestFrameSnapshot:
             sample_us=sample_us,
             total_leds=total_leds,
             total_us=total_us,
+            cpu_sampled_zone_count=cpu_sampled_zone_count,
+            gpu_sampled_zone_count=gpu_sampled_zone_count,
+            gpu_sampling_passes=gpu_sampling_passes,
+            held_zone_count=held_zone_count,
+            zone_composition_skips=zone_composition_skips,
         )
 
         diagnose_latest_frame_snapshot.additional_properties = d

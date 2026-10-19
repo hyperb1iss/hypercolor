@@ -696,7 +696,8 @@ pub(super) struct GpuSpatialSampler {
     uploaded_plan: Option<UploadedGpuSamplingPlan>,
     cached_bind_groups: Vec<CachedGpuSamplingBindGroup>,
     last_readback_wait_blocked: bool,
-    #[cfg(test)]
+    /// Sample passes encoded since construction, one per pass with points
+    /// to sample. Frame telemetry reads the delta around each LED dispatch.
     sample_dispatch_count: usize,
     #[cfg(test)]
     sample_param_write_count: usize,
@@ -838,7 +839,6 @@ impl GpuSpatialSampler {
             uploaded_plan: None,
             cached_bind_groups: Vec::with_capacity(3),
             last_readback_wait_blocked: false,
-            #[cfg(test)]
             sample_dispatch_count: 0,
             #[cfg(test)]
             sample_param_write_count: 0,
@@ -1317,10 +1317,7 @@ impl GpuSpatialSampler {
                 compute.set_bind_group(0, &bind_group, &[]);
                 compute.dispatch_workgroups(cached_pass.dispatch_workgroups, 1, 1);
             }
-            #[cfg(test)]
-            {
-                self.sample_dispatch_count = self.sample_dispatch_count.saturating_add(1);
-            }
+            self.sample_dispatch_count = self.sample_dispatch_count.saturating_add(1);
         }
         self.retain_bind_groups_for(passes);
         let output_bytes = sample_output_bytes(sample_count);
@@ -1639,7 +1636,6 @@ impl GpuSpatialSampler {
         self.cached_bind_groups.len()
     }
 
-    #[cfg(test)]
     pub(super) fn sample_dispatch_count(&self) -> usize {
         self.sample_dispatch_count
     }

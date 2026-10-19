@@ -66,8 +66,30 @@ pub(super) enum ZoneSampleSource {
     Held,
 }
 
+/// How the zones of a frame's per-zone sampling set took their colors, by
+/// source. All zero when the frame sampled no zone set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ZoneSourceCounts {
+    pub(crate) gpu: u32,
+    pub(crate) cpu: u32,
+    pub(crate) held: u32,
+}
+
 #[cfg(feature = "wgpu")]
 impl ZoneSamplingSet {
+    pub(super) fn source_counts(&self) -> ZoneSourceCounts {
+        let mut counts = ZoneSourceCounts::default();
+        for zone in &self.zones {
+            let count = match zone.source {
+                ZoneSampleSource::Gpu => &mut counts.gpu,
+                ZoneSampleSource::Cpu(_) => &mut counts.cpu,
+                ZoneSampleSource::Held => &mut counts.held,
+            };
+            *count = count.saturating_add(1);
+        }
+        counts
+    }
+
     fn output_shape(&self) -> impl Iterator<Item = (&str, usize)> + '_ {
         self.zones
             .iter()
@@ -418,6 +440,8 @@ pub(crate) struct LedSamplingOutcome {
     pub(crate) refresh_reused_frame_metadata: bool,
     pub(crate) reuses_published_frame: bool,
     pub(crate) zone_shape_signature: u64,
+    /// The sources of the zone set this frame's LEDs were resolved from.
+    pub(crate) zone_sources: ZoneSourceCounts,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -777,6 +801,13 @@ pub(crate) fn resolve_led_sampling(
     let samples_zone_set = matches!(gpu_sample_target, Some(GpuSampleTarget::Zones { .. }));
     #[cfg(not(feature = "wgpu"))]
     let samples_zone_set = false;
+    #[cfg(feature = "wgpu")]
+    let zone_sources = match gpu_sample_target.as_ref() {
+        Some(GpuSampleTarget::Zones { set, .. }) => set.source_counts(),
+        _ => ZoneSourceCounts::default(),
+    };
+    #[cfg(not(feature = "wgpu"))]
+    let zone_sources = ZoneSourceCounts::default();
     let mut gpu_zone_sampling = false;
     let mut gpu_sample_deferred = false;
     let gpu_sample_stale = stale_deferred_sampling.is_some();
@@ -1273,6 +1304,7 @@ pub(crate) fn resolve_led_sampling(
         refresh_reused_frame_metadata,
         reuses_published_frame,
         zone_shape_signature,
+        zone_sources,
     }
 }
 
@@ -1520,5 +1552,37 @@ mod tests {
         let zones = vec![zone_colors("left")];
 
         assert!(can_hold_zone_colors_for_deferred_sampling(&layout, &zones));
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn zone_sampling_set_counts_each_zone_by_its_source() {
+        use std::sync::Arc;
+
+        use super::{ZoneSampleSource, ZoneSampling, ZoneSamplingSet, ZoneSourceCounts};
+
+        let zone = |source| ZoneSampling {
+            prepared_zones: Arc::from(Vec::new()),
+            source,
+        };
+        let set = ZoneSamplingSet {
+            layout: Arc::new(test_layout(Vec::new())),
+            zones: vec![
+                zone(ZoneSampleSource::Gpu),
+                zone(ZoneSampleSource::Cpu(vec![zone_colors("cpu")])),
+                zone(ZoneSampleSource::Held),
+                zone(ZoneSampleSource::Gpu),
+            ],
+            gpu_textures: Vec::new(),
+        };
+
+        assert_eq!(
+            set.source_counts(),
+            ZoneSourceCounts {
+                gpu: 2,
+                cpu: 1,
+                held: 1,
+            }
+        );
     }
 }

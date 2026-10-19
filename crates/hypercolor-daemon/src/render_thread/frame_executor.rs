@@ -544,6 +544,7 @@ pub(crate) async fn execute_frame(
         refresh_reused_frame_metadata,
         reuses_published_frame,
         zone_shape_signature,
+        zone_sources,
     } = {
         let mut sampling = render.sampling_runtime();
         resolve_led_sampling(
@@ -555,6 +556,7 @@ pub(crate) async fn execute_frame(
             stale_deferred_sampling,
         )
     };
+    let gpu_sampling_passes = render.sparkleflinger.take_led_sample_passes();
 
     let sample_done_at = Instant::now();
     let sample_done_us = micros_between(frame_start, sample_done_at);
@@ -832,6 +834,11 @@ pub(crate) async fn execute_frame(
         reused_inputs,
         reused_canvas,
         gpu_zone_sampling,
+        gpu_sampled_zone_count: zone_sources.gpu,
+        cpu_sampled_zone_count: zone_sources.cpu,
+        held_zone_count: zone_sources.held,
+        gpu_sampling_passes,
+        zone_composition_skips: render_stage.zone_composition_skips,
         gpu_sample_deferred,
         gpu_sample_stale,
         gpu_sample_retry_hit,
@@ -1058,6 +1065,7 @@ mod tests {
             preview_requested,
             web_viewport_preview: None,
             producer_full_frame_copy: crate::performance::FullFrameCopyMetrics::default(),
+            zone_composition_skips: 0,
             display_zone_frames: Vec::new(),
             zone_canvases: Vec::new(),
             active_display_zone_ids: Vec::new(),

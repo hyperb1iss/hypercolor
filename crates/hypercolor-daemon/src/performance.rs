@@ -133,6 +133,27 @@ pub(crate) struct LatestFrameMetrics {
     pub retained_screen: bool,
     pub composition_bypassed: bool,
     pub gpu_zone_sampling: bool,
+    /// Zones of the frame's per-zone sampling set (Spec 86) whose source is
+    /// their own snapshot in the GPU dispatch. The three source counts
+    /// describe the set; whether this frame's GPU sample landed is what
+    /// `gpu_zone_sampling` and the `gpu_sample_*` flags report. All three
+    /// are zero when the frame sampled no zone set: single-zone scenes
+    /// sample the composed canvas with one engine, and the CPU backend
+    /// pre-samples.
+    pub gpu_sampled_zone_count: u32,
+    /// Zones of that set whose CPU-backed frame sampled on the CPU.
+    pub cpu_sampled_zone_count: u32,
+    /// Zones of that set with no samplable frame, whose outputs held their
+    /// published colors or went black.
+    pub held_zone_count: u32,
+    /// Texture passes the GPU sampler encoded for this frame's LED sampling:
+    /// one per sampled zone texture plus one for unassigned fallback outputs
+    /// when they ride along, or one for a single-zone compositor output.
+    /// Zero when the sample cache answered or no dispatch was issued.
+    pub gpu_sampling_passes: u32,
+    /// Scene zones whose composition key matched their held frame, so they
+    /// skipped composing and stabilizing this frame (Spec 86 §2.1).
+    pub zone_composition_skips: u32,
     pub gpu_sample_deferred: bool,
     pub gpu_sample_stale: bool,
     pub gpu_sample_retry_hit: bool,
@@ -235,6 +256,13 @@ pub(crate) struct PacingSummary {
     pub retained_screen: u32,
     pub composition_bypassed: u32,
     pub gpu_zone_sampling: u32,
+    /// Window totals of the per-frame zone sampling counters of the same
+    /// names; divide by the frame count for a per-frame average.
+    pub gpu_sampled_zone_count: u32,
+    pub cpu_sampled_zone_count: u32,
+    pub held_zone_count: u32,
+    pub gpu_sampling_passes: u32,
+    pub zone_composition_skips: u32,
     pub gpu_sample_deferred: u32,
     pub gpu_sample_stale: u32,
     pub gpu_sample_retry_hit: u32,
@@ -426,6 +454,11 @@ impl PerformanceTracker {
             retained_screen: metrics.retained_screen,
             composition_bypassed: metrics.composition_bypassed,
             gpu_zone_sampling: metrics.gpu_zone_sampling,
+            gpu_sampled_zone_count: metrics.gpu_sampled_zone_count,
+            cpu_sampled_zone_count: metrics.cpu_sampled_zone_count,
+            held_zone_count: metrics.held_zone_count,
+            gpu_sampling_passes: metrics.gpu_sampling_passes,
+            zone_composition_skips: metrics.zone_composition_skips,
             gpu_sample_deferred: metrics.gpu_sample_deferred,
             gpu_sample_stale: metrics.gpu_sample_stale,
             gpu_sample_retry_hit: metrics.gpu_sample_retry_hit,
@@ -559,6 +592,11 @@ struct FramePacingSample {
     retained_screen: bool,
     composition_bypassed: bool,
     gpu_zone_sampling: bool,
+    gpu_sampled_zone_count: u32,
+    cpu_sampled_zone_count: u32,
+    held_zone_count: u32,
+    gpu_sampling_passes: u32,
+    zone_composition_skips: u32,
     gpu_sample_deferred: bool,
     gpu_sample_stale: bool,
     gpu_sample_retry_hit: bool,
@@ -653,6 +691,17 @@ fn summarize_pacing(
                 .count(),
         )
         .unwrap_or(u32::MAX),
+        gpu_sampled_zone_count: window_total(pacing_history, |sample| {
+            sample.gpu_sampled_zone_count
+        }),
+        cpu_sampled_zone_count: window_total(pacing_history, |sample| {
+            sample.cpu_sampled_zone_count
+        }),
+        held_zone_count: window_total(pacing_history, |sample| sample.held_zone_count),
+        gpu_sampling_passes: window_total(pacing_history, |sample| sample.gpu_sampling_passes),
+        zone_composition_skips: window_total(pacing_history, |sample| {
+            sample.zone_composition_skips
+        }),
         gpu_sample_deferred: u32::try_from(
             pacing_history
                 .iter()
@@ -774,6 +823,16 @@ fn summarize_pacing(
         )
         .unwrap_or(u32::MAX),
     }
+}
+
+fn window_total(
+    pacing_history: &VecDeque<FramePacingSample>,
+    value: impl Fn(&FramePacingSample) -> u32,
+) -> u32 {
+    pacing_history
+        .iter()
+        .map(value)
+        .fold(0, u32::saturating_add)
 }
 
 fn summarize_short_samples(samples: &VecDeque<u32>) -> ShortSummary {
@@ -1014,6 +1073,31 @@ mod tests {
         assert_eq!(summary.p95_ms, 0.001);
         assert_eq!(summary.p99_ms, 0.001);
         assert_eq!(summary.max_ms, 0.001);
+    }
+
+    #[test]
+    fn pacing_totals_zone_sampling_counters_over_the_window() {
+        let mut tracker = PerformanceTracker::default();
+        tracker.record_frame(&LatestFrameMetrics {
+            gpu_sampled_zone_count: 2,
+            held_zone_count: 1,
+            gpu_sampling_passes: 3,
+            ..LatestFrameMetrics::default()
+        });
+        tracker.record_frame(&LatestFrameMetrics {
+            gpu_sampled_zone_count: 2,
+            cpu_sampled_zone_count: 1,
+            gpu_sampling_passes: 2,
+            zone_composition_skips: 2,
+            ..LatestFrameMetrics::default()
+        });
+
+        let pacing = tracker.snapshot().pacing;
+        assert_eq!(pacing.gpu_sampled_zone_count, 4);
+        assert_eq!(pacing.cpu_sampled_zone_count, 1);
+        assert_eq!(pacing.held_zone_count, 1);
+        assert_eq!(pacing.gpu_sampling_passes, 5);
+        assert_eq!(pacing.zone_composition_skips, 2);
     }
 
     #[test]

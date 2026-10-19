@@ -699,6 +699,11 @@ fn build_render_snapshot(
                 devices_written: frame.devices_written,
                 total_leds: frame.total_leds,
                 gpu_zone_sampling: frame.gpu_zone_sampling,
+                gpu_sampled_zone_count: frame.gpu_sampled_zone_count,
+                cpu_sampled_zone_count: frame.cpu_sampled_zone_count,
+                held_zone_count: frame.held_zone_count,
+                gpu_sampling_passes: frame.gpu_sampling_passes,
+                zone_composition_skips: frame.zone_composition_skips,
                 gpu_sample_deferred: frame.gpu_sample_deferred,
                 gpu_sample_stale: frame.gpu_sample_stale,
                 gpu_sample_retry_hit: frame.gpu_sample_retry_hit,
@@ -928,13 +933,15 @@ fn servo_memory_failure(detail: String) -> DiagnoseCheck {
 
 #[cfg(test)]
 mod tests {
-    use crate::performance::{FrameTimeline, LatestFrameMetrics, OutputFrameSourceKind};
+    use crate::performance::{
+        FrameTimeline, LatestFrameMetrics, OutputFrameSourceKind, PerformanceSnapshot,
+    };
 
     use hypercolor_types::api::system::{SoftwareConflict, SoftwareConflictsStatus};
 
     use super::{
-        build_device_output_snapshot, conflicts_check, render_frame_liveness_status,
-        render_led_freshness_status,
+        build_device_output_snapshot, build_render_snapshot, conflicts_check,
+        render_frame_liveness_status, render_led_freshness_status,
     };
     use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
     use hypercolor_types::device::DeviceId;
@@ -1014,6 +1021,33 @@ mod tests {
             item.transport_completed + item.transport_failed + item.transport_declined
         );
         assert_eq!(snapshot.errors_total, 0, "a decline is not an error");
+    }
+
+    #[test]
+    fn render_snapshot_reports_the_zone_sampling_counters() {
+        let snapshot = build_render_snapshot(
+            &PerformanceSnapshot {
+                latest_frame: Some(LatestFrameMetrics {
+                    gpu_sampled_zone_count: 2,
+                    cpu_sampled_zone_count: 1,
+                    held_zone_count: 1,
+                    gpu_sampling_passes: 3,
+                    zone_composition_skips: 2,
+                    ..LatestFrameMetrics::default()
+                }),
+                ..PerformanceSnapshot::default()
+            },
+            0.0,
+        );
+
+        let frame = snapshot
+            .latest_frame
+            .expect("a recorded frame should be reported");
+        assert_eq!(frame.gpu_sampled_zone_count, 2);
+        assert_eq!(frame.cpu_sampled_zone_count, 1);
+        assert_eq!(frame.held_zone_count, 1);
+        assert_eq!(frame.gpu_sampling_passes, 3);
+        assert_eq!(frame.zone_composition_skips, 2);
     }
 
     #[test]

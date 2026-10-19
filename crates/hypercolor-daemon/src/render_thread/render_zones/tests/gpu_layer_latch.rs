@@ -219,7 +219,8 @@ fn gaussian_gpu_zone_samples_on_the_gpu_beside_a_bilinear_zone() {
 
 /// A zone whose layers hand back the same frames reuses its snapshot without
 /// composing: its content generation holds, so sampling hits its cache. A
-/// zone whose input changes composes again, and both keep their colors.
+/// zone whose input changes composes again, and both keep their colors. The
+/// frame telemetry counts each skip, and each pass a dispatch encodes.
 #[test]
 fn unchanged_zone_layers_reuse_their_snapshot() {
     let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
@@ -243,6 +244,9 @@ fn unchanged_zone_layers_reuse_their_snapshot() {
     let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
     let mut zone_colors = Vec::new();
     let mut generations = Vec::new();
+    let mut composition_skips = Vec::new();
+    let mut sample_passes = Vec::new();
+    let mut repeat_sample_passes = Vec::new();
 
     for frame in 0..4_u64 {
         if frame == 3 {
@@ -277,7 +281,11 @@ fn unchanged_zone_layers_reuse_their_snapshot() {
                 .map(|texture| texture.frame.content_generation)
                 .collect::<Vec<_>>(),
         );
+        composition_skips.push(result.zone_composition_skips);
         let leds = sample_zone_set(&mut sparkleflinger, set);
+        sample_passes.push(sparkleflinger.take_led_sample_passes());
+        let _ = sample_zone_set(&mut sparkleflinger, set);
+        repeat_sample_passes.push(sparkleflinger.take_led_sample_passes());
         let led = |output_id: &str| {
             leds.iter()
                 .find(|zone| zone.zone_id == output_id)
@@ -303,6 +311,21 @@ fn unchanged_zone_layers_reuse_their_snapshot() {
     assert!(
         generations[3][1] > generations[0][1],
         "a zone whose input changed should compose again: {generations:?}"
+    );
+    assert_eq!(
+        composition_skips,
+        vec![0, 2, 2, 1],
+        "every zone whose layers matched its held frame should count a skip"
+    );
+    assert_eq!(
+        (sample_passes[0], sample_passes[3]),
+        (2, 2),
+        "a dispatch over new zone content encodes one pass per zone texture: {sample_passes:?}"
+    );
+    assert_eq!(
+        repeat_sample_passes,
+        vec![0; 4],
+        "a dispatch the sample cache answers encodes no passes"
     );
 }
 
