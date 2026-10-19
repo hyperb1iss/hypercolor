@@ -206,6 +206,31 @@ pub(super) fn media_layer_producer_frame(
     ProducerFrame::Canvas(canvas)
 }
 
+/// `frame` as a layer a GPU composition at the zone's extent can take.
+///
+/// The GPU compositor scales GPU textures into a zone but takes CPU frames
+/// only at the zone's own extent, and refuses the whole plan otherwise. A
+/// screen-region crop and a media frame at its intrinsic size are CPU
+/// canvases of their own extent, so a zone composing for GPU output uploads
+/// them into the layer's texture ring instead of losing its frame.
+#[cfg(feature = "wgpu")]
+pub(super) fn gpu_composable_layer_frame(
+    frame: ProducerFrame,
+    layer_id: SceneLayerId,
+    zone: &Zone,
+    sparkleflinger: &mut SparkleFlinger,
+) -> ProducerFrame {
+    let ProducerFrame::Canvas(canvas) = &frame else {
+        return frame;
+    };
+    if canvas.width() == zone.layout.canvas_width && canvas.height() == zone.layout.canvas_height {
+        return frame;
+    }
+    let uploaded = sparkleflinger
+        .upload_media_canvas_frame(MediaTextureSourceKey::from_media_layer(layer_id), canvas);
+    uploaded.map_or(frame, ProducerFrame::GpuTexture)
+}
+
 #[cfg(feature = "wgpu")]
 pub(super) fn media_mime_prefers_gpu_texture(mime_type: &str) -> bool {
     matches!(

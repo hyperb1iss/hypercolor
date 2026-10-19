@@ -140,6 +140,15 @@ pub(super) struct ZoneFrameRequirements {
     pub(super) reuse_unchanged_composition: bool,
 }
 
+impl ZoneFrameRequirements {
+    /// Whether the composition is only usable as a GPU frame: it asks for no
+    /// CPU output, so a plan the GPU compositor refuses yields no frame.
+    #[cfg(feature = "wgpu")]
+    pub(super) const fn requires_gpu_output(self) -> bool {
+        !self.requires_cpu_sampling_canvas && !self.requires_published_surface
+    }
+}
+
 /// The pixel-free description of the layers whose composition a zone's held
 /// frame shows.
 pub(super) struct ZoneCompositionIdentity {

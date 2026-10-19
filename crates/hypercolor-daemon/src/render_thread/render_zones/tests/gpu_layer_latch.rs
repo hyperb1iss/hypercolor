@@ -740,7 +740,7 @@ fn scene_probe_layout() -> SpatialLayout {
     }
 }
 
-fn bilinear_led_zone(name: &str, output_id: &str, x: f32, effect_id: EffectId) -> Zone {
+pub(super) fn bilinear_led_zone(name: &str, output_id: &str, x: f32, effect_id: EffectId) -> Zone {
     let mut zone = sample_zone(LED_ZONE_WIDTH, LED_ZONE_HEIGHT);
     zone.name = name.into();
     set_effect_zone(&mut zone, effect_id, HashMap::new());
@@ -781,7 +781,7 @@ fn led_expectation(zone: &Zone, output_id: &'static str, color: Rgba) -> LedExpe
     }
 }
 
-fn gpu_sparkleflinger_at(width: u32, height: u32) -> Option<SparkleFlinger> {
+pub(super) fn gpu_sparkleflinger_at(width: u32, height: u32) -> Option<SparkleFlinger> {
     match SparkleFlinger::new_required_gpu_for_test() {
         Ok(mut sparkleflinger) => {
             let canvas = sparkleflinger

@@ -13,6 +13,8 @@ use hypercolor_types::scene::Zone;
 
 use super::ZoneRuntime;
 use super::effect_errors::render_layer_effect_error;
+#[cfg(feature = "wgpu")]
+use super::frame_helpers::gpu_composable_layer_frame;
 use super::frame_helpers::{
     color_fill_frame, composed_frame_to_producer_frame, composition_layer_for_scene_layer,
     media_layer_producer_frame, passthrough_effect_layer, producer_frame_is_gpu,
@@ -189,6 +191,12 @@ impl ZoneRuntime {
                     LayerHealth::Active,
                 );
             }
+            #[cfg(feature = "wgpu")]
+            let frame = if requirements.requires_gpu_output() {
+                gpu_composable_layer_frame(frame, layer_runtime.id, zone, sparkleflinger)
+            } else {
+                frame
+            };
             if producer_frame_is_gpu(&frame) {
                 gpu_source_layers.push(layer_runtime.id);
             }
