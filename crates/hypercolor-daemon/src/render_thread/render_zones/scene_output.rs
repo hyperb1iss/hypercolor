@@ -122,6 +122,19 @@ impl ZoneRuntime {
         self.fail_next_projected_scene_composition = true;
     }
 
+    /// The next `render_scene` fails before rendering any zone, the way an
+    /// effect or resource error mid-scene does.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn fail_next_scene_render_for_test(&mut self) {
+        self.fail_next_scene_render = true;
+    }
+
+    /// Whether an injected scene failure is still waiting for a render.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) const fn injected_scene_failure_pending_for_test(&self) -> bool {
+        self.fail_next_scene_render || self.fail_next_projected_scene_composition
+    }
+
     #[cfg(test)]
     pub(super) fn compose_preview_grid_for_test(&mut self, zones: &[Zone]) -> ProducerFrame {
         let Some(scene_surface_pool) = &mut self.scene_surface_pool else {

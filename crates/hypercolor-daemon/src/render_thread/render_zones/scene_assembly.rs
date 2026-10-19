@@ -38,6 +38,10 @@ impl ZoneRuntime {
             !self.needs_reconcile(context.dependency_key),
             "render-zone resources were not admitted before scene rendering"
         );
+        #[cfg(all(test, feature = "wgpu"))]
+        if std::mem::take(&mut self.fail_next_scene_render) {
+            anyhow::bail!("injected scene render failure");
+        }
         #[cfg(feature = "wgpu")]
         sparkleflinger.begin_media_upload_frame();
 

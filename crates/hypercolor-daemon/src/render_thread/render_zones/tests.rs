@@ -614,6 +614,8 @@ mod gpu_layer_latch;
 mod gpu_zone_acceptance;
 mod invalidation;
 mod layers;
+#[cfg(feature = "wgpu")]
+mod pipeline_acceptance;
 mod projection;
 mod retention;
 mod scene_outputs;

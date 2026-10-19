@@ -123,6 +123,8 @@ pub(crate) struct ZoneRuntime {
     #[cfg(all(test, feature = "wgpu"))]
     fail_next_projected_scene_composition: bool,
     #[cfg(all(test, feature = "wgpu"))]
+    fail_next_scene_render: bool,
+    #[cfg(all(test, feature = "wgpu"))]
     injected_effect_layer_frames: HashMap<hypercolor_types::layer::SceneLayerId, ProducerFrame>,
     /// Effect renders each layer still reports `Pending` for.
     #[cfg(all(test, feature = "wgpu"))]
@@ -240,6 +242,8 @@ impl ZoneRuntime {
             scene_height,
             #[cfg(all(test, feature = "wgpu"))]
             fail_next_projected_scene_composition: false,
+            #[cfg(all(test, feature = "wgpu"))]
+            fail_next_scene_render: false,
             #[cfg(all(test, feature = "wgpu"))]
             injected_effect_layer_frames: HashMap::new(),
             #[cfg(all(test, feature = "wgpu"))]
