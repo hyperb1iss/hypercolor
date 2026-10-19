@@ -646,10 +646,12 @@ Lightpad and the LUMI keys raised ripples over the bubbles on both blocks.
   the plan, laid out over the fallback zone's texture extent, whenever that
   zone's frame is a GPU texture; the resolver adds it as one more pass
   against the texture and keeps the result's tail for the output stage. A
-  single-zone scene samples its own frame as a one-zone set so the pass
-  shares its dispatch, except during a transition, when fallback outputs
-  hold their last colors. This also covers single-zone scenes whose layers
-  compose on the GPU, which sent unassigned outputs black before this spec.
+  single-zone scene keeps sampling the compositor output, and the output
+  request carries the fallback texture pass beside it in the same
+  dispatch, so fallback outputs stay live through transitions. This also
+  covers single-zone scenes whose layers compose on the GPU, which sent
+  unassigned outputs black before this spec. A completed deferred sample is
+  reused only when it was taken with the current request's plans.
   Fallback colors are held only for the zone that sampled them and only
   while their shape matches, so a newly chosen fallback zone shows black for
   a frame rather than the previous zone's pixels.
