@@ -690,6 +690,9 @@ pub(super) struct GpuSpatialSampler {
     readback_buffers: Option<[wgpu::Buffer; SAMPLE_READBACK_SLOT_COUNT]>,
     readback_slots_in_use: [bool; SAMPLE_READBACK_SLOT_COUNT],
     next_readback_slot: usize,
+    /// Advances only when the readback ring is replaced, so a lease taken
+    /// before a kernel or bind group rebuild still frees its slot.
+    readback_generation: u64,
     capacity: usize,
     buffer_generation: u64,
     cached_plan: Option<CachedGpuSamplingPlan>,
@@ -833,6 +836,7 @@ impl GpuSpatialSampler {
             readback_buffers: None,
             readback_slots_in_use: [false; SAMPLE_READBACK_SLOT_COUNT],
             next_readback_slot: 0,
+            readback_generation: 0,
             capacity: 0,
             buffer_generation: 0,
             cached_plan: None,
@@ -1098,6 +1102,7 @@ impl GpuSpatialSampler {
                     self.readback_buffers = Some(buffers.readbacks);
                     self.readback_slots_in_use = [false; SAMPLE_READBACK_SLOT_COUNT];
                     self.next_readback_slot = 0;
+                    self.readback_generation = self.readback_generation.saturating_add(1);
                     self.capacity = buffers.capacity;
                     self.buffer_generation = self.buffer_generation.saturating_add(1);
                     self.uploaded_plan = None;
@@ -1487,7 +1492,7 @@ impl GpuSpatialSampler {
                 self.next_readback_slot = (slot + 1) % SAMPLE_READBACK_SLOT_COUNT;
                 return Some((
                     ReadbackLease {
-                        generation: self.buffer_generation,
+                        generation: self.readback_generation,
                         slot,
                     },
                     readback_buffers[slot].clone(),
@@ -1498,7 +1503,7 @@ impl GpuSpatialSampler {
     }
 
     fn release_readback_slot(&mut self, lease: ReadbackLease) {
-        if lease.generation == self.buffer_generation && lease.slot < SAMPLE_READBACK_SLOT_COUNT {
+        if lease.generation == self.readback_generation && lease.slot < SAMPLE_READBACK_SLOT_COUNT {
             self.readback_slots_in_use[lease.slot] = false;
         }
     }

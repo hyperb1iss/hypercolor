@@ -911,6 +911,72 @@ fn gpu_sampler_keeps_new_generation_slot_leased_after_retired_readback_finishes(
 }
 
 #[test]
+fn gpu_sampler_frees_readback_slots_leased_before_a_gaussian_kernel_grows() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let small_kernel = SpatialEngine::new(sampling_layout(SamplingMode::GaussianArea {
+        sigma: 0.5,
+        radius: 1,
+    }));
+    let grown_kernel = SpatialEngine::new(sampling_layout(SamplingMode::GaussianArea {
+        sigma: 1.5,
+        radius: 3,
+    }));
+    let plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(12))),
+            CompositionLayer::alpha(ProducerFrame::Canvas(patterned_canvas(96)), 0.35),
+        ],
+    );
+    compositor
+        .compose(&plan, false, None)
+        .expect("GPU composition should succeed before kernel growth");
+
+    let begin = |compositor: &mut GpuSparkleFlinger, engine: &SpatialEngine| match compositor
+        .begin_sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut Vec::new())
+        .expect("GPU sample dispatch should stay non-fatal")
+    {
+        GpuZoneSamplingDispatch::Pending(pending) => Some(pending),
+        GpuZoneSamplingDispatch::Saturated => None,
+        _ => panic!("GPU sample dispatch should defer readback completion"),
+    };
+    let before_growth = begin(&mut compositor, &small_kernel).expect("first sample should lease");
+    // Same LED count, larger kernel: only the kernel buffer is replaced.
+    let after_growth = begin(&mut compositor, &grown_kernel).expect("second sample should lease");
+    compositor
+        .finish_pending_zone_sampling(before_growth, &mut Vec::new())
+        .expect("the sample leased before the kernel grew should finish");
+    compositor
+        .finish_pending_zone_sampling(after_growth, &mut Vec::new())
+        .expect("the sample leased after the kernel grew should finish");
+
+    // New content, so the refills dispatch instead of reusing the cached
+    // sample.
+    let changed = CompositionPlan::single(
+        4,
+        4,
+        CompositionLayer::replace(ProducerFrame::Canvas(patterned_canvas(200))),
+    );
+    compositor
+        .compose(&changed, false, None)
+        .expect("GPU composition should succeed after kernel growth");
+    let mut pending = Vec::new();
+    for dispatch in 0..3 {
+        pending.push(begin(&mut compositor, &grown_kernel).unwrap_or_else(|| {
+            panic!("dispatch {dispatch}: every readback slot should be free again")
+        }));
+    }
+    for sample in pending {
+        compositor
+            .finish_pending_zone_sampling(sample, &mut Vec::new())
+            .expect("refilled samples should finish");
+    }
+}
+
+#[test]
 fn gpu_sampler_refuses_a_fourth_overlapped_readback_until_a_slot_is_released() {
     let Some(mut compositor) = super::gpu_test_compositor() else {
         return;
