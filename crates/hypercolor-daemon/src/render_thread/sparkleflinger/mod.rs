@@ -1303,6 +1303,14 @@ impl SparkleFlinger {
     }
 
     #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn sample_bind_group_creation_count_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.sample_bind_group_creation_count()),
+        }
+    }
+
+    #[cfg(all(test, feature = "wgpu"))]
     pub(crate) fn projected_bind_group_entry_count_for_test(&self) -> Option<usize> {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => None,

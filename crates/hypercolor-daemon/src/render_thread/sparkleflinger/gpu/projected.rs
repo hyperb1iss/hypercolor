@@ -411,6 +411,11 @@ impl GpuSparkleFlinger {
     }
 
     #[cfg(test)]
+    pub(crate) fn sample_bind_group_creation_count(&self) -> usize {
+        self.spatial_sampler.bind_group_creation_count()
+    }
+
+    #[cfg(test)]
     pub(crate) fn projected_bind_group_entry_count(&self) -> usize {
         self.surfaces.as_ref().map_or(0, |surfaces| {
             surfaces.compose_source_bind_groups.projected_entry_count()

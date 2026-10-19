@@ -693,6 +693,9 @@ pub(super) struct GpuSpatialSampler {
     /// Advances only when the readback ring is replaced, so a lease taken
     /// before a kernel or bind group rebuild still frees its slot.
     readback_generation: u64,
+    /// Sample bind groups this sampler has created.
+    #[cfg(test)]
+    bind_group_creation_count: usize,
     capacity: usize,
     buffer_generation: u64,
     cached_plan: Option<CachedGpuSamplingPlan>,
@@ -837,6 +840,8 @@ impl GpuSpatialSampler {
             readback_slots_in_use: [false; SAMPLE_READBACK_SLOT_COUNT],
             next_readback_slot: 0,
             readback_generation: 0,
+            #[cfg(test)]
+            bind_group_creation_count: 0,
             capacity: 0,
             buffer_generation: 0,
             cached_plan: None,
@@ -1595,6 +1600,10 @@ impl GpuSpatialSampler {
             area_generation: self.area_generation,
             bind_group: bind_group.clone(),
         });
+        #[cfg(test)]
+        {
+            self.bind_group_creation_count = self.bind_group_creation_count.saturating_add(1);
+        }
         bind_group
     }
 
@@ -1669,6 +1678,14 @@ impl GpuSpatialSampler {
     #[cfg(test)]
     pub(super) fn area_resource_allocation_count(&self) -> usize {
         self.area_pipeline.allocation_count()
+    }
+
+    /// Sample and summed-area bind groups created since the sampler was
+    /// created.
+    #[cfg(test)]
+    pub(super) fn bind_group_creation_count(&self) -> usize {
+        self.bind_group_creation_count
+            .saturating_add(self.area_pipeline.bind_group_creation_count())
     }
 
     #[cfg(test)]

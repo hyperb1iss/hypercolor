@@ -727,6 +727,9 @@ fn area_sampled_zones_allocate_no_summed_area_tables_after_warmup() {
             sparkleflinger
                 .projected_bind_group_creation_count_for_test()
                 .expect("a GPU compositor counts its projected bind groups"),
+            sparkleflinger
+                .sample_bind_group_creation_count_for_test()
+                .expect("a GPU compositor counts its sampling bind groups"),
         );
         if frame + 1 == WARMUP_FRAMES {
             assert_eq!(
@@ -737,8 +740,8 @@ fn area_sampled_zones_allocate_no_summed_area_tables_after_warmup() {
         } else if let Some(warm) = warm_counts {
             assert_eq!(
                 counts, warm,
-                "frame {frame}: (summed-area tables, snapshots, projected bind groups) \
-                 should stay at their warmup counts"
+                "frame {frame}: (summed-area tables, snapshots, projected bind groups, \
+                 sampling bind groups) should stay at their warmup counts"
             );
         }
         std::thread::sleep(FRAME_PACING);

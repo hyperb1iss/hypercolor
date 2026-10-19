@@ -21,6 +21,9 @@ pub(super) struct GpuAreaPipeline {
     /// Summed-area tables this pipeline has allocated.
     #[cfg(test)]
     allocation_count: std::cell::Cell<usize>,
+    /// Summed-area bind groups this pipeline has created.
+    #[cfg(test)]
+    bind_group_creation_count: std::cell::Cell<usize>,
 }
 
 pub(super) struct GpuAreaResources {
@@ -162,12 +165,19 @@ impl GpuAreaPipeline {
             ),
             #[cfg(test)]
             allocation_count: std::cell::Cell::new(0),
+            #[cfg(test)]
+            bind_group_creation_count: std::cell::Cell::new(0),
         }
     }
 
     #[cfg(test)]
     pub(super) fn allocation_count(&self) -> usize {
         self.allocation_count.get()
+    }
+
+    #[cfg(test)]
+    pub(super) fn bind_group_creation_count(&self) -> usize {
+        self.bind_group_creation_count.get()
     }
 
     pub(super) fn try_prepare(
@@ -214,7 +224,18 @@ impl GpuAreaPipeline {
         resources: &mut GpuAreaResources,
         encoder: &mut wgpu::CommandEncoder,
     ) {
+        #[cfg(test)]
+        let cached_bind_groups = resources.bind_groups.len();
         let bind_group = resources.bind_group(device, &self.bind_group_layout, source, source_view);
+        #[cfg(test)]
+        self.bind_group_creation_count.set(
+            self.bind_group_creation_count.get().saturating_add(
+                resources
+                    .bind_groups
+                    .len()
+                    .saturating_sub(cached_bind_groups),
+            ),
+        );
         encode_pass(
             encoder,
             "SparkleFlinger GPU area horizontal tile scan",
