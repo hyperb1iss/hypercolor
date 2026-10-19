@@ -2680,6 +2680,7 @@ async fn gpu_transition_into_a_still_multi_zone_scene_keeps_every_led_lit() {
 
     activate_render_scene(&state, second.id).await;
     let mut darkest = [255_u8; 2];
+    let mut saw_blend = false;
     let mut trace = Vec::new();
     let settled = tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
@@ -2695,6 +2696,7 @@ async fn gpu_transition_into_a_still_multi_zone_scene_keeps_every_led_lit() {
                 let brightest_channel = led.map_or(0, |color| color.into_iter().max().unwrap_or(0));
                 *darkest = (*darkest).min(brightest_channel);
             }
+            saw_blend |= red.is_some_and(|color| color != [255, 0, 0] && color != [0, 255, 0]);
             if red == Some([0, 255, 0]) && blue == Some([255, 255, 0]) {
                 break;
             }
@@ -2710,6 +2712,11 @@ async fn gpu_transition_into_a_still_multi_zone_scene_keeps_every_led_lit() {
     assert!(
         settled.is_ok(),
         "the LEDs never reached the second scene's colors:\n{}",
+        trace.join("\n")
+    );
+    assert!(
+        saw_blend,
+        "no frame showed the transition between the two scenes:\n{}",
         trace.join("\n")
     );
     assert!(
@@ -3030,18 +3037,25 @@ async fn gpu_multi_zone_fallback_keeps_animating_through_a_led_space_fade() {
     })
     .await;
     // A live fallback follows the rainbow every frame; a frozen one repeats
-    // its first sample, so count what one second of the fade delivers.
+    // its first sample. Count distinct fallback colors over the next thirty
+    // published frames, so a slow runner only delivers them later.
     let mut seen = first_lit.iter().cloned().collect::<Vec<_>>();
-    let window_end = tokio::time::Instant::now() + Duration::from_secs(1);
-    while tokio::time::Instant::now() < window_end {
-        if let Some(colors) = lit()
-            && !seen.contains(&colors)
-        {
-            seen.push(colors);
+    let observed_frames = tokio::time::timeout(WAIT_DEADLINE, async {
+        for _ in 0..30 {
+            frame_rx
+                .changed()
+                .await
+                .expect("frame sender should remain connected");
+            frame_rx.borrow_and_update();
+            if let Some(colors) = lit()
+                && !seen.contains(&colors)
+            {
+                seen.push(colors);
+            }
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    let animated = seen.len() >= 10;
+    })
+    .await;
+    let animated = observed_frames.is_ok() && seen.len() >= 15;
     let still_fading = frame_rx
         .borrow()
         .zones
@@ -3061,7 +3075,7 @@ async fn gpu_multi_zone_fallback_keeps_animating_through_a_led_space_fade() {
     );
     assert!(
         animated,
-        "the fallback device froze during the fade: {} distinct colors in one second",
+        "the fallback device froze during the fade: {} distinct colors in thirty frames",
         seen.len()
     );
     assert!(still_fading, "the scene transition should still be running");
