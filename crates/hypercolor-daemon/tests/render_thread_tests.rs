@@ -4509,14 +4509,27 @@ async fn gpu_multi_zone_previews_hold_their_cadence_through_a_transition_beside_
         cadence
     );
     let window_ms = u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX);
-    let demanded = (window_ms * PREVIEW_FPS / 1000).min(cadence.render_frames);
-    for (lane, delivered) in [
-        ("scene preview", cadence.scene_previews),
-        ("zone preview", cadence.zone_previews),
-        ("blended face", cadence.face_frames),
+    // What each lane's throttle can deliver from the frames that actually
+    // rendered, so a loaded machine that slows the render loop lowers the
+    // ask instead of failing the test. The previews publish once per 1/30 s
+    // slot that a rendered frame lands in. The face publishes once 1/30 s
+    // has passed since its last frame, which a loop at or under its 60 fps
+    // ceiling allows at least every second rendered frame; between 30 and
+    // 60 fps that is fewer chances than the previews get.
+    let window_demand = window_ms * PREVIEW_FPS / 1000;
+    let slot_demand = window_demand.min(cadence.render_frames);
+    let face_demand = window_demand.min(cadence.render_frames / 2);
+    // Three quarters of that absorbs the window's edges and render jitter
+    // that lands two frames in one slot, and still fails a lane that loses
+    // every other frame, as the readback cancellations of Spec 86 §11.2 did;
+    // a bound of one half accepted a lane at half rate.
+    for (lane, delivered, demanded) in [
+        ("scene preview", cadence.scene_previews, slot_demand),
+        ("zone preview", cadence.zone_previews, slot_demand),
+        ("blended face", cadence.face_frames, face_demand),
     ] {
         assert!(
-            delivered * 2 >= demanded,
+            delivered * 4 >= demanded * 3,
             "the {lane} delivered {delivered} frames where its cadence asks for {demanded} \
              over {} rendered frames: {cadence:#?}",
             cadence.render_frames
