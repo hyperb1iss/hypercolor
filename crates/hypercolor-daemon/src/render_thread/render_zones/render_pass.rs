@@ -271,6 +271,7 @@ impl ZoneRuntime {
             self.retain_direct_zone_frame(
                 zone.id,
                 context.elapsed_ms,
+                context.display_zone_target_fps.get(&zone.id).copied(),
                 context.dependency_key,
                 &frame,
             );
