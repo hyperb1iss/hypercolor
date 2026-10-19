@@ -1210,11 +1210,20 @@ pub(crate) fn resolve_led_sampling(
     let led_space_transition_zones = if !transition_active {
         None
     } else if uses_scene_sampled_zones {
-        current_scene_sampled_zones(
+        match current_scene_sampled_zones(
             &render_stage.led_sampling_strategy,
             sampling.output_artifacts.zones(),
-        )
-        .map(<[ZoneColors]>::to_vec)
+        ) {
+            // A retained zone set keeps no colors: they resolve on the GPU
+            // after the scene renders (Spec 86 §4.2). The retained frame
+            // repeats the set's content, so the blend reads the set's latest
+            // fresh sample, or holds the published frame until one lands,
+            // instead of blending every LED toward black.
+            Some([]) if retained_scene_zones.is_some() && !layout.zones.is_empty() => {
+                retained_zone_set_transition_zones(sampling, &layout)
+            }
+            zones => zones.map(<[ZoneColors]>::to_vec),
+        }
     } else if samples_zone_set {
         zone_set_transition_zones(
             sampling,
@@ -1307,6 +1316,22 @@ pub(crate) fn resolve_led_sampling(
         zone_shape_signature,
         zone_sources,
     }
+}
+
+/// The incoming scene's LED colors for a transition blend on a frame that
+/// reuses a retained zone set: the set's latest fresh sample, when it was
+/// taken for this layout.
+fn retained_zone_set_transition_zones(
+    sampling: &SamplingRuntime<'_>,
+    layout: &SpatialLayout,
+) -> Option<Vec<ZoneColors>> {
+    let latest = &sampling.zone_transition_planner.latest_zone_set_sample;
+    let sampled_this_layout = latest.len() == layout.zones.len()
+        && latest
+            .iter()
+            .zip(&layout.zones)
+            .all(|(zone, output)| zone.zone_id == output.id);
+    sampled_this_layout.then(|| latest.clone())
 }
 
 /// The incoming scene's LED colors for a transition blend when it samples a

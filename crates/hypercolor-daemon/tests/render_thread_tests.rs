@@ -2616,6 +2616,101 @@ async fn gpu_transition_out_of_overlapping_zones_blends_each_led_from_its_own_co
     );
 }
 
+/// A transition into a multi-zone scene whose content holds still blends
+/// every LED from its own old color toward its own new color on the GPU.
+/// Frames that reuse the retained scene keep no zone colors of their own,
+/// because a zone set's colors resolve on the GPU after the scene renders;
+/// blending from those empty colors would fade every LED toward black and
+/// pop back when the transition ends (Spec 86 §4.1, §4.2).
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_transition_into_a_still_multi_zone_scene_keeps_every_led_lit() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut first = make_scene("Red And Blue");
+    first.transition.duration_ms = 0;
+    first.zones = overlapping_zones(solid_id);
+    first.unassigned_behavior = UnassignedBehavior::Off;
+    let mut second = make_scene("Green And Yellow");
+    second.transition.duration_ms = 1_500;
+    second.zones = vec![
+        custom_zone(
+            "Green",
+            solid_id,
+            solid_color_controls(0, 255, 0),
+            test_layout(vec![point_zone("zone_red", "mock:red", 0.5, 0.5)]),
+        ),
+        custom_zone(
+            "Yellow",
+            solid_id,
+            solid_color_controls(255, 255, 0),
+            test_layout(vec![point_zone("zone_blue", "mock:blue", 0.5, 0.5)]),
+        ),
+    ];
+    second.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![first.clone(), second.clone()], first.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_red") == Some([255, 0, 0])
+            && zone_led(frame, "zone_blue") == Some([0, 0, 255])
+    })
+    .await;
+
+    activate_render_scene(&state, second.id).await;
+    let mut darkest = [255_u8; 2];
+    let mut trace = Vec::new();
+    let settled = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            frame_rx
+                .changed()
+                .await
+                .expect("frame sender should remain connected");
+            let frame = frame_rx.borrow_and_update().clone();
+            let red = zone_led(&frame, "zone_red");
+            let blue = zone_led(&frame, "zone_blue");
+            trace.push(format!("frame {}: {red:?} {blue:?}", frame.frame_number));
+            for (darkest, led) in darkest.iter_mut().zip([red, blue]) {
+                let brightest_channel = led.map_or(0, |color| color.into_iter().max().unwrap_or(0));
+                *darkest = (*darkest).min(brightest_channel);
+            }
+            if red == Some([0, 255, 0]) && blue == Some([255, 255, 0]) {
+                break;
+            }
+        }
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(
+        settled.is_ok(),
+        "the LEDs never reached the second scene's colors:\n{}",
+        trace.join("\n")
+    );
+    assert!(
+        darkest.iter().all(|channel| *channel >= 96),
+        "an LED dimmed to {darkest:?} at its darkest during the transition:\n{}",
+        trace.join("\n")
+    );
+}
+
 /// A mock device mapped to the router with no layout output of its own, so
 /// every scene leaves its LEDs unassigned.
 #[cfg(feature = "wgpu")]
