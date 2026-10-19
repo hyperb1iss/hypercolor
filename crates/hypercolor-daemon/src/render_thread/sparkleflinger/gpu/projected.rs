@@ -401,6 +401,11 @@ impl GpuSparkleFlinger {
     }
 
     #[cfg(test)]
+    pub(crate) fn summed_area_table_allocation_count(&self) -> usize {
+        self.spatial_sampler.area_resource_allocation_count()
+    }
+
+    #[cfg(test)]
     pub(crate) fn projected_bind_group_creation_count(&self) -> usize {
         self.projected_bind_group_creation_count.get()
     }

@@ -18,6 +18,9 @@ pub(super) struct GpuAreaPipeline {
     vertical_add: wgpu::ComputePipeline,
     hierarchy_scan: wgpu::ComputePipeline,
     hierarchy_add: wgpu::ComputePipeline,
+    /// Summed-area tables this pipeline has allocated.
+    #[cfg(test)]
+    allocation_count: std::cell::Cell<usize>,
 }
 
 pub(super) struct GpuAreaResources {
@@ -157,7 +160,14 @@ impl GpuAreaPipeline {
                 "SparkleFlinger GPU area hierarchy add",
                 "add_sum_offsets",
             ),
+            #[cfg(test)]
+            allocation_count: std::cell::Cell::new(0),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn allocation_count(&self) -> usize {
+        self.allocation_count.get()
     }
 
     pub(super) fn try_prepare(
@@ -190,6 +200,9 @@ impl GpuAreaPipeline {
                 "GPU area resources failed device validation: {error}"
             )));
         }
+        #[cfg(test)]
+        self.allocation_count
+            .set(self.allocation_count.get().saturating_add(1));
         Ok(resources)
     }
 

@@ -10,7 +10,8 @@ use hypercolor_types::layer::{BindingMap, BindingSource, LayerBinding, LayerPara
 use hypercolor_types::viewport::ViewportRect;
 
 use super::gpu_layer_latch::{
-    bilinear_led_zone, gpu_sparkleflinger_at, sample_zone_set, sample_zone_set_against,
+    alpha_lcd_face_zone, bilinear_led_zone, gpu_sparkleflinger_at, sample_zone_set,
+    sample_zone_set_against,
 };
 use super::*;
 use crate::render_thread::frame_sampling::{ZoneSamplingSet, ZoneSourceCounts};
@@ -561,6 +562,121 @@ fn single_screen_region_zone_composes_on_the_gpu() {
             Some(vec![[color.r, color.g, color.b]; 4]),
             "frame {frame}: the zone's LEDs should show the screen"
         );
+        std::thread::sleep(FRAME_PACING);
+    }
+}
+
+/// Area-sampled zones at three extents beside a blended LCD face, which
+/// switches the shared compositor's size every frame, allocate their
+/// summed-area tables once: after warmup the table, snapshot, and projected
+/// bind group counters stay flat while every frame recomposes and resamples
+/// every zone (Spec 86 §3.2, §8 criterion 11).
+#[test]
+fn area_sampled_zones_allocate_no_summed_area_tables_after_warmup() {
+    const WARMUP_FRAMES: u64 = 3;
+    const MEASURED_FRAMES: u64 = 12;
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let area = SamplingMode::AreaAverage {
+        radius_x: 4.0,
+        radius_y: 4.0,
+    };
+    let mut zones = [
+        bilinear_led_zone("Case", "case_leds", 0.2, solid_id),
+        bilinear_led_zone("WLED Accents", "accent_leds", 0.5, solid_id),
+        bilinear_led_zone("Desk", "desk_leds", 0.8, solid_id),
+    ];
+    let extents = [LED_ZONE_EXTENT, (160, 100), (320, 200)];
+    let colors = [RED, GREEN, BLUE];
+    for (zone, extent) in zones.iter_mut().zip(extents) {
+        zone.layout.default_sampling_mode = area.clone();
+        zone.layout.canvas_width = extent.0;
+        zone.layout.canvas_height = extent.1;
+    }
+    let face = alpha_lcd_face_zone("Corsair iCUE LINK LCD", solid_id);
+    let scene_zones = [
+        zones[0].clone(),
+        zones[1].clone(),
+        zones[2].clone(),
+        face.clone(),
+    ];
+    let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
+    let mut zone_colors = Vec::new();
+    let mut warm_counts = None;
+
+    for frame in 0..WARMUP_FRAMES + MEASURED_FRAMES {
+        // Fresh producer frames every frame: every zone composes again and
+        // every dispatch misses the sample cache, so each frame encodes its
+        // area passes.
+        for (index, (zone, color)) in zones.iter().zip(colors).enumerate() {
+            let key = u128::try_from(index).expect("zone index fits u128") + 1;
+            let extent = (zone.layout.canvas_width, zone.layout.canvas_height);
+            let layer_frame = upload_fill(&mut sparkleflinger, key, extent, color);
+            runtime.inject_effect_layer_frame_for_test(zone.layers[0].id, layer_frame);
+        }
+        let face_frame = upload_fill(&mut sparkleflinger, 9, (480, 480), GREEN);
+        runtime.inject_effect_layer_frame_for_test(face.layers[0].id, face_frame);
+
+        let result = render_scene_for_test_with_screen_and_sparkleflinger(
+            &mut runtime,
+            &scene_zones,
+            1,
+            frame * 16,
+            &HashMap::new(),
+            &registry,
+            &mut zone_colors,
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("multi-zone GPU scene should render");
+        assert_eq!(result.zone_composition_skips, 0, "frame {frame}");
+        let set = zone_set(&result);
+        let _ = sparkleflinger.take_led_sample_passes();
+        let leds = sample_zone_set(&mut sparkleflinger, set);
+        assert_eq!(
+            sparkleflinger.take_led_sample_passes(),
+            3,
+            "frame {frame}: each zone texture should be sampled again"
+        );
+        for (output_id, color) in [
+            ("case_leds", RED),
+            ("accent_leds", GREEN),
+            ("desk_leds", BLUE),
+        ] {
+            assert_eq!(
+                leds_of(&leds, output_id),
+                Some(vec![[color.r, color.g, color.b]; 4]),
+                "frame {frame}: {output_id}"
+            );
+        }
+
+        let counts = (
+            sparkleflinger
+                .summed_area_table_allocation_count_for_test()
+                .expect("a GPU compositor counts its summed-area tables"),
+            sparkleflinger
+                .snapshot_texture_allocation_count_for_test()
+                .expect("a GPU compositor counts its snapshots"),
+            sparkleflinger
+                .projected_bind_group_creation_count_for_test()
+                .expect("a GPU compositor counts its projected bind groups"),
+        );
+        if frame + 1 == WARMUP_FRAMES {
+            assert_eq!(
+                counts.0, 3,
+                "warmup should allocate one summed-area table per area-sampled extent"
+            );
+            warm_counts = Some(counts);
+        } else if let Some(warm) = warm_counts {
+            assert_eq!(
+                counts, warm,
+                "frame {frame}: (summed-area tables, snapshots, projected bind groups) \
+                 should stay at their warmup counts"
+            );
+        }
         std::thread::sleep(FRAME_PACING);
     }
 }

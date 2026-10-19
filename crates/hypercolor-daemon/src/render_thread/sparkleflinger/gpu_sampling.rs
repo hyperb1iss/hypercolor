@@ -1660,6 +1660,12 @@ impl GpuSpatialSampler {
         self.area_generation
     }
 
+    /// Summed-area tables allocated since the sampler was created.
+    #[cfg(test)]
+    pub(super) fn area_resource_allocation_count(&self) -> usize {
+        self.area_pipeline.allocation_count()
+    }
+
     #[cfg(test)]
     pub(super) const fn buffer_generation(&self) -> u64 {
         self.buffer_generation

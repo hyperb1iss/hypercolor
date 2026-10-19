@@ -765,7 +765,7 @@ pub(super) fn bilinear_led_zone(name: &str, output_id: &str, x: f32, effect_id: 
     zone
 }
 
-fn alpha_lcd_face_zone(name: &str, effect_id: EffectId) -> Zone {
+pub(super) fn alpha_lcd_face_zone(name: &str, effect_id: EffectId) -> Zone {
     let mut zone = sample_display_zone(LCD_FACE_EXTENT, LCD_FACE_EXTENT);
     zone.name = name.into();
     set_effect_zone(&mut zone, effect_id, HashMap::new());

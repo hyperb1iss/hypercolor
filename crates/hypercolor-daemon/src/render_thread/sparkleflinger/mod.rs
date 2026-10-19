@@ -1270,6 +1270,18 @@ impl SparkleFlinger {
         }
     }
 
+    /// Summed-area tables the GPU sampler has allocated for area-sampled
+    /// plans.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn summed_area_table_allocation_count_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                Some(gpu.summed_area_table_allocation_count())
+            }
+        }
+    }
+
     #[cfg(all(test, feature = "wgpu"))]
     pub(crate) fn compositor_surface_allocation_count_for_test(&self) -> Option<usize> {
         match &self.backend {
