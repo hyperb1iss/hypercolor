@@ -454,9 +454,12 @@ CPU path rather than dropping frames.
 On the GPU lane, per-producer surfaces upload to textures and the blend,
 transform, and preview passes run as wgpu compute shaders. Spatial sampling runs
 on the GPU too (`gpu_sampling.rs`, `sample.wgsl`): the prepared zone plan
-becomes a buffer of per-LED sample points (nearest, bilinear, or area), and
-sampled `ZoneColors` return through triple-buffered async readback slots so the
-render thread never blocks on the GPU.
+becomes a buffer of per-LED sample points (nearest, bilinear, area, or
+Gaussian, whose kernel weights ride in their own buffer), and sampled
+`ZoneColors` return through triple-buffered async readback slots so the render
+thread never blocks on the GPU. A multi-zone scene samples each zone's own
+texture with that zone's plan in one dispatch rather than the composed canvas
+(Spec 86).
 
 Area sampling is where the GPU lane changes the algorithm, not just the venue.
 Instead of the CPU path's `(2r+1)²` reads per LED, the compositor builds a
