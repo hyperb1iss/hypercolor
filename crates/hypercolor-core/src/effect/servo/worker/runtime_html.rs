@@ -119,7 +119,10 @@ fn build_control_preamble_script(
 
     let mut script = String::from("(function(){\n");
     script.push_str("  window.__hypercolorCaptureMode = true;\n");
-    script.push_str("  window.__hypercolorPreserveDrawingBuffer = false;\n");
+    // The worker paints and reads back even when the page's animation frame
+    // has not landed yet, and that capture must repeat the last WebGL frame
+    // rather than show the page background behind a cleared buffer.
+    script.push_str("  window.__hypercolorPreserveDrawingBuffer = true;\n");
     if host_driven_animation {
         script.push_str("  window.__hypercolorHostDrivenAnimation = true;\n");
     }
@@ -130,7 +133,7 @@ fn build_control_preamble_script(
     }
     script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) {\n");
     script.push_str("    globalThis.__hypercolorCaptureMode = true;\n");
-    script.push_str("    globalThis.__hypercolorPreserveDrawingBuffer = false;\n");
+    script.push_str("    globalThis.__hypercolorPreserveDrawingBuffer = true;\n");
     if host_driven_animation {
         script.push_str("    globalThis.__hypercolorHostDrivenAnimation = true;\n");
     }
@@ -232,9 +235,9 @@ mod tests {
         assert!(script.contains("globalThis[\"color\"] = \"#00ffaa\""));
         assert!(script.contains("globalThis[\"overlay\"] = \"#4080bf\""));
         assert!(script.contains("window.__hypercolorCaptureMode = true"));
-        assert!(script.contains("window.__hypercolorPreserveDrawingBuffer = false"));
+        assert!(script.contains("window.__hypercolorPreserveDrawingBuffer = true"));
         assert!(script.contains("globalThis.__hypercolorCaptureMode = true"));
-        assert!(script.contains("globalThis.__hypercolorPreserveDrawingBuffer = false"));
+        assert!(script.contains("globalThis.__hypercolorPreserveDrawingBuffer = true"));
         assert!(!script.contains("__hypercolorHostDrivenAnimation"));
     }
 
@@ -305,7 +308,7 @@ mod tests {
         let runtime_html =
             std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
         assert!(runtime_html.contains("window.__hypercolorCaptureMode = true"));
-        assert!(runtime_html.contains("window.__hypercolorPreserveDrawingBuffer = false"));
+        assert!(runtime_html.contains("window.__hypercolorPreserveDrawingBuffer = true"));
         assert!(runtime_html.contains("window.__hypercolorHostDrivenAnimation = true"));
         assert!(
             runtime_html.find("window.__hypercolorHostDrivenAnimation = true")
