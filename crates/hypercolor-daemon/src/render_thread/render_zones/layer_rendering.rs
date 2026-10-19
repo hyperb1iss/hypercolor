@@ -225,7 +225,8 @@ impl ZoneRuntime {
             )
         };
         let composed = sparkleflinger.compose_for_outputs(
-            plan.with_cpu_replay_cacheable(false),
+            plan.with_cpu_replay_cacheable(false)
+                .preserving_scene_preview(),
             requirements.requires_cpu_sampling_canvas,
             requirements
                 .requires_published_surface

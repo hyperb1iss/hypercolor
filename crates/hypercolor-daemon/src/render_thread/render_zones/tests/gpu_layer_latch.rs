@@ -580,7 +580,10 @@ fn assert_scene_keeps_led_colors(
 
 /// Sample a zone set the way the render thread does: one dispatch over the
 /// zones' textures, then splice CPU-sampled and held zones into zone order.
-fn sample_zone_set(sparkleflinger: &mut SparkleFlinger, set: &ZoneSamplingSet) -> Vec<ZoneColors> {
+pub(super) fn sample_zone_set(
+    sparkleflinger: &mut SparkleFlinger,
+    set: &ZoneSamplingSet,
+) -> Vec<ZoneColors> {
     let mut colors = sample_zone_textures(sparkleflinger, &set.gpu_textures);
     set.assemble_into(&mut colors, &[]);
     colors

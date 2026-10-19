@@ -388,6 +388,8 @@ pub struct CompositionPlan {
     height: u32,
     layers: Vec<CompositionLayer>,
     cpu_replay_cacheable: bool,
+    /// See [`Self::preserving_scene_preview`].
+    preserves_scene_preview: bool,
 }
 
 impl CompositionPlan {
@@ -397,6 +399,7 @@ impl CompositionPlan {
             height,
             layers: vec![layer.into_base_layer()],
             cpu_replay_cacheable: true,
+            preserves_scene_preview: false,
         }
     }
 
@@ -410,12 +413,24 @@ impl CompositionPlan {
             height,
             layers,
             cpu_replay_cacheable: true,
+            preserves_scene_preview: false,
         }
     }
 
     #[must_use]
     pub fn with_cpu_replay_cacheable(mut self, cacheable: bool) -> Self {
         self.cpu_replay_cacheable = cacheable;
+        self
+    }
+
+    /// Mark a composition made for another consumer of the shared
+    /// compositor, such as a zone or display-face frame or the projected
+    /// scene, rather than the scene's own output. It leaves the scene
+    /// preview alone: it neither stages a GPU preview readback nor cancels
+    /// one in flight, and it leaves the active preview request unchanged.
+    #[must_use]
+    pub(crate) fn preserving_scene_preview(mut self) -> Self {
+        self.preserves_scene_preview = true;
         self
     }
 
@@ -461,7 +476,8 @@ impl<'a> ReusableCompositionPlan<'a> {
         Self {
             plan: Some(
                 CompositionPlan::with_layers(width, height, std::mem::take(target))
-                    .with_cpu_replay_cacheable(false),
+                    .with_cpu_replay_cacheable(false)
+                    .preserving_scene_preview(),
             ),
             target,
         }
@@ -968,6 +984,7 @@ impl SparkleFlinger {
         requires_cpu_sampling_canvas: bool,
         preview_surface_request: Option<PreviewSurfaceRequest>,
     ) -> ComposedFrameSet {
+        let owns_preview_request = !plan.preserves_scene_preview;
         let (composed, commit_preview_request) = match &mut self.backend {
             SparkleFlingerBackend::Cpu(backend) => (
                 backend.compose_with_surface_pools(
@@ -1039,7 +1056,7 @@ impl SparkleFlinger {
                 }
             }
         };
-        if commit_preview_request {
+        if commit_preview_request && owns_preview_request {
             self.active_preview_request = preview_surface_request;
         }
         composed
@@ -1796,6 +1813,34 @@ impl SparkleFlinger {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => None,
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.upload_media_canvas_frame(source, canvas),
+        }
+    }
+
+    /// Leave the next scene preview map unfinished for one resolve, the way
+    /// a GPU still busy with the frame leaves it.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn defer_next_preview_map_resolve_for_test(&mut self) {
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
+            gpu.defer_next_preview_map_resolve();
+        }
+    }
+
+    /// Whether a scene preview readback is mapping and not yet finished.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn has_pending_preview_map_for_test(&self) -> bool {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => false,
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.has_pending_preview_map(),
+        }
+    }
+
+    /// Preview readback sets allocated so far, and scale bind groups built
+    /// for the current one.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn preview_resource_allocations_for_test(&self) -> Option<(usize, usize)> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.preview_resource_allocations()),
         }
     }
 

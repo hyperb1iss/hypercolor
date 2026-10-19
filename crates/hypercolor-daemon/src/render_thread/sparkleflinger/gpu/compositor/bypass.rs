@@ -54,24 +54,37 @@ impl GpuSparkleFlinger {
         Ok(Some(replacement))
     }
 
+    /// Switch the compositor to `replacement`'s surface set.
+    ///
+    /// A scene preview readback already mapping reads its own buffers, not
+    /// the compositor's surfaces, so it survives the switch and lands on a
+    /// later frame: a multi-zone frame switches sizes for every zone and
+    /// display face, and cancelling the map here would starve the scene
+    /// preview whenever the GPU finishes it after its own frame (Spec 86 §8
+    /// criterion 9). Only the scale bind groups follow the surfaces.
     pub(super) fn commit_surface_size(&mut self, replacement: Option<GpuCompositorSurfaceSet>) {
         let Some(replacement) = replacement else {
             return;
         };
-        self.discard_pending_preview_map();
         self.clear_sampling_readback_latch();
         drop(self.supersede_frame_in_flight("compositor surfaces resized"));
         self.discard_pending_uploads();
-        if let Some(previous) = self.surfaces.replace(replacement) {
+        let incoming_generation = replacement.generation;
+        let previous = self.surfaces.replace(replacement);
+        if let Some(preview_surfaces) = self.preview_surfaces.as_mut() {
+            preview_surfaces.switch_scale_output(
+                previous.as_ref().map(|previous| previous.generation),
+                incoming_generation,
+            );
+        }
+        if let Some(previous) = previous {
             self.compositor_surface_cache
                 .insert((previous.width, previous.height), Some(previous));
         }
-        self.preview_surfaces = None;
         self.current_output = None;
         self.cached_composition_key = None;
         self.cached_readback_surface = None;
         self.cached_preview_surfaces.clear();
-        self.pending_preview_map = None;
         self.ready_preview_surface = None;
         self.invalidate_output_sample();
         self.spatial_sampler.clear_output_bind_groups();
@@ -84,7 +97,6 @@ impl GpuSparkleFlinger {
         request: Option<PreviewSurfaceRequest>,
         requires_cpu_sampling_canvas: bool,
         prepared_surfaces: Option<&GpuCompositorSurfaceSet>,
-        force_replace: bool,
     ) -> Result<Option<PreparedPreviewSurfaceChange>> {
         if requires_cpu_sampling_canvas {
             return Ok(None);
@@ -105,7 +117,7 @@ impl GpuSparkleFlinger {
             source_height,
             request,
             scale_views,
-            force_replace,
+            prepared_surfaces.map(|surfaces| surfaces.generation),
         )
         .map(Some)
     }
@@ -195,7 +207,7 @@ impl GpuSparkleFlinger {
                 })
                 .map(|cached| cached.surface.clone())
             {
-                self.discard_superseded_preview_work();
+                self.retire_superseded_preview_work(plan);
                 return Ok(gpu_bypassed_surface_frame(
                     &surface,
                     requires_cpu_sampling_canvas,
@@ -205,9 +217,9 @@ impl GpuSparkleFlinger {
         }
 
         let prepared_surface_replacement = self.prepare_surface_size(plan.width, plan.height)?;
-        if prepared_surface_replacement.is_none() {
-            self.discard_superseded_preview_work();
-        }
+        // A surface switch keeps a pending scene preview map, so a scene
+        // composition retires it here whether or not the size changes.
+        self.retire_superseded_preview_work(plan);
         self.commit_surface_size(prepared_surface_replacement);
         if let Some(surfaces) = self.surfaces.as_mut() {
             upload_frame_into_cached_texture(

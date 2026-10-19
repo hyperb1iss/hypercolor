@@ -6,8 +6,8 @@ use hypercolor_types::canvas::{
 use super::super::{GpuCompositorPipeline, PREVIEW_SCALE_PARAM_BYTES};
 use super::{
     CachedPreviewReadbackSurfaces, GpuPreviewScaleBindGroups, GpuPreviewScaleOutput,
-    GpuPreviewSurfaceSet, MAX_CACHED_PREVIEW_READBACK_POOLS, PREVIEW_READBACK_SLOT_COUNT,
-    PreparedPreviewReadbackSurfaces,
+    GpuPreviewSurfaceSet, MAX_CACHED_PREVIEW_READBACK_POOLS, MAX_PARKED_PREVIEW_SCALE_OUTPUTS,
+    PREVIEW_READBACK_SLOT_COUNT, ParkedPreviewScaleOutput, PreparedPreviewReadbackSurfaces,
 };
 use crate::render_thread::producer_queue::ProducerFrame;
 use crate::render_thread::sparkleflinger::PreviewSurfaceRequest;
@@ -58,6 +58,10 @@ impl GpuPreviewSurfaceSet {
         cached_readback_surfaces
             .try_reserve_exact(MAX_CACHED_PREVIEW_READBACK_POOLS)
             .context("GPU preview readback cache allocation failed")?;
+        let mut parked_scale_outputs = Vec::new();
+        parked_scale_outputs
+            .try_reserve_exact(MAX_PARKED_PREVIEW_SCALE_OUTPUTS)
+            .context("GPU preview scale bind group cache allocation failed")?;
         Ok(Self {
             width,
             height,
@@ -65,6 +69,7 @@ impl GpuPreviewSurfaceSet {
             capacity_height: height,
             padded_bytes_per_row,
             scale_output: None,
+            parked_scale_outputs,
             readbacks,
             next_readback_slot: 0,
             readback_surfaces,
@@ -150,6 +155,49 @@ impl GpuPreviewSurfaceSet {
 
     pub(super) fn readback(&self, slot: usize) -> &wgpu::Buffer {
         &self.readbacks[slot]
+    }
+
+    /// Follow the compositor from the surface set with generation
+    /// `outgoing` to the one with generation `incoming`. The scale bind
+    /// groups read the compositor's views, so they park with the outgoing
+    /// set and the incoming set's parked ones come back. The readback
+    /// buffers, and a map in flight on them, do not depend on the
+    /// compositor surfaces and stay as they are.
+    ///
+    /// The incoming set's bind groups leave the parking list before the
+    /// outgoing ones join it, so parking into a full list can never evict
+    /// the bind groups that preview preparation counted on reusing.
+    pub(in crate::render_thread::sparkleflinger::gpu) fn switch_scale_output(
+        &mut self,
+        outgoing: Option<u64>,
+        incoming: u64,
+    ) {
+        let incoming_output = self
+            .parked_scale_outputs
+            .iter()
+            .position(|parked| parked.surface_set_generation == incoming)
+            .map(|index| self.parked_scale_outputs.remove(index).output);
+        let current = std::mem::replace(&mut self.scale_output, incoming_output);
+        if let (Some(surface_set_generation), Some(output)) = (outgoing, current) {
+            self.parked_scale_outputs
+                .retain(|parked| parked.surface_set_generation != surface_set_generation);
+            if self.parked_scale_outputs.len() >= MAX_PARKED_PREVIEW_SCALE_OUTPUTS {
+                self.parked_scale_outputs.pop();
+            }
+            self.parked_scale_outputs.insert(
+                0,
+                ParkedPreviewScaleOutput {
+                    surface_set_generation,
+                    output,
+                },
+            );
+        }
+    }
+
+    pub(super) fn has_parked_scale_output(&self, surface_set_generation: u64) -> bool {
+        self.parked_scale_outputs
+            .iter()
+            .any(|parked| parked.surface_set_generation == surface_set_generation)
     }
 
     #[cfg(test)]

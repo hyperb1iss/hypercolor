@@ -140,6 +140,7 @@ impl CpuSparkleFlinger {
             height,
             mut layers,
             cpu_replay_cacheable,
+            preserves_scene_preview: _,
         } = plan;
         let requires_full_size_preview =
             preview_request_matches_plan(preview_surface_request, width, height);

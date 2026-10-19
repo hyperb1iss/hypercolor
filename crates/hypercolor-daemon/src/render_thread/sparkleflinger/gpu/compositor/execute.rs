@@ -45,6 +45,12 @@ impl GpuSparkleFlinger {
             return Err(ScreenUploadPoolSaturated::for_test().into());
         }
         let requires_preview_surface = preview_surface_request.is_some();
+        debug_assert!(
+            !plan.preserves_scene_preview
+                || requires_cpu_sampling_canvas
+                || !requires_preview_surface,
+            "a composition that preserves the scene preview never stages a GPU preview readback"
+        );
         let readback_key = cached_readback_key(plan);
         if plan.layers.len() == 1
             && let Some(layer) = plan.layers.first()
@@ -143,7 +149,7 @@ impl GpuSparkleFlinger {
                 })
                 .map(|cached| cached.surface.clone())
             {
-                self.discard_superseded_preview_work();
+                self.retire_superseded_preview_work(plan);
                 return Ok(gpu_composed_from_surface(
                     surface,
                     requires_cpu_sampling_canvas,
@@ -161,7 +167,6 @@ impl GpuSparkleFlinger {
                 preview_surface_request,
                 requires_cpu_sampling_canvas,
                 None,
-                false,
             )?;
             let pending_output_submission =
                 self.supersede_frame_in_flight("current output readback restaged");
@@ -170,12 +175,12 @@ impl GpuSparkleFlinger {
                     || (None, Vec::new()),
                     |stashed| (Some(stashed.encoder), stashed.native_screen_leases),
                 );
-            if preview_surface_request.is_some() && !requires_cpu_sampling_canvas {
-                self.ready_preview_surface = None;
-            } else {
+            if (preview_surface_request.is_none() || requires_cpu_sampling_canvas)
+                && !plan.preserves_scene_preview
+            {
                 self.discard_pending_preview_map();
-                self.ready_preview_surface = None;
             }
+            self.ready_preview_surface = None;
             return self.read_back_current_output_surface(
                 plan.width,
                 plan.height,
@@ -206,7 +211,6 @@ impl GpuSparkleFlinger {
                 preview_surface_request,
                 requires_cpu_sampling_canvas,
                 prepared_surface_replacement.as_ref(),
-                prepared_surface_replacement.is_some(),
             )?
         };
         let first_layer = plan
@@ -246,13 +250,15 @@ impl GpuSparkleFlinger {
             // its preview bookkeeping may be retired here.
             drop(self.supersede_frame_in_flight("screen upload outputs superseded"));
             self.ready_preview_surface = None;
-            if preview_surface_request.is_none() || requires_cpu_sampling_canvas {
+            if (preview_surface_request.is_none() || requires_cpu_sampling_canvas)
+                && !plan.preserves_scene_preview
+            {
                 self.discard_pending_preview_map();
             }
         } else if preview_surface_request.is_some() && !requires_cpu_sampling_canvas {
             self.clear_superseded_preview_outputs();
         } else {
-            self.discard_superseded_preview_work();
+            self.retire_superseded_preview_work(plan);
         }
         // The stashed encoder (if any) was just submitted or dropped and no
         // local encoder exists yet, so retired uniform ring slots are safe to

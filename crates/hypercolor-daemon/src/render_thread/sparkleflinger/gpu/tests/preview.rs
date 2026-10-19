@@ -843,3 +843,140 @@ fn gpu_discard_superseded_preview_work_clears_preview_state() {
     assert!(compositor.ready_preview_surface.is_none());
     assert_eq!(compositor.superseded_frame_count, 1);
 }
+
+/// A pending scene preview map survives a composition for another consumer
+/// at another size, on both the bypass and the layered path, while a scene
+/// composition that wants no preview retires it even when it switches the
+/// compositor's size (Spec 86 §8 criterion 9).
+#[test]
+fn gpu_pending_preview_map_survives_only_side_compositions_across_size_switches() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let scene_plan = CompositionPlan::with_layers(
+        4,
+        4,
+        vec![
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas(Rgba::new(
+                255, 32, 0, 255,
+            )))),
+            CompositionLayer::alpha(
+                ProducerFrame::Canvas(solid_canvas(Rgba::new(32, 64, 255, 255))),
+                0.35,
+            ),
+        ],
+    );
+    let request = PreviewSurfaceRequest {
+        width: 2,
+        height: 2,
+    };
+    let bypass_plan = || {
+        CompositionPlan::single(
+            8,
+            8,
+            CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas_with_size(
+                8,
+                8,
+                Rgba::new(16, 220, 32, 255),
+            ))),
+        )
+    };
+    let layered_plan = || {
+        CompositionPlan::with_layers(
+            6,
+            6,
+            vec![
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas_with_size(
+                    6,
+                    6,
+                    Rgba::new(16, 220, 32, 255),
+                ))),
+                CompositionLayer::alpha(
+                    ProducerFrame::Canvas(solid_canvas_with_size(
+                        6,
+                        6,
+                        Rgba::new(255, 255, 255, 255),
+                    )),
+                    0.25,
+                ),
+            ],
+        )
+    };
+    let stage_deferred_scene_preview = |compositor: &mut GpuSparkleFlinger| {
+        compositor
+            .compose(&scene_plan, false, Some(request))
+            .expect("scene compose should stage a scaled preview");
+        compositor
+            .submit_pending_preview_work()
+            .expect("scene preview submit should succeed");
+        defer_pending_preview_map(compositor);
+    };
+
+    stage_deferred_scene_preview(&mut compositor);
+    compositor
+        .compose(&bypass_plan().preserving_scene_preview(), false, None)
+        .expect("side bypass compose should succeed");
+    compositor
+        .compose(&layered_plan().preserving_scene_preview(), false, None)
+        .expect("side layered compose should succeed");
+    assert!(
+        compositor.pending_preview_map.is_some(),
+        "side compositions at other sizes keep the scene preview map"
+    );
+    let preview = resolve_preview_surface_blocking(&mut compositor);
+    assert_eq!((preview.width(), preview.height()), (2, 2));
+
+    for (path, plan) in [("bypass", bypass_plan()), ("layered", layered_plan())] {
+        stage_deferred_scene_preview(&mut compositor);
+        compositor
+            .compose(&plan, false, None)
+            .expect("scene compose without a preview should succeed");
+        assert!(
+            compositor.pending_preview_map.is_none(),
+            "a {path} scene composition that wants no preview retires the pending map"
+        );
+    }
+}
+
+/// Cycling scaled previews through more compositor surface sets than the
+/// scale bind group parking list holds never loses the bind groups that
+/// preview preparation counted on reusing, and every preview comes back
+/// with its own composition's pixels.
+#[test]
+fn gpu_scaled_previews_survive_more_surface_sets_than_parking_holds() {
+    let Some(mut compositor) = super::gpu_test_compositor() else {
+        return;
+    };
+    let request = PreviewSurfaceRequest {
+        width: 2,
+        height: 2,
+    };
+    let extents = 4..13_u32;
+    for round in 0..2_u8 {
+        for extent in extents.clone() {
+            let color = Rgba::new(
+                u8::try_from(extent * 16).expect("extent color fits u8"),
+                round * 100,
+                40,
+                255,
+            );
+            let plan = CompositionPlan::single(
+                extent,
+                extent,
+                CompositionLayer::replace(ProducerFrame::Canvas(solid_canvas_with_size(
+                    extent, extent, color,
+                ))),
+            );
+            compositor
+                .compose(&plan, false, Some(request))
+                .expect("scaled preview compose should succeed");
+            let preview = resolve_preview_surface_blocking(&mut compositor);
+            assert_eq!((preview.width(), preview.height()), (2, 2));
+            assert_eq!(
+                &preview.rgba_bytes()[0..4],
+                &[color.r, color.g, color.b, color.a],
+                "round {round} extent {extent} previews its own composition"
+            );
+        }
+    }
+}

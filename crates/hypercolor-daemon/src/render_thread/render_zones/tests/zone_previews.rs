@@ -3,13 +3,19 @@
 //! A GPU zone's frame lives in its own GPU texture, so the CPU converter
 //! cannot publish it. Each zone's texture is scaled on the GPU to the zone
 //! preview demand and read back at that size only; nothing is staged while
-//! nobody watches zone previews.
+//! nobody watches zone previews. The scene preview of the same scenes keeps
+//! landing beside them while every zone resizes the compositor (§8 criterion
+//! 9).
 
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
+use super::gpu_layer_latch::sample_zone_set;
 use super::*;
 use crate::preview_runtime::PreviewDemandSummary;
-use crate::render_thread::sparkleflinger::{MediaTextureSourceKey, ZonePreviewStage};
+use crate::render_thread::sparkleflinger::{
+    CompositionLayer, CompositionMode, MediaTextureSourceKey, ZonePreviewStage,
+};
 use crate::render_thread::zone_previews::{
     ZonePreviewDemand, collect_gpu_zone_previews, stage_gpu_zone_previews, zone_preview_sources,
 };
@@ -29,6 +35,25 @@ const YELLOW: Rgba = Rgba::new(255, 255, 0, 255);
 const QUADRANTS: [Rgba; 4] = [RED, GREEN, BLUE, WHITE];
 const SMALL_PREVIEW: (u32, u32) = (64, 48);
 const PREVIEW_DEADLINE: Duration = Duration::from_secs(2);
+/// The UI scene preview's transport size: smaller than the scene, so the
+/// compositor scales it on the GPU before reading it back.
+const SCENE_PREVIEW_REQUEST: PreviewSurfaceRequest = PreviewSurfaceRequest {
+    width: 160,
+    height: 100,
+};
+const LAGGED_FRAMES: u64 = 24;
+const LAGGED_WARMUP_FRAMES: u64 = 3;
+const FRAME_PACING: Duration = Duration::from_millis(16);
+
+/// What one frame of [`PreviewScene::preview_frame_a_frame_behind`] produced.
+struct LaggedPreviewFrame {
+    /// A scene preview map pending when the frame began was still pending
+    /// after the frame's zones and LCD face composed.
+    carried_map_survived: bool,
+    scene_preview: Option<PublishedSurface>,
+    zone_previews: Vec<(ZoneId, PublishedSurface)>,
+    leds: Vec<ZoneColors>,
+}
 
 #[derive(Clone, Copy)]
 enum LayerFill {
@@ -192,6 +217,77 @@ impl PreviewScene {
         count: usize,
     ) -> (ZoneResult, Vec<(ZoneId, PublishedSurface)>) {
         self.render_until(demand, |previews| previews.len() == count)
+    }
+
+    /// Run one frame's preview work after `render`, in render-thread order,
+    /// on a GPU that runs a frame behind: a scene preview map begun during
+    /// this frame finishes no earlier than the next frame.
+    ///
+    /// The frame composer replaces the canvas with the scene frame and asks
+    /// for a transport-sized scene preview; the preview advances right after
+    /// composition, the LEDs sample their zone set, zone previews stage, and
+    /// the scene preview finalizes before zone previews are collected.
+    /// `map_carried` says whether a scene preview map was still pending when
+    /// this frame began rendering.
+    fn preview_frame_a_frame_behind(
+        &mut self,
+        demand: ZonePreviewDemand,
+        result: &ZoneResult,
+        map_carried: bool,
+    ) -> LaggedPreviewFrame {
+        let plan = CompositionPlan::single(
+            SCENE_WIDTH,
+            SCENE_HEIGHT,
+            CompositionLayer::from_parts(
+                result.scene_frame.clone(),
+                CompositionMode::Replace,
+                1.0,
+                true,
+            ),
+        );
+        let composed =
+            self.sparkleflinger
+                .compose_for_outputs(plan, false, Some(SCENE_PREVIEW_REQUEST));
+        let carried_map_survived =
+            map_carried && self.sparkleflinger.has_pending_preview_map_for_test();
+        let mut scene_preview = composed.preview_surface;
+        if scene_preview.is_none() {
+            scene_preview = self.resolve_scene_preview_a_frame_behind(carried_map_survived);
+        }
+        let LedSamplingStrategy::SparkleFlingerZones(set) = &result.led_sampling_strategy else {
+            panic!("a GPU multi-zone scene should sample each zone's own texture");
+        };
+        let leds = sample_zone_set(&mut self.sparkleflinger, set);
+        self.stage(demand, result);
+        if scene_preview.is_none() {
+            scene_preview = self.resolve_scene_preview_a_frame_behind(
+                carried_map_survived && self.sparkleflinger.has_pending_preview_map_for_test(),
+            );
+        }
+        let zone_previews = self.collect(demand, result);
+        LaggedPreviewFrame {
+            carried_map_survived,
+            scene_preview,
+            zone_previews,
+            leds,
+        }
+    }
+
+    /// Resolve the scene preview once, holding back a map begun this frame.
+    fn resolve_scene_preview_a_frame_behind(
+        &mut self,
+        map_from_earlier_frame: bool,
+    ) -> Option<PublishedSurface> {
+        self.sparkleflinger
+            .submit_pending_preview_work()
+            .expect("scene preview work should submit");
+        if self.sparkleflinger.has_pending_preview_map_for_test() && !map_from_earlier_frame {
+            self.sparkleflinger
+                .defer_next_preview_map_resolve_for_test();
+        }
+        self.sparkleflinger
+            .resolve_preview_surface()
+            .expect("scene preview should resolve")
     }
 
     fn lane_count(&self) -> usize {
@@ -383,6 +479,137 @@ fn unchanged_zone_texture_keeps_its_latched_preview() {
         ZonePreviewStage::Current
     );
     assert_eq!(scene.stage_count(), 1, "unchanged content reads back once");
+}
+
+/// The scene preview lands on the next frame, carrying the previous frame's
+/// pixels, when the GPU has not finished its readback by the end of the
+/// frame that staged it, even though every frame composes both LED zones
+/// and the LCD face at their own extents before composing the preview
+/// again, and zone previews keep landing beside it (Spec 86 §8 criterion
+/// 9). The accent zone changes color every frame, so each preview names the
+/// frame it came from. A compositor that cancels the pending
+/// preview readback on each size switch starves the scene preview forever
+/// on any GPU that runs a frame behind, and one that rebuilds the preview's
+/// readback set or scale bind groups on each switch allocates every frame.
+#[test]
+fn late_scene_preview_readbacks_still_land_while_zones_resize_the_compositor() {
+    let Some(mut scene) = PreviewScene::rig() else {
+        return;
+    };
+    let demand = small_demand();
+    let (case_id, accents_id) = (scene.zone(0).id, scene.zone(1).id);
+    let mut scene_previews = 0_u64;
+    let mut carried_maps = 0_u64;
+    let mut surviving_maps = 0_u64;
+    let mut zone_preview_frames: HashMap<ZoneId, u64> = HashMap::new();
+    let mut failures = Vec::new();
+    let mut trace = String::new();
+    let mut warm_allocations = None;
+
+    let accent_color = |frame: u64| {
+        if frame.is_multiple_of(2) {
+            BLUE
+        } else {
+            YELLOW
+        }
+    };
+
+    for frame in 0..LAGGED_FRAMES {
+        if frame == LAGGED_WARMUP_FRAMES {
+            warm_allocations = scene.sparkleflinger.preview_resource_allocations_for_test();
+        }
+        scene.sources[1].fill = LayerFill::Solid(accent_color(frame));
+        let map_carried = scene.sparkleflinger.has_pending_preview_map_for_test();
+        let result = scene.render();
+        let lagged = scene.preview_frame_a_frame_behind(demand, &result, map_carried);
+        carried_maps += u64::from(map_carried);
+        surviving_maps += u64::from(lagged.carried_map_survived);
+        let _ = write!(
+            trace,
+            "frame {frame}: carried={map_carried} survived={} scene_preview={} zone_previews={};",
+            lagged.carried_map_survived,
+            lagged.scene_preview.is_some(),
+            lagged.zone_previews.len(),
+        );
+
+        if let Some(preview) = &lagged.scene_preview {
+            scene_previews += 1;
+            let size = (preview.width(), preview.height());
+            if size != (SCENE_PREVIEW_REQUEST.width, SCENE_PREVIEW_REQUEST.height) {
+                failures.push(format!("frame {frame}: scene preview arrived at {size:?}"));
+            }
+            let center = preview.get_pixel(preview.width() / 2, preview.height() / 2);
+            let staged = accent_color(frame.saturating_sub(1));
+            if frame == 0 || center != staged {
+                failures.push(format!(
+                    "frame {frame}: scene preview center is {center:?}, not the accent color \
+                     {staged:?} the previous frame staged"
+                ));
+            }
+        }
+        for (zone_id, surface) in &lagged.zone_previews {
+            *zone_preview_frames.entry(*zone_id).or_default() += 1;
+            if (surface.width(), surface.height()) != SMALL_PREVIEW {
+                failures.push(format!(
+                    "frame {frame}: zone preview arrived at {}x{}",
+                    surface.width(),
+                    surface.height()
+                ));
+            }
+        }
+        let accent_leds = lagged
+            .leds
+            .iter()
+            .find(|zone| zone.zone_id == "accent_leds")
+            .map(|zone| zone.colors.clone())
+            .unwrap_or_default();
+        let accent = accent_color(frame);
+        if accent_leds.is_empty()
+            || accent_leds
+                .iter()
+                .any(|color| *color != [accent.r, accent.g, accent.b])
+        {
+            failures.push(format!(
+                "frame {frame}: accent LEDs sampled {:?}",
+                accent_leds.first()
+            ));
+        }
+        let _ = writeln!(trace);
+        std::thread::sleep(FRAME_PACING);
+    }
+
+    assert!(
+        failures.is_empty(),
+        "previews or LEDs went wrong:\n{}\ntrace:\n{trace}",
+        failures.join("\n")
+    );
+    assert!(
+        carried_maps > 0,
+        "the frame-behind GPU model never carried a scene preview map into a frame:\n{trace}"
+    );
+    assert_eq!(
+        surviving_maps, carried_maps,
+        "a pending scene preview map was cancelled by the next frame's zone and face \
+         composition:\n{trace}"
+    );
+    assert!(
+        scene_previews + 1 >= LAGGED_FRAMES,
+        "only {scene_previews} of {LAGGED_FRAMES} frames delivered the previous frame's scene \
+         preview:\n{trace}"
+    );
+    assert_eq!(
+        scene.sparkleflinger.preview_resource_allocations_for_test(),
+        warm_allocations,
+        "switching compositor sizes reallocated scene preview readback sets or scale bind \
+         groups after warmup"
+    );
+    for zone_id in [case_id, accents_id] {
+        let landed = zone_preview_frames.get(&zone_id).copied().unwrap_or(0);
+        assert!(
+            landed * 3 >= LAGGED_FRAMES,
+            "zone {zone_id} delivered a preview on only {landed} of {LAGGED_FRAMES} frames:\n{trace}"
+        );
+    }
 }
 
 fn assert_quadrant_preview(
