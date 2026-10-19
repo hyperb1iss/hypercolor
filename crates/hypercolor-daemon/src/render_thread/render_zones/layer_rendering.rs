@@ -14,7 +14,7 @@ use hypercolor_types::scene::Zone;
 use super::ZoneRuntime;
 use super::effect_errors::render_layer_effect_error;
 #[cfg(feature = "wgpu")]
-use super::frame_helpers::gpu_composable_layer_frame;
+use super::frame_helpers::upload_off_extent_canvas;
 use super::frame_helpers::{
     color_fill_frame, composed_frame_to_producer_frame, composition_layer_for_scene_layer,
     media_layer_producer_frame, passthrough_effect_layer, producer_frame_is_gpu,
@@ -44,8 +44,7 @@ impl ZoneRuntime {
         sparkleflinger: &mut SparkleFlinger,
         requirements: ZoneFrameRequirements,
     ) -> Result<Option<ProducerFrame>> {
-        let mut composition_layers = Vec::new();
-        let mut gpu_source_layers = Vec::new();
+        let mut layer_frames = Vec::new();
         for layer in &zone.layers {
             if !layer.enabled {
                 continue;
@@ -191,12 +190,26 @@ impl ZoneRuntime {
                     LayerHealth::Active,
                 );
             }
-            #[cfg(feature = "wgpu")]
-            let frame = if requirements.requires_gpu_output() {
-                gpu_composable_layer_frame(frame, layer_runtime.id, zone, sparkleflinger)
-            } else {
-                frame
-            };
+            layer_frames.push((layer_runtime, frame));
+        }
+
+        // A plan that can only compose on the GPU, because the zone asks for
+        // no CPU output or a layer is a GPU texture the CPU compositor cannot
+        // read, loses its whole frame to one canvas off the zone's extent.
+        #[cfg(feature = "wgpu")]
+        if requirements.requires_gpu_output()
+            || layer_frames
+                .iter()
+                .any(|(_, frame)| producer_frame_is_gpu(frame))
+        {
+            for (layer_runtime, frame) in &mut layer_frames {
+                upload_off_extent_canvas(frame, layer_runtime.id, zone, sparkleflinger);
+            }
+        }
+
+        let mut composition_layers = Vec::with_capacity(layer_frames.len());
+        let mut gpu_source_layers = Vec::new();
+        for (layer_runtime, frame) in layer_frames {
             if producer_frame_is_gpu(&frame) {
                 gpu_source_layers.push(layer_runtime.id);
             }

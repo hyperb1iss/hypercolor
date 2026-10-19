@@ -112,6 +112,70 @@ fn secondary_zone_media_and_screen_layers_keep_their_own_pixels() {
     }
 }
 
+/// A display face stacking a GPU-resident effect under a GIF at its 1x1
+/// intrinsic size still gets its frame. The face asks for CPU output, so the
+/// GPU compositor's refusal of the off-extent canvas used to fall back to
+/// the CPU compositor, which cannot read the effect's texture, and the face
+/// published nothing.
+#[test]
+fn display_face_mixing_a_gpu_effect_with_an_off_extent_gif_keeps_its_frame() {
+    const FACE_EXTENT: (u32, u32) = (8, 8);
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
+    let mut library =
+        AssetLibrary::open(tempdir.path().join("assets")).expect("asset library should open");
+    let gif = library
+        .add_bytes(&red_gif_bytes(), AssetUploadOptions::new("red.gif"))
+        .expect("GIF upload should be accepted");
+    let mut runtime =
+        ZoneRuntime::with_asset_library(SCENE_WIDTH, SCENE_HEIGHT, Arc::new(RwLock::new(library)));
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut face = sample_display_zone(FACE_EXTENT.0, FACE_EXTENT.1);
+    face.name = "Face".into();
+    set_effect_zone(&mut face, solid_id, HashMap::new());
+    let mut overlay = scene_layer(LayerSource::Media {
+        asset_id: gif.record.id,
+        playback: MediaPlayback::default(),
+    });
+    overlay.blend = BlendMode::Add;
+    face.layers.push(overlay);
+    let mut zone_colors = Vec::new();
+    let mut saw_surface = false;
+
+    for frame in 0..6_u64 {
+        let effect_frame = upload_fill(&mut sparkleflinger, 1, FACE_EXTENT, GREEN);
+        runtime.inject_effect_layer_frame_for_test(face.layers[0].id, effect_frame);
+        let result = render_scene_for_test_with_screen_and_sparkleflinger(
+            &mut runtime,
+            std::slice::from_ref(&face),
+            1,
+            frame * 16,
+            &HashMap::new(),
+            &registry,
+            &mut zone_colors,
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("display face scene should render");
+        let [(_, face_frame)] = &result.display_zone_frames[..] else {
+            panic!("frame {frame}: the face should publish a frame");
+        };
+        if let ProducerFrame::Surface(surface) = &face_frame.frame {
+            assert_eq!(
+                surface.get_pixel(0, 0),
+                Rgba::new(255, 255, 0, 255),
+                "frame {frame}: the face should add the GIF over its effect"
+            );
+            saw_surface = true;
+        }
+        std::thread::sleep(FRAME_PACING);
+    }
+    assert!(saw_surface, "the face should publish a composed surface");
+}
+
 /// A zone whose only layer reports `Pending` for whole frames keeps
 /// sampling its last snapshot, unchanged: the same texture and content
 /// generation, a GPU source rather than a held one, and the same colors
