@@ -122,6 +122,19 @@ pub trait Protocol: Send + Sync {
         None
     }
 
+    /// Report whether the transport wrote every command of the frame most
+    /// recently encoded.
+    ///
+    /// A protocol that writes only what changed since the last frame the
+    /// device accepted uses this to keep that baseline: success adopts the
+    /// encoded frame, failure forgets the baseline so the next frame is
+    /// written in full. The default ignores the report. A protocol must not
+    /// depend on a report arriving, and should treat a frame it never hears
+    /// about as failed.
+    fn frame_write_finished(&self, succeeded: bool) {
+        let _ = succeeded;
+    }
+
     /// Parse a raw device response payload.
     ///
     /// # Errors
