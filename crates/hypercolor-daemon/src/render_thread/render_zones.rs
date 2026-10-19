@@ -124,8 +124,9 @@ pub(crate) struct ZoneRuntime {
     fail_next_projected_scene_composition: bool,
     #[cfg(all(test, feature = "wgpu"))]
     injected_effect_layer_frames: HashMap<hypercolor_types::layer::SceneLayerId, ProducerFrame>,
+    /// Effect renders each layer still reports `Pending` for.
     #[cfg(all(test, feature = "wgpu"))]
-    pending_effect_layers: std::collections::HashSet<hypercolor_types::layer::SceneLayerId>,
+    pending_effect_layers: HashMap<hypercolor_types::layer::SceneLayerId, u32>,
 }
 
 pub(crate) struct PreparedSceneResize {
@@ -242,7 +243,7 @@ impl ZoneRuntime {
             #[cfg(all(test, feature = "wgpu"))]
             injected_effect_layer_frames: HashMap::new(),
             #[cfg(all(test, feature = "wgpu"))]
-            pending_effect_layers: std::collections::HashSet::new(),
+            pending_effect_layers: HashMap::new(),
         })
     }
 

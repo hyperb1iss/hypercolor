@@ -435,7 +435,24 @@ impl ZoneRuntime {
     /// `layer_id` reports `Pending`, and the one after it renders as usual.
     #[cfg(all(test, feature = "wgpu"))]
     pub(super) fn pend_effect_layer_once_for_test(&mut self, layer_id: SceneLayerId) {
-        self.pending_effect_layers.insert(layer_id);
+        self.pend_effect_layer_renders_for_test(layer_id, 1);
+    }
+
+    /// Stands in for a Servo page that stays loading: the next `renders`
+    /// effect renders of `layer_id` report `Pending`. A GPU-resident scene
+    /// zone whose layers are all pending polls them twice in one frame, so
+    /// `2 * n` keeps such a zone without a frame for `n` frames.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn pend_effect_layer_renders_for_test(
+        &mut self,
+        layer_id: SceneLayerId,
+        renders: u32,
+    ) {
+        if renders == 0 {
+            self.pending_effect_layers.remove(&layer_id);
+        } else {
+            self.pending_effect_layers.insert(layer_id, renders);
+        }
     }
 
     fn render_effect_layer_frame(
@@ -445,7 +462,11 @@ impl ZoneRuntime {
         context: ZoneFrameContext<'_>,
     ) -> Result<Option<ProducerFrame>> {
         #[cfg(all(test, feature = "wgpu"))]
-        if self.pending_effect_layers.remove(&layer.id) {
+        if let Some(remaining) = self.pending_effect_layers.get_mut(&layer.id) {
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                self.pending_effect_layers.remove(&layer.id);
+            }
             return Ok(None);
         }
         #[cfg(all(test, feature = "wgpu"))]

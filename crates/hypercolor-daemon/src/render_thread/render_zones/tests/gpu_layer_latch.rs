@@ -664,8 +664,18 @@ pub(super) fn sample_zone_set(
     sparkleflinger: &mut SparkleFlinger,
     set: &ZoneSamplingSet,
 ) -> Vec<ZoneColors> {
+    sample_zone_set_against(sparkleflinger, set, &[])
+}
+
+/// [`sample_zone_set`] with `published` as the published frame's zones,
+/// which held zones take their colors from.
+pub(super) fn sample_zone_set_against(
+    sparkleflinger: &mut SparkleFlinger,
+    set: &ZoneSamplingSet,
+    published: &[ZoneColors],
+) -> Vec<ZoneColors> {
     let mut colors = sample_zone_textures(sparkleflinger, &set.gpu_textures);
-    set.assemble_into(&mut colors, &[]);
+    set.assemble_into(&mut colors, published);
     colors
 }
 

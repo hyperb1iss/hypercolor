@@ -6,14 +6,19 @@ use std::time::Duration;
 
 use hypercolor_core::input::SyntheticScreenPublisher;
 use hypercolor_core::input::screen::PixelExtent;
+use hypercolor_types::layer::{BindingMap, BindingSource, LayerBinding, LayerParameter, TimeWave};
 use hypercolor_types::viewport::ViewportRect;
 
-use super::gpu_layer_latch::{bilinear_led_zone, gpu_sparkleflinger_at, sample_zone_set};
+use super::gpu_layer_latch::{
+    bilinear_led_zone, gpu_sparkleflinger_at, sample_zone_set, sample_zone_set_against,
+};
 use super::*;
 use crate::render_thread::frame_sampling::{ZoneSamplingSet, ZoneSourceCounts};
+use crate::render_thread::sparkleflinger::MediaTextureSourceKey;
 
 const SCENE_WIDTH: u32 = 640;
 const SCENE_HEIGHT: u32 = 480;
+const LED_ZONE_EXTENT: (u32, u32) = (640, 630);
 /// Real frames are paced by the render loop; pace these the same way so
 /// frame-to-frame state (held frames, sample caches) sees realistic gaps.
 const FRAME_PACING: Duration = Duration::from_millis(16);
@@ -106,6 +111,404 @@ fn secondary_zone_media_and_screen_layers_keep_their_own_pixels() {
     }
 }
 
+/// A zone whose only layer reports `Pending` for whole frames keeps
+/// sampling its last snapshot, unchanged: the same texture and content
+/// generation, a GPU source rather than a held one, and the same colors
+/// (Spec 86 §2.2, §8 criterion 14).
+#[test]
+fn all_pending_zone_layers_hold_the_zone_snapshot() {
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let case = bilinear_led_zone("Case", "case_leds", 0.3, solid_id);
+    let accents = bilinear_led_zone("WLED Accents", "accent_leds", 0.7, solid_id);
+    let zones = [case.clone(), accents.clone()];
+    let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
+    let mut zone_colors = Vec::new();
+    let mut held_snapshot = None;
+
+    for frame in 0..4_u64 {
+        if frame == 0 {
+            let case_frame = upload_fill(&mut sparkleflinger, 1, LED_ZONE_EXTENT, RED);
+            runtime.inject_effect_layer_frame_for_test(case.layers[0].id, case_frame);
+        } else {
+            // Both polls of the frame come back pending.
+            runtime.pend_effect_layer_renders_for_test(case.layers[0].id, 2);
+        }
+        let accent_frame = upload_fill(&mut sparkleflinger, 2, LED_ZONE_EXTENT, BLUE);
+        runtime.inject_effect_layer_frame_for_test(accents.layers[0].id, accent_frame);
+
+        let result = render_scene_for_test_with_screen_and_sparkleflinger(
+            &mut runtime,
+            &zones,
+            1,
+            frame * 16,
+            &HashMap::new(),
+            &registry,
+            &mut zone_colors,
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("multi-zone GPU scene should render");
+        assert!(
+            runtime.pending_effect_layers.is_empty(),
+            "frame {frame}: the zone should have polled its pending layer twice"
+        );
+        let set = zone_set(&result);
+        assert_eq!(
+            set.source_counts(),
+            ZoneSourceCounts {
+                gpu: 2,
+                cpu: 0,
+                held: 0,
+            },
+            "frame {frame}: a zone with a snapshot keeps sampling it"
+        );
+        let case_texture = &set.gpu_textures[0].frame;
+        let snapshot = (case_texture.storage_id, case_texture.content_generation);
+        match held_snapshot {
+            None => held_snapshot = Some(snapshot),
+            Some(held) => assert_eq!(
+                snapshot, held,
+                "frame {frame}: a pending zone should keep its snapshot unchanged"
+            ),
+        }
+        let leds = sample_zone_set(&mut sparkleflinger, set);
+        assert_eq!(
+            leds_of(&leds, "case_leds"),
+            Some(vec![[255, 0, 0]; 4]),
+            "frame {frame}"
+        );
+        assert_eq!(
+            leds_of(&leds, "accent_leds"),
+            Some(vec![[0, 0, 255]; 4]),
+            "frame {frame}"
+        );
+        std::thread::sleep(FRAME_PACING);
+    }
+}
+
+/// A zone with no snapshot yet whose layers are all pending contributes no
+/// GPU source: its LEDs take the published frame's colors only when those
+/// have the LEDs' own shape, and are black otherwise (Spec 86 §2.2, §8
+/// criterion 14). `cold_start_zone_holds_published_colors_or_goes_black`
+/// drives the same rule through the frame pipeline, where a reshaped scene's
+/// first sample is usually still in flight and the frame goes black by the
+/// unavailable-sample rule instead.
+#[test]
+fn cold_start_zone_holds_published_colors_only_in_their_own_shape() {
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let case = bilinear_led_zone("Case", "case_leds", 0.3, solid_id);
+    let accents = bilinear_led_zone("WLED Accents", "accent_leds", 0.7, solid_id);
+    let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
+    let mut zone_colors = Vec::new();
+    let case_frame = upload_fill(&mut sparkleflinger, 1, LED_ZONE_EXTENT, RED);
+    runtime.inject_effect_layer_frame_for_test(case.layers[0].id, case_frame);
+    runtime.pend_effect_layer_renders_for_test(accents.layers[0].id, 2);
+
+    let result = render_scene_for_test_with_screen_and_sparkleflinger(
+        &mut runtime,
+        &[case, accents],
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut zone_colors,
+        None,
+        &mut sparkleflinger,
+    )
+    .expect("multi-zone GPU scene should render");
+    let set = zone_set(&result);
+    assert_eq!(
+        set.source_counts(),
+        ZoneSourceCounts {
+            gpu: 1,
+            cpu: 0,
+            held: 1,
+        },
+        "a cold zone with nothing to compose should contribute no GPU source"
+    );
+    let published = |led_count: usize| {
+        vec![ZoneColors {
+            zone_id: "accent_leds".into(),
+            colors: vec![[9, 9, 9]; led_count],
+        }]
+    };
+    for (case_name, published, held) in [
+        ("the same shape", published(4), [9, 9, 9]),
+        ("another shape", published(1), [0, 0, 0]),
+        ("no colors", Vec::new(), [0, 0, 0]),
+    ] {
+        let leds = sample_zone_set_against(&mut sparkleflinger, set, &published);
+        assert_eq!(
+            leds_of(&leds, "case_leds"),
+            Some(vec![[255, 0, 0]; 4]),
+            "published frame with {case_name}"
+        );
+        assert_eq!(
+            leds_of(&leds, "accent_leds"),
+            Some(vec![held; 4]),
+            "the cold zone against a published frame with {case_name}"
+        );
+    }
+}
+
+/// A zone resized while its producer keeps handing back the same retained
+/// frame composes that frame into its replacement snapshot at the new
+/// extent instead of reusing the composition it held at the old one
+/// (Spec 86 §2.1, §8 criterion 14).
+#[test]
+fn resized_zone_recomposes_its_retained_frame_into_the_replacement_snapshot() {
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut case = bilinear_led_zone("Case", "case_leds", 0.3, solid_id);
+    let accents = bilinear_led_zone("WLED Accents", "accent_leds", 0.7, solid_id);
+    // The producer renders once at the original extent and retains that
+    // frame from then on, as Servo does under unchanging parameters.
+    let case_frame = upload_fill(&mut sparkleflinger, 1, LED_ZONE_EXTENT, RED);
+    let accent_frame = upload_fill(&mut sparkleflinger, 2, LED_ZONE_EXTENT, BLUE);
+    let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
+    let mut zone_colors = Vec::new();
+    let mut original_snapshot = None;
+
+    for frame in 0..5_u64 {
+        let revision = if frame < 2 { 1 } else { 2 };
+        if frame == 2 {
+            case.layout.canvas_width = 320;
+            case.layout.canvas_height = 315;
+        }
+        runtime.inject_effect_layer_frame_for_test(case.layers[0].id, case_frame.clone());
+        runtime.inject_effect_layer_frame_for_test(accents.layers[0].id, accent_frame.clone());
+        let result = render_scene_for_test_with_screen_and_sparkleflinger(
+            &mut runtime,
+            &[case.clone(), accents.clone()],
+            revision,
+            frame * 16,
+            &HashMap::new(),
+            &registry,
+            &mut zone_colors,
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("multi-zone GPU scene should render");
+        let skips = result.zone_composition_skips;
+        let set = zone_set(&result);
+        let case_texture = &set.gpu_textures[0].frame;
+        let extent = (case_texture.width, case_texture.height);
+        match frame {
+            0 | 1 => {
+                assert_eq!(extent, LED_ZONE_EXTENT, "frame {frame}");
+                original_snapshot = Some(case_texture.storage_id);
+                assert_eq!(
+                    skips,
+                    if frame == 0 { 0 } else { 2 },
+                    "frame {frame}: retained frames should reuse each zone's composition"
+                );
+            }
+            2 => {
+                assert_eq!(
+                    extent,
+                    (320, 315),
+                    "the resized zone should sample a snapshot at its new extent"
+                );
+                assert_ne!(
+                    Some(case_texture.storage_id),
+                    original_snapshot,
+                    "the resized zone should compose into its replacement snapshot"
+                );
+                assert_eq!(
+                    skips, 0,
+                    "no zone may reuse a composition held across the resize"
+                );
+            }
+            _ => {
+                assert_eq!(extent, (320, 315), "frame {frame}");
+                assert_eq!(
+                    skips, 2,
+                    "frame {frame}: the replacement snapshot is reused once composed"
+                );
+            }
+        }
+        let leds = sample_zone_set(&mut sparkleflinger, set);
+        assert_eq!(
+            leds_of(&leds, "case_leds"),
+            Some(vec![[255, 0, 0]; 4]),
+            "frame {frame}"
+        );
+        assert_eq!(
+            leds_of(&leds, "accent_leds"),
+            Some(vec![[0, 0, 255]; 4]),
+            "frame {frame}"
+        );
+        std::thread::sleep(FRAME_PACING);
+    }
+}
+
+/// A layer adjustment driven by a binding changes the zone's output while
+/// the producer frame stays the same, and the composition skip does not
+/// swallow it: a square-wave time binding on brightness turns the zone
+/// black and back while its producer frame never changes, and the frames
+/// between the binding's edges still reuse the held composition (Spec 86
+/// §2.1, §8 criterion 15).
+#[test]
+fn bound_layer_adjustment_recomposes_a_retained_producer_frame() {
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut case = bilinear_led_zone("Case", "case_leds", 0.3, solid_id);
+    case.layers[0].bindings = vec![LayerBinding {
+        target: LayerParameter::Brightness,
+        source: BindingSource::Time {
+            rate_hz: 1.0,
+            wave: TimeWave::Square,
+        },
+        map: BindingMap::linear(-1.0..=1.0, 0.0..=1.0),
+    }];
+    let accents = bilinear_led_zone("WLED Accents", "accent_leds", 0.7, solid_id);
+    let case_frame = upload_fill(&mut sparkleflinger, 1, LED_ZONE_EXTENT, RED);
+    let accent_frame = upload_fill(&mut sparkleflinger, 2, LED_ZONE_EXTENT, BLUE);
+    let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
+    let mut zone_colors = Vec::new();
+    // The square wave is high for the first half of each second and low
+    // for the second: full brightness, then none.
+    let frames: [(u64, [u8; 3], u32); 5] = [
+        (0, [255, 0, 0], 0),
+        (100, [255, 0, 0], 2),
+        (600, [0, 0, 0], 1),
+        (700, [0, 0, 0], 2),
+        (1_000, [255, 0, 0], 1),
+    ];
+
+    for (elapsed_ms, case_color, expected_skips) in frames {
+        runtime.inject_effect_layer_frame_for_test(case.layers[0].id, case_frame.clone());
+        runtime.inject_effect_layer_frame_for_test(accents.layers[0].id, accent_frame.clone());
+        let result = render_scene_for_test_with_screen_and_sparkleflinger(
+            &mut runtime,
+            &[case.clone(), accents.clone()],
+            1,
+            elapsed_ms,
+            &HashMap::new(),
+            &registry,
+            &mut zone_colors,
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("multi-zone GPU scene should render");
+        assert_eq!(
+            result.zone_composition_skips, expected_skips,
+            "at {elapsed_ms} ms: only zones whose bound inputs held still may skip"
+        );
+        let leds = sample_zone_set(&mut sparkleflinger, zone_set(&result));
+        assert_eq!(
+            leds_of(&leds, "case_leds"),
+            Some(vec![case_color; 4]),
+            "at {elapsed_ms} ms: the bound brightness should reach the zone's LEDs"
+        );
+        assert_eq!(
+            leds_of(&leds, "accent_leds"),
+            Some(vec![[0, 0, 255]; 4]),
+            "at {elapsed_ms} ms"
+        );
+        std::thread::sleep(FRAME_PACING);
+    }
+}
+
+/// A screen-region layer has no stable identity, so its zone composes on
+/// every frame, even when the screen shows the same pixels twice: each
+/// screen zone's snapshot generation advances on every frame, only the
+/// unchanged zone beside them counts a composition skip, and their LEDs
+/// follow the screen (Spec 86 §2.1, §8 criterion 15). One screen zone crops
+/// the whole screen at its own extent, which composes as the CPU canvas it
+/// is; the other crops half of it, which composes once uploaded.
+#[test]
+fn screen_region_layer_recomposes_every_frame() {
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut whole = bilinear_led_zone("Whole Screen", "whole_leds", 0.3, solid_id);
+    whole.layers = vec![scene_layer(LayerSource::ScreenRegion {
+        viewport: ViewportRect::full(),
+    })];
+    let mut half = bilinear_led_zone("Half Screen", "half_leds", 0.5, solid_id);
+    half.layers = vec![scene_layer(LayerSource::ScreenRegion {
+        viewport: ViewportRect::new(0.0, 0.0, 0.5, 1.0),
+    })];
+    let accents = bilinear_led_zone("WLED Accents", "accent_leds", 0.7, solid_id);
+    let accent_frame = upload_fill(&mut sparkleflinger, 2, LED_ZONE_EXTENT, BLUE);
+    let mut publisher = SyntheticScreenPublisher::surface(
+        PixelExtent::new(LED_ZONE_EXTENT.0, LED_ZONE_EXTENT.1).expect("fixture extent"),
+    );
+    let screen_pixels = usize::try_from(LED_ZONE_EXTENT.0 * LED_ZONE_EXTENT.1)
+        .expect("fixture pixel count fits usize");
+    let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
+    let mut zone_colors = Vec::new();
+    let mut last_generations: Option<(u64, u64)> = None;
+
+    for (frame, color) in [RED, RED, GREEN, GREEN, BLUE, RED].into_iter().enumerate() {
+        let frame = u64::try_from(frame).expect("frame index fits u64");
+        let screen_frame =
+            publisher.publish_rgba(&[color.r, color.g, color.b, 255].repeat(screen_pixels));
+        runtime.inject_effect_layer_frame_for_test(accents.layers[0].id, accent_frame.clone());
+        let result = render_scene_for_test_with_screen_and_sparkleflinger(
+            &mut runtime,
+            &[whole.clone(), half.clone(), accents.clone()],
+            1,
+            frame * 16,
+            &HashMap::new(),
+            &registry,
+            &mut zone_colors,
+            Some(&screen_frame),
+            &mut sparkleflinger,
+        )
+        .expect("multi-zone GPU scene should render");
+        assert_eq!(
+            result.zone_composition_skips,
+            u32::from(frame > 0),
+            "frame {frame}: only the unchanged accent zone may skip composing"
+        );
+        let set = zone_set(&result);
+        let generations = (
+            set.gpu_textures[0].frame.content_generation,
+            set.gpu_textures[1].frame.content_generation,
+        );
+        if let Some(last) = last_generations {
+            assert!(
+                generations.0 > last.0 && generations.1 > last.1,
+                "frame {frame}: both screen zones should compose again \
+                 (generations {generations:?} after {last:?})"
+            );
+        }
+        last_generations = Some(generations);
+        let leds = sample_zone_set(&mut sparkleflinger, set);
+        for output_id in ["whole_leds", "half_leds"] {
+            assert_eq!(
+                leds_of(&leds, output_id),
+                Some(vec![[color.r, color.g, color.b]; 4]),
+                "frame {frame}: {output_id} should follow the screen"
+            );
+        }
+        assert_eq!(
+            leds_of(&leds, "accent_leds"),
+            Some(vec![[0, 0, 255]; 4]),
+            "frame {frame}"
+        );
+        std::thread::sleep(FRAME_PACING);
+    }
+}
+
 /// A single full-scene zone whose only layer is a screen-region crop
 /// composes on the GPU like any other single-zone scene, and its LEDs show
 /// the screen. The crop is a CPU canvas at its own extent, which the GPU
@@ -174,6 +577,24 @@ fn leds_of(zones: &[ZoneColors], output_id: &str) -> Option<Vec<[u8; 3]>> {
         .iter()
         .find(|zone| zone.zone_id == output_id)
         .map(|zone| zone.colors.clone())
+}
+
+/// A GPU-resident producer frame of `extent` filled with `color`, standing
+/// in for one Servo render. Uploading under the same `key` again yields a
+/// new content generation of the same texture.
+fn upload_fill(
+    sparkleflinger: &mut SparkleFlinger,
+    key: u128,
+    (width, height): (u32, u32),
+    color: Rgba,
+) -> ProducerFrame {
+    let mut canvas = Canvas::new(width, height);
+    canvas.fill(color);
+    ProducerFrame::GpuTexture(
+        sparkleflinger
+            .upload_media_canvas_frame(MediaTextureSourceKey::for_test(key), &canvas)
+            .expect("GPU layer frame should upload"),
+    )
 }
 
 fn scene_layer(source: LayerSource) -> SceneLayer {
