@@ -16,6 +16,8 @@ use tokio::sync::{Mutex, Notify, RwLock, watch};
 
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::ComponentRegistry;
+#[cfg(feature = "wgpu")]
+use hypercolor_core::bus::ZonePreviewFrame;
 use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, HypercolorBus, PreviewKind};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
@@ -92,6 +94,8 @@ use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::output_power::{OutputPower, OutputPowerState};
 use hypercolor_daemon::performance::PerformanceTracker;
+#[cfg(feature = "wgpu")]
+use hypercolor_daemon::preview_runtime::ZonePreviewFrameReceiver;
 use hypercolor_daemon::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
 use hypercolor_daemon::render_thread::{
     CanvasDims, InputPublicationConsumer, InputPublicationDemand,
@@ -3047,6 +3051,253 @@ async fn gpu_multi_zone_scene_publishes_zone_previews_at_the_demanded_size() {
         assert_eq!(preview.frame.surface().get_pixel(0, 0), color);
         assert_eq!(preview.frame.surface().get_pixel(31, 19), color);
     }
+}
+
+/// Watch every frame this receiver observes until `stop` fires, recording
+/// each one in which a zone's LED shows anything but its own color.
+#[cfg(feature = "wgpu")]
+fn spawn_zone_color_watch(
+    mut frame_rx: watch::Receiver<FrameData>,
+    expected: Vec<(&'static str, [u8; 3])>,
+    stop: Arc<Notify>,
+) -> tokio::task::JoinHandle<(u32, Vec<String>)> {
+    tokio::spawn(async move {
+        let mut observed = 0_u32;
+        let mut violations = Vec::new();
+        loop {
+            tokio::select! {
+                () = stop.notified() => break,
+                changed = frame_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let frame = frame_rx.borrow_and_update().clone();
+                    observed += 1;
+                    for (zone_id, color) in &expected {
+                        let actual = zone_led(&frame, zone_id);
+                        if actual != Some(*color) {
+                            violations.push(format!(
+                                "frame {}: {zone_id} showed {actual:?}, expected {color:?}",
+                                frame.frame_number
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        (observed, violations)
+    })
+}
+
+/// Wait for a zone preview of every zone in `zones` published after
+/// `after_frame` at `size`.
+#[cfg(feature = "wgpu")]
+async fn wait_for_zone_previews_after(
+    previews_rx: &mut ZonePreviewFrameReceiver,
+    after_frame: u32,
+    zones: &[ZoneId],
+    size: (u32, u32),
+) -> Arc<[ZonePreviewFrame]> {
+    let mut last_seen = String::from("no zone previews observed");
+    let landed = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            {
+                let previews = previews_rx.borrow_and_update();
+                let fresh = |zone_id: &ZoneId| {
+                    previews.iter().any(|preview| {
+                        preview.zone_id == *zone_id
+                            && preview.frame.frame_number > after_frame
+                            && (preview.frame.width, preview.frame.height) == size
+                    })
+                };
+                if zones.iter().all(fresh) {
+                    break Arc::clone(&previews);
+                }
+                last_seen = previews
+                    .iter()
+                    .map(|preview| {
+                        format!(
+                            "{} {}x{} at frame {}",
+                            preview.zone_id,
+                            preview.frame.width,
+                            preview.frame.height,
+                            preview.frame.frame_number
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+            }
+            previews_rx
+                .changed()
+                .await
+                .expect("zone preview stream should stay open");
+        }
+    })
+    .await;
+    landed.unwrap_or_else(|_| {
+        panic!("zone previews after frame {after_frame} never landed at {size:?}: {last_seen}")
+    })
+}
+
+/// A zone-preview subscriber asking for `size` at 30 fps.
+#[cfg(feature = "wgpu")]
+fn sized_zone_preview_receiver(
+    state: &RenderThreadState,
+    size: (u32, u32),
+) -> ZonePreviewFrameReceiver {
+    let mut previews_rx = state.preview_runtime.zone_preview_receiver();
+    previews_rx.update_demand(PreviewStreamDemand {
+        fps: 30,
+        format: PreviewPixelFormat::Rgb,
+        width: size.0,
+        height: size.1,
+    });
+    previews_rx
+}
+
+/// A live canvas resize while a GPU multi-zone scene runs keeps every zone
+/// sampling its own texture: each zone's LEDs hold their own colors on
+/// every frame across and after two resizes (overlapping zones would read
+/// each other's colors if they sampled the scene canvas), the scene canvas
+/// comes back at each new size, and fresh zone previews still arrive scaled
+/// on the GPU, which only GPU-resident zones publish (Spec 86 §8 criterion
+/// 16).
+///
+/// Publishing the active layout at new canvas dimensions queues the same
+/// render-thread layout transaction that a `daemon.canvas_width` or
+/// `daemon.canvas_height` config change queues through
+/// `resize_active_canvas`.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resizes() {
+    const PREVIEW_SIZE: (u32, u32) = (32, 20);
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let mut scene_canvas_rx = state.event_bus.scene_canvas_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut scene = make_scene("Resized Zones");
+    // Activate without a transition so every frame shows the zones' own
+    // colors; transitions have their own coverage.
+    scene.transition.duration_ms = 0;
+    scene.zones = overlapping_zones(solid_id);
+    scene.zones[1].layout.canvas_width = 160;
+    scene.zones[1].layout.canvas_height = 100;
+    let mut green = custom_zone(
+        "Green",
+        solid_id,
+        solid_color_controls(0, 255, 0),
+        test_layout(vec![point_zone("zone_green", "mock:green", 0.2, 0.5)]),
+    );
+    green.layout.canvas_width = 480;
+    green.layout.canvas_height = 270;
+    scene.zones.push(green);
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    let led_zones = scene.zones.iter().map(|zone| zone.id).collect::<Vec<_>>();
+    let zone_colors = [
+        Rgba::new(255, 0, 0, 255),
+        Rgba::new(0, 0, 255, 255),
+        Rgba::new(0, 255, 0, 255),
+    ];
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    let mut previews_rx = sized_zone_preview_receiver(&state, PREVIEW_SIZE);
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let expected = vec![
+        ("zone_red", [255, 0, 0]),
+        ("zone_blue", [0, 0, 255]),
+        ("zone_green", [0, 255, 0]),
+    ];
+    let shows_every_zone = |frame: &FrameData| {
+        expected
+            .iter()
+            .all(|(zone_id, color)| zone_led(frame, zone_id) == Some(*color))
+    };
+    let settled = wait_for_frame_where(&mut frame_rx, shows_every_zone).await;
+    wait_for_zone_previews_after(&mut previews_rx, 0, &led_zones, PREVIEW_SIZE).await;
+
+    let stop = Arc::new(Notify::new());
+    let color_watch = spawn_zone_color_watch(
+        state.event_bus.frame_receiver(),
+        expected.clone(),
+        Arc::clone(&stop),
+    );
+    let mut last_frame = settled.frame_number;
+    for (width, height) in [(640, 400), (200, 120)] {
+        drop(previews_rx);
+        wait_until("zone previews to clear without a subscriber", || {
+            state.event_bus.zone_preview_lane().borrow().is_empty()
+        })
+        .await;
+        let mut resized = test_layout(Vec::new());
+        resized.canvas_width = width;
+        resized.canvas_height = height;
+        publish_layout(&state, resized).await;
+        assert_eq!(
+            (state.canvas_dims.width(), state.canvas_dims.height()),
+            (width, height),
+            "the render thread commits the resize before the layout publication returns"
+        );
+        let resized_frame = wait_for_frame_where(&mut frame_rx, |frame| {
+            frame.frame_number > last_frame && shows_every_zone(frame)
+        })
+        .await;
+        last_frame = resized_frame.frame_number;
+
+        let blue = Rgba::new(0, 0, 255, 255);
+        let green = Rgba::new(0, 255, 0, 255);
+        wait_for_canvas_where(&mut scene_canvas_rx, |canvas| {
+            (canvas.width, canvas.height) == (width, height)
+                && canvas.surface().get_pixel(width / 2, height / 2) == blue
+                && canvas.surface().get_pixel(width / 5, height / 2) == green
+        })
+        .await;
+
+        previews_rx = sized_zone_preview_receiver(&state, PREVIEW_SIZE);
+        let previews =
+            wait_for_zone_previews_after(&mut previews_rx, last_frame, &led_zones, PREVIEW_SIZE)
+                .await;
+        for (zone_id, color) in led_zones.iter().zip(zone_colors) {
+            let preview = previews
+                .iter()
+                .find(|preview| preview.zone_id == *zone_id)
+                .expect("every LED zone should publish a preview");
+            assert_eq!(
+                preview.frame.surface().get_pixel(0, 0),
+                color,
+                "zone {zone_id} previews its own texture after the {width}x{height} resize"
+            );
+        }
+    }
+    stop.notify_one();
+    let (observed, violations) = color_watch
+        .await
+        .expect("the zone color watch should finish cleanly");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert!(observed > 0, "the zone color watch saw no frames");
+    assert!(
+        violations.is_empty(),
+        "{} of {observed} observed frames lost a zone's own color across the resizes:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
 }
 
 #[tokio::test]
