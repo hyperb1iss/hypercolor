@@ -1,7 +1,9 @@
 //! A Studio placement saved on a primary zone that follows the active
 //! layout lands in that layout, so every path that rebuilds the zone from
-//! the active layout (effect and preset applies, layout publications, the
-//! startup restore) keeps it.
+//! the active layout (effect and preset applies, layout publications, scene
+//! switches, the startup restore) keeps it. Only what the Save changed
+//! lands there: outputs, stored edits, and positions saved from other
+//! scenes stay as they were.
 #![cfg(feature = "persistence-test-hooks")]
 
 use std::collections::HashMap;
@@ -13,6 +15,7 @@ use std::time::{Duration, SystemTime};
 use axum::body::Body;
 use http::{Request, StatusCode, header};
 use hypercolor_core::effect::EffectEntry;
+use hypercolor_daemon::LayoutTransactionRejection;
 use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
 use hypercolor_daemon::{layout_store, runtime_state};
@@ -21,6 +24,7 @@ use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
     EffectSource, EffectState, PresetTemplate,
 };
+use hypercolor_types::event::ChangeTrigger;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{SceneId, ZoneRole};
 use hypercolor_types::spatial::{
@@ -327,32 +331,43 @@ fn strip_a_in_zone(zone: &serde_json::Value) -> (f64, f64) {
     )
 }
 
-fn strip_a_in_layout(layout: &SpatialLayout) -> (f64, f64) {
+fn output_in_layout(layout: &SpatialLayout, id: &str) -> (f64, f64) {
     let output = layout
         .zones
         .iter()
-        .find(|output| output.id == "strip-a")
-        .expect("strip-a output");
+        .find(|output| output.id == id)
+        .unwrap_or_else(|| panic!("{id} output"));
     rounded(f64::from(output.position.x), f64::from(output.position.y))
 }
 
-/// Studio's Save: move strip-a and persist through the per-zone route,
-/// guarded by the revision the editor last saw. Returns the response and
-/// how many layouts the Save published.
-async fn studio_moves_strip_a(rig: &Rig) -> (axum::response::Response, usize) {
+fn strip_a_in_layout(layout: &SpatialLayout) -> (f64, f64) {
+    output_in_layout(layout, "strip-a")
+}
+
+fn output_ids(layout: &SpatialLayout) -> Vec<&str> {
+    layout
+        .zones
+        .iter()
+        .map(|output| output.id.as_str())
+        .collect()
+}
+
+/// Studio's Save request: move one segment's member and persist through
+/// the per-zone route, guarded by the revision the editor last saw.
+async fn studio_save_request(rig: &Rig, segment: &str, to: (f64, f64)) -> Request<Body> {
     let zone = primary_zone(&rig.app).await;
     let zone_id = zone["id"].as_str().expect("zone id").to_owned();
-    let strip_a_member = zone["members"]
+    let member = zone["members"]
         .as_array()
         .expect("members")
         .iter()
-        .find(|member| member["segment"] == "ch1")
-        .expect("strip-a member")["id"]
+        .find(|member| member["segment"] == segment)
+        .expect("moved member")["id"]
         .clone();
     let mut placements = zone["layout"]["placements"].clone();
     for placement in placements.as_array_mut().expect("placements") {
-        if placement["member"] == strip_a_member {
-            placement["position"] = json!({ "x": SAVED_POSITION.0, "y": SAVED_POSITION.1 });
+        if placement["member"] == member {
+            placement["position"] = json!({ "x": to.0, "y": to.1 });
         }
     }
     let mut request = json_request(
@@ -365,8 +380,25 @@ async fn studio_moves_strip_a(rig: &Rig) -> (axum::response::Response, usize) {
         header::IF_MATCH,
         format!("\"{revision}\"").parse().expect("valid If-Match"),
     );
+    request
+}
+
+/// Save a move of one segment's member. Returns the response and how many
+/// layouts the Save published.
+async fn studio_moves(
+    rig: &Rig,
+    segment: &str,
+    to: (f64, f64),
+) -> (axum::response::Response, usize) {
+    let request = studio_save_request(rig, segment, to).await;
     let (saved, published) = send(&rig.state, &rig.app, request).await;
     assert_eq!(saved.status(), StatusCode::OK, "Studio Save should land");
+    (saved, published)
+}
+
+/// Studio's Save of strip-a at [`SAVED_POSITION`].
+async fn studio_moves_strip_a(rig: &Rig) -> (axum::response::Response, usize) {
+    let (saved, published) = studio_moves(rig, "ch1", SAVED_POSITION).await;
     assert_eq!(
         strip_a_in_zone(&primary_zone(&rig.app).await),
         SAVED_POSITION,
@@ -605,4 +637,286 @@ async fn custom_led_zone_keeps_the_primary_layout_scene_local() {
         .await
         .expect("active layout stays stored");
     assert_eq!(strip_a_in_layout(&stored), AUTO_POSITION);
+}
+
+async fn create_named_scene(rig: &Rig, name: &str) -> String {
+    let (created, _) = send(
+        &rig.state,
+        &rig.app,
+        json_request("POST", "/api/v1/scenes".into(), json!({ "name": name })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    body_json(created).await["data"]["id"]
+        .as_str()
+        .expect("scene id")
+        .to_owned()
+}
+
+async fn activate(rig: &Rig, scene_id: &str) {
+    let (activated, _) = send(
+        &rig.state,
+        &rig.app,
+        json_request(
+            "POST",
+            format!("/api/v1/scenes/{scene_id}/activate"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(activated.status(), StatusCode::OK);
+}
+
+/// Store an edit of the active layout without applying it.
+async fn store_layout_edit(rig: &Rig, body: serde_json::Value) {
+    let (updated, _) = send(
+        &rig.state,
+        &rig.app,
+        json_request("PUT", format!("/api/v1/layouts/{ACTIVE_LAYOUT_ID}"), body),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+}
+
+fn stored_active_layout(rig: &Rig) -> SpatialLayout {
+    layout_store::load(&rig.layouts_path())
+        .expect("layout store should load")
+        .remove(ACTIVE_LAYOUT_ID)
+        .expect("active layout is stored")
+}
+
+fn strip_c_on_another_device() -> Output {
+    let mut strip_c = strip("strip-c", "ch1");
+    strip_c.device_id = "mock:other".to_owned();
+    strip_c
+}
+
+#[tokio::test]
+async fn activating_a_named_scene_realigns_its_primary_zone_to_the_active_layout() {
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+    studio_moves_strip_a(&rig).await;
+
+    activate(&rig, &gaming).await;
+
+    assert_eq!(
+        strip_a_in_zone(&primary_zone(&rig.app).await),
+        SAVED_POSITION,
+        "a scene created before the Save shows the saved position, not its snapshot"
+    );
+}
+
+#[tokio::test]
+async fn a_save_in_another_scene_keeps_positions_saved_elsewhere() {
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+    studio_moves_strip_a(&rig).await;
+    activate(&rig, &gaming).await;
+
+    studio_moves(&rig, "ch2", (0.1, 0.9)).await;
+
+    let published = rig.state.domains.layout.current();
+    let stored = stored_active_layout(&rig);
+    for layout in [&published, &stored] {
+        assert_eq!(strip_a_in_layout(layout), SAVED_POSITION);
+        assert_eq!(output_in_layout(layout, "strip-b"), (0.1, 0.9));
+    }
+}
+
+#[tokio::test]
+async fn a_save_in_a_stale_named_scene_keeps_outputs_only_the_active_layout_holds() {
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+    let mut zones = active_layout().zones;
+    zones.push(strip_c_on_another_device());
+    store_layout_edit(&rig, json!({ "zones": zones })).await;
+    let (applied, _) = send(
+        &rig.state,
+        &rig.app,
+        empty_request("POST", format!("/api/v1/layouts/{ACTIVE_LAYOUT_ID}/apply")),
+    )
+    .await;
+    assert_eq!(applied.status(), StatusCode::OK);
+    activate(&rig, &gaming).await;
+
+    studio_moves_strip_a(&rig).await;
+
+    let published = rig.state.domains.layout.current();
+    let stored = stored_active_layout(&rig);
+    for layout in [&published, &stored] {
+        assert_eq!(output_ids(layout), vec!["strip-a", "strip-b", "strip-c"]);
+        assert_eq!(strip_a_in_layout(layout), SAVED_POSITION);
+    }
+    let exclusions = std::fs::read_to_string(
+        rig.tmp
+            .path()
+            .join("data")
+            .join("layout-auto-exclusions.json"),
+    )
+    .unwrap_or_default();
+    assert!(
+        !exclusions.contains("mock:other"),
+        "a Save never excludes a device from auto-layout: {exclusions}"
+    );
+}
+
+#[tokio::test]
+async fn a_save_keeps_stored_layout_edits_that_were_never_applied() {
+    let rig = rig_with_running_effect().await;
+    let mut zones = active_layout().zones;
+    zones.push(strip_c_on_another_device());
+    store_layout_edit(&rig, json!({ "name": "Renamed", "zones": zones })).await;
+
+    studio_moves_strip_a(&rig).await;
+
+    let stored = stored_active_layout(&rig);
+    assert_eq!(stored.name, "Renamed");
+    assert_eq!(output_ids(&stored), vec!["strip-a", "strip-b", "strip-c"]);
+    assert_eq!(strip_a_in_layout(&stored), SAVED_POSITION);
+    let published = rig.state.domains.layout.current();
+    assert_eq!(published.name, "Active", "the stored edit stays unapplied");
+    assert_eq!(output_ids(&published), vec!["strip-a", "strip-b"]);
+    assert_eq!(strip_a_in_layout(&published), SAVED_POSITION);
+}
+
+#[tokio::test]
+async fn a_scene_that_names_its_own_layout_takes_it_on_activation() {
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+    let mut own = active_layout();
+    own.id = "layout-gaming".to_owned();
+    own.name = "Gaming".to_owned();
+    own.zones[0].position = NormalizedPosition::new(0.4, 0.6);
+    rig.state
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
+        .write()
+        .await
+        .insert(own.id.clone(), own.clone());
+    let response = rig
+        .app
+        .clone()
+        .oneshot(empty_request("GET", format!("/api/v1/scenes/{gaming}")))
+        .await
+        .expect("request should succeed");
+    let mut document = body_json(response).await["data"].take();
+    document["layout_id"] = json!(own.id);
+    let (replaced, _) = send(
+        &rig.state,
+        &rig.app,
+        json_request("PUT", format!("/api/v1/scenes/{gaming}"), document),
+    )
+    .await;
+    assert_eq!(replaced.status(), StatusCode::OK);
+    studio_moves_strip_a(&rig).await;
+
+    activate(&rig, &gaming).await;
+
+    assert_eq!(rig.state.domains.layout.current().id, own.id);
+    assert_eq!(strip_a_in_zone(&primary_zone(&rig.app).await), (0.4, 0.6));
+}
+
+#[tokio::test]
+async fn a_rejected_publication_leaves_the_save_undone() {
+    let rig = rig_with_running_effect().await;
+    let request = studio_save_request(&rig, "ch1", SAVED_POSITION).await;
+    let work = rig.app.clone().oneshot(request);
+    tokio::pin!(work);
+    let executor = rig.state.layout_publication_test_executor();
+    let rejected = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                response = &mut work => break response.expect("request should succeed"),
+                () = tokio::time::sleep(Duration::from_millis(1)) => {
+                    executor.reject_next_layout_publication(
+                        LayoutTransactionRejection::Superseded,
+                    );
+                }
+            }
+        }
+    })
+    .await
+    .expect("the Save should answer");
+
+    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        strip_a_in_zone(&primary_zone(&rig.app).await),
+        AUTO_POSITION,
+        "a Save that could not reach the active layout is not left half applied"
+    );
+    assert_eq!(
+        strip_a_in_layout(&rig.state.domains.layout.current()),
+        AUTO_POSITION
+    );
+    assert_eq!(
+        strip_a_in_layout(&stored_active_layout(&rig)),
+        AUTO_POSITION
+    );
+}
+
+#[tokio::test]
+async fn returning_to_the_default_scene_realigns_its_primary_zone() {
+    let rig = rig_with_running_effect().await;
+    let gaming = create_named_scene(&rig, "Gaming").await;
+    activate(&rig, &gaming).await;
+    studio_moves_strip_a(&rig).await;
+
+    let (deactivated, _) = send(
+        &rig.state,
+        &rig.app,
+        empty_request("POST", "/api/v1/scene/deactivate".into()),
+    )
+    .await;
+    assert_eq!(deactivated.status(), StatusCode::OK);
+
+    assert_eq!(
+        strip_a_in_zone(&primary_zone(&rig.app).await),
+        SAVED_POSITION,
+        "the Default scene shows the placement saved while another scene was active"
+    );
+}
+
+#[tokio::test]
+async fn a_save_adopts_members_neither_layout_holds_yet() {
+    let rig = rig_with_running_effect().await;
+    // A member assigned in Studio lives in the primary zone only.
+    let mut minted = strip("strip-m", "ch9");
+    minted.device_id = "mock:minted".to_owned();
+    minted.position = NormalizedPosition::new(0.6, 0.6);
+    let mut zone_layout = active_layout();
+    zone_layout.zones.push(minted);
+    let glow = effect("Glow");
+    register(&rig.state, &glow).await;
+    let mut mutation = rig.state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &glow,
+            HashMap::new(),
+            None,
+            zone_layout,
+            ChangeTrigger::System,
+            None,
+        )
+        .expect("primary zone should take the minted member");
+    hypercolor_daemon::domain::scene::commit_scene(&rig.state.domains.scene, mutation)
+        .await
+        .expect("seeded zone should commit");
+
+    studio_moves_strip_a(&rig).await;
+
+    let published = rig.state.domains.layout.current();
+    let stored = stored_active_layout(&rig);
+    for layout in [&published, &stored] {
+        assert_eq!(output_ids(layout), vec!["strip-a", "strip-b", "strip-m"]);
+        assert_eq!(output_in_layout(layout, "strip-m"), (0.6, 0.6));
+    }
+    apply_preset(&rig).await;
+    let zone = primary_zone(&rig.app).await;
+    assert_eq!(
+        zone["members"].as_array().map(Vec::len),
+        Some(3),
+        "the adopted member survives the next apply"
+    );
 }

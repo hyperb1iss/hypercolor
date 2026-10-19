@@ -643,9 +643,9 @@ pub async fn unassign_member(
 /// [`DomainError::NotFound`] for an unknown zone,
 /// [`DomainError::Validation`] when the placements are not exactly the
 /// zone's current members, [`DomainError::PreconditionFailed`] for a
-/// stale revision. A primary zone that follows the active layout can
-/// also report a layout store or publication failure after the zone
-/// write itself committed.
+/// stale revision. On a primary zone that follows the active layout,
+/// the layout store or publication failure that refused the save, with
+/// the zone put back as it was.
 pub async fn set_zone_layout(
     ctx: &SceneTreeContext,
     zone_id: ZoneId,
@@ -688,7 +688,8 @@ async fn set_zone_layout_workflow(
     let follows_active_layout = stored_zone.role == ZoneRole::Primary
         && stored_zone.display_target.is_none()
         && primary_zone_follows_active_layout(&scene);
-    let layout = layout_from_placements(&stored_zone.layout, placements)?;
+    let previous_layout = stored_zone.layout.clone();
+    let layout = layout_from_placements(&previous_layout, placements)?;
     let zone = mutation
         .set_zone_layout(scene_id, zone_id, layout)
         .map_err(|error| zone_layout_error(error, zone_id))?;
@@ -701,10 +702,30 @@ async fn set_zone_layout_workflow(
     };
 
     let runtime = ctx.scene.layout_runtime();
-    let published = ctx
+    let published = match ctx
         .layout
-        .adopt_primary_zone_layout_under_guard(&layout_guard, &saved_layout, runtime)
-        .await?;
+        .mirror_primary_zone_save_under_guard(
+            &layout_guard,
+            &previous_layout.zones,
+            &saved_layout.zones,
+            runtime,
+        )
+        .await
+    {
+        Ok(published) => published,
+        Err(refusal) => {
+            let error = undo_zone_layout_save(
+                ctx,
+                scene_id,
+                zone_id,
+                &saved_layout,
+                previous_layout,
+                refusal,
+            )
+            .await;
+            return Err(error);
+        }
+    };
     if published {
         // The publication admits a scene commit of its own. When it is the
         // only one since the zone write, its revision is the one the
@@ -719,6 +740,48 @@ async fn set_zone_layout_workflow(
         ctx.layout.converge_persisted_update(runtime).await;
     }
     Ok(written)
+}
+
+/// Put back a zone's pre-save layout after the active layout refused the
+/// save, which would otherwise revert at the next rebuild of the zone. A
+/// zone something else rewrote since is left alone. Answers with the
+/// refusal, or with an error naming both failures when the restore fails.
+async fn undo_zone_layout_save(
+    ctx: &SceneTreeContext,
+    scene_id: SceneId,
+    zone_id: ZoneId,
+    saved: &SpatialLayout,
+    previous: SpatialLayout,
+    refusal: DomainError,
+) -> DomainError {
+    let restored = ctx
+        .scene
+        .commit_retrying(|mutation| {
+            let still_saved = mutation
+                .scenes()
+                .get(&scene_id)
+                .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+                .is_some_and(|zone| zone.layout == *saved);
+            if !still_saved {
+                return Ok(None);
+            }
+            mutation
+                .set_zone_layout(scene_id, zone_id, previous.clone())
+                .map_err(|error| zone_layout_error(error, zone_id))?;
+            Ok(Some(()))
+        })
+        .await;
+    match restored {
+        Ok(Some(_)) => {
+            ctx.scene.save_runtime_session().await;
+            refusal
+        }
+        Ok(None) => refusal,
+        Err(error) => DomainError::Internal(anyhow::anyhow!(
+            "the zone layout was saved but the active layout refused it ({refusal}); \
+             restoring the zone failed: {error}"
+        )),
+    }
 }
 
 // ── Shared steps ─────────────────────────────────────────────────────────

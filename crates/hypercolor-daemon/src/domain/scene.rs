@@ -1393,6 +1393,27 @@ impl SceneMutation {
         self.candidate.sync_primary_zone_layout(layout);
     }
 
+    /// Re-align a newly active scene's primary zone with the active layout
+    /// when that zone follows it.
+    ///
+    /// A scene keeps the primary zone it was created or last active with,
+    /// and activation alone moves only the priority stack. Without a custom
+    /// LED zone that copy goes stale as soon as the layout moves on, so a
+    /// scene switch re-aligns it the way a layout publication does for the
+    /// scene active at the time. A scene that names its own layout is
+    /// re-aligned once more when that layout is published after activation,
+    /// and a snapshot-locked scene keeps what it captured.
+    pub fn realign_primary_layout(&mut self, layout: &SpatialLayout) {
+        if self
+            .candidate
+            .active_scene()
+            .is_some_and(Scene::blocks_runtime_mutation)
+        {
+            return;
+        }
+        self.candidate.sync_primary_zone_layout(layout);
+    }
+
     /// Restore a persisted scene without scheduling a redundant store write.
     pub fn restore_scene(&mut self, scene: Scene) -> Result<(), DomainError> {
         self.candidate.update(scene).map_err(|error| {
@@ -2504,6 +2525,7 @@ pub async fn activate_scene(
         SceneChangeReason::UserActivate,
     )?;
     mutation.sync_active_display_surfaces(&display_surfaces);
+    mutation.realign_primary_layout(&ctx.layout.current());
 
     let commit = ctx.scene.commit(mutation).await?;
 
@@ -3094,6 +3116,9 @@ pub async fn delete_scene(
     let mut mutation = ctx.scene.begin_mutation().await;
     let previous_scene_id = mutation.scenes().active_scene_id().copied();
     let scene = mutation.delete_scene(&scene_id)?;
+    if is_active {
+        mutation.realign_primary_layout(&ctx.layout.current());
+    }
     let current_scene = mutation.scenes().active_scene().cloned();
 
     mutation.retire_scene_previews(scene_id);
@@ -3132,6 +3157,7 @@ pub async fn deactivate_scene(ctx: &SceneLibraryContext) -> Result<SceneDeactiva
     let previous_scene = mutation.scenes().active_scene().cloned();
     mutation.deactivate_current(SceneChangeReason::UserDeactivate);
     mutation.sync_active_display_surfaces(&display_surfaces);
+    mutation.realign_primary_layout(&ctx.layout.current());
     let current_scene = mutation.scenes().active_scene().cloned();
 
     let commit = ctx.scene.commit(mutation).await?;
