@@ -11,13 +11,21 @@
 //! frame.
 
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use hypercolor_core::device::{BackendManager, SegmentRange};
+use hypercolor_types::device::DeviceId;
+use hypercolor_types::scene::UnassignedBehavior;
+
 use super::*;
-use crate::render_thread::frame_sampling::ZoneSamplingSet;
+use crate::render_thread::frame_sampling::{ZoneSamplingSet, ZoneSourceCounts};
+use crate::render_thread::pipeline_runtime::UnassignedOutputCache;
+use crate::render_thread::producer_queue::GpuTextureFrame;
 use crate::render_thread::sparkleflinger::{
-    MediaTextureSourceKey, ZoneSamplingDispatch, ZoneSamplingRequest,
+    MediaTextureSourceKey, ZoneSamplingDispatch, ZoneSamplingRequest, ZoneTextureSample,
 };
+use crate::render_thread::unassigned_output::UnassignedOutputPlanner;
 
 const SCENE_WIDTH: u32 = 640;
 const SCENE_HEIGHT: u32 = 480;
@@ -329,6 +337,158 @@ fn unchanged_zone_layers_reuse_their_snapshot() {
     );
 }
 
+/// GPU-backed zones never materialize into CPU zone canvases (Spec 86 §7,
+/// criterion 11): a GPU multi-zone scene records no producer full-frame copy
+/// on frames that compose or reuse a held composition, every zone samples
+/// on the GPU, and an unassigned `Fallback(zone)` plan reads the fallback
+/// zone's texture, whose pass rides the zone set's dispatch.
+#[test]
+fn gpu_zones_record_no_zone_canvas_materialization_with_unassigned_fallback() {
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let case = bilinear_led_zone("Case", "case_leds", 0.3, solid_id);
+    let accents = bilinear_led_zone("WLED Accents", "accent_leds", 0.7, solid_id);
+    let zones = [case.clone(), accents.clone()];
+    let sources = [
+        gpu_source(&case, 1, CASE_RED),
+        gpu_source(&accents, 2, ACCENT_BLUE),
+    ];
+    let mut manager = BackendManager::new();
+    manager.map_device_with_segment(
+        "mock:unplaced",
+        "mock",
+        DeviceId::new(),
+        Some(SegmentRange::new(0, 4)),
+    );
+    let mut unassigned_cache = UnassignedOutputCache::default();
+    let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
+    let mut zone_colors = Vec::new();
+    let mut layer_frames = Vec::new();
+
+    for frame in 0..RENDERED_FRAMES {
+        // Fresh layer frames compose; repeating the last ones from the
+        // midpoint on takes the held-composition path.
+        if frame < RENDERED_FRAMES / 2 {
+            layer_frames = sources
+                .iter()
+                .map(|source| {
+                    let mut canvas = Canvas::new(source.width, source.height);
+                    canvas.fill(source.color);
+                    sparkleflinger
+                        .upload_media_canvas_frame(
+                            MediaTextureSourceKey::for_test(source.source_key),
+                            &canvas,
+                        )
+                        .expect("GPU layer frame should upload")
+                })
+                .collect();
+        }
+        for (source, layer_frame) in sources.iter().zip(&layer_frames) {
+            runtime.inject_effect_layer_frame_for_test(
+                source.layer_id,
+                ProducerFrame::GpuTexture(layer_frame.clone()),
+            );
+        }
+
+        let result = render_scene_for_test_with_screen_and_sparkleflinger(
+            &mut runtime,
+            &zones,
+            1,
+            frame * 16,
+            &HashMap::new(),
+            &registry,
+            &mut zone_colors,
+            None,
+            &mut sparkleflinger,
+        )
+        .expect("multi-zone GPU scene should render");
+
+        assert_eq!(
+            result.producer_full_frame_copy.count, 0,
+            "frame {frame}: GPU zones recorded a full-frame copy ({:?})",
+            result.producer_full_frame_copy.reason
+        );
+        if frame >= RENDERED_FRAMES / 2 {
+            assert_eq!(
+                result.zone_composition_skips, 2,
+                "frame {frame}: repeated layer frames should reuse each held composition"
+            );
+        }
+        let LedSamplingStrategy::SparkleFlingerZones(set) = &result.led_sampling_strategy else {
+            panic!("a GPU multi-zone scene should sample each zone's own texture");
+        };
+        assert_eq!(
+            set.source_counts(),
+            ZoneSourceCounts {
+                gpu: 2,
+                cpu: 0,
+                held: 0,
+            },
+            "frame {frame}"
+        );
+        let case_texture = match result
+            .zone_canvases
+            .iter()
+            .find(|(zone_id, _)| *zone_id == case.id)
+            .map(|(_, frame)| frame)
+        {
+            Some(ProducerFrame::GpuTexture(texture)) => texture.clone(),
+            _ => panic!("frame {frame}: the fallback zone should publish its GPU texture"),
+        };
+
+        let plan = UnassignedOutputPlanner::new(&manager, &mut unassigned_cache)
+            .plan(
+                Arc::clone(&set.layout),
+                &UnassignedBehavior::Fallback(case.id),
+                &zones,
+                &result.zone_canvases,
+            )
+            .expect("the unassigned fallback should plan");
+        assert!(
+            plan.layout()
+                .zones
+                .iter()
+                .any(|output| output.device_id == "mock:unplaced"),
+            "frame {frame}: the unplaced device should be an unassigned output"
+        );
+        let fallback = unassigned_cache
+            .gpu_fallback()
+            .filter(|fallback| fallback.zone_id == case.id)
+            .expect("a GPU-backed fallback zone should sample its texture on the GPU");
+
+        if frame == 0 {
+            let fallback_plan = fallback.engine.sampling_plan();
+            let fallback_outputs = fallback_plan.len();
+            let mut textures = set.gpu_textures.clone();
+            textures.push(ZoneTextureSample {
+                frame: GpuTextureFrame {
+                    immutable_lease: None,
+                    ..case_texture
+                },
+                prepared_zones: fallback_plan,
+            });
+            let _ = sparkleflinger.take_led_sample_passes();
+            let colors = sample_zone_textures(&mut sparkleflinger, &textures);
+            assert_eq!(
+                sparkleflinger.take_led_sample_passes(),
+                3,
+                "the fallback pass rides the zone set's dispatch"
+            );
+            let fallback_colors = &colors[colors.len() - fallback_outputs..];
+            assert!(
+                fallback_colors
+                    .iter()
+                    .flat_map(|zone| zone.colors.iter())
+                    .all(|color| *color == [255, 0, 0]),
+                "unassigned outputs should sample the fallback zone: {fallback_colors:?}"
+            );
+        }
+    }
+}
+
 /// Renders `RENDERED_FRAMES` paced frames, feeding every layer a fresh
 /// GPU-resident frame the way a Servo effect does, and asserts on every frame
 /// that each LED zone samples its own layer color and that the projected
@@ -421,12 +581,19 @@ fn assert_scene_keeps_led_colors(
 /// Sample a zone set the way the render thread does: one dispatch over the
 /// zones' textures, then splice CPU-sampled and held zones into zone order.
 fn sample_zone_set(sparkleflinger: &mut SparkleFlinger, set: &ZoneSamplingSet) -> Vec<ZoneColors> {
+    let mut colors = sample_zone_textures(sparkleflinger, &set.gpu_textures);
+    set.assemble_into(&mut colors, &[]);
+    colors
+}
+
+/// One dispatch over `textures`, waiting for its readback.
+fn sample_zone_textures(
+    sparkleflinger: &mut SparkleFlinger,
+    textures: &[ZoneTextureSample],
+) -> Vec<ZoneColors> {
     let mut colors = Vec::new();
     match sparkleflinger
-        .begin_sample_zones_into(
-            ZoneSamplingRequest::ZoneTextures(&set.gpu_textures),
-            &mut colors,
-        )
+        .begin_sample_zones_into(ZoneSamplingRequest::ZoneTextures(textures), &mut colors)
         .expect("zone set sampling should dispatch")
     {
         ZoneSamplingDispatch::Ready => {}
@@ -444,7 +611,6 @@ fn sample_zone_set(sparkleflinger: &mut SparkleFlinger, set: &ZoneSamplingSet) -
             panic!("zone set sampling should admit bilinear plans")
         }
     }
-    set.assemble_into(&mut colors, &[]);
     colors
 }
 
