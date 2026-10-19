@@ -61,8 +61,9 @@ pub(super) enum ZoneSampleSource {
     Gpu,
     /// A CPU-backed zone, already sampled on the CPU from its canvas.
     Cpu(Vec<ZoneColors>),
-    /// A GPU-backed zone whose plan the GPU sampler refuses: its outputs hold
-    /// their published colors when the shape matches, and are black otherwise.
+    /// A zone with nothing to sample yet (no frame, or an imported GPU frame
+    /// the sampler cannot bind): its outputs hold their published colors when
+    /// the shape matches, and are black otherwise.
     Held,
 }
 
