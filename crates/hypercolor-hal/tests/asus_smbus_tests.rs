@@ -3,10 +3,11 @@ use std::time::Duration;
 use hypercolor_hal::drivers::asus::smbus::{
     AURA_GPU_MAGIC, AuraSmBusProtocol, ENE_ADDRESS_REGISTER, ENE_APPLY_VAL, ENE_BLOCK_WRITE_LIMIT,
     ENE_BLOCK_WRITE_REGISTER, ENE_DRAM_COLOR_APPLY_REGISTER, ENE_DRAM_I2C_ADDRESS_REGISTER,
-    ENE_DRAM_SLOT_INDEX_REGISTER, ENE_OPERATION_DELAY, ENE_READ_REGISTER, ENE_SAVE_VAL,
-    decode_ene_transaction, encode_ene_transaction, ene_byte_swap, ene_direct_color_writes,
-    ene_dram_remap_sequence, ene_permute_color, ene_read_register_range, ene_write_register,
-    ene_write_register_block, lookup_ene_firmware_variant, simple_gpu_magic, supports_mode_14,
+    ENE_DRAM_SLOT_INDEX_REGISTER, ENE_FULL_WRITE_INTERVAL, ENE_OPERATION_DELAY, ENE_READ_REGISTER,
+    ENE_SAVE_VAL, decode_ene_transaction, encode_ene_transaction, ene_byte_swap,
+    ene_direct_color_writes, ene_direct_led_write, ene_dram_remap_sequence, ene_permute_color,
+    ene_read_register_range, ene_write_register, ene_write_register_block,
+    lookup_ene_firmware_variant, simple_gpu_magic, supports_mode_14,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
 use hypercolor_hal::transport::smbus::SmBusOperation;
@@ -480,6 +481,14 @@ fn dram_frame_and_init_delay_counts_stay_within_the_transport_cost_model() {
     // 1 direct-mode re-assert + 24 payload bytes / 3-byte chunks + 1 apply latch.
     assert_eq!(count_delays(&frame_operations), 10);
 
+    // Once a frame is confirmed, direct mode stays asserted: a frame that
+    // changes every LED costs 8 color pairs + 1 apply latch.
+    protocol.frame_write_finished(true);
+    let changed = protocol.encode_frame(&[[0x44, 0x55, 0x66]; 8]);
+    let changed_operations =
+        decode_ene_transaction(&changed[0].data).expect("frame transaction should decode");
+    assert_eq!(count_delays(&changed_operations), 9);
+
     let init_delays = protocol
         .init_sequence()
         .iter()
@@ -490,4 +499,308 @@ fn dram_frame_and_init_delay_counts_stay_within_the_transport_cost_model() {
 
     // 16-byte firmware read + 64-byte config read + 1 direct-mode write.
     assert_eq!(init_delays, 81);
+}
+
+fn protocol_with_firmware(firmware_name: &[u8], led_count: u8) -> AuraSmBusProtocol {
+    let protocol = AuraSmBusProtocol::new();
+    let mut firmware = [0_u8; 16];
+    firmware[..firmware_name.len()].copy_from_slice(firmware_name);
+    protocol
+        .parse_response(&firmware)
+        .expect("firmware response should parse");
+    let mut config = [0_u8; 64];
+    config[0x02] = led_count;
+    protocol
+        .parse_response(&config)
+        .expect("config response should parse");
+    protocol
+}
+
+fn dram_protocol() -> AuraSmBusProtocol {
+    protocol_with_firmware(b"AUDA0-E6K5-0101", 8)
+}
+
+fn frame_operations(protocol: &AuraSmBusProtocol, colors: &[[u8; 3]]) -> Vec<SmBusOperation> {
+    let mut commands = Vec::new();
+    protocol.encode_frame_into(colors, &mut commands);
+    assert!(commands.len() <= 1, "a frame must stay one transaction");
+    commands.first().map_or_else(Vec::new, |command| {
+        decode_ene_transaction(&command.data).expect("frame transaction should decode")
+    })
+}
+
+/// Every color block write in a frame, as (ENE register, wire bytes).
+fn color_writes(operations: &[SmBusOperation]) -> Vec<(u16, Vec<u8>)> {
+    let mut pointer = None;
+    let mut writes = Vec::new();
+    for operation in operations {
+        match operation {
+            SmBusOperation::WriteWordData {
+                register: ENE_ADDRESS_REGISTER,
+                value,
+            } => pointer = Some(ene_byte_swap(*value)),
+            SmBusOperation::WriteBlockData {
+                register: ENE_BLOCK_WRITE_REGISTER,
+                data,
+            } => writes.push((
+                pointer.expect("a block write must follow a pointer write"),
+                data.clone(),
+            )),
+            _ => {}
+        }
+    }
+    writes
+}
+
+fn register_writes(operations: &[SmBusOperation], register: u16) -> usize {
+    operations
+        .iter()
+        .filter(|operation| {
+            **operation
+                == SmBusOperation::WriteWordData {
+                    register: ENE_ADDRESS_REGISTER,
+                    value: ene_byte_swap(register),
+                }
+        })
+        .count()
+}
+
+fn steady_frame() -> Vec<[u8; 3]> {
+    vec![[0x10, 0x20, 0x30]; 8]
+}
+
+#[test]
+fn single_led_write_matches_its_chunk_of_the_full_frame() {
+    let variant = lookup_ene_firmware_variant("AUDA0-E6K5-0101").expect("variant should resolve");
+    let colors = (0_u8..8)
+        .map(|index| [index, index.wrapping_mul(3), index.wrapping_mul(7)])
+        .collect::<Vec<_>>();
+    let full = ene_direct_color_writes(variant, &colors);
+
+    for (index, color) in colors.iter().enumerate() {
+        assert_eq!(
+            ene_direct_led_write(variant, index, *color),
+            full[index * 3..index * 3 + 3],
+            "LED {index} must write exactly its chunk of the full frame"
+        );
+    }
+}
+
+#[test]
+fn dram_frame_repeated_after_a_confirmed_write_sends_no_colors_or_latch() {
+    let protocol = dram_protocol();
+    let first = frame_operations(&protocol, &steady_frame());
+    assert_eq!(color_writes(&first).len(), 8);
+    assert_eq!(register_writes(&first, ENE_DRAM_COLOR_APPLY_REGISTER), 1);
+    protocol.frame_write_finished(true);
+
+    let repeated = frame_operations(&protocol, &steady_frame());
+
+    assert!(color_writes(&repeated).is_empty());
+    assert_eq!(register_writes(&repeated, ENE_DRAM_COLOR_APPLY_REGISTER), 0);
+    assert_eq!(protocol.written_frame_bytes(), Some(0));
+}
+
+#[test]
+fn one_changed_led_sends_one_color_pair_then_the_latch() {
+    let protocol = dram_protocol();
+    frame_operations(&protocol, &steady_frame());
+    protocol.frame_write_finished(true);
+    let mut changed = steady_frame();
+    changed[5] = [0xAA, 0xBB, 0xCC];
+
+    let operations = frame_operations(&protocol, &changed);
+
+    assert_eq!(
+        color_writes(&operations),
+        vec![(0x8100 + 15, vec![0xAA, 0xCC, 0xBB])]
+    );
+    let variant = lookup_ene_firmware_variant("AUDA0-E6K5-0101").expect("variant should resolve");
+    let latch = ene_write_register(ENE_DRAM_COLOR_APPLY_REGISTER, ENE_APPLY_VAL);
+    let mut tail = ene_direct_led_write(variant, 5, [0xAA, 0xBB, 0xCC]);
+    tail.extend(latch);
+    assert!(
+        operations.ends_with(&tail),
+        "the changed LED's pair must be followed by exactly one latch"
+    );
+    assert_eq!(protocol.written_frame_bytes(), Some(3));
+}
+
+#[test]
+fn failed_write_makes_the_next_frame_write_every_led() {
+    let protocol = dram_protocol();
+    frame_operations(&protocol, &steady_frame());
+    protocol.frame_write_finished(true);
+    let mut changed = steady_frame();
+    changed[2] = [0xFF, 0x00, 0x00];
+    assert_eq!(
+        color_writes(&frame_operations(&protocol, &changed)).len(),
+        1
+    );
+    protocol.frame_write_finished(false);
+
+    let retried = frame_operations(&protocol, &changed);
+
+    assert_eq!(color_writes(&retried).len(), 8);
+    assert_eq!(register_writes(&retried, ENE_DRAM_COLOR_APPLY_REGISTER), 1);
+    assert_eq!(protocol.written_frame_bytes(), Some(24));
+}
+
+#[test]
+fn unreported_write_makes_the_next_frame_write_every_led() {
+    let protocol = dram_protocol();
+    frame_operations(&protocol, &steady_frame());
+
+    let next = frame_operations(&protocol, &steady_frame());
+
+    assert_eq!(color_writes(&next).len(), 8);
+}
+
+#[test]
+fn init_sequence_makes_the_next_frame_write_every_led() {
+    let protocol = dram_protocol();
+    frame_operations(&protocol, &steady_frame());
+    protocol.frame_write_finished(true);
+
+    let _ = protocol.init_sequence();
+    let next = frame_operations(&protocol, &steady_frame());
+
+    assert_eq!(color_writes(&next).len(), 8);
+}
+
+#[test]
+fn led_count_change_makes_the_next_frame_write_every_led() {
+    let protocol = dram_protocol();
+    frame_operations(&protocol, &steady_frame());
+    protocol.frame_write_finished(true);
+    let mut longer = steady_frame();
+    longer.extend([[0x10, 0x20, 0x30]; 2]);
+
+    let next = frame_operations(&protocol, &longer);
+
+    assert_eq!(color_writes(&next).len(), 10);
+}
+
+#[test]
+fn unchanged_frame_without_a_latch_register_encodes_nothing() {
+    let protocol = protocol_with_firmware(b"AUMA0-E6K5-0104", 8);
+    frame_operations(&protocol, &steady_frame());
+    protocol.frame_write_finished(true);
+
+    let mut commands = vec![ProtocolCommand {
+        data: vec![0xAA],
+        ..Default::default()
+    }];
+    protocol.encode_frame_into(&steady_frame(), &mut commands);
+
+    assert!(commands.is_empty());
+}
+
+#[test]
+fn confirmed_frames_still_rewrite_every_led_periodically() {
+    let protocol = dram_protocol();
+    assert_eq!(
+        color_writes(&frame_operations(&protocol, &steady_frame())).len(),
+        8
+    );
+    protocol.frame_write_finished(true);
+
+    for frame in 1..ENE_FULL_WRITE_INTERVAL {
+        let operations = frame_operations(&protocol, &steady_frame());
+        assert!(
+            color_writes(&operations).is_empty(),
+            "frame {frame} after a full write should send no colors"
+        );
+        protocol.frame_write_finished(true);
+    }
+    let refresh = frame_operations(&protocol, &steady_frame());
+
+    assert_eq!(color_writes(&refresh).len(), 8);
+    assert_eq!(register_writes(&refresh, ENE_DRAM_COLOR_APPLY_REGISTER), 1);
+    protocol.frame_write_finished(true);
+    assert!(
+        color_writes(&frame_operations(&protocol, &steady_frame())).is_empty(),
+        "the refresh restarts the interval"
+    );
+}
+
+#[test]
+fn dram_direct_mode_is_asserted_only_while_the_shown_colors_are_unknown() {
+    let protocol = dram_protocol();
+    let first = frame_operations(&protocol, &steady_frame());
+    assert!(
+        first.starts_with(&ene_write_register(0x8020, ENE_APPLY_VAL)),
+        "a session's first frame must assert direct mode before any color"
+    );
+    assert_eq!(register_writes(&first, 0x8020), 1);
+    protocol.frame_write_finished(true);
+
+    let mut changed = steady_frame();
+    changed[0] = [0x99, 0x88, 0x77];
+    let delta = frame_operations(&protocol, &changed);
+    assert_eq!(register_writes(&delta, 0x8020), 0);
+    assert_eq!(color_writes(&delta).len(), 1);
+    protocol.frame_write_finished(true);
+
+    let mut commands = Vec::new();
+    protocol.encode_frame_into(&changed, &mut commands);
+    assert!(
+        commands.is_empty(),
+        "an unchanged frame on a confirmed DIMM must not touch the bus"
+    );
+}
+
+#[test]
+fn dram_failed_write_reasserts_direct_mode_on_the_next_frame() {
+    let protocol = dram_protocol();
+    frame_operations(&protocol, &steady_frame());
+    protocol.frame_write_finished(true);
+    let mut changed = steady_frame();
+    changed[7] = [0x00, 0x00, 0xFF];
+    frame_operations(&protocol, &changed);
+    protocol.frame_write_finished(false);
+
+    let recovery = frame_operations(&protocol, &changed);
+
+    assert!(recovery.starts_with(&ene_write_register(0x8020, ENE_APPLY_VAL)));
+    assert_eq!(color_writes(&recovery).len(), 8);
+    assert!(recovery.ends_with(&ene_write_register(
+        ENE_DRAM_COLOR_APPLY_REGISTER,
+        ENE_APPLY_VAL
+    )));
+    protocol.frame_write_finished(true);
+    assert_eq!(
+        register_writes(&frame_operations(&protocol, &steady_frame()), 0x8020),
+        0,
+        "a confirmed recovery frame ends the re-assert"
+    );
+}
+
+#[test]
+fn dram_unreported_write_and_init_reassert_direct_mode() {
+    let protocol = dram_protocol();
+    frame_operations(&protocol, &steady_frame());
+    let after_unreported = frame_operations(&protocol, &steady_frame());
+    assert_eq!(register_writes(&after_unreported, 0x8020), 1);
+    protocol.frame_write_finished(true);
+
+    let _ = protocol.init_sequence();
+    let after_init = frame_operations(&protocol, &steady_frame());
+    assert_eq!(register_writes(&after_init, 0x8020), 1);
+    assert_eq!(color_writes(&after_init).len(), 8);
+}
+
+#[test]
+fn dram_periodic_full_write_reasserts_direct_mode() {
+    let protocol = dram_protocol();
+    frame_operations(&protocol, &steady_frame());
+    protocol.frame_write_finished(true);
+    for _ in 1..ENE_FULL_WRITE_INTERVAL {
+        assert!(frame_operations(&protocol, &steady_frame()).is_empty());
+    }
+
+    let refresh = frame_operations(&protocol, &steady_frame());
+
+    assert!(refresh.starts_with(&ene_write_register(0x8020, ENE_APPLY_VAL)));
+    assert_eq!(color_writes(&refresh).len(), 8);
 }

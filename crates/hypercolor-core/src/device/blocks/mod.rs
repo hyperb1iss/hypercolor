@@ -10,6 +10,7 @@ mod framing;
 mod input;
 mod scanner;
 mod types;
+mod watcher;
 
 pub use backend::BlocksBackend;
 pub use scanner::BlocksScanner;

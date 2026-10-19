@@ -113,6 +113,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                         .retain_materialized_zone_frame(
                             zone_id,
                             self.context.elapsed_ms,
+                            self.context.target_fps.get(&zone_id).copied(),
                             self.context.dependency_key,
                             &display_target,
                             route,
@@ -535,6 +536,7 @@ mod tests {
         harness.render_zone_runtime.retain_materialized_zone_frame(
             zone_id,
             100,
+            Some(30),
             dependency_key,
             &display_target,
             &display_route,
@@ -582,6 +584,7 @@ mod tests {
         harness.render_zone_runtime.retain_materialized_zone_frame(
             zone_id,
             100,
+            Some(30),
             dependency_key,
             &display_target,
             &display_route,

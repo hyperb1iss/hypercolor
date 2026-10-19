@@ -627,6 +627,7 @@ impl AppState {
                     credential_store: Arc::clone(&credential_store),
                     in_progress: Arc::clone(&discovery_in_progress),
                     pending_scans: Arc::default(),
+                    target_lanes: Arc::default(),
                     task_spawner: test_constructor_task_spawner(),
                 };
                 Ok(Arc::new(

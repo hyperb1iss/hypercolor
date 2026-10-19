@@ -15,12 +15,14 @@ use tracing::{debug, warn};
 
 use super::DiscoveryRuntime;
 use super::device_helpers::{
+    FencedConnect, connect_backend_device_fenced,
     connect_backend_device_with_timeout as connect_backend_device_with_backend_timeout,
     desired_connect_behavior, device_log_label, disconnect_backend_device,
     ensure_default_logical_for_device, format_error_chain, lifecycle_policy_for_device,
     publish_device_connected, refresh_connected_device_info, sync_logical_mappings_for_device,
     sync_registry_state,
 };
+use super::lanes::ConnectFence;
 
 /// Transient write failures in a row before the daemon rebuilds the device
 /// session.
@@ -394,6 +396,18 @@ pub(crate) async fn execute_lifecycle_actions(
     runtime: DiscoveryRuntime,
     actions: Vec<LifecycleAction>,
 ) {
+    execute_fenced_lifecycle_actions(runtime, actions, None).await;
+}
+
+/// Execute `actions`, with the connect of `fence`'s device fenced: it maps
+/// and publishes only while its lifecycle intent still stands, holding the
+/// device's lane until the connect's follow-up is done.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn execute_fenced_lifecycle_actions(
+    runtime: DiscoveryRuntime,
+    actions: Vec<LifecycleAction>,
+    fence: Option<ConnectFence>,
+) {
     let mut pending: VecDeque<LifecycleAction> = actions.into();
 
     while let Some(action) = pending.pop_front() {
@@ -403,13 +417,41 @@ pub(crate) async fn execute_lifecycle_actions(
                 backend_id,
                 layout_device_id,
             } => {
-                let result = connect_backend_device_with_timeout(
-                    &runtime,
-                    &backend_id,
-                    device_id,
-                    &layout_device_id,
-                )
-                .await;
+                let fence = fence
+                    .as_ref()
+                    .filter(|fence| fence.device_id() == device_id);
+                let (result, _publication) = match fence {
+                    None => (
+                        connect_backend_device_with_timeout(
+                            &runtime,
+                            &backend_id,
+                            device_id,
+                            &layout_device_id,
+                        )
+                        .await,
+                        None,
+                    ),
+                    Some(fence) => match connect_backend_device_fenced_with_timeout(
+                        &runtime,
+                        &backend_id,
+                        device_id,
+                        &layout_device_id,
+                        fence,
+                    )
+                    .await
+                    {
+                        Ok(FencedConnect::Installed(hold)) => (Ok(()), Some(hold)),
+                        Ok(FencedConnect::Superseded) => {
+                            debug!(
+                                device_id = %device_id,
+                                backend_id = %backend_id,
+                                "dropping a background connect a newer scan superseded"
+                            );
+                            continue;
+                        }
+                        Err(error) => (Err(error), None),
+                    },
+                };
 
                 let (follow_up, connected) = match result {
                     Ok(()) => {
@@ -1047,6 +1089,27 @@ async fn connect_backend_device_with_timeout(
         device_id,
         layout_device_id,
         timeout,
+    )
+    .await
+}
+
+async fn connect_backend_device_fenced_with_timeout(
+    runtime: &DiscoveryRuntime,
+    backend_id: &str,
+    device_id: DeviceId,
+    layout_device_id: &str,
+    fence: &ConnectFence,
+) -> Result<FencedConnect, DeviceError> {
+    let timeout = lifecycle_policy_for_device(runtime, backend_id, device_id)
+        .await
+        .connect_timeout();
+    connect_backend_device_fenced(
+        runtime,
+        backend_id,
+        device_id,
+        layout_device_id,
+        timeout,
+        fence,
     )
     .await
 }

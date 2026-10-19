@@ -1114,19 +1114,29 @@ async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
 
 ### 10.2 Hot-Plug via Events
 
-After initial discovery, the backend subscribes to device events. When blocksd reports a new device
-(USB hot-plug, magnetic DNA snap), the backend:
+The periodic discovery scan (300 s by default) is only a backstop. The backend owns a device
+watcher (`blocks/watcher.rs`) that holds a `device`-only blocksd subscription on its own
+connection for as long as the backend lives, reconnecting with the input stream's backoff
+(250 ms doubling to 5 s) whenever blocksd restarts or starts late.
 
-1. Constructs `DeviceInfo` from the event payload
-2. Registers the device in its local map
-3. Publishes `DeviceDiscovered` to Hypercolor's device registry
-4. The layout engine may auto-assign the new device
+The watcher does not build devices from event payloads. A `device_added` or `device_removed`
+event, a line it cannot parse, or a subscription acknowledgement (blocks may have come or gone
+while it was disconnected) asks the host for a blocks-scoped discovery through
+`DriverRuntimeActions::request_discovery`. A one-slot channel plus a 150 ms window turns the
+burst a plug-in produces into one request without losing a change that arrives while a request
+is already in flight. The scoped scan then adopts and retires blocks through the same path the
+periodic scan uses.
 
-When a device is removed:
+In the daemon, a driver-scoped scan runs at once in that target's lane instead of queuing
+behind the global full scan, so an unrelated slow scanner (a WLED mDNS sweep, for example)
+cannot delay adoption. Each target retires its departures from its own scanner's result, a full
+sweep's binding migration skips targets a lane has observed since, and background connects are
+fenced so a connect that finishes after a newer scan retired its device closes instead of
+mapping. Shutdown drains lane workers, scanners, and background connects before device cleanup.
 
-1. Marks the device as disconnected
-2. Publishes `DeviceDisconnected` to the registry
-3. Retains the device in the local map (for reconnection matching)
+blocksd drops a subscriber whose event queue overflows without closing its connection, which
+leaves the watcher connected but deaf until the next periodic scan. The fix belongs in blocksd
+(send the error event, then close); the watcher already reconnects and resyncs on close.
 
 ### 10.3 Lifecycle State Machine
 

@@ -1,20 +1,26 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use hypercolor_core::device::{SmBusBackend, SmBusScanner};
 use hypercolor_driver_api::{
-    DeviceBackend, DeviceLifecyclePolicy, DiscoveredDevice, DiscoveryConnectBehavior,
+    DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId, DeviceDeliveryObserver,
+    DeviceDeliveryStatus, DeviceFrameSink, DeviceLifecyclePolicy, DiscoveredDevice,
+    DiscoveryConnectBehavior,
 };
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use hypercolor_hal::SmBusProbeError;
+use hypercolor_hal::drivers::asus::smbus::{AuraSmBusProtocol, decode_ene_transaction};
+use hypercolor_hal::protocol::Protocol;
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use hypercolor_hal::transport::TransportPlatform;
-use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusOperation, decode_operations};
+use hypercolor_hal::transport::smbus::{
+    SmBusBusArbiter, SmBusClaim, SmBusOperation, SmBusTransportScope, decode_operations,
+};
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
@@ -249,6 +255,158 @@ impl Transport for ConcurrentSmBusTransport {
     }
 }
 
+/// Watches device-claimed frame batches the way a physical bus would see them.
+#[derive(Default)]
+struct SmBusLaneProbe {
+    measuring: AtomicBool,
+    rendezvous: AtomicBool,
+    released: AtomicBool,
+    active_frames: AtomicUsize,
+    max_active_frames: AtomicUsize,
+    operations: StdMutex<HashMap<u16, Vec<SmBusOperation>>>,
+}
+
+impl SmBusLaneProbe {
+    fn wait_until(condition: impl Fn() -> bool, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        while !condition() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Hold a batch at its first delay until a partner batch is inside too and
+    /// the test releases both. Bounded, so a serialized bus fails rather than
+    /// hangs.
+    fn hold(&self) {
+        if !self.rendezvous.load(Ordering::SeqCst) {
+            return;
+        }
+        Self::wait_until(
+            || self.active_frames.load(Ordering::SeqCst) >= 2,
+            Duration::from_secs(1),
+        );
+        Self::wait_until(
+            || self.released.load(Ordering::SeqCst),
+            Duration::from_secs(2),
+        );
+    }
+
+    fn take_operations(&self, address: u16) -> Vec<SmBusOperation> {
+        self.operations
+            .lock()
+            .expect("operation log lock should not be poisoned")
+            .remove(&address)
+            .unwrap_or_default()
+    }
+}
+
+/// Fake device transport that claims the bus exactly as the Linux transport
+/// does for a connected device, then logs what reaches the wire.
+struct LaneSmBusTransport {
+    address: u16,
+    bus_arbiter: SmBusBusArbiter,
+    probe: Arc<SmBusLaneProbe>,
+    op_lock: tokio::sync::Mutex<()>,
+    responses: StdMutex<VecDeque<Vec<u8>>>,
+}
+
+impl LaneSmBusTransport {
+    fn new(address: u16, bus_arbiter: SmBusBusArbiter, probe: Arc<SmBusLaneProbe>) -> Self {
+        Self {
+            address,
+            bus_arbiter,
+            probe,
+            op_lock: tokio::sync::Mutex::new(()),
+            responses: StdMutex::new(VecDeque::from([
+                dram_firmware_response(),
+                dram_config_response(8),
+            ])),
+        }
+    }
+
+    async fn execute(&self, data: &[u8]) -> Result<(), TransportError> {
+        let operations = decode_operations(data)?;
+        let claim = SmBusClaim::for_batch(SmBusTransportScope::Device, self.address, &operations);
+        let probe = Arc::clone(&self.probe);
+        let address = self.address;
+        let _guard = self.op_lock.lock().await;
+        self.bus_arbiter
+            .run_blocking_claimed(claim, move || {
+                if !probe.measuring.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                let active = probe.active_frames.fetch_add(1, Ordering::SeqCst) + 1;
+                probe.max_active_frames.fetch_max(active, Ordering::SeqCst);
+                let mut held = false;
+                for operation in operations {
+                    if !held && matches!(operation, SmBusOperation::Delay { .. }) {
+                        held = true;
+                        probe.hold();
+                    }
+                    probe
+                        .operations
+                        .lock()
+                        .expect("operation log lock should not be poisoned")
+                        .entry(address)
+                        .or_default()
+                        .push(operation);
+                }
+                probe.active_frames.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl Transport for LaneSmBusTransport {
+    fn name(&self) -> &'static str {
+        "Lane SMBus"
+    }
+
+    async fn send(&self, data: &[u8]) -> Result<(), TransportError> {
+        self.execute(data).await
+    }
+
+    async fn receive(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
+        Err(TransportError::Timeout {
+            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        })
+    }
+
+    async fn send_receive(
+        &self,
+        data: &[u8],
+        _timeout: Duration,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.execute(data).await?;
+        self.responses
+            .lock()
+            .expect("response lock should not be poisoned")
+            .pop_front()
+            .ok_or_else(|| TransportError::IoError {
+                detail: "unexpected SMBus response request".to_owned(),
+            })
+    }
+
+    async fn close(&self) -> Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+fn reference_dram_frame(colors: &[[u8; 3]]) -> Vec<SmBusOperation> {
+    let protocol = AuraSmBusProtocol::new();
+    protocol
+        .parse_response(&dram_firmware_response())
+        .expect("reference firmware should parse");
+    protocol
+        .parse_response(&dram_config_response(8))
+        .expect("reference config should parse");
+    let commands = protocol.encode_frame(colors);
+    assert_eq!(commands.len(), 1, "a DRAM frame is one transaction");
+    decode_ene_transaction(&commands[0].data).expect("reference frame should decode")
+}
+
 fn assert_root_scoped_smbus_scan<T: std::fmt::Debug>(result: Result<Vec<T>>) {
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
@@ -472,6 +630,129 @@ async fn smbus_backend_instances_share_one_physical_bus_arbiter() {
     assert!(stale_sink_error.to_string().contains("disconnected"));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn smbus_frame_writes_overlap_across_devices_while_bus_claims_exclude_them() {
+    const BUS_PATH: &str = "/dev/i2c-lane-overlap-test";
+    let first_id = DeviceId::new();
+    let second_id = DeviceId::new();
+    let probe = Arc::new(SmBusLaneProbe::default());
+    let backend = SmBusBackend::with_transport_factory({
+        let probe = Arc::clone(&probe);
+        move |bus_path, address, bus_arbiter| {
+            assert_eq!(bus_path, BUS_PATH);
+            Ok(Box::new(LaneSmBusTransport::new(
+                address,
+                bus_arbiter,
+                Arc::clone(&probe),
+            )))
+        }
+    });
+    for (id, address) in [(first_id, 0x71), (second_id, 0x73)] {
+        backend
+            .adopt_device(&discovered_smbus_device_at(id, BUS_PATH, address))
+            .expect("backend should adopt the DIMM");
+        backend.connect(&id).await.expect("DIMM should connect");
+    }
+    let first_sink = backend
+        .frame_sink(&first_id)
+        .expect("first DIMM should expose a frame sink");
+    let second_sink = backend
+        .frame_sink(&second_id)
+        .expect("second DIMM should expose a frame sink");
+    let first_colors = vec![[0x10, 0x20, 0x30]; 8];
+    let second_colors = vec![[0x40, 0x50, 0x60]; 8];
+    let bus = SmBusBusArbiter::for_bus(BUS_PATH);
+
+    probe.rendezvous.store(true, Ordering::SeqCst);
+    probe.measuring.store(true, Ordering::SeqCst);
+    let frames = tokio::spawn({
+        let first_sink = Arc::clone(&first_sink);
+        let second_sink = Arc::clone(&second_sink);
+        let first_colors = Arc::new(first_colors.clone());
+        let second_colors = Arc::new(second_colors.clone());
+        async move {
+            tokio::join!(
+                first_sink.write_colors_shared(first_colors),
+                second_sink.write_colors_shared(second_colors),
+            )
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while probe.active_frames.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("both DIMMs' frames should be on the bus at once");
+
+    let mut discovery = tokio::spawn({
+        let bus = bus.clone();
+        let probe = Arc::clone(&probe);
+        async move {
+            bus.run_blocking(move || Ok(probe.active_frames.load(Ordering::SeqCst)))
+                .await
+        }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut discovery)
+            .await
+            .is_err(),
+        "a probe must wait for in-flight frame writes"
+    );
+    probe.released.store(true, Ordering::SeqCst);
+    let (first, second) = tokio::time::timeout(Duration::from_secs(2), frames)
+        .await
+        .expect("frame writes should finish once released")
+        .expect("frame task should complete");
+    first.expect("first frame write should succeed");
+    second.expect("second frame write should succeed");
+    let frames_seen_by_probe = tokio::time::timeout(Duration::from_secs(1), discovery)
+        .await
+        .expect("probe should run after the frames")
+        .expect("probe task should complete")
+        .expect("probe should succeed");
+    assert_eq!(frames_seen_by_probe, 0, "a probe must never share the bus");
+    assert_eq!(probe.max_active_frames.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        probe.take_operations(0x71),
+        reference_dram_frame(&first_colors),
+        "the first DIMM's transactions must reach the wire whole and in order"
+    );
+    assert_eq!(
+        probe.take_operations(0x73),
+        reference_dram_frame(&second_colors),
+        "the second DIMM's transactions must reach the wire whole and in order"
+    );
+
+    probe.rendezvous.store(false, Ordering::SeqCst);
+    let remap = bus.acquire_transaction().await;
+    let mut frames = tokio::spawn({
+        let first_sink = Arc::clone(&first_sink);
+        let second_sink = Arc::clone(&second_sink);
+        async move {
+            tokio::join!(
+                first_sink.write_colors_shared(Arc::new(vec![[1, 2, 3]; 8])),
+                second_sink.write_colors_shared(Arc::new(vec![[4, 5, 6]; 8])),
+            )
+        }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut frames)
+            .await
+            .is_err(),
+        "frame writes must wait while a remap holds the bus"
+    );
+    assert_eq!(probe.active_frames.load(Ordering::SeqCst), 0);
+    drop(remap);
+    let (first, second) = tokio::time::timeout(Duration::from_secs(2), frames)
+        .await
+        .expect("frame writes should resume after the remap")
+        .expect("frame task should complete");
+    first.expect("first frame write should succeed after the remap");
+    second.expect("second frame write should succeed after the remap");
+    probe.measuring.store(false, Ordering::SeqCst);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn smbus_bus_arbiter_retains_ownership_after_waiter_cancellation() {
     let arbiter = SmBusBusArbiter::default();
@@ -520,6 +801,291 @@ async fn smbus_bus_arbiter_retains_ownership_after_waiter_cancellation() {
         .await
         .expect("second transaction should proceed after the first completes")
         .expect("second transaction should succeed");
+}
+
+#[derive(Default)]
+struct CountingDeliveryObserver {
+    started: AtomicUsize,
+}
+
+impl DeviceDeliveryObserver for CountingDeliveryObserver {
+    fn transport_started(&self, _id: DeviceDeliveryId) {
+        self.started.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct ScriptedDram {
+    backend: SmBusBackend,
+    device_id: DeviceId,
+    sink: Arc<dyn DeviceFrameSink>,
+    packets: Arc<StdMutex<Vec<Vec<u8>>>>,
+    observer: Arc<CountingDeliveryObserver>,
+    sequence: u64,
+}
+
+impl ScriptedDram {
+    /// Connect one DIMM whose frame sends succeed or fail per `frame_sends`
+    /// in order, then succeed.
+    async fn connect(frame_sends: Vec<bool>) -> Self {
+        let device_id = DeviceId::new();
+        let packets = Arc::new(StdMutex::new(Vec::<Vec<u8>>::new()));
+        let backend = SmBusBackend::with_transport_factory({
+            let packets = Arc::clone(&packets);
+            move |_bus_path, _address, _bus_arbiter| {
+                let mut send_results = vec![Ok(())];
+                send_results.extend(frame_sends.iter().map(|&succeeds| {
+                    if succeeds {
+                        Ok(())
+                    } else {
+                        Err(TransportError::IoError {
+                            detail: "scripted frame failure".to_owned(),
+                        })
+                    }
+                }));
+                Ok(Box::new(ScriptedTransport::new(
+                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
+                    send_results,
+                    Arc::clone(&packets),
+                    Arc::new(AtomicUsize::new(0)),
+                )))
+            }
+        });
+        backend
+            .adopt_device(&discovered_smbus_device(device_id))
+            .expect("backend should adopt the DIMM");
+        backend
+            .connect(&device_id)
+            .await
+            .expect("DIMM should connect");
+        let sink = backend
+            .frame_sink(&device_id)
+            .expect("DIMM should expose a frame sink");
+        packets
+            .lock()
+            .expect("packet log lock should not be poisoned")
+            .clear();
+
+        Self {
+            backend,
+            device_id,
+            sink,
+            packets,
+            observer: Arc::new(CountingDeliveryObserver::default()),
+            sequence: 0,
+        }
+    }
+
+    async fn deliver(&mut self, colors: Vec<[u8; 3]>) -> DeviceDeliveryAck {
+        self.sequence += 1;
+        let observer: Arc<dyn DeviceDeliveryObserver> = self.observer.clone();
+        self.sink
+            .deliver_colors_shared_observed(
+                DeviceDeliveryId {
+                    queue_generation: 1,
+                    sequence: self.sequence,
+                },
+                Arc::new(colors),
+                observer,
+            )
+            .await
+    }
+
+    fn take_frames(&self) -> Vec<Vec<SmBusOperation>> {
+        std::mem::take(
+            &mut *self
+                .packets
+                .lock()
+                .expect("packet log lock should not be poisoned"),
+        )
+        .iter()
+        .map(|packet| decode_operations(packet).expect("frame packet should decode"))
+        .collect()
+    }
+}
+
+fn block_writes(operations: &[SmBusOperation]) -> usize {
+    operations
+        .iter()
+        .filter(|operation| matches!(operation, SmBusOperation::WriteBlockData { .. }))
+        .count()
+}
+
+fn steady_dram_frame() -> Vec<[u8; 3]> {
+    vec![[0x10, 0x20, 0x30]; 8]
+}
+
+#[tokio::test]
+async fn smbus_backend_writes_only_changed_leds_after_a_confirmed_frame() {
+    let mut dram = ScriptedDram::connect(Vec::new()).await;
+
+    let first = dram.deliver(steady_dram_frame()).await;
+    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
+    assert_eq!(first.completed_payload_bytes, 24);
+    let frames = dram.take_frames();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(block_writes(&frames[0]), 8);
+
+    let mut changed = steady_dram_frame();
+    changed[3] = [0x01, 0x02, 0x03];
+    let second = dram.deliver(changed).await;
+    assert_eq!(second.status, DeviceDeliveryStatus::Completed);
+    assert_eq!(
+        second.completed_payload_bytes, 3,
+        "the acknowledgement should count only the LED that was written"
+    );
+    let frames = dram.take_frames();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(block_writes(&frames[0]), 1);
+    assert_eq!(dram.observer.started.load(Ordering::SeqCst), 2);
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
+}
+
+#[tokio::test]
+async fn smbus_backend_rewrites_every_led_after_a_failed_write() {
+    let mut dram = ScriptedDram::connect(vec![true, false]).await;
+    let mut changed = steady_dram_frame();
+    changed[6] = [0xFF, 0xFF, 0xFF];
+
+    let first = dram.deliver(steady_dram_frame()).await;
+    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
+    let failed = dram.deliver(changed.clone()).await;
+    assert_eq!(failed.status, DeviceDeliveryStatus::Failed);
+    let retried = dram.deliver(changed).await;
+    assert_eq!(retried.status, DeviceDeliveryStatus::Completed);
+
+    let frames = dram.take_frames();
+    assert_eq!(frames.len(), 3);
+    assert_eq!(block_writes(&frames[1]), 1, "the failed frame was a delta");
+    assert_eq!(
+        block_writes(&frames[2]),
+        8,
+        "a failed write leaves the DIMM's colors unknown, so every LED is rewritten"
+    );
+    assert_eq!(retried.completed_payload_bytes, 24);
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
+}
+
+fn direct_mode_writes(operations: &[SmBusOperation]) -> usize {
+    operations
+        .iter()
+        .filter(|operation| {
+            **operation
+                == SmBusOperation::WriteWordData {
+                    register: 0x00,
+                    value: 0x2080,
+                }
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn smbus_backend_skips_the_bus_for_a_frame_the_dimm_already_shows() {
+    let mut dram = ScriptedDram::connect(Vec::new()).await;
+    dram.deliver(steady_dram_frame()).await;
+    let mut changed = steady_dram_frame();
+    changed[1] = [0x0A, 0x0B, 0x0C];
+    dram.deliver(changed.clone()).await;
+    dram.take_frames();
+    let started_before = dram.observer.started.load(Ordering::SeqCst);
+
+    let ack = dram.deliver(changed).await;
+
+    assert_eq!(ack.status, DeviceDeliveryStatus::SuppressedDuplicate);
+    assert!(!ack.transport_started);
+    assert!(dram.take_frames().is_empty());
+    assert_eq!(dram.observer.started.load(Ordering::SeqCst), started_before);
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
+}
+
+#[tokio::test]
+async fn smbus_backend_reasserts_direct_mode_after_a_failed_write() {
+    let mut dram = ScriptedDram::connect(vec![true, true, false]).await;
+    let mut changed = steady_dram_frame();
+    changed[4] = [0x20, 0x40, 0x60];
+
+    dram.deliver(steady_dram_frame()).await;
+    dram.deliver(changed.clone()).await;
+    let failed = dram.deliver(steady_dram_frame()).await;
+    assert_eq!(failed.status, DeviceDeliveryStatus::Failed);
+    dram.deliver(steady_dram_frame()).await;
+
+    let frames = dram.take_frames();
+    assert_eq!(frames.len(), 4);
+    assert_eq!(
+        direct_mode_writes(&frames[0]),
+        1,
+        "first frame of a session"
+    );
+    assert_eq!(direct_mode_writes(&frames[1]), 0, "confirmed delta frame");
+    assert_eq!(direct_mode_writes(&frames[2]), 0, "the frame that failed");
+    assert_eq!(
+        direct_mode_writes(&frames[3]),
+        1,
+        "the first frame after a failure must re-assert direct mode"
+    );
+    assert_eq!(block_writes(&frames[3]), 8);
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
+}
+
+#[tokio::test]
+async fn smbus_backend_reasserts_direct_mode_after_reconnect() {
+    let mut dram = ScriptedDram::connect(Vec::new()).await;
+    dram.deliver(steady_dram_frame()).await;
+    dram.deliver(steady_dram_frame()).await;
+    assert_eq!(
+        dram.take_frames().len(),
+        1,
+        "the repeat frame stays off the bus"
+    );
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
+    dram.backend
+        .connect(&dram.device_id)
+        .await
+        .expect("reconnect should succeed");
+    dram.sink = dram
+        .backend
+        .frame_sink(&dram.device_id)
+        .expect("reconnected DIMM should expose a frame sink");
+    let init = dram.take_frames();
+    assert_eq!(
+        init.iter()
+            .map(|ops| direct_mode_writes(ops))
+            .sum::<usize>(),
+        1,
+        "reconnect runs the init sequence's direct-mode write"
+    );
+
+    dram.deliver(steady_dram_frame()).await;
+
+    let frames = dram.take_frames();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(direct_mode_writes(&frames[0]), 1);
+    assert_eq!(block_writes(&frames[0]), 8);
+
+    dram.backend
+        .disconnect(&dram.device_id)
+        .await
+        .expect("disconnect should succeed");
 }
 
 fn discovered_smbus_device(device_id: DeviceId) -> DiscoveredDevice {
