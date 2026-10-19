@@ -790,7 +790,7 @@ pub(crate) fn ZoneLayoutProvider(
         };
         leptos::task::spawn_local(async move {
             match api::zones::update_zone_layout(&zone_id, &current, revision).await {
-                Ok(api::zones::ZoneOutcome::Applied(zone)) => {
+                Ok(api::zones::ZoneOutcome::Applied((zone, saved_revision))) => {
                     if !studio_history.is_current(generation) {
                         return;
                     }
@@ -803,7 +803,11 @@ pub(crate) fn ZoneLayoutProvider(
                             draft.baseline = acknowledged.clone();
                         }
                     });
-                    studio_history.record_saved_zone(scene.id, zone, revision.saturating_add(1));
+                    studio_history.record_saved_zone(
+                        scene.id,
+                        zone,
+                        saved_revision.unwrap_or_else(|| revision.saturating_add(1)),
+                    );
                     let completion = zone_save_completion(
                         selected_zone_id.get_untracked().as_deref(),
                         active_preview_key.get_value().as_deref(),

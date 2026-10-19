@@ -70,15 +70,18 @@ pub async fn update_zone(
     .await
 }
 
+/// Save a zone's placements. The applied outcome carries the scene revision
+/// the daemon reported, which a save of a primary zone that follows the
+/// active layout moves by two.
 pub async fn update_zone_layout(
     zone_id: &str,
     layout: &SpatialLayout,
     expected_revision: u64,
-) -> ApiResult<ZoneOutcome<ZoneResource>> {
+) -> ApiResult<ZoneOutcome<(ZoneResource, Option<u64>)>> {
     let request = ZoneLayoutRequest {
         placements: layout.zones.iter().map(member_placement).collect(),
     };
-    client::send_json_versioned::<_, ZoneResource>(
+    client::send_json_versioned_with_revision::<_, ZoneResource>(
         HttpMethod::Put,
         &format!("/api/v1/scene/zones/{}/layout", path_segment(zone_id)),
         Some(&request),
