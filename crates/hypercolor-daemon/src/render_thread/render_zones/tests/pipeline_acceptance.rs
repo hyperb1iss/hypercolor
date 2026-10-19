@@ -661,3 +661,69 @@ fn frame_summary(frame: &FrameData) -> String {
         .join(", ");
     format!("frame {} [{zones}]", frame.frame_number)
 }
+
+/// A GPU slower than the frame cadence still drives a multi-zone scene's
+/// LEDs. Each sample finishes only after the next frame has dispatched a
+/// newer one, so every sample in flight at a frame start is stale; the
+/// frame must publish the newest one that finished instead of dropping
+/// them all, and the LEDs follow scene changes without leaking readback
+/// slots.
+#[tokio::test]
+async fn slow_gpu_readbacks_keep_multi_zone_leds_following_the_scene() {
+    use crate::render_thread::sparkleflinger::SAMPLE_READBACK_WITHHELD_POLLS;
+    use std::sync::atomic::Ordering;
+
+    /// Resets the knob even when an assertion fails.
+    struct WithheldPolls;
+    impl Drop for WithheldPolls {
+        fn drop(&mut self) {
+            SAMPLE_READBACK_WITHHELD_POLLS.store(0, Ordering::Relaxed);
+        }
+    }
+
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut first = make_scene("Red And Blue");
+    first.transition.duration_ms = 0;
+    first.zones = overlapping_zones(solid_id, [255, 0, 0], [0, 0, 255]);
+    first.unassigned_behavior = UnassignedBehavior::Off;
+    let mut second = make_scene("Green And Yellow");
+    second.transition.duration_ms = 0;
+    second.zones = overlapping_zones(solid_id, [0, 255, 0], [255, 255, 0]);
+    second.unassigned_behavior = UnassignedBehavior::Off;
+    let Some(mut pipeline) = SteppedPipeline::start(
+        RenderAccelerationMode::Gpu,
+        vec![first.clone(), second.clone()],
+        first.id,
+        BackendManager::new(),
+    )
+    .await
+    else {
+        return;
+    };
+    let _withheld = WithheldPolls;
+    SAMPLE_READBACK_WITHHELD_POLLS.store(4, Ordering::Relaxed);
+    let shows = |red: [u8; 3], blue: [u8; 3]| {
+        move |frame: &FrameData| {
+            zone_leds(frame, "zone_red") == Some(vec![red])
+                && zone_leds(frame, "zone_blue") == Some(vec![blue])
+        }
+    };
+
+    for round in 0..4 {
+        pipeline.activate(first.id).await;
+        pipeline
+            .frame_where(
+                &format!("round {round}: the first scene with slow readbacks"),
+                shows([255, 0, 0], [0, 0, 255]),
+            )
+            .await;
+        pipeline.activate(second.id).await;
+        pipeline
+            .frame_where(
+                &format!("round {round}: the second scene with slow readbacks"),
+                shows([0, 255, 0], [255, 255, 0]),
+            )
+            .await;
+    }
+}

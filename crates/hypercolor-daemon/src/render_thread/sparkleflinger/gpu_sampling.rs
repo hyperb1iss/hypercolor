@@ -467,7 +467,16 @@ pub(super) struct PendingGpuSampleReadback {
     receiver: Option<mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>>,
     map_ready: bool,
     lease: ReadbackLease,
+    /// Non-blocking polls that still report this readback unfinished, so
+    /// tests can stand in for a GPU slower than the frame cadence.
+    #[cfg(test)]
+    withheld_polls: u32,
 }
+
+/// Non-blocking polls each new readback reports unfinished.
+#[cfg(test)]
+pub(crate) static SAMPLE_READBACK_WITHHELD_POLLS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 
 impl PendingGpuSampleReadback {
     #[cfg(test)]
@@ -1828,6 +1837,8 @@ fn begin_zone_color_readback(
         receiver: Some(receiver),
         map_ready: false,
         lease,
+        #[cfg(test)]
+        withheld_polls: SAMPLE_READBACK_WITHHELD_POLLS.load(std::sync::atomic::Ordering::Relaxed),
     }
 }
 
@@ -1837,6 +1848,11 @@ fn poll_zone_color_readback_ready(
 ) -> Result<bool> {
     if pending_readback.map_ready {
         return Ok(true);
+    }
+    #[cfg(test)]
+    if pending_readback.withheld_polls > 0 {
+        pending_readback.withheld_polls -= 1;
+        return Ok(false);
     }
     device
         .poll(wgpu::PollType::Poll)

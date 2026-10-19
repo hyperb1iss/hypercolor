@@ -7,6 +7,8 @@ mod gpu_area_sat;
 #[cfg(feature = "wgpu")]
 mod gpu_sampling;
 mod transform;
+#[cfg(all(test, feature = "wgpu"))]
+pub(crate) use gpu_sampling::SAMPLE_READBACK_WITHHELD_POLLS;
 mod zone_preview;
 
 #[cfg(all(feature = "wgpu", feature = "allocation-contract-tests"))]

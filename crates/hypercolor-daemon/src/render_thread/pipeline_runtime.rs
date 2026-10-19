@@ -808,6 +808,12 @@ pub(crate) struct DeferredSamplingState {
     pending: Option<PendingZoneSampling>,
     retired: VecDeque<PendingZoneSampling>,
     scratch: Vec<ZoneColors>,
+    /// The newest retired sample that finished, with its colors. A GPU slower
+    /// than the frame cadence finishes every sample only after the next frame
+    /// retired it, so the next frame publishes this one instead of dropping
+    /// every result.
+    finished_retired: Option<(PendingZoneSampling, Vec<ZoneColors>)>,
+    retired_scratch: Vec<ZoneColors>,
 }
 
 impl DeferredSamplingState {
@@ -854,9 +860,20 @@ impl DeferredSamplingState {
                 break;
             };
             match sparkleflinger
-                .try_finish_pending_zone_sampling(&mut retired_sampling, &mut self.scratch)
+                .try_finish_pending_zone_sampling(&mut retired_sampling, &mut self.retired_scratch)
             {
-                Ok(true) => {}
+                // Retired samples finish in dispatch order, so the last one
+                // to finish is the newest.
+                Ok(true) => {
+                    let colors = match self.finished_retired.take() {
+                        Some((_, mut colors)) => {
+                            colors.clone_from(&self.retired_scratch);
+                            colors
+                        }
+                        None => self.retired_scratch.clone(),
+                    };
+                    self.finished_retired = Some((retired_sampling, colors));
+                }
                 Ok(false) => {
                     self.retired.push_back(retired_sampling);
                 }
@@ -887,6 +904,7 @@ impl DeferredSamplingState {
     }
 
     pub(crate) fn discard_backlog(&mut self, sparkleflinger: &mut SparkleFlinger) {
+        self.finished_retired = None;
         if let Some(pending) = self.pending.take() {
             sparkleflinger.discard_pending_zone_sampling(pending);
         }
@@ -1670,15 +1688,24 @@ impl SamplingRuntime<'_> {
         self.finish_retired(retired_error_message);
 
         let mut work = PendingSamplingWork::default();
-        if let Some(status) = self.take_pending_status(pending_error_message) {
-            match status {
-                PendingZoneSamplingStatus::Completed(deferred_sampling) => {
-                    work.completed = Some(deferred_sampling);
-                }
-                PendingZoneSamplingStatus::Stale(deferred_sampling) => {
+        match self.take_pending_status(pending_error_message) {
+            Some(PendingZoneSamplingStatus::Completed(deferred_sampling)) => {
+                // The pending sample is the newest dispatch, so any finished
+                // retired sample is older than what this frame publishes.
+                self.deferred_sampling.finished_retired = None;
+                work.completed = Some(deferred_sampling);
+            }
+            Some(PendingZoneSamplingStatus::Stale(deferred_sampling)) => {
+                if let Some(finished) = self.take_finished_retired() {
+                    // Publish the finished sample and keep the newer one in
+                    // flight, retired, so it publishes once it finishes.
+                    self.deferred_sampling.retired.push_back(deferred_sampling);
+                    work.completed = Some(finished);
+                } else {
                     work.stale = Some(deferred_sampling);
                 }
             }
+            None => work.completed = self.take_finished_retired(),
         }
 
         work
@@ -1690,6 +1717,14 @@ impl SamplingRuntime<'_> {
     ) -> Option<PendingZoneSampling> {
         self.deferred_sampling
             .retire_or_return(self.sparkleflinger, pending)
+    }
+
+    /// The newest finished retired sample, its colors moved into the scratch
+    /// the resolver reads a completed sample from.
+    fn take_finished_retired(&mut self) -> Option<PendingZoneSampling> {
+        let (finished, colors) = self.deferred_sampling.finished_retired.take()?;
+        self.deferred_sampling.scratch = colors;
+        Some(finished)
     }
 
     pub(crate) fn discard_backlog(&mut self) {
