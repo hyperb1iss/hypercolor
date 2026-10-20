@@ -157,6 +157,11 @@ impl ZoneRuntime {
         Ok(result)
     }
 
+    /// Render a lone scene zone at the scene extent straight into the scene
+    /// frame, skipping projection. A display output's box keeps the zone
+    /// that places it without the projected scene's display-last ordering
+    /// (Spec 86 §5.1): one contributor places every output, LED or display,
+    /// and every box shows that zone's own pixels.
     fn render_single_full_scene_zone(
         &mut self,
         context: RenderSceneContext<'_>,
