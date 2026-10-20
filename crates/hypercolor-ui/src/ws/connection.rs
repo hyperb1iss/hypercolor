@@ -713,7 +713,7 @@ impl WsManager {
 
         connect.set_value(Some(connect_fn));
 
-        // Preview subscription effect — reacts to FPS cap / visibility changes.
+        // Preview subscription effect: reacts to FPS cap and visibility changes.
         //
         // Every preview effect waits for `Connected`. A socket that is still
         // opening rejects sends, and a request recorded as sent but never

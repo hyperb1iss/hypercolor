@@ -101,3 +101,30 @@ fn shortest_delta_takes_the_shorter_arc() {
     assert!((shortest_hue_delta(370.0, 20.0) - 10.0).abs() < 1e-9);
     assert!((shortest_hue_delta(0.0, 180.0) - 180.0).abs() < 1e-9);
 }
+
+/// The fallback is the hue CSS holds before the first publish. If the token
+/// or the drift property's initial value moved without it, the first publish
+/// would unwrap against the wrong angle and could sweep the long way.
+#[test]
+fn the_fallback_matches_the_css_it_unwraps_against() {
+    let read = |path: &str| {
+        std::fs::read_to_string(format!("{}/{path}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|error| panic!("read {path}: {error}"))
+    };
+    let declared = |css: &str, marker: &str| -> f64 {
+        let start = css.find(marker).expect("marker present") + marker.len();
+        let value: String = css[start..]
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        value.parse().expect("numeric value")
+    };
+    let tokens = read("tokens/semantic.css");
+    let input = read("input.css");
+    let drift = &input[input
+        .find("@property --ambient-hue-drift")
+        .expect("drift property registered")..];
+    assert!((declared(&tokens, "--ambient-hue:") - AMBIENT_HUE_FALLBACK_DEG).abs() < f64::EPSILON);
+    assert!((declared(drift, "initial-value:") - AMBIENT_HUE_FALLBACK_DEG).abs() < f64::EPSILON);
+}
