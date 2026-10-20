@@ -45,7 +45,7 @@ static PUSH2_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
                     connect_execution: TransportConnectExecution::Background,
                     retry_on_connect_timeout: false,
                 },
-                publishes_input: false,
+                publishes_input: true,
                 open: open_push2_transport,
             },
         },

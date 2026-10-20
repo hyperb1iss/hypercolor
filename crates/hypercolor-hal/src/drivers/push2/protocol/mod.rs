@@ -5,7 +5,10 @@ use hypercolor_types::device::SegmentInfo;
 mod diagnostics;
 mod display;
 mod flow;
+mod input;
 mod led_palette;
+
+pub use input::{Push2InputDecode, Push2InputDecoder};
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex, RwLock};
@@ -27,7 +30,7 @@ const PUSH2_RGB_LED_COUNT: usize = 92;
 const PUSH2_WHITE_BUTTON_COUNT: usize = 37;
 const PUSH2_MIDI_LED_COUNT: usize = PUSH2_RGB_LED_COUNT + PUSH2_WHITE_BUTTON_COUNT;
 const PUSH2_TOTAL_LEDS: usize = PUSH2_MIDI_LED_COUNT + PUSH2_TOUCH_STRIP_LED_COUNT;
-const PUSH2_PAD_COUNT: usize = 64;
+pub(super) const PUSH2_PAD_COUNT: usize = 64;
 const PUSH2_TOUCH_STRIP_LED_COUNT: usize = 31;
 const PUSH2_RGB_BUTTON_COUNT: usize = 28;
 const PUSH2_PALETTE_SIZE: usize = 128;
@@ -72,6 +75,11 @@ const PUSH2_MIDI_MODE_LIVE: u8 = 0x00;
 const PUSH2_MIDI_MODE_USER: u8 = 0x01;
 const PUSH2_TOUCH_STRIP_HOST_CONFIG: u8 = 0x6B;
 const PUSH2_TOUCH_STRIP_DEFAULT_CONFIG: u8 = 0x68;
+
+/// Segment name of the 8x8 pad matrix, as layouts bind it.
+pub const PUSH2_PADS_SEGMENT: &str = "Pads";
+/// Segment name of the touch strip, as layouts bind it.
+pub const PUSH2_TOUCH_STRIP_SEGMENT: &str = "Touch Strip";
 
 const PAD_NOTE_MAP: [u8; PUSH2_PAD_COUNT] = [
     36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59,
@@ -435,7 +443,7 @@ impl Protocol for Push2Protocol {
     fn zones(&self) -> Vec<SegmentInfo> {
         vec![
             SegmentInfo {
-                name: "Pads".to_owned(),
+                name: PUSH2_PADS_SEGMENT.to_owned(),
                 led_count: 64,
                 topology: DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
                 color_format: DeviceColorFormat::Rgb,
@@ -477,7 +485,7 @@ impl Protocol for Push2Protocol {
                 layout_hint: None,
             },
             SegmentInfo {
-                name: "Touch Strip".to_owned(),
+                name: PUSH2_TOUCH_STRIP_SEGMENT.to_owned(),
                 led_count: 31,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
