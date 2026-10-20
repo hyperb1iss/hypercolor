@@ -2,7 +2,9 @@
 //!
 //! A touch at a device-surface position must land on the canvas point that
 //! the LED under the finger samples, through the same position, size,
-//! rotation, scale, start corner, and edge behavior the sampler uses.
+//! rotation, scale, start corner, strip direction, and edge behavior the
+//! sampler uses, and on the segment the touch names when a device has
+//! several.
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -11,6 +13,7 @@ use hypercolor_core::spatial::{DISPLAY_ZONE_NAME, DeviceSurfaceMap, SpatialEngin
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+    StripDirection,
 };
 
 const EPSILON: f32 = 1.0e-5;
@@ -332,4 +335,154 @@ fn backend_manager_reports_layout_bindings_and_their_generation() {
     assert!(manager.unmap_device("blocks:lightpad"));
     assert!(manager.routing_mapping_generation() > mapped);
     assert_eq!(manager.layout_device_bindings().count(), 0);
+}
+
+fn strip(count: u32, direction: StripDirection) -> LedTopology {
+    LedTopology::Strip { count, direction }
+}
+
+fn segment_output(id: &str, segment: &str, topology: LedTopology) -> Output {
+    Output {
+        zone_name: Some(segment.to_owned()),
+        ..output(id, "blocks:lightpad", topology)
+    }
+}
+
+#[test]
+fn strip_touches_run_along_the_strip_in_every_direction() {
+    for direction in [
+        StripDirection::LeftToRight,
+        StripDirection::RightToLeft,
+        StripDirection::TopToBottom,
+        StripDirection::BottomToTop,
+    ] {
+        let device = DeviceId::new();
+        let output = placed((0.3, 0.6), (0.1, 0.5), 0.3, strip(31, direction));
+        let layout = layout(vec![output]);
+        let engine = SpatialEngine::new(layout.clone());
+        let plan = engine.sampling_plan();
+        let sampled = &plan[0].sample_positions;
+        let surfaces = DeviceSurfaceMap::from_layout(&layout, single_device(device));
+
+        for (index, led) in sampled.iter().enumerate() {
+            // Along the strip from its first LED, on its center line.
+            let along = f32::from(u16::try_from(index).expect("small strip")) / 30.0;
+            let touch = surfaces
+                .canvas_position(device, along, 0.5)
+                .expect("placed strip should map");
+            assert_close(touch, *led);
+        }
+    }
+}
+
+#[test]
+fn named_segments_of_one_device_resolve_through_their_own_outputs() {
+    let device = DeviceId::new();
+    let pads = Output {
+        position: NormalizedPosition::new(0.25, 0.5),
+        size: NormalizedPosition::new(0.5, 1.0),
+        ..segment_output("pads", "Pads", matrix(8, 8, Corner::BottomLeft))
+    };
+    let touch_strip = Output {
+        position: NormalizedPosition::new(0.9, 0.5),
+        size: NormalizedPosition::new(0.1, 1.0),
+        ..segment_output(
+            "strip",
+            "Touch Strip",
+            strip(31, StripDirection::BottomToTop),
+        )
+    };
+    let layout = layout(vec![pads, touch_strip]);
+    let surfaces = DeviceSurfaceMap::from_layout(&layout, single_device(device));
+
+    assert_eq!(surfaces.len(), 2);
+    assert!(surfaces.contains(device));
+    // The first pad row sits at the bottom of a bottom-left matrix.
+    assert_close(
+        surfaces
+            .segment_canvas_position(device, Some("Pads"), 0.0, 0.0)
+            .expect("pads are placed"),
+        NormalizedPosition::new(0.0, 1.0),
+    );
+    // The strip's first LED sits at its bottom.
+    assert_close(
+        surfaces
+            .segment_canvas_position(device, Some("Touch Strip"), 0.0, 0.5)
+            .expect("strip is placed"),
+        NormalizedPosition::new(0.9, 1.0),
+    );
+    assert_close(
+        surfaces
+            .segment_canvas_position(device, Some("Touch Strip"), 1.0, 0.5)
+            .expect("strip is placed"),
+        NormalizedPosition::new(0.9, 0.0),
+    );
+    // A touch that names no segment cannot choose between them.
+    assert_eq!(surfaces.canvas_position(device, 0.5, 0.5), None);
+    // Nor can one that names a segment the layout does not place.
+    assert_eq!(
+        surfaces.segment_canvas_position(device, Some("Display"), 0.5, 0.5),
+        None
+    );
+}
+
+#[test]
+fn a_segment_placed_twice_is_ambiguous_and_unplaced() {
+    let device = DeviceId::new();
+    let layout = layout(vec![
+        segment_output("left", "Pads", matrix(8, 8, Corner::TopLeft)),
+        segment_output("right", "Pads", matrix(8, 8, Corner::TopLeft)),
+        segment_output(
+            "strip",
+            "Touch Strip",
+            strip(31, StripDirection::BottomToTop),
+        ),
+    ]);
+    let surfaces = DeviceSurfaceMap::from_layout(&layout, single_device(device));
+
+    assert_eq!(
+        surfaces.segment_canvas_position(device, Some("Pads"), 0.5, 0.5),
+        None
+    );
+    assert!(
+        surfaces
+            .segment_canvas_position(device, Some("Touch Strip"), 0.5, 0.5)
+            .is_some()
+    );
+}
+
+#[test]
+fn a_named_touch_lands_on_a_sole_output_that_covers_the_whole_device() {
+    let device = DeviceId::new();
+    let whole = layout(vec![output(
+        "pad",
+        "blocks:lightpad",
+        matrix(15, 15, Corner::TopLeft),
+    )]);
+    let surfaces = DeviceSurfaceMap::from_layout(&whole, single_device(device));
+    assert_close(
+        surfaces
+            .segment_canvas_position(device, Some("Pads"), 0.25, 0.75)
+            .expect("the whole-device output stands for every segment"),
+        NormalizedPosition::new(0.25, 0.75),
+    );
+
+    // A sole output bound to another segment is not where this touch landed.
+    let other = layout(vec![segment_output(
+        "strip",
+        "Touch Strip",
+        strip(31, StripDirection::BottomToTop),
+    )]);
+    let surfaces = DeviceSurfaceMap::from_layout(&other, single_device(device));
+    assert_eq!(
+        surfaces.segment_canvas_position(device, Some("Pads"), 0.5, 0.5),
+        None
+    );
+    // The segment it names, and a touch naming none, both land on it.
+    assert!(
+        surfaces
+            .segment_canvas_position(device, Some("Touch Strip"), 0.5, 0.5)
+            .is_some()
+    );
+    assert!(surfaces.canvas_position(device, 0.5, 0.5).is_some());
 }
