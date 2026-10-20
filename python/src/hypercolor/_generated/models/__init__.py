@@ -562,6 +562,7 @@ from .rejected_control_change_attempted_value import RejectedControlChangeAttemp
 from .remove_favorite_response_200 import RemoveFavoriteResponse200
 from .render_acceleration_status import RenderAccelerationStatus
 from .render_loop_status import RenderLoopStatus
+from .render_output_demand_status import RenderOutputDemandStatus
 from .render_surface_status import RenderSurfaceStatus
 from .reorder_layers_request import ReorderLayersRequest
 from .reorder_live_zone_layers_response_200 import ReorderLiveZoneLayersResponse200
@@ -1183,6 +1184,7 @@ __all__ = (
     "RemoveFavoriteResponse200",
     "RenderAccelerationStatus",
     "RenderLoopStatus",
+    "RenderOutputDemandStatus",
     "RenderSurfaceStatus",
     "ReorderLayersRequest",
     "ReorderLiveZoneLayersResponse200",

@@ -12,6 +12,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.diagnose_latest_frame_snapshot import DiagnoseLatestFrameSnapshot
     from ..models.diagnose_render_window_snapshot import DiagnoseRenderWindowSnapshot
+    from ..models.render_output_demand_status import RenderOutputDemandStatus
 
 
 T = TypeVar("T", bound="DiagnoseRenderSnapshot")
@@ -23,10 +24,17 @@ class DiagnoseRenderSnapshot:
     Attributes:
         recent_window (DiagnoseRenderWindowSnapshot):
         latest_frame (DiagnoseLatestFrameSnapshot | None | Unset):
+        output_demand (RenderOutputDemandStatus | Unset): Output demand: what consumes the render loop's frames.
+
+            The render loop renders only while something consumes its output: a
+            connected device, a display, a preview or canvas stream, a capture, or
+            an explicit demand hold. With none of those it parks, renders nothing,
+            and resumes at its full tier the moment a consumer appears.
     """
 
     recent_window: DiagnoseRenderWindowSnapshot
     latest_frame: DiagnoseLatestFrameSnapshot | None | Unset = UNSET
+    output_demand: RenderOutputDemandStatus | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -44,6 +52,10 @@ class DiagnoseRenderSnapshot:
         else:
             latest_frame = self.latest_frame
 
+        output_demand: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.output_demand, Unset):
+            output_demand = self.output_demand.to_dict()
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -53,6 +65,8 @@ class DiagnoseRenderSnapshot:
         )
         if latest_frame is not UNSET:
             field_dict["latest_frame"] = latest_frame
+        if output_demand is not UNSET:
+            field_dict["output_demand"] = output_demand
 
         return field_dict
 
@@ -63,6 +77,9 @@ class DiagnoseRenderSnapshot:
         )
         from ..models.diagnose_render_window_snapshot import (
             DiagnoseRenderWindowSnapshot,
+        )
+        from ..models.render_output_demand_status import (
+            RenderOutputDemandStatus,
         )
 
         d = dict(src_dict)
@@ -87,9 +104,17 @@ class DiagnoseRenderSnapshot:
 
         latest_frame = _parse_latest_frame(d.pop("latest_frame", UNSET))
 
+        _output_demand = d.pop("output_demand", UNSET)
+        output_demand: RenderOutputDemandStatus | Unset
+        if isinstance(_output_demand, Unset):
+            output_demand = UNSET
+        else:
+            output_demand = RenderOutputDemandStatus.from_dict(_output_demand)
+
         diagnose_render_snapshot = cls(
             recent_window=recent_window,
             latest_frame=latest_frame,
+            output_demand=output_demand,
         )
 
         diagnose_render_snapshot.additional_properties = d
