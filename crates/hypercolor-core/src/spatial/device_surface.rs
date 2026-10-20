@@ -8,10 +8,12 @@
 //!
 //! A device with several LED outputs, such as a controller with separate pad
 //! and strip segments, is placed per segment: a touch that names the segment
-//! it landed on resolves through the output bound to that segment.
+//! it landed on resolves through the output bound to that segment, matched
+//! the way LED routing binds an output's segment name to the device.
 
 use std::sync::Arc;
 
+use hypercolor_types::attachment::channel_name_matches_slot_alias;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, SpatialLayout, StripDirection,
@@ -24,12 +26,14 @@ use super::sampler::{OutputPlacement, resolve_edge_behavior};
 ///
 /// A touch that names no segment resolves through the device's only LED
 /// output in the layout. A touch that names a segment resolves through the
-/// one LED output bound to that segment, or, when the device has a single
-/// output that names no segment, through that output, which stands for the
-/// whole device. Anything else gets no placement, and the contact carries
-/// only its surface position: the layout says nothing about where that
-/// surface sits on this canvas, or says several things, so there is no
-/// single canvas point to report.
+/// one LED output bound to that segment: the output whose segment name
+/// matches exactly, or else the only one whose name matches it the way LED
+/// routing does, ignoring case and slug punctuation. Anything else gets no
+/// placement, and the contact carries only its surface position: the layout
+/// says nothing about where that surface sits on this canvas, or says
+/// several things, so there is no single canvas point to report. An output
+/// that names no segment does not stand in for a named one, because its LED
+/// order follows the whole device rather than the touched segment.
 ///
 /// Cloning is cheap; the placements are shared.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -45,8 +49,6 @@ struct DeviceSurface {
     segment: Option<Arc<str>>,
     /// Whether this is the device's only LED output in the layout.
     sole: bool,
-    /// Whether the output names no segment at all.
-    whole_device: bool,
     placement: OutputPlacement,
     frame: SurfaceFrame,
     edge: EdgeBehavior,
@@ -91,7 +93,6 @@ impl DeviceSurfaceMap {
                     device_id,
                     segment: segment.map(Arc::from),
                     sole,
-                    whole_device: output.zone_name.is_none(),
                     placement: OutputPlacement::of(output),
                     frame: SurfaceFrame::of(&output.topology),
                     edge: resolve_edge_behavior(output, layout),
@@ -144,25 +145,24 @@ impl DeviceSurfaceMap {
     }
 
     fn surface(&self, device_id: DeviceId, segment: Option<&str>) -> Option<&DeviceSurface> {
-        let mut surfaces = self
-            .surfaces
-            .iter()
-            .filter(|surface| surface.device_id == device_id);
-        match segment {
-            None => surfaces.find(|surface| surface.sole),
-            Some(segment) => {
-                let mut whole_device = None;
-                for surface in surfaces {
-                    if surface.segment.as_deref() == Some(segment) {
-                        return Some(surface);
-                    }
-                    if surface.sole && surface.whole_device {
-                        whole_device = Some(surface);
-                    }
-                }
-                whole_device
-            }
+        let surfaces = || {
+            self.surfaces
+                .iter()
+                .filter(move |surface| surface.device_id == device_id)
+        };
+        let Some(segment) = segment else {
+            return surfaces().find(|surface| surface.sole);
+        };
+        if let Some(exact) = surfaces().find(|surface| surface.segment.as_deref() == Some(segment))
+        {
+            return Some(exact);
         }
+        let mut aliased = surfaces().filter(|surface| {
+            surface.segment.is_some()
+                && channel_name_matches_slot_alias(surface.segment.as_deref(), Some(segment))
+        });
+        let alias = aliased.next()?;
+        aliased.next().is_none().then_some(alias)
     }
 
     /// Whether any surface of `device_id` has a placement in this map.

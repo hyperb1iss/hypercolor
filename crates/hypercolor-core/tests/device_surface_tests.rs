@@ -452,22 +452,23 @@ fn a_segment_placed_twice_is_ambiguous_and_unplaced() {
 }
 
 #[test]
-fn a_named_touch_lands_on_a_sole_output_that_covers_the_whole_device() {
+fn a_named_touch_lands_only_on_the_output_bound_to_its_segment() {
     let device = DeviceId::new();
+    // An output naming no segment follows the whole device's LED order, not
+    // the touched segment's, so it is not where a named touch landed.
     let whole = layout(vec![output(
         "pad",
         "blocks:lightpad",
         matrix(15, 15, Corner::TopLeft),
     )]);
     let surfaces = DeviceSurfaceMap::from_layout(&whole, single_device(device));
-    assert_close(
-        surfaces
-            .segment_canvas_position(device, Some("Pads"), 0.25, 0.75)
-            .expect("the whole-device output stands for every segment"),
-        NormalizedPosition::new(0.25, 0.75),
+    assert_eq!(
+        surfaces.segment_canvas_position(device, Some("Pads"), 0.25, 0.75),
+        None
     );
+    assert!(surfaces.canvas_position(device, 0.25, 0.75).is_some());
 
-    // A sole output bound to another segment is not where this touch landed.
+    // Nor is a sole output bound to another segment.
     let other = layout(vec![segment_output(
         "strip",
         "Touch Strip",
@@ -485,4 +486,65 @@ fn a_named_touch_lands_on_a_sole_output_that_covers_the_whole_device() {
             .is_some()
     );
     assert!(surfaces.canvas_position(device, 0.5, 0.5).is_some());
+}
+
+#[test]
+fn segment_names_match_the_way_led_routing_matches_them() {
+    let device = DeviceId::new();
+    // A hand-written layout spells the segments the way routing tolerates.
+    let tolerant = layout(vec![
+        segment_output("pads", "pads", matrix(8, 8, Corner::BottomLeft)),
+        segment_output(
+            "strip",
+            "touch-strip",
+            strip(31, StripDirection::BottomToTop),
+        ),
+    ]);
+    let surfaces = DeviceSurfaceMap::from_layout(&tolerant, single_device(device));
+
+    assert_eq!(
+        surfaces.segment_canvas_position(device, Some("Pads"), 0.0, 0.0),
+        surfaces.segment_canvas_position(device, Some("pads"), 0.0, 0.0)
+    );
+    assert!(
+        surfaces
+            .segment_canvas_position(device, Some("Pads"), 0.0, 0.0)
+            .is_some()
+    );
+    assert!(
+        surfaces
+            .segment_canvas_position(device, Some("Touch Strip"), 0.5, 0.5)
+            .is_some()
+    );
+
+    // An exact name wins over an alias, and two aliases are ambiguous.
+    let crowded = layout(vec![
+        segment_output("exact", "Pads", matrix(8, 8, Corner::TopLeft)),
+        Output {
+            position: NormalizedPosition::new(0.1, 0.1),
+            size: NormalizedPosition::new(0.1, 0.1),
+            ..segment_output("alias", "pads", matrix(8, 8, Corner::TopLeft))
+        },
+        segment_output(
+            "left",
+            "Touch-Strip",
+            strip(31, StripDirection::BottomToTop),
+        ),
+        segment_output(
+            "right",
+            "touch strip",
+            strip(31, StripDirection::BottomToTop),
+        ),
+    ]);
+    let surfaces = DeviceSurfaceMap::from_layout(&crowded, single_device(device));
+    assert_close(
+        surfaces
+            .segment_canvas_position(device, Some("Pads"), 0.0, 0.0)
+            .expect("the exact segment is placed"),
+        NormalizedPosition::new(0.0, 0.0),
+    );
+    assert_eq!(
+        surfaces.segment_canvas_position(device, Some("Touch Strip"), 0.5, 0.5),
+        None
+    );
 }
