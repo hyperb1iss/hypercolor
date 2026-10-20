@@ -686,7 +686,10 @@ fn decode_reassembled_preview(
     publication: ReassembledPreviewBuffer,
 ) -> Option<PreviewBinaryMessage> {
     let ReassembledPreviewBuffer { metadata, encoded } = publication;
-    let decoded = decode_direct_preview(encoded)?;
+    let Some(decoded) = decode_direct_preview(encoded) else {
+        log::warn!("rejected reassembled preview publication: frame does not decode");
+        return None;
+    };
     if !preview_metadata_matches(&decoded, &metadata) {
         log::warn!("reassembled preview does not match its chunk metadata");
         return None;
