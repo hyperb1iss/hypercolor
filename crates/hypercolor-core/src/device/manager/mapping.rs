@@ -148,6 +148,16 @@ impl BackendManager {
         self.device_map.len()
     }
 
+    /// Every routed physical device as `(backend_id, device_id)`.
+    ///
+    /// A device bound under several layout ids appears once per binding;
+    /// callers that count devices deduplicate.
+    pub fn mapped_device_targets(&self) -> impl Iterator<Item = (&str, DeviceId)> + '_ {
+        self.device_map
+            .values()
+            .map(|mapping| (mapping.backend_id.as_str(), mapping.device_id))
+    }
+
     /// Each spatial layout `device_id` with the physical device it routes to.
     ///
     /// Anything derived from these bindings stays valid until

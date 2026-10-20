@@ -9,12 +9,17 @@
 //! - **Canvas previews** — latest render and screen-source canvases via `tokio::sync::watch`.
 //! - **Authoritative scene canvases** — latest full-scene display surface for non-preview consumers.
 //! - **Per-zone canvases** — latest render-zone canvases via per-zone `tokio::sync::watch`.
+//! - **Output demand**: [`OutputDemandSignal`] wakes a producer that idles while
+//!   nothing consumes its output, whenever a lane gains a receiver, a demand hold is
+//!   taken, or an event is published.
 //!
 //! The bus is `Send + Sync` and cloneable. Channel operations are lock-free;
 //! low-frequency status-event deduplication uses a short critical section.
 
+mod demand;
 mod filter;
 
+pub use demand::{OutputDemandHold, OutputDemandSignal};
 pub use filter::{EventFilter, FilteredEventReceiver};
 
 use std::collections::HashMap;
@@ -632,24 +637,41 @@ pub struct WatchLane<T> {
     sender: watch::Sender<T>,
     published: AtomicU64,
     revision: AtomicU64,
+    demand: Arc<OutputDemandSignal>,
 }
 
 impl<T> WatchLane<T> {
     /// Create a lane with its initial latest value.
     #[must_use]
     pub fn new(initial: T) -> Self {
+        Self::with_demand_signal(initial, Arc::default())
+    }
+
+    fn with_demand_signal(initial: T, demand: Arc<OutputDemandSignal>) -> Self {
         let (sender, _) = watch::channel(initial);
         Self {
             sender,
             published: AtomicU64::new(0),
             revision: AtomicU64::new(0),
+            demand,
         }
     }
 
     /// Subscribe to the latest value.
+    ///
+    /// A new receiver is new output demand, so subscribing notifies the
+    /// lane's [`OutputDemandSignal`].
     #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<T> {
-        self.sender.subscribe()
+        let receiver = self.sender.subscribe();
+        self.demand.notify();
+        receiver
+    }
+
+    /// Number of live receivers.
+    #[must_use]
+    pub fn receiver_count(&self) -> usize {
+        self.sender.receiver_count()
     }
 
     /// Borrow the latest published value.
@@ -739,14 +761,35 @@ pub struct BusLanes {
 }
 
 impl BusLanes {
-    fn new() -> Self {
+    fn new(demand: &Arc<OutputDemandSignal>) -> Self {
         Self {
-            frame: WatchLane::new(FrameData::empty()),
-            spectrum: WatchLane::new(SpectrumData::empty()),
-            previews: std::array::from_fn(|_| WatchLane::new(CanvasFrame::empty())),
-            screen_zones: WatchLane::new(ScreenZonesFrame::default()),
-            zone_preview: WatchLane::new(Arc::from([])),
+            frame: WatchLane::with_demand_signal(FrameData::empty(), Arc::clone(demand)),
+            spectrum: WatchLane::with_demand_signal(SpectrumData::empty(), Arc::clone(demand)),
+            previews: std::array::from_fn(|_| {
+                WatchLane::with_demand_signal(CanvasFrame::empty(), Arc::clone(demand))
+            }),
+            screen_zones: WatchLane::with_demand_signal(
+                ScreenZonesFrame::default(),
+                Arc::clone(demand),
+            ),
+            zone_preview: WatchLane::with_demand_signal(Arc::from([]), Arc::clone(demand)),
         }
+    }
+
+    /// Live receivers across every fixed lane.
+    #[must_use]
+    pub fn receiver_count(&self) -> usize {
+        self.frame
+            .receiver_count()
+            .saturating_add(self.spectrum.receiver_count())
+            .saturating_add(
+                self.previews
+                    .iter()
+                    .map(WatchLane::receiver_count)
+                    .fold(0, usize::saturating_add),
+            )
+            .saturating_add(self.screen_zones.receiver_count())
+            .saturating_add(self.zone_preview.receiver_count())
     }
 
     #[must_use]
@@ -812,6 +855,9 @@ pub struct HypercolorBus {
     /// Display-output-authored final display surface metadata keyed by zone id.
     display_zone_output_routes: Arc<Mutex<DisplayZoneOutputRouteRegistry>>,
 
+    /// Notified when output demand appears or observable state changes.
+    output_demand: Arc<OutputDemandSignal>,
+
     /// Clock every event publication is stamped against.
     clock: PublicationClock,
 }
@@ -831,15 +877,17 @@ impl HypercolorBus {
     #[must_use]
     pub fn with_clock(clock: PublicationClock) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+        let output_demand = Arc::new(OutputDemandSignal::default());
         Self {
             events,
             input_status_events: Arc::new(Mutex::new(HashMap::new())),
-            lanes: Arc::new(BusLanes::new()),
+            lanes: Arc::new(BusLanes::new(&output_demand)),
             zone_canvases: Arc::new(Mutex::new(HashMap::new())),
             display_zone_targets: Arc::new(Mutex::new(DisplayZoneTargetRegistry::default())),
             display_zone_output_routes: Arc::new(Mutex::new(
                 DisplayZoneOutputRouteRegistry::default(),
             )),
+            output_demand,
             clock,
         }
     }
@@ -868,6 +916,9 @@ impl HypercolorBus {
         };
         // Ignore send errors -- they mean no subscribers exist.
         let _ = self.events.send(timestamped);
+        // Discrete events mark state changes an idle producer may need to
+        // render before anyone asks for a frame.
+        self.output_demand.notify();
     }
 
     /// Publish a source-health transition when its operational state changed.
@@ -1126,7 +1177,44 @@ impl HypercolorBus {
     /// Subscribe to a zone's canvas updates.
     #[must_use]
     pub fn zone_canvas_receiver(&self, id: ZoneId) -> watch::Receiver<DisplayZoneFrame> {
-        self.zone_canvas_sender(id).subscribe()
+        let receiver = self.zone_canvas_sender(id).subscribe();
+        self.output_demand.notify();
+        receiver
+    }
+
+    /// Live receivers across every per-zone canvas stream.
+    #[must_use]
+    pub fn zone_canvas_receiver_count(&self) -> usize {
+        self.zone_canvases
+            .lock()
+            .expect("zone canvas registry should not be poisoned")
+            .values()
+            .map(watch::Sender::receiver_count)
+            .fold(0, usize::saturating_add)
+    }
+
+    // ── Output demand ────────────────────────────────────────────────
+
+    /// The signal notified by lane subscriptions, demand holds, and event
+    /// publication.
+    #[must_use]
+    pub fn output_demand(&self) -> &OutputDemandSignal {
+        &self.output_demand
+    }
+
+    /// Register output demand for a consumer that reads published frames
+    /// without holding a lane receiver.
+    pub fn hold_output_demand(&self) -> OutputDemandHold {
+        self.output_demand.acquire_hold()
+    }
+
+    /// Live receivers on every latest-value output stream: the fixed lanes
+    /// and the per-zone canvas streams.
+    #[must_use]
+    pub fn output_receiver_count(&self) -> usize {
+        self.lanes
+            .receiver_count()
+            .saturating_add(self.zone_canvas_receiver_count())
     }
 
     /// Number of tracked per-zone canvas streams.
