@@ -713,9 +713,16 @@ impl WsManager {
 
         connect.set_value(Some(connect_fn));
 
-        // Preview subscription effect — reacts to FPS cap / visibility changes
+        // Preview subscription effect — reacts to FPS cap / visibility changes.
+        //
+        // Every preview effect waits for `Connected`. A socket that is still
+        // opening rejects sends, and a request recorded as sent but never
+        // delivered would match every later rerun and never be retried,
+        // leaving the stream dark after a reconnect. The connect and close
+        // paths clear the recorded requests, and the move to `Connected`
+        // reruns these effects against the open socket.
         Effect::new(move |_| {
-            if !frame_topics {
+            if !frame_topics || connection_state.get() != ConnectionState::Connected {
                 return;
             }
             let engine_target = engine_preview_target.get();
@@ -726,8 +733,8 @@ impl WsManager {
             let window_visible = app_window_visible.get();
             if !should_stream_preview(is_visible, window_visible, engine_target, consumer_count) {
                 // Only a requested stream has anything to unsubscribe. The
-                // effect reruns on every engine target report, so an
-                // unguarded branch resent the unsubscribe twice a second.
+                // effect reruns on every engine target report, about twice
+                // a second, and each rerun would otherwise send another.
                 if requested_preview.get_value().is_some()
                     && let Some(ws) = ws_handle.get_value()
                 {
@@ -756,7 +763,7 @@ impl WsManager {
         });
 
         Effect::new(move |_| {
-            if !frame_topics {
+            if !frame_topics || connection_state.get() != ConnectionState::Connected {
                 return;
             }
             let engine_target = engine_preview_target.get();
@@ -811,7 +818,7 @@ impl WsManager {
         });
 
         Effect::new(move |_| {
-            if !frame_topics {
+            if !frame_topics || connection_state.get() != ConnectionState::Connected {
                 return;
             }
             let engine_target = engine_preview_target.get();
