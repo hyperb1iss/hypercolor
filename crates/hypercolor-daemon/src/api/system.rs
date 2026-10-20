@@ -158,6 +158,8 @@ async fn system_status_with_privacy(
         )
     };
 
+    let output_demand = performance.output_demand.status();
+
     // Query the live render loop for timing data.
     let render_loop_status = {
         let rl = state.render_loop.read().await;
@@ -170,20 +172,23 @@ async fn system_status_with_privacy(
         } else {
             0.0
         };
+        // A parked loop delivers no frames; `output_demand` says why.
+        let delivering = snapshot.state == RenderLoopState::Running && !output_demand.parked;
         RenderLoopStatus {
             state: snapshot.state.to_string(),
             fps_tier: snapshot.tier.to_string(),
             target_fps: snapshot.tier.fps(),
             ceiling_fps: snapshot.max_tier.fps(),
             capacity_fps,
-            delivered_fps: if snapshot.state == RenderLoopState::Running {
+            delivered_fps: if delivering {
                 round_1(performance.delivered_fps)
             } else {
                 0.0
             },
-            actual_fps: capacity_fps,
+            actual_fps: if delivering { capacity_fps } else { 0.0 },
             consecutive_misses: snapshot.consecutive_misses,
             total_frames: snapshot.total_frames,
+            output_demand,
         }
     };
     let running = render_loop_is_operational(render_loop_status.state.as_str());

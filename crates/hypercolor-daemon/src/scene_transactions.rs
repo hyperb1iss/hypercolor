@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use thiserror::Error;
-use tokio::sync::{Mutex, OwnedMutexGuard, oneshot};
+use tokio::sync::futures::Notified;
+use tokio::sync::{Mutex, Notify, OwnedMutexGuard, oneshot};
 
 use hypercolor_core::spatial::{SpatialEngine, SpatialPlanError};
 use hypercolor_types::scene::{SceneId, UnassignedBehavior, Zone};
@@ -320,6 +321,9 @@ struct SceneTransactionQueueState {
 #[derive(Clone)]
 pub struct SceneTransactionQueue {
     inner: Arc<StdMutex<SceneTransactionQueueState>>,
+    /// Wakes a render loop that parked because nothing consumed its frames;
+    /// a queued transaction has a caller waiting on it.
+    queued: Arc<Notify>,
     scene_activation_lock: Arc<Mutex<()>>,
     layout_update_lock: Arc<Mutex<()>>,
 }
@@ -575,6 +579,7 @@ impl SceneTransactionQueue {
     pub fn new() -> Self {
         Self {
             inner: Arc::default(),
+            queued: Arc::default(),
             scene_activation_lock: Arc::default(),
             layout_update_lock: Arc::default(),
         }
@@ -592,7 +597,18 @@ impl SceneTransactionQueue {
             return Err(LayoutTransactionRejection::RendererStopped);
         }
         state.pending.push_back(transaction);
+        drop(state);
+        self.queued.notify_waiters();
         Ok(())
+    }
+
+    /// Future that resolves the next time a transaction is queued.
+    ///
+    /// Pin it and call [`Notified::enable`] before checking
+    /// [`Self::has_pending`], so a push that lands between the check and the
+    /// await still wakes the waiter.
+    pub(crate) fn queued(&self) -> Notified<'_> {
+        self.queued.notified()
     }
 
     fn submit_layout_preparation(

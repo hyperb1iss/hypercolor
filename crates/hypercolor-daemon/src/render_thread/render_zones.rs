@@ -349,6 +349,16 @@ impl ZoneRuntime {
         Ok(runtime)
     }
 
+    /// Park every effect producer while the render loop requests no frames.
+    pub(crate) fn park_producers(&mut self) {
+        self.effect_pool.park();
+    }
+
+    /// Whether any effect producer has not yet shown its current content.
+    pub(crate) fn producers_warming(&self) -> bool {
+        self.effect_pool.any_warming()
+    }
+
     pub(crate) fn drain_layer_runtime_events(&mut self) -> Vec<HypercolorEvent> {
         self.layer_runtime.drain_events()
     }

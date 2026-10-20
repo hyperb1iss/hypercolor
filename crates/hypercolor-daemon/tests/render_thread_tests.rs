@@ -5871,6 +5871,11 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
     state.discovery_runtime = Some(discovery_runtime.clone());
 
     let mut event_rx = event_bus.subscribe_all();
+    // The disconnect unmaps the only device, which would leave nothing
+    // consuming frames and park the loop. A frame subscriber keeps output
+    // demand alive, so the frames below prove the loop is not blocked on
+    // the disconnect I/O rather than that it parked.
+    let _frame_consumer = event_bus.frame_receiver();
     {
         let mut rl = state.render_loop.write().await;
         rl.start();

@@ -22,6 +22,7 @@ use tracing::{debug, info, warn};
 
 use hypercolor_core::bus::{
     CanvasFrame, DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneViewport, HypercolorBus,
+    OutputDemandHold,
 };
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::is_display_zone;
@@ -394,6 +395,12 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
     .await;
     let mut scene_canvas_rx = display_requires_scene_canvas(initial_targets.targets.as_ref())
         .then(|| state.preview_runtime.scene_canvas_receiver());
+    let mut output_demand_hold = None;
+    sync_output_demand_hold(
+        &mut output_demand_hold,
+        &state.event_bus,
+        !initial_targets.targets.is_empty(),
+    );
     reconcile_display_workers(&state, &mut workers, initial_targets.targets.as_ref()).await;
     let mut last_reconciled_target_version = Some(initial_targets.version);
     let mut last_dispatched_sources =
@@ -449,6 +456,11 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
             &mut scene_canvas_rx,
             state.preview_runtime.as_ref(),
             display_requires_scene_canvas(targets.targets.as_ref()),
+        );
+        sync_output_demand_hold(
+            &mut output_demand_hold,
+            &state.event_bus,
+            !targets.targets.is_empty(),
         );
         if targets.targets.is_empty() {
             last_dispatched_sources.clear();
@@ -593,6 +605,26 @@ fn sync_display_canvas_receiver(
         }
     } else {
         let _ = receiver.take();
+    }
+}
+
+/// Hold render output demand while any display target exists.
+///
+/// A face rendered straight to its zone is read from the zone's canvas
+/// sender, not through a receiver, so the render loop would not count it as
+/// a consumer. Physical displays are already counted as devices; this hold
+/// is what keeps a previewed simulated display rendering.
+fn sync_output_demand_hold(
+    hold: &mut Option<OutputDemandHold>,
+    event_bus: &HypercolorBus,
+    has_targets: bool,
+) {
+    if has_targets {
+        if hold.is_none() {
+            *hold = Some(event_bus.hold_output_demand());
+        }
+    } else {
+        let _ = hold.take();
     }
 }
 

@@ -59,6 +59,10 @@ pub struct DiagnoseSnapshot {
 pub struct DiagnoseRenderSnapshot {
     pub latest_frame: Option<DiagnoseLatestFrameSnapshot>,
     pub recent_window: DiagnoseRenderWindowSnapshot,
+    /// What consumes rendered frames, and whether the loop parked because
+    /// nothing does. Absent from older daemons.
+    #[serde(default)]
+    pub output_demand: crate::api::system::RenderOutputDemandStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]

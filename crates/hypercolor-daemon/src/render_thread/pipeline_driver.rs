@@ -5,10 +5,11 @@ use tracing::{debug, info};
 use crate::deadline::wait_until_deadline;
 use hypercolor_core::engine::RenderLoopState;
 
-use super::RenderThreadState;
 use super::frame_executor::{execute_frame, service_scene_transactions};
 use super::frame_policy::SkipDecision;
+use super::output_gate::{RenderWakeReason, wait_for_output_demand};
 use super::pipeline_runtime::PipelineRuntime;
+use super::{RenderThreadState, u64_to_u32};
 
 pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: PipelineRuntime) {
     info!(
@@ -54,11 +55,51 @@ pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: Pipeline
             runtime.frame_loop.clock.rebase(scheduled_start);
         }
         let frame = execute_frame(&state, &mut runtime, scheduled_start, skip_decision).await;
+        if frame.parks() {
+            let reason = wait_for_output_demand(&state, &mut runtime.frame_loop).await;
+            resume_from_park(&state, &mut runtime, reason).await;
+            skip_decision = SkipDecision::None;
+            next_frame_at = Instant::now();
+            continue;
+        }
         skip_decision = frame.next_skip_decision;
         next_frame_at = frame.resolve_deadline(scheduled_start, Instant::now());
     }
 
     info!("render pipeline exited");
+}
+
+/// Pick the loop back up after a park without a jump in effect time.
+///
+/// Effects advance by the frame clock's delta, so the clock restarts one
+/// target interval back: the first frame after the wake steps effect time
+/// forward by exactly one frame instead of by the whole parked span, and no
+/// catch-up frames follow. Capture freshness skips the wake frame itself,
+/// whose asynchronous producers still show output requested before the
+/// park.
+async fn resume_from_park(
+    state: &RenderThreadState,
+    runtime: &mut PipelineRuntime,
+    reason: RenderWakeReason,
+) {
+    let now = Instant::now();
+    let (interval, resume_frame) = {
+        let render_loop = state.render_loop.read().await;
+        (render_loop.target_interval(), render_loop.frame_number())
+    };
+    runtime
+        .frame_loop
+        .clock
+        .rebase(now.checked_sub(interval).unwrap_or(now));
+    state
+        .preview_runtime
+        .note_render_resume(u64_to_u32(resume_frame));
+    state
+        .performance
+        .write()
+        .await
+        .note_output_woken(reason.as_str());
+    debug!(reason = reason.as_str(), "Render loop woke from a park");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

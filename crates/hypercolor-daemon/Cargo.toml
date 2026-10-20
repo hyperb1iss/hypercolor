@@ -44,6 +44,10 @@ name = "render_thread_tests"
 required-features = ["persistence-test-hooks"]
 
 [[test]]
+name = "output_demand_tests"
+required-features = ["persistence-test-hooks"]
+
+[[test]]
 name = "simulator_tests"
 required-features = ["persistence-test-hooks"]
 

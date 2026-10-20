@@ -361,16 +361,40 @@ fn render_checks(inputs: &DiagnosticsInputs) -> Vec<DiagnoseCheck> {
     let render_elapsed_ms = inputs.render_elapsed_ms();
     let running = inputs.render_loop.running;
     let render_loop_stats = inputs.render_loop.stats;
+    let parked = performance.output_demand.parked_since.is_some();
     let mut checks = vec![DiagnoseCheck {
         category: "render".to_owned(),
         name: "render_loop".to_owned(),
         status: if running { "pass" } else { "warning" }.to_owned(),
-        detail: format!(
-            "state={}, tier={}",
-            render_loop_stats.state, render_loop_stats.tier
-        ),
+        detail: if parked {
+            format!(
+                "state={}, tier={}, parked={}",
+                render_loop_stats.state,
+                render_loop_stats.tier,
+                crate::output_demand::IDLE_REASON_NO_OUTPUT_CONSUMERS
+            )
+        } else {
+            format!(
+                "state={}, tier={}",
+                render_loop_stats.state, render_loop_stats.tier
+            )
+        },
     }];
     if !running {
+        return checks;
+    }
+    if parked {
+        // A parked loop renders nothing by design, so frame age and LED
+        // freshness describe the last frame before the park, not a stall.
+        checks.push(DiagnoseCheck {
+            category: "render".to_owned(),
+            name: "frame_liveness".to_owned(),
+            status: "pass".to_owned(),
+            detail: format!(
+                "parked: nothing consumes rendered frames (no output devices, streams, or captures); the next consumer resumes rendering at the full tier. parks_total={}",
+                performance.output_demand.parks_total
+            ),
+        });
         return checks;
     }
 
@@ -738,6 +762,7 @@ fn build_render_snapshot(
 ) -> DiagnoseRenderSnapshot {
     let pacing = performance.pacing;
     DiagnoseRenderSnapshot {
+        output_demand: performance.output_demand.status(),
         latest_frame: performance
             .latest_frame
             .as_ref()

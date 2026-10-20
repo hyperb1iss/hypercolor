@@ -208,6 +208,7 @@ async fn get_status_maps_the_system_response_without_an_active_effect_call() {
                         actual_fps: 59.8,
                         consecutive_misses: 0,
                         total_frames: 12_000,
+                        ..RenderLoopStatus::default()
                     },
                     ..SystemStatus::default()
                 })

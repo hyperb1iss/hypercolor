@@ -173,7 +173,7 @@ pub async fn capture_canvas(
         if index > 0 && !request.interval.is_zero() {
             tokio::time::sleep(request.interval).await;
         }
-        let (frame, fresh) = next_frame(&mut receiver).await;
+        let (frame, fresh) = next_frame(preview, &mut receiver).await;
         if frame.width == 0 || frame.height == 0 {
             return Err(DomainError::service_unavailable(
                 "No canvas frame has been rendered yet; apply an effect and capture again",
@@ -190,13 +190,28 @@ pub async fn capture_canvas(
 /// Take the next frame the receiver has not seen yet, waiting for one when
 /// necessary, and fall back to the latest published frame when none arrives
 /// in time.
-async fn next_frame(receiver: &mut PreviewFrameReceiver) -> (CanvasFrame, bool) {
-    let fresh = matches!(
-        tokio::time::timeout(FRESH_FRAME_TIMEOUT, receiver.changed()).await,
-        Ok(Ok(()))
-    );
-    let frame = receiver.borrow_and_update().clone();
-    (frame, fresh)
+///
+/// A capture of an idle daemon wakes a parked render loop. The first frame
+/// after that wake still composes producer output requested before the
+/// park, so the capture waits for the frame after it, which is rendered
+/// from the capture's own request.
+async fn next_frame(
+    preview: &PreviewRuntime,
+    receiver: &mut PreviewFrameReceiver,
+) -> (CanvasFrame, bool) {
+    let deadline = tokio::time::Instant::now() + FRESH_FRAME_TIMEOUT;
+    let mut published = false;
+    loop {
+        let changed = tokio::time::timeout_at(deadline, receiver.changed()).await;
+        let frame = receiver.borrow_and_update().clone();
+        if !matches!(changed, Ok(Ok(()))) {
+            return (frame, published);
+        }
+        published = true;
+        if !preview.is_render_resume_frame(frame.frame_number) {
+            return (frame, true);
+        }
+    }
 }
 
 async fn encode(

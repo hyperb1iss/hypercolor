@@ -3,6 +3,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use crate::output_demand::OutputDemandTelemetry;
+
 const FRAME_HISTORY_CAPACITY: usize = 120;
 const LATENCY_BUCKET_WIDTH_US: u32 = 100;
 const LATENCY_BUCKET_COUNT: usize = 4096;
@@ -306,6 +308,7 @@ pub(crate) struct PerformanceSnapshot {
     pub full_frame_copy_count_total: u64,
     pub full_frame_copy_frames_total: u64,
     pub full_frame_copy_bytes_total: u64,
+    pub output_demand: OutputDemandTelemetry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,11 +430,55 @@ pub struct PerformanceTracker {
     full_frame_copy_count_total: u64,
     full_frame_copy_frames_total: u64,
     full_frame_copy_bytes_total: u64,
+    output_demand: OutputDemandTelemetry,
 }
 
 impl PerformanceTracker {
+    /// Record that the render loop parked because nothing consumes its
+    /// frames.
+    ///
+    /// A loop that wakes and parks again without rendering stays in the
+    /// same park, so only the first call of a park counts it. The interval
+    /// history is dropped because a parked loop delivers nothing: delivered
+    /// FPS then reads zero, and the parked gap stays out of the first
+    /// interval measured after the loop resumes.
+    ///
+    /// Returns whether this call began a new park.
+    pub(crate) fn note_output_parked(&mut self, at: Instant) -> bool {
+        self.frame_intervals_us.clear();
+        self.last_frame_recorded_at = None;
+        if self.output_demand.parked_since.is_some() {
+            return false;
+        }
+        self.output_demand.parked_since = Some(at);
+        self.output_demand.parks_total = self.output_demand.parks_total.saturating_add(1);
+        true
+    }
+
+    /// Record what woke a parked loop. The park ends with the next
+    /// recorded frame.
+    pub(crate) fn note_output_woken(&mut self, reason: &'static str) {
+        self.output_demand.last_wake_reason = Some(reason);
+    }
+
+    /// Record the consumers the render loop counted at its latest
+    /// evaluation.
+    pub(crate) fn note_output_consumers(
+        &mut self,
+        consumers: crate::output_demand::OutputConsumers,
+    ) {
+        self.output_demand.consumers = consumers;
+    }
+
+    /// Park state the render thread last recorded.
+    #[must_use]
+    pub fn output_demand_telemetry(&self) -> OutputDemandTelemetry {
+        self.output_demand
+    }
+
     /// Record one completed frame.
     pub(crate) fn record_frame(&mut self, metrics: &LatestFrameMetrics) {
+        self.output_demand.parked_since = None;
         let recorded_at = Instant::now();
         if let Some(previous) = self.last_frame_recorded_at.replace(recorded_at) {
             self.frame_intervals_us.push_back(duration_micros_u64(
@@ -550,6 +597,7 @@ impl PerformanceTracker {
             full_frame_copy_count_total: self.full_frame_copy_count_total,
             full_frame_copy_frames_total: self.full_frame_copy_frames_total,
             full_frame_copy_bytes_total: self.full_frame_copy_bytes_total,
+            output_demand: self.output_demand,
         }
     }
 

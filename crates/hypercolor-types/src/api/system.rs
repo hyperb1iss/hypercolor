@@ -323,6 +323,48 @@ pub struct RenderLoopStatus {
     pub actual_fps: f64,
     pub consecutive_misses: u32,
     pub total_frames: u64,
+    /// Whether anything consumes rendered frames, and why the loop parked
+    /// when nothing does. Absent from older daemons.
+    #[serde(default)]
+    pub output_demand: RenderOutputDemandStatus,
+}
+
+/// Output demand: what consumes the render loop's frames.
+///
+/// The render loop renders only while something consumes its output: a
+/// connected device, a display, a preview or canvas stream, a capture, or
+/// an explicit demand hold. With none of those it parks, renders nothing,
+/// and resumes at its full tier the moment a consumer appears.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct RenderOutputDemandStatus {
+    /// Whether the render loop is parked because nothing consumes its frames.
+    pub parked: bool,
+    /// Why the render loop is producing no frames, when it is parked.
+    /// `no_output_consumers` while parked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_reason: Option<String>,
+    /// How long the loop has been parked, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_ms: Option<u64>,
+    /// Connected devices that receive frames. Simulated displays count only
+    /// while previewed, through `demand_holds`.
+    pub output_devices: u32,
+    /// Live receivers on the frame, canvas, preview, spectrum, and per-zone
+    /// canvas streams, including in-flight canvas captures.
+    pub stream_receivers: u32,
+    /// Stream and diagnostic consumers of host input events, which the
+    /// render loop republishes.
+    pub input_event_streams: u32,
+    /// Explicit demand holds, such as display output for previewed
+    /// simulated displays.
+    pub demand_holds: u32,
+    /// How many times the loop has parked since the daemon started.
+    pub parks_total: u64,
+    /// What last woke the loop from a park: `output_consumer`,
+    /// `scene_transaction`, `producer_state`, or `render_loop_state`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_wake_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

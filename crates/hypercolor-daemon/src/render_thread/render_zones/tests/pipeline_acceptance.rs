@@ -50,6 +50,10 @@ struct SteppedPipeline {
     state: RenderThreadState,
     /// Boxed so the futures that hold the pipeline stay small.
     runtime: Box<PipelineRuntime>,
+    /// The harness reads each published frame off the frame lane without a
+    /// receiver, so it holds output demand to keep the pipeline rendering
+    /// whether or not a case attaches a device.
+    _output_demand: hypercolor_core::bus::OutputDemandHold,
 }
 
 impl SteppedPipeline {
@@ -101,7 +105,12 @@ impl SteppedPipeline {
             .await
             .expect("test scenes should commit");
         state.render_loop.write().await.start();
-        Some(Self { state, runtime })
+        let output_demand = state.event_bus.hold_output_demand();
+        Some(Self {
+            state,
+            runtime,
+            _output_demand: output_demand,
+        })
     }
 
     async fn activate(&self, scene_id: SceneId) {

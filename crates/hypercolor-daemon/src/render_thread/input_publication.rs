@@ -729,6 +729,25 @@ impl InputPublicationDemandHandle {
         self.snapshot().registration_count(consumer)
     }
 
+    /// Count live stream and diagnostic registrations that request `source`.
+    ///
+    /// These consumers render nothing themselves; they read what the
+    /// authoritative renderer republishes from that source, such as host
+    /// input events, so they need the renderer running.
+    #[must_use]
+    pub fn stream_registrations_requesting(&self, source: SourceKind) -> usize {
+        self.snapshot()
+            .entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.consumer,
+                    InputPublicationConsumer::PassiveStream | InputPublicationConsumer::Diagnostic
+                ) && entry.demand.requested_hz(source) > 0
+            })
+            .count()
+    }
+
     /// Read the current aggregate rate for one source domain.
     #[must_use]
     pub fn requested_hz(&self, source: SourceKind) -> u32 {
@@ -751,7 +770,7 @@ impl InputPublicationDemandHandle {
         self.registry.latest.load_full()
     }
 
-    fn subscribe_revision(&self) -> watch::Receiver<InputPublicationDemandRevision> {
+    pub(super) fn subscribe_revision(&self) -> watch::Receiver<InputPublicationDemandRevision> {
         self.registry.revision_tx.subscribe()
     }
 
