@@ -695,6 +695,109 @@ fn render_loop_elapsed_excludes_every_pause_interval() {
 }
 
 #[test]
+fn render_loop_elapsed_excludes_parked_time_without_leaving_running() {
+    let mut rl = RenderLoop::new(60);
+    rl.start();
+    std::thread::sleep(Duration::from_millis(10));
+
+    rl.park();
+    assert!(rl.is_parked());
+    assert_eq!(rl.state(), RenderLoopState::Running);
+    assert!(rl.is_running(), "a parked loop still ticks");
+    let parked_elapsed = rl.elapsed();
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(rl.elapsed(), parked_elapsed);
+
+    rl.unpark();
+    assert!(!rl.is_parked());
+    std::thread::sleep(Duration::from_millis(10));
+    assert!(rl.elapsed() > parked_elapsed);
+}
+
+#[test]
+fn render_loop_pause_inside_a_park_excludes_the_whole_span_once() {
+    let mut rl = RenderLoop::new(60);
+    rl.start();
+    std::thread::sleep(Duration::from_millis(10));
+
+    rl.park();
+    let held_at = rl.elapsed();
+    std::thread::sleep(Duration::from_millis(15));
+    rl.pause();
+    std::thread::sleep(Duration::from_millis(15));
+    rl.resume();
+    assert_eq!(
+        rl.elapsed(),
+        held_at,
+        "resuming a pause while still parked keeps the time held"
+    );
+    std::thread::sleep(Duration::from_millis(15));
+    rl.unpark();
+    let resumed_at = rl.elapsed();
+    assert!(
+        resumed_at >= held_at && resumed_at < held_at + Duration::from_millis(10),
+        "the park and the pause inside it are excluded exactly once: {held_at:?} -> {resumed_at:?}"
+    );
+}
+
+#[test]
+fn render_loop_unpark_while_paused_keeps_time_held_until_resume() {
+    let mut rl = RenderLoop::new(60);
+    rl.start();
+    std::thread::sleep(Duration::from_millis(10));
+
+    rl.park();
+    let held_at = rl.elapsed();
+    rl.pause();
+    std::thread::sleep(Duration::from_millis(15));
+    rl.unpark();
+    assert!(!rl.is_parked());
+    assert_eq!(rl.state(), RenderLoopState::Paused);
+    std::thread::sleep(Duration::from_millis(15));
+    assert_eq!(
+        rl.elapsed(),
+        held_at,
+        "leaving the park while paused keeps the pause holding time"
+    );
+
+    rl.resume();
+    let resumed_at = rl.elapsed();
+    assert!(
+        resumed_at >= held_at && resumed_at < held_at + Duration::from_millis(10),
+        "the park and the pause after it are excluded exactly once: {held_at:?} -> {resumed_at:?}"
+    );
+    std::thread::sleep(Duration::from_millis(10));
+    assert!(rl.elapsed() > resumed_at);
+}
+
+#[test]
+fn render_loop_park_is_ignored_unless_running() {
+    let mut rl = RenderLoop::new(60);
+    rl.park();
+    assert!(!rl.is_parked(), "a loop that never started cannot park");
+
+    rl.start();
+    rl.pause();
+    rl.park();
+    assert!(!rl.is_parked(), "a paused loop is idle for its own reason");
+}
+
+#[test]
+fn render_loop_abandoned_frame_records_nothing() {
+    let mut rl = RenderLoop::new(60);
+    rl.start();
+    assert!(rl.tick());
+    rl.abandon_frame();
+
+    assert_eq!(rl.frame_number(), 0);
+    assert!(
+        rl.frame_complete().is_none(),
+        "an abandoned frame has nothing left to complete"
+    );
+    assert_eq!(rl.frame_number(), 0);
+}
+
+#[test]
 fn render_loop_debug_output_is_readable() {
     let rl = RenderLoop::new(60);
     let debug = format!("{rl:?}");

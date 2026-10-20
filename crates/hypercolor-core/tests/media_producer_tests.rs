@@ -425,6 +425,27 @@ fn webm_video_frames_decode_when_feature_is_enabled() {
     assert!(pixel.r >= 250 && pixel.g >= 250 && pixel.b >= 250 && pixel.a == 255);
 }
 
+#[test]
+fn decoded_media_is_not_a_live_stream() {
+    let producer = MediaProducer::from_bytes(&animated_gif_bytes(), "image/gif")
+        .expect("animated GIF should decode");
+
+    assert!(!producer.is_live_stream());
+}
+
+#[cfg(feature = "media-video")]
+#[test]
+fn stream_url_producer_reports_a_live_stream() {
+    let producer = MediaProducer::from_bytes_with_stream_policy(
+        b"http://1.1.1.1/hypercolor-missing-live.m3u8\n",
+        "application/vnd.hypercolor.stream-url",
+        &StreamUrlPolicy::default(),
+    )
+    .expect("stream URL producer should start");
+
+    assert!(producer.is_live_stream());
+}
+
 #[cfg(feature = "media-video")]
 #[test]
 fn stream_url_producer_returns_before_first_live_frame() {

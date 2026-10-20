@@ -285,6 +285,21 @@ impl MediaProducer {
         !self.frames.is_empty()
     }
 
+    /// Whether a background worker decodes a live stream for this
+    /// producer, which keeps running until the producer is dropped.
+    #[must_use]
+    pub const fn is_live_stream(&self) -> bool {
+        #[cfg(feature = "media-video")]
+        {
+            self.live_stream.is_some()
+        }
+        #[cfg(not(feature = "media-video"))]
+        {
+            let _ = self;
+            false
+        }
+    }
+
     #[must_use]
     pub fn live_stream_error(&self) -> Option<String> {
         #[cfg(feature = "media-video")]

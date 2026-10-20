@@ -19,7 +19,7 @@
 mod demand;
 mod filter;
 
-pub use demand::{OutputDemandHold, OutputDemandSignal};
+pub use demand::{ArmedOutputDemand, OutputDemandHold, OutputDemandSignal};
 pub use filter::{EventFilter, FilteredEventReceiver};
 
 use std::collections::HashMap;

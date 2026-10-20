@@ -269,10 +269,11 @@ impl EffectRenderer for ServoRenderer {
     }
 
     fn park(&mut self) {
-        // Servo's script thread schedules its own animation ticks for a page
-        // with live requestAnimationFrame callbacks and keeps its timers
-        // running, so an unobserved page keeps drawing WebGL until it is
-        // throttled. The next render request unthrottles the webview.
+        // Servo's script thread schedules its own animation ticks every 30 ms
+        // for a page with live requestAnimationFrame callbacks, so an
+        // unobserved page keeps drawing WebGL until its webview is
+        // throttled, which stops those ticks. Timers keep their own pace.
+        // The next render request unthrottles the webview.
         if let Some(session) = self.session.as_ref()
             && let Err(error) = session.park()
         {

@@ -1540,7 +1540,8 @@ async fn concurrent_input_status_publications_are_generation_ordered() {
 /// Arm a waiter on the bus output-demand signal the way an idle producer
 /// does, run `trigger`, and report whether the waiter woke.
 async fn output_demand_wakes_on(bus: &HypercolorBus, trigger: impl FnOnce()) -> bool {
-    let notified = bus.output_demand().notified();
+    let armed = bus.output_demand().arm();
+    let notified = armed.notified();
     tokio::pin!(notified);
     notified.as_mut().enable();
     trigger();
@@ -1612,6 +1613,18 @@ async fn output_demand_holds_count_until_dropped_and_wake_waiters() {
 async fn published_events_wake_output_demand_waiters() {
     let bus = HypercolorBus::new();
 
+    assert!(output_demand_wakes_on(&bus, || bus.publish(paused_event())).await);
+}
+
+#[tokio::test]
+async fn output_demand_notification_without_an_armed_waiter_only_advances_the_epoch() {
+    let bus = HypercolorBus::new();
+    let epoch = bus.output_demand().epoch();
+
+    bus.publish(paused_event());
+    let _canvas = bus.canvas_receiver();
+
+    assert_eq!(bus.output_demand().epoch(), epoch + 2);
     assert!(output_demand_wakes_on(&bus, || bus.publish(paused_event())).await);
 }
 

@@ -274,8 +274,8 @@ impl ServoSessionHandle {
     }
 
     /// Throttle this session's page while the render loop requests no
-    /// frames, so its animation timers and requestAnimationFrame loop stop
-    /// running unobserved. The next render request unthrottles it.
+    /// frames, so its requestAnimationFrame loop stops scheduling itself
+    /// unobserved. The next render request unthrottles it.
     ///
     /// # Errors
     ///

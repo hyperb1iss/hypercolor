@@ -9,16 +9,20 @@
 //! changes, instead of polling for either.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
 
 use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
 
 /// Wake signal for producers that idle while nothing consumes their output.
+///
+/// Every event publication notifies it, so notification skips the waiter
+/// list entirely unless a producer has armed a wait.
 #[derive(Debug, Default)]
 pub struct OutputDemandSignal {
     epoch: AtomicU64,
     holds: AtomicUsize,
+    armed: AtomicUsize,
     notify: Notify,
 }
 
@@ -35,19 +39,27 @@ impl OutputDemandSignal {
         self.holds.load(Ordering::Acquire)
     }
 
-    /// Future that resolves on the next notification.
-    ///
-    /// Pin it and call [`Notified::enable`] before re-checking demand: a
-    /// notification that lands between the check and the await then still
-    /// wakes the waiter.
-    pub fn notified(&self) -> Notified<'_> {
-        self.notify.notified()
+    /// Arm a wait. Notifications reach waiters only while at least one
+    /// [`ArmedOutputDemand`] lives, so arm before re-checking demand.
+    pub fn arm(&self) -> ArmedOutputDemand<'_> {
+        self.armed.fetch_add(1, Ordering::SeqCst);
+        // Orders the arm before every demand read the waiter makes next.
+        fence(Ordering::SeqCst);
+        ArmedOutputDemand { signal: self }
     }
 
     /// Wake every current waiter.
     pub fn notify(&self) {
         self.epoch.fetch_add(1, Ordering::AcqRel);
-        self.notify.notify_waiters();
+        // The state change that prompted this call (a new receiver, a hold,
+        // an event) may use weaker orderings, so a full fence orders it
+        // before the armed check. Paired with the fence in `arm`, either
+        // this load sees the waiter and wakes it, or the waiter's demand
+        // read sees the state change.
+        fence(Ordering::SeqCst);
+        if self.armed.load(Ordering::SeqCst) > 0 {
+            self.notify.notify_waiters();
+        }
     }
 
     pub(super) fn acquire_hold(self: &Arc<Self>) -> OutputDemandHold {
@@ -56,6 +68,29 @@ impl OutputDemandSignal {
         OutputDemandHold {
             signal: Arc::clone(self),
         }
+    }
+}
+
+/// An armed wait on an [`OutputDemandSignal`].
+#[derive(Debug)]
+pub struct ArmedOutputDemand<'a> {
+    signal: &'a OutputDemandSignal,
+}
+
+impl ArmedOutputDemand<'_> {
+    /// Future that resolves on the next notification.
+    ///
+    /// Pin it and call [`Notified::enable`] before re-checking demand: a
+    /// notification that lands between the check and the await then still
+    /// wakes the waiter.
+    pub fn notified(&self) -> Notified<'_> {
+        self.signal.notify.notified()
+    }
+}
+
+impl Drop for ArmedOutputDemand<'_> {
+    fn drop(&mut self) {
+        self.signal.armed.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

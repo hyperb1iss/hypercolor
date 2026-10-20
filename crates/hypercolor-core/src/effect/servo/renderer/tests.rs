@@ -708,6 +708,65 @@ fn init_with_canvas_size_reuses_previous_canvas_while_new_effect_loads() {
 }
 
 #[test]
+fn renderer_warms_from_load_start_until_the_new_page_renders_its_first_frame() {
+    let _lock = SHARED_WORKER_STATE_TEST_LOCK
+        .lock()
+        .expect("shared worker test lock");
+    reset_shared_servo_worker_state();
+
+    let (worker, load_rx, release_tx, unload_rx, stopped) = spawn_blocking_load_test_worker();
+    install_running_shared_worker(worker);
+
+    let temp_dir = tempfile::tempdir().expect("temporary directory");
+    let source_path = temp_dir.path().join("effect.html");
+    std::fs::write(&source_path, "<!doctype html><html><body></body></html>")
+        .expect("write source html");
+
+    let mut renderer = ServoRenderer::new();
+    assert!(
+        !renderer.is_warming(),
+        "an uninitialized renderer has nothing to warm"
+    );
+    renderer.park();
+
+    // A reload keeps the previous page's canvas on screen, so the canvas
+    // alone must not read as warm.
+    renderer.initialized = true;
+    renderer.last_canvas = Some(solid_canvas(640, 480, 12, 34, 56));
+    renderer
+        .init_with_canvas_size(&html_metadata(source_path), 640, 480)
+        .expect("renderer should queue initialization");
+    load_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("create-session command should be queued asynchronously");
+    assert!(renderer.is_warming(), "a loading page is warming");
+
+    release_tx.send(()).expect("release create-session");
+    wait_for_load_completion(&mut renderer);
+    assert!(renderer.session.is_some());
+    assert!(
+        renderer.is_warming(),
+        "a loaded page stays warming until its first frame lands"
+    );
+    renderer.park();
+
+    renderer.accept_completed_canvas(solid_canvas(640, 480, 1, 2, 3), false);
+    assert!(
+        !renderer.is_warming(),
+        "the first completed frame ends warming"
+    );
+
+    renderer.destroy();
+    assert!(!renderer.is_warming());
+    unload_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("destroy should unload test worker");
+
+    shutdown_shared_servo_worker().expect("shared worker shutdown should succeed");
+    assert!(stopped.load(Ordering::SeqCst));
+}
+
+#[test]
 fn destroy_discards_completed_load_task_before_it_is_polled() {
     let (worker, load_rx, unload_rx, stopped) = spawn_load_test_worker();
     let mut session = ServoSessionHandle::new(

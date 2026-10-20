@@ -287,8 +287,8 @@ impl EffectRenderer for WebViewportRenderer {
     }
 
     fn park(&mut self) {
-        // A live web page keeps its own timers and animations running between
-        // renders; throttling it stops that work until the next render.
+        // A live web page keeps animating between renders; throttling it
+        // stops its self-scheduled animation frames until the next render.
         if let Some(session) = self.session.as_ref()
             && let Err(error) = session.park()
         {

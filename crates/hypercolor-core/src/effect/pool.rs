@@ -962,6 +962,35 @@ mod tests {
         applied: Vec<(String, ControlValue)>,
     }
 
+    struct ParkSpyRenderer {
+        parks: Arc<AtomicU64>,
+        warming: Arc<AtomicBool>,
+    }
+
+    impl EffectRenderer for ParkSpyRenderer {
+        fn init(&mut self, _metadata: &EffectMetadata) -> Result<()> {
+            Ok(())
+        }
+
+        fn render_into(&mut self, _input: &FrameInput<'_>, _target: &mut Canvas) -> Result<()> {
+            Ok(())
+        }
+
+        fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> Result<()> {
+            Ok(())
+        }
+
+        fn park(&mut self) {
+            self.parks.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn is_warming(&self) -> bool {
+            self.warming.load(Ordering::SeqCst)
+        }
+
+        fn destroy(&mut self) {}
+    }
+
     impl DestroySpyRenderer {
         fn new(destroyed: Arc<AtomicBool>) -> Self {
             Self { destroyed }
@@ -1812,6 +1841,37 @@ mod tests {
             pool.slots
                 .contains_key(&EffectSlotKey::new(kept_zone_id, kept_layer_id))
         );
+    }
+
+    #[test]
+    fn park_reaches_every_renderer_and_warming_tracks_any_of_them() {
+        let parks = Arc::new(AtomicU64::new(0));
+        let first_warming = Arc::new(AtomicBool::new(false));
+        let second_warming = Arc::new(AtomicBool::new(false));
+        let mut pool = EffectPool::new();
+        assert!(!pool.any_warming());
+        pool.park();
+
+        for warming in [&first_warming, &second_warming] {
+            let effect_id = EffectId::new(uuid::Uuid::now_v7());
+            let mut slot = advance_spy_slot(effect_id, Arc::new(AtomicU64::new(0)));
+            slot.renderer = Box::new(ParkSpyRenderer {
+                parks: Arc::clone(&parks),
+                warming: Arc::clone(warming),
+            });
+            pool.slots
+                .insert(EffectSlotKey::new(ZoneId::new(), SceneLayerId::new()), slot);
+        }
+
+        pool.park();
+        assert_eq!(parks.load(Ordering::SeqCst), 2);
+        assert!(!pool.any_warming());
+
+        second_warming.store(true, Ordering::SeqCst);
+        assert!(pool.any_warming());
+        second_warming.store(false, Ordering::SeqCst);
+        first_warming.store(true, Ordering::SeqCst);
+        assert!(pool.any_warming());
     }
 
     #[test]
