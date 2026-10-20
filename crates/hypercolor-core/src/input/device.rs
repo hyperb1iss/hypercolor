@@ -392,7 +392,34 @@ impl DeviceInputRegistryHandle {
     }
 
     fn attach(&self, device_id: DeviceId, label: Arc<str>) -> DeviceInputAttachment {
-        let mut writer = lock_or_recover(&self.inner.writer);
+        let writer = lock_or_recover(&self.inner.writer);
+        self.attach_locked(writer, device_id, label)
+    }
+
+    /// Replace the device's child with a fresh one, but only while
+    /// `publication_id` is still its current incarnation. The check and the
+    /// replacement share the writer lock, so a stale lease can never
+    /// supersede a newer attachment.
+    fn renew(
+        &self,
+        device_id: DeviceId,
+        publication_id: DeviceInputPublicationId,
+    ) -> Option<DeviceInputAttachment> {
+        let writer = lock_or_recover(&self.inner.writer);
+        let current = writer.children.get(&device_id)?;
+        if current.publication_id() != publication_id {
+            return None;
+        }
+        let label = Arc::clone(&current.inner.label);
+        Some(self.attach_locked(writer, device_id, label))
+    }
+
+    fn attach_locked(
+        &self,
+        mut writer: MutexGuard<'_, DeviceInputRegistryWriter>,
+        device_id: DeviceId,
+        label: Arc<str>,
+    ) -> DeviceInputAttachment {
         // A new attachment is a new session for the device. The previous
         // incarnation closes so the router cancels anything it still held.
         if let Some(previous) = writer.children.remove(&device_id) {
@@ -542,6 +569,15 @@ impl Drop for DeviceInputAttachment {
 impl DeviceInputPublisher for DeviceInputAttachment {
     fn publish(&self, edges: &[DeviceInputEdge]) -> bool {
         self.inject(edges).is_ok()
+    }
+
+    fn renew(&self) -> Option<Box<dyn DeviceInputPublisher>> {
+        if self.closed.load(Ordering::Acquire) {
+            return None;
+        }
+        self.registry
+            .renew(self.child.device_id(), self.child.publication_id())
+            .map(|renewed| Box::new(renewed) as Box<dyn DeviceInputPublisher>)
     }
 }
 

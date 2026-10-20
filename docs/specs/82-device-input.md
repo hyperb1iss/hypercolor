@@ -120,6 +120,8 @@ pub trait DeviceInputSink: Send + Sync {
 pub trait DeviceInputPublisher: Send + Sync {
     /// `false` once this lease has been superseded or detached.
     fn publish(&self, edges: &[DeviceInputEdge]) -> bool;
+    /// A fresh lease replacing this one, only while this one is current.
+    fn renew(&self) -> Option<Box<dyn DeviceInputPublisher>> { None }
 }
 
 trait DriverHost {
@@ -132,8 +134,13 @@ the router cancels anything the consumer observed. Attaching the same device
 again supersedes the earlier lease: the old source retires the same way, and
 the old lease's `publish` returns `false` and its drop does nothing, because
 close is fenced by publication incarnation. A stale lease can never retire
-its successor. Hosts without device input return `None`, so every existing
-host and test double keeps compiling.
+its successor. `renew` replaces a lease with a fresh one, cancelling what it
+held, and the host checks that the lease is still current and replaces it
+under one lock, so a stale lease can never take the device back from a
+newer attachment either; a superseded or detached lease renews to `None`.
+Hosts without device input return `None`, so every existing host and test
+double keeps compiling, and publishers that cannot renew atomically keep
+the default `None`.
 
 ### 3. Device input registry (`hypercolor-core::input::device`)
 
@@ -372,12 +379,14 @@ good). A driver-owned USB binding sets `publishes_input`, and
 passes the transport a `UsbDeviceInput` bridge at open, attaches the host
 lease under the device's canonical `DeviceId` only once connect succeeds,
 and retires it as shutdown begins, before the shutdown sequence runs.
-`interrupted()` supersedes the lease and `closed()` retires it, so the host
+`interrupted()` renews the lease and `closed()` retires it, so the host
 cancels every hold either way, as the Blocks backend does for a lost
-blocksd stream. A bridge whose lease a newer connection superseded closes
-itself instead of re-attaching, so it can never take the device back. Input before connect finishes is dropped, and a device that
-never finishes connecting never becomes an input source. After a close,
-nothing brings the lease back; a reconnect builds a new bridge.
+blocksd stream. Renewal is atomic on the host, so a bridge whose lease a
+newer connection superseded gets `None` and closes itself instead of
+taking the device back. Input before connect finishes is dropped, and a
+device that never finishes connecting never becomes an input source.
+After a close, nothing brings the lease back; a reconnect builds a new
+bridge.
 
 **Push 2.** Spec 28 §11.4 has the MIDI map. The transport's existing User
 port input callback forwards each message to the sysex reply ingress, then
@@ -429,17 +438,20 @@ Mode reply announcing Live mode, reports `interrupted()`.
   touch over it, for each matrix start corner and each strip direction;
   named segments resolve through their own outputs, match routing's
   aliases with exact names first, and stay unplaced when placed twice, when
-  two aliases match, or when only an unnamed output exists; unbound, ambiguous, and display-only outputs place nothing;
-  non-finite points; backend bindings and their generation.
+  two aliases match, or when only an unnamed output exists; unbound,
+  ambiguous, and display-only outputs place nothing; non-finite points;
+  backend bindings and their generation.
 - Segments: the registry keeps a contact's segment through begin, end, a
   re-begin, and cancel, and routes it into held output; the payload places
   segment-named touches per segment; `InputEvent::Touch` omits `segment`
   when unset.
 - USB seam: the bridge drops input before connect, attaches on activation,
-  supersedes on interruption, retires on close and stays retired, and never
+  renews on interruption, retires on close and stays retired, and never
   disturbs a successor, even when an interruption reaches a superseded
-  bridge first; only bindings that publish input get a bridge; a
-  disconnect retires the lease before the shutdown sequence runs.
+  bridge first or a fresh connection activates between a stale bridge
+  deciding to renew and the renewal; only bindings that publish input get
+  a bridge; a disconnect retires the lease before the shutdown sequence
+  runs. The registry renews only a lease that is still current.
 - Push 2 (`push2_input_tests.rs`, `push2_touch_surface_tests.rs`): the MIDI
   decode and relay (spec 28 §14.1), and touch-to-LED agreement through the
   real frame encoder and decoder.

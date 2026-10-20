@@ -9,7 +9,7 @@ use hypercolor_core::input::{
     BrowserInputHandle, DeviceButtonHold, DeviceInputChildSlot, DeviceInputHandle,
     DeviceInputRegistryError, InputData, InputManager, InteractionData, SourceState, TouchContact,
 };
-use hypercolor_driver_api::DeviceInputSink;
+use hypercolor_driver_api::{DeviceInputPublisher, DeviceInputSink};
 use hypercolor_types::config::InteractionRoutePolicy;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::device_input::{DeviceInputEdge, TouchPosition};
@@ -492,6 +492,63 @@ fn driver_sink_leases_report_supersession() {
     assert!(second.publish(&[began(0, at(0.5, 0.5, 0.5))]));
     drop(first);
     assert!(handle.registry().snapshot().child(device).is_some());
+}
+
+#[test]
+fn renewing_replaces_only_a_lease_that_is_still_current() {
+    let handle = demanded_handle();
+    let sink: Arc<dyn DeviceInputSink> = Arc::new(handle.clone());
+    let device = DeviceId::new();
+    let registry = handle.registry();
+
+    let first = sink.attach(device, "pad");
+    let first_slot = registry
+        .snapshot()
+        .child(device)
+        .cloned()
+        .expect("attached");
+    assert!(first.publish(&[began(0, at(0.5, 0.5, 0.5))]));
+
+    // A current lease renews into a fresh child under the same label, and
+    // the old child retires so the router cancels what it held.
+    let renewed = first.renew().expect("a current lease renews");
+    assert!(!first_slot.is_active());
+    let renewed_slot = registry
+        .snapshot()
+        .child(device)
+        .cloned()
+        .expect("attached");
+    assert_ne!(renewed_slot.publication_id(), first_slot.publication_id());
+    assert_eq!(renewed_slot.label(), "pad");
+    assert!(held(&renewed_slot).device.touches.is_empty());
+    assert!(!first.publish(&[]));
+    assert!(renewed.publish(&[]));
+
+    // Once a newer attachment supersedes it, a lease cannot renew, and the
+    // newer attachment keeps the device.
+    let newer = sink.attach(device, "pad");
+    let newer_slot = registry
+        .snapshot()
+        .child(device)
+        .cloned()
+        .expect("attached");
+    assert!(renewed.renew().is_none());
+    assert!(first.renew().is_none());
+    assert!(newer_slot.is_active());
+    assert_eq!(
+        registry
+            .snapshot()
+            .child(device)
+            .map(DeviceInputChildSlot::publication_id),
+        Some(newer_slot.publication_id())
+    );
+
+    drop(newer);
+
+    // A detached lease cannot renew either.
+    let detached = handle.attach(DeviceId::new(), "other");
+    detached.close();
+    assert!(DeviceInputPublisher::renew(&detached).is_none());
 }
 
 #[test]

@@ -79,14 +79,12 @@ impl TransportInputSink for UsbDeviceInput {
         let Lease::Live(publisher) = &mut *lease else {
             return;
         };
-        // An empty publish only asks whether the lease is still current. A
-        // lease a newer connection superseded must not take the device back.
-        if publisher.publish(&[]) {
-            // Attaching again supersedes this lease, so the host cancels its
-            // holds before the replacement publishes anything.
-            *publisher = self.sink.attach(self.device_id, &self.label);
-        } else {
-            *lease = Lease::Closed;
+        // Renewing cancels this lease's holds and replaces it in one step on
+        // the host, and only while it is still current, so a lease a newer
+        // connection superseded can never take the device back.
+        match publisher.renew() {
+            Some(renewed) => *publisher = renewed,
+            None => *lease = Lease::Closed,
         }
     }
 
