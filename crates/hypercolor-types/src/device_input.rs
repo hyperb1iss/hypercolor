@@ -17,9 +17,11 @@ use crate::event::InputButtonState;
 /// from its first LED.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TouchPosition {
-    /// Horizontal position in `[0, 1]`, from the surface's left edge.
+    /// Horizontal position in `[0, 1]`, from the left edge of the surface's
+    /// frame.
     pub x: f32,
-    /// Vertical position in `[0, 1]`, from the surface's top edge.
+    /// Vertical position in `[0, 1]`, from the top edge of the surface's
+    /// frame, which for an LED matrix is the row holding its first LED.
     pub y: f32,
     /// Contact pressure in `[0, 1]`.
     pub pressure: f32,

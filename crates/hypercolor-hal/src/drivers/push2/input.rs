@@ -35,8 +35,10 @@ impl Push2InputRelay {
     /// interruption when input was lost.
     ///
     /// Runs on the native input thread for every message, sysex replies
-    /// included, so it only decodes and hands off: no allocation once warm,
-    /// and no locks shared with the output or display paths.
+    /// included, so it only decodes and hands off. Decoding allocates
+    /// nothing once warm and takes no lock the output or display paths
+    /// share; publishing costs whatever the host's sink does with the edges,
+    /// and only messages that carry input publish.
     pub fn receive(&mut self, message: &[u8]) {
         self.edges.clear();
         let decoded = self.decoder.decode(message, &mut self.edges);

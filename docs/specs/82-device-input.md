@@ -153,7 +153,7 @@ demanded:
 
 | Edge | Rule |
 | --- | --- |
-| `TouchBegan` | Clamped. A non-finite position drops the edge and counts it. A begin for a contact already down ends the old contact first. More than 32 contacts per device drops the edge. |
+| `TouchBegan` | Clamped. A non-finite position drops the edge and counts it. A begin for a contact already down ends the old contact first. More than 128 held contacts per device drops the edge (the Push 2 can hold 65). |
 | `TouchMoved` | Updates a held contact. A contact whose begin was never seen, such as one down when the device attached, is ignored. |
 | `TouchEnded` | Never dropped. A non-finite final position falls back to the last good one. |
 | `Button` | Pressed once until released; release without a press is ignored; autorepeat is ignored. At most 16 held buttons per device. |
@@ -306,9 +306,11 @@ spatial layout, so a touch has one canvas point per zone that places its
 device and none elsewhere. `DeviceSurfaceMap`
 (`hypercolor-core::spatial`) resolves a touch that names no segment through
 the device's only LED output in the layout, and a touch that names a
-segment through the one LED output bound to that segment, or through the
-device's only output when that output names no segment and so stands for
-the whole device. It maps the surface point through that output's
+segment through the one LED output bound to that segment: the output whose
+segment name matches exactly, or else the only one matching it the way LED
+routing does (`channel_name_matches_slot_alias`, ignoring case and slug
+punctuation). An output that names no segment never stands in for a named
+one, since its LED order follows the whole device. It maps the surface point through that output's
 position, size, rotation, scale, and edge behavior, with the zone-local
 transform shared with the sampler. A matrix output also applies its start
 corner, because its LED order is the device's own row-major order, and a
@@ -372,7 +374,8 @@ lease under the device's canonical `DeviceId` only once connect succeeds,
 and retires it as shutdown begins, before the shutdown sequence runs.
 `interrupted()` supersedes the lease and `closed()` retires it, so the host
 cancels every hold either way, as the Blocks backend does for a lost
-blocksd stream. Input before connect finishes is dropped, and a device that
+blocksd stream. A bridge whose lease a newer connection superseded closes
+itself instead of re-attaching, so it can never take the device back. Input before connect finishes is dropped, and a device that
 never finishes connecting never becomes an input source. After a close,
 nothing brings the lease back; a reconnect builds a new bridge.
 
@@ -424,9 +427,9 @@ Mode reply announcing Live mode, reports `interrupted()`.
 - Surfaces (`device_surface_tests.rs`): placement through position, size,
   rotation, scale, and edge behavior; every LED's sampled point equals the
   touch over it, for each matrix start corner and each strip direction;
-  named segments resolve through their own outputs, a segment placed twice
-  is ambiguous, and a named touch falls back only to a sole whole-device
-  output; unbound, ambiguous, and display-only outputs place nothing;
+  named segments resolve through their own outputs, match routing's
+  aliases with exact names first, and stay unplaced when placed twice, when
+  two aliases match, or when only an unnamed output exists; unbound, ambiguous, and display-only outputs place nothing;
   non-finite points; backend bindings and their generation.
 - Segments: the registry keeps a contact's segment through begin, end, a
   re-begin, and cancel, and routes it into held output; the payload places
@@ -434,7 +437,8 @@ Mode reply announcing Live mode, reports `interrupted()`.
   when unset.
 - USB seam: the bridge drops input before connect, attaches on activation,
   supersedes on interruption, retires on close and stays retired, and never
-  disturbs a successor; only bindings that publish input get a bridge; a
+  disturbs a successor, even when an interruption reaches a superseded
+  bridge first; only bindings that publish input get a bridge; a
   disconnect retires the lease before the shutdown sequence runs.
 - Push 2 (`push2_input_tests.rs`, `push2_touch_surface_tests.rs`): the MIDI
   decode and relay (spec 28 §14.1), and touch-to-LED agreement through the

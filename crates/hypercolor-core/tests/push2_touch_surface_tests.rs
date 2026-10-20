@@ -3,8 +3,11 @@
 //! Each case lights one LED through the real Push 2 frame encoder to learn
 //! which pad note or strip LED drives it, presses that control through the
 //! real input decoder, and checks the resulting touch maps to the exact
-//! canvas point the sampler reads for that LED, through layouts as the UI
-//! seeds them and as the daemon's auto layout builds them.
+//! canvas point the sampler reads for that LED. The layouts are built here
+//! from the Push 2's own zone list, in every matrix start corner and strip
+//! direction, which covers the topologies the UI seeds (bottom-left pads,
+//! bottom-to-top strip) and the ones auto layout picks (top-left matrices,
+//! left-to-right strips).
 
 use hypercolor_core::spatial::{DeviceSurfaceMap, SpatialEngine};
 use hypercolor_hal::drivers::push2::{
@@ -201,9 +204,14 @@ fn sampled(layout: &SpatialLayout) -> Vec<Vec<NormalizedPosition>> {
 fn every_tested_pad_lands_on_its_own_led() {
     // Four corners and an interior pad, in Pads LED order.
     let pads = [0, 7, 56, 63, 27];
-    // As the UI seeds the Push 2 (bottom left, its physical first LED) and
-    // as auto layout builds any 8x8 matrix (top left).
-    for corner in [Corner::BottomLeft, Corner::TopLeft] {
+    // Bottom left is how the UI seeds the Push 2 (its physical first LED)
+    // and top left how auto layout builds any matrix.
+    for corner in [
+        Corner::BottomLeft,
+        Corner::TopLeft,
+        Corner::TopRight,
+        Corner::BottomRight,
+    ] {
         let layout = push2_layout(corner, StripDirection::BottomToTop);
         let device = DeviceId::new();
         let surfaces =
