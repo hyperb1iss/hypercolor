@@ -18,7 +18,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::api;
@@ -26,6 +26,7 @@ use crate::api::security::{CredentialAuthority, CredentialTier, RemoteClientFami
 use crate::app_state::AppState;
 use crate::macos_owner::{MacosDaemonOwner, MacosDaemonSessionAttestation, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
+use crate::render_thread::{RenderFailureRecord, RenderSupervision};
 use crate::startup::{DaemonState, StartupProgress, config_sources};
 
 const MAIN_RUNTIME_WORKERS: usize = 4;
@@ -33,6 +34,18 @@ const MAIN_RUNTIME_MAX_BLOCKING_THREADS: usize = 8;
 const MAIN_RUNTIME_THREAD_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(2);
 const API_LISTEN_BACKLOG: i32 = 1024;
 const API_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long the graceful shutdown after an unrecoverable render failure may
+/// take before the process exits regardless.
+///
+/// The daemon must not keep serving without a renderer, and a failure bad
+/// enough to exhaust the restart budget can also wedge the teardown, so
+/// this backstop bounds the gap a service manager sees.
+const RENDER_FAILURE_EXIT_DEADLINE: Duration = Duration::from_secs(20);
+
+/// Exit code of a process exit forced by an unrecoverable render failure.
+/// `EX_SOFTWARE`: an internal failure.
+pub(crate) const RENDER_FAILURE_EXIT_CODE: i32 = 70;
 
 /// Runtime options for one daemon process.
 #[derive(Default)]
@@ -167,10 +180,16 @@ impl PreparedDaemon {
         let progress = StartupProgress::default();
         let handoff =
             api::startup::ApiHandoff::starting(progress.clone(), env!("CARGO_PKG_VERSION"));
+        // The API stops on the caller's shutdown signal and also when the
+        // render thread gives up, so the server listens to a channel this
+        // function owns rather than the caller's.
+        let (api_shutdown_tx, api_shutdown_rx) = watch::channel(*shutdown_rx.borrow());
+        let _shutdown_relay =
+            BackgroundTask::spawn(relay_shutdown_signal(shutdown_rx, api_shutdown_tx.clone()));
         let server = ApiServerTask::spawn(serve_api_handoff_with_shutdown_timeout(
             listeners,
             handoff.clone(),
-            shutdown_rx,
+            api_shutdown_rx,
             API_GRACEFUL_SHUTDOWN_TIMEOUT,
         ));
         info!(binds = %self.listen_addr, "API listeners answering startup probes");
@@ -185,6 +204,12 @@ impl PreparedDaemon {
             self.options.service_status.take(),
             progress.clone(),
         )?;
+        let render_supervision = daemon_state.domains.output.render_supervision().clone();
+        let _render_failure_watch = BackgroundTask::spawn(shut_down_after_render_failure(
+            render_supervision.clone(),
+            api_shutdown_tx.clone(),
+            Some(RENDER_FAILURE_EXIT_DEADLINE),
+        ));
         let ui_dir = resolve_ui_dir(self.options.ui_dir.clone());
         daemon_state.session_monitors = self.options.session_monitors.take();
         record_api_binding(
@@ -255,9 +280,30 @@ impl PreparedDaemon {
         );
 
         hypercolor_linux_session::notify_ready();
-        hypercolor_linux_session::spawn_watchdog();
+        // A render thread wedged inside a frame cannot be interrupted, so it
+        // stops the keepalives and systemd restarts the daemon instead.
+        let watchdog_supervision = render_supervision.clone();
+        hypercolor_linux_session::spawn_watchdog_while(move || {
+            watchdog_supervision.watchdog_healthy()
+        });
 
-        server.join().await?;
+        let server_result = server.join().await;
+        if let Some(record) = render_supervision.termination() {
+            // The termination error must win over any teardown error: it is
+            // what tells a process host, such as the Windows service, to
+            // exit the way its service manager restarts.
+            if let Err(error) = server_result {
+                warn!(error = %format!("{error:#}"), "API server failed while stopping after the render failure");
+            }
+            if let Some(publisher) = mdns_publisher {
+                publisher.shutdown().await;
+            }
+            if let Err(error) = daemon_state.shutdown().await {
+                warn!(error = %format!("{error:#}"), "daemon shutdown after the render failure did not finish cleanly");
+            }
+            return Err(render_failure_exit_error(&record));
+        }
+        server_result?;
 
         if let Some(publisher) = mdns_publisher {
             publisher.shutdown().await;
@@ -265,8 +311,196 @@ impl PreparedDaemon {
 
         daemon_state.shutdown().await?;
 
+        if let Some(record) = render_supervision.termination() {
+            return Err(render_failure_exit_error(&record));
+        }
         info!("Hypercolor daemon exited cleanly");
         Ok(())
+    }
+}
+
+/// A spawned task that is aborted when its owner goes away.
+struct BackgroundTask(tokio::task::JoinHandle<()>);
+
+impl BackgroundTask {
+    fn spawn(task: impl Future<Output = ()> + Send + 'static) -> Self {
+        Self(tokio::spawn(task))
+    }
+}
+
+impl Drop for BackgroundTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Forward the caller's shutdown signal into the API shutdown channel.
+///
+/// A dropped caller sender counts as shutdown, which is how the API server
+/// treated the caller's channel directly.
+async fn relay_shutdown_signal(
+    mut external: watch::Receiver<bool>,
+    api_shutdown: watch::Sender<bool>,
+) {
+    let _ = external.wait_for(|shutdown| *shutdown).await;
+    api_shutdown.send_replace(true);
+}
+
+/// Shut the API down once the render thread gives up.
+///
+/// The daemon then runs its normal graceful shutdown and returns an error,
+/// so the process exits nonzero and its service manager (the systemd unit,
+/// launchd, the Windows service recovery actions, or the desktop app's
+/// supervisor) starts a fresh one. `exit_deadline` arms a backstop that
+/// exits the process if that shutdown does not finish in time.
+async fn shut_down_after_render_failure(
+    supervision: RenderSupervision,
+    api_shutdown: watch::Sender<bool>,
+    exit_deadline: Option<Duration>,
+) {
+    let record = supervision.terminated().await;
+    error!(
+        kind = record.kind.as_str(),
+        message = %record.message,
+        restarts_total = record.restarts_total,
+        failure_record = %supervision
+            .failure_record_path()
+            .map_or_else(|| "not persisted".to_owned(), |path| path.display().to_string()),
+        "render thread cannot recover; stopping the daemon so its service manager restarts it"
+    );
+    if let Some(deadline) = exit_deadline {
+        arm_render_failure_exit_backstop(deadline);
+    }
+    api_shutdown.send_replace(true);
+}
+
+fn arm_render_failure_exit_backstop(deadline: Duration) {
+    let spawned = std::thread::Builder::new()
+        .name("hypercolor-exit-backstop".to_owned())
+        .spawn(move || {
+            std::thread::sleep(deadline);
+            error!(
+                deadline_ms = u64::try_from(deadline.as_millis()).unwrap_or(u64::MAX),
+                exit_code = RENDER_FAILURE_EXIT_CODE,
+                "graceful shutdown after the render failure did not finish; exiting now"
+            );
+            std::process::exit(RENDER_FAILURE_EXIT_CODE);
+        });
+    if let Err(spawn_error) = spawned {
+        error!(%spawn_error, "could not arm the exit backstop for the render failure shutdown");
+    }
+}
+
+/// A daemon run that ended because the render thread could not recover.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "render thread could not recover ({kind}: {message}); exiting so the service manager restarts the daemon"
+)]
+pub(crate) struct RenderTerminationError {
+    kind: &'static str,
+    message: String,
+}
+
+fn render_failure_exit_error(record: &RenderFailureRecord) -> anyhow::Error {
+    anyhow::Error::new(RenderTerminationError {
+        kind: record.kind.as_str(),
+        message: record.message.clone(),
+    })
+}
+
+/// Whether a daemon run ended because the render thread could not recover.
+///
+/// A process host that reports its own exit, such as the Windows service,
+/// uses this to exit in a way its service manager restarts.
+#[must_use]
+pub fn is_render_termination(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<RenderTerminationError>().is_some()
+}
+
+#[cfg(test)]
+mod render_failure_shutdown_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::watch;
+
+    use super::{
+        is_render_termination, relay_shutdown_signal, render_failure_exit_error,
+        shut_down_after_render_failure,
+    };
+    use crate::render_thread::{
+        RenderFailureKind, RenderFailureRecord, RenderRecoveryAction, RenderSupervision,
+        RenderThreadPhase,
+    };
+
+    fn exhausted_record() -> RenderFailureRecord {
+        RenderFailureRecord {
+            kind: RenderFailureKind::Panic,
+            message: "frame panicked again".to_owned(),
+            thread: Some("hypercolor-render".to_owned()),
+            location: None,
+            occurred_at: "2026-10-19T22:30:00.000Z".to_owned(),
+            occurred_at_unix_ms: 0,
+            pid: std::process::id(),
+            process_instance: String::new(),
+            daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
+            restart_attempt: 6,
+            restarts_total: 5,
+            action: RenderRecoveryAction::TerminateProcess,
+            backtrace: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unrecoverable_render_failure_shuts_the_api_down_and_fails_the_run() {
+        let supervision = RenderSupervision::detached();
+        let (api_shutdown_tx, mut api_shutdown_rx) = watch::channel(false);
+        let watcher = tokio::spawn(shut_down_after_render_failure(
+            supervision.clone(),
+            api_shutdown_tx,
+            None,
+        ));
+        tokio::task::yield_now().await;
+        assert!(!*api_shutdown_rx.borrow(), "nothing failed yet");
+
+        supervision.request_termination(Arc::new(exhausted_record()));
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            api_shutdown_rx.wait_for(|stop| *stop),
+        )
+        .await
+        .expect("the API should be told to stop")
+        .expect("the watcher holds the sender until it fires");
+        watcher.await.expect("watcher should finish");
+        assert_eq!(supervision.phase(), RenderThreadPhase::Terminating);
+        let record = supervision
+            .termination()
+            .expect("termination should stay recorded for the exit path");
+        let error = render_failure_exit_error(&record);
+        assert!(is_render_termination(&error));
+        assert!(!is_render_termination(&anyhow::anyhow!(
+            "an unrelated failure"
+        )));
+        let error = format!("{error:#}");
+        assert!(error.contains("frame panicked again"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn the_caller_shutdown_signal_and_its_disappearance_both_stop_the_api() {
+        let (external_tx, external_rx) = watch::channel(false);
+        let (api_tx, mut api_rx) = watch::channel(false);
+        let relay = tokio::spawn(relay_shutdown_signal(external_rx, api_tx));
+        external_tx.send_replace(true);
+        relay.await.expect("relay should finish");
+        assert!(*api_rx.borrow_and_update());
+
+        let (external_tx, external_rx) = watch::channel(false);
+        let (api_tx, api_rx) = watch::channel(false);
+        let relay = tokio::spawn(relay_shutdown_signal(external_rx, api_tx));
+        drop(external_tx);
+        relay.await.expect("relay should finish");
+        assert!(*api_rx.borrow());
     }
 }
 

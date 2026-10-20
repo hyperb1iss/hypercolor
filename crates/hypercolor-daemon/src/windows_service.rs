@@ -104,6 +104,20 @@ fn run_service() -> Result<()> {
         shutdown_rx,
         configuration.extension_installers,
     ));
+    if let Err(error) = &run_result
+        && daemon::is_render_termination(error)
+    {
+        // A reported stop, even with an error code, runs the recovery
+        // actions only when the service's failure flag is set, and
+        // services installed before the installer set it do not have it.
+        // Exiting without reporting a stop is a crash to the service
+        // manager, which restarts the service either way.
+        tracing::error!(
+            error = %format!("{error:#}"),
+            "exiting the service without reporting a stop so the service manager restarts it"
+        );
+        std::process::exit(daemon::RENDER_FAILURE_EXIT_CODE);
+    }
     let exit_code = u32::from(run_result.is_err());
     report_status(
         &status_handle,

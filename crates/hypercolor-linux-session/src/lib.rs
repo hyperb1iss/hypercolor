@@ -19,7 +19,7 @@ pub use self::parent_death::arm_parent_death;
 pub use self::procfs::{process_resident_memory_mb, running_processes};
 #[cfg(target_os = "linux")]
 pub use self::screensaver::ScreensaverMonitor;
-pub use self::systemd::{notify_ready, spawn_watchdog};
+pub use self::systemd::{notify_ready, spawn_watchdog, spawn_watchdog_while};
 
 /// Build the Linux session monitors for daemon composition.
 #[must_use]
