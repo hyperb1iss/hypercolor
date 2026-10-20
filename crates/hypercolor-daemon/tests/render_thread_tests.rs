@@ -99,6 +99,7 @@ use hypercolor_daemon::SceneTransactionQueue;
 #[cfg(feature = "wgpu")]
 use hypercolor_daemon::canvas_capture::{CanvasCaptureRequest, CanvasImageFormat, capture_canvas};
 use hypercolor_daemon::discovery::DiscoveryRuntime;
+use hypercolor_daemon::domain::diagnostics::render_thread_check;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::output_power::{OutputPower, OutputPowerState};
 use hypercolor_daemon::performance::PerformanceTracker;
@@ -8058,4 +8059,118 @@ async fn injected_uncaptured_wgpu_error_is_logged_and_counted_without_killing_th
     rt.shutdown()
         .await
         .expect("a render thread that only logged a GPU error should shut down cleanly");
+}
+
+async fn render_thread_check_now(
+    state: &RenderThreadState,
+    supervision: &RenderSupervision,
+    stall_after: Duration,
+) -> hypercolor_types::api::diagnose::DiagnoseCheck {
+    let loop_state = state.render_loop.read().await.state();
+    render_thread_check(&supervision.snapshot(), loop_state, stall_after)
+}
+
+async fn wait_for_render_thread_check(
+    state: &RenderThreadState,
+    supervision: &RenderSupervision,
+    stall_after: Duration,
+    expected: &str,
+) -> hypercolor_types::api::diagnose::DiagnoseCheck {
+    wait_for_render_thread_check_where(state, supervision, stall_after, |check| {
+        check.status == expected
+    })
+    .await
+}
+
+async fn wait_for_render_thread_check_where<F>(
+    state: &RenderThreadState,
+    supervision: &RenderSupervision,
+    stall_after: Duration,
+    accept: F,
+) -> hypercolor_types::api::diagnose::DiagnoseCheck
+where
+    F: Fn(&hypercolor_types::api::diagnose::DiagnoseCheck) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+    loop {
+        let check = render_thread_check_now(state, supervision, stall_after).await;
+        if accept(&check) {
+            return check;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "render_thread check never reached the expected state: {} ({})",
+            check.status,
+            check.detail
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn render_thread_check_fails_while_frames_stall_and_passes_after_recovery() {
+    let stall_after = Duration::from_millis(300);
+    let supervision = RenderSupervision::new(fast_restart_policy(3), None);
+    let state = solid_strip_state();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+    wait_for_render_frames(&state, 3).await;
+    wait_for_render_thread_check(&state, &supervision, stall_after, "pass").await;
+
+    supervision.inject_fault(InjectedRenderFault::Stall(Duration::from_millis(1_500)));
+
+    let stalled = wait_for_render_thread_check(&state, &supervision, stall_after, "fail").await;
+    assert!(
+        stalled.detail.contains("has not completed a frame"),
+        "{}",
+        stalled.detail
+    );
+    wait_for_render_thread_check(&state, &supervision, stall_after, "pass").await;
+    assert_eq!(supervision.snapshot().restarts_total, 0);
+
+    state.render_loop.write().await.stop();
+    rt.shutdown().await.expect("shutdown after a stall");
+}
+
+#[tokio::test]
+async fn render_thread_check_fails_while_the_pipeline_restarts_and_passes_after() {
+    let stall_after = Duration::from_millis(300);
+    let supervision = RenderSupervision::new(
+        RenderRestartPolicy {
+            initial_backoff: Duration::from_millis(600),
+            max_backoff: Duration::from_millis(600),
+            ..fast_restart_policy(3)
+        },
+        None,
+    );
+    let state = solid_strip_state();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+    wait_for_render_frames(&state, 3).await;
+
+    supervision.inject_fault(InjectedRenderFault::Panic(
+        "injected panic for the restarting check",
+    ));
+
+    // The panic hook symbolizes a backtrace on the render thread, which can
+    // outlast the stall threshold, so a stall failure may come first.
+    wait_for_render_thread_check_where(&state, &supervision, stall_after, |check| {
+        check.status == "fail" && check.detail.contains("restarting")
+    })
+    .await;
+    let recovered = wait_for_render_thread_check(&state, &supervision, stall_after, "pass").await;
+    assert!(
+        recovered.detail.contains("restarts=1"),
+        "{}",
+        recovered.detail
+    );
+    let resumed_from = state.render_loop.read().await.frame_number();
+    wait_for_render_frames(&state, resumed_from + 3).await;
+
+    state.render_loop.write().await.stop();
+    rt.shutdown()
+        .await
+        .expect("shutdown after a recovered restart");
 }

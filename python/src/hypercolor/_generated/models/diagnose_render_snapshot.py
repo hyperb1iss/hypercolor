@@ -12,6 +12,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.diagnose_latest_frame_snapshot import DiagnoseLatestFrameSnapshot
     from ..models.diagnose_render_window_snapshot import DiagnoseRenderWindowSnapshot
+    from ..models.render_supervision_status import RenderSupervisionStatus
 
 
 T = TypeVar("T", bound="DiagnoseRenderSnapshot")
@@ -23,10 +24,17 @@ class DiagnoseRenderSnapshot:
     Attributes:
         recent_window (DiagnoseRenderWindowSnapshot):
         latest_frame (DiagnoseLatestFrameSnapshot | None | Unset):
+        supervision (RenderSupervisionStatus | Unset): Health and recovery state of the supervised render thread.
+
+            The render thread restarts its pipeline in-process after a panic or an
+            error exit, within a bounded budget, and the daemon exits so its
+            service manager restarts it once that budget runs out or the compositor
+            GPU device is lost.
     """
 
     recent_window: DiagnoseRenderWindowSnapshot
     latest_frame: DiagnoseLatestFrameSnapshot | None | Unset = UNSET
+    supervision: RenderSupervisionStatus | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -44,6 +52,10 @@ class DiagnoseRenderSnapshot:
         else:
             latest_frame = self.latest_frame
 
+        supervision: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.supervision, Unset):
+            supervision = self.supervision.to_dict()
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -53,6 +65,8 @@ class DiagnoseRenderSnapshot:
         )
         if latest_frame is not UNSET:
             field_dict["latest_frame"] = latest_frame
+        if supervision is not UNSET:
+            field_dict["supervision"] = supervision
 
         return field_dict
 
@@ -63,6 +77,9 @@ class DiagnoseRenderSnapshot:
         )
         from ..models.diagnose_render_window_snapshot import (
             DiagnoseRenderWindowSnapshot,
+        )
+        from ..models.render_supervision_status import (
+            RenderSupervisionStatus,
         )
 
         d = dict(src_dict)
@@ -87,9 +104,17 @@ class DiagnoseRenderSnapshot:
 
         latest_frame = _parse_latest_frame(d.pop("latest_frame", UNSET))
 
+        _supervision = d.pop("supervision", UNSET)
+        supervision: RenderSupervisionStatus | Unset
+        if isinstance(_supervision, Unset):
+            supervision = UNSET
+        else:
+            supervision = RenderSupervisionStatus.from_dict(_supervision)
+
         diagnose_render_snapshot = cls(
             recent_window=recent_window,
             latest_frame=latest_frame,
+            supervision=supervision,
         )
 
         diagnose_render_snapshot.additional_properties = d

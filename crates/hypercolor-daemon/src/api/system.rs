@@ -300,6 +300,12 @@ async fn system_status_with_privacy(
         macos_daemon_ownership,
         compositor_acceleration: render_acceleration_status(&state.render_acceleration),
         render_loop: render_loop_status,
+        render_supervision: state
+            .domains
+            .output
+            .render_supervision()
+            .snapshot()
+            .status(include_private_diagnostics),
         session_performance,
         latest_frame,
         effect_health,

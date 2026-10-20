@@ -404,6 +404,61 @@ pub struct RenderSupervisionSnapshot {
     pub gpu_errors: GpuErrorTotals,
 }
 
+impl RenderSupervisionSnapshot {
+    /// The API projection of this snapshot.
+    ///
+    /// `include_private` gates the failure message and the last GPU error
+    /// text, which can carry source paths and resource labels.
+    #[must_use]
+    pub fn status(
+        &self,
+        include_private: bool,
+    ) -> hypercolor_types::api::system::RenderSupervisionStatus {
+        use hypercolor_types::api::system::{
+            GpuErrorStatus, RenderFailureStatus, RenderSupervisionStatus,
+        };
+
+        RenderSupervisionStatus {
+            phase: self.phase.as_str().to_owned(),
+            restarts_total: self.restarts_total,
+            consecutive_failures: self.consecutive_failures,
+            max_restarts: self.max_restarts,
+            last_frame_age_ms: self.last_frame_age.map(duration_millis),
+            last_failure: self
+                .last_failure
+                .as_ref()
+                .map(|record| RenderFailureStatus {
+                    kind: record.kind.as_str().to_owned(),
+                    message: if include_private {
+                        record.message.clone()
+                    } else {
+                        String::new()
+                    },
+                    thread: record.thread.clone(),
+                    location: include_private.then(|| record.location.clone()).flatten(),
+                    occurred_at: record.occurred_at.clone(),
+                    action: record.action.as_str().to_owned(),
+                    restart_attempt: record.restart_attempt,
+                    current_process: self.last_failure_in_this_process,
+                }),
+            gpu_errors: GpuErrorStatus {
+                validation_errors: self.gpu_errors.validation,
+                out_of_memory_errors: self.gpu_errors.out_of_memory,
+                internal_errors: self.gpu_errors.internal,
+                device_lost: self.gpu_errors.device_lost,
+                last_error: include_private
+                    .then(|| {
+                        self.gpu_errors
+                            .last
+                            .as_ref()
+                            .map(|last| format!("{}: {}: {}", last.device, last.kind, last.message))
+                    })
+                    .flatten(),
+            },
+        }
+    }
+}
+
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
