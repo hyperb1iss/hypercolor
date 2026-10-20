@@ -298,6 +298,9 @@ impl From<ServoGpuImportModeArg> for ServoGpuImportMode {
 /// Returns an error when process bootstrap, daemon startup, serving, or
 /// graceful shutdown fails.
 pub fn run(extension_installers: &'static [&'static dyn DaemonExtensionInstaller]) -> Result<()> {
+    // First, before any thread exists, so every thread's panic is recorded
+    // and no dependency that saves and restores the hook can drop it.
+    crate::panic_hook::install();
     #[cfg(target_os = "macos")]
     let (mut args, macos_owner_argument) = {
         let matches = DaemonArgs::command().get_matches();
