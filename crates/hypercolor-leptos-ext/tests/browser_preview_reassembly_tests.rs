@@ -41,6 +41,8 @@ impl Pair {
         assert_eq!(self.native.partial_count(), self.js.partial_count());
         assert_eq!(self.native.reserved_bytes(), self.js.reserved_bytes());
         assert_eq!(self.native.tombstone_count(), self.js.tombstone_count());
+        assert_eq!(self.native.state_bytes(), self.js.state_bytes());
+        assert_eq!(self.native.tombstone_bytes(), self.js.tombstone_bytes());
         assert_eq!(
             self.native.superseded_publications(),
             self.js.superseded_publications()

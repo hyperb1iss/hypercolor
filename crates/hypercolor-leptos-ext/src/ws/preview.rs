@@ -1508,7 +1508,7 @@ impl<B: PreviewPublicationBuffer> PreviewChunkReassembler<B> {
             .streams
             .get(stream)
             .is_some_and(|state| state.partial.is_some());
-        let stream_state_bytes = preview_stream_state_bytes::<B>(stream)?;
+        let stream_state_bytes = preview_stream_state_bytes(stream)?;
         let existing_is_tombstone = self
             .streams
             .get(stream)
@@ -1712,7 +1712,7 @@ impl<B: PreviewPublicationBuffer> PreviewChunkReassembler<B> {
             if let Some(partial) = state.partial.take() {
                 expired_bytes = expired_bytes.saturating_add(partial.total_encoded_bytes);
                 expired_state_bytes = expired_state_bytes
-                    .saturating_add(preview_stream_state_bytes::<B>(stream).unwrap_or(usize::MAX));
+                    .saturating_add(preview_stream_state_bytes(stream).unwrap_or(usize::MAX));
                 expired_publications = expired_publications.saturating_add(1);
             }
             state.tombstone_generation = self.next_tombstone_generation;
@@ -1830,7 +1830,7 @@ impl<B: PreviewPublicationBuffer> PreviewChunkReassembler<B> {
     }
 
     fn mark_tombstone(&mut self, stream: &PreviewStreamId, was_active: bool) {
-        let stream_state_bytes = preview_stream_state_bytes::<B>(stream).unwrap_or(usize::MAX);
+        let stream_state_bytes = preview_stream_state_bytes(stream).unwrap_or(usize::MAX);
         let is_new_tombstone = self
             .streams
             .get(stream)
@@ -1881,7 +1881,7 @@ impl<B: PreviewPublicationBuffer> PreviewChunkReassembler<B> {
                     && state.tombstone_generation == oldest_generation;
                 removed |= evict;
                 if evict {
-                    removed_bytes = preview_stream_state_bytes::<B>(stream).unwrap_or(usize::MAX);
+                    removed_bytes = preview_stream_state_bytes(stream).unwrap_or(usize::MAX);
                 }
                 !evict
             });
@@ -1918,7 +1918,7 @@ impl<B: PreviewPublicationBuffer> PreviewChunkReassembler<B> {
                     && state.tombstone_generation == oldest_generation;
                 removed |= evict;
                 if evict {
-                    removed_bytes = preview_stream_state_bytes::<B>(stream).unwrap_or(usize::MAX);
+                    removed_bytes = preview_stream_state_bytes(stream).unwrap_or(usize::MAX);
                 }
                 !evict
             });
@@ -1931,8 +1931,11 @@ impl<B: PreviewPublicationBuffer> PreviewChunkReassembler<B> {
     }
 }
 
-fn preview_stream_state_bytes<B>(stream: &PreviewStreamId) -> Result<usize, PreviewChunkError> {
-    std::mem::size_of::<(Arc<PreviewStreamId>, PreviewStreamState<B>)>()
+/// Budgeted size of one stream's state. Measured with the native storage
+/// for every buffer type, so a browser client admits exactly the streams
+/// a native one does.
+fn preview_stream_state_bytes(stream: &PreviewStreamId) -> Result<usize, PreviewChunkError> {
+    std::mem::size_of::<(Arc<PreviewStreamId>, PreviewStreamState<Vec<u8>>)>()
         .checked_add(std::mem::size_of::<(usize, usize)>())
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PreviewStreamId>()))
         .and_then(|bytes| bytes.checked_add(stream.identity_bytes()))
