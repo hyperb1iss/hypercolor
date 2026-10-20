@@ -64,32 +64,50 @@ fn preview_now_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-fn clear_preview_decoder(
-    decoder: &Rc<RefCell<PreviewBinaryDecoder>>,
-    timeout: &Rc<RefCell<Option<BrowserTimeoutHandle>>>,
-) {
-    timeout.borrow_mut().take();
+/// The timer that sweeps idle partial preview publications, and when it fires.
+struct PreviewExpiryTimer {
+    _handle: BrowserTimeoutHandle,
+    deadline_ms: u64,
+}
+
+type PreviewExpirySlot = Rc<RefCell<Option<PreviewExpiryTimer>>>;
+
+fn clear_preview_decoder(decoder: &Rc<RefCell<PreviewBinaryDecoder>>, timer: &PreviewExpirySlot) {
+    timer.borrow_mut().take();
     decoder.borrow_mut().clear();
 }
 
-fn schedule_preview_expiry(
-    decoder: &Rc<RefCell<PreviewBinaryDecoder>>,
-    timeout: &Rc<RefCell<Option<BrowserTimeoutHandle>>>,
-) {
-    timeout.borrow_mut().take();
+/// Keep a sweep armed no later than the earliest idle deadline.
+///
+/// Every chunked frame leaves a partial publication between its chunks, so
+/// re-arming per message would mint a timer, and the JS closure behind it,
+/// for every frame. A sweep that fires before anything is idle expires
+/// nothing and re-arms for the deadline then pending, so an armed timer
+/// only has to be replaced when a deadline lands before it, and an idle
+/// partial is still swept on time.
+fn schedule_preview_expiry(decoder: &Rc<RefCell<PreviewBinaryDecoder>>, timer: &PreviewExpirySlot) {
     let Some(deadline_ms) = decoder.borrow().next_expiry_ms() else {
         return;
     };
+    if timer
+        .borrow()
+        .as_ref()
+        .is_some_and(|armed| armed.deadline_ms <= deadline_ms)
+    {
+        return;
+    }
     let delay = Duration::from_millis(deadline_ms.saturating_sub(preview_now_ms()));
     let decoder_for_timeout = Rc::clone(decoder);
-    let timeout_for_callback = Rc::clone(timeout);
-    let timeout_for_schedule = Rc::clone(timeout);
+    let timer_for_callback = Rc::clone(timer);
     let handle = browser_set_timeout(delay, move || {
-        timeout_for_callback.borrow_mut().take();
+        timer_for_callback.borrow_mut().take();
         decoder_for_timeout.borrow_mut().expire_at(preview_now_ms());
-        schedule_preview_expiry(&decoder_for_timeout, &timeout_for_schedule);
+        schedule_preview_expiry(&decoder_for_timeout, &timer_for_callback);
     });
-    *timeout.borrow_mut() = Some(handle);
+    *timer.borrow_mut() = Some(PreviewExpiryTimer {
+        _handle: handle,
+        deadline_ms,
+    });
 }
 
 fn quantize_preview_fps(value: f64) -> f32 {
@@ -403,7 +421,7 @@ impl WsManager {
             let generation = socket_generation.get_value().wrapping_add(1);
             socket_generation.set_value(generation);
             let preview_decoder = Rc::new(RefCell::new(PreviewBinaryDecoder::default()));
-            let preview_expiry_timeout = Rc::new(RefCell::new(None::<BrowserTimeoutHandle>));
+            let preview_expiry_timeout: PreviewExpirySlot = Rc::new(RefCell::new(None));
             let event_preview_decoder = Rc::clone(&preview_decoder);
             let event_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
             let process_event: Rc<dyn Fn(WebSocketEvent)> = Rc::new(move |event| {
