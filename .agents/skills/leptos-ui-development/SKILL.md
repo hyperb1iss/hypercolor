@@ -410,12 +410,11 @@ while the consumer count is above zero. Parallel counters exist for the other
 streams (`set_screen_preview_consumers`, `set_screen_zones_consumers`,
 `set_web_viewport_preview_consumers`, `set_device_metrics_consumers`).
 
-FPS caps (`src/ws/preview.rs:11-14`):
+FPS caps (`src/ws/preview.rs`):
 
 | Constant                        | Value | Applies to                         |
 | ------------------------------- | ----- | ---------------------------------- |
 | `DEFAULT_PREVIEW_FPS_CAP`       | 60    | The main canvas preview            |
-| `HIDDEN_TAB_PREVIEW_FPS_CAP`    | 6     | Any preview while the tab is hidden |
 | `SCREEN_PREVIEW_FPS_CAP`        | 15    | The screen-source preview          |
 | `WEB_VIEWPORT_PREVIEW_FPS_CAP`  | 15    | The web-viewport preview           |
 
@@ -434,9 +433,17 @@ Canvas preview does **not** use `Portal`. Portal is used by `modal.rs`,
 `control_panel/{color,enum_select,sensor}.rs` popovers, which have to escape
 overflow-hidden cards.
 
-## Visibility-Aware FPS
+## Hidden Means Idle
 
-Tab hidden → reduce preview FPS to 6 via `document.visibilitychange` listener. Resets smoothed FPS counters on reconnect to avoid glitch display.
+A hidden page shows no frame, so `should_stream_preview` subscribes to none:
+when `document.visibilitychange` reports hidden, or the Tauri window reports
+hidden (`hypercolor-window-visibility`), the canvas, screen-canvas,
+web-viewport, screen-zones and display-preview subscriptions are dropped and
+the daemon stops encoding for this client. Becoming visible resubscribes from
+scratch through the same path a reconnect takes, so no epoch is lost. An
+interactive preview closes with the canvas stream (its extent comes from the
+authoritative frame) and reopens when frames return. Smoothed FPS counters
+reset on reconnect to avoid a glitchy display.
 
 ## leptos_icons Gotcha
 

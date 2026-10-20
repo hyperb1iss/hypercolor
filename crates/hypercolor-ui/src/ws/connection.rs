@@ -724,7 +724,7 @@ impl WsManager {
             let width_cap = preview_width_cap.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
-            if !should_stream_preview(window_visible, engine_target, consumer_count) {
+            if !should_stream_preview(is_visible, window_visible, engine_target, consumer_count) {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_preview_subscription(
                         requested_preview,
@@ -746,7 +746,6 @@ impl WsManager {
                     engine_target,
                     client_cap,
                     width_cap,
-                    is_visible,
                 );
             }
         });
@@ -759,7 +758,7 @@ impl WsManager {
             let consumer_count = screen_preview_consumers.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
-            if !should_stream_preview(window_visible, engine_target, consumer_count) {
+            if !should_stream_preview(is_visible, window_visible, engine_target, consumer_count) {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_screen_preview_subscription(
                         requested_screen_preview,
@@ -775,19 +774,18 @@ impl WsManager {
                     ws.as_ref(),
                     requested_screen_preview,
                     engine_target,
-                    is_visible,
                 );
             }
         });
 
         // Zone frames are tiny and carry no per-client config, so the
         // subscription is a simple on/off keyed to consumers, connection
-        // state, and app window visibility.
+        // state, and page and app window visibility.
         Effect::new(move |_| {
             let connected = connection_state.get() == ConnectionState::Connected;
             let consumer_count = screen_zones_consumers.get();
-            let window_visible = app_window_visible.get();
-            let wants_stream = connected && window_visible && consumer_count > 0;
+            let visible = page_visible.get() && app_window_visible.get();
+            let wants_stream = connected && visible && consumer_count > 0;
 
             if wants_stream {
                 if !screen_zones_requested.get_value()
@@ -813,7 +811,7 @@ impl WsManager {
             let consumer_count = web_viewport_preview_consumers.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
-            if !should_stream_preview(window_visible, engine_target, consumer_count) {
+            if !should_stream_preview(is_visible, window_visible, engine_target, consumer_count) {
                 if let Some(ws) = ws_handle.get_value() {
                     clear_web_viewport_preview_subscription(
                         requested_web_viewport_preview,
@@ -829,7 +827,6 @@ impl WsManager {
                     ws.as_ref(),
                     requested_web_viewport_preview,
                     engine_target,
-                    is_visible,
                 );
             }
         });
@@ -968,8 +965,9 @@ impl WsManager {
             visibility_change_callback.set_value(Some(on_visibility_change));
         }
 
-        // Tauri native-window visibility listener. Browser tab visibility only
-        // caps preview FPS; a hidden app window should unsubscribe entirely.
+        // Tauri native-window visibility listener. Page visibility misses some
+        // native minimize and hide states, so the window's own signal gates
+        // previews alongside it.
         if let Some(window) = browser_window() {
             tauri_visibility_change_callback.update_value(|handle| {
                 if let Some(mut handle) = handle.take() {

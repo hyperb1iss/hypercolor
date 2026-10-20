@@ -13,7 +13,6 @@ use hypercolor_types::spatial::SpatialLayout;
 use super::transport::{WebSocketConnection, send_json};
 
 pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 60;
-pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
 pub(super) const SCREEN_PREVIEW_FPS_CAP: u32 = 15;
 pub(super) const WEB_VIEWPORT_PREVIEW_FPS_CAP: u32 = 15;
 const REMOTE_PREVIEW_WIDTH_MEDIUM: u32 = 640;
@@ -66,25 +65,22 @@ impl PreviewSubscriptionRequest {
     }
 }
 
-pub(super) fn desired_preview_fps(
-    engine_target_fps: u32,
-    client_cap: u32,
-    page_visible: bool,
-) -> u32 {
-    let capped_target = engine_target_fps.clamp(1, 60).min(client_cap.clamp(1, 60));
-    if page_visible {
-        capped_target
-    } else {
-        capped_target.min(HIDDEN_TAB_PREVIEW_FPS_CAP)
-    }
+pub(super) fn desired_preview_fps(engine_target_fps: u32, client_cap: u32) -> u32 {
+    engine_target_fps.clamp(1, 60).min(client_cap.clamp(1, 60))
 }
 
+/// Whether a preview stream should be subscribed at all.
+///
+/// A hidden page shows no frame, so it subscribes to none: the daemon stops
+/// encoding for this client and the page stops decoding. Returning to view
+/// resubscribes from scratch, the same path a reconnect takes.
 pub(super) const fn should_stream_preview(
+    page_visible: bool,
     app_window_visible: bool,
     engine_target_fps: u32,
     consumer_count: u32,
 ) -> bool {
-    app_window_visible && engine_target_fps > 0 && consumer_count > 0
+    page_visible && app_window_visible && engine_target_fps > 0 && consumer_count > 0
 }
 
 fn preview_canvas_format_for_host(hostname: &str) -> &'static str {
@@ -110,10 +106,9 @@ pub(super) fn request_preview_subscription(
     engine_target_fps: u32,
     client_cap: u32,
     width_cap: u32,
-    page_visible: bool,
 ) {
     let request = PreviewSubscriptionRequest::canvas(
-        desired_preview_fps(engine_target_fps, client_cap, page_visible),
+        desired_preview_fps(engine_target_fps, client_cap),
         width_cap,
     );
     if requested_preview_request.get_value() == Some(request) {
@@ -142,10 +137,9 @@ pub(super) fn request_screen_preview_subscription(
     ws: &dyn WebSocketConnection,
     requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     engine_target_fps: u32,
-    page_visible: bool,
 ) {
     let request = PreviewSubscriptionRequest::canvas(
-        desired_preview_fps(engine_target_fps, SCREEN_PREVIEW_FPS_CAP, page_visible),
+        desired_preview_fps(engine_target_fps, SCREEN_PREVIEW_FPS_CAP),
         0,
     );
     if requested_preview_request.get_value() == Some(request) {
@@ -173,12 +167,10 @@ pub(super) fn request_web_viewport_preview_subscription(
     ws: &dyn WebSocketConnection,
     requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     engine_target_fps: u32,
-    page_visible: bool,
 ) {
     let request = PreviewSubscriptionRequest::web_viewport(desired_preview_fps(
         engine_target_fps,
         WEB_VIEWPORT_PREVIEW_FPS_CAP,
-        page_visible,
     ));
     if requested_preview_request.get_value() == Some(request) {
         return;
@@ -626,18 +618,20 @@ mod tests {
     }
 
     #[test]
-    fn hidden_page_caps_preview_fps() {
-        assert_eq!(desired_preview_fps(60, 60, false), 6);
-        assert_eq!(desired_preview_fps(20, 15, false), 6);
-        assert_eq!(desired_preview_fps(5, 60, false), 5);
+    fn preview_fps_is_the_lower_of_engine_target_and_client_cap() {
+        assert_eq!(desired_preview_fps(60, 60), 60);
+        assert_eq!(desired_preview_fps(60, 15), 15);
+        assert_eq!(desired_preview_fps(20, 60), 20);
+        assert_eq!(desired_preview_fps(120, 0), 1);
     }
 
     #[test]
-    fn hidden_tauri_window_disables_preview_streaming() {
-        assert!(should_stream_preview(true, 60, 1));
-        assert!(!should_stream_preview(false, 60, 1));
-        assert!(!should_stream_preview(true, 0, 1));
-        assert!(!should_stream_preview(true, 60, 0));
+    fn a_hidden_page_or_window_disables_preview_streaming() {
+        assert!(should_stream_preview(true, true, 60, 1));
+        assert!(!should_stream_preview(false, true, 60, 1));
+        assert!(!should_stream_preview(true, false, 60, 1));
+        assert!(!should_stream_preview(true, true, 0, 1));
+        assert!(!should_stream_preview(true, true, 60, 0));
     }
 
     #[test]
