@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
+use super::gpu_errors::{GpuDeviceRole, GpuErrorKind, record_device_lost, record_uncaptured_error};
+
 const GPU_RESOURCE_CREATION_BUDGET_PERCENT: u8 = 80;
 const GPU_DEVICE_LOSS_BUDGET_PERCENT: u8 = 95;
 
@@ -125,6 +127,7 @@ impl GpuRenderDevice {
             trace: wgpu::Trace::Off,
         }))
         .with_context(|| format!("failed to create a {label} wgpu device"))?;
+        install_error_handlers(&device, label, GpuDeviceRole::Compositor);
 
         let limits = device.limits();
         let info = GpuRenderDeviceInfo {
@@ -193,6 +196,7 @@ impl GpuRenderDevice {
             trace: wgpu::Trace::Off,
         }))
         .with_context(|| format!("failed to create an independent {label} wgpu device"))?;
+        install_error_handlers(&device, label, GpuDeviceRole::Auxiliary);
 
         let adapter_info = adapter.get_info();
         let limits = device.limits();
@@ -255,6 +259,46 @@ impl GpuRenderDevice {
             texture_format_name(format)
         );
     }
+}
+
+/// Route every error and loss `device` reports into the daemon's GPU
+/// error accounting.
+///
+/// Without a handler wgpu panics the calling thread on the first
+/// uncaptured validation error, which on the render thread takes the whole
+/// pipeline down. With it the error is counted, logged at error level with
+/// the device label and wgpu's description, and kept for diagnostics.
+fn install_error_handlers(device: &wgpu::Device, label: &'static str, role: GpuDeviceRole) {
+    device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+        let kind = match &error {
+            wgpu::Error::Validation { .. } => GpuErrorKind::Validation,
+            wgpu::Error::OutOfMemory { .. } => GpuErrorKind::OutOfMemory,
+            wgpu::Error::Internal { .. } => GpuErrorKind::Internal,
+        };
+        record_uncaptured_error(label, kind, &error.to_string());
+    }));
+    device.set_device_lost_callback(move |reason, message| {
+        let reason = match reason {
+            wgpu::DeviceLostReason::Unknown => "unknown",
+            wgpu::DeviceLostReason::Destroyed => "destroyed",
+        };
+        record_device_lost(label, role, reason, &message);
+    });
+}
+
+/// Raise one uncaptured validation error on `device` on purpose.
+///
+/// A buffer that is both read- and write-mappable is invalid without
+/// `MAPPABLE_PRIMARY_BUFFERS`, which no daemon device requests, so wgpu
+/// reports it synchronously through the uncaptured-error handler.
+#[cfg(test)]
+pub(crate) fn raise_uncaptured_validation_error(device: &wgpu::Device) {
+    let _invalid = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("injected validation error"),
+        size: 4,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::MAP_WRITE,
+        mapped_at_creation: false,
+    });
 }
 
 /// Make test devices compile shaders the way shipped builds do on users'
@@ -655,6 +699,22 @@ mod tests {
             ..hardware
         };
         assert!(llvmpipe.software_adapter_reason().is_some());
+    }
+
+    #[test]
+    fn uncaptured_validation_errors_are_counted_instead_of_panicking() {
+        let Ok(device) = GpuRenderDevice::new_with_backend_preference(
+            "validation handler test device",
+            GpuBackendPreference::Default,
+        ) else {
+            return;
+        };
+        let before = crate::render_thread::gpu_errors::gpu_error_totals();
+
+        raise_uncaptured_validation_error(device.device());
+
+        let after = crate::render_thread::gpu_errors::gpu_error_totals();
+        assert!(after.validation > before.validation);
     }
 
     #[test]

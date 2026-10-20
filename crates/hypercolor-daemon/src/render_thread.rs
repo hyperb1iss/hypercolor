@@ -36,6 +36,7 @@ mod frame_throttle;
 #[cfg(feature = "wgpu")]
 #[doc(hidden)]
 pub mod gpu_device;
+pub mod gpu_errors;
 mod input_publication;
 mod layer_runtime;
 mod lighting_feed;
