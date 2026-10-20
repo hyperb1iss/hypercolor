@@ -321,7 +321,8 @@ pub enum InputEvent {
     ///
     /// Position and pressure are normalized to `[0, 1]` in Q16.16, so
     /// `1 << 16` is the far edge. Movement between these edges is held
-    /// interaction state, not an event.
+    /// interaction state, not an event. `segment` names the device segment
+    /// the contact landed on, for devices whose touch surfaces span several.
     Touch {
         source_id: String,
         device_id: DeviceId,
@@ -330,6 +331,8 @@ pub enum InputEvent {
         x_q16_16: i64,
         y_q16_16: i64,
         pressure_q16_16: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        segment: Option<String>,
     },
 
     /// A control button on a device changed state.

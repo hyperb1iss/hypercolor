@@ -22,7 +22,19 @@ fn at(x: f32, y: f32, pressure: f32) -> TouchPosition {
 }
 
 fn began(contact: u32, position: TouchPosition) -> DeviceInputEdge {
-    DeviceInputEdge::TouchBegan { contact, position }
+    DeviceInputEdge::TouchBegan {
+        contact,
+        position,
+        segment: None,
+    }
+}
+
+fn began_on(contact: u32, position: TouchPosition, segment: &str) -> DeviceInputEdge {
+    DeviceInputEdge::TouchBegan {
+        contact,
+        position,
+        segment: Some(Arc::from(segment)),
+    }
 }
 
 fn moved(contact: u32, position: TouchPosition) -> DeviceInputEdge {
@@ -140,7 +152,7 @@ fn touches_announce_begin_and_end_while_moves_update_holds() {
     let snapshot = held(&slot);
     assert!(snapshot.generation > generation);
     assert_eq!(snapshot.device.touches.len(), 1);
-    let touch = snapshot.device.touches[0];
+    let touch = &snapshot.device.touches[0];
     assert_eq!((touch.device_id, touch.contact), (device, 2));
     assert_eq!((touch.x, touch.y, touch.pressure), (0.75, 0.25, 0.5));
 
@@ -174,6 +186,65 @@ fn repeated_begin_ends_the_previous_contact_first() {
         ]
     );
     assert_eq!(held(&slot).device.touches[0].x, 0.9);
+}
+
+/// Segment named by each touch event, in order.
+fn touch_segments(events: &[TimedInputEvent]) -> Vec<Option<String>> {
+    events
+        .iter()
+        .filter_map(|timed| match &timed.event {
+            InputEvent::Touch { segment, .. } => Some(segment.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_contact_keeps_the_segment_it_landed_on_until_it_ends() {
+    let handle = demanded_handle();
+    let attachment = handle.attach(DeviceId::new(), "controller");
+    let slot = attachment.slot();
+    let mut cursor = 0;
+    let pads = Some("Pads".to_owned());
+    let strip = Some("Touch Strip".to_owned());
+
+    attachment
+        .inject(&[
+            began_on(0, at(0.0, 0.0, 0.5), "Pads"),
+            began_on(64, at(0.5, 0.5, 1.0), "Touch Strip"),
+            moved(64, at(0.75, 0.5, 1.0)),
+        ])
+        .expect("inject");
+    assert_eq!(
+        touch_segments(&events_since(&slot, &mut cursor)),
+        vec![pads.clone(), strip.clone()]
+    );
+    let touches = held(&slot).device.touches;
+    assert_eq!(touches[0].segment.as_deref(), Some("Pads"));
+    assert_eq!(touches[1].segment.as_deref(), Some("Touch Strip"));
+    assert_eq!(touches[1].x, 0.75);
+
+    // A contact that lands again, on another segment, ends on its old one.
+    attachment
+        .inject(&[began(0, at(0.5, 0.5, 0.5)), ended(64, at(0.75, 0.5, 0.0))])
+        .expect("inject");
+    assert_eq!(
+        touch_segments(&events_since(&slot, &mut cursor)),
+        vec![pads, None, strip]
+    );
+
+    // Cancels name the segment too, so a consumer can place them.
+    attachment
+        .inject(&[began_on(7, at(0.25, 0.25, 0.5), "Pads")])
+        .expect("inject");
+    events_since(&slot, &mut cursor);
+    handle.set_demanded(false);
+    let events = events_since(&slot, &mut cursor);
+    assert_eq!(
+        touch_edges(&events),
+        vec![(0, TouchPhase::Cancelled), (7, TouchPhase::Cancelled)]
+    );
+    assert_eq!(touch_segments(&events), vec![None, Some("Pads".to_owned())]);
 }
 
 #[test]
@@ -211,7 +282,7 @@ fn positions_clamp_and_non_finite_input_never_strands_a_contact() {
             moved(1, at(f32::INFINITY, 0.5, 0.5)),
         ])
         .expect("inject");
-    let touch = held(&slot).device.touches[0];
+    let touch = held(&slot).device.touches[0].clone();
     assert_eq!((touch.x, touch.y, touch.pressure), (1.0, 0.0, 1.0));
 
     attachment
@@ -457,6 +528,7 @@ fn merged_snapshots_union_device_holds_per_device() {
         x,
         y: 0.5,
         pressure: 0.5,
+        segment: None,
     };
     let hold = |device_id| DeviceButtonHold {
         device_id,
@@ -593,6 +665,7 @@ fn routed_touches_carry_begin_and_end_edges_and_live_positions() {
             x: 0.25,
             y: 0.5,
             pressure: 0.5,
+            segment: None,
         }]
     );
     let began_generation = routed.generation;
@@ -616,6 +689,11 @@ fn routed_touches_carry_begin_and_end_edges_and_live_positions() {
         vec![(3, TouchPhase::Ended)]
     );
     assert!(routed.device.is_empty());
+
+    pad.inject(&[began_on(9, at(0.5, 0.5, 0.5), "Pads")])
+        .expect("inject");
+    let routed = route.host();
+    assert_eq!(routed.device.touches[0].segment.as_deref(), Some("Pads"));
 }
 
 #[test]

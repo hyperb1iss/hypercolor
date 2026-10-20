@@ -10,6 +10,11 @@ use std::sync::Arc;
 use crate::event::InputButtonState;
 
 /// A normalized position and pressure on a device touch surface.
+///
+/// A surface whose LEDs form a matrix or a strip uses the frame its LED order
+/// defines, so a touch lands on the LED under it however a layout places the
+/// device: a matrix's first LED is its top left, and a strip runs along `x`
+/// from its first LED.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TouchPosition {
     /// Horizontal position in `[0, 1]`, from the surface's left edge.
@@ -30,6 +35,10 @@ pub enum DeviceInputEdge {
     TouchBegan {
         contact: u32,
         position: TouchPosition,
+        /// Device segment the contact landed on, by the segment's name, for
+        /// a device whose touch surfaces span several segments. `None` on a
+        /// device with one surface. The contact keeps it until it ends.
+        segment: Option<Arc<str>>,
     },
     /// A held contact moved or changed pressure.
     TouchMoved {

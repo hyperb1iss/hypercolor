@@ -1311,6 +1311,7 @@ fn device_touch_round_trips_with_device_attribution() {
         x_q16_16: 32_768,
         y_q16_16: 65_536,
         pressure_q16_16: 16_384,
+        segment: None,
     };
 
     let json = serde_json::to_value(&touch).expect("serialize touch");
@@ -1321,11 +1322,34 @@ fn device_touch_round_trips_with_device_attribution() {
     assert_eq!(json["x_q16_16"], 32_768);
     assert_eq!(json["y_q16_16"], 65_536);
     assert_eq!(json["pressure_q16_16"], 16_384);
+    // A single-surface device's touch keeps the wire shape it always had.
+    assert!(json.get("segment").is_none());
 
     let restored: InputEvent = serde_json::from_value(json).expect("deserialize touch");
     assert_eq!(restored, touch);
     assert_eq!(restored.device_id(), Some(device_id));
     assert_eq!(restored.source_id(), format!("device:{device_id}"));
+}
+
+#[test]
+fn device_touch_on_a_named_segment_round_trips_the_segment() {
+    let device_id = DeviceId::new();
+    let touch = InputEvent::Touch {
+        source_id: format!("device:{device_id}"),
+        device_id,
+        contact: 64,
+        phase: TouchPhase::Ended,
+        x_q16_16: 0,
+        y_q16_16: 32_768,
+        pressure_q16_16: 65_536,
+        segment: Some("Touch Strip".to_owned()),
+    };
+
+    let json = serde_json::to_value(&touch).expect("serialize touch");
+    assert_eq!(json["segment"], "Touch Strip");
+
+    let restored: InputEvent = serde_json::from_value(json).expect("deserialize touch");
+    assert_eq!(restored, touch);
 }
 
 #[test]

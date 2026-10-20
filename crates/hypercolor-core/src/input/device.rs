@@ -63,6 +63,7 @@ pub enum DeviceInputRegistryError {
 
 struct HeldTouch {
     position: TouchPosition,
+    segment: Option<Arc<str>>,
     announced: bool,
 }
 
@@ -638,14 +639,23 @@ impl EdgeFold<'_> {
     fn apply(&mut self, state: &mut DeviceChildState, edge: &DeviceInputEdge) {
         let announce = state.publishing;
         match edge {
-            DeviceInputEdge::TouchBegan { contact, position } => {
+            DeviceInputEdge::TouchBegan {
+                contact,
+                position,
+                segment,
+            } => {
                 let Some(position) = sanitize_position(*position, None) else {
                     self.dropped = self.dropped.saturating_add(1);
                     return;
                 };
                 if let Some(previous) = state.touches.remove(contact) {
                     if previous.announced {
-                        self.touch(*contact, TouchPhase::Ended, previous.position);
+                        self.touch(
+                            *contact,
+                            TouchPhase::Ended,
+                            previous.position,
+                            previous.segment.as_deref(),
+                        );
                     }
                 } else if state.touches.len() >= MAX_CONTACTS_PER_DEVICE {
                     self.dropped = self.dropped.saturating_add(1);
@@ -655,11 +665,12 @@ impl EdgeFold<'_> {
                     *contact,
                     HeldTouch {
                         position,
+                        segment: segment.clone(),
                         announced: announce,
                     },
                 );
                 if announce {
-                    self.touch(*contact, TouchPhase::Began, position);
+                    self.touch(*contact, TouchPhase::Began, position, segment.as_deref());
                 }
             }
             DeviceInputEdge::TouchMoved { contact, position } => {
@@ -681,7 +692,12 @@ impl EdgeFold<'_> {
                 {
                     let position =
                         sanitize_position(*position, Some(held.position)).unwrap_or(held.position);
-                    self.touch(*contact, TouchPhase::Ended, position);
+                    self.touch(
+                        *contact,
+                        TouchPhase::Ended,
+                        position,
+                        held.segment.as_deref(),
+                    );
                 }
             }
             DeviceInputEdge::Button {
@@ -721,7 +737,12 @@ impl EdgeFold<'_> {
         for (contact, held) in &mut state.touches {
             if held.announced {
                 held.announced = false;
-                self.touch(*contact, TouchPhase::Cancelled, held.position);
+                self.touch(
+                    *contact,
+                    TouchPhase::Cancelled,
+                    held.position,
+                    held.segment.as_deref(),
+                );
             }
         }
         for (button, announced) in &mut state.buttons {
@@ -732,7 +753,13 @@ impl EdgeFold<'_> {
         }
     }
 
-    fn touch(&mut self, contact: u32, phase: TouchPhase, position: TouchPosition) {
+    fn touch(
+        &mut self,
+        contact: u32,
+        phase: TouchPhase,
+        position: TouchPosition,
+        segment: Option<&str>,
+    ) {
         self.changed = true;
         self.events.push(timed_event(
             InputEvent::Touch {
@@ -743,6 +770,7 @@ impl EdgeFold<'_> {
                 x_q16_16: unit_to_q16_16(position.x),
                 y_q16_16: unit_to_q16_16(position.y),
                 pressure_q16_16: unit_to_q16_16(position.pressure),
+                segment: segment.map(str::to_owned),
             },
             self.at_ms,
         ));
@@ -778,6 +806,7 @@ fn build_child_snapshot(
             x: held.position.x,
             y: held.position.y,
             pressure: held.position.pressure,
+            segment: held.segment.clone(),
         })
         .collect();
     data.device.buttons = state

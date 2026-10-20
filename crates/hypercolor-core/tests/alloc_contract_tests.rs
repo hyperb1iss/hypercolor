@@ -601,6 +601,8 @@ fn steady_router_resolution_control() -> (Stats, Stats) {
                     y: 0.5,
                     pressure: 0.5,
                 },
+                // A named segment keeps the held rebuild allocation free too.
+                segment: Some(Arc::from("Pads")),
             },
             DeviceInputEdge::Button {
                 button: Arc::from("mode"),

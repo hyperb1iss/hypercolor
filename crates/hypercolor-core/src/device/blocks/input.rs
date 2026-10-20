@@ -293,7 +293,12 @@ fn touch_edge(touch: &BlocksTouch) -> DeviceInputEdge {
         pressure: touch.z,
     };
     match touch.action {
-        BlocksTouchAction::Start => DeviceInputEdge::TouchBegan { contact, position },
+        // A block has one touch surface, so its touches name no segment.
+        BlocksTouchAction::Start => DeviceInputEdge::TouchBegan {
+            contact,
+            position,
+            segment: None,
+        },
         BlocksTouchAction::Move => DeviceInputEdge::TouchMoved { contact, position },
         BlocksTouchAction::End => DeviceInputEdge::TouchEnded { contact, position },
     }
