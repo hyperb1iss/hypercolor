@@ -42,7 +42,7 @@
     --accent-muted:      oklch(0.65 0.30 320 / 0.12);
     --accent-subtle:     oklch(0.65 0.30 320 / 0.06);
 
-    /* Ambient (dynamic — --ambient-hue set from Leptos). The colors are
+    /* Ambient (dynamic: --ambient-hue is set from Leptos). The colors are
        built from channel tokens so a consumer that drifts its own copy of
        the hue (.preview-glow) can rebuild them; a token declared here has
        already substituted the root hue. Light mode overrides the channels. */

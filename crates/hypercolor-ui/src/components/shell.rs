@@ -33,6 +33,18 @@ fn targets_editable(ev: &leptos::ev::KeyboardEvent) -> bool {
     tag == "input" || tag == "textarea" || tag == "select" || el.is_content_editable()
 }
 
+/// The hue a previous shell left on the document element, so a remounted
+/// shell keeps unwrapping from it instead of from the CSS fallback.
+fn published_ambient_hue() -> Option<f64> {
+    let root = browser_document()?.document_element()?;
+    let value = root
+        .dyn_ref::<web_sys::HtmlElement>()?
+        .style()
+        .get_property_value("--ambient-hue")
+        .ok()?;
+    value.trim().parse().ok()
+}
+
 /// Focus the current page's search bar (the `/` kbd hint in `PageSearchBar`).
 fn focus_page_search() {
     if let Some(doc) = browser_document()
@@ -57,7 +69,10 @@ pub fn Shell(children: Children) -> impl IntoView {
     // whole document, so `AmbientHuePublisher` paces it; CSS drifts the
     // halo between published values.
     let frame_analysis = use_context::<FrameAnalysisContext>();
-    let ambient_publisher = StoredValue::new(AmbientHuePublisher::default());
+    let ambient_publisher = StoredValue::new(published_ambient_hue().map_or_else(
+        AmbientHuePublisher::default,
+        AmbientHuePublisher::starting_at,
+    ));
 
     if let Some(frame_analysis) = frame_analysis {
         Effect::new(move |_| {

@@ -4,8 +4,8 @@
 //! on the document element, where every `--ambient-*` token resolves it.
 //! A write there restyles the whole document, so it happens on a slow,
 //! fixed cadence and only for a change the eye could see. CSS interpolates
-//! between published values (`--ambient-hue-drift` in
-//! `tokens/semantic.css`), so the tint still drifts instead of stepping.
+//! between published values (`--ambient-hue-drift` in `input.css`), so the
+//! tint still drifts instead of stepping.
 
 /// Least time between two published hues.
 ///
@@ -22,46 +22,63 @@ pub const AMBIENT_PUBLISH_INTERVAL_MS: f64 = 1_000.0;
 /// publishing would restart the drift for nothing.
 pub const AMBIENT_HUE_DEADBAND_DEG: f64 = 4.0;
 
+/// The hue `tokens/semantic.css` declares before anything is published.
+pub const AMBIENT_HUE_FALLBACK_DEG: f64 = 320.0;
+
 /// Paces `--ambient-hue` writes and keeps the published value continuous.
 ///
 /// Published values are unwrapped: a move from 350° to 10° publishes 370,
 /// not 10, so CSS interpolating the number turns 20° the short way rather
-/// than 340° the long way. OKLCH reads any angle modulo 360.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// than 340° the long way. OKLCH reads any angle modulo 360. The first
+/// publish unwraps against the value CSS already holds for the same reason.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AmbientHuePublisher {
-    published: Option<f64>,
+    published: f64,
     published_at_ms: f64,
 }
 
+impl Default for AmbientHuePublisher {
+    fn default() -> Self {
+        Self::starting_at(AMBIENT_HUE_FALLBACK_DEG)
+    }
+}
+
 impl AmbientHuePublisher {
+    /// A publisher continuing from `hue_deg`, the value `--ambient-hue`
+    /// holds now. Its first move is not held back by the interval.
+    #[must_use]
+    pub fn starting_at(hue_deg: f64) -> Self {
+        Self {
+            published: if hue_deg.is_finite() {
+                hue_deg
+            } else {
+                AMBIENT_HUE_FALLBACK_DEG
+            },
+            published_at_ms: f64::NEG_INFINITY,
+        }
+    }
+
     /// Offer a freshly measured hue in degrees. Returns the value to write
     /// as `--ambient-hue`, or `None` when the tint should stay put.
     pub fn offer(&mut self, hue_deg: f64, now_ms: f64) -> Option<f64> {
         if !hue_deg.is_finite() || !now_ms.is_finite() {
             return None;
         }
-        let Some(published) = self.published else {
-            let first = hue_deg.rem_euclid(360.0);
-            self.published = Some(first);
-            self.published_at_ms = now_ms;
-            return Some(first);
-        };
         if now_ms - self.published_at_ms < AMBIENT_PUBLISH_INTERVAL_MS {
             return None;
         }
-        let delta = shortest_hue_delta(published, hue_deg);
+        let delta = shortest_hue_delta(self.published, hue_deg);
         if delta.abs() < AMBIENT_HUE_DEADBAND_DEG {
             return None;
         }
-        let next = published + delta;
-        self.published = Some(next);
+        self.published += delta;
         self.published_at_ms = now_ms;
-        Some(next)
+        Some(self.published)
     }
 
-    /// The last value handed out, unwrapped.
+    /// The value `--ambient-hue` holds, unwrapped.
     #[must_use]
-    pub const fn published(&self) -> Option<f64> {
+    pub const fn published(&self) -> f64 {
         self.published
     }
 }
