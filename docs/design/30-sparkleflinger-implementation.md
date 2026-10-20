@@ -225,21 +225,26 @@ With no consumer the gate parks the loop instead of rendering. It
 withdraws the authoritative input capture demand, releases the screen
 queue, calls `EffectRenderer::park` on every producer (which throttles
 Servo webviews so the page's script thread stops scheduling its own
-animation ticks and slows its timers), and returns `NextWake::Park`. The
-pipeline driver then sleeps on the bus output-demand signal (notified by
-lane subscriptions, demand holds, and event publication), the device
-registry change signal, the input demand revision, and the scene
-transaction queue, with a one second safety tick. On wake it rebases the
-frame clock one target interval back, so effect time steps by one frame,
-records the wake frame for capture freshness, and continues at the
-current tier.
+animation ticks; page timers keep their pace), drops live media streams
+on a teardown thread, abandons
+the admitted frame without recording it, calls `RenderLoop::park` so
+render time stops like it does for a pause, and returns `NextWake::Park`.
+The pipeline driver then sleeps on the bus output-demand signal (notified
+by lane subscriptions, demand holds, and event publication, and armed only
+while the loop waits), the device registry change signal, the input demand
+revision, and the scene transaction queue, with a one second safety tick.
+On wake it unparks the render loop, rebases the frame clock one target
+interval back so effect time steps by one frame, records the wake frame
+for capture freshness, and continues at the current tier.
 
 The gate parks only once the producers are settled: three consecutive
-frame starts with no producer reporting `is_warming` under an unchanged
-producer signature (scene plan generation, zones revision, effect registry
-generation, zone layout preview generation, canvas size), bounded at ten
-seconds. Frames that consumers drive count toward settling, so losing the
-last consumer parks at once when the producers are warm.
+frame starts with no producer reporting `is_warming`, no loading media,
+and no scene transition in flight, under an unchanged producer signature
+(scene plan generation, zones revision, effect registry generation, zone
+layout preview generation, canvas size), bounded at ten seconds, so a
+crossfade longer than that pauses partway until a consumer returns. Frames
+that consumers drive count toward settling, so losing the last consumer
+parks at once when the producers are warm.
 
 ### 3.5 Input sampling
 
