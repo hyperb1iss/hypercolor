@@ -271,10 +271,12 @@ fn outdated_schema_is_refused_and_names_the_file_and_the_fix() {
 
 /// The hand-migration lands an old file on the oldest schema the chain
 /// still upgrades, so later migrations run on it. Jumping straight to the
-/// current schema would skip them and keep a retired beat threshold.
+/// current schema would skip them and keep a retired beat threshold and
+/// render target.
 #[test]
 fn following_the_hand_migration_runs_every_later_migration() {
-    let old = "schema_version = 3\n\n[audio]\nbeat_sensitivity = 0.6\n";
+    let old =
+        "schema_version = 3\n\n[daemon]\ntarget_fps = 30\n\n[audio]\nbeat_sensitivity = 0.6\n";
     let error = ConfigManager::parse_toml(old).expect_err("schema 3 must be refused");
     let rendered = format!("{error:#}");
     assert!(rendered.contains("schema_version = 4"), "{rendered}");
@@ -285,6 +287,7 @@ fn following_the_hand_migration_runs_every_later_migration() {
 
     assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     assert!((config.audio.beat_sensitivity - DEFAULT_BEAT_SENSITIVITY).abs() < f32::EPSILON);
+    assert_eq!(config.daemon.target_fps, DEFAULT_TARGET_FPS);
     assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Merge);
     assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
 }
