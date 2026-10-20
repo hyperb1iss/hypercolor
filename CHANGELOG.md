@@ -5,6 +5,69 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-10-20
+
+GPU-resident multi-zone rendering lands from spec 86, the effect authoring loop gains canvas capture plus a live console over CLI/REST/MCP, and the WebSocket gains a monotonic publication clock. Seven RustSec advisories are closed across the dependency graph.
+
+### Added
+
+- ✨ Render multi-zone scenes GPU-resident: each zone samples from its own GPU texture (`75254a9`), Gaussian-area plans sample on the GPU (`7d6686d`), and unassigned fallback outputs sample there too (`3c878d0`)
+- ✨ Publish **Studio zone previews** for GPU-resident zones (`c4b0ed7`), with previews queued behind LED work (`b78d07a`)
+- ✨ Report per-zone sampling counters on every frame (`237934f`) and warn in `diagnose` when a multi-zone frame holds a zone (`13a7e52`)
+- ✨ Add the effect authoring loop: capture the composed canvas over REST and MCP (`9c75087`), journal effect console output with author line numbers (`4e5f043`), serve console and install over MCP (`3ec1d85`), and add `effects capture`, `effects console`, and `effects install` to the CLI (`9d4cc2a`)
+- ✨ Add the `effect-livecoding` skill and route authoring through it (`0c90a05`, `e505a6f`)
+- ✨ Stamp bus events on a **microsecond publication clock** (`4b44675`), send `mono_us` and the clock epoch on the WebSocket hello (`abe1198`, `bf4988d`), stamp command responses inside the round trip (`a03559a`, `48c3336`), and read both from the Python client (`7df1bca`, `7569cff`)
+- ✨ Give device declines their own delivery outcome (`66a930c`) and report declined deliveries in the device output snapshot (`84fb5dd`)
+- ✨ Let drivers request a driver-scoped discovery (`4339aa9`)
+- ✨ Expose whether a scene's primary zone follows the active layout (`450f048`)
+- ✨ Document the multipart upload request bodies in OpenAPI (`b9a7004`)
+
+### Changed
+
+- 🔄 Raise the default **beat threshold** from `0.6` to `1.2` (`40bbd7d`), migrate the retired `0.6` value in config schema 6 (`695bb1b`), and relabel the UI beat slider as a threshold (`e013afb`)
+- 🔄 Move config strictness into `HypercolorConfig::deserialize_strict`, which wraps the TOML loader, env/CLI overlays, and REST config writes, and names each rejected key by its full dotted path (`b3febb9`)
+- 🔄 Drop `deny_unknown_fields` from the config section types so a client embedding `hypercolor-types` can decode payloads from a newer daemon instead of failing the whole `GET /api/v1/config` decode (`bbc7fb8`); registry section validation stays strict (`5c96f48`)
+- 🔄 Render axum extractor rejections as the standard error envelope (`bc52054`, `3cd0af7`) and fence stock extractors with clippy `disallowed_types` (`2547d69`)
+- 🔄 Skip durable writes whose bytes are already on disk (`ad2444f`), run one directory barrier per durable write (`588facd`), move scene commit file I/O to the blocking pool (`bb453c4`), and trust the scene service's store receipts per commit (`e74fb7a`)
+- 🔄 Run each WebSocket session's commands on a dedicated lane (`a7fd7a4`) and drain a closing session's backlog in order (`dbf54ca`)
+- 🔄 Overlap SMBus frame writes of different devices on one bus (`5651dd7`), write only the Aura SMBus LEDs a frame changes (`2a395c8`), and assert Aura DRAM direct mode only when its state is unknown (`5d18019`)
+- 🔄 Vendor `utoipa-swagger-ui` 10.0.1 unmodified (`4e8e2b0`) and bump the Rust dependency group across 12 updates (`f3689f5`)
+- 🔄 Prune idle incremental directories from the build cache wrapper (`e64085e`, `1140866`) and gate GPU zone, composer, and render-thread tests on the WARP lane (`41513b2`, `7bff627`)
+
+### Fixed
+
+- 🐛 Blend transitions out of multi-zone scenes in LED space (`64013d9`), keep per-zone fade provenance while held LEDs wait (`ac38ff7`), and start interrupting fades from the LEDs' per-zone blend (`328499c`)
+- 🐛 Publish GPU samples that finish after a newer dispatch (`d65b9a8`), bound the GPU work a render frame may leave queued (`c9baa19`), and end every render frame's GPU work including early exits (`a372f55`)
+- 🐛 Open one GPU device for both render compositors (`1e66eee`) and keep scene preview readbacks across compositor switches (`47419fd`)
+- 🐛 Collapse display zones when a device identity remap collides (`81c65f0`), remap display targets minted before driver-scoped fingerprints (`3534947`), and announce device binding migrations on the scene commit (`0cd2482`)
+- 🐛 Retire each discovery target's departures from its own scan (`cce7eea`), run driver-scoped scans in their own lanes (`dda72dc`), drain every scan task before shutdown cleanup (`f836e77`), and fence background connects to their lifecycle intent (`d488062`)
+- 🐛 Adopt and retire blocks as soon as blocksd reports them (`3696bfa`), report a blocksd negative acknowledgement as a decline (`f371d39`), and fail a binary frame ack byte blocksd never sends (`495ea51`)
+- 🐛 Verify identical bytes on disk before skipping a write (`18f2626`), never verify a destination through a final symlink (`d0f01dd`), apply the requested mode before syncing (`a09d214`), and treat an explicit `0000` file mode as a real request (`0ecd937`)
+- 🐛 Start the Servo hard-stall clock when the worker starts a render (`f2f7ed1`) and keep WebGL drawing buffers between frame captures (`8ea391c`)
+- 🐛 Stop re-applying saved preferences over other clients' applies (`89e5401`), add Studio effect layers in their remembered state (`7a6889d`), keep saved primary-zone placements in the active layout (`fad5874`), and carry only what a Save changed into the shared layout (`1a68ad1`)
+- 🐛 Pace display faces on a due-time cadence (`8622226`) and count frames published during a burst interval as fresh (`74b1201`)
+- 🐛 Hand-migrate pre-v4 configs onto schema 4 (`d573205`)
+- 🐛 Accept a scene read back as its own replacement (`a20281e`); document optional upload parts as absent rather than null (`f3396fe`) and both media types the canvas route returns (`c9918d5`)
+
+### Security
+
+- 🔒 Bump `rustls` to 0.23.46, closing RUSTSEC-2026-0346 (TLS secrets in `Debug` output), RUSTSEC-2026-0347 (buffered application data after ECH rejection), RUSTSEC-2026-0348 (1 GiB pre-auth allocation in Brotli certificate decompression), and RUSTSEC-2026-0349 (unauthenticated `ServerHello` downgrade). rustls reaches the daemon through reqwest, tokio-rustls, tungstenite, the Hue DTLS stack, and Servo (`728d81a`)
+- 🔒 Build the vendored `utoipa-swagger-ui` against `zip` 9.0.5, closing RUSTSEC-2026-0367, RUSTSEC-2026-0368, and RUSTSEC-2026-0369. `zip` is a build dependency only and the build script does not call the affected extract APIs, so none was reachable; the bump clears `cargo deny` without advisory ignores (`3055ee7`)
+
+### Breaking Changes
+
+- **WebSocket manifest `schema_version` moves from 2 to 3** for the new top-level `clock` block (`1fd72ae`)
+  - No in-repo consumer reads `schema_version`, so the bump changes no in-repo behavior
+  - Third-party generators or clients that key on `schema_version` should regenerate against `protocol/websocket-v1.json`
+
+### Metrics
+
+- Total Commits: 215
+- Files Changed: 392
+- Insertions: +39,862
+- Deletions: -2,791
+<!-- -------------------------------------------------------------- -->
+
 ## [0.7.0] - 2026-10-13
 
 This release detects competing RGB software and reports it in the UI and diagnostics, rebuilds the main UI drag surfaces on captured pointer events (wave 1 of spec 75), and tightens the daemon's network trust model behind a credential authority seam. Config writes now tell you whether they reached disk, and LightScript effects can read device touch and button input. The insertion count is dominated by vendoring `servo-script` 0.6.0 into `vendor/`.
