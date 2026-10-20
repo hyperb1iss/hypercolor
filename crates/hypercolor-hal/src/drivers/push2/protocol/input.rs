@@ -6,7 +6,11 @@
 //!
 //! - Pads are notes 36 (bottom left) to 99 (top right). A press is Note On
 //!   with its velocity; a release is Note Off. Aftertouch arrives as channel
-//!   pressure by default, or as polyphonic key pressure per pad.
+//!   pressure by default, or as polyphonic key pressure per pad. Aftertouch
+//!   reports only above the pads' threshold and can fall to 0 once a strike
+//!   settles, so a held pad's pressure is the greater of its strike velocity
+//!   and its latest aftertouch: pressing harder swells it, and the strike
+//!   sets its floor.
 //! - The touch strip touch is Note On 12 with velocity 127, released with
 //!   velocity 0. Its position is a pitch bend from 0 at the bottom to 16320
 //!   at the top (eight significant bits), the mode the driver configures.
@@ -141,8 +145,17 @@ pub struct Push2InputDecoder {
     button_by_cc: [Option<Arc<str>>; 128],
     pads_segment: Arc<str>,
     strip_segment: Arc<str>,
-    held_pads: [bool; PUSH2_PAD_COUNT],
+    held_pads: [Option<HeldPad>; PUSH2_PAD_COUNT],
     strip: StripState,
+}
+
+/// A pad the device reported pressed.
+#[derive(Debug, Clone, Copy)]
+struct HeldPad {
+    /// Velocity of the strike, the floor for its pressure.
+    strike: u8,
+    /// Pressure last reported for it, as a seven-bit value.
+    pressure: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -174,7 +187,7 @@ impl Push2InputDecoder {
             button_by_cc,
             pads_segment: Arc::from(PUSH2_PADS_SEGMENT),
             strip_segment: Arc::from(PUSH2_TOUCH_STRIP_SEGMENT),
-            held_pads: [false; PUSH2_PAD_COUNT],
+            held_pads: [None; PUSH2_PAD_COUNT],
             strip: StripState::default(),
         }
     }
@@ -257,17 +270,15 @@ impl Push2InputDecoder {
             NOTE_ON if second > 0 => self.press(first, second, edges),
             NOTE_ON | NOTE_OFF => self.release(first, edges),
             POLY_PRESSURE => {
-                if let Some(pad) = self.held_pad(first) {
-                    edges.push(self.pad_edge(pad, second, EdgeKind::Moved));
+                if let Some(pad) = self.pad(first) {
+                    self.aftertouch(pad, second, edges);
                 }
             }
             CHANNEL_PRESSURE => {
                 // The Push 2 reports its hardest-pressed pad; every held pad
-                // takes that pressure.
-                for (pad, held) in (0_u8..).zip(self.held_pads) {
-                    if held {
-                        edges.push(self.pad_edge(pad, first, EdgeKind::Moved));
-                    }
+                // takes that aftertouch.
+                for pad in 0..PAD_GRID * PAD_GRID {
+                    self.aftertouch(pad, first, edges);
                 }
             }
             CONTROL_CHANGE => {
@@ -304,7 +315,10 @@ impl Push2InputDecoder {
             return;
         }
         if let Some(pad) = self.pad(note) {
-            self.held_pads[usize::from(pad)] = true;
+            self.held_pads[usize::from(pad)] = Some(HeldPad {
+                strike: velocity,
+                pressure: velocity,
+            });
             edges.push(self.pad_edge(pad, velocity, EdgeKind::Began));
         }
     }
@@ -328,8 +342,9 @@ impl Push2InputDecoder {
             self.strip.began = false;
             return;
         }
-        if let Some(pad) = self.held_pad(note) {
-            self.held_pads[usize::from(pad)] = false;
+        if let Some(pad) = self.pad(note)
+            && self.held_pads[usize::from(pad)].take().is_some()
+        {
             edges.push(self.pad_edge(pad, 0, EdgeKind::Ended));
         }
     }
@@ -370,9 +385,17 @@ impl Push2InputDecoder {
         self.pad_by_note[usize::from(note)]
     }
 
-    fn held_pad(&self, note: u8) -> Option<u8> {
-        self.pad(note)
-            .filter(|pad| self.held_pads[usize::from(*pad)])
+    /// Move a held pad to the greater of its strike and `aftertouch`, when
+    /// that changes its pressure. A pad that is not held has none to report.
+    fn aftertouch(&mut self, pad: u8, aftertouch: u8, edges: &mut Vec<DeviceInputEdge>) {
+        let Some(held) = &mut self.held_pads[usize::from(pad)] else {
+            return;
+        };
+        let pressure = held.strike.max(aftertouch);
+        if pressure != held.pressure {
+            held.pressure = pressure;
+            edges.push(self.pad_edge(pad, pressure, EdgeKind::Moved));
+        }
     }
 
     fn pad_edge(&self, pad: u8, value: u8, kind: EdgeKind) -> DeviceInputEdge {
@@ -394,7 +417,7 @@ impl Push2InputDecoder {
     }
 
     fn lose(&mut self) -> Push2InputDecode {
-        self.held_pads = [false; PUSH2_PAD_COUNT];
+        self.held_pads = [None; PUSH2_PAD_COUNT];
         self.strip = StripState::default();
         Push2InputDecode::Lost
     }

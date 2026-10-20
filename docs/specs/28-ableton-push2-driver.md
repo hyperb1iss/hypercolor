@@ -1042,13 +1042,21 @@ other channels are ignored.
 | --- | --- |
 | Note On 36 to 99, velocity > 0 | Pad `TouchBegan`, pressure = velocity / 127, segment `Pads` |
 | Note Off, or Note On velocity 0, on a held pad | Pad `TouchEnded` |
-| Poly key pressure on a held pad | That pad's `TouchMoved` with the new pressure |
-| Channel pressure | `TouchMoved` for every held pad with that pressure (the device reports its hardest-pressed pad) |
+| Poly key pressure on a held pad | That pad's `TouchMoved` when its pressure changes (see below) |
+| Channel pressure | The same for every held pad (the device reports its hardest-pressed pad) |
 | Note On 12, velocity 127 / 0 | Touch strip touched / released, contact 64, segment `Touch Strip` |
 | Pitch bend (14 bit, 0 bottom to 16320 top) | Touch strip position |
 | Control change, value > 0 / 0, on a button CC | `Button` pressed / released |
 | Control change 14, 15, 71 to 79 | Ignored: relative encoder turns |
 | Note On 0 to 10 | Ignored: encoder capacitive touches |
+
+**Held pressure.** A held pad's pressure is the greater of its strike
+(Note On velocity / 127) and its latest aftertouch value / 127. The Push 2
+reports aftertouch only above its pads' threshold and can send 0 once a
+strike settles, so taking the aftertouch alone would collapse a held pad's
+pressure right after the hit. Pressing in harder still raises it; easing
+off settles back to the strike, never below. A pad's `TouchMoved` goes out
+only when that pressure changes.
 
 Pad contacts are their LED index (`note - 36`). A pad touch reports
 `x = column / 7` and `y = row / 7`, with row 0 the first LED row (notes 36 to

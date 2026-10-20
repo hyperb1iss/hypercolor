@@ -129,35 +129,43 @@ fn note_off_and_zero_velocity_note_on_both_release_a_pad() {
 }
 
 #[test]
-fn poly_pressure_moves_one_held_pad_and_channel_pressure_moves_them_all() {
+fn aftertouch_swells_held_pads_above_their_strike_and_never_below_it() {
     let mut decoder = Push2InputDecoder::new();
     decode(&mut decoder, &[NOTE_ON, 36, 100]);
-    decode(&mut decoder, &[NOTE_ON, 99, 100]);
+    decode(&mut decoder, &[NOTE_ON, 99, 40]);
+    let moved = |contact, x, y, value: f32| DeviceInputEdge::TouchMoved {
+        contact,
+        position: pad_at(x, y, value / 127.0),
+    };
 
+    // Poly pressure moves only its own pad, and only while it is held.
     assert_eq!(
         decode(&mut decoder, &[0xA0, 99, 127]),
-        vec![DeviceInputEdge::TouchMoved {
-            contact: 63,
-            position: pad_at(1.0, 1.0, 1.0),
-        }]
+        vec![moved(63, 1.0, 1.0, 127.0)]
     );
+    assert_eq!(
+        decode(&mut decoder, &[0xA0, 99, 20]),
+        vec![moved(63, 1.0, 1.0, 40.0)],
+        "easing off settles back to the strike, not below it"
+    );
+    assert!(decode(&mut decoder, &[0xA0, 99, 10]).is_empty());
     assert!(
         decode(&mut decoder, &[0xA0, 40, 127]).is_empty(),
         "a pad that is not held has no pressure to report"
     );
+
+    // Channel pressure reaches every held pad through the same floor, so
+    // the zero sent once a strike settles leaves both at their strikes.
+    assert!(decode(&mut decoder, &[0xD0, 0]).is_empty());
+    assert_eq!(
+        decode(&mut decoder, &[0xD0, 110]),
+        vec![moved(0, 0.0, 0.0, 110.0), moved(63, 1.0, 1.0, 110.0),]
+    );
     assert_eq!(
         decode(&mut decoder, &[0xD0, 0]),
-        vec![
-            DeviceInputEdge::TouchMoved {
-                contact: 0,
-                position: pad_at(0.0, 0.0, 0.0),
-            },
-            DeviceInputEdge::TouchMoved {
-                contact: 63,
-                position: pad_at(1.0, 1.0, 0.0),
-            },
-        ]
+        vec![moved(0, 0.0, 0.0, 100.0), moved(63, 1.0, 1.0, 40.0)]
     );
+
     decode(&mut decoder, &[NOTE_OFF, 36, 0]);
     decode(&mut decoder, &[NOTE_OFF, 99, 0]);
     assert!(decode(&mut decoder, &[0xD0, 90]).is_empty());

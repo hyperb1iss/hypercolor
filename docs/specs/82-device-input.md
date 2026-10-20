@@ -488,7 +488,8 @@ Mode reply announcing Live mode, reports `interrupted()`.
   local frame. Strip outputs follow their direction since phase 3; before,
   only left-to-right strips agreed with their LEDs.
 - Push 2 channel pressure carries one value for the whole device, so every
-  held pad takes the hardest-pressed pad's pressure. The driver does not
+  held pad takes the hardest-pressed pad's aftertouch, floored at its own
+  strike velocity. The driver does not
   switch the device to poly aftertouch, which would need a sysex the driver
   avoids sending.
 - A Push 2 touch strip finger that stops exactly on the strip's center
