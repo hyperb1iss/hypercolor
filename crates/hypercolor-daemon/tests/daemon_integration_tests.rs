@@ -421,7 +421,7 @@ async fn config_loading_defaults_have_correct_schema() {
         .boot;
 
     assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
-    assert_eq!(config.daemon.target_fps, 30);
+    assert_eq!(config.daemon.target_fps, 60);
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.listen_address, "127.0.0.1");
     assert_eq!(config.daemon.canvas_width, DEFAULT_CANVAS_WIDTH);

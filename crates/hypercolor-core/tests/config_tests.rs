@@ -25,7 +25,7 @@ fn load_minimal_toml() {
     assert_eq!(config.schema_version, 6);
     // Sections should fall back to their serde defaults
     assert_eq!(config.daemon.port, 9420);
-    assert_eq!(config.daemon.target_fps, 30);
+    assert_eq!(config.daemon.target_fps, 60);
     assert!(config.web.enabled);
     assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
@@ -341,7 +341,7 @@ fn new_with_missing_file_uses_defaults() {
 
     assert_eq!(config.schema_version, 6);
     assert_eq!(config.daemon.port, 9420);
-    assert_eq!(config.daemon.target_fps, 30);
+    assert_eq!(config.daemon.target_fps, 60);
     assert!(config.web.enabled);
 }
 
@@ -760,7 +760,7 @@ mod change_stream {
 
         assert_eq!(
             drain_config_changes(&mut events),
-            vec![("daemon.target_fps".to_owned(), Some(json!(30)), json!(45))]
+            vec![("daemon.target_fps".to_owned(), Some(json!(60)), json!(45))]
         );
     }
 
@@ -870,7 +870,7 @@ mod change_stream {
         assert_eq!(manager.get().daemon.target_fps, 50);
         assert_eq!(
             drain_config_changes(&mut events),
-            vec![("daemon.target_fps".to_owned(), Some(json!(30)), json!(50))]
+            vec![("daemon.target_fps".to_owned(), Some(json!(60)), json!(50))]
         );
     }
 
@@ -940,7 +940,7 @@ mod change_stream {
 
         assert_eq!(
             drain_config_changes(&mut events),
-            vec![("daemon.target_fps".to_owned(), Some(json!(30)), json!(50))]
+            vec![("daemon.target_fps".to_owned(), Some(json!(60)), json!(50))]
         );
     }
 

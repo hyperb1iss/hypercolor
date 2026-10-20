@@ -4,6 +4,15 @@ use super::defaults;
 
 // ─── Daemon ──────────────────────────────────────────────────────────────────
 
+/// Default `[daemon] target_fps`, the top render tier.
+///
+/// The value is a ceiling, not a fixed rate: the render loop's FPS
+/// controller never upshifts past it, and it downshifts on its own after
+/// consecutive budget misses. A lower default would only strand headroom
+/// on machines that can hold the full tier, while slower machines are
+/// already protected by the downshift.
+pub const DEFAULT_TARGET_FPS: u32 = 60;
+
 /// Core daemon settings: networking, render loop, lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
@@ -16,6 +25,7 @@ pub struct DaemonConfig {
     #[serde(default = "defaults::bool_true")]
     pub unix_socket: bool,
 
+    /// Highest render tier the FPS controller may run at.
     #[serde(default = "defaults::target_fps")]
     pub target_fps: u32,
 
