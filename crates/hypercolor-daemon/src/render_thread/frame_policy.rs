@@ -137,9 +137,13 @@ impl FramePolicy {
         self.complete_throttled_frame(render_loop, SESSION_SLEEP_THROTTLE_DELAY)
     }
 
-    /// Close the admitted frame without rendering it and park the loop.
+    /// Drop the admitted frame without rendering it and park the loop.
+    ///
+    /// The frame is abandoned rather than completed, so parking feeds no
+    /// timing into tier decisions and does not advance the frame number.
     pub(crate) fn park_execution(&mut self, render_loop: &mut RenderLoop) -> FrameExecution {
-        let _ = render_loop.frame_complete();
+        render_loop.abandon_frame();
+        render_loop.park();
         FrameExecution {
             next_wake: NextWake::Park,
             next_skip_decision: SkipDecision::None,
@@ -334,7 +338,9 @@ mod tests {
 
         assert!(execution.parks());
         assert_eq!(execution.next_skip_decision, SkipDecision::None);
-        assert_eq!(render_loop.frame_number(), 1);
+        assert_eq!(render_loop.frame_number(), 0);
+        assert!(render_loop.is_parked());
+        assert!(render_loop.frame_complete().is_none());
     }
 
     #[test]

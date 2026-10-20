@@ -18,25 +18,33 @@ use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
-use hypercolor_core::input::InputManager;
-use hypercolor_core::scene::SceneManager;
+use hypercolor_core::input::{InputManager, SourceKind};
+use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::SceneTransactionQueue;
 use hypercolor_daemon::canvas_capture::{CanvasCaptureRequest, CanvasImageFormat, capture_canvas};
 use hypercolor_daemon::domain::scene::SceneService;
 use hypercolor_daemon::domain::spatial::SpatialService;
-use hypercolor_daemon::output_demand::{OutputDemandTelemetry, is_output_device};
+use hypercolor_daemon::output_demand::{
+    OutputConsumers, OutputDemandTelemetry, is_output_backend, is_output_device,
+    output_device_count,
+};
 use hypercolor_daemon::output_power::OutputPowerState;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
-use hypercolor_daemon::render_thread::{CanvasDims, RenderThread, RenderThreadState};
+use hypercolor_daemon::render_thread::{
+    CanvasDims, InputPublicationConsumer, InputPublicationDemand, RenderThread, RenderThreadState,
+};
 use hypercolor_daemon::simulators::SimulatedDisplayExt;
+use hypercolor_driver_api::DeviceBackend;
 use hypercolor_types::api::simulators::SimulatedDisplay;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
-use hypercolor_types::effect::EffectMetadata;
-use hypercolor_types::event::FrameData;
+use hypercolor_types::effect::{EffectId, EffectMetadata};
+use hypercolor_types::event::{FrameData, SceneChangeReason};
+use hypercolor_types::layer::{SceneLayer, SceneLayerId};
+use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
@@ -110,6 +118,37 @@ fn builtin_effect_metadata(stem: &str) -> EffectMetadata {
             (entry.metadata.source.source_stem() == Some(stem)).then_some(entry.metadata.clone())
         })
         .expect("builtin effect should exist")
+}
+
+fn builtin_effect_id(stem: &str) -> EffectId {
+    builtin_effect_metadata(stem).id
+}
+
+fn primary_zone(
+    effect_id: EffectId,
+    controls: HashMap<String, ControlValue>,
+    layout: SpatialLayout,
+) -> Zone {
+    Zone {
+        id: ZoneId::new(),
+        name: "Primary".into(),
+        description: None,
+        layers: vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect_id,
+            controls,
+            HashMap::new(),
+            None,
+        )],
+        layout,
+        brightness: 1.0,
+        enabled: true,
+        color: None,
+        display_target: None,
+        role: ZoneRole::Primary,
+        controls_version: 0,
+        layers_version: 0,
+    }
 }
 
 fn solid_color_controls(r: u8, g: u8, b: u8) -> HashMap<String, ControlValue> {
@@ -605,6 +644,218 @@ async fn scene_change_while_parked_renders_the_new_effect_then_parks_again() {
     assert_eq!(
         telemetry(&state).await.last_wake_reason,
         Some("producer_state")
+    );
+
+    stop(&state, render_thread).await;
+}
+
+#[tokio::test]
+async fn consumer_counts_cover_every_kind_and_skip_simulated_displays() {
+    let bus = HypercolorBus::new();
+    assert!(!OutputConsumers::from_bus(&bus, 0, 0).any());
+    assert!(OutputConsumers::from_bus(&bus, 1, 0).any());
+    assert!(OutputConsumers::from_bus(&bus, 0, 1).any());
+    let canvas = bus.canvas_receiver();
+    assert_eq!(OutputConsumers::from_bus(&bus, 0, 0).stream_receivers, 1);
+    drop(canvas);
+    let hold = bus.hold_output_demand();
+    assert_eq!(OutputConsumers::from_bus(&bus, 0, 0).demand_holds, 1);
+    drop(hold);
+    assert!(!OutputConsumers::from_bus(&bus, 0, 0).any());
+
+    assert!(is_output_backend("wled"));
+    assert!(!is_output_backend("simulator"));
+
+    let registry = DeviceRegistry::new();
+    assert_eq!(output_device_count(&registry).await, 0);
+    let strip = connect_device(&registry, mock_device_info("Strip")).await;
+    let _known = registry.add(mock_device_info("Known Only")).await;
+    let simulator = SimulatedDisplay {
+        id: DeviceId::new(),
+        name: "Virtual LCD".into(),
+        width: 240,
+        height: 240,
+        circular: false,
+        enabled: true,
+    }
+    .device_info();
+    connect_device(&registry, simulator).await;
+    assert_eq!(
+        output_device_count(&registry).await,
+        1,
+        "only the connected physical device counts"
+    );
+    registry.set_state(&strip, DeviceState::Disabled).await;
+    assert_eq!(output_device_count(&registry).await, 0);
+}
+
+#[tokio::test]
+async fn routed_device_missing_from_the_registry_keeps_the_loop_rendering() {
+    let mut state = make_render_state("rainbow", HashMap::new());
+    let device_id = DeviceId::new();
+    let backend = Arc::new(MockDeviceBackend::new().with_device(&MockDeviceConfig {
+        name: "Routed Strip".into(),
+        led_count: 1,
+        topology: LedTopology::Point,
+        id: Some(device_id),
+    }));
+    backend
+        .connect(&device_id)
+        .await
+        .expect("mock device should connect");
+    let mut manager = BackendManager::new();
+    manager.register_backend(backend);
+    manager.map_device("mock:main", "mock", device_id);
+    state.backend_manager = Arc::new(Mutex::new(manager));
+    let render_thread = start(&state).await;
+
+    assert_renders_at_full_tier(&state, "a routed device").await;
+    assert_eq!(telemetry(&state).await.parks_total, 0);
+    assert_eq!(telemetry(&state).await.consumers.output_devices, 1);
+
+    stop(&state, render_thread).await;
+}
+
+#[tokio::test]
+async fn input_event_stream_keeps_the_loop_republishing_host_input() {
+    let state = make_render_state("rainbow", HashMap::new());
+    let render_thread = start(&state).await;
+    let parked_at = wait_until_parked(&state, 1).await;
+
+    let stream = render_thread.input_publication_demands().register(
+        InputPublicationConsumer::PassiveStream,
+        InputPublicationDemand::default().with_source(SourceKind::Interaction, 60),
+    );
+    let latency = wait_until_rendering_past(&state, parked_at).await;
+    assert!(
+        latency < WAKE_LATENCY_BOUND,
+        "an input event stream should wake the loop at once, took {latency:?}"
+    );
+    assert_renders_at_full_tier(&state, "an input event stream").await;
+    assert_eq!(telemetry(&state).await.consumers.input_event_streams, 1);
+
+    drop(stream);
+    wait_until_parked(&state, 2).await;
+
+    stop(&state, render_thread).await;
+}
+
+#[tokio::test]
+async fn pausing_a_parked_loop_ends_the_park_and_resuming_parks_again() {
+    let state = make_render_state("rainbow", HashMap::new());
+    let render_thread = start(&state).await;
+    wait_until_parked(&state, 1).await;
+
+    state.render_loop.write().await.pause();
+    tokio::time::timeout(WAIT_DEADLINE, async {
+        while telemetry(&state).await.parked_since.is_some() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a paused loop should stop reporting a park");
+    assert_eq!(
+        telemetry(&state).await.last_wake_reason,
+        Some("render_loop_state")
+    );
+    assert!(!state.render_loop.read().await.is_parked());
+
+    state.render_loop.write().await.resume();
+    wait_until_parked(&state, 2).await;
+
+    stop(&state, render_thread).await;
+}
+
+#[tokio::test]
+async fn render_time_holds_still_while_parked() {
+    let state = make_render_state("rainbow", HashMap::new());
+    let render_thread = start(&state).await;
+    wait_until_parked(&state, 1).await;
+
+    let parked_elapsed = state.render_loop.read().await.elapsed();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        state.render_loop.read().await.elapsed(),
+        parked_elapsed,
+        "media layers and time bindings read render time, which must not run on while parked"
+    );
+
+    let frames = state.event_bus.frame_receiver();
+    wait_until_rendering_past(&state, frame_number(&state).await).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let resumed_elapsed = state.render_loop.read().await.elapsed();
+    assert!(resumed_elapsed > parked_elapsed);
+    assert!(
+        resumed_elapsed < parked_elapsed + Duration::from_millis(400),
+        "render time should resume from the park, not jump by it: {parked_elapsed:?} -> {resumed_elapsed:?}"
+    );
+    drop(frames);
+
+    stop(&state, render_thread).await;
+}
+
+#[tokio::test]
+async fn scene_transition_finishes_before_the_loop_parks() {
+    let state = make_render_state("solid_color", solid_color_controls(255, 0, 0));
+    let layout = test_layout(vec![point_zone("zone_main", "mock:main", 0.5, 0.5)]);
+    let solid_id = builtin_effect_id("solid_color");
+    let mut scene_a = make_scene("Red");
+    scene_a.transition.duration_ms = 0;
+    scene_a.zones = vec![primary_zone(
+        solid_id,
+        solid_color_controls(255, 0, 0),
+        layout.clone(),
+    )];
+    let mut scene_b = make_scene("Blue");
+    scene_b.transition.duration_ms = 600;
+    scene_b.zones = vec![primary_zone(
+        solid_id,
+        solid_color_controls(0, 0, 255),
+        layout,
+    )];
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene_a.clone())
+        .expect("scene should stage");
+    mutation
+        .create_scene(scene_b.clone())
+        .expect("scene should stage");
+    mutation
+        .activate(scene_a.id, None, SceneChangeReason::UserActivate)
+        .expect("scene should activate");
+    state
+        .scene_manager
+        .commit_mutation(mutation)
+        .await
+        .expect("scenes should commit");
+
+    let render_thread = start(&state).await;
+    let parked_at = wait_until_parked(&state, 1).await;
+    assert_eq!(
+        zone_main_color(&state.event_bus.frame_lane().borrow()),
+        [255, 0, 0]
+    );
+
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .activate(scene_b.id, None, SceneChangeReason::UserActivate)
+        .expect("scene should activate");
+    state
+        .scene_manager
+        .commit_mutation(mutation)
+        .await
+        .expect("scene activation should commit");
+
+    let parked_again_at = wait_until_parked(&state, 2).await;
+    assert_eq!(
+        zone_main_color(&state.event_bus.frame_lane().borrow()),
+        [0, 0, 255],
+        "the crossfade should finish on the new scene before the loop parks"
+    );
+    assert!(
+        parked_again_at - parked_at >= 15,
+        "a 600 ms crossfade renders through to its end, rendered {} frames",
+        parked_again_at - parked_at
     );
 
     stop(&state, render_thread).await;

@@ -1121,6 +1121,25 @@ mod tests {
         )))
     }
 
+    #[test]
+    fn display_output_holds_render_demand_exactly_while_it_has_targets() {
+        let event_bus = HypercolorBus::new();
+        let mut hold = None;
+
+        sync_output_demand_hold(&mut hold, &event_bus, true);
+        assert_eq!(event_bus.output_demand().hold_count(), 1);
+        sync_output_demand_hold(&mut hold, &event_bus, true);
+        assert_eq!(
+            event_bus.output_demand().hold_count(),
+            1,
+            "a held demand is not taken twice"
+        );
+
+        sync_output_demand_hold(&mut hold, &event_bus, false);
+        assert_eq!(event_bus.output_demand().hold_count(), 0);
+        assert!(hold.is_none());
+    }
+
     fn display_target(blend_mode: BlendMode) -> DisplayTarget {
         let device_id = DeviceId::new();
         DisplayTarget {

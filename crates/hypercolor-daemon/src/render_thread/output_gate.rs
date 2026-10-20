@@ -13,8 +13,9 @@
 //!
 //! Parking waits for the producers to settle first. After the scene, the
 //! effect catalog, or the canvas changes, the loop keeps rendering until
-//! every producer is warm, so an effect applied while nobody watches is
-//! loaded and showing its own content by the time a consumer arrives.
+//! every producer is warm and any scene transition has finished, so an
+//! effect applied while nobody watches is loaded and showing its own
+//! content by the time a consumer arrives.
 
 use std::time::{Duration, Instant};
 
@@ -35,8 +36,8 @@ pub(crate) const PARKED_SAFETY_TICK: Duration = Duration::from_secs(1);
 const SETTLE_WARM_FRAMES: u32 = 3;
 
 /// Longest the loop keeps rendering for producers that never finish
-/// warming, such as a page that fails to load. Matches the Servo page-load
-/// timeout.
+/// warming, such as a page that never loads. Matches the Servo worker's
+/// ready timeout, the longest a session creation or page load may block.
 const SETTLE_LIMIT: Duration = Duration::from_secs(10);
 
 /// Everything the producers render from, so a change to any of it is work
@@ -118,16 +119,21 @@ pub(crate) struct OutputGate {
     /// Consumers last recorded into render telemetry.
     recorded: Option<OutputConsumers>,
     streak: Option<WarmStreak>,
+    /// Whether the last rendered frame was mid scene transition.
+    transition_active: bool,
+    /// Whether the loop is parked, from the park until a frame renders or
+    /// the loop leaves the running state.
+    parked: bool,
 }
 
 impl OutputGate {
     /// Count consumers and record them for status surfaces when they
     /// changed.
     ///
-    /// The device registry is read only when its generation moved. A rig
-    /// with a registered device stops there; otherwise the backend
-    /// manager's routes are counted too, so a device mapped for output
-    /// counts even before the registry reports it renderable.
+    /// The device registry is read only when its generation moved. When
+    /// neither a registered device nor any bus-side consumer exists, the
+    /// backend manager's routes are counted too, so a device mapped for
+    /// output counts even before the registry reports it renderable.
     pub(crate) async fn consumers(
         &mut self,
         state: &RenderThreadState,
@@ -144,16 +150,14 @@ impl OutputGate {
                 count
             }
         };
-        let output_devices = if registry_devices > 0 {
-            registry_devices
-        } else {
-            routed_output_device_count(state).await
-        };
         let input_event_streams =
             u32::try_from(input_demands.stream_registrations_requesting(SourceKind::Interaction))
                 .unwrap_or(u32::MAX);
-        let consumers =
-            OutputConsumers::from_bus(&state.event_bus, output_devices, input_event_streams);
+        let mut consumers =
+            OutputConsumers::from_bus(&state.event_bus, registry_devices, input_event_streams);
+        if !consumers.any() {
+            consumers.output_devices = routed_output_device_count(state).await;
+        }
         if self.recorded != Some(consumers) {
             self.recorded = Some(consumers);
             state
@@ -163,6 +167,34 @@ impl OutputGate {
                 .note_output_consumers(consumers);
         }
         consumers
+    }
+
+    /// Record whether the frame just rendered was mid scene transition.
+    ///
+    /// A transition advances only as frames render, so the loop keeps
+    /// rendering until it completes rather than freezing it mid crossfade
+    /// with the outgoing scene's producers still alive. Only frames that
+    /// reach composition update the flag, and the settle limit still
+    /// bounds the wait, so a crossfade longer than that limit pauses
+    /// partway and finishes once a consumer returns.
+    pub(crate) fn note_scene_transition(&mut self, active: bool) {
+        self.transition_active = active;
+    }
+
+    /// Whether the previous rendered frame was mid scene transition.
+    pub(crate) const fn transition_active(&self) -> bool {
+        self.transition_active
+    }
+
+    /// Record that the loop parked.
+    pub(crate) fn enter_park(&mut self) {
+        self.parked = true;
+    }
+
+    /// Record that the loop left its park, returning whether it was
+    /// parked.
+    pub(crate) fn leave_park(&mut self) -> bool {
+        std::mem::take(&mut self.parked)
     }
 
     /// Decide whether this frame renders.
@@ -256,8 +288,9 @@ pub(crate) async fn wait_for_output_demand(
     state: &RenderThreadState,
     frame_loop: &mut FrameLoopState,
 ) -> RenderWakeReason {
+    let armed_output_demand = state.event_bus.output_demand().arm();
     loop {
-        let output_demand = state.event_bus.output_demand().notified();
+        let output_demand = armed_output_demand.notified();
         let devices = state.device_registry.changed();
         let transactions = state.scene_transactions.queued();
         let mut input_demand_revisions = frame_loop.input_demands.subscribe_revision();

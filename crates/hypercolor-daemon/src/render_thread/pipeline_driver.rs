@@ -84,9 +84,17 @@ async fn resume_from_park(
 ) {
     let now = Instant::now();
     let (interval, resume_frame) = {
-        let render_loop = state.render_loop.read().await;
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.unpark();
         (render_loop.target_interval(), render_loop.frame_number())
     };
+    if reason == RenderWakeReason::RenderLoopState {
+        // A paused or stopped loop is idle for its own reason, not for
+        // lack of consumers; the gate parks it again if it resumes with
+        // nothing to render for.
+        runtime.frame_loop.output_gate.leave_park();
+        state.performance.write().await.note_output_unparked();
+    }
     runtime
         .frame_loop
         .clock

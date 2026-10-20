@@ -139,7 +139,7 @@ async fn read_scenes_with_state(state: &AppState) -> Value {
 }
 
 fn read_audio_with_state(state: &AppState) -> Value {
-    let spectrum = state.event_bus.spectrum_receiver().borrow().clone();
+    let spectrum = state.event_bus.spectrum_lane().borrow().clone();
     let (enabled, device, fft_size) = if let Some(config_manager) = state.config_manager.as_ref() {
         let config = config_manager.get();
         (

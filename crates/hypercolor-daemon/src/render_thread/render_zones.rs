@@ -349,14 +349,38 @@ impl ZoneRuntime {
         Ok(runtime)
     }
 
-    /// Park every effect producer while the render loop requests no frames.
+    /// Park every producer while the render loop requests no frames.
+    ///
+    /// Effect producers quiesce in place. Live media streams decode on a
+    /// worker of their own, so they are dropped instead and reconnect when
+    /// a layer next renders; a live stream has no past frame worth keeping.
+    /// Dropping one joins its decoder, which waits on the stream source, so
+    /// the drop runs on a short-lived thread rather than the render thread.
     pub(crate) fn park_producers(&mut self) {
         self.effect_pool.park();
+        let live_streams = self
+            .media_producers
+            .extract_if(|_, cached| cached.producer.is_live_stream())
+            .map(|(_, cached)| cached)
+            .collect::<Vec<_>>();
+        if live_streams.is_empty() {
+            return;
+        }
+        if let Err(error) = std::thread::Builder::new()
+            .name("hypercolor-media-park".to_owned())
+            .spawn(move || drop(live_streams))
+        {
+            tracing::warn!(%error, "Could not spawn the live stream teardown thread");
+        }
     }
 
-    /// Whether any effect producer has not yet shown its current content.
+    /// Whether any producer has not yet shown its current content.
     pub(crate) fn producers_warming(&self) -> bool {
         self.effect_pool.any_warming()
+            || self.media_producers.values().any(|cached| {
+                !cached.producer.has_renderable_frame()
+                    && cached.producer.live_stream_error().is_none()
+            })
     }
 
     pub(crate) fn drain_layer_runtime_events(&mut self) -> Vec<HypercolorEvent> {

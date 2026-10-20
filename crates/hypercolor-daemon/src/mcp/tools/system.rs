@@ -175,7 +175,7 @@ pub(super) fn handle_get_sensor_data_with_state(
 }
 
 pub(super) fn handle_get_audio_state_with_state(state: &AppState) -> Result<Value, ToolError> {
-    let spectrum = state.event_bus.spectrum_receiver().borrow().clone();
+    let spectrum = state.event_bus.spectrum_lane().borrow().clone();
     let enabled = state
         .config_manager
         .as_ref()

@@ -152,8 +152,11 @@ struct DiagnosticsInputs {
 }
 
 impl DiagnosticsInputs {
+    /// Render time now, on the clock frame timestamps are taken from.
+    /// Daemon uptime runs on through pauses and parks that render time
+    /// skips, so measuring frame age against it would count those spans.
     fn render_elapsed_ms(&self) -> f64 {
-        self.uptime.as_secs_f64() * 1000.0
+        self.render_loop.elapsed.as_secs_f64() * 1000.0
     }
 }
 

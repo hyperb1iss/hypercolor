@@ -455,6 +455,13 @@ impl PerformanceTracker {
         true
     }
 
+    /// Record that the loop left its park without completing a frame, such
+    /// as a frame that renders through a throttle path or a loop paused
+    /// while parked.
+    pub(crate) fn note_output_unparked(&mut self) {
+        self.output_demand.parked_since = None;
+    }
+
     /// Record what woke a parked loop. The park ends with the next
     /// recorded frame.
     pub(crate) fn note_output_woken(&mut self, reason: &'static str) {

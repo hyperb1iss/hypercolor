@@ -535,6 +535,9 @@ pub(crate) async fn execute_frame(
     })
     .await;
     let render_us = render_stage.total_us;
+    frame_loop
+        .output_gate
+        .note_scene_transition(render_stage.scene_transition_active);
 
     let preview_advance_start = Instant::now();
     {
@@ -939,16 +942,20 @@ async fn gate_output_demand(
         .consumers(state, &frame_loop.input_demands)
         .await;
     let signature = ProducerSignature::observe(state).await;
-    let decision = frame_loop.output_gate.decide(
-        consumers.any(),
-        signature,
-        render.render_zone_runtime.producers_warming(),
-        Instant::now(),
-    );
+    let warming = render.render_zone_runtime.producers_warming()
+        || frame_loop.output_gate.transition_active();
+    let decision =
+        frame_loop
+            .output_gate
+            .decide(consumers.any(), signature, warming, Instant::now());
     if decision == GateDecision::Render {
+        if frame_loop.output_gate.leave_park() {
+            state.performance.write().await.note_output_unparked();
+        }
         return None;
     }
 
+    frame_loop.output_gate.enter_park();
     frame_loop.clear_input_demands();
     let _ = render.screen_queue.clear_latest();
     render.sparkleflinger.release_native_screen_caches();
@@ -1023,7 +1030,7 @@ async fn force_static_sleep_snapshot(
 
     let frame_number = state
         .event_bus
-        .frame_receiver()
+        .frame_lane()
         .borrow()
         .frame_number
         .saturating_add(1);
