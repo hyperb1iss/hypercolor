@@ -147,9 +147,38 @@ fn a_reconnect_supersedes_a_bridge_that_was_never_closed() {
     let fresh_slot = child(&host, device).expect("attached");
     assert!(!stale_slot.is_active());
 
-    // The stale bridge can neither publish into nor retire its successor.
+    // The stale bridge can neither publish into, take over, nor retire its
+    // successor.
     stale.publish(&[pad_press(1)]);
+    stale.interrupted();
     stale.close();
     assert!(fresh_slot.is_active());
+    assert_eq!(
+        child(&host, device).map(|slot| slot.publication_id()),
+        Some(fresh_slot.publication_id())
+    );
     assert!(touch_phases(&fresh_slot).is_empty());
+}
+
+#[test]
+fn a_superseded_bridge_stops_before_an_interruption_can_take_the_device_back() {
+    let host = demanded_host();
+    let device = DeviceId::new();
+    let stale = bridge(&host, device);
+    stale.activate();
+    let fresh = bridge(&host, device);
+    fresh.activate();
+    let fresh_slot = child(&host, device).expect("attached");
+
+    // Only an interruption, with no publish first to notice the takeover.
+    stale.interrupted();
+    stale.activate();
+
+    assert!(fresh_slot.is_active());
+    assert_eq!(
+        child(&host, device).map(|slot| slot.publication_id()),
+        Some(fresh_slot.publication_id())
+    );
+    fresh.publish(&[pad_press(2)]);
+    assert_eq!(touch_phases(&fresh_slot), vec![(2, TouchPhase::Began)]);
 }

@@ -24,5 +24,7 @@ pub trait DeviceInputPublisher: Send + Sync {
     /// Publish edges in the order the device reported them.
     ///
     /// Returns `false` once this lease has been superseded or detached.
+    /// Publishing no edges changes nothing, so it reports whether the lease
+    /// is still current.
     fn publish(&self, edges: &[DeviceInputEdge]) -> bool;
 }

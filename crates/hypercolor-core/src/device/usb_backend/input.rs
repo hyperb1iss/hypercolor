@@ -65,16 +65,28 @@ impl UsbDeviceInput {
 
 impl TransportInputSink for UsbDeviceInput {
     fn publish(&self, edges: &[DeviceInputEdge]) {
-        if let Lease::Live(publisher) = &*self.lock() {
-            publisher.publish(edges);
+        let mut lease = self.lock();
+        if let Lease::Live(publisher) = &*lease
+            && !publisher.publish(edges)
+        {
+            // A newer connection of the same device owns its input now.
+            *lease = Lease::Closed;
         }
     }
 
     fn interrupted(&self) {
-        // Attaching again supersedes the old lease, so the host cancels its
-        // holds before the replacement publishes anything.
-        if let Lease::Live(publisher) = &mut *self.lock() {
+        let mut lease = self.lock();
+        let Lease::Live(publisher) = &mut *lease else {
+            return;
+        };
+        // An empty publish only asks whether the lease is still current. A
+        // lease a newer connection superseded must not take the device back.
+        if publisher.publish(&[]) {
+            // Attaching again supersedes this lease, so the host cancels its
+            // holds before the replacement publishes anything.
             *publisher = self.sink.attach(self.device_id, &self.label);
+        } else {
+            *lease = Lease::Closed;
         }
     }
 
