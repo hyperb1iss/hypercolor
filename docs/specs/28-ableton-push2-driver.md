@@ -4,7 +4,8 @@
 
 **Status:** Implemented (status corrected 2026-08-25). The 960-pixel display path,
 palette-indexed pads, and MIDI transport ship in
-`crates/hypercolor-hal/src/drivers/push2/`.
+`crates/hypercolor-hal/src/drivers/push2/`. Pad, touch strip, and button input
+(§11.4) shipped 2026-10-19.
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::push2`
 **Author:** Nova
@@ -1018,8 +1019,71 @@ impl Protocol for Push2Protocol {
 | Display            | ✓ (960×160 RGB565)              |
 | Display brightness | ✓ (0–255)                       |
 | Animations         | Future (requires MIDI clock)    |
-| Input events       | Future (pad pressure, encoders) |
+| Input events       | ✓ (pads, touch strip, buttons)  |
 | Keepalive          | ✓ (mode/touch-strip reassert)   |
+
+### 11.4 Input
+
+The Push 2 reports its controls on the User port the transport already opens
+for sysex replies, so input costs no MIDI output: the driver sends no new
+sysex and changes no device mode to read it. The midir input callback hands
+every message to the sysex reply ingress first, then to a
+`Push2InputRelay` (`drivers/push2/input.rs`) that decodes it with
+`Push2InputDecoder` (`protocol/input.rs`) and publishes the edges through the
+`TransportInputSink` the transport opener received (Spec 82 §9). The relay
+owns no lock the output or display paths take, and allocates nothing once
+warm.
+
+The map follows Ableton's MIDI and Display Interface Manual and its MIDI
+mapping figure. Every control reports on channel 1 (status low nibble 0);
+other channels are ignored.
+
+| Message | Decoded as |
+| --- | --- |
+| Note On 36 to 99, velocity > 0 | Pad `TouchBegan`, pressure = velocity / 127, segment `Pads` |
+| Note Off, or Note On velocity 0, on a held pad | Pad `TouchEnded` |
+| Poly key pressure on a held pad | That pad's `TouchMoved` with the new pressure |
+| Channel pressure | `TouchMoved` for every held pad with that pressure (the device reports its hardest-pressed pad) |
+| Note On 12, velocity 127 / 0 | Touch strip touched / released, contact 64, segment `Touch Strip` |
+| Pitch bend (14 bit, 0 bottom to 16320 top) | Touch strip position |
+| Control change, value > 0 / 0, on a button CC | `Button` pressed / released |
+| Control change 14, 15, 71 to 79 | Ignored: relative encoder turns |
+| Note On 0 to 10 | Ignored: encoder capacitive touches |
+
+Pad contacts are their LED index (`note - 36`). A pad touch reports
+`x = column / 7` and `y = row / 7`, with row 0 the first LED row (notes 36 to
+43, the physical bottom row), so a press projects onto the LED under it
+through the layout's matrix start corner. The strip reports `x` along the
+strip from its first LED at the bottom, on the center line `y = 0.5`, at full
+pressure since it senses none.
+
+Buttons use stable snake_case names from the tables in §5.2 and §5.3:
+`track_1` to `track_8` (CC 102 to 109), `select_1` to `select_8` (CC 20 to
+27), `scene_1` (CC 43, top) to `scene_8` (CC 36), `play`, `record`,
+`tap_tempo`, `metronome`, and the white buttons by their table names
+(`master`, `stop_clip`, `arrow_up`, `shift`, `user`, `undo`, and so on). The
+name table covers exactly the CCs that have LEDs.
+
+**Strip autoreturn.** The host touch strip configuration (§7.2) autoreturns
+to center, and the manual says the strip sends that center value just before
+the release note. The decoder therefore treats the center value as
+ambiguous while the strip is touched: it moves the touch only once a later
+value shows the finger is still down, and a release ends the touch at its
+last real position. A touch begins at its first position, either a value
+reported just ahead of the touch note or the first one after it; a touch
+that never leaves the center begins and ends there on release. A finger
+that stops exactly on center leaves the touch one step short until it moves
+again.
+
+**Lost input.** A message cut short, data with no status before it, or a Set
+MIDI Mode reply selecting Live mode (sent to both ports whoever asked, after
+which the controls report on the Live port only) makes the relay report an
+interruption, so the host cancels everything the Push 2 held. Closing the
+input connection, which drops the relay, reports that input ended. midir
+delivers whole messages with their status byte on every backend (its ALSA
+decoder disables running status), so the decoder accepts running status
+within one message buffer but treats a buffer that opens on a data byte as
+lost.
 
 ---
 
@@ -1291,6 +1355,16 @@ Located in `crates/hypercolor-hal/tests/push2/`:
 | `init_sequence`            | Init commands are well-formed and in correct order       |
 | `shutdown_sequence`        | Shutdown restores device to Live mode                    |
 
+Input decoding and its relay are covered in
+`crates/hypercolor-hal/tests/push2_input_tests.rs`: pads, zero-velocity and
+Note Off releases, poly and channel pressure, strip touches with autoreturn,
+named buttons, ignored encoders, running status, cut-short messages, and the
+Live mode reply. `crates/hypercolor-core/tests/push2_touch_surface_tests.rs`
+lights single LEDs through the real frame encoder, presses the matching
+control through the real decoder, and checks the touch lands on the LED's
+sampled canvas point for the four pad corners, an interior pad, and strip
+positions in every strip direction.
+
 ### 14.2 Integration Tests
 
 | Test                   | Validates                                                 |
@@ -1320,6 +1394,9 @@ via `nusb`) requires direct USB device permissions.
 - Apply a solid color effect → all 64 pads light up uniformly
 - Apply a rainbow gradient → pads show smooth color gradient across 8×8 grid
 - Verify touch strip reflects effect intensity
+- With Touch Ripple layered on the Push 2's zone, press each corner pad and
+  slide the touch strip: ripples start under the finger, and a strip lift
+  echoes where the finger left, not at the strip's center
 - Verify display renders effect visualization
 - Disconnect/reconnect → device recovers cleanly
 - Launch Ableton Live after shutdown → Live regains full control
@@ -1336,7 +1413,7 @@ via `nusb`) requires direct USB device permissions.
 
 ## Appendix B: Open Questions
 
-1. **Input events** — Push 2 sends pad velocity, aftertouch, encoder rotation, and button presses. These could feed into Hypercolor's (future) reactive effect system. Not in scope for the initial driver but worth designing the data path.
+1. **Input events** (resolved): pads, the touch strip, and buttons publish device input (§11.4). Encoder turns and touches remain unread; they need a relative-control vocabulary the device input pipeline does not have yet.
 
 2. **Conflict with Ableton Live** — if Live is running, it claims the User port. The driver should detect this (failed mode switch) and surface a clear error rather than silently failing.
 
