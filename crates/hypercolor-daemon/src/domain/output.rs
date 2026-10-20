@@ -128,6 +128,12 @@ impl OutputContext {
         &self.render_supervision
     }
 
+    /// The current output power state.
+    #[must_use]
+    pub(crate) fn power_state(&self) -> crate::output_power::OutputPowerState {
+        self.output_power.snapshot()
+    }
+
     /// How long the daemon's subsystems have been up.
     #[must_use]
     pub fn uptime(&self) -> std::time::Duration {

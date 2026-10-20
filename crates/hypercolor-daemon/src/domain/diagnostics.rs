@@ -23,6 +23,7 @@ use crate::domain::display::DisplayContext;
 use crate::domain::input_status::{actionable_input_diagnostics, input_status_snapshot};
 use crate::domain::output::{OutputContext, RenderLoopStatus};
 use crate::domain::spatial::SpatialService;
+use crate::output_power::{OutputOverride, OutputPowerState};
 use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};
 use crate::render_thread::gpu_errors::GpuErrorTotals;
 use crate::render_thread::{RenderSupervisionSnapshot, RenderThreadPhase};
@@ -158,6 +159,7 @@ struct DiagnosticsInputs {
     config_available: bool,
     config_persistence: Option<(PathBuf, ConfigPersistence)>,
     render_supervision: RenderSupervisionSnapshot,
+    output_power: OutputPowerState,
 }
 
 impl DiagnosticsInputs {
@@ -349,6 +351,7 @@ impl DiagnosticsContext {
             config_available: self.authorities.platform.config_available(),
             config_persistence: self.authorities.platform.config_persistence(),
             render_supervision: self.authorities.output.render_supervision().snapshot(),
+            output_power: self.authorities.output.power_state(),
         }
     }
 }
@@ -371,21 +374,25 @@ fn render_checks(inputs: &DiagnosticsInputs) -> Vec<DiagnoseCheck> {
     let render_elapsed_ms = inputs.render_elapsed_ms();
     let running = inputs.render_loop.running;
     let render_loop_stats = inputs.render_loop.stats;
+    let pause = render_loop_pause_reason(render_loop_stats.state, inputs.output_power)
+        .map_or_else(String::new, |reason| format!("; {reason}"));
+    let mut render_thread = render_thread_check(
+        &inputs.render_supervision,
+        render_loop_stats.state,
+        RENDER_THREAD_STALL_FAIL,
+    );
+    render_thread.detail.push_str(&pause);
     let mut checks = vec![
         DiagnoseCheck {
             category: "render".to_owned(),
             name: "render_loop".to_owned(),
             status: if running { "pass" } else { "warning" }.to_owned(),
             detail: format!(
-                "state={}, tier={}",
+                "state={}, tier={}{pause}",
                 render_loop_stats.state, render_loop_stats.tier
             ),
         },
-        render_thread_check(
-            &inputs.render_supervision,
-            render_loop_stats.state,
-            RENDER_THREAD_STALL_FAIL,
-        ),
+        render_thread,
         gpu_errors_check(&inputs.render_supervision.gpu_errors),
     ];
     if !running {
@@ -431,6 +438,28 @@ fn render_checks(inputs: &DiagnosticsInputs) -> Vec<DiagnoseCheck> {
         ),
     });
     checks
+}
+
+/// What paused the render loop, for the render checks' details.
+///
+/// A paused loop renders nothing by design, which looks like a hang from
+/// the outside, so the details say where the pause came from.
+fn render_loop_pause_reason(
+    loop_state: RenderLoopState,
+    power: OutputPowerState,
+) -> Option<&'static str> {
+    if loop_state != RenderLoopState::Paused {
+        return None;
+    }
+    Some(match power.output_override {
+        OutputOverride::Paused => {
+            "paused by output power: a manual pause (PATCH /api/v1/output or a pause \
+             control), which persists across restarts until power is set back to running"
+        }
+        OutputOverride::Stopped => "paused by output power: the last effect was stopped",
+        OutputOverride::None if power.session_sleeping => "paused while the session sleeps",
+        OutputOverride::None => "paused, though output power reports running",
+    })
 }
 
 /// Whether the supervised render thread is alive and producing frames.
@@ -514,13 +543,22 @@ fn render_thread_status(
                         supervision.restarts_total
                     ),
                 ),
+                _ if loop_state == RenderLoopState::Paused => (
+                    "pass",
+                    format!(
+                        "phase=running, the render loop is paused so no frames are due, \
+                         last_poll_age_ms={}, last_frame_age_ms={}, restarts={}, \
+                         last_failure={failure}",
+                        millis_or_none(supervision.last_heartbeat_age),
+                        millis_or_none(supervision.last_frame_age),
+                        supervision.restarts_total
+                    ),
+                ),
                 _ => (
                     "pass",
                     format!(
                         "phase=running, last_frame_age_ms={}, restarts={}, last_failure={failure}",
-                        supervision
-                            .last_frame_age
-                            .map_or_else(|| "none".to_owned(), |age| age.as_millis().to_string()),
+                        millis_or_none(supervision.last_frame_age),
                         supervision.restarts_total
                     ),
                 ),
@@ -554,6 +592,10 @@ fn render_thread_status(
 /// How recent the latest uncaptured GPU error must be for the
 /// `gpu_errors` check to warn. Older errors stay in the counts.
 pub const GPU_ERROR_WARNING_WINDOW: Duration = Duration::from_mins(10);
+
+fn millis_or_none(age: Option<Duration>) -> String {
+    age.map_or_else(|| "none".to_owned(), |age| age.as_millis().to_string())
+}
 
 /// Whether a GPU error went uncaptured recently.
 ///
@@ -1408,6 +1450,48 @@ mod tests {
             );
             assert_eq!(check.name, "render_thread");
         }
+    }
+
+    #[test]
+    fn a_paused_loop_passes_the_render_thread_check_and_names_its_pause() {
+        use crate::output_power::{OutputOverride, OutputPowerState};
+        use crate::render_thread::RenderThreadPhase;
+        use hypercolor_core::engine::RenderLoopState;
+
+        let paused_for_a_minute = supervision(RenderThreadPhase::Running, 60_000, 40);
+        let check = super::render_thread_check(
+            &paused_for_a_minute,
+            RenderLoopState::Paused,
+            std::time::Duration::from_secs(3),
+        );
+        assert_eq!(check.status, "pass", "{}", check.detail);
+        assert!(
+            check.detail.contains("no frames are due"),
+            "{}",
+            check.detail
+        );
+
+        let manual = OutputPowerState {
+            output_override: OutputOverride::Paused,
+            ..OutputPowerState::default()
+        };
+        assert!(
+            super::render_loop_pause_reason(RenderLoopState::Paused, manual)
+                .is_some_and(|reason| reason.contains("manual pause")
+                    && reason.contains("persists across restarts"))
+        );
+        let stopped = OutputPowerState {
+            output_override: OutputOverride::Stopped,
+            ..OutputPowerState::default()
+        };
+        assert!(
+            super::render_loop_pause_reason(RenderLoopState::Paused, stopped)
+                .is_some_and(|reason| reason.contains("last effect was stopped"))
+        );
+        assert_eq!(
+            super::render_loop_pause_reason(RenderLoopState::Running, manual),
+            None
+        );
     }
 
     #[test]

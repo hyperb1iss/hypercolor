@@ -49,7 +49,7 @@ The `render` category has seven checks for FPS and LED output problems.
 render_loop   state=running, tier=medium
 ```
 
-The `tier` field shows where the FPS controller has landed. Compare it against your configured `daemon.target_fps`: on the default config, `medium` (30 FPS) is the healthy steady state. A tier sitting below your configured target means the loop has downshifted under budget pressure. If `state` is anything other than `running`, the render loop has stopped; see [common issues](@/troubleshooting/common-issues.md).
+The `tier` field shows where the FPS controller has landed. Compare it against your configured `daemon.target_fps`: on the default config, `medium` (30 FPS) is the healthy steady state. A tier sitting below your configured target means the loop has downshifted under budget pressure. If `state` is anything other than `running`, the render loop is not rendering; see [common issues](@/troubleshooting/common-issues.md). A `paused` loop renders nothing on purpose, so the detail names what paused it. A manual output pause (from `PATCH /api/v1/output`, a pause control, or an integration such as Home Assistant) persists across daemon restarts until output power is set back to running.
 
 **Tier reference:**
 
@@ -69,7 +69,7 @@ The controller downshifts after 2 consecutive budget misses and only upshifts af
 render_thread   phase=running, last_frame_age_ms=12, restarts=0, last_failure=none
 ```
 
-The render thread supervises its own pipeline. When a frame panics or the pipeline loses its input feed, the daemon logs the failure with a backtrace, rebuilds the pipeline with fresh GPU and render state, and keeps going. This check fails while that restart is in progress, when the thread has gone without completing a frame for 3 seconds while the loop runs, and when the thread is gone while the loop still says it is running.
+The render thread supervises its own pipeline. When a frame panics or the pipeline loses its input feed, the daemon logs the failure with a backtrace, rebuilds the pipeline with fresh GPU and render state, and keeps going. This check fails while that restart is in progress, when the thread has gone without completing a frame for 3 seconds while the loop runs, and when the thread is gone while the loop still says it is running. A paused loop passes, since no frames are due, and the detail names what paused it.
 
 `restarts` counts in-process restarts since the daemon started. After five restarts within five minutes, or when the GPU device is lost, the daemon stops recovering in-process and exits with an error so its service manager starts a fresh process. Under systemd, a render thread stuck inside one frame for 20 seconds also stops the service watchdog keepalive, so systemd restarts the daemon. Every failure is also written to `render-failure.json` in the daemon state directory (`~/.local/state/hypercolor/` on Linux), so it survives a log that was lost. The next run reports that record here as `(earlier daemon run)`.
 
