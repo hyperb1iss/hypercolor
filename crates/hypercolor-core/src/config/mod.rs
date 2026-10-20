@@ -1044,8 +1044,10 @@ impl ConfigManager {
     /// effect fallback value `clear_groups` to `clear_zones`, then
     /// upgraded again as v5. Schema v5 is upgraded by dropping an
     /// `audio.beat_sensitivity` still at the retired 0.6 default so the
-    /// current default applies. Every other older or newer schema is
-    /// refused rather than guessed at.
+    /// current default applies, then upgraded again as v6. Schema v6 is
+    /// upgraded by dropping a `daemon.target_fps` still at the retired 30
+    /// default the same way. Every other older or newer schema is refused
+    /// rather than guessed at.
     ///
     /// # Errors
     ///
@@ -1070,6 +1072,10 @@ impl ConfigManager {
         }
         if schema_version == 5 {
             migrate_v5_to_v6(&mut document)?;
+            schema_version = 6;
+        }
+        if schema_version == 6 {
+            migrate_v6_to_v7(&mut document)?;
         } else if schema_version != CURRENT_SCHEMA_VERSION {
             bail!(schema_mismatch_message(schema_version));
         }
@@ -1140,6 +1146,27 @@ fn migrate_v5_to_v6(document: &mut toml::Value) -> Result<()> {
             .is_some_and(|value| (value - V5_DEFAULT_BEAT_SENSITIVITY).abs() < 1e-6)
     {
         audio.remove("beat_sensitivity");
+    }
+    root.insert("schema_version".to_owned(), toml::Value::Integer(6));
+    Ok(())
+}
+
+/// The `daemon.target_fps` default that schemas v4 through v6 shipped.
+const V6_DEFAULT_TARGET_FPS: i64 = 30;
+
+/// Schema v7 raised the render target default from 30 to
+/// [`hypercolor_types::config::DEFAULT_TARGET_FPS`]. Every save rewrites the
+/// whole file, so a v6 file carries 30 whether or not anyone chose it. That
+/// exact value is dropped so the current default applies; any other value
+/// was picked on purpose and stays.
+fn migrate_v6_to_v7(document: &mut toml::Value) -> Result<()> {
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("configuration root must be a TOML table"))?;
+    if let Some(daemon) = root.get_mut("daemon").and_then(toml::Value::as_table_mut)
+        && daemon.get("target_fps").and_then(toml::Value::as_integer) == Some(V6_DEFAULT_TARGET_FPS)
+    {
+        daemon.remove("target_fps");
     }
     root.insert(
         "schema_version".to_owned(),

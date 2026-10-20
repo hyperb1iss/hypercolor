@@ -76,7 +76,7 @@ state_history_generations       = 10  # Previous versions kept per state file; 0
 state_history_min_interval_secs = 30  # Content changed more recently than this is transient
 ```
 
-**`target_fps`** controls the maximum render cadence. The FPS controller auto-shifts between tiers (10, 20, 30, 45, 60) based on frame budget; this key sets the ceiling. The default of `60` lets the loop climb to the top tier when the machine has headroom, and a machine that can't keep up downshifts on its own, so there is no need to lower it for a slower machine. Changes to this key take effect live without a daemon restart.
+**`target_fps`** controls the maximum render cadence. The FPS controller auto-shifts between tiers (10, 20, 30, 45, 60) based on frame budget; this key sets the ceiling. The default of `60` lets the loop climb to the top tier when the machine has headroom, and a machine that can't keep up downshifts on its own, so there is no need to lower it for a slower machine. Changes to this key take effect live without a daemon restart. A config file whose `schema_version` is 4 through 6 and that still carries the old `30` default moves to `60` when it loads. Any other value stays, and setting `30` again afterwards sticks.
 
 **`canvas_width` / `canvas_height`** are the render canvas dimensions. LED spatial positions are normalized to `[0.0, 1.0]`, so layouts remain valid across different canvas sizes. Canvas resizes take effect at the next frame boundary. Both keys support live reload.
 

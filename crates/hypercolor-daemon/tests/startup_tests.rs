@@ -861,11 +861,11 @@ fn parse_config_toml_refuses_an_outdated_schema() {
 
 #[test]
 fn parse_config_toml_refuses_a_newer_schema() {
-    let error = parse_config_toml("schema_version = 7\n")
+    let error = parse_config_toml("schema_version = 8\n")
         .expect_err("a future schema must be refused, not read");
     let rendered = format!("{error:#}");
 
-    assert!(rendered.contains("schema_version 7"), "{rendered}");
+    assert!(rendered.contains("schema_version 8"), "{rendered}");
     assert!(rendered.contains("newer hypercolor"), "{rendered}");
 }
 
@@ -904,7 +904,7 @@ fn parse_config_toml_rejects_invalid_toml() {
 #[test]
 fn default_config_has_sane_values() {
     let config = default_config();
-    assert_eq!(config.schema_version, 6);
+    assert_eq!(config.schema_version, 7);
     assert_eq!(config.daemon.target_fps, 60);
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.listen_address, "127.0.0.1");

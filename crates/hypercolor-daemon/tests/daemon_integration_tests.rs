@@ -645,7 +645,10 @@ async fn daemon_render_loop_uses_configured_fps() {
     let mut config = default_config();
     config.daemon.target_fps = 30;
 
-    let toml_str = "schema_version = 5\n[daemon]\ntarget_fps = 30\n";
+    // Only a current-schema file keeps 30; an older one carries the
+    // retired default and loads at the new one.
+    let toml_str =
+        format!("schema_version = {CURRENT_SCHEMA_VERSION}\n[daemon]\ntarget_fps = 30\n");
     let mut temp = NamedTempFile::new().expect("create temp");
     temp.write_all(toml_str.as_bytes()).expect("write");
     temp.flush().expect("flush");
