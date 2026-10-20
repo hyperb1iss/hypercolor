@@ -504,15 +504,22 @@ root, and every `--ambient-*` token derives from that hue in OKLCH.
 | `--ambient-border` | 12 to 15% | Scrollbar thumb, active card border |
 | `--ambient-tint` | 3 to 4% | "Now Playing" background, noise tint |
 
-`.preview-glow` crossfades over 2s on the `--ease-silk` curve, so hue shifts
-drift rather than snap.
+`.preview-glow` drifts to each new hue over 2s on the `--ease-silk` curve, so
+hue shifts drift rather than snap. The drift runs on `--ambient-hue-drift`, a
+registered `<number>` that does not inherit, so each frame of it restyles the
+halo element alone and never its subtree.
 
 **Discipline.** Hue extraction runs on a low-priority cadence, not the render
-loop and not every frame. The CSS property update is one cheap `setProperty`
-call; OKLCH interpolation happens in CSS. When no effect is active,
-`--ambient-hue` falls back to `320` (purple), matching the primary accent.
-Ambient reactivity is a progressive enhancement: the UI is correct and complete
-without it.
+loop and not every frame. A `:root` write restyles the whole document, so the
+hue publishes at most once a second and only when it moves at least 4°
+(`AmbientHuePublisher` in `src/ambient.rs`); the published value is unwrapped
+so CSS always turns the short way around the wheel. Interpolation happens in
+CSS. A surface that wants the drift rebuilds its color from the
+`--ambient-l`, `--ambient-c` and `--ambient-*-alpha` channel tokens against
+`--ambient-hue-drift`, because the composed `--ambient-*` colors have already
+substituted the root hue. When no effect is active, `--ambient-hue` falls back
+to `320` (purple), matching the primary accent. Ambient reactivity is a
+progressive enhancement: the UI is correct and complete without it.
 
 ---
 

@@ -348,7 +348,10 @@ Token files in `tokens/` (DESIGN-SYSTEM.md §3 has the full architecture):
 **document element**, not the shell div. Custom-property `var()` substitution
 resolves where the property is *declared*, and every `--ambient-*` token is
 declared in a `:root` block of `semantic.css`, so a hue set lower in the tree
-would never reach them.
+would never reach them. That write restyles the whole document, so
+`AmbientHuePublisher` (`src/ambient.rs`) paces it to at most once a second
+with a 4° deadband, and `.preview-glow` drifts between published values on
+the non-inherited `--ambient-hue-drift` property.
 
 **Theme**: stored in localStorage as `hc-theme` and applied by an inline
 `index.html` script _before first paint_ to prevent flash. There is no runtime

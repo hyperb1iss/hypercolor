@@ -2,6 +2,7 @@
 
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::events::document as browser_document;
+use hypercolor_leptos_ext::prelude::now_ms;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::hooks::use_navigate;
@@ -9,6 +10,7 @@ use wasm_bindgen::JsCast;
 
 use hypercolor_types::scene::SceneMutationMode;
 
+use crate::ambient::AmbientHuePublisher;
 use crate::app::{EffectsContext, FrameAnalysisContext};
 use crate::components::mobile_nav::MobileNav;
 use crate::components::page_search_bar::PAGE_SEARCH_INPUT_ID;
@@ -51,19 +53,23 @@ pub fn Shell(children: Children) -> impl IntoView {
     // custom-property `var()` substitution happens where a property is
     // *declared*, and every `--ambient-*` token plus the scrollbar tints are
     // declared in `:root` blocks of tokens/semantic.css, so a hue set any
-    // lower in the tree would never reach them.
+    // lower in the tree would never reach them. A `:root` write restyles the
+    // whole document, so `AmbientHuePublisher` paces it; CSS drifts the
+    // halo between published values.
     let frame_analysis = use_context::<FrameAnalysisContext>();
-    let last_ambient_hue = StoredValue::new(None::<i16>);
+    let ambient_publisher = StoredValue::new(AmbientHuePublisher::default());
 
     if let Some(frame_analysis) = frame_analysis {
         Effect::new(move |_| {
             let Some(analysis) = frame_analysis.live_canvas.get() else {
                 return;
             };
-            let hue = analysis.dominant_hue.round() as i16;
-            if last_ambient_hue.get_value() == Some(hue) {
+            let Some(hue) = ambient_publisher
+                .try_update_value(|publisher| publisher.offer(analysis.dominant_hue, now_ms()))
+                .flatten()
+            else {
                 return;
-            }
+            };
 
             if let Some(doc) = browser_document()
                 && let Some(root) = doc.document_element()
@@ -71,8 +77,7 @@ pub fn Shell(children: Children) -> impl IntoView {
             {
                 let _ = html_el
                     .style()
-                    .set_property("--ambient-hue", &hue.to_string());
-                last_ambient_hue.set_value(Some(hue));
+                    .set_property("--ambient-hue", &format!("{hue:.1}"));
             }
         });
     }
