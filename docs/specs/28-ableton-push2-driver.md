@@ -1031,8 +1031,10 @@ every message to the sysex reply ingress first, then to a
 `Push2InputRelay` (`drivers/push2/input.rs`) that decodes it with
 `Push2InputDecoder` (`protocol/input.rs`) and publishes the edges through the
 `TransportInputSink` the transport opener received (Spec 82 §9). The relay
-owns no lock the output or display paths take, and allocates nothing once
-warm.
+owns no lock the output or display paths take. Decoding allocates nothing
+once warm; publishing costs what the host's sink does with the edges, which
+allocates per batch in the core fold, and only messages that carry input
+publish.
 
 The map follows Ableton's MIDI and Display Interface Manual and its MIDI
 mapping figure. Every control reports on channel 1 (status low nibble 0);
