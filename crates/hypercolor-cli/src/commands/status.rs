@@ -381,6 +381,13 @@ fn status_table_lines(data: &SystemStatus, p: &Painter) -> Vec<String> {
         p.muted(&format!("{} frames", format_count(total_frames))),
         p.muted(""),
     ));
+    if render_loop.output_demand.parked {
+        lines.push(format!(
+            "  {}   {}",
+            p.muted(&pad("", 10)),
+            p.muted("parked: nothing consumes frames, so nothing renders until a device, preview, or capture appears"),
+        ));
+    }
 
     // ── Frame budget ────────────────────────────────────────────────
     if let Some(latest_frame) = &data.latest_frame {
@@ -611,8 +618,8 @@ mod tests {
     use hypercolor_types::api::system::{
         LatestFrameStatus, MacosCapabilityOwner, MacosDaemonHandoverPhase,
         MacosDaemonOwnerConflictStatus, MacosDaemonOwnerRecoveryRequiredStatus,
-        MacosDaemonOwnershipStatus, PreviewRuntimeStatus, RenderLoopStatus, RenderSurfaceStatus,
-        ServerInfo, SystemResource, SystemStatus,
+        MacosDaemonOwnershipStatus, PreviewRuntimeStatus, RenderLoopStatus,
+        RenderOutputDemandStatus, RenderSurfaceStatus, ServerInfo, SystemResource, SystemStatus,
     };
     use serde_json::json;
 
@@ -956,6 +963,38 @@ mod tests {
         assert_eq!(format_count(999), "999");
         assert_eq!(format_count(1_234), "1,234");
         assert_eq!(format_count(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn status_lines_explain_a_parked_render_loop() {
+        let painter = Painter::plain();
+        let parked = SystemStatus {
+            render_loop: RenderLoopStatus {
+                state: "running".to_owned(),
+                target_fps: 60,
+                output_demand: RenderOutputDemandStatus {
+                    parked: true,
+                    idle_reason: Some("no_output_consumers".to_owned()),
+                    ..RenderOutputDemandStatus::default()
+                },
+                ..RenderLoopStatus::default()
+            },
+            ..SystemStatus::default()
+        };
+        let rendering = SystemStatus {
+            render_loop: RenderLoopStatus {
+                state: "running".to_owned(),
+                target_fps: 60,
+                ..RenderLoopStatus::default()
+            },
+            ..SystemStatus::default()
+        };
+
+        let parked_lines = status_table_lines(&parked, &painter).join("\n");
+        let rendering_lines = status_table_lines(&rendering, &painter).join("\n");
+
+        assert!(parked_lines.contains("parked: nothing consumes frames"));
+        assert!(!rendering_lines.contains("parked"));
     }
 
     #[test]
