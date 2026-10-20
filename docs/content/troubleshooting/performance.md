@@ -46,10 +46,10 @@ The `render` category has five checks for FPS and LED output problems.
 ### `render_loop`
 
 ```
-render_loop   state=running, tier=full
+render_loop   state=running, tier=60fps (full)
 ```
 
-The `tier` field shows where the FPS controller has landed. Compare it against your configured `daemon.target_fps`: on the default config, `full` (60 FPS) is the healthy steady state. A tier sitting below your configured target means the loop has downshifted under budget pressure. If `state` is anything other than `running`, the render loop has stopped; see [common issues](@/troubleshooting/common-issues.md).
+The `tier` field shows where the FPS controller has landed, as its rate and name. Compare it against your configured `daemon.target_fps`: on the default config, `full` (60 FPS) is the healthy steady state. A tier sitting below your configured target means the loop has downshifted under budget pressure. If `state` is anything other than `running`, the render loop has stopped; see [common issues](@/troubleshooting/common-issues.md).
 
 **Tier reference:**
 
