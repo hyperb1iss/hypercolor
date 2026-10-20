@@ -37,8 +37,11 @@ use crate::input::{
 };
 
 const DEFAULT_EVENT_LIMIT: usize = 256;
-/// Protocol-level contact indices on current touch hardware fit in five bits.
-const MAX_CONTACTS_PER_DEVICE: usize = 32;
+/// Held contacts one device may report. MIDI controllers number contacts by
+/// seven-bit note, and the Push 2 holds up to 65 at once (64 pads and its
+/// touch strip), so the bound only stops a misbehaving driver from growing
+/// held state without limit.
+const MAX_CONTACTS_PER_DEVICE: usize = 128;
 const MAX_HELD_BUTTONS_PER_DEVICE: usize = 16;
 
 /// Opaque lifetime identity for one device child publication.

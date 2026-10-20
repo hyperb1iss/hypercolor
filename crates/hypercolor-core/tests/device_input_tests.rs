@@ -306,13 +306,22 @@ fn contacts_beyond_the_per_device_cap_are_dropped() {
     let attachment = handle.attach(DeviceId::new(), "pad");
     let slot = attachment.slot();
 
-    let edges: Vec<_> = (0..33)
+    // Every Push 2 pad and its touch strip, held at once, all fit.
+    let push2: Vec<_> = (0..65)
+        .map(|contact| began(contact, at(0.5, 0.5, 0.5)))
+        .collect();
+    attachment.inject(&push2).expect("inject");
+    let snapshot = held(&slot);
+    assert_eq!(snapshot.device.touches.len(), 65);
+    assert_eq!(snapshot.batch.dropped_events, 0);
+
+    let edges: Vec<_> = (65..129)
         .map(|contact| began(contact, at(0.5, 0.5, 0.5)))
         .collect();
     attachment.inject(&edges).expect("inject");
 
     let snapshot = held(&slot);
-    assert_eq!(snapshot.device.touches.len(), 32);
+    assert_eq!(snapshot.device.touches.len(), 128);
     assert_eq!(snapshot.batch.dropped_events, 1);
 }
 
