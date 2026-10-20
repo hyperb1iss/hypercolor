@@ -35,6 +35,7 @@ use hypercolor_core::input::{
     ManagedSourceRole, MotionAggregate, ScreenData, ScreenSource, ScreenSourceRole, SourceKind,
     SourceRoleBinding, SourceSessionWriter, SourceStatusHandle, SourceStatusWriter,
 };
+use hypercolor_core::spatial::DeviceSurfaceMap;
 use hypercolor_types::audio::{AudioData, AudioPipelineConfig};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
@@ -42,7 +43,10 @@ use hypercolor_types::device_input::{DeviceInputEdge, TouchPosition};
 use hypercolor_types::event::{InputButtonState, TimedInputEvent};
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+use hypercolor_types::spatial::{
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+    StripDirection,
+};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, Stats, StatsAlloc};
 
 #[cfg_attr(not(feature = "servo"), global_allocator)]
@@ -649,6 +653,74 @@ fn steady_router_resolution_control() -> (Stats, Stats) {
     (first, second)
 }
 
+/// A controller whose zone layout places its white buttons and a strip it
+/// spells `touch-strip`, but not its pads, as a scene zone may.
+fn partial_controller_surfaces(device: DeviceId) -> DeviceSurfaceMap {
+    let strip_output = |id: &str, segment: &str| Output {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        device_id: "usb:controller".to_owned(),
+        zone_name: Some(segment.to_owned()),
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(0.5, 0.1),
+        rotation: 0.0,
+        scale: 1.0,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: 31,
+            direction: StripDirection::BottomToTop,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        display_order: 0,
+        attachment: None,
+        brightness: None,
+    };
+    let layout = SpatialLayout {
+        id: "partial".to_owned(),
+        name: "Partial".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![
+            strip_output("white", "White Buttons"),
+            strip_output("strip", "touch-strip"),
+        ],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    };
+    DeviceSurfaceMap::from_layout(&layout, |layout_device_id| {
+        (layout_device_id == "usb:controller").then_some(device)
+    })
+}
+
+/// Place held named touches the way every frame's payload does: one whose
+/// segment the layout does not place, and one it places only by alias.
+fn named_touch_placement_round(surfaces: &DeviceSurfaceMap, device: DeviceId) -> Stats {
+    let mut region = Region::new(GLOBAL);
+    region.reset();
+    for _ in 0..128 {
+        black_box(black_box(surfaces).segment_canvas_position(
+            black_box(device),
+            Some(black_box("Pads")),
+            0.25,
+            0.75,
+        ));
+        black_box(black_box(surfaces).segment_canvas_position(
+            black_box(device),
+            Some(black_box("Touch Strip")),
+            0.5,
+            0.5,
+        ));
+    }
+    region.change()
+}
+
 fn audio_input_construction_round(config: &AudioPipelineConfig) -> Stats {
     let mut region = Region::new(GLOBAL);
     region.reset();
@@ -801,6 +873,22 @@ fn counting_allocator_is_active_and_scoped() {
     let (first_route, second_route) = steady_router_resolution_control();
     assert_eq!(first_route, Stats::default());
     assert_eq!(second_route, first_route);
+
+    let controller = DeviceId::new();
+    let surfaces = partial_controller_surfaces(controller);
+    assert_eq!(
+        surfaces.segment_canvas_position(controller, Some("Pads"), 0.25, 0.75),
+        None
+    );
+    assert!(
+        surfaces
+            .segment_canvas_position(controller, Some("Touch Strip"), 0.5, 0.5)
+            .is_some()
+    );
+    assert_eq!(
+        named_touch_placement_round(&surfaces, controller),
+        Stats::default()
+    );
 
     let audio_config = AudioPipelineConfig::default();
     let analyzer_construction = audio_input_construction_round(&audio_config);

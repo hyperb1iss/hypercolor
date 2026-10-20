@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use hypercolor_types::attachment::channel_name_matches_slot_alias;
+use hypercolor_types::attachment::{slot_alias_key, slot_alias_key_matches};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, SpatialLayout, StripDirection,
@@ -47,6 +47,9 @@ struct DeviceSurface {
     /// The output's segment, kept only when no other LED output of the same
     /// device names it, so a touch naming it has exactly one place to land.
     segment: Option<Arc<str>>,
+    /// The segment's alias key, built once so a touch that misses the exact
+    /// name resolves its alias every frame without allocating.
+    alias: Option<Box<str>>,
     /// Whether this is the device's only LED output in the layout.
     sole: bool,
     placement: OutputPlacement,
@@ -92,6 +95,7 @@ impl DeviceSurfaceMap {
                 Some(DeviceSurface {
                     device_id,
                     segment: segment.map(Arc::from),
+                    alias: segment.map(|segment| slot_alias_key(segment).into_boxed_str()),
                     sole,
                     placement: OutputPlacement::of(output),
                     frame: SurfaceFrame::of(&output.topology),
@@ -158,8 +162,10 @@ impl DeviceSurfaceMap {
             return Some(exact);
         }
         let mut aliased = surfaces().filter(|surface| {
-            surface.segment.is_some()
-                && channel_name_matches_slot_alias(surface.segment.as_deref(), Some(segment))
+            surface
+                .alias
+                .as_deref()
+                .is_some_and(|alias| slot_alias_key_matches(alias, segment))
         });
         let alias = aliased.next()?;
         aliased.next().is_none().then_some(alias)
