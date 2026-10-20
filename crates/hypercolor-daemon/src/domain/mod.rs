@@ -562,6 +562,14 @@ impl MutationContext {
             trigger: ChangeTrigger::Mcp,
         }
     }
+
+    /// Provenance for a mutation the daemon makes on its own behalf.
+    #[must_use]
+    pub const fn system() -> Self {
+        Self {
+            trigger: ChangeTrigger::System,
+        }
+    }
 }
 
 #[cfg(test)]
