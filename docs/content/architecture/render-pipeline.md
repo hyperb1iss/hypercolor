@@ -166,6 +166,21 @@ fps_controller.maybe_transition();
 
 `FrameStats` surfaces `tier`, `frame_time`, `headroom`, `ewma_frame_time`, `consecutive_misses`, and `frames_since_tier_change`, all forwarded to the event bus and visible in the dashboard.
 
+## Rendering only what someone receives
+
+Every frame costs producer, compositor, and GPU work whether or not anything receives it. A daemon with no devices and no open client would otherwise render a WebGL effect at 60 fps for nobody. Before each frame the loop therefore counts the consumers of its output:
+
+- connected devices, LED or display, that receive frames (a simulated display counts only while someone previews it);
+- live receivers on the bus output streams: frame data, spectrum, the canvas and scene canvas previews, screen canvas and screen zones, web viewport, zone previews, and the per-zone canvas streams. WebSocket subscriptions, display backdrops, and canvas captures all hold one;
+- WebSocket and diagnostic subscribers to host input events, which the loop republishes;
+- explicit output demand holds, taken by anything that reads published frames without a receiver.
+
+With none of them, the loop **parks**: it renders nothing, withdraws its audio, screen, and interaction capture demand, and throttles HTML effect pages so their own timers and `requestAnimationFrame` loops stop too. A parked loop sleeps until something can observe a frame. Subscribing to a stream, taking a demand hold, connecting a device, queuing a layout change, or publishing any bus event wakes it at once, and it resumes at its full tier. A one second safety tick re-checks in case a consumer arrived without signalling. No observable cadence changes, because the moment anything can see a frame, it renders at full rate.
+
+Parking waits for the producers to settle. After the scene, an effect, or the canvas changes, the loop keeps rendering until every producer has shown its new content (bounded at ten seconds), so an effect applied while nobody watches is already loaded when a client or capture arrives. Effect time carries across the park: the first frame after a wake advances effect time by one frame, not by the parked span, and no catch-up frames follow. A canvas capture that wakes the loop skips the wake frame itself, whose HTML producers still show output requested before the park, and returns the next one.
+
+`/api/v1/status` reports the state under `render_loop.output_demand` (`parked`, `idle_reason`, `parked_ms`, and the consumer counts the loop last saw), with `delivered_fps` and `actual_fps` at zero while parked. `/api/v1/diagnose` carries the same object under `snapshot.render.output_demand`. Rigs with a connected device never park.
+
 ## Canvas resize and layout updates
 
 Two operations trigger mid-run reconfigurations without stalling the render thread:
