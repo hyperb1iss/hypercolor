@@ -52,6 +52,8 @@ mod screen_canvas;
 mod screen_parity_diagnostics;
 #[doc(hidden)]
 pub mod sparkleflinger;
+pub mod supervision;
+mod supervisor;
 mod unassigned_output;
 mod zone_previews;
 
@@ -62,17 +64,17 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use arc_swap::ArcSwapOption;
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use self::input_publication::InputPublicationMonitor;
 pub(crate) use self::input_publication::InputScreenBranchRequest;
 pub use self::input_publication::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
     InputPublicationDemandRegistration, InputPublicationStatus, InputScreenBranchDemand,
 };
-use self::input_publication::{InputPublicationMonitor, InputPublicationPump};
-use self::pipeline_driver::run_pipeline;
 pub(crate) use self::producer_queue::ProducerFrame;
 pub(crate) use self::render_zones::{RenderSceneContext, ZoneFrameInputs};
 pub(crate) use self::scene_dependency::SceneDependencyKey;
@@ -84,6 +86,10 @@ pub(crate) use self::scene_dependency::SceneDependencyKey;
 pub(crate) use self::screen_parity_diagnostics::{
     ScreenParityDiagnosticHandle, ScreenParityLiveSnapshot, ScreenParitySnapshotError,
 };
+pub use self::supervision::{
+    RenderFailureKind, RenderFailureRecord, RenderRecoveryAction, RenderRestartPolicy,
+    RenderSupervision, RenderSupervisionSnapshot, RenderThreadPhase,
+};
 use crate::discovery::DiscoveryRuntime;
 use crate::domain::scene::{ScenePlanReader, SceneService};
 use crate::domain::spatial::SpatialService;
@@ -92,7 +98,7 @@ use crate::output_power::OutputPowerState;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_transactions::SceneTransactionQueue;
-use crate::startup::{StartupProgress, startup_step};
+use crate::startup::StartupProgress;
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::HypercolorBus;
@@ -247,11 +253,20 @@ const fn u8_to_fps_tier(value: u8) -> FpsTier {
 /// Call [`shutdown`](Self::shutdown) to stop the thread gracefully.
 /// The render loop must be stopped first (via `RenderLoop::stop()`) — the
 /// thread will exit on the next `tick()` returning `false`.
+///
+/// The thread supervises its own pipeline: a panic or error exit is logged,
+/// recorded in the [`RenderSupervision`] it was spawned with, and followed
+/// by an in-process restart, until the restart budget runs out and the
+/// supervision asks the daemon to exit.
 pub struct RenderThread {
     join_handle: Option<std::thread::JoinHandle<Result<()>>>,
     cancel: CancellationToken,
     input_publication_demands: InputPublicationDemandHandle,
-    input_publication_monitor: InputPublicationMonitor,
+    /// The current input pump's monitor, replaced when a failed pump is
+    /// restarted.
+    input_publication_monitor: Arc<ArcSwapOption<InputPublicationMonitor>>,
+    supervision: RenderSupervision,
+    _panic_observer: Option<crate::panic_hook::PanicObserverRegistration>,
     #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
     screen_parity_diagnostics: ScreenParityDiagnosticHandle,
 }
@@ -359,7 +374,16 @@ impl RenderThread {
     }
 
     pub fn try_spawn(state: RenderThreadState) -> Result<Self> {
-        Self::try_spawn_with_runtime_builder(state, build_render_runtime)
+        Self::try_spawn_supervised(state, RenderSupervision::detached())
+    }
+
+    /// Spawn the render thread under `supervision`, which carries the
+    /// restart policy and receives its health and failures.
+    pub fn try_spawn_supervised(
+        state: RenderThreadState,
+        supervision: RenderSupervision,
+    ) -> Result<Self> {
+        Self::spawn_inner(state, build_render_runtime, None, supervision)
     }
 
     /// Spawn the render thread while reporting each completed startup step
@@ -376,8 +400,9 @@ impl RenderThread {
     pub fn try_spawn_reporting(
         state: RenderThreadState,
         progress: StartupProgress,
+        supervision: RenderSupervision,
     ) -> Result<Self> {
-        Self::spawn_inner(state, build_render_runtime, Some(progress))
+        Self::spawn_inner(state, build_render_runtime, Some(progress), supervision)
     }
 
     #[doc(hidden)]
@@ -388,24 +413,23 @@ impl RenderThread {
     where
         F: FnOnce() -> Result<tokio::runtime::Runtime> + Send + 'static,
     {
-        Self::spawn_inner(state, build_runtime, None)
+        Self::spawn_inner(state, build_runtime, None, RenderSupervision::detached())
     }
 
     fn spawn_inner<F>(
         state: RenderThreadState,
         build_runtime: F,
         progress: Option<StartupProgress>,
+        supervision: RenderSupervision,
     ) -> Result<Self>
     where
         F: FnOnce() -> Result<tokio::runtime::Runtime> + Send + 'static,
     {
         let input_publication_demands =
             InputPublicationDemandHandle::new(state.input_manager.screen_native_execution_policy());
-        let pump_demands = input_publication_demands.clone();
-        let pipeline_demands = input_publication_demands.clone();
         let cancel = CancellationToken::new();
-        let worker_cancel = cancel.clone();
-        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<InputPublicationMonitor>>(1);
+        let input_publication_monitor = Arc::new(ArcSwapOption::empty());
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<()>>(1);
         #[cfg(feature = "wgpu")]
         let (screen_parity_diagnostics, screen_parity_mailbox) =
             screen_parity_diagnostics::screen_parity_diagnostic_channel();
@@ -414,116 +438,65 @@ impl RenderThread {
             not(all(target_os = "macos", feature = "screen-capture"))
         ))]
         let _ = screen_parity_diagnostics;
-        let join_handle = std::thread::Builder::new()
-            .name("hypercolor-render".to_owned())
-            .spawn(move || -> Result<()> {
-                let _scene_transaction_consumer = state.scene_transactions.consumer();
-                crate::process::configure_render_thread_priority();
-                let runtime =
-                    match startup_step(progress.as_ref(), "render runtime", build_runtime) {
-                        Ok(runtime) => runtime,
-                        Err(error) => {
-                            let _ = ready_tx.send(Err(error));
-                            return Ok(());
-                        }
-                    };
-                let mut input_pump = match startup_step(
-                    progress.as_ref(),
-                    "input publication pump",
-                    || {
-                        runtime.block_on(InputPublicationPump::start(
-                            state.input_manager.clone(),
-                            pump_demands,
-                            Some(state.interaction_routing.device_input().clone()),
-                        ))
-                    },
-                ) {
-                    Ok(pump) => pump,
-                    Err(error) => {
-                        let _ = ready_tx.send(Err(error));
-                        return Ok(());
-                    }
-                };
-                #[cfg(all(
-                    target_os = "macos",
-                    feature = "wgpu",
-                    feature = "screen-capture"
-                ))]
-                let pipeline = pipeline_runtime::PipelineRuntime::from_state(
-                    &state,
-                    input_pump.reader(),
-                    pipeline_demands,
-                    #[cfg(feature = "wgpu")]
-                    screen_parity_mailbox,
-                    progress.as_ref(),
-                );
-                #[cfg(not(all(
-                    target_os = "macos",
-                    feature = "wgpu",
-                    feature = "screen-capture"
-                )))]
-                let pipeline = pipeline_runtime::PipelineRuntime::from_state(
-                    &state,
-                    input_pump.reader(),
-                    pipeline_demands,
-                    #[cfg(feature = "wgpu")]
-                    screen_parity_mailbox,
-                    progress.as_ref(),
-                );
-                // Startup reporting ends with the pipeline build.
-                drop(progress);
-                match pipeline {
-                    Ok(runtime_state) => {
-                        let monitor = input_pump.monitor();
-                        if ready_tx.send(Ok(monitor.clone())).is_err() {
-                            return runtime.block_on(input_pump.shutdown());
-                        }
-                        let pipeline_result = runtime.block_on(async {
-                            tokio::select! {
-                                () = run_pipeline(state.clone(), runtime_state) => Ok(()),
-                                status = monitor.wait_for_terminal() => {
-                                    tracing::error!(?status, "input publication pump terminated while rendering");
-                                    state.render_loop.write().await.stop();
-                                    Err(anyhow!("input publication pump terminated: {status:?}"))
-                                }
-                                () = worker_cancel.cancelled() => {
-                                    state.render_loop.write().await.stop();
-                                    Ok(())
-                                }
-                            }
-                        });
-                        let shutdown_result = runtime.block_on(input_pump.shutdown());
-                        pipeline_result.and(shutdown_result)
-                    }
-                    Err(error) => {
-                        if let Err(shutdown_error) = runtime.block_on(input_pump.shutdown()) {
-                            tracing::warn!(%shutdown_error, "input publication cleanup failed after render startup error");
-                        }
-                        let _ = ready_tx.send(Err(error));
-                        Ok(())
-                    }
-                }
-            })
-            .context("failed to spawn render thread")?;
-        let ready = ready_rx
-            .recv()
-            .context("render thread exited before startup completed")?;
-        let input_publication_monitor = match ready {
-            Ok(monitor) => monitor,
+        let panic_observer = supervision
+            .panic_observer()
+            .map(crate::panic_hook::add_observer);
+        supervision.set_phase(RenderThreadPhase::Starting);
+        let launch = supervisor::RenderThreadLaunch {
+            state,
+            build_runtime,
+            progress,
+            ready: ready_tx,
+            cancel: cancel.clone(),
+            input_demands: input_publication_demands.clone(),
+            input_monitor: Arc::clone(&input_publication_monitor),
+            supervision: supervision.clone(),
+            #[cfg(feature = "wgpu")]
+            screen_parity_mailbox,
+        };
+        let spawned = std::thread::Builder::new()
+            .name(supervision::RENDER_THREAD_NAME.to_owned())
+            .spawn(move || supervisor::run(launch))
+            .context("failed to spawn render thread");
+        let join_handle = match spawned {
+            Ok(join_handle) => join_handle,
             Err(error) => {
-                let _ = join_handle.join();
+                supervision.set_phase(RenderThreadPhase::Stopped);
                 return Err(error);
             }
         };
+        let startup = ready_rx
+            .recv()
+            .context("render thread exited before startup completed")
+            .and_then(|ready| ready);
+        if let Err(error) = startup {
+            let _ = join_handle.join();
+            return Err(match supervision.termination() {
+                Some(record) => error.context(format!(
+                    "render thread failed during startup ({}): {}",
+                    record.kind.as_str(),
+                    record.message
+                )),
+                None => error,
+            });
+        }
         info!("render thread spawned");
         Ok(Self {
             join_handle: Some(join_handle),
             cancel,
             input_publication_demands,
             input_publication_monitor,
+            supervision,
+            _panic_observer: panic_observer,
             #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
             screen_parity_diagnostics,
         })
+    }
+
+    /// The supervision this thread reports its health and failures to.
+    #[must_use]
+    pub fn supervision(&self) -> RenderSupervision {
+        self.supervision.clone()
     }
 
     /// Clone the lock-free demand publication used by input consumers.
@@ -533,7 +506,10 @@ impl RenderThread {
 
     /// Read the input-publication worker lifecycle state without blocking.
     pub fn input_publication_status(&self) -> InputPublicationStatus {
-        self.input_publication_monitor.status()
+        self.input_publication_monitor
+            .load()
+            .as_ref()
+            .map_or(InputPublicationStatus::Starting, |monitor| monitor.status())
     }
 
     #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
@@ -584,7 +560,7 @@ fn build_render_runtime() -> Result<tokio::runtime::Runtime> {
         .worker_threads(RENDER_RUNTIME_WORKERS)
         .max_blocking_threads(RENDER_RUNTIME_MAX_BLOCKING_THREADS)
         .thread_keep_alive(RENDER_RUNTIME_THREAD_KEEP_ALIVE)
-        .thread_name("hypercolor-render-rt")
+        .thread_name(supervision::RENDER_RUNTIME_THREAD_NAME)
         .enable_all()
         .build()
         .context("failed to initialize render thread runtime")

@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use super::gpu_errors::{GpuDeviceRole, GpuErrorKind, record_device_lost, record_uncaptured_error};
+use super::gpu_errors::{
+    DeviceLossSignal, GpuDeviceRole, GpuErrorKind, record_device_lost, record_uncaptured_error,
+};
 
 const GPU_RESOURCE_CREATION_BUDGET_PERCENT: u8 = 80;
 const GPU_DEVICE_LOSS_BUDGET_PERCENT: u8 = 95;
@@ -19,6 +21,7 @@ struct GpuRenderDeviceInner {
     device: wgpu::Device,
     queue: wgpu::Queue,
     info: GpuRenderDeviceInfo,
+    loss: DeviceLossSignal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,7 +130,7 @@ impl GpuRenderDevice {
             trace: wgpu::Trace::Off,
         }))
         .with_context(|| format!("failed to create a {label} wgpu device"))?;
-        install_error_handlers(&device, label, GpuDeviceRole::Compositor);
+        let loss = install_error_handlers(&device, label, GpuDeviceRole::Compositor);
 
         let limits = device.limits();
         let info = GpuRenderDeviceInfo {
@@ -150,6 +153,7 @@ impl GpuRenderDevice {
                 device,
                 queue,
                 info,
+                loss,
             }),
         })
     }
@@ -196,7 +200,7 @@ impl GpuRenderDevice {
             trace: wgpu::Trace::Off,
         }))
         .with_context(|| format!("failed to create an independent {label} wgpu device"))?;
-        install_error_handlers(&device, label, GpuDeviceRole::Auxiliary);
+        let loss = install_error_handlers(&device, label, GpuDeviceRole::Auxiliary);
 
         let adapter_info = adapter.get_info();
         let limits = device.limits();
@@ -220,6 +224,7 @@ impl GpuRenderDevice {
                 device,
                 queue,
                 info,
+                loss,
             }),
         })
     }
@@ -244,6 +249,11 @@ impl GpuRenderDevice {
         self.inner.info.clone()
     }
 
+    /// Raised once wgpu reports this device lost.
+    pub(crate) fn loss_signal(&self) -> DeviceLossSignal {
+        self.inner.loss.clone()
+    }
+
     pub(crate) fn require_texture_usage(
         &self,
         format: wgpu::TextureFormat,
@@ -262,13 +272,17 @@ impl GpuRenderDevice {
 }
 
 /// Route every error and loss `device` reports into the daemon's GPU
-/// error accounting.
+/// error accounting, and return the signal its loss raises.
 ///
 /// Without a handler wgpu panics the calling thread on the first
 /// uncaptured validation error, which on the render thread takes the whole
 /// pipeline down. With it the error is counted, logged at error level with
 /// the device label and wgpu's description, and kept for diagnostics.
-fn install_error_handlers(device: &wgpu::Device, label: &'static str, role: GpuDeviceRole) {
+fn install_error_handlers(
+    device: &wgpu::Device,
+    label: &'static str,
+    role: GpuDeviceRole,
+) -> DeviceLossSignal {
     device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
         let kind = match &error {
             wgpu::Error::Validation { .. } => GpuErrorKind::Validation,
@@ -277,13 +291,17 @@ fn install_error_handlers(device: &wgpu::Device, label: &'static str, role: GpuD
         };
         record_uncaptured_error(label, kind, &error.to_string());
     }));
+    let loss = DeviceLossSignal::default();
+    let raised = loss.clone();
     device.set_device_lost_callback(move |reason, message| {
         let reason = match reason {
             wgpu::DeviceLostReason::Unknown => "unknown",
             wgpu::DeviceLostReason::Destroyed => "destroyed",
         };
         record_device_lost(label, role, reason, &message);
+        raised.raise(format!("{label} lost ({reason}: {message})"));
     });
+    loss
 }
 
 /// Raise one uncaptured validation error on `device` on purpose.
@@ -291,7 +309,7 @@ fn install_error_handlers(device: &wgpu::Device, label: &'static str, role: GpuD
 /// A buffer that is both read- and write-mappable is invalid without
 /// `MAPPABLE_PRIMARY_BUFFERS`, which no daemon device requests, so wgpu
 /// reports it synchronously through the uncaptured-error handler.
-#[cfg(test)]
+#[cfg(any(test, feature = "persistence-test-hooks"))]
 pub(crate) fn raise_uncaptured_validation_error(device: &wgpu::Device) {
     let _invalid = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("injected validation error"),
@@ -715,6 +733,29 @@ mod tests {
 
         let after = crate::render_thread::gpu_errors::gpu_error_totals();
         assert!(after.validation > before.validation);
+    }
+
+    #[test]
+    fn a_destroyed_device_raises_only_its_own_loss_signal() {
+        let Ok(device) = GpuRenderDevice::new_with_backend_preference(
+            "loss signal test device",
+            GpuBackendPreference::Default,
+        ) else {
+            return;
+        };
+        let sibling = device
+            .independent_device("loss signal sibling device")
+            .expect("selected adapter should support a second logical device");
+
+        device.device().destroy();
+        let _ = device.device().poll(wgpu::PollType::Poll);
+
+        let lost = device
+            .loss_signal()
+            .lost()
+            .expect("destroying the device should run its device-lost callback");
+        assert!(lost.contains("loss signal test device"), "{lost}");
+        assert!(sibling.loss_signal().lost().is_none());
     }
 
     #[test]

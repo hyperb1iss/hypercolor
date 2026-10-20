@@ -6,7 +6,9 @@
 //! each one is counted, the latest is kept for diagnostics, and they are
 //! logged at error level under a burst limit so a cascade of follow-on
 //! errors from one invalid resource cannot flood the log. Device loss is
-//! counted and logged too.
+//! counted and logged too, and each device raises its own
+//! [`DeviceLossSignal`], which the render supervisor waits on for the
+//! device its pipeline draws with.
 //!
 //! The accounting has no wgpu types in it, so builds without the `wgpu`
 //! feature still report (all zero) totals.
@@ -19,8 +21,10 @@
 )]
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use tokio::sync::watch;
 
 /// Errors logged per [`LOG_WINDOW`] before the rest are only counted.
 const LOG_BURST: u32 = 10;
@@ -116,6 +120,57 @@ static TELEMETRY: GpuErrorTelemetry = GpuErrorTelemetry {
         suppressed: 0,
     }),
 };
+
+/// Sticky "this device was lost" flag for one wgpu device.
+///
+/// Clones share the flag. It is set once, by the device-lost callback, and
+/// stays set: a lost device never comes back, so anything that checks it
+/// later, such as a pipeline rebuilt on the same device, sees the loss too.
+#[derive(Debug, Clone)]
+pub(crate) struct DeviceLossSignal {
+    sender: Arc<watch::Sender<Option<Arc<str>>>>,
+}
+
+impl Default for DeviceLossSignal {
+    fn default() -> Self {
+        Self {
+            sender: Arc::new(watch::Sender::new(None)),
+        }
+    }
+}
+
+impl DeviceLossSignal {
+    /// Mark the device lost, keeping the first description.
+    pub(crate) fn raise(&self, description: String) {
+        self.sender.send_if_modified(|lost| {
+            if lost.is_some() {
+                return false;
+            }
+            *lost = Some(Arc::from(description));
+            true
+        });
+    }
+
+    /// The loss description, once the device is lost.
+    pub(crate) fn lost(&self) -> Option<Arc<str>> {
+        self.sender.borrow().clone()
+    }
+
+    /// Wait until the device is lost, and return the description.
+    pub(crate) async fn wait(&self) -> String {
+        let mut receiver = self.sender.subscribe();
+        let lost = receiver
+            .wait_for(Option::is_some)
+            .await
+            .map(|lost| lost.as_deref().unwrap_or("device lost").to_owned());
+        match lost {
+            Ok(lost) => lost,
+            // This signal holds its own sender, so the channel cannot close
+            // while the wait borrows it.
+            Err(_) => std::future::pending().await,
+        }
+    }
+}
 
 /// Record one uncaptured error from `device`.
 pub(crate) fn record_uncaptured_error(device: &str, kind: GpuErrorKind, message: &str) {
@@ -222,7 +277,8 @@ fn admit_log() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        GpuDeviceRole, GpuErrorKind, gpu_error_totals, record_device_lost, record_uncaptured_error,
+        DeviceLossSignal, GpuDeviceRole, GpuErrorKind, gpu_error_totals, record_device_lost,
+        record_uncaptured_error,
     };
 
     #[test]
@@ -255,5 +311,28 @@ mod tests {
         );
 
         assert!(gpu_error_totals().device_lost > before.device_lost);
+    }
+
+    #[tokio::test]
+    async fn a_raised_loss_wakes_a_waiter_and_stays_raised() {
+        let signal = DeviceLossSignal::default();
+        assert!(signal.lost().is_none());
+        let waiter = tokio::spawn({
+            let signal = signal.clone();
+            async move { signal.wait().await }
+        });
+
+        signal.raise("compositor lost (unknown: reset)".to_owned());
+        signal.raise("a later loss report".to_owned());
+
+        assert_eq!(
+            waiter.await.expect("waiter should finish"),
+            "compositor lost (unknown: reset)"
+        );
+        assert_eq!(
+            signal.lost().as_deref(),
+            Some("compositor lost (unknown: reset)")
+        );
+        assert_eq!(signal.wait().await, "compositor lost (unknown: reset)");
     }
 }

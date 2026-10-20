@@ -13,7 +13,7 @@
     reason = "consumed by platform diagnostic endpoints; targets without one carry the seam unused"
 )]
 
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use anyhow::{Context, Result, anyhow};
 use hypercolor_core::input::screen::implementer::{
@@ -37,8 +37,14 @@ pub(crate) struct ScreenParityDiagnosticHandle {
     sender: tokio_mpsc::Sender<ScreenParityRequest>,
 }
 
+/// The render thread's end of the parity mailbox.
+///
+/// Clones share one receiver, so the supervisor keeps the mailbox across a
+/// pipeline restart and the diagnostics handle stays connected to whichever
+/// pipeline is live.
+#[derive(Clone)]
 pub(crate) struct ScreenParityDiagnosticMailbox {
-    receiver: tokio_mpsc::Receiver<ScreenParityRequest>,
+    receiver: Arc<Mutex<tokio_mpsc::Receiver<ScreenParityRequest>>>,
 }
 
 struct ScreenParityRequest {
@@ -81,7 +87,9 @@ pub(crate) fn screen_parity_diagnostic_channel()
     let (sender, receiver) = tokio_mpsc::channel(REQUEST_CAPACITY);
     (
         ScreenParityDiagnosticHandle { sender },
-        ScreenParityDiagnosticMailbox { receiver },
+        ScreenParityDiagnosticMailbox {
+            receiver: Arc::new(Mutex::new(receiver)),
+        },
     )
 }
 
@@ -109,8 +117,12 @@ impl ScreenParityDiagnosticMailbox {
         descriptor: Option<&ResolvedScreenPublicationDescriptor>,
         spatial_engine: &SpatialEngine,
     ) {
-        let Ok(request) = self.receiver.try_recv() else {
-            return;
+        let request = {
+            let mut receiver = self.receiver.lock().unwrap_or_else(PoisonError::into_inner);
+            let Ok(request) = receiver.try_recv() else {
+                return;
+            };
+            request
         };
         let result = capture_active_snapshot(
             render_device,
