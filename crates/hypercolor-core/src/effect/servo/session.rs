@@ -273,6 +273,18 @@ impl ServoSessionHandle {
         }
     }
 
+    /// Throttle this session's page while the render loop requests no
+    /// frames, so its animation timers and requestAnimationFrame loop stop
+    /// running unobserved. The next render request unthrottles it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker's control queue cannot accept the
+    /// command.
+    pub fn park(&self) -> Result<()> {
+        self.worker.set_session_throttled(self.session_id, true)
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         self.render_width = width.max(1);
         self.render_height = height.max(1);

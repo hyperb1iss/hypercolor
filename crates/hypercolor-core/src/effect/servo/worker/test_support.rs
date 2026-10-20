@@ -69,6 +69,7 @@ pub fn spawn_test_worker() -> (ServoWorker, Arc<AtomicBool>) {
                     let _ = response_tx.send(());
                     break;
                 }
+                WorkerCommand::SetThrottled { .. } => {}
                 WorkerCommand::MemoryReport { response_tx } => {
                     let _ = response_tx.send(Ok(empty_memory_report()));
                 }
@@ -170,6 +171,7 @@ pub fn spawn_render_test_worker() -> (
                 WorkerCommand::LoadUrl { response_tx, .. } => {
                     let _ = response_tx.send(Ok(()));
                 }
+                WorkerCommand::SetThrottled { .. } => {}
                 WorkerCommand::MemoryReport { response_tx } => {
                     let _ = response_tx.send(Ok(empty_memory_report()));
                 }
@@ -251,6 +253,7 @@ pub fn spawn_contended_render_test_worker() -> ContendedRenderTestWorker {
                     let _ = response_tx.send(());
                     break;
                 }
+                WorkerCommand::SetThrottled { .. } => {}
                 WorkerCommand::MemoryReport { response_tx } => {
                     let _ = response_tx.send(Ok(empty_memory_report()));
                 }
@@ -322,6 +325,7 @@ pub fn spawn_load_test_worker() -> (
                     let _ = response_tx.send(());
                     break;
                 }
+                WorkerCommand::SetThrottled { .. } => {}
                 WorkerCommand::MemoryReport { response_tx } => {
                     let _ = response_tx.send(Ok(empty_memory_report()));
                 }
@@ -391,6 +395,7 @@ pub fn spawn_blocking_load_test_worker() -> (
                     let _ = response_tx.send(());
                     break;
                 }
+                WorkerCommand::SetThrottled { .. } => {}
                 WorkerCommand::MemoryReport { response_tx } => {
                     let _ = response_tx.send(Ok(empty_memory_report()));
                 }

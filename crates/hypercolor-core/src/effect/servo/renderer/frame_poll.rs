@@ -49,6 +49,7 @@ impl ServoRenderer {
                 self.clear_stall_state();
                 self.last_gpu_frame = Some(frame);
                 self.warned_fallback_frame = false;
+                self.awaiting_first_frame = false;
             }
             Ok(Some(EffectRenderOutput::Pending)) => {}
             Ok(None) => self.update_stall_state(pending, soft_stall_timeout),
@@ -75,6 +76,7 @@ impl ServoRenderer {
 
     pub(super) fn accept_completed_canvas(&mut self, canvas: Canvas, clear_gpu_frame: bool) {
         self.clear_stall_state();
+        self.awaiting_first_frame = false;
         self.last_canvas = Some(canvas);
         self.clear_cached_gpu_frame_if_needed(clear_gpu_frame);
         self.warned_fallback_frame = false;

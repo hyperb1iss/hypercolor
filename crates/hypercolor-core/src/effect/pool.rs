@@ -241,6 +241,21 @@ impl EffectPool {
         }
     }
 
+    /// Park every renderer because the render loop stopped requesting
+    /// frames. See [`EffectRenderer::park`].
+    pub fn park(&mut self) {
+        for slot in self.slots.values_mut() {
+            slot.renderer.park();
+        }
+    }
+
+    /// Whether any renderer is still warming up its current content. See
+    /// [`EffectRenderer::is_warming`].
+    #[must_use]
+    pub fn any_warming(&self) -> bool {
+        self.slots.values().any(|slot| slot.renderer.is_warming())
+    }
+
     pub fn remove_zone(&mut self, zone_id: ZoneId) {
         if self.slots.keys().any(|key| key.zone_id == zone_id) {
             let next_generation = self.next_generation();
