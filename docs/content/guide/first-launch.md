@@ -173,7 +173,14 @@ launch.
 ## After the wizard
 
 The window lands on the Hypercolor dashboard. The daemon is running, the tray is live,
-and device discovery is already in progress. From here:
+and device discovery is already in progress.
+
+On a fresh install the dashboard is already lit. The first time the daemon starts with no
+saved session, scenes, or library, it loads **Hyperbloom** into the default scene with its
+default controls, so the preview glows on its own and reacts to sound, and it seeds your
+favorites with Hyperbloom, Borealis, Bubble Garden, Plasma Engine, and Spectral Fire. This
+happens once: clear the scene or remove the favorites and they stay that way, and an
+upgraded install keeps exactly what it had. From here:
 
 - Head to **Devices** to confirm your hardware was found.
 - Open **Effects** to apply your first look.
@@ -189,7 +196,9 @@ USB udev rules, network mDNS, and per-protocol pairing.
 
 If you installed the daemon only (Linux server, headless setup, or manual `just daemon`
 from source), there is no wizard and no tray. The daemon starts, writes its config to
-`~/.config/hypercolor/hypercolor.toml` on first run, and listens on `:9420`. You can
+`~/.config/hypercolor/hypercolor.toml` on first run, and listens on `:9420`. It applies
+the same first-run defaults, Hyperbloom in the default scene and the curated favorites,
+without any help from the app. You can
 reach the web UI at `http://localhost:9420` in a browser, or use the CLI or TUI:
 
 ```bash

@@ -40,6 +40,8 @@ The picker always names what is actually rendering, even on a brand-new install 
 
 When you first run Hypercolor, you are in the **ephemeral default scene**. It is the live working state of your rig before you have saved anything, and the daemon never lists it as a saved scene. The scene picker still names it so you always know what is on screen, but the rename and delete actions are hidden for it, because there is nothing persisted to rename or delete.
 
+On a brand-new install the default scene starts with Hyperbloom in its primary zone, so something is on screen before you pick an effect. From then on it holds whatever you leave in it, including nothing at all.
+
 You leave the default scene the moment you create your first scene. Creating a scene captures the current rig as a saved, named configuration and switches to it.
 
 To return to the default scene later, deactivate the active scene from the scene pill in the dashboard header. Deactivation rebuilds the ephemeral working state, and the picker only flips once the daemon confirms the switch.

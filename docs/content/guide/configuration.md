@@ -80,7 +80,7 @@ state_history_min_interval_secs = 30  # Content changed more recently than this 
 
 **`canvas_width` / `canvas_height`** are the render canvas dimensions. LED spatial positions are normalized to `[0.0, 1.0]`, so layouts remain valid across different canvas sizes. Canvas resizes take effect at the next frame boundary. Both keys support live reload.
 
-**`start_scene`**: `"last"` restores the scene that was active at shutdown. `"default"` selects the auto-managed Default scene. Any other non-empty string is treated as a saved scene name or id.
+**`start_scene`**: `"last"` restores the scene that was active at shutdown, and on a fresh install with nothing to restore it starts the default scene with Hyperbloom. `"default"` selects the auto-managed Default scene. Any other non-empty string is treated as a saved scene name or id.
 
 **`shutdown_behavior`**: `hardware_default` leaves LEDs on their last hardware frame (most controllers hold it). `off` sends a black frame to every device. `static` sends the color in `shutdown_color`.
 

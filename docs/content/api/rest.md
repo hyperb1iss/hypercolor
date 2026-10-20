@@ -1020,6 +1020,10 @@ The library holds favorites, presets, and playlists.
 
 ### Favorites
 
+A fresh install starts with a few curated favorites, which the daemon seeds once on its
+very first run. An existing install never gets them, even one whose favorites list is
+empty.
+
 {% <api_endpoint method="GET" path="/api/v1/library/favorites"> %}
 List favorited effects.
 {% </api_endpoint> %}
