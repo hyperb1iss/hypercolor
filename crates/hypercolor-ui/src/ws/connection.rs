@@ -725,7 +725,12 @@ impl WsManager {
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
             if !should_stream_preview(is_visible, window_visible, engine_target, consumer_count) {
-                if let Some(ws) = ws_handle.get_value() {
+                // Only a requested stream has anything to unsubscribe. The
+                // effect reruns on every engine target report, so an
+                // unguarded branch resent the unsubscribe twice a second.
+                if requested_preview.get_value().is_some()
+                    && let Some(ws) = ws_handle.get_value()
+                {
                     clear_preview_subscription(
                         requested_preview,
                         &set_preview_target_fps,
@@ -759,7 +764,9 @@ impl WsManager {
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
             if !should_stream_preview(is_visible, window_visible, engine_target, consumer_count) {
-                if let Some(ws) = ws_handle.get_value() {
+                if requested_screen_preview.get_value().is_some()
+                    && let Some(ws) = ws_handle.get_value()
+                {
                     clear_screen_preview_subscription(
                         requested_screen_preview,
                         &set_screen_canvas_frame,
@@ -812,7 +819,9 @@ impl WsManager {
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
             if !should_stream_preview(is_visible, window_visible, engine_target, consumer_count) {
-                if let Some(ws) = ws_handle.get_value() {
+                if requested_web_viewport_preview.get_value().is_some()
+                    && let Some(ws) = ws_handle.get_value()
+                {
                     clear_web_viewport_preview_subscription(
                         requested_web_viewport_preview,
                         &set_web_viewport_canvas_frame,
