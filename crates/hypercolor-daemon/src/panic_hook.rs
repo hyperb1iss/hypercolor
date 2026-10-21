@@ -246,21 +246,37 @@ fn starts_frame(line: &str) -> bool {
     digits > 0 && trimmed[digits..].starts_with(": ")
 }
 
-/// Index of the first frame of the code that panicked.
+/// The frame std's own short backtraces start after: everything above it
+/// is the backtrace capture, this hook, and the hook dispatch.
+const SHORT_BACKTRACE_END: &str = "__rust_end_short_backtrace";
+
+/// Index of the first frame worth keeping.
 ///
-/// The excerpt skips the contiguous run of capture and panic runtime frames
-/// at the top and stops at the first frame it does not recognize, so an
-/// unfamiliar runtime frame costs a few extra lines rather than hiding the
-/// panic site. The runtime is matched by its entry points, not by every
-/// `std::panicking` frame: MSVC symbols keep generic arguments, so the code
-/// that panicked can run inside a frame such as
-/// `std::panicking::catch_unwind::do_call<the_caller::closure_env$0>`.
+/// That is the frame after std's short backtrace marker, the same cut a
+/// default panic message makes, so the excerpt opens with the panic entry
+/// (`begin_panic_handler`, `panic_fmt`) and then the code that panicked.
+/// Frame names cannot place the cut more precisely: a build without
+/// debuginfo, such as the Windows CI tests, labels the caller's frames with
+/// the nearest public symbol, which can be a `core::panicking` function.
+/// Without the marker, the excerpt skips the contiguous run of capture and
+/// panic runtime frames at the top and stops at the first frame it does not
+/// recognize, so an unfamiliar frame costs a few extra lines rather than
+/// hiding the panic site.
 fn panicking_frame_index(frames: &[&str]) -> usize {
     frames
         .iter()
         .take(PANIC_MACHINERY_SCAN_FRAMES)
-        .take_while(|frame| is_capture_frame(frame) || is_panic_entry(frame))
-        .count()
+        .position(|frame| frame_symbol(frame).contains(SHORT_BACKTRACE_END))
+        .map_or_else(
+            || {
+                frames
+                    .iter()
+                    .take(PANIC_MACHINERY_SCAN_FRAMES)
+                    .take_while(|frame| is_capture_frame(frame) || is_panic_entry(frame))
+                    .count()
+            },
+            |marker| marker + 1,
+        )
 }
 
 fn frame_symbol(frame: &str) -> &str {
@@ -295,7 +311,6 @@ fn is_panic_entry(frame: &str) -> bool {
         "std::panicking::panic_with_hook",
         "std::panicking::rust_panic_with_hook",
         "std::rt::begin_panic",
-        "std::sys::backtrace::__rust_end_short_backtrace",
     ]
     .iter()
     .any(|needle| symbol.contains(needle))
@@ -361,17 +376,50 @@ mod tests {
 ";
 
     #[test]
-    fn excerpt_starts_at_the_panicking_frame_with_msvc_symbols() {
+    fn excerpt_starts_after_the_short_backtrace_marker_with_msvc_symbols() {
         let excerpt = backtrace_excerpt(CAPTURED_MSVC);
 
         assert!(
-            excerpt.trim_start().starts_with(
-                "10: std::panicking::catch_unwind::do_call<hypercolor_daemon::render_thread"
-            ),
+            excerpt
+                .trim_start()
+                .starts_with("8: std::panicking::begin_panic_handler"),
             "{excerpt}"
         );
+        assert!(excerpt.contains(
+            "10: std::panicking::catch_unwind::do_call<hypercolor_daemon::render_thread"
+        ));
         assert!(excerpt.contains("pipeline_driver.rs:40"));
-        assert!(!excerpt.contains("panic_fmt"));
+        assert!(!excerpt.contains("PanicReport::capture"));
+    }
+
+    /// A Windows test build without debuginfo: the caller's frames take the
+    /// nearest public symbol, here a `core::panicking` instantiation.
+    const CAPTURED_WITHOUT_DEBUGINFO: &str = "   0: std::backtrace_rs::backtrace::win64::trace
+   1: std::backtrace::Backtrace::force_capture
+   2: <std::sync::once::Once>::call_once::<hypercolor_daemon::panic_hook::install::{closure#0}>::{closure#0}
+   3: std::panicking::panic_with_hook
+   4: std::panicking::panic_handler::closure$0
+   5: std::sys::backtrace::__rust_end_short_backtrace<std::panicking::panic_handler::closure_env$0,never$>
+   6: std::panicking::panic_handler
+   7: core::panicking::panic_fmt
+   8: core::panicking::assert_failed::<alloc::string::String, &str>
+   9: core::panicking::assert_failed::<alloc::string::String, &str>
+  10: std::sys::thread::windows::impl$0::new::thread_start
+  11: BaseThreadInitThunk
+";
+
+    #[test]
+    fn excerpt_keeps_misnamed_caller_frames_from_a_build_without_debuginfo() {
+        let excerpt = backtrace_excerpt(CAPTURED_WITHOUT_DEBUGINFO);
+
+        assert!(
+            excerpt
+                .trim_start()
+                .starts_with("6: std::panicking::panic_handler"),
+            "{excerpt}"
+        );
+        assert!(excerpt.contains("8: core::panicking::assert_failed"));
+        assert!(!excerpt.contains("force_capture"));
     }
 
     #[test]
