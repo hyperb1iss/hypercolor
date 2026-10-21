@@ -9,7 +9,7 @@ use hypercolor_core::input::{
     BrowserInputHandle, DeviceButtonHold, DeviceInputChildSlot, DeviceInputHandle,
     DeviceInputRegistryError, InputData, InputManager, InteractionData, SourceState, TouchContact,
 };
-use hypercolor_driver_api::DeviceInputSink;
+use hypercolor_driver_api::{DeviceInputPublisher, DeviceInputSink};
 use hypercolor_types::config::InteractionRoutePolicy;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::device_input::{DeviceInputEdge, TouchPosition};
@@ -22,7 +22,19 @@ fn at(x: f32, y: f32, pressure: f32) -> TouchPosition {
 }
 
 fn began(contact: u32, position: TouchPosition) -> DeviceInputEdge {
-    DeviceInputEdge::TouchBegan { contact, position }
+    DeviceInputEdge::TouchBegan {
+        contact,
+        position,
+        segment: None,
+    }
+}
+
+fn began_on(contact: u32, position: TouchPosition, segment: &str) -> DeviceInputEdge {
+    DeviceInputEdge::TouchBegan {
+        contact,
+        position,
+        segment: Some(Arc::from(segment)),
+    }
 }
 
 fn moved(contact: u32, position: TouchPosition) -> DeviceInputEdge {
@@ -140,7 +152,7 @@ fn touches_announce_begin_and_end_while_moves_update_holds() {
     let snapshot = held(&slot);
     assert!(snapshot.generation > generation);
     assert_eq!(snapshot.device.touches.len(), 1);
-    let touch = snapshot.device.touches[0];
+    let touch = &snapshot.device.touches[0];
     assert_eq!((touch.device_id, touch.contact), (device, 2));
     assert_eq!((touch.x, touch.y, touch.pressure), (0.75, 0.25, 0.5));
 
@@ -174,6 +186,65 @@ fn repeated_begin_ends_the_previous_contact_first() {
         ]
     );
     assert_eq!(held(&slot).device.touches[0].x, 0.9);
+}
+
+/// Segment named by each touch event, in order.
+fn touch_segments(events: &[TimedInputEvent]) -> Vec<Option<String>> {
+    events
+        .iter()
+        .filter_map(|timed| match &timed.event {
+            InputEvent::Touch { segment, .. } => Some(segment.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_contact_keeps_the_segment_it_landed_on_until_it_ends() {
+    let handle = demanded_handle();
+    let attachment = handle.attach(DeviceId::new(), "controller");
+    let slot = attachment.slot();
+    let mut cursor = 0;
+    let pads = Some("Pads".to_owned());
+    let strip = Some("Touch Strip".to_owned());
+
+    attachment
+        .inject(&[
+            began_on(0, at(0.0, 0.0, 0.5), "Pads"),
+            began_on(64, at(0.5, 0.5, 1.0), "Touch Strip"),
+            moved(64, at(0.75, 0.5, 1.0)),
+        ])
+        .expect("inject");
+    assert_eq!(
+        touch_segments(&events_since(&slot, &mut cursor)),
+        vec![pads.clone(), strip.clone()]
+    );
+    let touches = held(&slot).device.touches;
+    assert_eq!(touches[0].segment.as_deref(), Some("Pads"));
+    assert_eq!(touches[1].segment.as_deref(), Some("Touch Strip"));
+    assert_eq!(touches[1].x, 0.75);
+
+    // A contact that lands again, on another segment, ends on its old one.
+    attachment
+        .inject(&[began(0, at(0.5, 0.5, 0.5)), ended(64, at(0.75, 0.5, 0.0))])
+        .expect("inject");
+    assert_eq!(
+        touch_segments(&events_since(&slot, &mut cursor)),
+        vec![pads, None, strip]
+    );
+
+    // Cancels name the segment too, so a consumer can place them.
+    attachment
+        .inject(&[began_on(7, at(0.25, 0.25, 0.5), "Pads")])
+        .expect("inject");
+    events_since(&slot, &mut cursor);
+    handle.set_demanded(false);
+    let events = events_since(&slot, &mut cursor);
+    assert_eq!(
+        touch_edges(&events),
+        vec![(0, TouchPhase::Cancelled), (7, TouchPhase::Cancelled)]
+    );
+    assert_eq!(touch_segments(&events), vec![None, Some("Pads".to_owned())]);
 }
 
 #[test]
@@ -211,7 +282,7 @@ fn positions_clamp_and_non_finite_input_never_strands_a_contact() {
             moved(1, at(f32::INFINITY, 0.5, 0.5)),
         ])
         .expect("inject");
-    let touch = held(&slot).device.touches[0];
+    let touch = held(&slot).device.touches[0].clone();
     assert_eq!((touch.x, touch.y, touch.pressure), (1.0, 0.0, 1.0));
 
     attachment
@@ -235,13 +306,22 @@ fn contacts_beyond_the_per_device_cap_are_dropped() {
     let attachment = handle.attach(DeviceId::new(), "pad");
     let slot = attachment.slot();
 
-    let edges: Vec<_> = (0..33)
+    // Every Push 2 pad and its touch strip, held at once, all fit.
+    let push2: Vec<_> = (0..65)
+        .map(|contact| began(contact, at(0.5, 0.5, 0.5)))
+        .collect();
+    attachment.inject(&push2).expect("inject");
+    let snapshot = held(&slot);
+    assert_eq!(snapshot.device.touches.len(), 65);
+    assert_eq!(snapshot.batch.dropped_events, 0);
+
+    let edges: Vec<_> = (65..129)
         .map(|contact| began(contact, at(0.5, 0.5, 0.5)))
         .collect();
     attachment.inject(&edges).expect("inject");
 
     let snapshot = held(&slot);
-    assert_eq!(snapshot.device.touches.len(), 32);
+    assert_eq!(snapshot.device.touches.len(), 128);
     assert_eq!(snapshot.batch.dropped_events, 1);
 }
 
@@ -415,6 +495,63 @@ fn driver_sink_leases_report_supersession() {
 }
 
 #[test]
+fn renewing_replaces_only_a_lease_that_is_still_current() {
+    let handle = demanded_handle();
+    let sink: Arc<dyn DeviceInputSink> = Arc::new(handle.clone());
+    let device = DeviceId::new();
+    let registry = handle.registry();
+
+    let first = sink.attach(device, "pad");
+    let first_slot = registry
+        .snapshot()
+        .child(device)
+        .cloned()
+        .expect("attached");
+    assert!(first.publish(&[began(0, at(0.5, 0.5, 0.5))]));
+
+    // A current lease renews into a fresh child under the same label, and
+    // the old child retires so the router cancels what it held.
+    let renewed = first.renew().expect("a current lease renews");
+    assert!(!first_slot.is_active());
+    let renewed_slot = registry
+        .snapshot()
+        .child(device)
+        .cloned()
+        .expect("attached");
+    assert_ne!(renewed_slot.publication_id(), first_slot.publication_id());
+    assert_eq!(renewed_slot.label(), "pad");
+    assert!(held(&renewed_slot).device.touches.is_empty());
+    assert!(!first.publish(&[]));
+    assert!(renewed.publish(&[]));
+
+    // Once a newer attachment supersedes it, a lease cannot renew, and the
+    // newer attachment keeps the device.
+    let newer = sink.attach(device, "pad");
+    let newer_slot = registry
+        .snapshot()
+        .child(device)
+        .cloned()
+        .expect("attached");
+    assert!(renewed.renew().is_none());
+    assert!(first.renew().is_none());
+    assert!(newer_slot.is_active());
+    assert_eq!(
+        registry
+            .snapshot()
+            .child(device)
+            .map(DeviceInputChildSlot::publication_id),
+        Some(newer_slot.publication_id())
+    );
+
+    drop(newer);
+
+    // A detached lease cannot renew either.
+    let detached = handle.attach(DeviceId::new(), "other");
+    detached.close();
+    assert!(DeviceInputPublisher::renew(&detached).is_none());
+}
+
+#[test]
 fn source_status_follows_demand() {
     let handle = DeviceInputHandle::new();
     let _attachment = handle.attach(DeviceId::new(), "pad");
@@ -457,6 +594,7 @@ fn merged_snapshots_union_device_holds_per_device() {
         x,
         y: 0.5,
         pressure: 0.5,
+        segment: None,
     };
     let hold = |device_id| DeviceButtonHold {
         device_id,
@@ -593,6 +731,7 @@ fn routed_touches_carry_begin_and_end_edges_and_live_positions() {
             x: 0.25,
             y: 0.5,
             pressure: 0.5,
+            segment: None,
         }]
     );
     let began_generation = routed.generation;
@@ -616,6 +755,11 @@ fn routed_touches_carry_begin_and_end_edges_and_live_positions() {
         vec![(3, TouchPhase::Ended)]
     );
     assert!(routed.device.is_empty());
+
+    pad.inject(&[began_on(9, at(0.5, 0.5, 0.5), "Pads")])
+        .expect("inject");
+    let routed = route.host();
+    assert_eq!(routed.device.touches[0].segment.as_deref(), Some("Pads"));
 }
 
 #[test]

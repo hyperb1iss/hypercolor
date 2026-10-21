@@ -135,6 +135,7 @@ async fn an_aborted_stream_cannot_publish_into_a_reconnected_device() {
                     y: 0.5,
                     pressure: 0.25,
                 },
+                segment: None,
             },
         }),
         "the replacement stream still publishes"

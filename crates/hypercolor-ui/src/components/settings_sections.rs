@@ -1049,7 +1049,7 @@ pub fn RenderingSection(
             </div>
             <SettingSegmented
                 label="Target FPS"
-                description="Render loop frame rate. 30 is the balanced default; 60 uses more CPU but gives smoother motion"
+                description="Highest render loop frame rate. 60 is the default; the loop steps down on its own when frames run over budget"
                 key="daemon.target_fps"
                 value=target_fps
                 options=Signal::stored(fps_tier_options)

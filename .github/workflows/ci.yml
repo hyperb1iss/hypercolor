@@ -1872,6 +1872,13 @@ jobs:
         # The version is exact because crates/hypercolor-app/installer.nsi
         # forks the NSIS template of the tauri-bundler this CLI pins; keep it
         # in step with that file's header and build-windows-installer.ps1.
+        #
+        # binstall resolves releases through the GitHub API. Unauthenticated,
+        # a shared runner IP hits the rate limit often enough that the step
+        # waits out a 403 and then compiles from source for about ten
+        # minutes; the job token lifts that limit.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: cargo binstall -y --targets "${{ matrix.rust-target }}" "tauri-cli@=2.12.1" || cargo install tauri-cli --version "=2.12.1" --locked
 
       - name: Download web assets
@@ -1934,11 +1941,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
+          # Name the daemon binary: the package also auto-discovers the
+          # src/bin dev tools (hypercolor-debug, hypercolor-openapi,
+          # hypercolor-ws-manifest), and each one pays its own fat LTO link
+          # over Servo. The bundle ships only hypercolor-daemon, matching
+          # `just app-bundle-binaries`.
           if ($env:RUNNER_OS -eq "Windows") {
-            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-daemon --features servo
+            Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor-daemon --bin hypercolor-daemon --features servo
             Invoke-Checked ./scripts/cargo-cache-build.ps1 cargo build --release --locked -p hypercolor
           } else {
-            Invoke-Checked bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor-daemon --features servo
+            Invoke-Checked bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor-daemon --bin hypercolor-daemon --features servo
             Invoke-Checked bash ./scripts/cargo-cache-build.sh cargo build --release --locked -p hypercolor
           }
           if ($env:RUNNER_OS -eq "Windows") {

@@ -71,7 +71,7 @@ pub struct HypercolorConfig {
 }
 
 /// Current schema version for newly created configurations.
-pub const CURRENT_SCHEMA_VERSION: u32 = 6;
+pub const CURRENT_SCHEMA_VERSION: u32 = 7;
 
 impl HypercolorConfig {
     /// Decode a config document from an authoritative source, refusing any

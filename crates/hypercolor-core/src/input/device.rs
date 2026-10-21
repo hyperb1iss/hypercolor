@@ -37,8 +37,11 @@ use crate::input::{
 };
 
 const DEFAULT_EVENT_LIMIT: usize = 256;
-/// Protocol-level contact indices on current touch hardware fit in five bits.
-const MAX_CONTACTS_PER_DEVICE: usize = 32;
+/// Held contacts one device may report. MIDI controllers number contacts by
+/// seven-bit note, and the Push 2 holds up to 65 at once (64 pads and its
+/// touch strip), so the bound only stops a misbehaving driver from growing
+/// held state without limit.
+const MAX_CONTACTS_PER_DEVICE: usize = 128;
 const MAX_HELD_BUTTONS_PER_DEVICE: usize = 16;
 
 /// Opaque lifetime identity for one device child publication.
@@ -63,6 +66,7 @@ pub enum DeviceInputRegistryError {
 
 struct HeldTouch {
     position: TouchPosition,
+    segment: Option<Arc<str>>,
     announced: bool,
 }
 
@@ -388,7 +392,34 @@ impl DeviceInputRegistryHandle {
     }
 
     fn attach(&self, device_id: DeviceId, label: Arc<str>) -> DeviceInputAttachment {
-        let mut writer = lock_or_recover(&self.inner.writer);
+        let writer = lock_or_recover(&self.inner.writer);
+        self.attach_locked(writer, device_id, label)
+    }
+
+    /// Replace the device's child with a fresh one, but only while
+    /// `publication_id` is still its current incarnation. The check and the
+    /// replacement share the writer lock, so a stale lease can never
+    /// supersede a newer attachment.
+    fn renew(
+        &self,
+        device_id: DeviceId,
+        publication_id: DeviceInputPublicationId,
+    ) -> Option<DeviceInputAttachment> {
+        let writer = lock_or_recover(&self.inner.writer);
+        let current = writer.children.get(&device_id)?;
+        if current.publication_id() != publication_id {
+            return None;
+        }
+        let label = Arc::clone(&current.inner.label);
+        Some(self.attach_locked(writer, device_id, label))
+    }
+
+    fn attach_locked(
+        &self,
+        mut writer: MutexGuard<'_, DeviceInputRegistryWriter>,
+        device_id: DeviceId,
+        label: Arc<str>,
+    ) -> DeviceInputAttachment {
         // A new attachment is a new session for the device. The previous
         // incarnation closes so the router cancels anything it still held.
         if let Some(previous) = writer.children.remove(&device_id) {
@@ -539,6 +570,15 @@ impl DeviceInputPublisher for DeviceInputAttachment {
     fn publish(&self, edges: &[DeviceInputEdge]) -> bool {
         self.inject(edges).is_ok()
     }
+
+    fn renew(&self) -> Option<Box<dyn DeviceInputPublisher>> {
+        if self.closed.load(Ordering::Acquire) {
+            return None;
+        }
+        self.registry
+            .renew(self.child.device_id(), self.child.publication_id())
+            .map(|renewed| Box::new(renewed) as Box<dyn DeviceInputPublisher>)
+    }
 }
 
 struct DeviceInputStatusControl {
@@ -638,14 +678,23 @@ impl EdgeFold<'_> {
     fn apply(&mut self, state: &mut DeviceChildState, edge: &DeviceInputEdge) {
         let announce = state.publishing;
         match edge {
-            DeviceInputEdge::TouchBegan { contact, position } => {
+            DeviceInputEdge::TouchBegan {
+                contact,
+                position,
+                segment,
+            } => {
                 let Some(position) = sanitize_position(*position, None) else {
                     self.dropped = self.dropped.saturating_add(1);
                     return;
                 };
                 if let Some(previous) = state.touches.remove(contact) {
                     if previous.announced {
-                        self.touch(*contact, TouchPhase::Ended, previous.position);
+                        self.touch(
+                            *contact,
+                            TouchPhase::Ended,
+                            previous.position,
+                            previous.segment.as_deref(),
+                        );
                     }
                 } else if state.touches.len() >= MAX_CONTACTS_PER_DEVICE {
                     self.dropped = self.dropped.saturating_add(1);
@@ -655,11 +704,12 @@ impl EdgeFold<'_> {
                     *contact,
                     HeldTouch {
                         position,
+                        segment: segment.clone(),
                         announced: announce,
                     },
                 );
                 if announce {
-                    self.touch(*contact, TouchPhase::Began, position);
+                    self.touch(*contact, TouchPhase::Began, position, segment.as_deref());
                 }
             }
             DeviceInputEdge::TouchMoved { contact, position } => {
@@ -681,7 +731,12 @@ impl EdgeFold<'_> {
                 {
                     let position =
                         sanitize_position(*position, Some(held.position)).unwrap_or(held.position);
-                    self.touch(*contact, TouchPhase::Ended, position);
+                    self.touch(
+                        *contact,
+                        TouchPhase::Ended,
+                        position,
+                        held.segment.as_deref(),
+                    );
                 }
             }
             DeviceInputEdge::Button {
@@ -721,7 +776,12 @@ impl EdgeFold<'_> {
         for (contact, held) in &mut state.touches {
             if held.announced {
                 held.announced = false;
-                self.touch(*contact, TouchPhase::Cancelled, held.position);
+                self.touch(
+                    *contact,
+                    TouchPhase::Cancelled,
+                    held.position,
+                    held.segment.as_deref(),
+                );
             }
         }
         for (button, announced) in &mut state.buttons {
@@ -732,7 +792,13 @@ impl EdgeFold<'_> {
         }
     }
 
-    fn touch(&mut self, contact: u32, phase: TouchPhase, position: TouchPosition) {
+    fn touch(
+        &mut self,
+        contact: u32,
+        phase: TouchPhase,
+        position: TouchPosition,
+        segment: Option<&str>,
+    ) {
         self.changed = true;
         self.events.push(timed_event(
             InputEvent::Touch {
@@ -743,6 +809,7 @@ impl EdgeFold<'_> {
                 x_q16_16: unit_to_q16_16(position.x),
                 y_q16_16: unit_to_q16_16(position.y),
                 pressure_q16_16: unit_to_q16_16(position.pressure),
+                segment: segment.map(str::to_owned),
             },
             self.at_ms,
         ));
@@ -778,6 +845,7 @@ fn build_child_snapshot(
             x: held.position.x,
             y: held.position.y,
             pressure: held.position.pressure,
+            segment: held.segment.clone(),
         })
         .collect();
     data.device.buttons = state

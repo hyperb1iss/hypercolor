@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use hypercolor_core::config::{ConfigManager, ConfigPersistence};
 use hypercolor_core::persistence::AtomicFileWriter;
+use hypercolor_types::config::DEFAULT_TARGET_FPS;
 
 fn set_mode(path: &Path, mode: u32) {
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
@@ -63,7 +64,7 @@ fn save_into_a_read_only_directory_is_live_and_lagging_until_the_retry_lands() {
             .expect("the previous file stays readable")
             .daemon
             .target_fps,
-        30
+        DEFAULT_TARGET_FPS
     );
 
     AtomicFileWriter::new(&path)

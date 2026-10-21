@@ -260,7 +260,8 @@ async fn blocks_input_publishes_touches_and_buttons_for_adopted_devices() -> Tes
                 1,
                 DeviceInputEdge::TouchBegan {
                     contact: 1,
-                    position: at(0.25)
+                    position: at(0.25),
+                    segment: None,
                 }
             ),
             (
@@ -332,7 +333,8 @@ async fn blocks_input_cancels_holds_when_the_stream_or_device_is_lost() -> TestR
             4,
             DeviceInputEdge::TouchBegan {
                 contact: 0,
-                position: at(0.5)
+                position: at(0.5),
+                segment: None,
             }
         )],
         "input after reconnecting flows through the newest lease"
@@ -379,7 +381,8 @@ async fn an_oversized_event_line_is_skipped_and_the_stream_stays_framed() -> Tes
             2,
             DeviceInputEdge::TouchBegan {
                 contact: 0,
-                position: at(0.5)
+                position: at(0.5),
+                segment: None,
             }
         )],
         "the line after the oversized one still decodes"

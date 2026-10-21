@@ -8,6 +8,7 @@
 //! shim over [`run`]. That keeps every module reachable from integration
 //! tests as `hypercolor_ui::...` without `#[path]` source includes.
 
+pub mod ambient;
 pub mod api;
 pub mod app;
 pub mod apply_target;

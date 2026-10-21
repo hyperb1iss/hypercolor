@@ -24,5 +24,19 @@ pub trait DeviceInputPublisher: Send + Sync {
     /// Publish edges in the order the device reported them.
     ///
     /// Returns `false` once this lease has been superseded or detached.
+    /// Publishing no edges changes nothing, so it reports whether the lease
+    /// is still current.
     fn publish(&self, edges: &[DeviceInputEdge]) -> bool;
+
+    /// Replace this lease with a fresh one for the same device, cancelling
+    /// whatever it held, but only while this lease is still current.
+    ///
+    /// The host checks and replaces in one step, so a lease that a newer
+    /// attachment already superseded can never take the device back.
+    /// Returns `None` once this lease has been superseded or detached, and
+    /// the caller then holds nothing. Hosts that cannot replace atomically
+    /// keep this default, so callers retire the lease instead.
+    fn renew(&self) -> Option<Box<dyn DeviceInputPublisher>> {
+        None
+    }
 }
