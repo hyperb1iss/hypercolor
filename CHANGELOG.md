@@ -5,6 +5,66 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-10-21
+
+Ableton Push 2 becomes a full input surface, the render loop now parks when nothing consumes frames, and the render pipeline survives GPU failures by restarting in-process instead of taking the daemon down with it. Fresh installs start on a curated scene, and the default render target moves to 60 fps.
+
+### Added
+
+- Publish Push 2 pad, touch strip, and button input: pads emit `TouchBegan`/`TouchMoved`/`TouchEnded` with velocity as pressure, the strip reports position, and 65 named buttons emit `Button` press/release edges (2733b43)
+- Carry the touched segment from driver edge to effect: `DeviceInputEdge::TouchBegan` gains a `segment` name, and `DeviceSurfaceMap::segment_canvas_position()` places touches through the LED outputs of that segment (95542e8, 47ca946)
+- Let driver-owned USB transports publish device input through the new `TransportInputSink` trait and `publishes_input` transport binding (e359628)
+- **Park the render loop while nothing consumes frames**: an idle daemon with no devices, previews, or captures drops to near-zero CPU and wakes instantly on the first consumer (e3cd0d4, a6cb03b, b3fc8b4)
+- Report render health in `/api/v1/system` and `diagnose` with `RenderOutputDemandStatus`, `RenderSupervisionStatus`, `RenderFailureStatus`, and `GpuErrorStatus` (febfb79, ef27ce5)
+- Supervise the render pipeline and restart it in-process after a panic, input pump failure, or device loss, with a 5-restarts-per-5-minutes budget and exponential backoff (62598c1)
+- Record every thread panic through a process-wide hook; render thread panics persist to `render-failure.json` and survive into the next run's status (74524e3)
+- Count and log uncaptured wgpu errors (validation, OOM, internal, device loss) instead of panicking the render thread (3d64f80)
+- Seed fresh installs with the **Hyperbloom** scene and a curated favorites list (f24a0c7)
+- Read macOS microphone permission without prompting via `microphone_record_permission()` (2dabe76)
+- Explain a parked render loop in `hypercolor status` and name what paused it in the render diagnose checks (0ab6828, ef27ce5)
+
+### Changed
+
+- **Raise the default render target from 30 to 60 fps**; the FPS controller still downshifts on budget misses, so slower machines are unaffected (1211994)
+- Migrate configs to **schema 7**: `daemon.target_fps` is dropped only when it still holds the retired v6 default of 30, so explicit settings survive (25d105d)
+- Give bundled HTML effects a stem-derived id (`hypercolor:html-bundled:{stem}`) so the same effect resolves identically across installs and platforms (5bc6e6b)
+- Exit nonzero when the render thread cannot recover, letting systemd, launchd, and the Windows service restart the daemon (1c4249b)
+- Reassemble chunked preview frames without WASM copies: per-frame copies into WASM drop from ~1.23 MB to 124 bytes (80057ee)
+- Reuse a single RAF closure instead of minting one per preview frame, cutting `Closure` churn from ~67/s to ~0.12/s (8689a3f)
+- Unsubscribe preview streams while the page is hidden, so the daemon stops encoding unobserved frames (69382da)
+- Take the ambient tint off the frame path with a 1 Hz publication cap and 4° deadband (8c39935)
+- Hold render time while a loop is parked so frame-age and stall telemetry stay exact (4b8f617, bb20c6c)
+- Resolve touch segment aliases without allocating (c74e9f2)
+- Build only the shipped daemon binary for native app releases (254cc63)
+- Rename the diagnose output power read to `output_power_snapshot` (340dd2d)
+
+### Fixed
+
+- Keep each display's backdrop on the zone that places it: display outputs now project after all LED outputs per Spec 86 §5.1 (38f2278, d010677)
+- Hold every Push 2 contact a device can report at once by raising `MAX_CONTACTS_PER_DEVICE` from 32 to 128 (f00ed25)
+- Match touch segments the way LED routing does, exact name first then case- and punctuation-insensitive alias (ea22c7e)
+- Never let a superseded input bridge take a device back, and renew an interrupted input lease atomically under the registry writer lock (b030339, a919182)
+- Floor held Push 2 pad pressure at its strike velocity so aftertouch cannot collapse it (c1e4b3f)
+- Stop system-audio capture from opening the microphone unasked; default-input fallback is refused unless permission is already granted (4b056cd)
+- Show a parked render loop as parked rather than as a failing frame rate, and measure render stalls from when frames were due again (c0947cf, 6854715)
+- Publish a render restart only together with the failure behind it, clear park telemetry whenever a pipeline starts, and never start a pipeline inside a park it did not enter (5063a4d, b561027, 967a736)
+- Resubscribe preview streams after a socket reconnect and only unsubscribe streams that were actually requested (9dc7dd3, 7986662)
+- Log reassembled previews that fail to decode, and apply the same reassembly budget to every buffer storage (38fbc9c, e185636)
+- Start the ambient drift from the hue CSS already holds (3657a02)
+- Trim panic backtrace excerpts correctly: cut at std's short backtrace marker, start at the panicking frame on Windows, and stop skipping at the first unrecognized frame (d8cadbf, 2a978e7, 68359c1)
+
+### Security
+
+- Bump `rustls-webpki` and the webpki root bundles to clear advisories (dfe553b, PR #446)
+
+### Metrics
+
+- Total Commits: 82
+- Files Changed: 186
+- Insertions: +14,811
+- Deletions: -1,013
+<!-- -------------------------------------------------------------- -->
+
 ## [0.7.1] - 2026-10-20
 
 GPU-resident multi-zone rendering lands from spec 86, the effect authoring loop gains canvas capture plus a live console over CLI/REST/MCP, and the WebSocket gains a monotonic publication clock. Seven RustSec advisories are closed across the dependency graph.
