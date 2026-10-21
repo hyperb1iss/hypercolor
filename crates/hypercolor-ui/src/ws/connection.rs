@@ -64,32 +64,50 @@ fn preview_now_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-fn clear_preview_decoder(
-    decoder: &Rc<RefCell<PreviewBinaryDecoder>>,
-    timeout: &Rc<RefCell<Option<BrowserTimeoutHandle>>>,
-) {
-    timeout.borrow_mut().take();
+/// The timer that sweeps idle partial preview publications, and when it fires.
+struct PreviewExpiryTimer {
+    _handle: BrowserTimeoutHandle,
+    deadline_ms: u64,
+}
+
+type PreviewExpirySlot = Rc<RefCell<Option<PreviewExpiryTimer>>>;
+
+fn clear_preview_decoder(decoder: &Rc<RefCell<PreviewBinaryDecoder>>, timer: &PreviewExpirySlot) {
+    timer.borrow_mut().take();
     decoder.borrow_mut().clear();
 }
 
-fn schedule_preview_expiry(
-    decoder: &Rc<RefCell<PreviewBinaryDecoder>>,
-    timeout: &Rc<RefCell<Option<BrowserTimeoutHandle>>>,
-) {
-    timeout.borrow_mut().take();
+/// Keep a sweep armed no later than the earliest idle deadline.
+///
+/// Every chunked frame leaves a partial publication between its chunks, so
+/// re-arming per message would mint a timer, and the JS closure behind it,
+/// for every frame. A sweep that fires before anything is idle expires
+/// nothing and re-arms for the deadline then pending, so an armed timer
+/// only has to be replaced when a deadline lands before it, and an idle
+/// partial is still swept on time.
+fn schedule_preview_expiry(decoder: &Rc<RefCell<PreviewBinaryDecoder>>, timer: &PreviewExpirySlot) {
     let Some(deadline_ms) = decoder.borrow().next_expiry_ms() else {
         return;
     };
+    if timer
+        .borrow()
+        .as_ref()
+        .is_some_and(|armed| armed.deadline_ms <= deadline_ms)
+    {
+        return;
+    }
     let delay = Duration::from_millis(deadline_ms.saturating_sub(preview_now_ms()));
     let decoder_for_timeout = Rc::clone(decoder);
-    let timeout_for_callback = Rc::clone(timeout);
-    let timeout_for_schedule = Rc::clone(timeout);
+    let timer_for_callback = Rc::clone(timer);
     let handle = browser_set_timeout(delay, move || {
-        timeout_for_callback.borrow_mut().take();
+        timer_for_callback.borrow_mut().take();
         decoder_for_timeout.borrow_mut().expire_at(preview_now_ms());
-        schedule_preview_expiry(&decoder_for_timeout, &timeout_for_schedule);
+        schedule_preview_expiry(&decoder_for_timeout, &timer_for_callback);
     });
-    *timeout.borrow_mut() = Some(handle);
+    *timer.borrow_mut() = Some(PreviewExpiryTimer {
+        _handle: handle,
+        deadline_ms,
+    });
 }
 
 fn quantize_preview_fps(value: f64) -> f32 {
@@ -403,7 +421,7 @@ impl WsManager {
             let generation = socket_generation.get_value().wrapping_add(1);
             socket_generation.set_value(generation);
             let preview_decoder = Rc::new(RefCell::new(PreviewBinaryDecoder::default()));
-            let preview_expiry_timeout = Rc::new(RefCell::new(None::<BrowserTimeoutHandle>));
+            let preview_expiry_timeout: PreviewExpirySlot = Rc::new(RefCell::new(None));
             let event_preview_decoder = Rc::clone(&preview_decoder);
             let event_preview_expiry_timeout = Rc::clone(&preview_expiry_timeout);
             let process_event: Rc<dyn Fn(WebSocketEvent)> = Rc::new(move |event| {
@@ -695,9 +713,16 @@ impl WsManager {
 
         connect.set_value(Some(connect_fn));
 
-        // Preview subscription effect — reacts to FPS cap / visibility changes
+        // Preview subscription effect: reacts to FPS cap and visibility changes.
+        //
+        // Every preview effect waits for `Connected`. A socket that is still
+        // opening rejects sends, and a request recorded as sent but never
+        // delivered would match every later rerun and never be retried,
+        // leaving the stream dark after a reconnect. The connect and close
+        // paths clear the recorded requests, and the move to `Connected`
+        // reruns these effects against the open socket.
         Effect::new(move |_| {
-            if !frame_topics {
+            if !frame_topics || connection_state.get() != ConnectionState::Connected {
                 return;
             }
             let engine_target = engine_preview_target.get();
@@ -706,8 +731,13 @@ impl WsManager {
             let width_cap = preview_width_cap.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
-            if !should_stream_preview(window_visible, engine_target, consumer_count) {
-                if let Some(ws) = ws_handle.get_value() {
+            if !should_stream_preview(is_visible, window_visible, engine_target, consumer_count) {
+                // Only a requested stream has anything to unsubscribe. The
+                // effect reruns on every engine target report, about twice
+                // a second, and each rerun would otherwise send another.
+                if requested_preview.get_value().is_some()
+                    && let Some(ws) = ws_handle.get_value()
+                {
                     clear_preview_subscription(
                         requested_preview,
                         &set_preview_target_fps,
@@ -728,21 +758,22 @@ impl WsManager {
                     engine_target,
                     client_cap,
                     width_cap,
-                    is_visible,
                 );
             }
         });
 
         Effect::new(move |_| {
-            if !frame_topics {
+            if !frame_topics || connection_state.get() != ConnectionState::Connected {
                 return;
             }
             let engine_target = engine_preview_target.get();
             let consumer_count = screen_preview_consumers.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
-            if !should_stream_preview(window_visible, engine_target, consumer_count) {
-                if let Some(ws) = ws_handle.get_value() {
+            if !should_stream_preview(is_visible, window_visible, engine_target, consumer_count) {
+                if requested_screen_preview.get_value().is_some()
+                    && let Some(ws) = ws_handle.get_value()
+                {
                     clear_screen_preview_subscription(
                         requested_screen_preview,
                         &set_screen_canvas_frame,
@@ -757,19 +788,18 @@ impl WsManager {
                     ws.as_ref(),
                     requested_screen_preview,
                     engine_target,
-                    is_visible,
                 );
             }
         });
 
         // Zone frames are tiny and carry no per-client config, so the
         // subscription is a simple on/off keyed to consumers, connection
-        // state, and app window visibility.
+        // state, and page and app window visibility.
         Effect::new(move |_| {
             let connected = connection_state.get() == ConnectionState::Connected;
             let consumer_count = screen_zones_consumers.get();
-            let window_visible = app_window_visible.get();
-            let wants_stream = connected && window_visible && consumer_count > 0;
+            let visible = page_visible.get() && app_window_visible.get();
+            let wants_stream = connected && visible && consumer_count > 0;
 
             if wants_stream {
                 if !screen_zones_requested.get_value()
@@ -788,15 +818,17 @@ impl WsManager {
         });
 
         Effect::new(move |_| {
-            if !frame_topics {
+            if !frame_topics || connection_state.get() != ConnectionState::Connected {
                 return;
             }
             let engine_target = engine_preview_target.get();
             let consumer_count = web_viewport_preview_consumers.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
-            if !should_stream_preview(window_visible, engine_target, consumer_count) {
-                if let Some(ws) = ws_handle.get_value() {
+            if !should_stream_preview(is_visible, window_visible, engine_target, consumer_count) {
+                if requested_web_viewport_preview.get_value().is_some()
+                    && let Some(ws) = ws_handle.get_value()
+                {
                     clear_web_viewport_preview_subscription(
                         requested_web_viewport_preview,
                         &set_web_viewport_canvas_frame,
@@ -811,7 +843,6 @@ impl WsManager {
                     ws.as_ref(),
                     requested_web_viewport_preview,
                     engine_target,
-                    is_visible,
                 );
             }
         });
@@ -950,8 +981,9 @@ impl WsManager {
             visibility_change_callback.set_value(Some(on_visibility_change));
         }
 
-        // Tauri native-window visibility listener. Browser tab visibility only
-        // caps preview FPS; a hidden app window should unsubscribe entirely.
+        // Tauri native-window visibility listener. Page visibility misses some
+        // native minimize and hide states, so the window's own signal gates
+        // previews alongside it.
         if let Some(window) = browser_window() {
             tauri_visibility_change_callback.update_value(|handle| {
                 if let Some(mut handle) = handle.take() {

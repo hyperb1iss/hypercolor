@@ -15,7 +15,11 @@ pub struct Scheduler {
 
 struct SchedulerInner {
     window: web_sys::Window,
-    callback: RefCell<Option<Closure<dyn FnMut(f64)>>>,
+    /// One closure serves every frame this scheduler requests. A fresh
+    /// `Closure` per frame would allocate a JS function and register it with
+    /// wasm-bindgen's finalization registry sixty times a second, churn the
+    /// garbage collector pays for on every animated surface.
+    callback: Closure<dyn FnMut(f64)>,
     pending_frame: Cell<Option<i32>>,
     active: Cell<bool>,
     user: RefCell<Box<dyn FnMut(FrameInfo)>>,
@@ -46,14 +50,21 @@ impl Scheduler {
     {
         let window = web_sys::window().expect("browser window is available for animation frames");
         Self {
-            inner: Rc::new(SchedulerInner {
-                window,
-                callback: RefCell::new(None),
-                pending_frame: Cell::new(None),
-                active: Cell::new(false),
-                user: RefCell::new(Box::new(callback)),
-                last_time_ms: Cell::new(None),
-                mode: Cell::new(Mode::Idle),
+            inner: Rc::new_cyclic(|weak: &Weak<SchedulerInner>| {
+                let weak = Weak::clone(weak);
+                SchedulerInner {
+                    window,
+                    callback: Closure::<dyn FnMut(f64)>::new(move |time_ms| {
+                        if let Some(inner) = Weak::upgrade(&weak) {
+                            on_animation_frame(&inner, time_ms);
+                        }
+                    }),
+                    pending_frame: Cell::new(None),
+                    active: Cell::new(false),
+                    user: RefCell::new(Box::new(callback)),
+                    last_time_ms: Cell::new(None),
+                    mode: Cell::new(Mode::Idle),
+                }
             }),
         }
     }
@@ -96,7 +107,6 @@ impl SchedulerInner {
         if let Some(request_id) = self.pending_frame.take() {
             let _ = self.window.cancel_animation_frame(request_id);
         }
-        self.callback.borrow_mut().take();
     }
 
     fn monotonic_ms(&self, time_ms: f64) -> f64 {
@@ -108,10 +118,11 @@ impl SchedulerInner {
 
 impl Drop for SchedulerInner {
     fn drop(&mut self) {
+        // Cancel before the closure drops with the struct, so the browser
+        // never calls into a freed callback.
         if let Some(request_id) = self.pending_frame.take() {
             let _ = self.window.cancel_animation_frame(request_id);
         }
-        self.callback.borrow_mut().take();
     }
 }
 
@@ -120,19 +131,11 @@ fn request_next_frame(inner: &Rc<SchedulerInner>) {
         return;
     }
 
-    let weak = Rc::downgrade(inner);
-    let callback = Closure::<dyn FnMut(f64)>::new(move |time_ms| {
-        if let Some(inner) = Weak::upgrade(&weak) {
-            on_animation_frame(&inner, time_ms);
-        }
-    });
-
     if let Ok(request_id) = inner
         .window
-        .request_animation_frame(callback.as_ref().unchecked_ref())
+        .request_animation_frame(inner.callback.as_ref().unchecked_ref())
     {
         inner.pending_frame.set(Some(request_id));
-        inner.callback.borrow_mut().replace(callback);
     }
 }
 
@@ -140,7 +143,6 @@ fn on_animation_frame(inner: &Rc<SchedulerInner>, time_ms: f64) {
     inner.pending_frame.take();
 
     if !inner.active.get() {
-        inner.callback.borrow_mut().take();
         return;
     }
 
@@ -163,8 +165,6 @@ fn on_animation_frame(inner: &Rc<SchedulerInner>, time_ms: f64) {
         inner.active.set(false);
         inner.mode.set(Mode::Idle);
     }
-
-    inner.callback.borrow_mut().take();
 
     if keep_running {
         request_next_frame(inner);

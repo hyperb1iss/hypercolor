@@ -35,17 +35,20 @@ pub use preview::{
     PREVIEW_CANCEL_FIXED_HEADER_LEN, PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CANCEL_SCHEMA,
     PREVIEW_CHUNK_FIXED_HEADER_LEN, PREVIEW_CHUNK_FRAME_TAG, PREVIEW_CHUNK_SCHEMA,
     PREVIEW_FRAME_HEADER_LEN, PREVIEW_MIN_MESSAGE_BYTES, PreviewCancelFrame, PreviewChunkError,
-    PreviewChunkFrame, PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel,
-    PreviewFrameDecodeError, PreviewPixelFormat, PreviewPublicationMetadata,
-    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportLimits,
-    ReassembledPreviewPublication, SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG,
-    ScreenZonesFrame, WIDE_DISPLAY_PREVIEW_FRAME_PREFIX_LEN, WIDE_DISPLAY_PREVIEW_FRAME_TAG,
-    WIDE_INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
-    WIDE_PREVIEW_FRAME_HEADER_LEN, WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_HEADER_LEN,
-    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_HEADER_LEN, WIDE_ZONE_PREVIEW_FRAME_TAG,
-    ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
-    split_preview_publication, split_preview_publication_with_limits,
+    PreviewChunkFrame, PreviewChunkHeader, PreviewChunkPayload, PreviewChunkReassembler,
+    PreviewFrame, PreviewFrameChannel, PreviewFrameDecodeError, PreviewPixelFormat,
+    PreviewPublicationBuffer, PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId,
+    PreviewTransportLimits, ReassembledPreviewPublication, SCREEN_ZONES_FRAME_HEADER_LEN,
+    SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame, WIDE_DISPLAY_PREVIEW_FRAME_PREFIX_LEN,
+    WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN,
+    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_HEADER_LEN, WIDE_PREVIEW_FRAME_TAG,
+    WIDE_SCREEN_ZONES_FRAME_HEADER_LEN, WIDE_SCREEN_ZONES_FRAME_TAG,
+    WIDE_ZONE_PREVIEW_FRAME_HEADER_LEN, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN,
+    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, split_preview_publication,
+    split_preview_publication_with_limits,
 };
+#[cfg(feature = "ws-client-wasm")]
+pub use preview::{JsPreviewPublicationBuffer, ReassembledPreviewBuffer};
 pub use spectrum::{
     SPECTRUM_FRAME_HEADER_LEN, SPECTRUM_FRAME_TAG, SpectrumFrame, SpectrumFrameDecodeError,
 };

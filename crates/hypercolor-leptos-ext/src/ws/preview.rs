@@ -886,10 +886,57 @@ impl PreviewChunkFrame {
     }
 
     pub fn decode_bytes(input: &Bytes) -> Result<Self, PreviewChunkError> {
-        if input.len() < PREVIEW_CHUNK_FIXED_HEADER_LEN {
+        let (header, payload_offset) = PreviewChunkHeader::decode_prefix(input, input.len())?;
+        Ok(Self {
+            metadata: header.metadata,
+            total_encoded_bytes: header.total_encoded_bytes,
+            chunk_offset: header.chunk_offset,
+            chunk_index: header.chunk_index,
+            chunk_count: header.chunk_count,
+            payload: input.slice(payload_offset..),
+        })
+    }
+
+    fn validate_layout(&self) -> Result<(), PreviewChunkError> {
+        validate_chunk_layout(
+            self.total_encoded_bytes,
+            self.chunk_offset,
+            self.chunk_index,
+            self.chunk_count,
+            self.payload.len(),
+        )
+    }
+}
+
+/// A chunk envelope without its payload: where the payload belongs in its
+/// publication. Decoding needs only the envelope's leading bytes, so a
+/// client can place a payload it never copies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewChunkHeader {
+    pub metadata: PreviewPublicationMetadata,
+    pub total_encoded_bytes: u64,
+    pub chunk_offset: u64,
+    pub chunk_index: u32,
+    pub chunk_count: u32,
+}
+
+impl PreviewChunkHeader {
+    /// Decode the envelope of a chunk message `message_len` bytes long.
+    ///
+    /// `input` starts at the message's first byte and holds at least the
+    /// envelope (the fixed header plus the stream identity); it may hold the
+    /// whole message. The payload length follows from `message_len` and is
+    /// checked against the layout. Returns the header and the payload offset.
+    pub fn decode_prefix(
+        input: &[u8],
+        message_len: usize,
+    ) -> Result<(Self, usize), PreviewChunkError> {
+        if message_len < PREVIEW_CHUNK_FIXED_HEADER_LEN
+            || input.len() < PREVIEW_CHUNK_FIXED_HEADER_LEN
+        {
             return Err(PreviewChunkError::TooShort {
                 expected: PREVIEW_CHUNK_FIXED_HEADER_LEN,
-                actual: input.len(),
+                actual: message_len.min(input.len()),
             });
         }
         if input[0] != PREVIEW_CHUNK_FRAME_TAG {
@@ -904,10 +951,10 @@ impl PreviewChunkFrame {
         let payload_offset = PREVIEW_CHUNK_FIXED_HEADER_LEN
             .checked_add(identity_len)
             .ok_or(PreviewChunkError::LengthOverflow)?;
-        if input.len() < payload_offset {
+        if message_len < payload_offset || input.len() < payload_offset {
             return Err(PreviewChunkError::TooShort {
                 expected: payload_offset,
-                actual: input.len(),
+                actual: message_len.min(input.len()),
             });
         }
         let stream = PreviewStreamId::decode(
@@ -915,7 +962,7 @@ impl PreviewChunkFrame {
             input[3],
             &input[PREVIEW_CHUNK_FIXED_HEADER_LEN..payload_offset],
         )?;
-        let frame = Self {
+        let header = Self {
             metadata: PreviewPublicationMetadata {
                 stream,
                 publication_id: u64::from_le_bytes(
@@ -937,43 +984,52 @@ impl PreviewChunkFrame {
             chunk_offset: u64::from_le_bytes(input[39..47].try_into().expect("slice has 8 bytes")),
             chunk_index: u32::from_le_bytes(input[47..51].try_into().expect("slice has 4 bytes")),
             chunk_count: u32::from_le_bytes(input[51..55].try_into().expect("slice has 4 bytes")),
-            payload: input.slice(payload_offset..),
         };
-        frame.validate_layout()?;
-        Ok(frame)
+        validate_chunk_layout(
+            header.total_encoded_bytes,
+            header.chunk_offset,
+            header.chunk_index,
+            header.chunk_count,
+            message_len - payload_offset,
+        )?;
+        Ok((header, payload_offset))
     }
+}
 
-    fn validate_layout(&self) -> Result<(), PreviewChunkError> {
-        if self.total_encoded_bytes == 0 || self.chunk_count == 0 {
-            return Err(PreviewChunkError::InvalidLayout);
-        }
-        if u64::from(self.chunk_count) > self.total_encoded_bytes {
-            return Err(PreviewChunkError::ImpossibleChunkCount {
-                chunks: self.chunk_count,
-                total_bytes: self.total_encoded_bytes,
-            });
-        }
-        if self.chunk_index >= self.chunk_count || self.payload.is_empty() {
-            return Err(PreviewChunkError::InvalidLayout);
-        }
-        let payload_len =
-            u64::try_from(self.payload.len()).map_err(|_| PreviewChunkError::LengthOverflow)?;
-        let end = self
-            .chunk_offset
-            .checked_add(payload_len)
-            .ok_or(PreviewChunkError::LengthOverflow)?;
-        if end > self.total_encoded_bytes {
-            return Err(PreviewChunkError::InvalidLayout);
-        }
-        if self.chunk_index + 1 == self.chunk_count {
-            if end != self.total_encoded_bytes {
-                return Err(PreviewChunkError::InvalidLayout);
-            }
-        } else if end >= self.total_encoded_bytes {
-            return Err(PreviewChunkError::InvalidLayout);
-        }
-        Ok(())
+fn validate_chunk_layout(
+    total_encoded_bytes: u64,
+    chunk_offset: u64,
+    chunk_index: u32,
+    chunk_count: u32,
+    payload_len: usize,
+) -> Result<(), PreviewChunkError> {
+    if total_encoded_bytes == 0 || chunk_count == 0 {
+        return Err(PreviewChunkError::InvalidLayout);
     }
+    if u64::from(chunk_count) > total_encoded_bytes {
+        return Err(PreviewChunkError::ImpossibleChunkCount {
+            chunks: chunk_count,
+            total_bytes: total_encoded_bytes,
+        });
+    }
+    if chunk_index >= chunk_count || payload_len == 0 {
+        return Err(PreviewChunkError::InvalidLayout);
+    }
+    let payload_len = u64::try_from(payload_len).map_err(|_| PreviewChunkError::LengthOverflow)?;
+    let end = chunk_offset
+        .checked_add(payload_len)
+        .ok_or(PreviewChunkError::LengthOverflow)?;
+    if end > total_encoded_bytes {
+        return Err(PreviewChunkError::InvalidLayout);
+    }
+    if chunk_index + 1 == chunk_count {
+        if end != total_encoded_bytes {
+            return Err(PreviewChunkError::InvalidLayout);
+        }
+    } else if end >= total_encoded_bytes {
+        return Err(PreviewChunkError::InvalidLayout);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1212,28 +1268,104 @@ pub struct ReassembledPreviewPublication {
     pub encoded: Bytes,
 }
 
+/// One chunk's payload bytes, wherever they live.
+pub trait PreviewChunkPayload {
+    fn byte_len(&self) -> usize;
+
+    /// Copy the payload's leading bytes into `out`, as many as fit or as
+    /// the payload holds. Returns the count copied.
+    fn copy_prefix_into(&self, out: &mut [u8]) -> usize;
+}
+
+/// Storage a reassembler fills with one publication's encoded bytes.
+///
+/// The state machine, budgets and tombstones are the same for every
+/// storage; only where the bytes accumulate differs. `Vec<u8>` serves
+/// native clients, and the browser keeps payloads in JS so a chunked frame
+/// never crosses into WASM memory.
+pub trait PreviewPublicationBuffer: Sized {
+    type Payload: PreviewChunkPayload;
+
+    /// Empty storage with room for `capacity` bytes, or `None` when that
+    /// much cannot be allocated.
+    fn try_with_capacity(capacity: usize) -> Option<Self>;
+
+    fn byte_len(&self) -> usize;
+
+    /// Make room for `total` bytes in all. `false` when allocation fails.
+    fn try_reserve_total(&mut self, total: usize) -> bool;
+
+    /// Append a payload. `false` when growing the storage fails.
+    fn try_append(&mut self, payload: &Self::Payload) -> bool;
+
+    /// Copy the stored leading bytes into `out`. Returns the count copied.
+    fn copy_prefix_into(&self, out: &mut [u8]) -> usize;
+}
+
+impl PreviewChunkPayload for Bytes {
+    fn byte_len(&self) -> usize {
+        self.len()
+    }
+
+    fn copy_prefix_into(&self, out: &mut [u8]) -> usize {
+        let count = out.len().min(self.len());
+        out[..count].copy_from_slice(&self[..count]);
+        count
+    }
+}
+
+impl PreviewPublicationBuffer for Vec<u8> {
+    type Payload = Bytes;
+
+    fn try_with_capacity(capacity: usize) -> Option<Self> {
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(capacity).ok()?;
+        Some(bytes)
+    }
+
+    fn byte_len(&self) -> usize {
+        self.len()
+    }
+
+    fn try_reserve_total(&mut self, total: usize) -> bool {
+        self.try_reserve_exact(total.saturating_sub(self.len()))
+            .is_ok()
+    }
+
+    fn try_append(&mut self, payload: &Bytes) -> bool {
+        self.extend_from_slice(payload);
+        true
+    }
+
+    fn copy_prefix_into(&self, out: &mut [u8]) -> usize {
+        let count = out.len().min(self.len());
+        out[..count].copy_from_slice(&self[..count]);
+        count
+    }
+}
+
 #[derive(Debug)]
-struct PartialPreviewPublication {
+struct PartialPreviewPublication<B> {
     metadata: PreviewPublicationMetadata,
     total_encoded_bytes: usize,
     chunk_count: u32,
     next_chunk_index: u32,
     screen_zones_header_validated: bool,
-    bytes: Vec<u8>,
+    bytes: B,
 }
 
 #[derive(Debug)]
-struct PreviewStreamState {
+struct PreviewStreamState<B> {
     high_water_publication_id: u64,
-    partial: Option<PartialPreviewPublication>,
+    partial: Option<PartialPreviewPublication<B>>,
     last_activity_ms: u64,
     tombstone_generation: u64,
 }
 
 #[derive(Debug)]
-pub struct PreviewChunkReassembler {
+pub struct PreviewChunkReassembler<B = Vec<u8>> {
     limits: PreviewReassemblyLimits,
-    streams: HashMap<Arc<PreviewStreamId>, PreviewStreamState>,
+    streams: HashMap<Arc<PreviewStreamId>, PreviewStreamState<B>>,
     active_streams: usize,
     tombstones: usize,
     reserved_bytes: usize,
@@ -1248,19 +1380,7 @@ pub struct PreviewChunkReassembler {
 impl PreviewChunkReassembler {
     #[must_use]
     pub fn new(limits: PreviewReassemblyLimits) -> Self {
-        Self {
-            limits,
-            streams: HashMap::new(),
-            active_streams: 0,
-            tombstones: 0,
-            reserved_bytes: 0,
-            state_bytes: 0,
-            tombstone_bytes: 0,
-            logical_now_ms: 0,
-            next_tombstone_generation: 1,
-            superseded_publications: 0,
-            expired_publications: 0,
-        }
+        Self::with_limits(limits)
     }
 
     pub fn push(
@@ -1276,15 +1396,61 @@ impl PreviewChunkReassembler {
         encoded_chunk: &Bytes,
         now_ms: u64,
     ) -> Result<Option<ReassembledPreviewPublication>, PreviewChunkError> {
+        self.begin_push(encoded_chunk.len(), now_ms)?;
+        let (header, payload_offset) =
+            PreviewChunkHeader::decode_prefix(encoded_chunk, encoded_chunk.len())?;
+        let payload = encoded_chunk.slice(payload_offset..);
+        let Some((metadata, bytes)) = self.push_parts(&header, &payload, now_ms)? else {
+            return Ok(None);
+        };
+        let encoded = Bytes::from(bytes);
+        validate_completed_publication(&metadata, &encoded, self.limits)?;
+        Ok(Some(ReassembledPreviewPublication { metadata, encoded }))
+    }
+}
+
+impl<B: PreviewPublicationBuffer> PreviewChunkReassembler<B> {
+    /// A reassembler that accumulates publications in `B`.
+    #[must_use]
+    pub fn with_limits(limits: PreviewReassemblyLimits) -> Self {
+        Self {
+            limits,
+            streams: HashMap::new(),
+            active_streams: 0,
+            tombstones: 0,
+            reserved_bytes: 0,
+            state_bytes: 0,
+            tombstone_bytes: 0,
+            logical_now_ms: 0,
+            next_tombstone_generation: 1,
+            superseded_publications: 0,
+            expired_publications: 0,
+        }
+    }
+
+    /// Advance the clock, sweep idle partials, and check a chunk message's
+    /// length against the budget, before anything decodes it.
+    fn begin_push(&mut self, message_len: usize, now_ms: u64) -> Result<(), PreviewChunkError> {
         self.logical_now_ms = self.logical_now_ms.max(now_ms);
         self.expire_at(now_ms);
-        if encoded_chunk.len() > self.limits.max_message_bytes {
+        if message_len > self.limits.max_message_bytes {
             return Err(PreviewChunkError::MessageBudgetExceeded {
-                requested: encoded_chunk.len(),
+                requested: message_len,
                 limit: self.limits.max_message_bytes,
             });
         }
-        let chunk = PreviewChunkFrame::decode_bytes(encoded_chunk)?;
+        Ok(())
+    }
+
+    /// Place one decoded chunk. Returns the publication's metadata and
+    /// storage once its last chunk lands; validating the assembled bytes is
+    /// the caller's, since only it knows how to read its storage.
+    fn push_parts(
+        &mut self,
+        chunk: &PreviewChunkHeader,
+        payload: &B::Payload,
+        now_ms: u64,
+    ) -> Result<Option<(PreviewPublicationMetadata, B)>, PreviewChunkError> {
         let max_chunk_count = self
             .limits
             .effective_max_chunk_count(chunk.metadata.stream.identity_bytes());
@@ -1320,14 +1486,15 @@ impl PreviewChunkReassembler {
             .get(&stream)
             .is_none_or(|state| publication_id > state.high_water_publication_id);
         if starts_new_publication {
-            self.admit_partial(&chunk, total_encoded_bytes, now_ms)?;
+            self.admit_partial(chunk, payload, total_encoded_bytes, now_ms)?;
         }
-        self.append_chunk(&stream, &chunk, total_encoded_bytes, now_ms)
+        self.append_chunk(&stream, chunk, payload, total_encoded_bytes, now_ms)
     }
 
     fn admit_partial(
         &mut self,
-        chunk: &PreviewChunkFrame,
+        chunk: &PreviewChunkHeader,
+        payload: &B::Payload,
         total_encoded_bytes: usize,
         now_ms: u64,
     ) -> Result<(), PreviewChunkError> {
@@ -1335,7 +1502,7 @@ impl PreviewChunkReassembler {
             return Err(PreviewChunkError::MissingPublicationStart);
         }
         let screen_zones_header_validated =
-            validate_reassembly_admission(chunk, total_encoded_bytes, self.limits)?;
+            validate_reassembly_admission(chunk, payload, total_encoded_bytes, self.limits)?;
         let stream = &chunk.metadata.stream;
         let existing_is_active = self
             .streams
@@ -1391,8 +1558,7 @@ impl PreviewChunkReassembler {
         }
         drop(replaced);
 
-        let mut bytes = Vec::new();
-        if bytes.try_reserve_exact(initial_reservation).is_err() {
+        let Some(bytes) = B::try_with_capacity(initial_reservation) else {
             if existing_is_active {
                 self.active_streams = self.active_streams.saturating_sub(1);
                 self.mark_tombstone(stream, true);
@@ -1400,7 +1566,7 @@ impl PreviewChunkReassembler {
             return Err(PreviewChunkError::AllocationFailed {
                 bytes: initial_reservation,
             });
-        }
+        };
         let partial = PartialPreviewPublication {
             metadata: chunk.metadata.clone(),
             total_encoded_bytes,
@@ -1445,10 +1611,11 @@ impl PreviewChunkReassembler {
     fn append_chunk(
         &mut self,
         stream: &PreviewStreamId,
-        chunk: &PreviewChunkFrame,
+        chunk: &PreviewChunkHeader,
+        payload: &B::Payload,
         total_encoded_bytes: usize,
         now_ms: u64,
-    ) -> Result<Option<ReassembledPreviewPublication>, PreviewChunkError> {
+    ) -> Result<Option<(PreviewPublicationMetadata, B)>, PreviewChunkError> {
         let state = self
             .streams
             .get_mut(stream)
@@ -1466,43 +1633,46 @@ impl PreviewChunkReassembler {
         if chunk.chunk_index < partial.next_chunk_index {
             return Err(PreviewChunkError::DuplicateChunk);
         }
-        let expected_offset =
-            u64::try_from(partial.bytes.len()).map_err(|_| PreviewChunkError::LengthOverflow)?;
+        let expected_offset = u64::try_from(partial.bytes.byte_len())
+            .map_err(|_| PreviewChunkError::LengthOverflow)?;
         if chunk.chunk_index != partial.next_chunk_index || chunk.chunk_offset != expected_offset {
             return Err(PreviewChunkError::NonContiguousChunk);
         }
         if !partial.screen_zones_header_validated {
             let prefix_len = partial
                 .bytes
-                .len()
-                .checked_add(chunk.payload.len())
+                .byte_len()
+                .checked_add(payload.byte_len())
                 .ok_or(PreviewChunkError::LengthOverflow)?
                 .min(EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN);
             let mut prefix = [0_u8; EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN];
-            let retained_prefix_len = partial.bytes.len().min(prefix_len);
-            prefix[..retained_prefix_len].copy_from_slice(&partial.bytes[..retained_prefix_len]);
-            let incoming_prefix_len = prefix_len.saturating_sub(retained_prefix_len);
-            prefix[retained_prefix_len..prefix_len]
-                .copy_from_slice(&chunk.payload[..incoming_prefix_len]);
+            let retained_prefix_len = partial.bytes.byte_len().min(prefix_len);
+            partial
+                .bytes
+                .copy_prefix_into(&mut prefix[..retained_prefix_len]);
+            payload.copy_prefix_into(&mut prefix[retained_prefix_len..prefix_len]);
             if validate_screen_zones_header_prefix(
                 &partial.metadata,
                 partial.total_encoded_bytes,
                 &prefix[..prefix_len],
                 self.limits,
             )? {
-                let additional = partial
-                    .total_encoded_bytes
-                    .checked_sub(partial.bytes.len())
-                    .ok_or(PreviewChunkError::LengthOverflow)?;
-                partial.bytes.try_reserve_exact(additional).map_err(|_| {
-                    PreviewChunkError::AllocationFailed {
+                if partial.bytes.byte_len() > partial.total_encoded_bytes {
+                    return Err(PreviewChunkError::LengthOverflow);
+                }
+                if !partial.bytes.try_reserve_total(partial.total_encoded_bytes) {
+                    return Err(PreviewChunkError::AllocationFailed {
                         bytes: partial.total_encoded_bytes,
-                    }
-                })?;
+                    });
+                }
                 partial.screen_zones_header_validated = true;
             }
         }
-        partial.bytes.extend_from_slice(&chunk.payload);
+        if !partial.bytes.try_append(payload) {
+            return Err(PreviewChunkError::AllocationFailed {
+                bytes: partial.total_encoded_bytes,
+            });
+        }
         partial.next_chunk_index = partial
             .next_chunk_index
             .checked_add(1)
@@ -1512,7 +1682,7 @@ impl PreviewChunkReassembler {
         if partial.next_chunk_index != partial.chunk_count {
             return Ok(None);
         }
-        if partial.bytes.len() != partial.total_encoded_bytes {
+        if partial.bytes.byte_len() != partial.total_encoded_bytes {
             return Err(PreviewChunkError::NonContiguousChunk);
         }
         let completed = state
@@ -1525,12 +1695,7 @@ impl PreviewChunkReassembler {
             .ok_or(PreviewChunkError::LengthOverflow)?;
         self.active_streams = self.active_streams.saturating_sub(1);
         self.mark_tombstone(stream, true);
-        let encoded = Bytes::from(completed.bytes);
-        validate_completed_publication(&completed.metadata, &encoded, self.limits)?;
-        Ok(Some(ReassembledPreviewPublication {
-            metadata: completed.metadata,
-            encoded,
-        }))
+        Ok(Some((completed.metadata, completed.bytes)))
     }
 
     pub fn expire_at(&mut self, now_ms: u64) -> usize {
@@ -1766,16 +1931,20 @@ impl PreviewChunkReassembler {
     }
 }
 
+/// Budgeted size of one stream's state. Measured with the native storage
+/// for every buffer type, so a browser client admits exactly the streams
+/// a native one does.
 fn preview_stream_state_bytes(stream: &PreviewStreamId) -> Result<usize, PreviewChunkError> {
-    std::mem::size_of::<(Arc<PreviewStreamId>, PreviewStreamState)>()
+    std::mem::size_of::<(Arc<PreviewStreamId>, PreviewStreamState<Vec<u8>>)>()
         .checked_add(std::mem::size_of::<(usize, usize)>())
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PreviewStreamId>()))
         .and_then(|bytes| bytes.checked_add(stream.identity_bytes()))
         .ok_or(PreviewChunkError::LengthOverflow)
 }
 
-fn validate_reassembly_admission(
-    chunk: &PreviewChunkFrame,
+fn validate_reassembly_admission<P: PreviewChunkPayload>(
+    chunk: &PreviewChunkHeader,
+    payload: &P,
     total_encoded_bytes: usize,
     limits: PreviewReassemblyLimits,
 ) -> Result<bool, PreviewChunkError> {
@@ -1799,10 +1968,12 @@ fn validate_reassembly_admission(
                 limit: limits.max_decoded_publication_bytes,
             });
         }
+        let mut prefix = [0_u8; EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN];
+        let prefix_len = payload.copy_prefix_into(&mut prefix);
         return validate_screen_zones_header_prefix(
             metadata,
             total_encoded_bytes,
-            &chunk.payload,
+            &prefix[..prefix_len],
             limits,
         );
     }
@@ -2477,6 +2648,171 @@ impl IdentityFrameHeader {
             });
         }
         Ok(end)
+    }
+}
+
+#[cfg(feature = "ws-client-wasm")]
+impl PreviewChunkPayload for js_sys::Uint8Array {
+    fn byte_len(&self) -> usize {
+        self.length() as usize
+    }
+
+    fn copy_prefix_into(&self, out: &mut [u8]) -> usize {
+        let count = out.len().min(self.length() as usize);
+        self.subarray(0, count as u32).copy_to(&mut out[..count]);
+        count
+    }
+}
+
+/// Browser storage for chunked publications: a JS `Uint8Array` that chunk
+/// payloads are copied into straight from their WebSocket buffers.
+///
+/// A publication assembled here costs one JS-to-JS copy and one allocation,
+/// the same as a frame small enough to arrive in a single message, instead
+/// of a copy into WASM memory, a second into the reassembly buffer, and a
+/// third back out to JS.
+#[cfg(feature = "ws-client-wasm")]
+#[derive(Debug)]
+pub struct JsPreviewPublicationBuffer {
+    bytes: js_sys::Uint8Array,
+    len: usize,
+}
+
+#[cfg(feature = "ws-client-wasm")]
+impl JsPreviewPublicationBuffer {
+    /// Allocate through `Reflect.construct` so the `RangeError` an
+    /// oversized buffer throws comes back as `None`. A plain constructor
+    /// call would throw straight through the WASM frames above it.
+    fn try_allocate(capacity: usize) -> Option<js_sys::Uint8Array> {
+        use wasm_bindgen::JsCast;
+
+        let length = u32::try_from(capacity).ok()?;
+        let constructor = js_sys::Reflect::get(
+            &js_sys::global(),
+            &wasm_bindgen::JsValue::from_str("Uint8Array"),
+        )
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+        js_sys::Reflect::construct(
+            &constructor,
+            &js_sys::Array::of1(&wasm_bindgen::JsValue::from(length)),
+        )
+        .ok()?
+        .dyn_into::<js_sys::Uint8Array>()
+        .ok()
+    }
+
+    fn grow_to(&mut self, capacity: usize) -> bool {
+        let Some(grown) = Self::try_allocate(capacity) else {
+            return false;
+        };
+        grown.set(&self.bytes.subarray(0, self.len as u32), 0);
+        self.bytes = grown;
+        true
+    }
+
+    /// The assembled publication in an `ArrayBuffer` of its own, ready for
+    /// the same decoders a single-message frame goes through.
+    #[must_use]
+    pub fn into_array_buffer(self) -> js_sys::ArrayBuffer {
+        if self.bytes.length() as usize == self.len {
+            self.bytes.buffer()
+        } else {
+            self.bytes.slice(0, self.len as u32).buffer()
+        }
+    }
+}
+
+#[cfg(feature = "ws-client-wasm")]
+impl PreviewPublicationBuffer for JsPreviewPublicationBuffer {
+    type Payload = js_sys::Uint8Array;
+
+    fn try_with_capacity(capacity: usize) -> Option<Self> {
+        Some(Self {
+            bytes: Self::try_allocate(capacity)?,
+            len: 0,
+        })
+    }
+
+    fn byte_len(&self) -> usize {
+        self.len
+    }
+
+    fn try_reserve_total(&mut self, total: usize) -> bool {
+        self.bytes.length() as usize >= total || self.grow_to(total)
+    }
+
+    fn try_append(&mut self, payload: &js_sys::Uint8Array) -> bool {
+        let Some(end) = self.len.checked_add(payload.length() as usize) else {
+            return false;
+        };
+        let capacity = self.bytes.length() as usize;
+        if end > capacity && !self.grow_to(end.max(capacity.saturating_mul(2))) {
+            return false;
+        }
+        let Ok(offset) = u32::try_from(self.len) else {
+            return false;
+        };
+        self.bytes.set(payload, offset);
+        self.len = end;
+        true
+    }
+
+    fn copy_prefix_into(&self, out: &mut [u8]) -> usize {
+        let count = out.len().min(self.len);
+        self.bytes
+            .subarray(0, count as u32)
+            .copy_to(&mut out[..count]);
+        count
+    }
+}
+
+/// A publication reassembled in JS: its metadata, and its encoded bytes
+/// exactly as a single-message frame would carry them.
+#[cfg(feature = "ws-client-wasm")]
+#[derive(Debug, Clone)]
+pub struct ReassembledPreviewBuffer {
+    pub metadata: PreviewPublicationMetadata,
+    pub encoded: js_sys::ArrayBuffer,
+}
+
+#[cfg(feature = "ws-client-wasm")]
+impl PreviewChunkReassembler<JsPreviewPublicationBuffer> {
+    /// Place one chunk message straight from its WebSocket buffer. Only the
+    /// envelope is copied into WASM memory; the payload stays in JS.
+    ///
+    /// Unlike [`PreviewChunkReassembler::push_at`], a completed publication
+    /// is not decoded here. The caller decodes [`ReassembledPreviewBuffer::encoded`]
+    /// with the `*View::decode_array_buffer` decoders and checks the result
+    /// against the metadata, as it would a frame that arrived whole.
+    pub fn push_array_buffer_at(
+        &mut self,
+        message: &js_sys::ArrayBuffer,
+        now_ms: u64,
+    ) -> Result<Option<ReassembledPreviewBuffer>, PreviewChunkError> {
+        let data = js_sys::Uint8Array::new(message);
+        let message_len = data.length() as usize;
+        self.begin_push(message_len, now_ms)?;
+        let fixed_len = message_len.min(PREVIEW_CHUNK_FIXED_HEADER_LEN);
+        let mut envelope = data.subarray(0, fixed_len as u32).to_vec();
+        if envelope.len() == PREVIEW_CHUNK_FIXED_HEADER_LEN {
+            let identity_len = usize::from(u16::from_le_bytes([envelope[5], envelope[6]]));
+            let envelope_len = PREVIEW_CHUNK_FIXED_HEADER_LEN
+                .saturating_add(identity_len)
+                .min(message_len);
+            if envelope_len > envelope.len() {
+                envelope = data.subarray(0, envelope_len as u32).to_vec();
+            }
+        }
+        let (header, payload_offset) = PreviewChunkHeader::decode_prefix(&envelope, message_len)?;
+        let payload = data.subarray(payload_offset as u32, message_len as u32);
+        Ok(self
+            .push_parts(&header, &payload, now_ms)?
+            .map(|(metadata, bytes)| ReassembledPreviewBuffer {
+                metadata,
+                encoded: bytes.into_array_buffer(),
+            }))
     }
 }
 
