@@ -179,7 +179,7 @@ With none of them, the loop **parks**: it renders nothing, withdraws its audio, 
 
 Parking waits for the producers to settle. After the scene, an effect, or the canvas changes, the loop keeps rendering until every producer has shown its new content and any scene transition has finished (bounded at ten seconds, so a longer crossfade pauses partway and finishes when a consumer returns), so an effect applied while nobody watches is already loaded when a client or capture arrives. Time carries across the park: render time stops while parked, so media layers and time bindings continue where they left off, and the first frame after a wake advances effect time by one frame, not by the parked span, with no catch-up frames. A canvas capture that wakes the loop skips the wake frame itself, whose HTML producers still show output requested before the park, and returns the next one.
 
-`/api/v1/status` reports the state under `render_loop.output_demand` (`parked`, `idle_reason`, `parked_ms`, and the consumer counts the loop last saw), with `delivered_fps` and `actual_fps` at zero while parked. `/api/v1/diagnose` carries the same object under `snapshot.render.output_demand`. Rigs with a connected device never park.
+`/api/v1/system` reports the state under `render_loop.output_demand` (`parked`, `idle_reason`, `parked_ms`, and the consumer counts the loop last saw), with `delivered_fps` and `actual_fps` at zero while parked. `/api/v1/diagnose` carries the same object under `snapshot.render.output_demand`. Rigs with a connected device never park.
 
 ## Canvas resize and layout updates
 
