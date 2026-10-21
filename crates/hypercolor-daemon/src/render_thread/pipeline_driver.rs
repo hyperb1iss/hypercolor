@@ -89,15 +89,10 @@ pub(crate) async fn run_pipeline(
 /// replaces one that failed while parked starts with a fresh gate, so it
 /// would otherwise render with effect time still held.
 async fn clear_stale_park(state: &RenderThreadState) {
-    let was_parked = {
-        let mut render_loop = state.render_loop.write().await;
-        let was_parked = render_loop.is_parked();
-        render_loop.unpark();
-        was_parked
-    };
-    if was_parked {
-        state.performance.write().await.note_output_unparked();
-    }
+    state.render_loop.write().await.unpark();
+    // The telemetry can outlive the loop's flag: a pipeline that failed
+    // between unparking and its next recorded frame leaves it set.
+    state.performance.write().await.note_output_unparked();
 }
 
 /// Pick the loop back up after a park without a jump in effect time.
