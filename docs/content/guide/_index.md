@@ -105,7 +105,7 @@ end
 
 Effects render into a virtual RGBA canvas (640×480 by default, tunable). **SparkleFlinger**, the render-thread compositor, latches the newest surface from each active layer at the frame boundary and blends them into one canonical frame per tick. The spatial engine samples each LED at its physical position using normalized `[0.0, 1.0]` coordinates, so effects stay resolution-independent regardless of canvas size. A single-zone scene samples that canonical frame. A multi-zone scene on the GPU keeps each zone in its own texture, and every LED samples its own zone, so overlapping zones never bleed into each other. Device output is queued asynchronously so a slow device never stalls the render loop.
 
-The daemon runs an adaptive render loop across five FPS tiers (10 / 20 / 30 / 45 / 60). The default target is 30 fps. The loop downshifts fast on consecutive budget misses and upshifts slowly on sustained headroom, so Servo-heavy effects and simpler ones share the same engine without tuning.
+The daemon runs an adaptive render loop across five FPS tiers (10 / 20 / 30 / 45 / 60). The default target is 60 fps, the top tier. The loop downshifts fast on consecutive budget misses and upshifts slowly on sustained headroom, so Servo-heavy effects and simpler ones share the same engine without tuning.
 
 ## Supported hardware
 

@@ -163,7 +163,7 @@ fn pending_restart_flags_only_restart_classified_changes() {
 
     // A live-classified exact key inside the restart-classified
     // daemon section must NOT flag a restart.
-    manager.modify(|config| config.daemon.target_fps = 60);
+    manager.modify(|config| config.daemon.target_fps = 45);
     assert!(
         manager.pending_restart().is_empty(),
         "live render knobs never flag a restart"

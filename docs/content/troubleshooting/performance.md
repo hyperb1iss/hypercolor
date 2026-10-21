@@ -4,7 +4,7 @@ description = "Diagnose Servo overhead, USB-bus saturation, and render budget pr
 weight = 60
 +++
 
-Hypercolor's render loop targets your configured `daemon.target_fps` ceiling using an adaptive five-tier controller (Minimal 10 → Low 20 → Medium 30 → High 45 → Full 60) that shifts between tiers based on measured frame budget. Healthy means holding the tier that matches your configured target. The default target is **30 FPS**, so on a stock config the loop sits at **Medium** when everything is fine; that is the ceiling, not a downshift. Full (60) only comes into play if you raise `daemon.target_fps`. The first sign of a performance problem is the tier sitting *below your configured target*, not a hard crash.
+Hypercolor's render loop targets your configured `daemon.target_fps` ceiling using an adaptive five-tier controller (Minimal 10 → Low 20 → Medium 30 → High 45 → Full 60) that shifts between tiers based on measured frame budget. Healthy means holding the tier that matches your configured target. The default target is **60 FPS**, so on a stock config the loop sits at **Full** when everything is fine. The first sign of a performance problem is the tier sitting *below your configured target*, not a hard crash.
 
 This page walks you through reading the `diagnose` output, identifying which part of the pipeline is the bottleneck, and fixing the root cause.
 
@@ -46,10 +46,10 @@ The `render` category has five checks for FPS and LED output problems.
 ### `render_loop`
 
 ```
-render_loop   state=running, tier=medium
+render_loop   state=running, tier=60fps (full)
 ```
 
-The `tier` field shows where the FPS controller has landed. Compare it against your configured `daemon.target_fps`: on the default config, `medium` (30 FPS) is the healthy steady state. A tier sitting below your configured target means the loop has downshifted under budget pressure. If `state` is anything other than `running`, the render loop has stopped; see [common issues](@/troubleshooting/common-issues.md).
+The `tier` field shows where the FPS controller has landed, as its rate and name. Compare it against your configured `daemon.target_fps`: on the default config, `full` (60 FPS) is the healthy steady state. A tier sitting below your configured target means the loop has downshifted under budget pressure. If `state` is anything other than `running`, the render loop has stopped; see [common issues](@/troubleshooting/common-issues.md).
 
 **Tier reference:**
 
