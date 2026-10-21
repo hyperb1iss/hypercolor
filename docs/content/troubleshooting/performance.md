@@ -67,7 +67,7 @@ The controller downshifts after 2 consecutive budget misses and only upshifts af
 render_loop   state=running, tier=full, parked=no_output_consumers
 ```
 
-`parked` means nothing consumes rendered frames: no connected device, no open preview or stream, no capture. The loop renders nothing until one appears, then resumes at its full tier, so `0 fps` here is expected rather than a stall. `frame_liveness` passes while parked, and `hypercolor status` shows the same state on its render line. `snapshot.render.output_demand` in the JSON report lists the consumer counts the loop last saw and what last woke it.
+`parked` means nothing consumes rendered frames: no connected device, no open preview or stream, no capture. The loop renders nothing until one appears, then resumes at its current tier, so `0 fps` here is expected rather than a stall. `frame_liveness` passes while parked, and `hypercolor status` shows the same state on its render line. `snapshot.render.output_demand` in the JSON report lists the consumer counts the loop last saw and what last woke it.
 
 ### `render_thread`
 

@@ -262,7 +262,7 @@ keyed daemon receive the public identity without the status block.
 `render_loop.output_demand` says what consumes rendered frames. With no device, stream,
 preview, or capture attached the loop parks: `parked` turns true, `idle_reason` reads
 `no_output_consumers`, `parked_ms` counts up, and `delivered_fps` and `actual_fps` read
-zero until a consumer appears and the loop resumes at its full tier.
+zero until a consumer appears and the loop resumes at its current tier.
 
 `status.effect_count` reflects whatever the registry holds at request time (native
 built-ins plus discovered HTML effects); treat it as live, not a fixed product

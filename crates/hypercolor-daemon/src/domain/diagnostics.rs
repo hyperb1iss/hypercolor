@@ -419,7 +419,7 @@ fn render_checks(inputs: &DiagnosticsInputs) -> Vec<DiagnoseCheck> {
             name: "frame_liveness".to_owned(),
             status: "pass".to_owned(),
             detail: format!(
-                "parked: nothing consumes rendered frames (no output devices, streams, or captures); the next consumer resumes rendering at the full tier. parks_total={}",
+                "parked: nothing consumes rendered frames (no output devices, streams, or captures); the next consumer resumes rendering at the current tier. parks_total={}",
                 performance.output_demand.parks_total
             ),
         });

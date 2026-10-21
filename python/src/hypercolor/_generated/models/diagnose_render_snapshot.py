@@ -30,7 +30,7 @@ class DiagnoseRenderSnapshot:
             The render loop renders only while something consumes its output: a
             connected device, a display, a preview or canvas stream, a capture, or
             an explicit demand hold. With none of those it parks, renders nothing,
-            and resumes at its full tier the moment a consumer appears.
+            and resumes at its current tier the moment a consumer appears.
         supervision (RenderSupervisionStatus | Unset): Health and recovery state of the supervised render thread.
 
             The render thread restarts its pipeline in-process after a panic or an

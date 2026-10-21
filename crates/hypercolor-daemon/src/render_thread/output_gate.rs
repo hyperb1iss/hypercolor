@@ -8,7 +8,7 @@
 //! the loop instead of rendering. A parked loop sleeps on the bus output
 //! demand signal, the device registry, the input demand registry, and the
 //! scene transaction queue, so the first consumer to appear wakes it at
-//! once and it resumes at its full tier. A long safety tick re-evaluates in
+//! once and it resumes at its current tier. A long safety tick re-evaluates in
 //! case some consumer arrived without signalling.
 //!
 //! Parking waits for the producers to settle first. After the scene, the

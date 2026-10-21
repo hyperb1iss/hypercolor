@@ -1,7 +1,7 @@
 //! Integration tests for output-demand gating.
 //!
 //! The render loop parks while nothing consumes its frames and resumes at
-//! its full tier the moment a consumer appears. These tests drive the real
+//! its current tier the moment a consumer appears. These tests drive the real
 //! render thread and prove each consumer kind keeps or wakes it, that a
 //! capture after a park returns a freshly rendered frame, and that effect
 //! time carries across the park without a jump.
