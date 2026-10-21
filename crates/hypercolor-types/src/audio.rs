@@ -153,6 +153,26 @@ pub enum AudioSourceType {
     None,
 }
 
+// ─── AudioInputPermission ─────────────────────────────────────────────
+
+/// Whether the OS lets this process open an audio input device without
+/// asking the user first.
+///
+/// Platforms that gate audio input behind a privacy prompt report the
+/// user's current answer; platforms without such a prompt report
+/// [`NotRequired`](Self::NotRequired).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AudioInputPermission {
+    /// The user already allowed audio input.
+    Granted,
+    /// The user refused audio input.
+    Denied,
+    /// The user has not been asked, so opening an input would prompt.
+    Undetermined,
+    /// The platform opens audio inputs without a permission prompt.
+    NotRequired,
+}
+
 // ─── AudioPipelineConfig ──────────────────────────────────────────────
 
 /// DSP pipeline configuration for the audio analysis engine.

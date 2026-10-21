@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 
+use hypercolor_types::audio::AudioInputPermission;
+
 use crate::{
     MacosCaptureCallbackDiagnostics, MacosCaptureCapabilities, MacosCaptureError,
     MacosCaptureSelection, MacosCaptureSelector, MacosFrameMailbox, MacosProtectedSourceState,
@@ -16,6 +18,15 @@ use crate::{
 
 const UNSUPPORTED: MacosCaptureError =
     MacosCaptureError::CapabilityProbeFailed("ScreenCaptureKit is unavailable on this platform");
+
+/// Report that no macOS microphone privacy gate exists on this platform.
+///
+/// Off macOS there is no Microphone TCC service, so opening an audio input
+/// can never show its prompt.
+#[must_use]
+pub fn microphone_record_permission() -> AudioInputPermission {
+    AudioInputPermission::NotRequired
+}
 
 /// Stub ScreenCaptureKit session on hosts without ScreenCaptureKit.
 #[derive(Debug)]

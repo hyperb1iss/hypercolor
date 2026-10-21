@@ -253,6 +253,7 @@ wgpu-hal = { version = "30.0.1", default-features = false, features = ["vulkan"]
 objc2-core-foundation = { version = "0.3.2", default-features = false }
 objc2-core-graphics = { version = "0.3.2", default-features = false }
 objc2-app-kit = { version = "0.3.2", default-features = false }
+objc2-avf-audio = { version = "0.3.2", default-features = false }
 objc2-core-media = { version = "0.3.2", default-features = false }
 objc2-core-video = { version = "0.3.2", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false }
