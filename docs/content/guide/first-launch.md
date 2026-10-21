@@ -190,6 +190,13 @@ upgraded install keeps exactly what it had. From here:
 If devices are missing, the [Finding devices](@/guide/finding-devices.md) guide covers
 USB udev rules, network mDNS, and per-protocol pairing.
 
+On macOS, Hyperbloom glows without reacting until it has something to listen to. The
+default audio source never falls back to your microphone before you have granted it
+access, so first boot asks for nothing unless a loopback-named device is already
+installed. Choose an input under **Device** in the Audio settings, a loopback driver
+such as BlackHole or Default Microphone, and macOS asks for Microphone permission then.
+See [Audio setup](@/guide/audio-setup.md#macos-install-a-loopback-driver).
+
 ---
 
 ## Launching without the desktop app

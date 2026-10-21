@@ -117,7 +117,10 @@ Hypercolor for macOS requires Apple silicon and macOS 15.2 (Sequoia) or newer;
 Intel Macs are not supported.
 
 Hypercolor requests Screen Recording permission when you enable screen capture.
-For system audio, follow [Audio setup](@/guide/audio-setup.md).
+It asks for Microphone permission only when it first opens an audio input you
+set up; the default system-audio source never falls back to the microphone
+before you grant access. For system audio, follow
+[Audio setup](@/guide/audio-setup.md).
 
 ### Homebrew {% raw %}{#homebrew}{% endraw %}
 
