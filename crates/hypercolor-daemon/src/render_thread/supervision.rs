@@ -703,18 +703,21 @@ impl RenderSupervision {
     #[must_use]
     pub fn snapshot(&self) -> RenderSupervisionSnapshot {
         let now = Instant::now();
-        let current = self
+        let failure_guard = self
             .inner
             .last_failure
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        let last_failure_in_this_process = current.is_some();
+            .unwrap_or_else(PoisonError::into_inner);
+        let current = failure_guard.clone();
         let phase = self.phase();
+        let restarts_total = self.inner.restarts_total.load(Ordering::Relaxed);
+        let consecutive_failures = self.inner.consecutive_failures.load(Ordering::Relaxed);
+        drop(failure_guard);
+        let last_failure_in_this_process = current.is_some();
         RenderSupervisionSnapshot {
             phase,
-            restarts_total: self.inner.restarts_total.load(Ordering::Relaxed),
-            consecutive_failures: self.inner.consecutive_failures.load(Ordering::Relaxed),
+            restarts_total,
+            consecutive_failures,
             max_restarts: self.inner.policy.max_restarts,
             last_heartbeat_age: self.age(&self.inner.last_heartbeat_us, now),
             last_frame_age: self.age(&self.inner.last_frame_us, now),
@@ -849,17 +852,14 @@ impl RenderSupervision {
                 RenderThreadPhase::Stopped,
             ),
         };
+        // Only the render thread records failures, so the counter cannot
+        // move between this read and the commit below.
+        let previous_restarts = self.inner.restarts_total.load(Ordering::Relaxed);
         let restarts_total = if action == RenderRecoveryAction::Restart {
-            self.inner
-                .restarts_total
-                .fetch_add(1, Ordering::Relaxed)
-                .saturating_add(1)
+            previous_restarts.saturating_add(1)
         } else {
-            self.inner.restarts_total.load(Ordering::Relaxed)
+            previous_restarts
         };
-        self.inner
-            .consecutive_failures
-            .store(consecutive_failures, Ordering::Relaxed);
         let record = failure_record(failure, action, restart_attempt, restarts_total);
         log_failure(&record, plan, self.inner.policy.max_restarts);
         if let Some(store) = self.inner.store.as_ref()
@@ -867,12 +867,23 @@ impl RenderSupervision {
         {
             tracing::warn!(path = %store.path.display(), error = %format!("{error:#}"), "could not persist the render failure record");
         }
-        *self
+        // The failure, its counters, and the phase change together under
+        // the failure lock, which `snapshot` holds while it reads them, so
+        // no reader sees a counted restart without the failure behind it.
+        let mut last_failure = self
             .inner
             .last_failure
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(record.clone());
+            .unwrap_or_else(PoisonError::into_inner);
+        *last_failure = Some(record.clone());
+        self.inner
+            .consecutive_failures
+            .store(consecutive_failures, Ordering::Relaxed);
+        self.inner
+            .restarts_total
+            .store(restarts_total, Ordering::Relaxed);
         self.set_phase(phase);
+        drop(last_failure);
         record
     }
 
