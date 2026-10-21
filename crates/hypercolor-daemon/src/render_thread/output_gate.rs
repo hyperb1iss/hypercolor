@@ -25,6 +25,7 @@ use tokio::pin;
 use super::RenderThreadState;
 use super::input_publication::InputPublicationDemandHandle;
 use super::pipeline_runtime::FrameLoopState;
+use super::supervision::RenderSupervision;
 use crate::output_demand::{OutputConsumers, is_output_backend, output_device_count};
 
 /// How often a parked loop re-evaluates demand without any wake signal.
@@ -287,9 +288,13 @@ async fn routed_output_device_count(state: &RenderThreadState) -> u32 {
 pub(crate) async fn wait_for_output_demand(
     state: &RenderThreadState,
     frame_loop: &mut FrameLoopState,
+    supervision: &RenderSupervision,
 ) -> RenderWakeReason {
     let armed_output_demand = state.event_bus.output_demand().arm();
     loop {
+        // Every pass, the safety tick included, proves the parked thread is
+        // alive to the stall check and the service watchdog.
+        supervision.heartbeat(Instant::now());
         let output_demand = armed_output_demand.notified();
         let devices = state.device_registry.changed();
         let transactions = state.scene_transactions.queued();

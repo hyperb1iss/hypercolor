@@ -1,7 +1,8 @@
 use hypercolor_types::attachment::{
     ComponentBinding, ComponentCanvasSize, ComponentCategory, ComponentCompatibility,
     ComponentOrigin, ComponentSlot, ComponentTemplate, ComponentTemplateManifest,
-    channel_name_matches_slot_alias, slot_id_matches_channel_name, slugify_slot_id,
+    channel_name_matches_slot_alias, slot_alias_key, slot_alias_key_matches,
+    slot_id_matches_channel_name, slugify_slot_id,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
@@ -98,6 +99,46 @@ fn slot_alias_matching_uses_default_profile_slug_rules() {
         Some("channel-1"),
         Some("Channel 2")
     ));
+}
+
+#[test]
+fn precomputed_alias_keys_match_exactly_when_names_alias() {
+    let names = [
+        "Pads",
+        "pads",
+        "PADS",
+        "Touch Strip",
+        "touch-strip",
+        "Touch_Strip",
+        "touch strip ",
+        "Touchstrip",
+        "Channel 1",
+        "channel-01",
+        "CHANNEL-001",
+        "Channel 10",
+        "channel 0",
+        "Channel 00",
+        "ATX Strimer",
+        "atx-strimer",
+        "gpu_strimer",
+        "GPU Strimer",
+        "!!!",
+        "slot",
+        "",
+        "Buttons Above",
+        "Ünicode Pads",
+        "-pads-",
+    ];
+    for left in names {
+        let key = slot_alias_key(left);
+        for right in names {
+            assert_eq!(
+                slot_alias_key_matches(&key, right),
+                channel_name_matches_slot_alias(Some(left), Some(right)),
+                "{left:?} against {right:?}"
+            );
+        }
+    }
 }
 
 #[test]

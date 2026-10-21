@@ -19,6 +19,7 @@ use hypercolor_core::input::screen::planner::{
     ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
     ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
 };
+use hypercolor_core::spatial::DISPLAY_ZONE_NAME;
 #[cfg(feature = "wgpu")]
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 #[cfg(feature = "wgpu")]
@@ -714,6 +715,203 @@ fn projected_composition_preserves_zone_and_zone_overlap_order() {
     assert_eq!(actual.get_pixel(0, 7), Rgba::BLACK);
 }
 
+#[test]
+fn authoritative_scene_canvas_keeps_display_backdrop_on_its_owner_zone() {
+    let mut runtime = cpu_backed_runtime(8, 8);
+    let zones = display_backdrop_overlap_zones();
+    runtime
+        .target_canvases
+        .insert(zones[0].id, solid_canvas(8, 8, Rgba::new(255, 0, 0, 255)));
+    runtime
+        .target_canvases
+        .insert(zones[1].id, solid_canvas(8, 8, Rgba::new(0, 0, 255, 255)));
+
+    let scene_frame = runtime
+        .compose_scene_frame(&zones)
+        .expect("scene frame should allocate");
+    let scene = canvas_from_scene_frame(&scene_frame);
+
+    assert_display_backdrop_owns_its_box(|x, y| canvas_rgb(&scene, x, y));
+}
+
+#[test]
+fn cpu_scene_render_keeps_display_backdrop_on_its_owner_zone() {
+    let registry = EffectRegistry::default();
+    let zones = display_backdrop_overlap_zones();
+    let mut runtime = ZoneRuntime::new(8, 8);
+    let mut zone_colors = Vec::new();
+
+    let rendered = render_scene_for_test(
+        &mut runtime,
+        &zones,
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut zone_colors,
+    )
+    .expect("CPU multi-zone scene should render");
+    let scene = canvas_from_scene_frame(&rendered.scene_frame);
+
+    assert_display_backdrop_owns_its_box(|x, y| canvas_rgb(&scene, x, y));
+}
+
+#[test]
+fn full_scene_identity_display_backdrop_lands_after_led_outputs() {
+    let [mut owner, overlay] = display_backdrop_overlap_zones();
+    let mut owner_display = point_zone("owner_full_display");
+    owner_display.size = NormalizedPosition::new(1.0, 1.0);
+    owner_display.zone_name = Some(DISPLAY_ZONE_NAME.to_owned());
+    owner_display.sampling_mode = Some(SamplingMode::Nearest);
+    owner.layout.zones = vec![owner_display];
+    let owner_source = solid_canvas(8, 8, Rgba::new(255, 0, 0, 255));
+    let owner_projection =
+        build_zone_projection(&owner, 8, 8).expect("owner projection metadata should allocate");
+    let mut identity_probe = Canvas::new(8, 8);
+    assert!(
+        copy_full_scene_identity_projection(&mut identity_probe, &owner_source, &owner_projection),
+        "the owner zone should take the full-scene identity fast path"
+    );
+    let projection_cache = HashMap::from([
+        (owner.id, owner_projection),
+        (
+            overlay.id,
+            build_zone_projection(&overlay, 8, 8)
+                .expect("overlay projection metadata should allocate"),
+        ),
+    ]);
+    let target_canvases = HashMap::from([
+        (owner.id, owner_source),
+        (overlay.id, solid_canvas(8, 8, Rgba::new(0, 0, 255, 255))),
+    ]);
+    let mut scene = Canvas::new(8, 8);
+
+    compose_authoritative_scene_canvas(
+        &mut scene,
+        &[owner, overlay],
+        &target_canvases,
+        8,
+        8,
+        &projection_cache,
+    );
+
+    for y in 0..8 {
+        for x in 0..8 {
+            assert_eq!(
+                canvas_rgb(&scene, x, y),
+                [255, 0, 0],
+                "a full-scene display backdrop should cover the later LED output at ({x}, {y})"
+            );
+        }
+    }
+}
+
+#[test]
+fn overlapping_display_backdrops_keep_zone_order() {
+    let [mut back, mut front] = display_backdrop_overlap_zones();
+    let mut front_display = back.layout.zones[0].clone();
+    front_display.id = "front_display".into();
+    front_display.position = NormalizedPosition::new(0.5, 0.25);
+    front.layout.zones = vec![front_display];
+    back.layout.zones.truncate(1);
+    let projection_cache = HashMap::from([
+        (
+            back.id,
+            build_zone_projection(&back, 8, 8).expect("back projection metadata should allocate"),
+        ),
+        (
+            front.id,
+            build_zone_projection(&front, 8, 8).expect("front projection metadata should allocate"),
+        ),
+    ]);
+    let target_canvases = HashMap::from([
+        (back.id, solid_canvas(8, 8, Rgba::new(255, 0, 0, 255))),
+        (front.id, solid_canvas(8, 8, Rgba::new(0, 0, 255, 255))),
+    ]);
+    let mut scene = Canvas::new(8, 8);
+
+    compose_authoritative_scene_canvas(
+        &mut scene,
+        &[back, front],
+        &target_canvases,
+        8,
+        8,
+        &projection_cache,
+    );
+
+    assert_eq!(canvas_rgb(&scene, 1, 1), [255, 0, 0]);
+    assert_eq!(
+        canvas_rgb(&scene, 3, 1),
+        [0, 0, 255],
+        "the later zone's display backdrop should win where two backdrops overlap"
+    );
+    assert_eq!(canvas_rgb(&scene, 5, 1), [0, 0, 255]);
+}
+
+#[test]
+fn projected_scene_layers_put_display_backdrops_last() {
+    let mut runtime = ZoneRuntime::new(8, 8);
+    let registry = EffectRegistry::default();
+    let zones = display_backdrop_overlap_zones();
+    let dependency_key = SceneDependencyKey::new(1, registry.generation());
+    runtime
+        .reconcile(
+            &zones,
+            Some(SceneId::DEFAULT),
+            dependency_key,
+            &registry,
+            &HashMap::new(),
+            None,
+        )
+        .expect("projection resources should reconcile");
+    runtime
+        .projected_scene_layers
+        .try_reserve_exact(3)
+        .expect("test projection scratch should allocate");
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
+    let sensors = SystemSnapshot::empty();
+    let target_fps = HashMap::new();
+    let context = RenderSceneContext {
+        zones: &zones,
+        active_scene_id: Some(SceneId::DEFAULT),
+        dependency_key,
+        elapsed_ms: 0,
+        display_zone_target_fps: &target_fps,
+        display_zone_descriptors: &HashMap::new(),
+        registry: &registry,
+        authoritative_spatial_engine: None,
+        inputs: ZoneFrameInputs {
+            delta_secs: 1.0 / 60.0,
+            audio: &audio,
+            interaction: &interaction,
+            screen: None,
+            sensors: &sensors,
+            input_availability: InputSourceAvailability::default(),
+            media: None,
+            net: None,
+            lighting: None,
+        },
+    };
+    let mut sparkleflinger = SparkleFlinger::cpu();
+    let mut output = super::super::render_pass::RenderedZonePassOutput::default();
+
+    let projected = runtime
+        .render_scene_contributor_frames(context, &mut sparkleflinger, true, true, &mut output)
+        .expect("projected contributors should render");
+
+    let layer_count = projected.layers.len();
+    let display_layer_start = projected.display_layer_start;
+    let scene = compose_projection_layers_on_cpu(projected.layers, 8, 8);
+
+    assert_display_backdrop_owns_its_box(|x, y| canvas_rgb(&scene, x, y));
+    assert_eq!(layer_count, 3);
+    assert_eq!(
+        display_layer_start, 2,
+        "both LED outputs should sit below the one display backdrop"
+    );
+}
+
 /// The projected scene feeds previews only, so bilinear zones project like
 /// any affine zone; their LEDs sample their own textures (Spec 86 §5.1).
 #[test]
@@ -861,6 +1059,45 @@ fn gpu_projected_scene_frame_stays_gpu_resident() {
         .expect("GPU projection should export the current output frame");
 
     assert!(matches!(frame, ProducerFrame::GpuTexture(_)));
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn gpu_projected_scene_keeps_display_backdrop_on_its_owner_zone() {
+    let Some(mut sparkleflinger) = required_gpu_sparkleflinger() else {
+        return;
+    };
+    let canvas = sparkleflinger
+        .prepare_canvas_resize(8, 8)
+        .expect("display backdrop scene canvas should prepare");
+    assert!(canvas.is_admitted());
+    sparkleflinger.apply_canvas_resize(canvas);
+    let registry = EffectRegistry::default();
+    let zones = display_backdrop_overlap_zones();
+    let mut runtime = ZoneRuntime::new(8, 8);
+    let mut zone_colors = Vec::new();
+
+    let rendered = render_scene_for_test_with_screen_and_sparkleflinger(
+        &mut runtime,
+        &zones,
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut zone_colors,
+        None,
+        &mut sparkleflinger,
+    )
+    .expect("GPU multi-zone scene should render");
+
+    assert!(
+        matches!(rendered.scene_frame, ProducerFrame::GpuTexture(_)),
+        "the scene canvas should come from GPU projection, not the CPU fallback"
+    );
+    let pixels = sample_full_gpu_canvas(&mut sparkleflinger, 8, 8);
+    assert_display_backdrop_owns_its_box(|x, y| {
+        pixels[usize::try_from(y * 8 + x).expect("scene pixel index should fit usize")]
+    });
 }
 
 #[cfg(feature = "wgpu")]
@@ -2102,6 +2339,83 @@ fn cpu_backed_runtime(width: u32, height: u32) -> ZoneRuntime {
         .expect("test CPU scene surface should prepare"),
     );
     runtime
+}
+
+/// Two color-fill zones at the 8x8 scene extent. The red owner zone places a
+/// display output over the top-left quadrant and an LED output over the
+/// bottom-right one. The blue overlay zone, later in zone order, places one
+/// LED output across the center that overlaps both.
+fn display_backdrop_overlap_zones() -> [Zone; 2] {
+    let mut owner = sample_zone(8, 8);
+    make_color_fill_zone(&mut owner);
+    let mut owner_display = point_zone_at("owner_display", 0.25, 0.25);
+    owner_display.size = NormalizedPosition::new(0.5, 0.5);
+    owner_display.zone_name = Some(DISPLAY_ZONE_NAME.to_owned());
+    let mut owner_led = point_zone_at("owner_led", 0.75, 0.75);
+    owner_led.size = NormalizedPosition::new(0.5, 0.5);
+    owner.layout.zones = vec![owner_display, owner_led];
+    owner.layout.default_sampling_mode = SamplingMode::Nearest;
+
+    let mut overlay = sample_zone(8, 8);
+    make_color_fill_zone(&mut overlay);
+    let LayerSource::ColorFill { rgba } = &mut overlay.layers[0].source else {
+        unreachable!("color-fill helper should create a color layer")
+    };
+    *rgba = [0.0, 0.0, 1.0, 1.0];
+    let mut overlay_led = point_zone_at("overlay_led", 0.5, 0.5);
+    overlay_led.size = NormalizedPosition::new(0.5, 0.5);
+    overlay.layout.zones = vec![overlay_led];
+    overlay.layout.default_sampling_mode = SamplingMode::Nearest;
+    [owner, overlay]
+}
+
+/// Check a scene canvas composed from `display_backdrop_overlap_zones`, read
+/// as RGB through `pixel(x, y)`.
+fn assert_display_backdrop_owns_its_box(pixel: impl Fn(u32, u32) -> [u8; 3]) {
+    const OWNER: [u8; 3] = [255, 0, 0];
+    const OVERLAY: [u8; 3] = [0, 0, 255];
+    for (x, y) in [(2, 2), (3, 3), (2, 3), (3, 2)] {
+        assert_eq!(
+            pixel(x, y),
+            OWNER,
+            "the display box at ({x}, {y}) should show the zone that places the display, \
+             not the later zone's overlapping LED output"
+        );
+    }
+    for (x, y) in [(0, 0), (1, 3)] {
+        assert_eq!(pixel(x, y), OWNER, "display box at ({x}, {y})");
+    }
+    for (x, y) in [(4, 2), (5, 3), (2, 4), (3, 5)] {
+        assert_eq!(
+            pixel(x, y),
+            OVERLAY,
+            "outside the display box, the overlay's LED output should show at ({x}, {y})"
+        );
+    }
+    for (x, y) in [(4, 4), (5, 5)] {
+        assert_eq!(
+            pixel(x, y),
+            OVERLAY,
+            "overlapping LED outputs should keep zone order at ({x}, {y})"
+        );
+    }
+    for (x, y) in [(6, 4), (7, 7)] {
+        assert_eq!(pixel(x, y), OWNER, "owner LED output at ({x}, {y})");
+    }
+    for (x, y) in [(7, 0), (0, 7)] {
+        assert_eq!(pixel(x, y), [0, 0, 0], "uncovered pixel at ({x}, {y})");
+    }
+}
+
+fn solid_canvas(width: u32, height: u32, color: Rgba) -> Canvas {
+    let mut canvas = Canvas::new(width, height);
+    canvas.fill(color);
+    canvas
+}
+
+fn canvas_rgb(canvas: &Canvas, x: u32, y: u32) -> [u8; 3] {
+    let pixel = canvas.get_pixel(x, y);
+    [pixel.r, pixel.g, pixel.b]
 }
 
 #[cfg(feature = "wgpu")]

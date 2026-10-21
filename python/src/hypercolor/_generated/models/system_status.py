@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from ..models.preview_runtime_status import PreviewRuntimeStatus
     from ..models.render_acceleration_status import RenderAccelerationStatus
     from ..models.render_loop_status import RenderLoopStatus
+    from ..models.render_supervision_status import RenderSupervisionStatus
     from ..models.screen_capture_capacity_status import ScreenCaptureCapacityStatus
     from ..models.session_performance_status import SessionPerformanceStatus
 
@@ -65,6 +66,12 @@ class SystemStatus:
         active_scene (None | str | Unset):
         latest_frame (LatestFrameStatus | None | Unset):
         macos_daemon_ownership (MacosDaemonOwnershipStatus | None | Unset):
+        render_supervision (RenderSupervisionStatus | Unset): Health and recovery state of the supervised render thread.
+
+            The render thread restarts its pipeline in-process after a panic or an
+            error exit, within a bounded budget, and the daemon exits so its
+            service manager restarts it once that budget runs out or the compositor
+            GPU device is lost.
     """
 
     active_scene_snapshot_locked: bool
@@ -93,6 +100,7 @@ class SystemStatus:
     active_scene: None | str | Unset = UNSET
     latest_frame: LatestFrameStatus | None | Unset = UNSET
     macos_daemon_ownership: MacosDaemonOwnershipStatus | None | Unset = UNSET
+    render_supervision: RenderSupervisionStatus | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -171,6 +179,10 @@ class SystemStatus:
         else:
             macos_daemon_ownership = self.macos_daemon_ownership
 
+        render_supervision: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.render_supervision, Unset):
+            render_supervision = self.render_supervision.to_dict()
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -207,6 +219,8 @@ class SystemStatus:
             field_dict["latest_frame"] = latest_frame
         if macos_daemon_ownership is not UNSET:
             field_dict["macos_daemon_ownership"] = macos_daemon_ownership
+        if render_supervision is not UNSET:
+            field_dict["render_supervision"] = render_supervision
 
         return field_dict
 
@@ -225,6 +239,9 @@ class SystemStatus:
             RenderAccelerationStatus,
         )
         from ..models.render_loop_status import RenderLoopStatus
+        from ..models.render_supervision_status import (
+            RenderSupervisionStatus,
+        )
         from ..models.screen_capture_capacity_status import (
             ScreenCaptureCapacityStatus,
         )
@@ -341,6 +358,13 @@ class SystemStatus:
             d.pop("macos_daemon_ownership", UNSET)
         )
 
+        _render_supervision = d.pop("render_supervision", UNSET)
+        render_supervision: RenderSupervisionStatus | Unset
+        if isinstance(_render_supervision, Unset):
+            render_supervision = UNSET
+        else:
+            render_supervision = RenderSupervisionStatus.from_dict(_render_supervision)
+
         system_status = cls(
             active_scene_snapshot_locked=active_scene_snapshot_locked,
             audio_available=audio_available,
@@ -368,6 +392,7 @@ class SystemStatus:
             active_scene=active_scene,
             latest_frame=latest_frame,
             macos_daemon_ownership=macos_daemon_ownership,
+            render_supervision=render_supervision,
         )
 
         system_status.additional_properties = d

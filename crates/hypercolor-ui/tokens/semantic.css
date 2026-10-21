@@ -42,11 +42,19 @@
     --accent-muted:      oklch(0.65 0.30 320 / 0.12);
     --accent-subtle:     oklch(0.65 0.30 320 / 0.06);
 
-    /* Ambient (dynamic — --ambient-hue set from Leptos) */
+    /* Ambient (dynamic: --ambient-hue is set from Leptos). The colors are
+       built from channel tokens so a consumer that drifts its own copy of
+       the hue (.preview-glow) can rebuild them; a token declared here has
+       already substituted the root hue. Light mode overrides the channels. */
     --ambient-hue:       320;
-    --ambient-glow:      oklch(0.65 0.20 var(--ambient-hue) / 0.08);
-    --ambient-border:    oklch(0.65 0.20 var(--ambient-hue) / 0.15);
-    --ambient-tint:      oklch(0.65 0.20 var(--ambient-hue) / 0.04);
+    --ambient-l:         0.65;
+    --ambient-c:         0.20;
+    --ambient-glow-alpha:   0.08;
+    --ambient-border-alpha: 0.15;
+    --ambient-tint-alpha:   0.04;
+    --ambient-glow:      oklch(var(--ambient-l) var(--ambient-c) var(--ambient-hue) / var(--ambient-glow-alpha));
+    --ambient-border:    oklch(var(--ambient-l) var(--ambient-c) var(--ambient-hue) / var(--ambient-border-alpha));
+    --ambient-tint:      oklch(var(--ambient-l) var(--ambient-c) var(--ambient-hue) / var(--ambient-tint-alpha));
 
     /* Status */
     --status-success:    oklch(0.85 0.22 155);
@@ -119,10 +127,16 @@
     --accent-muted:      oklch(0.58 0.28 320 / 0.10);
     --accent-subtle:     oklch(0.58 0.28 320 / 0.05);
 
-    /* Ambient (lower intensity on light) */
-    --ambient-glow:      oklch(0.58 0.15 var(--ambient-hue) / 0.06);
-    --ambient-border:    oklch(0.58 0.15 var(--ambient-hue) / 0.12);
-    --ambient-tint:      oklch(0.58 0.15 var(--ambient-hue) / 0.03);
+    /* Ambient (lower intensity on light). Redeclaring the colors here
+       resolves them against these channels on this element. */
+    --ambient-l:         0.58;
+    --ambient-c:         0.15;
+    --ambient-glow-alpha:   0.06;
+    --ambient-border-alpha: 0.12;
+    --ambient-tint-alpha:   0.03;
+    --ambient-glow:      oklch(var(--ambient-l) var(--ambient-c) var(--ambient-hue) / var(--ambient-glow-alpha));
+    --ambient-border:    oklch(var(--ambient-l) var(--ambient-c) var(--ambient-hue) / var(--ambient-border-alpha));
+    --ambient-tint:      oklch(var(--ambient-l) var(--ambient-c) var(--ambient-hue) / var(--ambient-tint-alpha));
 
     /* Status (darkened for contrast on light surfaces) */
     --status-success:    oklch(0.55 0.18 155);

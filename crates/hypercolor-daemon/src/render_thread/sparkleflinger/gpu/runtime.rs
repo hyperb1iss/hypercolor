@@ -117,7 +117,7 @@ impl GpuSparkleFlinger {
         })?;
 
         Ok(Self {
-            _render_device: render_device,
+            render_device,
             device,
             queue,
             probe,
@@ -231,6 +231,16 @@ impl GpuSparkleFlinger {
         &mut self,
     ) {
         self.fail_next_screen_upload_pool_saturation = true;
+    }
+
+    /// Raised once the device this compositor draws with is lost.
+    pub(crate) fn device_loss_signal(&self) -> crate::render_thread::gpu_errors::DeviceLossSignal {
+        self.render_device.loss_signal()
+    }
+
+    #[cfg(feature = "persistence-test-hooks")]
+    pub(crate) fn raise_uncaptured_validation_error(&self) {
+        crate::render_thread::gpu_device::raise_uncaptured_validation_error(&self.device);
     }
 
     pub(crate) fn supports_plan(&self, plan: &CompositionPlan) -> bool {

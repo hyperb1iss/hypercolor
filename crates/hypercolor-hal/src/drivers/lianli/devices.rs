@@ -316,6 +316,7 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
                     id: "lianli/wireless",
                     kind: UsbTransportKind::Usb,
                     lifecycle: TransportLifecycleHints::default(),
+                    publishes_input: false,
                     open: open_wireless_controller,
                 },
             },

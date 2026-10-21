@@ -1142,6 +1142,32 @@ impl SparkleFlinger {
         }
     }
 
+    /// The loss signal of the GPU device this compositor draws with, or
+    /// `None` on the CPU backend.
+    pub(crate) fn device_loss_signal(
+        &self,
+    ) -> Option<crate::render_thread::gpu_errors::DeviceLossSignal> {
+        match &self.backend {
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => Some(gpu.device_loss_signal()),
+            SparkleFlingerBackend::Cpu(_) => None,
+        }
+    }
+
+    /// Raise one uncaptured validation error on the compositor's GPU
+    /// device, returning `false` on the CPU backend, which has none.
+    #[cfg(feature = "persistence-test-hooks")]
+    pub(crate) fn raise_uncaptured_validation_error(&self) -> bool {
+        match &self.backend {
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                gpu.raise_uncaptured_validation_error();
+                true
+            }
+            SparkleFlingerBackend::Cpu(_) => false,
+        }
+    }
+
     /// Wait for the GPU to finish an earlier frame before this one queues
     /// more work, so GPU latency stays bounded on a device slower than the
     /// frame cadence. A no-op on the CPU backend.

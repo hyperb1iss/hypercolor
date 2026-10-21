@@ -57,6 +57,7 @@ pub struct OutputContext {
     preview_runtime: Arc<PreviewRuntime>,
     devices: DeviceContext,
     start_time: Instant,
+    render_supervision: crate::render_thread::RenderSupervision,
 }
 
 impl OutputContext {
@@ -107,6 +108,7 @@ impl OutputContext {
         preview_runtime: Arc<PreviewRuntime>,
         devices: DeviceContext,
         start_time: Instant,
+        render_supervision: crate::render_thread::RenderSupervision,
     ) -> Self {
         Self {
             output_power,
@@ -119,7 +121,20 @@ impl OutputContext {
             preview_runtime,
             devices,
             start_time,
+            render_supervision,
         }
+    }
+
+    /// Health and recovery state of the supervised render thread.
+    #[must_use]
+    pub const fn render_supervision(&self) -> &crate::render_thread::RenderSupervision {
+        &self.render_supervision
+    }
+
+    /// The current output power state.
+    #[must_use]
+    pub(crate) fn output_power_snapshot(&self) -> crate::output_power::OutputPowerState {
+        self.output_power.snapshot()
     }
 
     /// How long the daemon's subsystems have been up.

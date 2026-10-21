@@ -22,6 +22,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::protocol::TransferType;
 use crate::registry::{UsbTransportFuture, UsbTransportOpenRequest};
+use crate::transport::input::TransportInputSink;
 use crate::transport::midi::{
     MidiResponseIngress, MidiResponseToken, MidiWorkerClient, NativeMidiSession, OpenedMidiSession,
     close_input_before_output, open_native_midi_worker,
@@ -31,6 +32,7 @@ use crate::transport::{
 };
 
 use super::devices::{PUSH2_DISPLAY_ENDPOINT, PUSH2_DISPLAY_INTERFACE, PUSH2_MIDI_INTERFACE};
+use super::input::Push2InputRelay;
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const PUSH2_MIDI_SHORT_PACKET_SPACING: Duration = Duration::from_micros(500);
@@ -65,6 +67,7 @@ pub fn open_push2_transport(request: UsbTransportOpenRequest) -> UsbTransportFut
             PUSH2_MIDI_INTERFACE,
             PUSH2_DISPLAY_INTERFACE,
             PUSH2_DISPLAY_ENDPOINT,
+            request.input,
         )
         .await?;
         Ok(Box::new(transport) as Box<dyn Transport>)
@@ -488,6 +491,10 @@ impl Push2Transport {
     /// Open the Push 2 transport, binding the MIDI user port and the display
     /// bulk endpoint.
     ///
+    /// Pad, touch strip, and button input arriving on the MIDI port goes to
+    /// `input`, when given, alongside the sysex replies the output path
+    /// waits on. Reading it sends nothing to the device.
+    ///
     /// # Errors
     ///
     /// Returns [`TransportError`] when the MIDI ports or bulk endpoint cannot
@@ -505,6 +512,7 @@ impl Push2Transport {
         midi_interface: u8,
         display_interface: u8,
         display_endpoint: u8,
+        input: Option<Arc<dyn TransportInputSink>>,
     ) -> Result<Self, TransportError> {
         let expected_role = match midi_interface {
             1 => Push2MidiPortRole::Live,
@@ -518,7 +526,7 @@ impl Push2Transport {
             serial: serial.map(ToOwned::to_owned),
             usb_path: usb_path.map(ToOwned::to_owned),
         };
-        let midi = open_push2_midi_worker(identity.clone()).await?;
+        let midi = open_push2_midi_worker(identity.clone(), input).await?;
 
         #[cfg(target_os = "linux")]
         let display_interface_handle = device
@@ -780,6 +788,7 @@ impl Transport for Push2Transport {
 
 async fn open_push2_midi_worker(
     identity: Push2MidiIdentity,
+    input: Option<Arc<dyn TransportInputSink>>,
 ) -> Result<MidiWorkerClient, TransportError> {
     let lease = Push2MidiLease::acquire(identity.clone())?;
     let worker_context = format!("Push 2 MIDI worker for {}", identity.describe());
@@ -794,6 +803,7 @@ async fn open_push2_midi_worker(
             let connections = open_push2_midi_connections(
                 open_identity.role,
                 ingress,
+                input,
                 open_identity.vendor_id,
                 open_identity.product_id,
                 open_identity.serial.as_deref(),
@@ -843,6 +853,7 @@ fn send_bulk_locked(
 fn open_push2_midi_connections(
     expected_role: Push2MidiPortRole,
     ingress: MidiResponseIngress,
+    input: Option<Arc<dyn TransportInputSink>>,
     vendor_id: u16,
     product_id: u16,
     serial: Option<&str>,
@@ -876,12 +887,19 @@ fn open_push2_midi_connections(
     let output_name = midi_out
         .port_name(&output_port)
         .unwrap_or_else(|_| "<unknown>".to_owned());
+    // The relay lives in the callback, so input ends exactly when this
+    // connection closes. Replies go to the output path first, so decoding
+    // input never delays an acknowledgement.
+    let mut relay = input.map(Push2InputRelay::new);
     let midi_in = midi_in
         .connect(
             &input_port,
             "hypercolor-push2-sysex",
             move |_timestamp, message, _state| {
                 ingress.forward(message);
+                if let Some(relay) = relay.as_mut() {
+                    relay.receive(message);
+                }
             },
             (),
         )

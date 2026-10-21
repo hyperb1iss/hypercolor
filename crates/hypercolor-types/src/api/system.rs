@@ -33,6 +33,9 @@ pub struct SystemStatus {
     pub macos_daemon_ownership: Option<MacosDaemonOwnershipStatus>,
     pub compositor_acceleration: RenderAccelerationStatus,
     pub render_loop: RenderLoopStatus,
+    /// Supervised render thread health. Absent from older daemons.
+    #[serde(default)]
+    pub render_supervision: RenderSupervisionStatus,
     pub session_performance: SessionPerformanceStatus,
     pub latest_frame: Option<LatestFrameStatus>,
     pub effect_health: EffectHealthStatus,
@@ -365,6 +368,76 @@ pub struct RenderOutputDemandStatus {
     /// `scene_transaction`, `producer_state`, or `render_loop_state`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_wake_reason: Option<String>,
+}
+
+/// Health and recovery state of the supervised render thread.
+///
+/// The render thread restarts its pipeline in-process after a panic or an
+/// error exit, within a bounded budget, and the daemon exits so its
+/// service manager restarts it once that budget runs out or the compositor
+/// GPU device is lost.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct RenderSupervisionStatus {
+    /// `not_started`, `starting`, `running`, `restarting`, `terminating`,
+    /// or `stopped`.
+    pub phase: String,
+    /// In-process pipeline restarts since the daemon started.
+    pub restarts_total: u64,
+    /// Failures since the pipeline last ran past its stable uptime.
+    pub consecutive_failures: u32,
+    /// Restarts the budget allows within its window.
+    pub max_restarts: u32,
+    /// Milliseconds since the render loop last completed a frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_frame_age_ms: Option<u64>,
+    /// The latest render failure in this daemon run, or else the one the
+    /// previous run recorded in the state directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<RenderFailureStatus>,
+    /// Uncaptured wgpu errors and device losses since the daemon started.
+    #[serde(default)]
+    pub gpu_errors: GpuErrorStatus,
+}
+
+/// One render failure, as the supervisor recorded it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct RenderFailureStatus {
+    /// `panic`, `input_pump_terminated`, `input_pump_restart_failed`,
+    /// `pipeline_rebuild_failed`, or `gpu_device_lost`.
+    pub kind: String,
+    /// The panic message or error chain. Empty when the caller may not
+    /// read private diagnostics.
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// RFC 3339 UTC time of the failure.
+    pub occurred_at: String,
+    /// `restart`, `terminate_process`, `daemon_stopping`, `process_abort`,
+    /// or `awaiting_supervisor`.
+    pub action: String,
+    /// Restarts counted in the budget window by this failure.
+    pub restart_attempt: u32,
+    /// Whether this daemon run recorded the failure, as opposed to an
+    /// earlier run whose record survived in the state directory.
+    pub current_process: bool,
+}
+
+/// Uncaptured wgpu errors and device losses since the daemon started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct GpuErrorStatus {
+    pub validation_errors: u64,
+    pub out_of_memory_errors: u64,
+    pub internal_errors: u64,
+    pub device_lost: u64,
+    /// `device: kind: message` of the most recent one. Absent when there
+    /// was none, or when the caller may not read private diagnostics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

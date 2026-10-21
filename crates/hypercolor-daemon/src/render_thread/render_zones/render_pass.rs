@@ -31,6 +31,9 @@ pub(super) struct RenderedZonePassOutput {
 
 pub(super) struct ProjectedSceneFrames {
     pub(super) layers: Vec<CompositionLayer>,
+    /// Where display-output layers begin in `layers`: every LED-output
+    /// layer sits below it and every display backdrop above (Spec 86 §5.1).
+    pub(super) display_layer_start: usize,
     pub(super) cpu_replay_complete: bool,
     /// Each GPU-resident scene zone's frame this pass, in zone order: the
     /// sources its LEDs sample from (Spec 86 §3).
@@ -41,6 +44,7 @@ impl Default for ProjectedSceneFrames {
     fn default() -> Self {
         Self {
             layers: Vec::new(),
+            display_layer_start: 0,
             cpu_replay_complete: true,
             zone_frames: Vec::new(),
         }
@@ -132,6 +136,7 @@ impl ZoneRuntime {
                     .layers
                     .push(CompositionLayer::replace_opaque(opaque_black));
             }
+            projected_scene.display_layer_start = projected_scene.layers.len();
         }
         let render_result = (|| -> Result<()> {
             for zone in context.zones {
@@ -196,6 +201,7 @@ impl ZoneRuntime {
                     && let Some(projection) = self.scene_projection_cache.get(&zone.id)
                     && append_projection_composition_layers_for_zone(
                         &mut projected_scene.layers,
+                        &mut projected_scene.display_layer_start,
                         &frame,
                         zone,
                         projection,
@@ -285,6 +291,7 @@ impl ZoneRuntime {
                 .is_some_and(|projection| {
                     append_projection_composition_layers_for_zone(
                         &mut projected_scene.layers,
+                        &mut projected_scene.display_layer_start,
                         &frame,
                         zone,
                         projection,

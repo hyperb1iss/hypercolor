@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::system::InputStatus;
+use crate::api::system::{InputStatus, RenderSupervisionStatus};
 
 /// Optional body for `POST /api/v1/diagnose`.
 ///
@@ -63,6 +63,10 @@ pub struct DiagnoseRenderSnapshot {
     /// nothing does. Absent from older daemons.
     #[serde(default)]
     pub output_demand: crate::api::system::RenderOutputDemandStatus,
+    /// Supervised render thread health, restart counts, and the last
+    /// failure. Absent from older daemons.
+    #[serde(default)]
+    pub supervision: RenderSupervisionStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]

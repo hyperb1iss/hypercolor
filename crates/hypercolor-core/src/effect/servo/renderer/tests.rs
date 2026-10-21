@@ -1680,6 +1680,7 @@ fn queued_frames_map_superseded_touches_with_the_newest_placement() {
             x_q16_16: 1 << 15,
             y_q16_16: 1 << 15,
             pressure_q16_16: 1 << 15,
+            segment: None,
         },
         at_ms: 5,
         seq: 1,

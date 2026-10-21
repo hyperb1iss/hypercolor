@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from ..models.diagnose_latest_frame_snapshot import DiagnoseLatestFrameSnapshot
     from ..models.diagnose_render_window_snapshot import DiagnoseRenderWindowSnapshot
     from ..models.render_output_demand_status import RenderOutputDemandStatus
+    from ..models.render_supervision_status import RenderSupervisionStatus
 
 
 T = TypeVar("T", bound="DiagnoseRenderSnapshot")
@@ -30,11 +31,18 @@ class DiagnoseRenderSnapshot:
             connected device, a display, a preview or canvas stream, a capture, or
             an explicit demand hold. With none of those it parks, renders nothing,
             and resumes at its full tier the moment a consumer appears.
+        supervision (RenderSupervisionStatus | Unset): Health and recovery state of the supervised render thread.
+
+            The render thread restarts its pipeline in-process after a panic or an
+            error exit, within a bounded budget, and the daemon exits so its
+            service manager restarts it once that budget runs out or the compositor
+            GPU device is lost.
     """
 
     recent_window: DiagnoseRenderWindowSnapshot
     latest_frame: DiagnoseLatestFrameSnapshot | None | Unset = UNSET
     output_demand: RenderOutputDemandStatus | Unset = UNSET
+    supervision: RenderSupervisionStatus | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -56,6 +64,10 @@ class DiagnoseRenderSnapshot:
         if not isinstance(self.output_demand, Unset):
             output_demand = self.output_demand.to_dict()
 
+        supervision: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.supervision, Unset):
+            supervision = self.supervision.to_dict()
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -67,6 +79,8 @@ class DiagnoseRenderSnapshot:
             field_dict["latest_frame"] = latest_frame
         if output_demand is not UNSET:
             field_dict["output_demand"] = output_demand
+        if supervision is not UNSET:
+            field_dict["supervision"] = supervision
 
         return field_dict
 
@@ -80,6 +94,9 @@ class DiagnoseRenderSnapshot:
         )
         from ..models.render_output_demand_status import (
             RenderOutputDemandStatus,
+        )
+        from ..models.render_supervision_status import (
+            RenderSupervisionStatus,
         )
 
         d = dict(src_dict)
@@ -111,10 +128,18 @@ class DiagnoseRenderSnapshot:
         else:
             output_demand = RenderOutputDemandStatus.from_dict(_output_demand)
 
+        _supervision = d.pop("supervision", UNSET)
+        supervision: RenderSupervisionStatus | Unset
+        if isinstance(_supervision, Unset):
+            supervision = UNSET
+        else:
+            supervision = RenderSupervisionStatus.from_dict(_supervision)
+
         diagnose_render_snapshot = cls(
             recent_window=recent_window,
             latest_frame=latest_frame,
             output_demand=output_demand,
+            supervision=supervision,
         )
 
         diagnose_render_snapshot.additional_properties = d

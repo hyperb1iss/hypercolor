@@ -383,14 +383,30 @@ its assigned outputs sample:
 ### 5.1 Scene canvas
 
 The scene canvas is composed on the GPU from zone snapshots with the existing
-projection layers (`projection.rs:150-180`, one layer per output over the
+projection layers (`projection.rs:207-254`, one layer per output over the
 opaque black base) whenever a consumer requests it: a preview receiver, a
 display face that blends the scene, or a canvas capture. The primary
 composition plan, including active transitions, runs over it exactly as
 today, so display backdrops see transitions. It never feeds LED output, so
 admission drops the sampling-mode and edge-behavior requirements and keeps
-the affine requirement. Overlapping outputs keep zone-order overwrite, which
-Spec 64 already calls a harmless detail of a preview image.
+the affine requirement.
+
+Projection layers land in two strata. Every LED output's layer comes first,
+in zone order, so overlapping LED outputs keep zone-order overwrite, which
+Spec 64 calls a harmless detail of a preview image. Every display output's
+layer comes after all of them, also in zone order, so overlapping display
+outputs keep zone order among themselves. A display output is one that
+`is_led_sampled_zone` rejects, the same test the LED sampler and device
+routing use. Display boxes are not preview detail: a display whose zone has
+no face layers shows its slice of the scene canvas as its backdrop, so its
+box puts the scene canvas on hardware. Under plain zone order, an LED output
+from a later zone that overlapped a display's box painted that zone's effect
+onto the physical display (a custom zone's ripple layer showing on LCDs the
+primary zone places). The box has to show the zone that places the display.
+The CPU reconstruction (`compose_authoritative_scene_canvas`) composes the
+same two strata, and its full-scene identity copy runs in the stratum of the
+one output it stands in for. The single full-scene zone path skips
+projection and needs no ordering, because one zone places every output.
 
 The target-space fetch rounds to the nearest texel. That is exact for nearest
 outputs and close for others, but Spec 48 §4.2 asks the preview to follow LED

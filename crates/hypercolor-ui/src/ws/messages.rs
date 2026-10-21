@@ -7,14 +7,13 @@ use hypercolor_leptos_ext::prelude::now_ms;
 pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::ScreenZonesFrame;
 use hypercolor_leptos_ext::ws::{
-    DISPLAY_PREVIEW_FRAME_TAG, DisplayPreviewFrame, DisplayPreviewFrameView,
-    EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame,
-    InteractivePreviewFrameView, PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG,
-    PreviewCancelFrame, PreviewChunkReassembler, PreviewFrame, PreviewPublicationMetadata,
-    PreviewReassemblyLimits, PreviewStreamId, ReassembledPreviewPublication,
+    DISPLAY_PREVIEW_FRAME_TAG, DisplayPreviewFrameView, EXTENDED_SCREEN_ZONES_FRAME_TAG,
+    INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrameView, JsPreviewPublicationBuffer,
+    PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG, PreviewCancelFrame, PreviewChunkReassembler,
+    PreviewPublicationMetadata, PreviewReassemblyLimits, PreviewStreamId, ReassembledPreviewBuffer,
     SCREEN_ZONES_FRAME_TAG, WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
     WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
-    ZonePreviewFrame, ZonePreviewFrameView,
+    ZonePreviewFrameView,
 };
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
@@ -601,14 +600,17 @@ pub(super) enum PreviewBinaryMessage {
     ScreenZones(ScreenZonesFrame),
 }
 
+/// Decodes binary preview messages. Chunked publications reassemble in JS
+/// (`JsPreviewPublicationBuffer`), so a frame too large for one message
+/// still reaches the presenter without passing through WASM memory.
 pub(super) struct PreviewBinaryDecoder {
-    chunks: PreviewChunkReassembler,
+    chunks: PreviewChunkReassembler<JsPreviewPublicationBuffer>,
 }
 
 impl Default for PreviewBinaryDecoder {
     fn default() -> Self {
         Self {
-            chunks: PreviewChunkReassembler::new(PreviewReassemblyLimits::default()),
+            chunks: PreviewChunkReassembler::with_limits(PreviewReassemblyLimits::default()),
         }
     }
 }
@@ -622,9 +624,8 @@ impl PreviewBinaryDecoder {
         let buffer = frame.into_array_buffer();
         let bytes = js_sys::Uint8Array::new(&buffer);
         if bytes.length() > 0 && bytes.get_index(0) == PREVIEW_CHUNK_FRAME_TAG {
-            let encoded = Bytes::from(bytes.to_vec());
-            return match self.chunks.push_at(&encoded, now_ms) {
-                Ok(Some(publication)) => decode_reassembled_preview(&publication),
+            return match self.chunks.push_array_buffer_at(&buffer, now_ms) {
+                Ok(Some(publication)) => decode_reassembled_preview(publication),
                 Ok(None) => None,
                 Err(error) => {
                     log::warn!("rejected preview chunk publication: {error}");
@@ -679,86 +680,21 @@ fn decode_direct_preview(buffer: js_sys::ArrayBuffer) -> Option<PreviewBinaryMes
     Some(PreviewBinaryMessage::Frame(channel, frame))
 }
 
+/// Decode a publication reassembled from chunks exactly as a frame that
+/// arrived in one message, then hold it to the metadata its chunks carried.
 fn decode_reassembled_preview(
-    publication: &ReassembledPreviewPublication,
+    publication: ReassembledPreviewBuffer,
 ) -> Option<PreviewBinaryMessage> {
-    let metadata = &publication.metadata;
-    let decoded = match &metadata.stream {
-        PreviewStreamId::Passive(expected_channel) => {
-            let frame = PreviewFrame::decode_bytes(&publication.encoded).ok()?;
-            if frame.channel != *expected_channel {
-                return None;
-            }
-            PreviewBinaryMessage::Frame(
-                frame.channel,
-                CanvasFrame {
-                    channel: frame.channel,
-                    frame_number: frame.frame_number,
-                    timestamp_ms: frame.timestamp_ms,
-                    width: frame.width,
-                    height: frame.height,
-                    format: frame.format,
-                    payload: js_sys::Uint8Array::from(frame.payload.as_ref()),
-                },
-            )
-        }
-        PreviewStreamId::Zone { scene_id, zone_id } => {
-            let frame = ZonePreviewFrame::decode_bytes(&publication.encoded).ok()?;
-            if frame.scene_id != *scene_id || frame.zone_id != *zone_id {
-                return None;
-            }
-            PreviewBinaryMessage::Zone(ZonePreviewFrameView {
-                scene_id: frame.scene_id,
-                zone_id: frame.zone_id,
-                frame_number: frame.frame_number,
-                timestamp_ms: frame.timestamp_ms,
-                width: frame.width,
-                height: frame.height,
-                format: frame.format,
-                payload: js_sys::Uint8Array::from(frame.payload.as_ref()),
-            })
-        }
-        PreviewStreamId::Interactive(expected_preview_id) => {
-            let frame = InteractivePreviewFrame::decode_bytes(&publication.encoded).ok()?;
-            if frame.preview_id != *expected_preview_id {
-                return None;
-            }
-            PreviewBinaryMessage::Interactive(
-                frame.preview_id,
-                CanvasFrame {
-                    channel: PreviewFrameChannel::Canvas,
-                    frame_number: frame.frame_number,
-                    timestamp_ms: frame.timestamp_ms,
-                    width: frame.width,
-                    height: frame.height,
-                    format: frame.format,
-                    payload: js_sys::Uint8Array::from(frame.payload.as_ref()),
-                },
-            )
-        }
-        PreviewStreamId::Display(expected_device_id) => {
-            let frame = DisplayPreviewFrame::decode_bytes(&publication.encoded).ok()?;
-            if frame.device_id != *expected_device_id {
-                return None;
-            }
-            PreviewBinaryMessage::Display(
-                frame.device_id,
-                CanvasFrame {
-                    channel: PreviewFrameChannel::Canvas,
-                    frame_number: frame.frame_number,
-                    timestamp_ms: frame.timestamp_ms,
-                    width: frame.width,
-                    height: frame.height,
-                    format: frame.format,
-                    payload: js_sys::Uint8Array::from(frame.payload.as_ref()),
-                },
-            )
-        }
-        PreviewStreamId::ScreenZones => {
-            PreviewBinaryMessage::ScreenZones(ScreenZonesFrame::decode(&publication.encoded).ok()?)
-        }
+    let ReassembledPreviewBuffer { metadata, encoded } = publication;
+    let Some(decoded) = decode_direct_preview(encoded) else {
+        log::warn!("rejected reassembled preview publication: frame does not decode");
+        return None;
     };
-    preview_metadata_matches(&decoded, metadata).then_some(decoded)
+    if !preview_metadata_matches(&decoded, &metadata) {
+        log::warn!("reassembled preview does not match its chunk metadata");
+        return None;
+    }
+    Some(decoded)
 }
 
 fn preview_metadata_matches(

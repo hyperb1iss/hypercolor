@@ -18,6 +18,7 @@ use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent, Tou
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+    StripDirection,
 };
 
 const CANVAS_WIDTH: u32 = 321;
@@ -253,6 +254,7 @@ fn touch(device_id: DeviceId, contact: u32, x: f32, y: f32, pressure: f32) -> To
         x,
         y,
         pressure,
+        segment: None,
     }
 }
 
@@ -277,6 +279,7 @@ fn touch_edge(
             x_q16_16,
             y_q16_16,
             pressure_q16_16: Q / 2,
+            segment: None,
         },
         at_ms: 200,
         seq,
@@ -396,6 +399,118 @@ fn touches_and_buttons_reach_the_page_with_canvas_positions() {
     assert_eq!(events[2]["button"], "mode");
     assert_eq!(events[2]["state"], "pressed");
     assert!(events[2].get("canvas").is_none());
+}
+
+/// A controller with an 8x8 pad matrix on the canvas's left half and a
+/// bottom-to-top touch strip at its right edge, both bound to `device`.
+fn segmented_surfaces(device: DeviceId) -> DeviceSurfaceMap {
+    let output = |id: &str, segment: &str, position, size, topology| Output {
+        id: id.into(),
+        name: id.into(),
+        device_id: "usb:controller".into(),
+        zone_name: Some(segment.to_owned()),
+        position,
+        size,
+        rotation: 0.0,
+        scale: 1.0,
+        orientation: None,
+        topology,
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        display_order: 0,
+        attachment: None,
+        brightness: None,
+    };
+    let layout = SpatialLayout {
+        id: "rig".into(),
+        name: "Rig".into(),
+        description: None,
+        canvas_width: CANVAS_WIDTH,
+        canvas_height: CANVAS_HEIGHT,
+        zones: vec![
+            output(
+                "pads",
+                "Pads",
+                NormalizedPosition::new(0.25, 0.5),
+                NormalizedPosition::new(0.5, 1.0),
+                LedTopology::Matrix {
+                    width: 8,
+                    height: 8,
+                    serpentine: false,
+                    start_corner: Corner::BottomLeft,
+                },
+            ),
+            output(
+                "strip",
+                "Touch Strip",
+                NormalizedPosition::new(0.875, 0.5),
+                NormalizedPosition::new(0.25, 1.0),
+                LedTopology::Strip {
+                    count: 31,
+                    direction: StripDirection::BottomToTop,
+                },
+            ),
+        ],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    };
+    DeviceSurfaceMap::from_layout(&layout, |layout_device_id| {
+        (layout_device_id == "usb:controller").then_some(device)
+    })
+}
+
+#[test]
+fn touches_on_a_segmented_device_land_on_the_segment_they_name() {
+    let frame = Frame::new();
+    let mut runtime = LightscriptRuntime::new(CANVAS_WIDTH, CANVAS_HEIGHT);
+    let controller = DeviceId::new();
+    let surfaces = segmented_surfaces(controller);
+
+    let mut interaction = InteractionData {
+        generation: 1,
+        ..InteractionData::default()
+    };
+    interaction.device.touches = vec![
+        TouchContact {
+            segment: Some(Arc::from("Pads")),
+            ..touch(controller, 0, 0.0, 0.0, 0.5)
+        },
+        // A touch naming no segment cannot pick between the two outputs.
+        touch(controller, 1, 0.5, 0.5, 0.5),
+    ];
+    let mut strip_end = touch_edge(controller, 64, TouchPhase::Ended, Q, Q / 2, 4);
+    if let InputEvent::Touch { segment, .. } = &mut strip_end.event {
+        *segment = Some("Touch Strip".to_owned());
+    }
+    interaction.batch.events = vec![strip_end];
+
+    let payload = frame
+        .payload(
+            &mut runtime,
+            &interaction,
+            FrameDataSources {
+                device_surfaces: Some(&surfaces),
+                ..FrameDataSources::default()
+            },
+        )
+        .expect("device input emits");
+
+    // The first pad row sits at the bottom of the bottom-left matrix.
+    let pad = &payload["interaction"]["device"]["touches"][0];
+    assert_number(&pad["canvas"]["nx"], 0.0);
+    assert_number(&pad["canvas"]["ny"], 1.0);
+    assert!(payload["interaction"]["device"]["touches"][1]["canvas"].is_null());
+
+    // The strip's far end is its top LED.
+    let strip = &payload["interaction"]["events"][0];
+    assert_eq!(strip["phase"], "ended");
+    assert_number(&strip["canvas"]["nx"], 0.875);
+    assert_number(&strip["canvas"]["ny"], 0.0);
 }
 
 #[test]

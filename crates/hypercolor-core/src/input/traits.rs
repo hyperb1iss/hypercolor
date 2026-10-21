@@ -431,7 +431,7 @@ impl DeviceInteractionData {
                 .iter()
                 .any(|held| held.device_id == touch.device_id && held.contact == touch.contact)
             {
-                self.touches.push(*touch);
+                self.touches.push(touch.clone());
             }
         }
         for button in &other.buttons {
@@ -449,7 +449,7 @@ impl DeviceInteractionData {
 }
 
 /// One contact held on a device touch surface.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TouchContact {
     /// Device whose surface is being touched.
     pub device_id: DeviceId,
@@ -461,6 +461,9 @@ pub struct TouchContact {
     pub y: f32,
     /// Contact pressure in `[0, 1]`.
     pub pressure: f32,
+    /// Device segment the contact landed on, when the device's touch
+    /// surfaces span several segments.
+    pub segment: Option<Arc<str>>,
 }
 
 /// One control button held on a device.

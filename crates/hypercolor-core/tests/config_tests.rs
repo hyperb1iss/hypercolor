@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use hypercolor_core::config::ConfigManager;
 use hypercolor_types::config::{
-    CURRENT_SCHEMA_VERSION, DEFAULT_BEAT_SENSITIVITY, EffectErrorFallbackPolicy, HypercolorConfig,
-    InteractionRoutePolicy,
+    CURRENT_SCHEMA_VERSION, DEFAULT_BEAT_SENSITIVITY, DEFAULT_TARGET_FPS,
+    EffectErrorFallbackPolicy, HypercolorConfig, InteractionRoutePolicy,
 };
 
 // ─── TOML Parsing ───────────────────────────────────────────────────────────
@@ -14,7 +14,7 @@ use hypercolor_types::config::{
 #[test]
 fn load_minimal_toml() {
     let toml = r"
-        schema_version = 6
+        schema_version = 7
     ";
 
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
@@ -22,10 +22,10 @@ fn load_minimal_toml() {
 
     let config = ConfigManager::load(tmp.path()).expect("minimal TOML should parse without error");
 
-    assert_eq!(config.schema_version, 6);
+    assert_eq!(config.schema_version, 7);
     // Sections should fall back to their serde defaults
     assert_eq!(config.daemon.port, 9420);
-    assert_eq!(config.daemon.target_fps, 30);
+    assert_eq!(config.daemon.target_fps, 60);
     assert!(config.web.enabled);
     assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
@@ -37,7 +37,7 @@ fn schema_v4_renames_start_profile_before_deserialization() {
         ConfigManager::parse_toml("schema_version = 4\n[daemon]\nstart_profile = \"Evening\"\n")
             .expect("schema v4 should migrate");
 
-    assert_eq!(config.schema_version, 6);
+    assert_eq!(config.schema_version, 7);
     assert_eq!(config.daemon.start_scene, "Evening");
 }
 
@@ -109,11 +109,126 @@ fn schema_v5_keeps_a_beat_threshold_someone_chose() {
 }
 
 #[test]
-fn current_schema_keeps_a_beat_threshold_of_point_six() {
-    let config = ConfigManager::parse_toml("schema_version = 6\n[audio]\nbeat_sensitivity = 0.6\n")
-        .expect("current schema should parse");
+fn schema_v6_and_later_keep_a_beat_threshold_of_point_six() {
+    for version in [6, CURRENT_SCHEMA_VERSION] {
+        let config = ConfigManager::parse_toml(&format!(
+            "schema_version = {version}\n[audio]\nbeat_sensitivity = 0.6\n"
+        ))
+        .expect("schema v6 and later should parse");
 
-    assert!((config.audio.beat_sensitivity - 0.6).abs() < f32::EPSILON);
+        assert!(
+            (config.audio.beat_sensitivity - 0.6).abs() < f32::EPSILON,
+            "schema {version} moved {}",
+            config.audio.beat_sensitivity
+        );
+    }
+}
+
+#[test]
+fn schema_v6_moves_the_retired_render_target_to_the_current_one() {
+    for version in [4, 5, 6] {
+        let config = ConfigManager::parse_toml(&format!(
+            "schema_version = {version}\n[daemon]\ntarget_fps = 30\n"
+        ))
+        .expect("older schemas should migrate");
+
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            config.daemon.target_fps, DEFAULT_TARGET_FPS,
+            "schema {version} kept the retired render target"
+        );
+    }
+}
+
+/// A v6 save wrote the whole document, so the retired default sits on disk
+/// as an explicit `target_fps = 30` that nobody chose.
+#[test]
+fn schema_v6_moves_the_render_target_exactly_as_a_save_wrote_it() {
+    let mut saved = HypercolorConfig {
+        schema_version: 6,
+        ..HypercolorConfig::default()
+    };
+    saved.daemon.target_fps = 30;
+    let written = toml::to_string_pretty(&saved).expect("serialize a v6 save");
+    assert!(written.contains("target_fps = 30"), "{written}");
+
+    let config = ConfigManager::parse_toml(&written).expect("a v6 save should migrate");
+
+    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(config.daemon.target_fps, DEFAULT_TARGET_FPS);
+}
+
+#[test]
+fn schema_v6_keeps_a_render_target_someone_chose() {
+    for chosen in [10, 20, 45, 60, 120] {
+        let config = ConfigManager::parse_toml(&format!(
+            "schema_version = 6\n[daemon]\ntarget_fps = {chosen}\n"
+        ))
+        .expect("schema v6 should migrate");
+
+        assert_eq!(config.daemon.target_fps, chosen);
+    }
+}
+
+#[test]
+fn current_schema_keeps_a_render_target_of_thirty() {
+    let config = ConfigManager::parse_toml(&format!(
+        "schema_version = {CURRENT_SCHEMA_VERSION}\n[daemon]\ntarget_fps = 30\n"
+    ))
+    .expect("current schema should parse");
+
+    assert_eq!(config.daemon.target_fps, 30);
+}
+
+/// Loading never rewrites the file; the migrated value reaches disk with
+/// the next save, stamped with the current schema so it is never migrated
+/// again.
+#[test]
+fn a_migrated_render_target_reaches_disk_on_the_next_save() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let path = dir.path().join("hypercolor.toml");
+    fs::write(&path, "schema_version = 6\n\n[daemon]\ntarget_fps = 30\n")
+        .expect("failed to write v6 config");
+
+    let manager = ConfigManager::new(path.clone()).expect("a v6 file should load");
+    assert_eq!(manager.get().daemon.target_fps, DEFAULT_TARGET_FPS);
+    assert!(manager.save().expect("save should succeed").is_durable());
+
+    let written = fs::read_to_string(&path).expect("saved config should read");
+    let on_disk: toml::Value = toml::from_str(&written).expect("saved config should parse");
+    assert_eq!(
+        on_disk
+            .get("schema_version")
+            .and_then(toml::Value::as_integer),
+        Some(i64::from(CURRENT_SCHEMA_VERSION))
+    );
+    assert_eq!(
+        on_disk
+            .get("daemon")
+            .and_then(|daemon| daemon.get("target_fps"))
+            .and_then(toml::Value::as_integer),
+        Some(i64::from(DEFAULT_TARGET_FPS))
+    );
+}
+
+/// A v4 file runs every migration in order: the start-key rename, the
+/// beat threshold, and the render target.
+#[test]
+fn schema_v4_chains_through_every_later_migration() {
+    let config = ConfigManager::parse_toml(concat!(
+        "schema_version = 4\n\n",
+        "[daemon]\n",
+        "start_profile = \"Evening\"\n",
+        "target_fps = 30\n\n",
+        "[audio]\n",
+        "beat_sensitivity = 0.6\n",
+    ))
+    .expect("schema v4 should migrate");
+
+    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+    assert_eq!(config.daemon.start_scene, "Evening");
+    assert_eq!(config.daemon.target_fps, DEFAULT_TARGET_FPS);
+    assert!((config.audio.beat_sensitivity - DEFAULT_BEAT_SENSITIVITY).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -156,10 +271,12 @@ fn outdated_schema_is_refused_and_names_the_file_and_the_fix() {
 
 /// The hand-migration lands an old file on the oldest schema the chain
 /// still upgrades, so later migrations run on it. Jumping straight to the
-/// current schema would skip them and keep a retired beat threshold.
+/// current schema would skip them and keep a retired beat threshold and
+/// render target.
 #[test]
 fn following_the_hand_migration_runs_every_later_migration() {
-    let old = "schema_version = 3\n\n[audio]\nbeat_sensitivity = 0.6\n";
+    let old =
+        "schema_version = 3\n\n[daemon]\ntarget_fps = 30\n\n[audio]\nbeat_sensitivity = 0.6\n";
     let error = ConfigManager::parse_toml(old).expect_err("schema 3 must be refused");
     let rendered = format!("{error:#}");
     assert!(rendered.contains("schema_version = 4"), "{rendered}");
@@ -170,6 +287,7 @@ fn following_the_hand_migration_runs_every_later_migration() {
 
     assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     assert!((config.audio.beat_sensitivity - DEFAULT_BEAT_SENSITIVITY).abs() < f32::EPSILON);
+    assert_eq!(config.daemon.target_fps, DEFAULT_TARGET_FPS);
     assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Merge);
     assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
 }
@@ -177,7 +295,7 @@ fn following_the_hand_migration_runs_every_later_migration() {
 #[test]
 fn newer_schema_is_refused_as_written_by_a_newer_hypercolor() {
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
-    fs::write(tmp.path(), "schema_version = 7\n").expect("failed to write future config");
+    fs::write(tmp.path(), "schema_version = 8\n").expect("failed to write future config");
 
     let error = ConfigManager::load(tmp.path())
         .expect_err("a future schema must be refused, never guessed at");
@@ -187,7 +305,7 @@ fn newer_schema_is_refused_as_written_by_a_newer_hypercolor() {
         rendered.contains(&tmp.path().display().to_string()),
         "{rendered}"
     );
-    assert!(rendered.contains("schema_version 7"), "{rendered}");
+    assert!(rendered.contains("schema_version 8"), "{rendered}");
     assert!(rendered.contains("newer hypercolor"), "{rendered}");
     // A future file is not an old file: no hand-migration is offered.
     assert!(
@@ -202,7 +320,7 @@ fn current_schema_keeps_explicit_route_fields() {
     fs::write(
         tmp.path(),
         concat!(
-            "schema_version = 6\n\n",
+            "schema_version = 7\n\n",
             "[input]\n",
             "daemon_route = \"host\"\n",
             "preview_route = \"merge\"\n",
@@ -212,7 +330,7 @@ fn current_schema_keeps_explicit_route_fields() {
 
     let config = ConfigManager::load(tmp.path()).expect("current-schema config should load");
 
-    assert_eq!(config.schema_version, 6);
+    assert_eq!(config.schema_version, 7);
     assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(config.input.preview_route, InteractionRoutePolicy::Merge);
 }
@@ -339,9 +457,9 @@ fn new_with_missing_file_uses_defaults() {
         ConfigManager::new(path).expect("ConfigManager should fall back to defaults gracefully");
     let config = manager.get();
 
-    assert_eq!(config.schema_version, 6);
+    assert_eq!(config.schema_version, 7);
     assert_eq!(config.daemon.port, 9420);
-    assert_eq!(config.daemon.target_fps, 30);
+    assert_eq!(config.daemon.target_fps, 60);
     assert!(config.web.enabled);
 }
 
@@ -760,7 +878,7 @@ mod change_stream {
 
         assert_eq!(
             drain_config_changes(&mut events),
-            vec![("daemon.target_fps".to_owned(), Some(json!(30)), json!(45))]
+            vec![("daemon.target_fps".to_owned(), Some(json!(60)), json!(45))]
         );
     }
 
@@ -870,7 +988,7 @@ mod change_stream {
         assert_eq!(manager.get().daemon.target_fps, 50);
         assert_eq!(
             drain_config_changes(&mut events),
-            vec![("daemon.target_fps".to_owned(), Some(json!(30)), json!(50))]
+            vec![("daemon.target_fps".to_owned(), Some(json!(60)), json!(50))]
         );
     }
 
@@ -940,7 +1058,7 @@ mod change_stream {
 
         assert_eq!(
             drain_config_changes(&mut events),
-            vec![("daemon.target_fps".to_owned(), Some(json!(30)), json!(50))]
+            vec![("daemon.target_fps".to_owned(), Some(json!(60)), json!(50))]
         );
     }
 

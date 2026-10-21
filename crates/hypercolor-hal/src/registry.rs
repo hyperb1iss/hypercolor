@@ -4,11 +4,13 @@ use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
+use crate::transport::input::TransportInputSink;
 use crate::transport::{Transport, TransportError};
 
 /// Function pointer used to construct a protocol instance.
@@ -33,6 +35,10 @@ pub struct UsbTransportOpenRequest {
     pub serial: Option<String>,
     /// Optional host USB topology path.
     pub usb_path: Option<String>,
+    /// Where to publish the input the transport decodes, when its binding
+    /// sets [`UsbTransportBinding::publishes_input`] and the host accepts
+    /// device input.
+    pub input: Option<Arc<dyn TransportInputSink>>,
 }
 
 /// Inventory classification for a driver-owned USB transport.
@@ -83,6 +89,11 @@ pub struct UsbTransportBinding {
     pub kind: UsbTransportKind,
     /// Connection lifecycle requirements.
     pub lifecycle: TransportLifecycleHints,
+    /// Whether the transport decodes device input and publishes it to
+    /// [`UsbTransportOpenRequest::input`]. Hosts attach input only for
+    /// transports that do, so a device that cannot be played never shows up
+    /// as an input source.
+    pub publishes_input: bool,
     /// Driver-owned transport factory.
     pub open: UsbTransportFactory,
 }
@@ -93,13 +104,17 @@ impl fmt::Debug for UsbTransportBinding {
             .field("id", &self.id)
             .field("kind", &self.kind)
             .field("lifecycle", &self.lifecycle)
+            .field("publishes_input", &self.publishes_input)
             .finish_non_exhaustive()
     }
 }
 
 impl PartialEq for UsbTransportBinding {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.kind == other.kind && self.lifecycle == other.lifecycle
+        self.id == other.id
+            && self.kind == other.kind
+            && self.lifecycle == other.lifecycle
+            && self.publishes_input == other.publishes_input
     }
 }
 
