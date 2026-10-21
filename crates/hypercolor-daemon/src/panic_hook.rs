@@ -248,26 +248,19 @@ fn starts_frame(line: &str) -> bool {
 
 /// Index of the first frame of the code that panicked.
 ///
-/// That is the frame right after the last panic entry point near the top.
-/// Matching entry points, rather than every `std::panicking` frame, matters
-/// on MSVC targets: their symbols keep generic arguments, so the code that
-/// panicked can run inside a frame such as
+/// The excerpt skips the contiguous run of capture and panic runtime frames
+/// at the top and stops at the first frame it does not recognize, so an
+/// unfamiliar runtime frame costs a few extra lines rather than hiding the
+/// panic site. The runtime is matched by its entry points, not by every
+/// `std::panicking` frame: MSVC symbols keep generic arguments, so the code
+/// that panicked can run inside a frame such as
 /// `std::panicking::catch_unwind::do_call<the_caller::closure_env$0>`.
-/// Without an entry point, the excerpt skips only the capture frames.
 fn panicking_frame_index(frames: &[&str]) -> usize {
     frames
         .iter()
         .take(PANIC_MACHINERY_SCAN_FRAMES)
-        .rposition(|frame| is_panic_entry(frame))
-        .map_or_else(
-            || {
-                frames
-                    .iter()
-                    .take_while(|frame| is_capture_frame(frame))
-                    .count()
-            },
-            |entry| entry + 1,
-        )
+        .take_while(|frame| is_capture_frame(frame) || is_panic_entry(frame))
+        .count()
 }
 
 fn frame_symbol(frame: &str) -> &str {
@@ -282,6 +275,8 @@ fn is_capture_frame(frame: &str) -> bool {
         "std::backtrace::",
         "hypercolor_daemon::panic_hook::",
         "<alloc::boxed::Box<F,A> as core::ops::function::Fn<Args>>::call",
+        // The boxed hook's call on MSVC, which names its argument type.
+        "PanicHookInfo",
     ]
     .iter()
     .any(|needle| symbol.contains(needle))

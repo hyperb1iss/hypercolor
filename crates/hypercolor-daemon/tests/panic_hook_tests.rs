@@ -76,8 +76,9 @@ fn hook_reports_a_named_thread_panic_to_observers_the_catcher_and_the_previous_h
     );
     assert!(
         recent.backtrace_excerpt().contains("panic_hook_tests"),
-        "the excerpt should start near the panicking frame:\n{}",
-        recent.backtrace_excerpt()
+        "the excerpt should start near the panicking frame:\n{}\nfull backtrace:\n{}",
+        recent.backtrace_excerpt(),
+        recent.backtrace
     );
     assert!(
         PREVIOUS_HOOK_CALLS.load(Ordering::SeqCst) > previous_calls,
