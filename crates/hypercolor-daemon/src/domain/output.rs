@@ -130,7 +130,7 @@ impl OutputContext {
 
     /// The current output power state.
     #[must_use]
-    pub(crate) fn power_state(&self) -> crate::output_power::OutputPowerState {
+    pub(crate) fn output_power_snapshot(&self) -> crate::output_power::OutputPowerState {
         self.output_power.snapshot()
     }
 

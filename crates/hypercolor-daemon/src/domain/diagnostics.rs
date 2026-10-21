@@ -351,7 +351,7 @@ impl DiagnosticsContext {
             config_available: self.authorities.platform.config_available(),
             config_persistence: self.authorities.platform.config_persistence(),
             render_supervision: self.authorities.output.render_supervision().snapshot(),
-            output_power: self.authorities.output.power_state(),
+            output_power: self.authorities.output.output_power_snapshot(),
         }
     }
 }
