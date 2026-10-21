@@ -16,6 +16,7 @@ use hypercolor_types::effect::{ControlKind, EffectMetadata, EffectSource};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
+use tracing::debug;
 
 use super::ServoSessionHandle;
 #[cfg(test)]
@@ -80,6 +81,10 @@ pub struct ServoRenderer {
     animation_cadence: AnimationCadence,
     host_driven_animation: bool,
     last_submit_time_secs: Option<f64>,
+    /// Set when a page starts loading and cleared by its first completed
+    /// frame. A reload keeps the previous page's canvas on screen, so the
+    /// canvas alone cannot tell whether the current page has rendered.
+    awaiting_first_frame: bool,
     producer_role: ServoProducerRole,
     display_descriptor: Option<DisplayDescriptor>,
 }
@@ -133,6 +138,7 @@ impl ServoRenderer {
             animation_cadence: AnimationCadence::MatchRenderLoop,
             host_driven_animation: false,
             last_submit_time_secs: None,
+            awaiting_first_frame: false,
             producer_role,
             display_descriptor: None,
         }
@@ -262,6 +268,26 @@ impl EffectRenderer for ServoRenderer {
         self.display_descriptor = descriptor;
     }
 
+    fn park(&mut self) {
+        // Servo's script thread schedules its own animation ticks every 30 ms
+        // for a page with live requestAnimationFrame callbacks, so an
+        // unobserved page keeps drawing WebGL until its webview is
+        // throttled, which stops those ticks. Timers keep their own pace.
+        // The next render request unthrottles the webview.
+        if let Some(session) = self.session.as_ref()
+            && let Err(error) = session.park()
+        {
+            debug!(%error, "Could not throttle the parked Servo page");
+        }
+    }
+
+    fn is_warming(&self) -> bool {
+        self.initialized
+            && self.load_failed.is_none()
+            && self.hard_stall.is_none()
+            && (self.load_task.is_some() || (self.session.is_some() && self.awaiting_first_frame))
+    }
+
     fn destroy(&mut self) {
         self.load_task = None;
         if let Some(session) = self.session.take() {
@@ -302,6 +328,7 @@ impl EffectRenderer for ServoRenderer {
         self.animation_cadence = AnimationCadence::MatchRenderLoop;
         self.host_driven_animation = false;
         self.last_submit_time_secs = None;
+        self.awaiting_first_frame = false;
     }
 }
 

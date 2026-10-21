@@ -49,6 +49,11 @@ impl FrameExecution {
     pub(crate) fn resolve_deadline(self, scheduled_start: Instant, now: Instant) -> Instant {
         self.next_wake.resolve_deadline(scheduled_start, now)
     }
+
+    /// Whether the loop parked because nothing consumes its frames.
+    pub(crate) const fn parks(&self) -> bool {
+        matches!(self.next_wake, NextWake::Park)
+    }
 }
 
 /// Scheduler decision for when the next render iteration should begin.
@@ -57,6 +62,8 @@ pub(crate) enum NextWake {
     Interval(Duration),
     /// Hold the loop for a fixed delay before checking again.
     Delay(Duration),
+    /// Sleep until output demand appears; the pipeline driver owns the wait.
+    Park,
 }
 
 impl NextWake {
@@ -64,6 +71,7 @@ impl NextWake {
         match self {
             Self::Interval(interval) => advance_deadline(scheduled_start, interval, now),
             Self::Delay(delay) => now.checked_add(delay).unwrap_or(now),
+            Self::Park => now,
         }
     }
 }
@@ -127,6 +135,19 @@ impl FramePolicy {
         render_loop: &mut RenderLoop,
     ) -> FrameExecution {
         self.complete_throttled_frame(render_loop, SESSION_SLEEP_THROTTLE_DELAY)
+    }
+
+    /// Drop the admitted frame without rendering it and park the loop.
+    ///
+    /// The frame is abandoned rather than completed, so parking feeds no
+    /// timing into tier decisions and does not advance the frame number.
+    pub(crate) fn park_execution(&mut self, render_loop: &mut RenderLoop) -> FrameExecution {
+        render_loop.abandon_frame();
+        render_loop.park();
+        FrameExecution {
+            next_wake: NextWake::Park,
+            next_skip_decision: SkipDecision::None,
+        }
     }
 
     pub(crate) fn inactive_loop_execution(
@@ -304,6 +325,22 @@ mod tests {
             NextWake::Delay(delay) if delay == Duration::from_millis(120)
         ));
         assert_eq!(execution.next_skip_decision, SkipDecision::None);
+    }
+
+    #[test]
+    fn park_execution_parks_without_a_skip_decision() {
+        let mut render_loop = RenderLoop::new(60);
+        render_loop.start();
+        assert!(render_loop.tick());
+        let mut policy = FramePolicy::new(FpsTier::Full);
+
+        let execution = policy.park_execution(&mut render_loop);
+
+        assert!(execution.parks());
+        assert_eq!(execution.next_skip_decision, SkipDecision::None);
+        assert_eq!(render_loop.frame_number(), 0);
+        assert!(render_loop.is_parked());
+        assert!(render_loop.frame_complete().is_none());
     }
 
     #[test]

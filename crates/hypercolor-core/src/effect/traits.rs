@@ -295,6 +295,28 @@ pub trait EffectRenderer: Send {
         None
     }
 
+    /// The render loop stopped requesting frames because nothing consumes
+    /// them.
+    ///
+    /// Renderers that keep working between frames on their own, such as a
+    /// web page whose animation timers fire without being asked, should
+    /// quiesce that work here. The next render call resumes the renderer,
+    /// so parking needs no counterpart. The default no-op covers renderers
+    /// that only work when called.
+    fn park(&mut self) {}
+
+    /// Whether the renderer has not yet produced output for its current
+    /// content, for example while a page loads or before its first frame
+    /// lands.
+    ///
+    /// The render loop keeps rendering while any producer warms up, so a
+    /// renderer that is parked once warm shows its real content the moment
+    /// a consumer arrives. Renderers that produce output synchronously keep
+    /// the default.
+    fn is_warming(&self) -> bool {
+        false
+    }
+
     /// Tear down the renderer and release all resources.
     ///
     /// Called when the effect transitions to `Destroying`. After this call,

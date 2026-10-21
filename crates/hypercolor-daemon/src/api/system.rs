@@ -158,10 +158,15 @@ async fn system_status_with_privacy(
         )
     };
 
+    let output_demand = performance.output_demand.status();
+
     // Query the live render loop for timing data.
-    let render_loop_status = {
+    let (render_loop_status, render_elapsed_ms) = {
         let rl = state.render_loop.read().await;
         let snapshot = rl.stats();
+        // Frame timestamps use render time, which stops while the loop is
+        // paused or parked, so frame age is measured on the same clock.
+        let render_elapsed_ms = rl.elapsed().as_secs_f64() * 1000.0;
         let capacity_fps = if snapshot.state == RenderLoopState::Running {
             round_1(paced_fps(
                 snapshot.avg_frame_time.as_secs_f64(),
@@ -170,27 +175,32 @@ async fn system_status_with_privacy(
         } else {
             0.0
         };
-        RenderLoopStatus {
+        // A parked loop delivers no frames; `output_demand` says why.
+        let delivering = snapshot.state == RenderLoopState::Running && !output_demand.parked;
+        let status = RenderLoopStatus {
             state: snapshot.state.to_string(),
             fps_tier: snapshot.tier.to_string(),
             target_fps: snapshot.tier.fps(),
             ceiling_fps: snapshot.max_tier.fps(),
             capacity_fps,
-            delivered_fps: if snapshot.state == RenderLoopState::Running {
+            delivered_fps: if delivering {
                 round_1(performance.delivered_fps)
             } else {
                 0.0
             },
-            actual_fps: capacity_fps,
+            actual_fps: if delivering { capacity_fps } else { 0.0 },
             consecutive_misses: snapshot.consecutive_misses,
             total_frames: snapshot.total_frames,
-        }
+            output_demand,
+        };
+        (status, render_elapsed_ms)
     };
     let running = render_loop_is_operational(render_loop_status.state.as_str());
     let latest_frame = if render_loop_status.state == "running" {
-        performance.latest_frame.as_ref().map(|frame| {
-            latest_frame_status(frame, state.start_time.elapsed().as_secs_f64() * 1000.0)
-        })
+        performance
+            .latest_frame
+            .as_ref()
+            .map(|frame| latest_frame_status(frame, render_elapsed_ms))
     } else {
         None
     };

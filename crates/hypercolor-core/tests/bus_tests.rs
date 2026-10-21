@@ -1534,3 +1534,103 @@ async fn concurrent_input_status_publications_are_generation_ordered() {
             .all(|pair| pair[0] < pair[1])
     );
 }
+
+// ── Output demand ─────────────────────────────────────────────────────────
+
+/// Arm a waiter on the bus output-demand signal the way an idle producer
+/// does, run `trigger`, and report whether the waiter woke.
+async fn output_demand_wakes_on(bus: &HypercolorBus, trigger: impl FnOnce()) -> bool {
+    let armed = bus.output_demand().arm();
+    let notified = armed.notified();
+    tokio::pin!(notified);
+    notified.as_mut().enable();
+    trigger();
+    timeout(Duration::from_millis(200), notified).await.is_ok()
+}
+
+#[tokio::test]
+async fn lane_subscriptions_wake_output_demand_waiters() {
+    let bus = HypercolorBus::new();
+    let epoch = bus.output_demand().epoch();
+
+    let mut receivers = Vec::new();
+    assert!(output_demand_wakes_on(&bus, || receivers.push(bus.canvas_receiver())).await);
+    assert!(output_demand_wakes_on(&bus, || receivers.push(bus.scene_canvas_receiver())).await);
+    assert!(output_demand_wakes_on(&bus, || receivers.push(bus.screen_canvas_receiver())).await);
+    let mut frames = None;
+    assert!(output_demand_wakes_on(&bus, || frames = Some(bus.frame_receiver())).await);
+    let mut zone_canvas = None;
+    assert!(
+        output_demand_wakes_on(&bus, || zone_canvas =
+            Some(bus.zone_canvas_receiver(ZoneId::new())))
+        .await
+    );
+
+    assert!(bus.output_demand().epoch() >= epoch + 5);
+}
+
+#[tokio::test]
+async fn output_receiver_count_spans_every_output_stream() {
+    let bus = HypercolorBus::new();
+    assert_eq!(bus.output_receiver_count(), 0);
+
+    let frames = bus.frame_receiver();
+    let spectrum = bus.spectrum_receiver();
+    let canvas = bus.canvas_receiver();
+    let scene = bus.scene_canvas_receiver();
+    let screen = bus.screen_canvas_receiver();
+    let web = bus.web_viewport_canvas_receiver();
+    let zones = bus.screen_zones_receiver();
+    let previews = bus.zone_preview_receiver();
+    let zone_canvas = bus.zone_canvas_receiver(ZoneId::new());
+    assert_eq!(bus.output_receiver_count(), 9);
+    assert_eq!(bus.zone_canvas_receiver_count(), 1);
+
+    drop((
+        frames, spectrum, canvas, scene, screen, web, zones, previews,
+    ));
+    assert_eq!(bus.output_receiver_count(), 1);
+    drop(zone_canvas);
+    assert_eq!(bus.output_receiver_count(), 0);
+}
+
+#[tokio::test]
+async fn output_demand_holds_count_until_dropped_and_wake_waiters() {
+    let bus = HypercolorBus::new();
+    let mut hold = None;
+
+    assert!(output_demand_wakes_on(&bus, || hold = Some(bus.hold_output_demand())).await);
+    assert_eq!(bus.output_demand().hold_count(), 1);
+    let second = bus.hold_output_demand();
+    assert_eq!(bus.output_demand().hold_count(), 2);
+
+    drop(hold);
+    drop(second);
+    assert_eq!(bus.output_demand().hold_count(), 0);
+}
+
+#[tokio::test]
+async fn published_events_wake_output_demand_waiters() {
+    let bus = HypercolorBus::new();
+
+    assert!(output_demand_wakes_on(&bus, || bus.publish(paused_event())).await);
+}
+
+#[tokio::test]
+async fn output_demand_notification_without_an_armed_waiter_only_advances_the_epoch() {
+    let bus = HypercolorBus::new();
+    let epoch = bus.output_demand().epoch();
+
+    bus.publish(paused_event());
+    let _canvas = bus.canvas_receiver();
+
+    assert_eq!(bus.output_demand().epoch(), epoch + 2);
+    assert!(output_demand_wakes_on(&bus, || bus.publish(paused_event())).await);
+}
+
+#[tokio::test]
+async fn output_demand_waiter_that_is_not_triggered_stays_asleep() {
+    let bus = HypercolorBus::new();
+
+    assert!(!output_demand_wakes_on(&bus, || {}).await);
+}

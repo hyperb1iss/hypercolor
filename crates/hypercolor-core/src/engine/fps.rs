@@ -337,6 +337,12 @@ impl FpsController {
         self.frame_start = Some(Instant::now());
     }
 
+    /// Forget the frame begun by [`begin_frame`](Self::begin_frame)
+    /// without recording it.
+    pub fn abandon_frame(&mut self) {
+        self.frame_start = None;
+    }
+
     /// Mark the end of the current frame.
     ///
     /// Updates the EWMA, consecutive miss counter, and checks for tier

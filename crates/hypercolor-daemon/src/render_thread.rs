@@ -40,6 +40,7 @@ pub mod gpu_errors;
 mod input_publication;
 mod layer_runtime;
 mod lighting_feed;
+mod output_gate;
 mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;

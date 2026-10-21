@@ -394,6 +394,10 @@ pub struct RenderSupervisionSnapshot {
     pub last_heartbeat_age: Option<Duration>,
     /// Time since the render loop last completed a frame.
     pub last_frame_age: Option<Duration>,
+    /// Time since a frame was last due: the later of the last completed
+    /// frame and the last idle iteration. A loop that just left a pause or a
+    /// park is measured from when it left, not from its last frame before.
+    pub frame_due_age: Option<Duration>,
     /// How long the current pipeline has been running.
     pub current_run: Option<Duration>,
     /// The latest failure in this process, or else the failure the previous
@@ -577,6 +581,8 @@ struct SupervisionInner {
     attempt_started_us: AtomicU64,
     last_heartbeat_us: AtomicU64,
     last_frame_us: AtomicU64,
+    /// The latest idle iteration, after which frames were due again.
+    idle_until_us: AtomicU64,
     last_failure: Mutex<Option<RenderFailureRecord>>,
     previous_failure: Option<RenderFailureRecord>,
     termination: watch::Sender<Option<Arc<RenderFailureRecord>>>,
@@ -653,6 +659,7 @@ impl RenderSupervision {
                 attempt_started_us: AtomicU64::new(0),
                 last_heartbeat_us: AtomicU64::new(0),
                 last_frame_us: AtomicU64::new(0),
+                idle_until_us: AtomicU64::new(0),
                 last_failure: Mutex::new(None),
                 previous_failure,
                 termination: watch::Sender::new(None),
@@ -721,6 +728,7 @@ impl RenderSupervision {
             max_restarts: self.inner.policy.max_restarts,
             last_heartbeat_age: self.age(&self.inner.last_heartbeat_us, now),
             last_frame_age: self.age(&self.inner.last_frame_us, now),
+            frame_due_age: self.frame_due_age(now),
             current_run: (phase == RenderThreadPhase::Running)
                 .then(|| self.age(&self.inner.attempt_started_us, now))
                 .flatten(),
@@ -798,11 +806,12 @@ impl RenderSupervision {
         self.set_phase(RenderThreadPhase::Running);
     }
 
-    /// The render loop completed an idle or paused iteration at `now`.
+    /// The render loop completed an idle iteration at `now`: a paused poll
+    /// or a pass of the park wait. No frame was due up to this moment.
     pub(crate) fn heartbeat(&self, now: Instant) {
-        self.inner
-            .last_heartbeat_us
-            .store(self.stamp(now), Ordering::Relaxed);
+        let stamp = self.stamp(now);
+        self.inner.last_heartbeat_us.store(stamp, Ordering::Relaxed);
+        self.inner.idle_until_us.store(stamp, Ordering::Relaxed);
     }
 
     /// The render loop completed a frame at `now`.
@@ -1003,6 +1012,15 @@ impl RenderSupervision {
         u64::try_from(now.saturating_duration_since(self.inner.epoch).as_micros())
             .unwrap_or(u64::MAX - 1)
             .saturating_add(1)
+    }
+
+    fn frame_due_age(&self, now: Instant) -> Option<Duration> {
+        let due_since = self
+            .inner
+            .last_frame_us
+            .load(Ordering::Relaxed)
+            .max(self.inner.idle_until_us.load(Ordering::Relaxed));
+        (due_since != 0).then(|| Duration::from_micros(self.stamp(now).saturating_sub(due_since)))
     }
 
     fn age(&self, stamp: &AtomicU64, now: Instant) -> Option<Duration> {

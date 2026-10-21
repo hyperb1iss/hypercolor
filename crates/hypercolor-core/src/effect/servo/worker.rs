@@ -507,6 +507,18 @@ impl ServoWorkerRuntime {
                     record_servo_destroy_wait(destroy_started.elapsed());
                     let _ = response_tx.send(result);
                 }
+                ScheduledServoWork::Command(WorkerCommand::SetThrottled {
+                    session_id,
+                    throttled,
+                }) => {
+                    if let Err(error) = self.set_webview_throttled(session_id, throttled) {
+                        debug!(?session_id, throttled, %error, "Skipped Servo webview throttle");
+                    } else {
+                        // Deliver the throttle to the page's script thread now
+                        // rather than on the next render, which may be far off.
+                        self.servo.spin_event_loop();
+                    }
+                }
                 ScheduledServoWork::Command(WorkerCommand::MemoryReport { response_tx }) => {
                     let result = self.memory_report();
                     let _ = response_tx.send(result);

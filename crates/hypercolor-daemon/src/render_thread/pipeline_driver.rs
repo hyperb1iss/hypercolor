@@ -5,11 +5,12 @@ use tracing::{debug, info};
 use crate::deadline::wait_until_deadline;
 use hypercolor_core::engine::RenderLoopState;
 
-use super::RenderThreadState;
 use super::frame_executor::{execute_frame, service_scene_transactions};
 use super::frame_policy::SkipDecision;
+use super::output_gate::{RenderWakeReason, wait_for_output_demand};
 use super::pipeline_runtime::PipelineRuntime;
 use super::supervision::RenderSupervision;
+use super::{RenderThreadState, u64_to_u32};
 
 pub(crate) async fn run_pipeline(
     state: RenderThreadState,
@@ -20,6 +21,7 @@ pub(crate) async fn run_pipeline(
         mode = ?state.render_acceleration_mode,
         "render pipeline started"
     );
+    clear_stale_park(&state).await;
     let mut skip_decision = SkipDecision::None;
     let mut next_frame_at = Instant::now();
     let mut rebase_clock_on_resume = false;
@@ -63,6 +65,14 @@ pub(crate) async fn run_pipeline(
             runtime.frame_loop.clock.rebase(scheduled_start);
         }
         let frame = execute_frame(&state, &mut runtime, scheduled_start, skip_decision).await;
+        if frame.parks() {
+            let reason =
+                wait_for_output_demand(&state, &mut runtime.frame_loop, &supervision).await;
+            resume_from_park(&state, &mut runtime, reason).await;
+            skip_decision = SkipDecision::None;
+            next_frame_at = Instant::now();
+            continue;
+        }
         let now = Instant::now();
         supervision.frame_completed(now);
         skip_decision = frame.next_skip_decision;
@@ -70,6 +80,60 @@ pub(crate) async fn run_pipeline(
     }
 
     info!("render pipeline exited");
+}
+
+/// Leave a park that a previous pipeline entered and never left.
+///
+/// The park flag and its hold live on the shared render loop, but the
+/// output gate that would end them belongs to the pipeline. A pipeline that
+/// replaces one that failed while parked starts with a fresh gate, so it
+/// would otherwise render with effect time still held.
+async fn clear_stale_park(state: &RenderThreadState) {
+    state.render_loop.write().await.unpark();
+    // The telemetry can outlive the loop's flag: a pipeline that failed
+    // between unparking and its next recorded frame leaves it set.
+    state.performance.write().await.note_output_unparked();
+}
+
+/// Pick the loop back up after a park without a jump in effect time.
+///
+/// Effects advance by the frame clock's delta, so the clock restarts one
+/// target interval back: the first frame after the wake steps effect time
+/// forward by exactly one frame instead of by the whole parked span, and no
+/// catch-up frames follow. Capture freshness skips the wake frame itself,
+/// whose asynchronous producers still show output requested before the
+/// park.
+async fn resume_from_park(
+    state: &RenderThreadState,
+    runtime: &mut PipelineRuntime,
+    reason: RenderWakeReason,
+) {
+    let now = Instant::now();
+    let (interval, resume_frame) = {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.unpark();
+        (render_loop.target_interval(), render_loop.frame_number())
+    };
+    if reason == RenderWakeReason::RenderLoopState {
+        // A paused or stopped loop is idle for its own reason, not for
+        // lack of consumers; the gate parks it again if it resumes with
+        // nothing to render for.
+        runtime.frame_loop.output_gate.leave_park();
+        state.performance.write().await.note_output_unparked();
+    }
+    runtime
+        .frame_loop
+        .clock
+        .rebase(now.checked_sub(interval).unwrap_or(now));
+    state
+        .preview_runtime
+        .note_render_resume(u64_to_u32(resume_frame));
+    state
+        .performance
+        .write()
+        .await
+        .note_output_woken(reason.as_str());
+    debug!(reason = reason.as_str(), "Render loop woke from a park");
 }
 
 /// Raise a fault a test queued, on the render thread, exactly where a real

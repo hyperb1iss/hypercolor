@@ -163,8 +163,11 @@ struct DiagnosticsInputs {
 }
 
 impl DiagnosticsInputs {
+    /// Render time now, on the clock frame timestamps are taken from.
+    /// Daemon uptime runs on through pauses and parks that render time
+    /// skips, so measuring frame age against it would count those spans.
     fn render_elapsed_ms(&self) -> f64 {
-        self.uptime.as_secs_f64() * 1000.0
+        self.render_loop.elapsed.as_secs_f64() * 1000.0
     }
 }
 
@@ -374,11 +377,21 @@ fn render_checks(inputs: &DiagnosticsInputs) -> Vec<DiagnoseCheck> {
     let render_elapsed_ms = inputs.render_elapsed_ms();
     let running = inputs.render_loop.running;
     let render_loop_stats = inputs.render_loop.stats;
+    let parked = performance.output_demand.parked_since.is_some();
     let pause = render_loop_pause_reason(render_loop_stats.state, inputs.output_power)
         .map_or_else(String::new, |reason| format!("; {reason}"));
+    let park = if parked {
+        format!(
+            ", parked={}",
+            crate::output_demand::IDLE_REASON_NO_OUTPUT_CONSUMERS
+        )
+    } else {
+        String::new()
+    };
     let mut render_thread = render_thread_check(
         &inputs.render_supervision,
         render_loop_stats.state,
+        parked,
         RENDER_THREAD_STALL_FAIL,
     );
     render_thread.detail.push_str(&pause);
@@ -388,7 +401,7 @@ fn render_checks(inputs: &DiagnosticsInputs) -> Vec<DiagnoseCheck> {
             name: "render_loop".to_owned(),
             status: if running { "pass" } else { "warning" }.to_owned(),
             detail: format!(
-                "state={}, tier={}{pause}",
+                "state={}, tier={}{park}{pause}",
                 render_loop_stats.state, render_loop_stats.tier
             ),
         },
@@ -396,6 +409,20 @@ fn render_checks(inputs: &DiagnosticsInputs) -> Vec<DiagnoseCheck> {
         gpu_errors_check(&inputs.render_supervision.gpu_errors),
     ];
     if !running {
+        return checks;
+    }
+    if parked {
+        // A parked loop renders nothing by design, so frame age and LED
+        // freshness describe the last frame before the park, not a stall.
+        checks.push(DiagnoseCheck {
+            category: "render".to_owned(),
+            name: "frame_liveness".to_owned(),
+            status: "pass".to_owned(),
+            detail: format!(
+                "parked: nothing consumes rendered frames (no output devices, streams, or captures); the next consumer resumes rendering at the current tier. parks_total={}",
+                performance.output_demand.parks_total
+            ),
+        });
         return checks;
     }
 
@@ -472,9 +499,10 @@ fn render_loop_pause_reason(
 pub fn render_thread_check(
     supervision: &RenderSupervisionSnapshot,
     loop_state: RenderLoopState,
+    parked: bool,
     stall_after: Duration,
 ) -> DiagnoseCheck {
-    let (status, detail) = render_thread_status(supervision, loop_state, stall_after);
+    let (status, detail) = render_thread_status(supervision, loop_state, parked, stall_after);
     DiagnoseCheck {
         category: "render".to_owned(),
         name: "render_thread".to_owned(),
@@ -486,6 +514,7 @@ pub fn render_thread_check(
 fn render_thread_status(
     supervision: &RenderSupervisionSnapshot,
     loop_state: RenderLoopState,
+    parked: bool,
     stall_after: Duration,
 ) -> (&'static str, String) {
     let failure = supervision.last_failure.as_ref().map_or_else(
@@ -528,10 +557,13 @@ fn render_thread_status(
             ),
         ),
         RenderThreadPhase::Running => {
-            let (age, activity) = if loop_state == RenderLoopState::Paused {
+            // A paused or parked loop renders nothing by design, so only
+            // its polling shows the thread is alive.
+            let idle = loop_state == RenderLoopState::Paused || parked;
+            let (age, activity) = if idle {
                 (supervision.last_heartbeat_age, "polled")
             } else {
-                (supervision.last_frame_age, "completed a frame")
+                (supervision.frame_due_age, "completed a frame")
             };
             match age {
                 Some(age) if loop_active && age >= stall_after => (
@@ -543,12 +575,17 @@ fn render_thread_status(
                         supervision.restarts_total
                     ),
                 ),
-                _ if loop_state == RenderLoopState::Paused => (
+                _ if idle => (
                     "pass",
                     format!(
-                        "phase=running, the render loop is paused so no frames are due, \
+                        "phase=running, the render loop is {} so no frames are due, \
                          last_poll_age_ms={}, last_frame_age_ms={}, restarts={}, \
                          last_failure={failure}",
+                        if parked {
+                            "parked with no output consumers"
+                        } else {
+                            "paused"
+                        },
                         millis_or_none(supervision.last_heartbeat_age),
                         millis_or_none(supervision.last_frame_age),
                         supervision.restarts_total
@@ -975,6 +1012,7 @@ fn build_render_snapshot(
 ) -> DiagnoseRenderSnapshot {
     let pacing = performance.pacing;
     DiagnoseRenderSnapshot {
+        output_demand: performance.output_demand.status(),
         latest_frame: performance
             .latest_frame
             .as_ref()
@@ -1359,6 +1397,7 @@ mod tests {
             max_restarts: 5,
             last_heartbeat_age: Some(std::time::Duration::from_millis(heartbeat_age_ms)),
             last_frame_age: Some(std::time::Duration::from_millis(frame_age_ms)),
+            frame_due_age: Some(std::time::Duration::from_millis(frame_age_ms)),
             current_run: None,
             last_failure: None,
             last_failure_in_this_process: false,
@@ -1441,6 +1480,7 @@ mod tests {
             let check = super::render_thread_check(
                 &supervision(phase, frame_age, heartbeat_age),
                 loop_state,
+                false,
                 stall,
             );
             assert_eq!(
@@ -1453,6 +1493,37 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_loop_is_judged_by_its_polling_not_its_last_frame() {
+        use crate::render_thread::RenderThreadPhase;
+        use hypercolor_core::engine::RenderLoopState;
+
+        let stall = std::time::Duration::from_secs(3);
+        let parked_for_a_minute = supervision(RenderThreadPhase::Running, 60_000, 400);
+        let check =
+            super::render_thread_check(&parked_for_a_minute, RenderLoopState::Running, true, stall);
+        assert_eq!(check.status, "pass", "{}", check.detail);
+        assert!(
+            check.detail.contains("parked with no output consumers"),
+            "{}",
+            check.detail
+        );
+
+        let wedged_while_parked = supervision(RenderThreadPhase::Running, 60_000, 5_000);
+        let check =
+            super::render_thread_check(&wedged_while_parked, RenderLoopState::Running, true, stall);
+        assert_eq!(check.status, "fail", "{}", check.detail);
+        assert!(check.detail.contains("polled"), "{}", check.detail);
+
+        let unparked = super::render_thread_check(
+            &parked_for_a_minute,
+            RenderLoopState::Running,
+            false,
+            stall,
+        );
+        assert_eq!(unparked.status, "fail", "{}", unparked.detail);
+    }
+
+    #[test]
     fn a_paused_loop_passes_the_render_thread_check_and_names_its_pause() {
         use crate::output_power::{OutputOverride, OutputPowerState};
         use crate::render_thread::RenderThreadPhase;
@@ -1462,6 +1533,7 @@ mod tests {
         let check = super::render_thread_check(
             &paused_for_a_minute,
             RenderLoopState::Paused,
+            false,
             std::time::Duration::from_secs(3),
         );
         assert_eq!(check.status, "pass", "{}", check.detail);

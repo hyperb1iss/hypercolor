@@ -199,6 +199,12 @@ pub(super) enum WorkerCommand {
         session_id: ServoSessionId,
         response_tx: SyncSender<Result<()>>,
     },
+    /// Throttle or unthrottle one session's webview without waiting for
+    /// the worker to apply it.
+    SetThrottled {
+        session_id: ServoSessionId,
+        throttled: bool,
+    },
     MemoryReport {
         response_tx: SyncSender<Result<ServoMemoryReportSnapshot>>,
     },
@@ -799,6 +805,28 @@ impl ServoWorkerClient {
         Ok(())
     }
 
+    /// Queue a webview throttle change for one session.
+    ///
+    /// Commands are ordered barriers on the worker, so a throttle queued
+    /// behind an in-flight render applies after that render finishes, and
+    /// the next render command unthrottles the webview again.
+    pub(super) fn set_session_throttled(
+        &self,
+        session_id: ServoSessionId,
+        throttled: bool,
+    ) -> Result<()> {
+        if !self.has_session(session_id) {
+            return Ok(());
+        }
+        self.try_send_command(
+            WorkerCommand::SetThrottled {
+                session_id,
+                throttled,
+            },
+            "set-throttled",
+        )
+    }
+
     pub(super) fn memory_report(&self) -> Result<ServoMemoryReportSnapshot> {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         self.try_send_command(WorkerCommand::MemoryReport { response_tx }, "memory-report")?;
@@ -919,6 +947,41 @@ mod tests {
             panic!("expected detached destroy command");
         };
         assert_eq!(queued_id, session_id);
+    }
+
+    #[test]
+    fn session_throttle_queues_without_waiting_and_skips_unknown_sessions() {
+        let (command_tx, command_rx) = mpsc::sync_channel(4);
+        let client =
+            ServoWorkerClient::new(command_tx, Arc::new(ServoWorkerClientSharedState::new()));
+        let session_id = ServoSessionId(11);
+
+        client
+            .set_session_throttled(session_id, true)
+            .expect("an unknown session has nothing to throttle");
+        assert!(command_rx.try_recv().is_err());
+
+        client.with_sessions(|sessions| {
+            sessions.insert(
+                session_id,
+                ClientStateSlot::new(ServoProducerRole::SceneHtml),
+            );
+        });
+        client
+            .set_session_throttled(session_id, true)
+            .expect("throttle should queue without waiting for the worker");
+
+        let WorkerCommand::SetThrottled {
+            session_id: queued_id,
+            throttled,
+        } = command_rx
+            .try_recv()
+            .expect("throttle command should be queued")
+        else {
+            panic!("expected a throttle command");
+        };
+        assert_eq!(queued_id, session_id);
+        assert!(throttled);
     }
 
     #[test]

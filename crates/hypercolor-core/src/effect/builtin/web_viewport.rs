@@ -286,6 +286,16 @@ impl EffectRenderer for WebViewportRenderer {
         Ok(())
     }
 
+    fn park(&mut self) {
+        // A live web page keeps animating between renders; throttling it
+        // stops its self-scheduled animation frames until the next render.
+        if let Some(session) = self.session.as_ref()
+            && let Err(error) = session.park()
+        {
+            tracing::debug!(%error, "Could not throttle the parked web viewport page");
+        }
+    }
+
     fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
         for (control_id, value) in batch.changes {
             match control_id.as_str() {

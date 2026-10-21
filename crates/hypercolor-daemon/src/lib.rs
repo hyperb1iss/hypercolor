@@ -42,6 +42,7 @@ pub mod macos_tcc_canary;
 pub mod mcp;
 pub mod mdns;
 pub mod network;
+pub mod output_demand;
 pub mod output_power;
 pub mod panic_hook;
 pub mod path_migration;

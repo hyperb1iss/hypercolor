@@ -5877,6 +5877,11 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
     state.discovery_runtime = Some(discovery_runtime.clone());
 
     let mut event_rx = event_bus.subscribe_all();
+    // The disconnect unmaps the only device, which would leave nothing
+    // consuming frames and park the loop. A frame subscriber keeps output
+    // demand alive, so the frames below prove the loop is not blocked on
+    // the disconnect I/O rather than that it parked.
+    let _frame_consumer = event_bus.frame_receiver();
     {
         let mut rl = state.render_loop.write().await;
         rl.start();
@@ -7829,6 +7834,8 @@ fn fast_restart_policy(max_restarts: u32) -> RenderRestartPolicy {
     }
 }
 
+/// A one-strip scene with no output device. Callers hold a frame receiver
+/// so the loop has a consumer and keeps rendering instead of parking.
 fn solid_strip_state() -> RenderThreadState {
     make_render_state(
         active_builtin_effect("solid_color", solid_color_controls(0, 255, 0)),
@@ -7890,6 +7897,7 @@ async fn injected_render_panic_is_logged_recorded_and_the_pipeline_resumes() {
     let record_path = state_dir.path().join(RENDER_FAILURE_FILE);
     let supervision = RenderSupervision::new(fast_restart_policy(3), Some(record_path.clone()));
     let state = solid_strip_state();
+    let _frame_consumer = state.event_bus.frame_receiver();
     state.render_loop.write().await.start();
     let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
         .expect("supervised render thread should spawn");
@@ -7970,6 +7978,7 @@ async fn repeated_render_panics_exhaust_the_restart_budget_and_request_terminati
     let record_path = state_dir.path().join(RENDER_FAILURE_FILE);
     let supervision = RenderSupervision::new(fast_restart_policy(2), Some(record_path.clone()));
     let state = solid_strip_state();
+    let _frame_consumer = state.event_bus.frame_receiver();
     state.render_loop.write().await.start();
     let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
         .expect("supervised render thread should spawn");
@@ -8000,6 +8009,7 @@ async fn repeated_render_panics_exhaust_the_restart_budget_and_request_terminati
 async fn lost_compositor_device_terminates_without_an_in_process_restart() {
     let supervision = RenderSupervision::new(fast_restart_policy(5), None);
     let state = solid_strip_state();
+    let _frame_consumer = state.event_bus.frame_receiver();
     state.render_loop.write().await.start();
     let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
         .expect("supervised render thread should spawn");
@@ -8026,6 +8036,7 @@ async fn injected_uncaptured_wgpu_error_is_logged_and_counted_without_killing_th
     let logs = captured_logs();
     let supervision = RenderSupervision::new(fast_restart_policy(3), None);
     let mut state = solid_strip_state();
+    let _frame_consumer = state.event_bus.frame_receiver();
     state.render_acceleration_mode = RenderAccelerationMode::Gpu;
     state.render_loop.write().await.start();
     let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
@@ -8067,7 +8078,16 @@ async fn render_thread_check_now(
     stall_after: Duration,
 ) -> hypercolor_types::api::diagnose::DiagnoseCheck {
     let loop_state = state.render_loop.read().await.state();
-    render_thread_check(&supervision.snapshot(), loop_state, stall_after)
+    // Diagnose reads the park from the performance telemetry, not from the
+    // render loop's flag; the two differ briefly around a wake.
+    let parked = state
+        .performance
+        .read()
+        .await
+        .output_demand_telemetry()
+        .parked_since
+        .is_some();
+    render_thread_check(&supervision.snapshot(), loop_state, parked, stall_after)
 }
 
 async fn wait_for_render_thread_check(
@@ -8112,6 +8132,7 @@ async fn render_thread_check_fails_while_frames_stall_and_passes_after_recovery(
     let stall_after = Duration::from_millis(300);
     let supervision = RenderSupervision::new(fast_restart_policy(3), None);
     let state = solid_strip_state();
+    let _frame_consumer = state.event_bus.frame_receiver();
     state.render_loop.write().await.start();
     let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
         .expect("supervised render thread should spawn");
@@ -8145,6 +8166,7 @@ async fn render_thread_check_fails_while_the_pipeline_restarts_and_passes_after(
         None,
     );
     let state = solid_strip_state();
+    let _frame_consumer = state.event_bus.frame_receiver();
     state.render_loop.write().await.start();
     let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
         .expect("supervised render thread should spawn");
@@ -8173,4 +8195,134 @@ async fn render_thread_check_fails_while_the_pipeline_restarts_and_passes_after(
     rt.shutdown()
         .await
         .expect("shutdown after a recovered restart");
+}
+
+#[tokio::test]
+async fn a_parked_loop_keeps_its_supervisor_heartbeat_fresh() {
+    let stall_after = Duration::from_millis(2_500);
+    let supervision = RenderSupervision::new(fast_restart_policy(3), None);
+    let state = solid_strip_state();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+
+    let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+    while !state.render_loop.read().await.is_parked() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a loop with no consumer should park"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Longer than the stall threshold: only the park wait's heartbeat can
+    // keep the check passing, since no frame completes while parked.
+    tokio::time::sleep(Duration::from_millis(3_000)).await;
+    assert!(state.render_loop.read().await.is_parked());
+    let check = render_thread_check_now(&state, &supervision, stall_after).await;
+    assert_eq!(check.status, "pass", "{}", check.detail);
+    assert!(
+        check.detail.contains("parked with no output consumers"),
+        "{}",
+        check.detail
+    );
+    assert!(supervision.watchdog_healthy());
+
+    state.render_loop.write().await.stop();
+    rt.shutdown().await.expect("shutdown while parked");
+}
+
+#[tokio::test]
+async fn a_new_pipeline_never_inherits_a_park_it_did_not_enter() {
+    let supervision = RenderSupervision::new(fast_restart_policy(3), None);
+    let state = solid_strip_state();
+    let _frame_consumer = state.event_bus.frame_receiver();
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.start();
+        // A park left behind by a pipeline that died while parked.
+        render_loop.park();
+    }
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+
+    wait_for_render_frames(&state, 3).await;
+    assert!(
+        !state.render_loop.read().await.is_parked(),
+        "a consumed loop must render unparked so effect time advances"
+    );
+
+    state.render_loop.write().await.stop();
+    rt.shutdown()
+        .await
+        .expect("shutdown after clearing a stale park");
+}
+
+#[tokio::test]
+async fn a_loop_resumed_from_a_long_pause_is_not_reported_as_stalled() {
+    let stall_after = Duration::from_millis(1_000);
+    let supervision = RenderSupervision::new(fast_restart_policy(3), None);
+    let state = solid_strip_state();
+    let _frame_consumer = state.event_bus.frame_receiver();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+    wait_for_render_frames(&state, 3).await;
+
+    state.render_loop.write().await.pause();
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    state.render_loop.write().await.resume();
+
+    // Read before the render thread can notice the resume: the last frame is
+    // a whole pause old, but frames have only been due since the last poll.
+    let check = render_thread_check_now(&state, &supervision, stall_after).await;
+    assert_eq!(check.status, "pass", "{}", check.detail);
+    let resumed_from = state.render_loop.read().await.frame_number();
+    wait_for_render_frames(&state, resumed_from + 3).await;
+    let check = render_thread_check_now(&state, &supervision, stall_after).await;
+    assert_eq!(check.status, "pass", "{}", check.detail);
+
+    state.render_loop.write().await.stop();
+    rt.shutdown().await.expect("shutdown after a long pause");
+}
+
+#[tokio::test]
+async fn a_loop_woken_from_a_long_park_is_not_reported_as_stalled() {
+    let stall_after = Duration::from_millis(1_000);
+    let supervision = RenderSupervision::new(fast_restart_policy(3), None);
+    let state = solid_strip_state();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+
+    let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+    while !state.render_loop.read().await.is_parked() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a loop with no consumer should park"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+    let parked_frame = state.render_loop.read().await.frame_number();
+    let _frame_consumer = state.event_bus.frame_receiver();
+    // Sample across the wake, including the first frame whose gate ends the
+    // park before that frame completes.
+    let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+    loop {
+        let check = render_thread_check_now(&state, &supervision, stall_after).await;
+        assert_eq!(check.status, "pass", "{}", check.detail);
+        if state.render_loop.read().await.frame_number() >= parked_frame + 3 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the woken loop should render"
+        );
+        tokio::task::yield_now().await;
+    }
+
+    state.render_loop.write().await.stop();
+    rt.shutdown().await.expect("shutdown after a long park");
 }

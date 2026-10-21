@@ -63,13 +63,19 @@ The `tier` field shows where the FPS controller has landed, as its rate and name
 
 The controller downshifts after 2 consecutive budget misses and only upshifts after sustained headroom, so a tier stuck below your target is a real signal.
 
+```
+render_loop   state=running, tier=full, parked=no_output_consumers
+```
+
+`parked` means nothing consumes rendered frames: no connected device, no open preview or stream, no capture. The loop renders nothing until one appears, then resumes at its current tier, so `0 fps` here is expected rather than a stall. `frame_liveness` passes while parked, and `hypercolor status` shows the same state on its render line. `snapshot.render.output_demand` in the JSON report lists the consumer counts the loop last saw and what last woke it.
+
 ### `render_thread`
 
 ```
 render_thread   phase=running, last_frame_age_ms=12, restarts=0, last_failure=none
 ```
 
-The render thread supervises its own pipeline. When a frame panics or the pipeline loses its input feed, the daemon logs the failure with a backtrace, rebuilds the pipeline with fresh GPU and render state, and keeps going. This check fails while that restart is in progress, when the thread has gone without completing a frame for 3 seconds while the loop runs, and when the thread is gone while the loop still says it is running. A paused loop passes, since no frames are due, and the detail names what paused it.
+The render thread supervises its own pipeline. When a frame panics or the pipeline loses its input feed, the daemon logs the failure with a backtrace, rebuilds the pipeline with fresh GPU and render state, and keeps going. This check fails while that restart is in progress, when the thread has gone without completing a frame for 3 seconds while the loop runs, and when the thread is gone while the loop still says it is running. A paused or parked loop passes as long as the thread keeps polling, since no frames are due, and the detail names what paused it.
 
 `restarts` counts in-process restarts since the daemon started. After five restarts within five minutes, or when the GPU device is lost, the daemon stops recovering in-process and exits with an error so its service manager starts a fresh process. Under systemd, a render thread stuck inside one frame for 20 seconds also stops the service watchdog keepalive, so systemd restarts the daemon. Every failure is also written to `render-failure.json` in the daemon state directory (`~/.local/state/hypercolor/` on Linux), so it survives a log that was lost. The next run reports that record here as `(earlier daemon run)`.
 

@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
-use tokio::sync::RwLock;
+use tokio::sync::futures::Notified;
+use tokio::sync::{Notify, RwLock};
 use tracing::{debug, info, trace, warn};
 
 use hypercolor_types::device::{
@@ -67,6 +68,7 @@ impl TrackedDevice {
 pub struct DeviceRegistry {
     inner: Arc<RwLock<RegistryInner>>,
     generation: Arc<AtomicU64>,
+    changed: Arc<Notify>,
 }
 
 #[derive(Debug, Default)]
@@ -152,6 +154,7 @@ impl DeviceRegistry {
         Self {
             inner: Arc::new(RwLock::new(RegistryInner::default())),
             generation: Arc::new(AtomicU64::new(0)),
+            changed: Arc::new(Notify::new()),
         }
     }
 
@@ -561,6 +564,15 @@ impl DeviceRegistry {
         self.generation.load(Ordering::Relaxed)
     }
 
+    /// Future that resolves the next time [`Self::generation`] moves.
+    ///
+    /// Pin it and call [`Notified::enable`] before reading the registry, so
+    /// a mutation that lands between the read and the await still wakes the
+    /// waiter.
+    pub fn changed(&self) -> Notified<'_> {
+        self.changed.notified()
+    }
+
     /// Number of devices currently tracked.
     pub async fn len(&self) -> usize {
         let inner = self.inner.read().await;
@@ -805,6 +817,7 @@ impl DeviceRegistry {
 
     fn bump_generation(&self) {
         self.generation.fetch_add(1, Ordering::Relaxed);
+        self.changed.notify_waiters();
     }
 }
 

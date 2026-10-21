@@ -564,6 +564,7 @@ from .remove_favorite_response_200 import RemoveFavoriteResponse200
 from .render_acceleration_status import RenderAccelerationStatus
 from .render_failure_status import RenderFailureStatus
 from .render_loop_status import RenderLoopStatus
+from .render_output_demand_status import RenderOutputDemandStatus
 from .render_supervision_status import RenderSupervisionStatus
 from .render_surface_status import RenderSurfaceStatus
 from .reorder_layers_request import ReorderLayersRequest
@@ -1188,6 +1189,7 @@ __all__ = (
     "RenderAccelerationStatus",
     "RenderFailureStatus",
     "RenderLoopStatus",
+    "RenderOutputDemandStatus",
     "RenderSupervisionStatus",
     "RenderSurfaceStatus",
     "ReorderLayersRequest",

@@ -39,6 +39,9 @@ pub struct RenderLoopStatus {
     pub running: bool,
     /// Pacing state and tier at the moment of the read.
     pub stats: hypercolor_core::engine::RenderLoopStats,
+    /// Render time at the moment of the read: the clock frame timestamps
+    /// use, which stops while the loop is paused or parked.
+    pub elapsed: std::time::Duration,
 }
 
 /// Owning authority for global output power, brightness, and quiescence.
@@ -151,6 +154,7 @@ impl OutputContext {
         RenderLoopStatus {
             running: guard.is_running(),
             stats: guard.stats(),
+            elapsed: guard.elapsed(),
         }
     }
 
@@ -216,7 +220,7 @@ impl OutputContext {
         };
         let frame_number = self
             .event_bus
-            .frame_receiver()
+            .frame_lane()
             .borrow()
             .frame_number
             .saturating_add(1);

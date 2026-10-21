@@ -108,11 +108,16 @@ pub struct RenderLoop {
     /// Increments whenever a live render loop enters the paused state.
     pause_generation: u64,
 
-    /// Wall-clock instant when the current pause began.
-    paused_at: Option<Instant>,
+    /// Wall-clock instant the current span excluded from elapsed time
+    /// began, while the loop is paused or parked.
+    held_since: Option<Instant>,
+
+    /// Whether the loop is parked: running, but rendering nothing because
+    /// nothing consumes its frames.
+    parked: bool,
 
     /// Total wall-clock time excluded from render elapsed time.
-    paused_duration: Duration,
+    held_duration: Duration,
 
     /// Monotonically increasing frame counter.
     frame_number: u64,
@@ -138,8 +143,9 @@ impl RenderLoop {
             running: Arc::new(AtomicBool::new(false)),
             state: RenderLoopState::Created,
             pause_generation: 0,
-            paused_at: None,
-            paused_duration: Duration::ZERO,
+            held_since: None,
+            parked: false,
+            held_duration: Duration::ZERO,
             frame_number: 0,
             start_time: None,
         }
@@ -154,8 +160,9 @@ impl RenderLoop {
             running: Arc::new(AtomicBool::new(false)),
             state: RenderLoopState::Created,
             pause_generation: 0,
-            paused_at: None,
-            paused_duration: Duration::ZERO,
+            held_since: None,
+            parked: false,
+            held_duration: Duration::ZERO,
             frame_number: 0,
             start_time: None,
         }
@@ -170,8 +177,9 @@ impl RenderLoop {
         self.running.store(true, Ordering::Release);
         self.state = RenderLoopState::Running;
         self.start_time = Some(Instant::now());
-        self.paused_at = None;
-        self.paused_duration = Duration::ZERO;
+        self.held_since = None;
+        self.parked = false;
+        self.held_duration = Duration::ZERO;
         info!(tier = %self.fps_controller.tier(), "Render loop started");
     }
 
@@ -206,7 +214,7 @@ impl RenderLoop {
         if self.state == RenderLoopState::Running {
             self.state = RenderLoopState::Paused;
             self.pause_generation = self.pause_generation.wrapping_add(1);
-            self.paused_at = Some(Instant::now());
+            self.begin_hold();
             debug!("Render loop paused");
         }
     }
@@ -214,11 +222,51 @@ impl RenderLoop {
     /// Resume from paused state.
     pub fn resume(&mut self) {
         if self.state == RenderLoopState::Paused {
-            if let Some(paused_at) = self.paused_at.take() {
-                self.paused_duration += paused_at.elapsed();
+            if !self.parked {
+                self.end_hold();
             }
             self.state = RenderLoopState::Running;
             debug!("Render loop resumed");
+        }
+    }
+
+    /// Park a running loop that renders nothing because nothing consumes
+    /// its frames.
+    ///
+    /// Parked time is excluded from [`elapsed`](Self::elapsed) the way
+    /// paused time is, so time-driven layers continue from where they
+    /// stopped instead of jumping by the parked span. The lifecycle state
+    /// stays [`Running`](RenderLoopState::Running).
+    pub fn park(&mut self) {
+        if self.state == RenderLoopState::Running && !self.parked {
+            self.parked = true;
+            self.begin_hold();
+        }
+    }
+
+    /// Leave a park started by [`park`](Self::park).
+    pub fn unpark(&mut self) {
+        if self.parked {
+            self.parked = false;
+            if self.state != RenderLoopState::Paused {
+                self.end_hold();
+            }
+        }
+    }
+
+    /// Whether the loop is parked.
+    #[must_use]
+    pub fn is_parked(&self) -> bool {
+        self.parked
+    }
+
+    fn begin_hold(&mut self) {
+        self.held_since.get_or_insert_with(Instant::now);
+    }
+
+    fn end_hold(&mut self) {
+        if let Some(held_since) = self.held_since.take() {
+            self.held_duration += held_since.elapsed();
         }
     }
 
@@ -249,6 +297,14 @@ impl RenderLoop {
     /// was in progress.
     pub fn frame_complete(&mut self) -> Option<FrameStats> {
         self.frame_complete_with_max_tier(None)
+    }
+
+    /// Drop the frame begun by [`tick`](Self::tick) without completing it.
+    ///
+    /// The frame never rendered, so it records no timing, feeds no tier
+    /// decision, and does not advance [`frame_number`](Self::frame_number).
+    pub fn abandon_frame(&mut self) {
+        self.fps_controller.abandon_frame();
     }
 
     /// Finalize the current frame and optionally apply a new runtime ceiling
@@ -296,9 +352,9 @@ impl RenderLoop {
     #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.start_time.map_or(Duration::ZERO, |started_at| {
-            let now = self.paused_at.unwrap_or_else(Instant::now);
+            let now = self.held_since.unwrap_or_else(Instant::now);
             now.duration_since(started_at)
-                .saturating_sub(self.paused_duration)
+                .saturating_sub(self.held_duration)
         })
     }
 
@@ -344,8 +400,9 @@ impl std::fmt::Debug for RenderLoop {
         f.debug_struct("RenderLoop")
             .field("state", &self.state)
             .field("pause_generation", &self.pause_generation)
-            .field("paused_at", &self.paused_at)
-            .field("paused_duration", &self.paused_duration)
+            .field("held_since", &self.held_since)
+            .field("parked", &self.parked)
+            .field("held_duration", &self.held_duration)
             .field("frame_number", &self.frame_number)
             .field("running", &self.running.load(Ordering::Relaxed))
             .field("start_time", &self.start_time)

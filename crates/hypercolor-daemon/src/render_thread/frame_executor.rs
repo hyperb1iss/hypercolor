@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame};
 use hypercolor_core::device::BackendManager;
@@ -14,10 +14,11 @@ use hypercolor_types::session::OffOutputBehavior;
 use super::frame_composer::{ComposeRequest, compose_frame};
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_metrics::{ActiveFrameMetricsInput, summarize_active_frame};
-use super::frame_policy::{FrameExecution, SkipDecision};
+use super::frame_policy::{FrameExecution, FramePolicy, SkipDecision};
 use super::frame_reporting::{FrameCompletionReport, report_active_frame_completion};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
 use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
+use super::output_gate::{GateDecision, ProducerSignature};
 use super::pipeline_runtime::PreparedCanvasResize;
 use super::pipeline_runtime::{
     FrameLoopState, OutputFrameSource, OutputReuseKey, PendingSamplingWork, PipelineRuntime,
@@ -339,6 +340,11 @@ pub(crate) async fn execute_frame(
             .frame_policy
             .complete_throttled_frame(&mut render_loop, Duration::ZERO);
     }
+    if let Some(parked) =
+        gate_output_demand(state, frame_loop, render, &mut runtime.frame_policy).await
+    {
+        return parked;
+    }
     render.sparkleflinger.wait_for_gpu_frame_budget();
     let mut scene_snapshot = build_frame_scene_snapshot(
         state,
@@ -529,6 +535,9 @@ pub(crate) async fn execute_frame(
     })
     .await;
     let render_us = render_stage.total_us;
+    frame_loop
+        .output_gate
+        .note_scene_transition(render_stage.scene_transition_active);
 
     let preview_advance_start = Instant::now();
     {
@@ -916,6 +925,54 @@ pub(crate) async fn execute_frame(
     }
 }
 
+/// Park the loop instead of rendering a frame nothing consumes.
+///
+/// The frame-rate inputs (audio, screen, interaction capture) feed only the
+/// frames, so their capture demand is withdrawn with them and comes back
+/// with the next rendered frame, and the effect producers quiesce work
+/// they would otherwise keep doing between frames.
+async fn gate_output_demand(
+    state: &RenderThreadState,
+    frame_loop: &mut FrameLoopState,
+    render: &mut RenderCaches,
+    frame_policy: &mut FramePolicy,
+) -> Option<FrameExecution> {
+    let consumers = frame_loop
+        .output_gate
+        .consumers(state, &frame_loop.input_demands)
+        .await;
+    let signature = ProducerSignature::observe(state).await;
+    let warming = render.render_zone_runtime.producers_warming()
+        || frame_loop.output_gate.transition_active();
+    let decision =
+        frame_loop
+            .output_gate
+            .decide(consumers.any(), signature, warming, Instant::now());
+    if decision == GateDecision::Render {
+        if frame_loop.output_gate.leave_park() {
+            state.performance.write().await.note_output_unparked();
+        }
+        return None;
+    }
+
+    frame_loop.output_gate.enter_park();
+    frame_loop.clear_input_demands();
+    let _ = render.screen_queue.clear_latest();
+    render.sparkleflinger.release_native_screen_caches();
+    render.render_zone_runtime.park_producers();
+    render.sparkleflinger.end_gpu_frame();
+    let began = state
+        .performance
+        .write()
+        .await
+        .note_output_parked(Instant::now());
+    if began {
+        debug!("Render loop parked: nothing consumes its frames");
+    }
+    let mut render_loop = state.render_loop.write().await;
+    Some(frame_policy.park_execution(&mut render_loop))
+}
+
 fn publish_input_demands(
     frame_loop: &mut super::pipeline_runtime::FrameLoopState,
     effect_demand: super::scene_snapshot::EffectDemand,
@@ -973,7 +1030,7 @@ async fn force_static_sleep_snapshot(
 
     let frame_number = state
         .event_bus
-        .frame_receiver()
+        .frame_lane()
         .borrow()
         .frame_number
         .saturating_add(1);

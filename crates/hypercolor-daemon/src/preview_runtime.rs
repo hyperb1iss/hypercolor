@@ -84,7 +84,13 @@ struct PreviewRuntimeTelemetry {
     screen_canvas: PreviewObservation,
     web_viewport_canvas: PreviewObservation,
     zone_preview: PreviewObservation,
+    /// Frame number of the first frame after the render loop last woke
+    /// from a park, tagged with [`RENDER_RESUME_FRAME_SET`]; zero until the
+    /// loop first wakes.
+    render_resume_frame: AtomicU64,
 }
+
+const RENDER_RESUME_FRAME_SET: u64 = 1 << 32;
 
 impl PreviewRuntimeTelemetry {
     fn preview(&self, kind: PreviewKind) -> &PreviewObservation {
@@ -286,6 +292,28 @@ impl PreviewRuntime {
 
     pub fn clear_interactive_executor(&self) {
         self.interactive_executor.store(None);
+    }
+
+    /// Record the frame number the render loop renders first after waking
+    /// from an output-demand park.
+    pub fn note_render_resume(&self, frame_number: u32) {
+        self.telemetry.render_resume_frame.store(
+            RENDER_RESUME_FRAME_SET | u64::from(frame_number),
+            Ordering::Release,
+        );
+    }
+
+    /// Whether `frame_number` is the first frame after the most recent wake
+    /// from a park.
+    ///
+    /// Asynchronous producers deliver one tick late, so that frame composes
+    /// producer output requested before the park. Consumers that need output
+    /// rendered after they asked, such as canvas captures, wait one more
+    /// frame.
+    #[must_use]
+    pub fn is_render_resume_frame(&self, frame_number: u32) -> bool {
+        self.telemetry.render_resume_frame.load(Ordering::Acquire)
+            == RENDER_RESUME_FRAME_SET | u64::from(frame_number)
     }
 
     pub fn note_canvas_frame(&self, frame_number: u32, timestamp_ms: u32) {

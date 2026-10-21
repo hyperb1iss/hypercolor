@@ -162,6 +162,7 @@ impl ServoRenderer {
         let display_descriptor = (self.producer_role == ServoProducerRole::DisplayFaceHtml)
             .then(|| self.display_descriptor.clone())
             .flatten();
+        self.awaiting_first_frame = true;
         self.load_task = Some(start_servo_load_task(
             metadata.name.clone(),
             path.clone(),

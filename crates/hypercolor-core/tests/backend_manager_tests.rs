@@ -1542,6 +1542,38 @@ fn map_and_unmap_device() {
 }
 
 #[test]
+fn mapped_device_targets_list_each_binding_with_its_backend() {
+    let mut manager = BackendManager::new();
+    let strip = DeviceId::new();
+    let display = DeviceId::new();
+    assert_eq!(manager.mapped_device_targets().count(), 0);
+
+    manager.map_device("wled:strip_1", "wled", strip);
+    manager.map_device("wled:strip_1_alias", "wled", strip);
+    manager.map_device("simulator:lcd", "simulator", display);
+
+    let mut targets = manager
+        .mapped_device_targets()
+        .map(|(backend_id, device_id)| (backend_id.to_owned(), device_id))
+        .collect::<Vec<_>>();
+    targets.sort();
+    let mut expected = vec![
+        ("simulator".to_owned(), display),
+        ("wled".to_owned(), strip),
+        ("wled".to_owned(), strip),
+    ];
+    expected.sort();
+    assert_eq!(targets, expected);
+
+    assert!(manager.unmap_device("simulator:lcd"));
+    assert!(
+        manager
+            .mapped_device_targets()
+            .all(|(backend_id, device_id)| backend_id == "wled" && device_id == strip)
+    );
+}
+
+#[test]
 fn unmap_device_clears_cached_target_fps_when_last_mapping_is_removed() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));

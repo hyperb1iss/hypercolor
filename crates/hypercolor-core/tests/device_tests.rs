@@ -406,6 +406,40 @@ async fn registry_add_and_get() {
 }
 
 #[tokio::test]
+async fn registry_changes_wake_waiters_armed_before_they_land() {
+    let registry = DeviceRegistry::new();
+    let device = mock_device_info("Case Fans");
+    let id = device.id;
+
+    let changed = registry.changed();
+    tokio::pin!(changed);
+    changed.as_mut().enable();
+    registry.add(device).await;
+    tokio::time::timeout(Duration::from_millis(200), changed)
+        .await
+        .expect("adding a device should wake a waiter armed before it");
+
+    let changed = registry.changed();
+    tokio::pin!(changed);
+    changed.as_mut().enable();
+    assert!(registry.set_state(&id, DeviceState::Connected).await);
+    tokio::time::timeout(Duration::from_millis(200), changed)
+        .await
+        .expect("a state change should wake a waiter armed before it");
+
+    let changed = registry.changed();
+    tokio::pin!(changed);
+    changed.as_mut().enable();
+    assert!(registry.set_state(&id, DeviceState::Connected).await);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), changed)
+            .await
+            .is_err(),
+        "a no-op state write should not wake waiters"
+    );
+}
+
+#[tokio::test]
 async fn registry_add_returns_existing_id() {
     let registry = DeviceRegistry::new();
     let device = mock_device_info("Desk Strip");
