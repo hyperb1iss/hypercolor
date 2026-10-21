@@ -8077,10 +8077,16 @@ async fn render_thread_check_now(
     supervision: &RenderSupervision,
     stall_after: Duration,
 ) -> hypercolor_types::api::diagnose::DiagnoseCheck {
-    let (loop_state, parked) = {
-        let render_loop = state.render_loop.read().await;
-        (render_loop.state(), render_loop.is_parked())
-    };
+    let loop_state = state.render_loop.read().await.state();
+    // Diagnose reads the park from the performance telemetry, not from the
+    // render loop's flag; the two differ briefly around a wake.
+    let parked = state
+        .performance
+        .read()
+        .await
+        .output_demand_telemetry()
+        .parked_since
+        .is_some();
     render_thread_check(&supervision.snapshot(), loop_state, parked, stall_after)
 }
 
@@ -8250,4 +8256,73 @@ async fn a_new_pipeline_never_inherits_a_park_it_did_not_enter() {
     rt.shutdown()
         .await
         .expect("shutdown after clearing a stale park");
+}
+
+#[tokio::test]
+async fn a_loop_resumed_from_a_long_pause_is_not_reported_as_stalled() {
+    let stall_after = Duration::from_millis(1_000);
+    let supervision = RenderSupervision::new(fast_restart_policy(3), None);
+    let state = solid_strip_state();
+    let _frame_consumer = state.event_bus.frame_receiver();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+    wait_for_render_frames(&state, 3).await;
+
+    state.render_loop.write().await.pause();
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    state.render_loop.write().await.resume();
+
+    // Read before the render thread can notice the resume: the last frame is
+    // a whole pause old, but frames have only been due since the last poll.
+    let check = render_thread_check_now(&state, &supervision, stall_after).await;
+    assert_eq!(check.status, "pass", "{}", check.detail);
+    let resumed_from = state.render_loop.read().await.frame_number();
+    wait_for_render_frames(&state, resumed_from + 3).await;
+    let check = render_thread_check_now(&state, &supervision, stall_after).await;
+    assert_eq!(check.status, "pass", "{}", check.detail);
+
+    state.render_loop.write().await.stop();
+    rt.shutdown().await.expect("shutdown after a long pause");
+}
+
+#[tokio::test]
+async fn a_loop_woken_from_a_long_park_is_not_reported_as_stalled() {
+    let stall_after = Duration::from_millis(1_000);
+    let supervision = RenderSupervision::new(fast_restart_policy(3), None);
+    let state = solid_strip_state();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+
+    let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+    while !state.render_loop.read().await.is_parked() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a loop with no consumer should park"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+    let parked_frame = state.render_loop.read().await.frame_number();
+    let _frame_consumer = state.event_bus.frame_receiver();
+    // Sample across the wake, including the first frame whose gate ends the
+    // park before that frame completes.
+    let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+    loop {
+        let check = render_thread_check_now(&state, &supervision, stall_after).await;
+        assert_eq!(check.status, "pass", "{}", check.detail);
+        if state.render_loop.read().await.frame_number() >= parked_frame + 3 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the woken loop should render"
+        );
+        tokio::task::yield_now().await;
+    }
+
+    state.render_loop.write().await.stop();
+    rt.shutdown().await.expect("shutdown after a long park");
 }

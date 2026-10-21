@@ -563,7 +563,7 @@ fn render_thread_status(
             let (age, activity) = if idle {
                 (supervision.last_heartbeat_age, "polled")
             } else {
-                (supervision.last_frame_age, "completed a frame")
+                (supervision.frame_due_age, "completed a frame")
             };
             match age {
                 Some(age) if loop_active && age >= stall_after => (
@@ -1397,6 +1397,7 @@ mod tests {
             max_restarts: 5,
             last_heartbeat_age: Some(std::time::Duration::from_millis(heartbeat_age_ms)),
             last_frame_age: Some(std::time::Duration::from_millis(frame_age_ms)),
+            frame_due_age: Some(std::time::Duration::from_millis(frame_age_ms)),
             current_run: None,
             last_failure: None,
             last_failure_in_this_process: false,
