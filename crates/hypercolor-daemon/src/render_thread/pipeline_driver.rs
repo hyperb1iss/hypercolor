@@ -21,6 +21,7 @@ pub(crate) async fn run_pipeline(
         mode = ?state.render_acceleration_mode,
         "render pipeline started"
     );
+    clear_stale_park(&state).await;
     let mut skip_decision = SkipDecision::None;
     let mut next_frame_at = Instant::now();
     let mut rebase_clock_on_resume = false;
@@ -79,6 +80,24 @@ pub(crate) async fn run_pipeline(
     }
 
     info!("render pipeline exited");
+}
+
+/// Leave a park that a previous pipeline entered and never left.
+///
+/// The park flag and its hold live on the shared render loop, but the
+/// output gate that would end them belongs to the pipeline. A pipeline that
+/// replaces one that failed while parked starts with a fresh gate, so it
+/// would otherwise render with effect time still held.
+async fn clear_stale_park(state: &RenderThreadState) {
+    let was_parked = {
+        let mut render_loop = state.render_loop.write().await;
+        let was_parked = render_loop.is_parked();
+        render_loop.unpark();
+        was_parked
+    };
+    if was_parked {
+        state.performance.write().await.note_output_unparked();
+    }
 }
 
 /// Pick the loop back up after a park without a jump in effect time.

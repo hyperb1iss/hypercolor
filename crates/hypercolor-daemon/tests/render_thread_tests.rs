@@ -8225,3 +8225,29 @@ async fn a_parked_loop_keeps_its_supervisor_heartbeat_fresh() {
     state.render_loop.write().await.stop();
     rt.shutdown().await.expect("shutdown while parked");
 }
+
+#[tokio::test]
+async fn a_new_pipeline_never_inherits_a_park_it_did_not_enter() {
+    let supervision = RenderSupervision::new(fast_restart_policy(3), None);
+    let state = solid_strip_state();
+    let _frame_consumer = state.event_bus.frame_receiver();
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.start();
+        // A park left behind by a pipeline that died while parked.
+        render_loop.park();
+    }
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+
+    wait_for_render_frames(&state, 3).await;
+    assert!(
+        !state.render_loop.read().await.is_parked(),
+        "a consumed loop must render unparked so effect time advances"
+    );
+
+    state.render_loop.write().await.stop();
+    rt.shutdown()
+        .await
+        .expect("shutdown after clearing a stale park");
+}
