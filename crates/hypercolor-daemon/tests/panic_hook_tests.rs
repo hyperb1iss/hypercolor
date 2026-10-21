@@ -74,11 +74,17 @@ fn hook_reports_a_named_thread_panic_to_observers_the_catcher_and_the_previous_h
         "location should point at the panic site: {:?}",
         recent.location
     );
+    // A build without debuginfo cannot name this test's frames at all, so
+    // the excerpt can only be held to the frames the backtrace does name.
+    let excerpt = recent.backtrace_excerpt();
     assert!(
-        recent.backtrace_excerpt().contains("panic_hook_tests"),
-        "the excerpt should start near the panicking frame:\n{}\nfull backtrace:\n{}",
-        recent.backtrace_excerpt(),
+        !recent.backtrace.contains("panic_hook_tests") || excerpt.contains("panic_hook_tests"),
+        "the excerpt dropped the panicking frame:\n{excerpt}\nfull backtrace:\n{}",
         recent.backtrace
+    );
+    assert!(
+        !excerpt.contains("Backtrace::force_capture"),
+        "the excerpt should skip the capture frames:\n{excerpt}"
     );
     assert!(
         PREVIOUS_HOOK_CALLS.load(Ordering::SeqCst) > previous_calls,
