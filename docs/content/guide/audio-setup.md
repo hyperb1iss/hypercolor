@@ -36,7 +36,7 @@ When `[audio].device` is set to `"default"` (the out-of-the-box value), the daem
 
 **On Linux**, it queries the PulseAudio compatibility layer (which PipeWire exposes) for the default sink name, constructs the monitor source name as `{sink_name}.monitor`, and verifies it exists before opening the stream.
 
-**On Windows and macOS**, capture goes through the platform audio API (WASAPI and CoreAudio, via cpal). The daemon scans the available input devices for one whose name looks like a loopback; it matches "monitor", "loopback", "what u hear", and "stereo mix", and opens the first hit. If no loopback-named input device exists, system-audio capture is unavailable, while microphone capture (`device = "microphone"`) still works.
+**On Windows and macOS**, capture goes through the platform audio API (WASAPI and CoreAudio, via cpal). The daemon scans the available input devices for one whose name looks like a loopback; it matches "monitor", "loopback", "what u hear", and "stereo mix", and opens the first hit. If no loopback-named input device exists, Windows falls back to the default input device, which is usually a microphone. macOS falls back the same way only when Hypercolor already has Microphone permission. Otherwise the daemon opens nothing, audio-reactive effects receive silence, and `hypercolor diagnose --check input` explains why: `audio_loopback_unavailable`, with a hint to choose Default Microphone or a loopback input device, while you have not answered the Microphone prompt yet, or `audio_permission_denied` if you turned it down. See [macOS](#macos-install-a-loopback-driver) below.
 
 You can confirm detection worked by applying any audio-reactive effect (the built-in `audio-pulse` effect is designed for exactly this) and watching the TUI spectrum strip described at the end of this page.
 
@@ -89,7 +89,9 @@ macOS exposes no system-audio input at all, so an audio-reactive setup needs a l
 
 1. Install [BlackHole](https://existential.audio/blackhole/) (free) or a commercial tool like Rogue Amoeba's Loopback.
 2. Route your output through it. The usual pattern is a Multi-Output Device in Audio MIDI Setup containing both your speakers and BlackHole, so you hear the audio while Hypercolor captures it.
-3. Leave `device = "default"` (the daemon spots the loopback by name), or set `device` to the loopback device's exact name.
+3. Pick the loopback device under **Device** in the Audio settings, or set `device` to its exact name as `hypercolor audio devices` lists it (BlackHole appears as `BlackHole 2ch`). `device = "default"` finds a loopback on its own only when the device name contains "loopback" or "monitor".
+
+macOS treats every audio input as a microphone, loopback drivers included, so the first capture from any input asks for Microphone permission. The default source never falls back to the microphone just to trigger that prompt. The prompt appears when the daemon first opens an input you set up: Default Microphone, a named device such as BlackHole, or a loopback-named device that `"default"` found. Until you grant access, `"default"` with no loopback device waits silently instead of falling back to the microphone. If you denied the prompt earlier, allow Hypercolor under System Settings → Privacy & Security → Microphone.
 
 ---
 
@@ -156,7 +158,7 @@ If the strip shows "No audio", the daemon is not receiving samples. Work through
 
 1. Run `hypercolor audio devices` and confirm the active device is a monitor or loopback source.
 2. On Linux, run `pactl list short sources` and check that the monitor source you configured actually exists. If you recently changed your audio hardware or switched PipeWire profiles, the source name may have changed.
-3. On Windows and macOS, confirm a loopback-named input device exists at all (Stereo Mix, a virtual cable, or BlackHole) and that your output is routed through it.
+3. On Windows and macOS, confirm a loopback input device exists at all (Stereo Mix, a virtual cable, or BlackHole) and that your output is routed through it. On macOS, `audio_loopback_unavailable` in `hypercolor diagnose --check input` means the daemon found no loopback device and is waiting for you to choose an input.
 4. Check that `enabled = true` in `[audio]`. After editing the file, restart the daemon (or rely on `watch_config = true`, the default, to hot-reload) so the change takes effect.
 5. On Linux, make sure nothing is preventing the daemon from connecting to the PulseAudio compatibility socket. On some minimal installs, `pipewire-pulse` is not running; start it with `systemctl --user start pipewire-pulse`.
 

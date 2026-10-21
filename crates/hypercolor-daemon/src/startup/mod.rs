@@ -260,6 +260,10 @@ pub struct DaemonState {
     pub(super) startup_device_aliases: Option<crate::device_aliases::DeviceAliasFile>,
     pub(super) startup_runtime_snapshot: Option<crate::runtime_state::RuntimeSessionSnapshot>,
 
+    /// Whether initialization found no runtime session, named-scene store,
+    /// or library store, so the first start applies the first-run defaults.
+    pub(super) fresh_install: bool,
+
     /// Global discovery scan lock shared across startup and API-triggered scans.
     pub discovery_in_progress: Arc<AtomicBool>,
 

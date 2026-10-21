@@ -23,6 +23,7 @@ pub mod fft;
 pub mod linux;
 pub mod realtime;
 
+use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -40,7 +41,10 @@ use crate::input::traits::{
     AudioSource, AudioSourceRole, InputData, InputSource, SourceRoleBinding,
 };
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
-use hypercolor_types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
+use hypercolor_macos_capture::microphone_record_permission;
+use hypercolor_types::audio::{
+    AudioData, AudioInputPermission, AudioPipelineConfig, AudioSourceType,
+};
 use hypercolor_types::event::TimedInputEvent;
 use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
@@ -324,6 +328,7 @@ pub(super) enum AudioFailureKind {
     PermissionDenied = 2,
     BackendUnavailable = 3,
     AnalysisWorkerExited = 4,
+    LoopbackUnavailable = 5,
 }
 
 impl AudioFailureKind {
@@ -333,6 +338,7 @@ impl AudioFailureKind {
             2 => Self::PermissionDenied,
             3 => Self::BackendUnavailable,
             4 => Self::AnalysisWorkerExited,
+            5 => Self::LoopbackUnavailable,
             _ => Self::None,
         }
     }
@@ -344,6 +350,7 @@ impl AudioFailureKind {
             Self::PermissionDenied => "audio_permission_denied",
             Self::BackendUnavailable => "audio_backend_unavailable",
             Self::AnalysisWorkerExited => "audio_analysis_worker_exited",
+            Self::LoopbackUnavailable => "audio_loopback_unavailable",
         }
     }
 
@@ -354,11 +361,97 @@ impl AudioFailureKind {
             Self::PermissionDenied => "audio capture permission was denied",
             Self::BackendUnavailable => "audio capture backend stopped unexpectedly",
             Self::AnalysisWorkerExited => "audio analysis worker stopped unexpectedly",
+            Self::LoopbackUnavailable => "no system audio loopback device found",
+        }
+    }
+
+    const fn remediation(self) -> Option<&'static str> {
+        match self {
+            Self::LoopbackUnavailable => Some(
+                "choose Default Microphone or a loopback input device in audio settings to \
+                 capture audio",
+            ),
+            Self::None
+            | Self::DeviceLost
+            | Self::PermissionDenied
+            | Self::BackendUnavailable
+            | Self::AnalysisWorkerExited => None,
+        }
+    }
+
+    fn issue(self) -> SourceIssue {
+        let issue = SourceIssue::new(self.issue_code(), self.message(), true);
+        match self.remediation() {
+            Some(remediation) => issue.with_remediation(remediation),
+            None => issue,
         }
     }
 }
 
+/// Whether system-monitor capture may fall back to the default input device.
+///
+/// With no loopback device to open, the fallback is whatever the platform
+/// calls its default input, usually a microphone. Opening it is acceptable
+/// only when that cannot surprise the user with a permission prompt they
+/// never asked for: the platform has no such prompt, or the user already
+/// granted access. An explicit microphone or named-device choice is the
+/// user's own request and never passes through this rule.
+#[must_use]
+pub const fn default_input_fallback_allowed(permission: AudioInputPermission) -> bool {
+    matches!(
+        permission,
+        AudioInputPermission::Granted | AudioInputPermission::NotRequired
+    )
+}
+
+/// System-monitor capture declined to open the default input in place of a
+/// missing loopback device.
+#[derive(Debug)]
+struct DefaultInputFallbackRefused {
+    permission: AudioInputPermission,
+}
+
+impl DefaultInputFallbackRefused {
+    const fn failure(&self) -> AudioFailureKind {
+        match self.permission {
+            AudioInputPermission::Denied => AudioFailureKind::PermissionDenied,
+            AudioInputPermission::Granted
+            | AudioInputPermission::Undetermined
+            | AudioInputPermission::NotRequired => AudioFailureKind::LoopbackUnavailable,
+        }
+    }
+}
+
+impl fmt::Display for DefaultInputFallbackRefused {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.permission == AudioInputPermission::Denied {
+            formatter.write_str(
+                "no system audio loopback device found and audio input permission was denied; \
+                 allow Hypercolor to use the microphone in the system privacy settings to \
+                 capture audio",
+            )
+        } else {
+            formatter.write_str(
+                "no system audio loopback device found; choose Default Microphone or a \
+                 loopback input device to capture audio",
+            )
+        }
+    }
+}
+
+impl std::error::Error for DefaultInputFallbackRefused {}
+
+/// The failure a refused default-input fallback stands for, if `error` is one.
+fn refused_fallback_failure(error: &anyhow::Error) -> Option<AudioFailureKind> {
+    error
+        .downcast_ref::<DefaultInputFallbackRefused>()
+        .map(DefaultInputFallbackRefused::failure)
+}
+
 fn classify_audio_start_failure(error: &anyhow::Error) -> AudioFailureKind {
+    if let Some(failure) = refused_fallback_failure(error) {
+        return failure;
+    }
     let message = format!("{error:#}").to_ascii_lowercase();
     if ["permission", "access denied", "not authorized"]
         .iter()
@@ -546,7 +639,9 @@ fn audio_reconnect_delay(failure: AudioFailureKind, attempt: u32) -> Duration {
     let exponent = attempt.min(4);
     let multiplier = 1_u32 << exponent;
     match failure {
-        AudioFailureKind::DeviceLost => Duration::from_millis(250 * u64::from(multiplier)),
+        AudioFailureKind::DeviceLost | AudioFailureKind::LoopbackUnavailable => {
+            Duration::from_millis(250 * u64::from(multiplier))
+        }
         AudioFailureKind::AnalysisWorkerExited => {
             Duration::from_millis(500 * u64::from(multiplier))
         }
@@ -634,6 +729,8 @@ pub(super) struct PreparedAudioReconfiguration {
     latest_snapshot: Option<Arc<ArcSwapOption<CapturedAudioSnapshot>>>,
     status: Option<SourceStatusReporter>,
     terminal_failure: Arc<AtomicU8>,
+    /// A refused default-input fallback staged in place of a capture runtime.
+    staged_failure: Option<AudioFailureKind>,
 }
 
 pub(super) struct AudioPreparationRequest {
@@ -667,11 +764,18 @@ impl PreparedAudioReconfiguration {
     ) -> anyhow::Result<Self> {
         let terminal_failure = Arc::new(AtomicU8::new(AudioFailureKind::None as u8));
         let should_start_capture = request.running && request.capture_active;
+        let mut staged_failure = None;
         let capture = if should_start_capture {
-            Some(build_capture(
-                &request.config,
-                Arc::clone(&terminal_failure),
-            )?)
+            match build_capture(&request.config, Arc::clone(&terminal_failure)) {
+                Ok(capture) => Some(capture),
+                // A refused fallback is a source waiting for the user's
+                // choice, not a failed reconfiguration. The committed source
+                // stays silent and retries like a running one would.
+                Err(error) => {
+                    staged_failure = Some(refused_fallback_failure(&error).ok_or(error)?);
+                    None
+                }
+            }
         } else {
             None
         };
@@ -718,6 +822,7 @@ impl PreparedAudioReconfiguration {
             latest_snapshot,
             status,
             terminal_failure,
+            staged_failure,
         })
     }
 
@@ -886,20 +991,29 @@ impl AudioInput {
         Ok(())
     }
 
+    /// Publish a new recoverable failure once, as its transition happens.
+    fn report_failure(&mut self, failure: AudioFailureKind) {
+        self.last_failure = failure;
+        if failure == AudioFailureKind::LoopbackUnavailable {
+            tracing::info!(
+                input = %self.name,
+                source = ?self.config.source,
+                "No system audio loopback device found; audio stays silent until an input \
+                 is chosen in audio settings"
+            );
+        }
+        if let Some(status) = self.status.session() {
+            status.degraded(failure.issue());
+        }
+    }
+
     fn poll_recovery(&mut self) -> anyhow::Result<()> {
         let failure = self
             .recovery
             .as_ref()
             .map_or(AudioFailureKind::None, RecoveryWorker::failure);
         if failure != AudioFailureKind::None && failure != self.last_failure {
-            self.last_failure = failure;
-            if let Some(status) = self.status.session() {
-                status.degraded(SourceIssue::new(
-                    failure.issue_code(),
-                    failure.message(),
-                    true,
-                ));
-            }
+            self.report_failure(failure);
         }
 
         let recovery_poll = self
@@ -914,11 +1028,7 @@ impl AudioInput {
                 let failure = AudioFailureKind::AnalysisWorkerExited;
                 self.schedule_recovery(failure)?;
                 if let Some(status) = self.status.session() {
-                    status.degraded(SourceIssue::new(
-                        failure.issue_code(),
-                        failure.message(),
-                        true,
-                    ));
+                    status.degraded(failure.issue());
                 }
                 return Ok(());
             }
@@ -965,11 +1075,7 @@ impl AudioInput {
             self.last_status_snapshot = None;
             self.schedule_recovery(failure)?;
             if let Some(status) = self.status.session() {
-                status.degraded(SourceIssue::new(
-                    failure.issue_code(),
-                    failure.message(),
-                    true,
-                ));
+                status.degraded(failure.issue());
             }
         }
         self.poll_recovery()?;
@@ -1043,10 +1149,21 @@ impl AudioInput {
         let should_capture = prepared.running
             && prepared.capture_active
             && !matches!(prepared.config.source, AudioSourceType::None);
-        if should_capture && prepared.capture.is_none() {
+        let staged_failure = prepared.staged_failure.take().filter(|_| should_capture);
+        if should_capture && prepared.capture.is_none() && staged_failure.is_none() {
             prepared.status = Some(status);
             anyhow::bail!("active prepared audio source is missing its capture runtime");
         }
+        let recovery = match staged_failure
+            .map(|failure| RecoveryWorker::spawn(&prepared.config, failure))
+            .transpose()
+        {
+            Ok(recovery) => recovery,
+            Err(error) => {
+                prepared.status = Some(status);
+                return Err(error);
+            }
+        };
         if should_capture && let Err(error) = status.begin_session() {
             prepared.status = Some(status);
             return Err(error.into());
@@ -1056,7 +1173,7 @@ impl AudioInput {
             .latest_snapshot
             .take()
             .expect("prepared audio snapshot slot is committed exactly once");
-        Ok(Self {
+        let mut input = Self {
             name: std::mem::take(&mut prepared.name),
             running: prepared.running,
             capture_active: prepared.capture_active,
@@ -1072,12 +1189,17 @@ impl AudioInput {
             latest_snapshot,
             last_status_snapshot: None,
             capture,
-            recovery: None,
+            recovery,
             degraded_to_silence: false,
             last_failure: AudioFailureKind::None,
             prepared_failure: Arc::clone(&prepared.terminal_failure),
             status,
-        })
+        };
+        if let Some(failure) = staged_failure {
+            input.degraded_to_silence = true;
+            input.report_failure(failure);
+        }
+        Ok(input)
     }
 
     fn reset_analyzer(&mut self) {
@@ -1188,11 +1310,7 @@ impl AudioInput {
             if self.degraded_to_silence
                 && let Some(status) = status
             {
-                status.degraded(SourceIssue::new(
-                    self.last_failure.issue_code(),
-                    self.last_failure.message(),
-                    true,
-                ));
+                status.degraded(self.last_failure.issue());
             }
             self.capture_active = true;
             Ok(())
@@ -1244,11 +1362,7 @@ impl InputSource for AudioInput {
         if self.degraded_to_silence
             && let Some(status) = status
         {
-            status.degraded(SourceIssue::new(
-                self.last_failure.issue_code(),
-                self.last_failure.message(),
-                true,
-            ));
+            status.degraded(self.last_failure.issue());
         }
         self.running = true;
         Ok(())
@@ -1593,8 +1707,18 @@ fn select_input_device(
                 return Ok(selected);
             }
 
-            let device = find_monitor_input_device(host)?
-                .or_else(|| host.default_input_device())
+            if let Some(device) = find_monitor_input_device(host)? {
+                return Ok(SelectedInputDevice::new(device));
+            }
+            // Only macOS gates audio input behind a prompt; the capture crate
+            // reports `NotRequired` everywhere else, so Linux and Windows keep
+            // falling back to the default input unconditionally.
+            let permission = microphone_record_permission();
+            if !default_input_fallback_allowed(permission) {
+                return Err(DefaultInputFallbackRefused { permission }.into());
+            }
+            let device = host
+                .default_input_device()
                 .ok_or_else(|| anyhow!("no input device available for system monitor capture"))?;
             Ok(SelectedInputDevice::new(device))
         }
@@ -2387,10 +2511,122 @@ fn analysis_dt_seconds(sample_count: usize, sample_rate_hz: u32) -> f32 {
     dt
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn refused_fallback_waits_for_a_source_choice_until_access_is_answered() {
+        let error = anyhow::Error::from(DefaultInputFallbackRefused {
+            permission: AudioInputPermission::Undetermined,
+        });
+
+        let failure = classify_audio_start_failure(&error);
+        let issue = failure.issue();
+
+        assert_eq!(failure, AudioFailureKind::LoopbackUnavailable);
+        assert_eq!(issue.code.as_ref(), "audio_loopback_unavailable");
+        assert!(issue.retryable);
+        assert!(
+            issue
+                .remediation
+                .as_deref()
+                .is_some_and(|remediation| remediation.contains("Default Microphone"))
+        );
+        assert!(error.to_string().contains("choose Default Microphone"));
+    }
+
+    #[test]
+    fn refused_fallback_reports_denied_access_as_a_permission_failure() {
+        let error = anyhow::Error::from(DefaultInputFallbackRefused {
+            permission: AudioInputPermission::Denied,
+        });
+
+        assert_eq!(
+            classify_audio_start_failure(&error),
+            AudioFailureKind::PermissionDenied
+        );
+        assert!(error.to_string().contains("privacy settings"));
+    }
+
+    fn staged_refusal_request() -> AudioPreparationRequest {
+        AudioPreparationRequest {
+            running: true,
+            source_graph_generation: 1,
+            predecessor_status: None,
+            // The staged source's recovery worker retries for real; a missing
+            // named device keeps those retries from opening any host input.
+            config: AudioPipelineConfig {
+                source: AudioSourceType::Named("__hypercolor_staged_refusal_probe__".to_owned()),
+                ..AudioPipelineConfig::default()
+            },
+            name: "AudioInput(staged-refusal)".to_owned(),
+            capture_active: true,
+        }
+    }
+
+    #[test]
+    fn live_reconfiguration_commits_a_refused_fallback_as_a_waiting_source() {
+        let mut prepared =
+            PreparedAudioReconfiguration::prepare_with_capture(staged_refusal_request(), |_, _| {
+                Err(DefaultInputFallbackRefused {
+                    permission: AudioInputPermission::Undetermined,
+                }
+                .into())
+            })
+            .expect("a refused fallback stages a waiting source instead of failing");
+
+        let mut input = AudioInput::from_prepared(&mut prepared)
+            .expect("the staged source commits without a capture runtime");
+
+        assert!(input.capture.is_none());
+        assert!(
+            input.recovery.is_some(),
+            "the waiting source keeps retrying"
+        );
+        let snapshot = input.status.handle().snapshot();
+        assert_eq!(snapshot.state, crate::input::SourceState::Degraded);
+        assert_eq!(
+            snapshot.issue.as_ref().map(|issue| issue.code.as_ref()),
+            Some("audio_loopback_unavailable")
+        );
+        assert!(
+            snapshot
+                .issue
+                .as_ref()
+                .is_some_and(|issue| issue.remediation.is_some())
+        );
+        assert!(input.ensure_prepared_source_ready().is_ok());
+        let data = input.sample().expect("a waiting source samples silence");
+        assert!(matches!(data, InputData::Audio(audio) if audio == AudioData::silence()));
+        input.stop();
+    }
+
+    #[test]
+    fn live_reconfiguration_still_fails_on_other_capture_errors() {
+        let prepared =
+            PreparedAudioReconfiguration::prepare_with_capture(staged_refusal_request(), |_, _| {
+                Err(anyhow!("audio input device 'probe' not found"))
+            });
+
+        assert!(prepared.is_err());
+    }
+
+    #[test]
+    fn loopback_unavailable_retries_on_the_device_reappearance_cadence() {
+        for attempt in 0..6 {
+            assert_eq!(
+                audio_reconnect_delay(AudioFailureKind::LoopbackUnavailable, attempt),
+                audio_reconnect_delay(AudioFailureKind::DeviceLost, attempt)
+            );
+        }
+        assert_eq!(
+            AudioFailureKind::from_code(AudioFailureKind::LoopbackUnavailable as u8),
+            AudioFailureKind::LoopbackUnavailable
+        );
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn pulse_record_buffer_attr_targets_twenty_milliseconds() {
         let spec = pulse::sample::Spec {

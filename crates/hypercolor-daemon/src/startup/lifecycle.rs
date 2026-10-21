@@ -92,7 +92,19 @@ impl DaemonState {
         }
 
         // Restore persisted scene state before the render loop begins producing frames.
-        self.restore_runtime_session(&config).await;
+        // The effect registry finished scanning during initialization, and
+        // no client reaches the scene or the library until the API is served,
+        // so first-run seeds land here without racing anything.
+        let fresh_install = std::mem::take(&mut self.fresh_install);
+        self.restore_runtime_session(&config, fresh_install).await;
+        if fresh_install {
+            crate::first_run::seed_favorites(
+                &self.domains.effects,
+                self.library_store.as_ref(),
+                &self.event_bus,
+            )
+            .await;
+        }
 
         let session_config = config.session.clone();
         let monitors = self
@@ -468,8 +480,9 @@ impl DaemonState {
             .map_err(Into::into)
     }
 
-    async fn restore_runtime_session(&mut self, config: &HypercolorConfig) {
+    async fn restore_runtime_session(&mut self, config: &HypercolorConfig, seed_scene: bool) {
         let scene_mode = config.daemon.start_scene.trim();
+        let mut snapshot_unreadable = false;
         let snapshot = self.startup_runtime_snapshot.take().or_else(|| {
             match runtime_state::load(&self.runtime_state_path) {
                 Ok(snapshot) => snapshot,
@@ -479,6 +492,7 @@ impl DaemonState {
                         %error,
                         "Failed to load runtime session snapshot"
                     );
+                    snapshot_unreadable = true;
                     None
                 }
             }
@@ -500,6 +514,12 @@ impl DaemonState {
                 path = %self.runtime_state_path.display(),
                 "No runtime session snapshot found to restore"
             );
+            // A fresh install's last session is the curated default. A
+            // session file written since initialization still belongs to
+            // someone, even when it fails to parse, so it is never replaced.
+            if seed_scene && !snapshot_unreadable {
+                crate::first_run::seed_scene(&self.domains.effects).await;
+            }
             return;
         };
         // Restore active layout if persisted.
