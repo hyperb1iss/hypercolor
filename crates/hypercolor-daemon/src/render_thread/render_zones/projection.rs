@@ -1,6 +1,6 @@
 use std::collections::{HashMap, TryReserveError};
 
-use hypercolor_core::spatial::sample_canvas_position;
+use hypercolor_core::spatial::{is_led_sampled_zone, sample_canvas_position};
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::scene::{Zone, ZoneId};
 use hypercolor_types::spatial::{
@@ -21,6 +21,7 @@ pub(super) struct CachedZoneProjection {
 
 pub(super) struct CachedOutputProjection {
     zone: Output,
+    stratum: ProjectionStratum,
     sampling_mode: SamplingMode,
     edge_behavior: EdgeBehavior,
     pub(super) bounds: Option<ProjectionBounds>,
@@ -59,6 +60,33 @@ impl CachedZoneProjection {
     }
 }
 
+/// The two strata of the scene canvas, in composition order.
+///
+/// LED outputs land first, in zone order; where they overlap, the later zone
+/// wins, a harmless detail of a preview image. Display outputs land after
+/// every LED output, again in zone order. A display's box in the scene canvas
+/// is that display's backdrop on real hardware, so it shows the zone that
+/// places the display, whatever LED outputs from later zones overlap it
+/// (Spec 86 §5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectionStratum {
+    Led,
+    DisplayBackdrop,
+}
+
+impl ProjectionStratum {
+    const COMPOSITION_ORDER: [Self; 2] = [Self::Led, Self::DisplayBackdrop];
+
+    /// Display outputs are exactly the outputs the LED sampler skips.
+    fn of(output: &Output) -> Self {
+        if is_led_sampled_zone(output) {
+            Self::Led
+        } else {
+            Self::DisplayBackdrop
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ProjectionAffine {
     local_origin: [f32; 2],
@@ -86,34 +114,52 @@ pub(super) fn compose_authoritative_scene_canvas(
 ) {
     scene_canvas.clear();
 
-    for zone in zones
-        .iter()
-        .filter(|zone| zone_contributes_to_scene_canvas(zone))
-    {
-        let Some(source) = target_canvases.get(&zone.id) else {
-            continue;
-        };
+    for stratum in ProjectionStratum::COMPOSITION_ORDER {
+        for zone in zones
+            .iter()
+            .filter(|zone| zone_contributes_to_scene_canvas(zone))
+        {
+            let Some(source) = target_canvases.get(&zone.id) else {
+                continue;
+            };
 
-        let Some(projection) = scene_projection_cache.get(&zone.id) else {
-            for output in &zone.layout.zones {
-                blit_zone_projection(
-                    scene_canvas,
-                    source,
-                    output,
-                    &zone.layout,
-                    scene_width,
-                    scene_height,
-                );
+            let Some(projection) = scene_projection_cache.get(&zone.id) else {
+                for output in zone
+                    .layout
+                    .zones
+                    .iter()
+                    .filter(|output| ProjectionStratum::of(output) == stratum)
+                {
+                    blit_zone_projection(
+                        scene_canvas,
+                        source,
+                        output,
+                        &zone.layout,
+                        scene_width,
+                        scene_height,
+                    );
+                }
+                continue;
+            };
+
+            // The identity copy stands in for rasterizing the zone's only
+            // output, so it runs in that output's stratum.
+            if projection
+                .zones
+                .first()
+                .is_some_and(|output| output.stratum == stratum)
+                && copy_full_scene_identity_projection(scene_canvas, source, projection)
+            {
+                continue;
             }
-            continue;
-        };
 
-        if copy_full_scene_identity_projection(scene_canvas, source, projection) {
-            continue;
-        }
-
-        for zone_projection in &projection.zones {
-            rasterize_zone_projection(scene_canvas, source, zone_projection);
+            for zone_projection in projection
+                .zones
+                .iter()
+                .filter(|output| output.stratum == stratum)
+            {
+                rasterize_zone_projection(scene_canvas, source, zone_projection);
+            }
         }
     }
 }
@@ -149,8 +195,18 @@ pub(super) fn projection_supports_composition(projection: &CachedZoneProjection)
     !projection.zones.is_empty() && projection.zones.iter().all(|zone| zone.affine.is_some())
 }
 
+/// Add a zone's projection layers to the scene composition, one per output,
+/// in scene composition order.
+///
+/// `display_layer_start` is the index where display-output layers begin. An
+/// LED output's layer is inserted there and the boundary advances, so LED
+/// layers stay in zone order beneath every display backdrop; a display
+/// output's layer is pushed onto the end, in zone order. The capacity check
+/// covers every layer before any lands, and insertion shifts layers within
+/// that capacity, so a frame never allocates here.
 pub(super) fn append_projection_composition_layers_for_zone(
     layers: &mut Vec<CompositionLayer>,
+    display_layer_start: &mut usize,
     frame: &ProducerFrame,
     zone: &Zone,
     projection: &CachedZoneProjection,
@@ -167,9 +223,14 @@ pub(super) fn append_projection_composition_layers_for_zone(
     if layers.capacity().saturating_sub(layers.len()) < projection.zones.len() {
         return false;
     }
+    debug_assert!(
+        *display_layer_start <= layers.len(),
+        "display layers must start within the projected scene layers"
+    );
+    let mut led_insert_at = (*display_layer_start).min(layers.len());
     for output in &projection.zones {
-        layers.push(CompositionLayer::alpha(frame.clone(), 1.0).with_transform(
-            CompositionTransform {
+        let layer =
+            CompositionLayer::alpha(frame.clone(), 1.0).with_transform(CompositionTransform {
                 anchor: output.zone.position,
                 scale: [
                     output.zone.size.x * output.zone.scale,
@@ -178,9 +239,16 @@ pub(super) fn append_projection_composition_layers_for_zone(
                 rotation: output.zone.rotation,
                 fit: FitMode::Stretch,
                 sample_target_space: true,
-            },
-        ));
+            });
+        match output.stratum {
+            ProjectionStratum::Led => {
+                layers.insert(led_insert_at, layer);
+                led_insert_at += 1;
+            }
+            ProjectionStratum::DisplayBackdrop => layers.push(layer),
+        }
     }
+    *display_layer_start = led_insert_at;
     true
 }
 
@@ -194,8 +262,10 @@ pub(super) fn projection_composition_layers_for_zone(
 ) -> Option<Vec<CompositionLayer>> {
     let mut layers = Vec::new();
     layers.try_reserve_exact(projection.zones.len()).ok()?;
+    let mut display_layer_start = 0;
     append_projection_composition_layers_for_zone(
         &mut layers,
+        &mut display_layer_start,
         frame,
         zone,
         projection,
@@ -304,6 +374,7 @@ fn build_output_projection(
     let affine = ProjectionAffine::new(zone, target_width, target_height);
     CachedOutputProjection {
         zone: zone.clone(),
+        stratum: ProjectionStratum::of(zone),
         sampling_mode,
         edge_behavior,
         bounds: affine
