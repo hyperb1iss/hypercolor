@@ -201,18 +201,7 @@ fn remember(report: &PanicReport) {
 #[must_use]
 pub fn backtrace_excerpt(backtrace: &str) -> String {
     let frames = split_frames(backtrace);
-    let start = frames
-        .iter()
-        .take(PANIC_MACHINERY_SCAN_FRAMES)
-        .position(|frame| is_panic_machinery(frame))
-        .map_or(0, |entry| {
-            entry
-                + frames
-                    .iter()
-                    .skip(entry)
-                    .take_while(|frame| is_panic_machinery(frame))
-                    .count()
-        });
+    let start = panicking_frame_index(&frames);
     let mut excerpt = String::new();
     for frame in frames.iter().skip(start).take(BACKTRACE_EXCERPT_FRAMES) {
         if excerpt.len() + frame.len() > BACKTRACE_EXCERPT_BYTES {
@@ -257,19 +246,61 @@ fn starts_frame(line: &str) -> bool {
     digits > 0 && trimmed[digits..].starts_with(": ")
 }
 
-fn is_panic_machinery(frame: &str) -> bool {
-    let symbol = frame.lines().next().unwrap_or_default();
+/// Index of the first frame of the code that panicked.
+///
+/// That is the frame right after the last panic entry point near the top.
+/// Matching entry points, rather than every `std::panicking` frame, matters
+/// on MSVC targets: their symbols keep generic arguments, so the code that
+/// panicked can run inside a frame such as
+/// `std::panicking::catch_unwind::do_call<the_caller::closure_env$0>`.
+/// Without an entry point, the excerpt skips only the capture frames.
+fn panicking_frame_index(frames: &[&str]) -> usize {
+    frames
+        .iter()
+        .take(PANIC_MACHINERY_SCAN_FRAMES)
+        .rposition(|frame| is_panic_entry(frame))
+        .map_or_else(
+            || {
+                frames
+                    .iter()
+                    .take_while(|frame| is_capture_frame(frame))
+                    .count()
+            },
+            |entry| entry + 1,
+        )
+}
+
+fn frame_symbol(frame: &str) -> &str {
+    frame.lines().next().unwrap_or_default()
+}
+
+/// Frames of the backtrace capture and this hook.
+fn is_capture_frame(frame: &str) -> bool {
+    let symbol = frame_symbol(frame);
     [
         "std::backtrace_rs::",
         "std::backtrace::",
         "hypercolor_daemon::panic_hook::",
         "<alloc::boxed::Box<F,A> as core::ops::function::Fn<Args>>::call",
-        "std::panicking::",
-        "std::sys::backtrace::",
+    ]
+    .iter()
+    .any(|needle| symbol.contains(needle))
+}
+
+/// Frames of the runtime path from a `panic!` to the hook.
+fn is_panic_entry(frame: &str) -> bool {
+    let symbol = frame_symbol(frame);
+    [
         "rust_begin_unwind",
         "core::panicking::",
         "core::option::expect_failed",
+        "core::option::unwrap_failed",
         "core::result::unwrap_failed",
+        "std::panicking::begin_panic",
+        "std::panicking::panic_with_hook",
+        "std::panicking::rust_panic_with_hook",
+        "std::rt::begin_panic",
+        "std::sys::backtrace::__rust_end_short_backtrace",
     ]
     .iter()
     .any(|needle| symbol.contains(needle))
@@ -305,6 +336,65 @@ mod tests {
         assert!(excerpt.contains("pipeline_driver.rs:40:13"));
         assert!(excerpt.contains("5: tokio::runtime::park"));
         assert!(!excerpt.contains("force_capture"));
+    }
+
+    /// An MSVC backtrace: symbols keep their generic arguments, and the
+    /// panicking closure runs inside a `std::panicking` frame.
+    const CAPTURED_MSVC: &str = "   0: std::backtrace_rs::backtrace::win64::trace
+             at /rustc/library\\std\\src\\..\\..\\backtrace\\src\\backtrace\\win64.rs:85
+   1: std::backtrace::Backtrace::create
+             at /rustc/library\\std\\src\\backtrace.rs:331
+   2: hypercolor_daemon::panic_hook::PanicReport::capture
+             at .\\src\\panic_hook.rs:60
+   3: hypercolor_daemon::panic_hook::install::closure$0::closure$0
+             at .\\src\\panic_hook.rs:120
+   4: alloc::boxed::impl$30::call<tuple$<ref$<std::panic::PanicHookInfo> >,dyn$<core::ops::function::Fn<tuple$<ref$<std::panic::PanicHookInfo> > > >,alloc::alloc::Global>
+   5: std::panicking::panic_with_hook
+             at /rustc/library\\std\\src\\panicking.rs:842
+   6: std::panicking::begin_panic_handler::closure$0
+             at /rustc/library\\std\\src\\panicking.rs:707
+   7: std::sys::backtrace::__rust_end_short_backtrace<std::panicking::begin_panic_handler::closure_env$0,never$>
+   8: std::panicking::begin_panic_handler
+             at /rustc/library\\std\\src\\panicking.rs:698
+   9: core::panicking::panic_fmt
+             at /rustc/library\\core\\src\\panicking.rs:75
+  10: std::panicking::catch_unwind::do_call<hypercolor_daemon::render_thread::pipeline_driver::run_pipeline::closure_env$0,tuple$<> >
+             at .\\src\\render_thread\\pipeline_driver.rs:40
+  11: std::panicking::catch_unwind<tuple$<>,hypercolor_daemon::render_thread::pipeline_driver::run_pipeline::closure_env$0>
+  12: std::sys::backtrace::__rust_begin_short_backtrace<hypercolor_daemon::render_thread::spawn::closure_env$0,tuple$<> >
+  13: std::sys::thread::windows::impl$0::new::thread_start
+";
+
+    #[test]
+    fn excerpt_starts_at_the_panicking_frame_with_msvc_symbols() {
+        let excerpt = backtrace_excerpt(CAPTURED_MSVC);
+
+        assert!(
+            excerpt.trim_start().starts_with(
+                "10: std::panicking::catch_unwind::do_call<hypercolor_daemon::render_thread"
+            ),
+            "{excerpt}"
+        );
+        assert!(excerpt.contains("pipeline_driver.rs:40"));
+        assert!(!excerpt.contains("panic_fmt"));
+    }
+
+    #[test]
+    fn excerpt_without_a_panic_entry_skips_only_the_capture() {
+        let excerpt = backtrace_excerpt(
+            "   0: std::backtrace::Backtrace::force_capture
+   1: hypercolor_daemon::panic_hook::PanicReport::capture
+   2: std::panicking::catch_unwind::do_call<some::caller::closure_env$0>
+   3: some::caller::run
+",
+        );
+
+        assert!(
+            excerpt
+                .trim_start()
+                .starts_with("2: std::panicking::catch_unwind"),
+            "{excerpt}"
+        );
     }
 
     #[test]
