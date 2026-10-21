@@ -137,22 +137,36 @@ export interface TouchCanvasPoint {
     ny: number
 }
 
-/** One contact held on a device's touch surface, such as a ROLI Lightpad. */
+/**
+ * One contact held on a device's touch surface, such as a ROLI Lightpad or
+ * an Ableton Push 2 pad.
+ */
 export interface TouchContact {
     /** Hypercolor device id of the touched surface. */
     device: string
     /** Contact identity, stable from touch start to end on that device. */
     contact: number
-    /** Device-surface x in [0, 1], from the surface's left edge. */
+    /**
+     * Device-surface x in [0, 1], in the frame the touched segment's LED
+     * order defines: a matrix's first LED is its top left, and a strip runs
+     * along x from its first LED.
+     */
     x: number
-    /** Device-surface y in [0, 1], from the surface's top edge. */
+    /**
+     * Device-surface y in [0, 1], from the row holding the segment's first
+     * LED. That row need not be the physical top: on a Push 2 the first pad
+     * row, y = 0, is the bottom one. Draw at `canvas` to land where the
+     * finger is.
+     */
     y: number
     /** Contact pressure in [0, 1]. */
     pressure: number
     /**
-     * Canvas position of the contact, or `null` when the touched device has
-     * no single output in this canvas's layout (not placed, or placed more
-     * than once). Surface coordinates stay valid either way.
+     * Canvas position of the contact, or `null` when the touched surface has
+     * no single output in this canvas's layout. A device with several
+     * segments, such as Push 2 pads and its touch strip, is placed per
+     * segment, so a touch is `null` only when its own segment is not placed,
+     * or is placed more than once. Surface coordinates stay valid either way.
      */
     canvas: TouchCanvasPoint | null
 }

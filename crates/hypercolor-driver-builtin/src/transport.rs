@@ -88,12 +88,14 @@ impl DriverModule for UsbTransportDriverModule {
 impl DeviceBackendFactory for UsbTransportDriverModule {
     fn build(
         &self,
-        _host: &dyn DriverHost,
+        host: &dyn DriverHost,
         _config: DriverConfigView<'_>,
     ) -> Result<Arc<dyn DeviceBackend>, DriverError> {
-        Ok(Arc::new(UsbBackend::with_protocol_config_store(
-            self.protocol_configs.clone(),
-        )))
+        let mut backend = UsbBackend::with_protocol_config_store(self.protocol_configs.clone());
+        if let Some(sink) = host.device_input() {
+            backend = backend.with_device_input(sink);
+        }
+        Ok(Arc::new(backend))
     }
 }
 

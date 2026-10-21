@@ -69,6 +69,10 @@ pub fn slot_id_matches_channel_name(slot_id: &str, channel_name: &str) -> bool {
 }
 
 /// Symmetric comparison for channel names and attachment slot aliases.
+///
+/// Two names match exactly when their [`slot_alias_key`]s are equal, so a
+/// caller comparing one name against many can compute the keys once and use
+/// [`slot_alias_key_matches`], which allocates nothing.
 #[must_use]
 pub fn channel_name_matches_slot_alias(left: Option<&str>, right: Option<&str>) -> bool {
     match (left, right) {
@@ -82,7 +86,11 @@ pub fn channel_name_matches_slot_alias(left: Option<&str>, right: Option<&str>) 
     }
 }
 
-fn slot_alias_key(raw: &str) -> String {
+/// Canonical alias key of a channel name or slot ID: its slug with numeric
+/// parts stripped of leading zeros, so `"Channel 01"` and `"channel-1"`
+/// share the key `"channel-1"`.
+#[must_use]
+pub fn slot_alias_key(raw: &str) -> String {
     let slug = slugify_slot_id(raw);
     let mut key = String::with_capacity(slug.len());
 
@@ -108,6 +116,42 @@ fn slot_alias_key(raw: &str) -> String {
     } else {
         key
     }
+}
+
+/// Whether `raw`'s alias key equals `key`, a key [`slot_alias_key`] built.
+///
+/// Walks `raw` in place instead of building its key, so matching one name
+/// against precomputed keys allocates nothing.
+#[must_use]
+pub fn slot_alias_key_matches(key: &str, raw: &str) -> bool {
+    let mut parts = raw
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .peekable();
+    if parts.peek().is_none() {
+        return key == "slot";
+    }
+    let mut expected = key.bytes();
+    for (index, part) in parts.enumerate() {
+        if index > 0 && expected.next() != Some(b'-') {
+            return false;
+        }
+        let canonical = if part.bytes().all(|byte| byte.is_ascii_digit()) {
+            match part.trim_start_matches('0') {
+                "" => "0",
+                number => number,
+            }
+        } else {
+            part
+        };
+        if !canonical
+            .bytes()
+            .all(|byte| expected.next() == Some(byte.to_ascii_lowercase()))
+        {
+            return false;
+        }
+    }
+    expected.next().is_none()
 }
 
 /// Template category used for filtering and UI grouping.

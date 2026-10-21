@@ -4,7 +4,9 @@
 
 Phase 1 implemented (2026-09-28, shipped in 0.6.3). Phase 2 implemented
 (2026-10-11, for 0.7.0): effects see touches and device buttons, with
-canvas positions. Extends Spec 30 (ROLI Blocks backend), whose event
+canvas positions. Phase 3 started (2026-10-19): the Ableton Push 2 publishes
+pads, touch strip, and buttons through a USB transport input seam, and
+touches name the device segment they land on. Extends Spec 30 (ROLI Blocks backend), whose event
 sections were never built, and Spec 71 (interactive input pipeline), which
 shipped differently from its text. Read `crates/hypercolor-core/src/input/`
 rather than Spec 71's design sections.
@@ -58,7 +60,7 @@ publishes the same way.
 
 ```rust
 pub enum DeviceInputEdge {
-    TouchBegan { contact: u32, position: TouchPosition },
+    TouchBegan { contact: u32, position: TouchPosition, segment: Option<Arc<str>> },
     TouchMoved { contact: u32, position: TouchPosition },
     TouchEnded { contact: u32, position: TouchPosition },
     Button { button: Arc<str>, state: InputButtonState },
@@ -68,7 +70,13 @@ pub struct TouchPosition { pub x: f32, pub y: f32, pub pressure: f32 }
 ```
 
 Positions are normalized device-surface coordinates in `[0, 1]`, origin at
-the surface's top left as the device reports it. Pressure is `[0, 1]`.
+the surface's top left as the device reports it. A surface whose LEDs form a
+matrix or a strip uses the frame its LED order defines: a matrix's first LED
+is its top left, and a strip runs along `x` from its first LED. Pressure is
+`[0, 1]`. `segment` names the device segment a contact landed on, by the
+segment name layouts bind (`Output::zone_name`), for a device whose touch
+surfaces span several segments; single-surface devices leave it `None`. A
+contact keeps its segment until it ends.
 
 `event.rs` gains two routed edges. `InputEvent` derives `Eq`, so positions
 use the same Q16.16 fixed point as `PointerScroll`:
@@ -84,6 +92,7 @@ InputEvent::Touch {
     x_q16_16: i64,
     y_q16_16: i64,
     pressure_q16_16: i64,
+    segment: Option<String>, // omitted from JSON when None
 }
 
 InputEvent::DeviceButton {
@@ -111,6 +120,8 @@ pub trait DeviceInputSink: Send + Sync {
 pub trait DeviceInputPublisher: Send + Sync {
     /// `false` once this lease has been superseded or detached.
     fn publish(&self, edges: &[DeviceInputEdge]) -> bool;
+    /// A fresh lease replacing this one, only while this one is current.
+    fn renew(&self) -> Option<Box<dyn DeviceInputPublisher>> { None }
 }
 
 trait DriverHost {
@@ -123,8 +134,13 @@ the router cancels anything the consumer observed. Attaching the same device
 again supersedes the earlier lease: the old source retires the same way, and
 the old lease's `publish` returns `false` and its drop does nothing, because
 close is fenced by publication incarnation. A stale lease can never retire
-its successor. Hosts without device input return `None`, so every existing
-host and test double keeps compiling.
+its successor. `renew` replaces a lease with a fresh one, cancelling what it
+held, and the host checks that the lease is still current and replaces it
+under one lock, so a stale lease can never take the device back from a
+newer attachment either; a superseded or detached lease renews to `None`.
+Hosts without device input return `None`, so every existing host and test
+double keeps compiling, and publishers that cannot renew atomically keep
+the default `None`.
 
 ### 3. Device input registry (`hypercolor-core::input::device`)
 
@@ -144,7 +160,7 @@ demanded:
 
 | Edge | Rule |
 | --- | --- |
-| `TouchBegan` | Clamped. A non-finite position drops the edge and counts it. A begin for a contact already down ends the old contact first. More than 32 contacts per device drops the edge. |
+| `TouchBegan` | Clamped. A non-finite position drops the edge and counts it. A begin for a contact already down ends the old contact first. More than 128 held contacts per device drops the edge (the Push 2 can hold 65). |
 | `TouchMoved` | Updates a held contact. A contact whose begin was never seen, such as one down when the device attached, is ignored. |
 | `TouchEnded` | Never dropped. A non-finite final position falls back to the last good one. |
 | `Button` | Pressed once until released; release without a press is ignored; autorepeat is ignored. At most 16 held buttons per device. |
@@ -197,13 +213,15 @@ pub struct TouchContact {
     pub x: f32,
     pub y: f32,
     pub pressure: f32,
+    pub segment: Option<Arc<str>>,
 }
 
 pub struct DeviceButtonHold { pub device_id: DeviceId, pub button: Arc<str> }
 ```
 
 The router rebuilds held output every frame without allocating. Touch lookups
-build their key from `Copy` fields, button lookups scan instead of building an
+build their key from `Copy` fields, a held touch's segment is a shared
+`Arc<str>` cloned into reused slots, button lookups scan instead of building an
 owned key, and
 the output vectors are truncated and refilled in place. The allocation
 contract test holds a device touch and button through every measured frame.
@@ -293,12 +311,18 @@ as input use, so an effect reading them must declare `input: true`.
 **Canvas positions.** Every render zone samples its canvas through its own
 spatial layout, so a touch has one canvas point per zone that places its
 device and none elsewhere. `DeviceSurfaceMap`
-(`hypercolor-core::spatial`) places each device that owns exactly one LED
-output in a layout, and maps a surface point through that output's
+(`hypercolor-core::spatial`) resolves a touch that names no segment through
+the device's only LED output in the layout, and a touch that names a
+segment through the one LED output bound to that segment: the output whose
+segment name matches exactly, or else the only one matching it the way LED
+routing does (`channel_name_matches_slot_alias`, ignoring case and slug
+punctuation). An output that names no segment never stands in for a named
+one, since its LED order follows the whole device. It maps the surface point through that output's
 position, size, rotation, scale, and edge behavior, with the zone-local
 transform shared with the sampler. A matrix output also applies its start
-corner, because its LED order is the device's own row-major order. The
-result is the canvas point the LED under the finger samples. `canvas.nx`
+corner, because its LED order is the device's own row-major order, and a
+strip output applies its direction, because its surface `x` runs from its
+first LED. The result is the canvas point the LED under the finger samples. `canvas.nx`
 and `canvas.ny` are normalized; `canvas.x` and `canvas.y` are Canvas 2D
 drawing coordinates of the sampled pixel's center (`n * (size - 1) + 0.5`),
 so an effect that draws at them lights exactly that point.
@@ -312,7 +336,7 @@ the Servo frame queue keeps the newest one with a coalesced batch, so a
 superseded touch edge is mapped with the same placement as the held
 contacts beside it.
 
-**Missing placement.** When the touched device has no LED output in the
+**Missing placement.** When the touched surface has no LED output in the
 zone's layout, or has several, `canvas` is `null` and the surface
 coordinates still arrive. The platform does not guess between outputs or
 invent a position for an unplaced device; the effect decides what an
@@ -341,6 +365,39 @@ contact's landing point, lights a pressure-scaled glow under every held
 finger, and steps its palette on device button presses. It skips touches
 whose `canvas` is `null` and deduplicates edges by `seq`.
 
+### 9. USB transport producers and the Push 2 (phase 3)
+
+**Seam.** `hypercolor-hal` cannot depend on the driver API, so it defines
+its own callback, `hypercolor_hal::transport::input::TransportInputSink`,
+with `publish(&[DeviceInputEdge])`, `interrupted()` (input may have been
+lost, so cancel what the device held), and `closed()` (input ended for
+good). A driver-owned USB binding sets `publishes_input`, and
+`UsbTransportOpenRequest::input` carries the sink to its opener.
+
+**Lease.** The builtin USB module hands `host.device_input()` to
+`UsbBackend::with_device_input`. For a binding that publishes input, connect
+passes the transport a `UsbDeviceInput` bridge at open, attaches the host
+lease under the device's canonical `DeviceId` only once connect succeeds,
+and retires it as shutdown begins, before the shutdown sequence runs.
+`interrupted()` renews the lease and `closed()` retires it, so the host
+cancels every hold either way, as the Blocks backend does for a lost
+blocksd stream. Renewal is atomic on the host, so a bridge whose lease a
+newer connection superseded gets `None` and closes itself instead of
+taking the device back. Input before connect finishes is dropped, and a
+device that never finishes connecting never becomes an input source.
+After a close, nothing brings the lease back; a reconnect builds a new
+bridge.
+
+**Push 2.** Spec 28 §11.4 has the MIDI map. The transport's existing User
+port input callback forwards each message to the sysex reply ingress, then
+to a relay that decodes it and publishes the edges. Reading input sends no
+MIDI and changes no device mode. Pads are contacts 0 to 63 on segment
+`Pads`, in the matrix's LED frame; the touch strip is contact 64 on segment
+`Touch Strip`, along the strip from its bottom LED; buttons use stable
+snake_case names. The relay lives in the native callback, so dropping the
+input connection reports `closed()`. A message cut short, or the Set MIDI
+Mode reply announcing Live mode, reports `interrupted()`.
+
 ## Phasing
 
 1. **Pipeline (0.6.3).** Sections 1 through 7. Touches and buttons reach
@@ -350,7 +407,9 @@ whose `canvas` is `null` and deduplicates edges by `seq`.
    bootstrap, and SDK types expose touches and device buttons. Touches gain
    canvas coordinates by resolving the device's output through each render
    zone's layout. The Touch Ripple effect proves the path on a Lightpad.
-3. **More producers.** Push 2 pads; a generic MIDI source.
+3. **More producers.** Push 2 pads, touch strip, and buttons (section 9,
+   started 2026-10-19), with segment-named touches so multi-output devices
+   place per segment; a generic MIDI source.
 
 ## Testing
 
@@ -376,9 +435,26 @@ whose `canvas` is `null` and deduplicates edges by `seq`.
   checks it publishes nothing into the new lease.
 - Surfaces (`device_surface_tests.rs`): placement through position, size,
   rotation, scale, and edge behavior; every LED's sampled point equals the
-  touch over it, for each matrix start corner; unbound, ambiguous, and
-  display-only outputs place nothing; non-finite points; backend bindings
-  and their generation.
+  touch over it, for each matrix start corner and each strip direction;
+  named segments resolve through their own outputs, match routing's
+  aliases with exact names first, and stay unplaced when placed twice, when
+  two aliases match, or when only an unnamed output exists; unbound,
+  ambiguous, and display-only outputs place nothing; non-finite points;
+  backend bindings and their generation.
+- Segments: the registry keeps a contact's segment through begin, end, a
+  re-begin, and cancel, and routes it into held output; the payload places
+  segment-named touches per segment; `InputEvent::Touch` omits `segment`
+  when unset.
+- USB seam: the bridge drops input before connect, attaches on activation,
+  renews on interruption, retires on close and stays retired, and never
+  disturbs a successor, even when an interruption reaches a superseded
+  bridge first or a fresh connection activates between a stale bridge
+  deciding to renew and the renewal; only bindings that publish input get
+  a bridge; a disconnect retires the lease before the shutdown sequence
+  runs. The registry renews only a lease that is still current.
+- Push 2 (`push2_input_tests.rs`, `push2_touch_surface_tests.rs`): the MIDI
+  decode and relay (spec 28 §14.1), and touch-to-LED agreement through the
+  real frame encoder and decoder.
 - Payload (`lightscript_interaction_payload_tests.rs`): touches and buttons
   serialize with surface and canvas positions, an unplaced device carries
   `canvas: null`, a held touch re-sends when its placement or the canvas
@@ -408,7 +484,17 @@ whose `canvas` is `null` and deduplicates edges by `seq`.
   the zone through that transform, and the transform is not inverted, so
   touches on such a layer land offset.
 - An attachment's LED remap (`led_mapping`) is not inverted, and outputs
-  other than matrices take the surface frame as the output's local frame.
+  other than matrices and strips take the surface frame as the output's
+  local frame. Strip outputs follow their direction since phase 3; before,
+  only left-to-right strips agreed with their LEDs.
+- Push 2 channel pressure carries one value for the whole device, so every
+  held pad takes the hardest-pressed pad's aftertouch, floored at its own
+  strike velocity. The driver does not
+  switch the device to poly aftertouch, which would need a sysex the driver
+  avoids sending.
+- A Push 2 touch strip finger that stops exactly on the strip's center
+  leaves the touch one step short of it until it moves, because autoreturn
+  reports the same value just before every lift.
 
 ## Open questions
 

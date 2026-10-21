@@ -40,6 +40,7 @@ fn background_driver_transport() -> TransportType {
                 connect_execution: TransportConnectExecution::Background,
                 retry_on_connect_timeout: false,
             },
+            publishes_input: false,
             open: unreachable_test_transport,
         },
     }
@@ -728,6 +729,7 @@ async fn brightness_actor_response_preserves_timeout_duration() {
         info_template: temporary_control_test_device(true, 1),
         frame_diagnostics_emitted: false,
         non_black_frame_diagnostics_emitted: false,
+        input: None,
     };
 
     let error = device
@@ -820,6 +822,7 @@ fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError) -> U
         info_template: info.clone(),
         frame_diagnostics_emitted: false,
         non_black_frame_diagnostics_emitted: false,
+        input: None,
     };
     let frame_sink = device.frame_sink(device_id);
     let display_sink = Some(device.display_sink(device_id));
@@ -887,6 +890,7 @@ fn backend_with_display_actor(
         info_template: info.clone(),
         frame_diagnostics_emitted: false,
         non_black_frame_diagnostics_emitted: false,
+        input: None,
     };
     let frame_sink = device.frame_sink(device_id);
     let display_sink = Some(device.display_sink(device_id));
@@ -1606,6 +1610,7 @@ fn usb_device_with_actor_task(
         info_template: info,
         frame_diagnostics_emitted: false,
         non_black_frame_diagnostics_emitted: false,
+        input: None,
     }
 }
 
@@ -4192,4 +4197,113 @@ async fn push2_midi_stall_never_blocks_frame_publication_or_tears_down_the_actor
         .await
         .expect("actor task should join")
         .expect("actor should exit cleanly");
+}
+
+fn input_test_protocol() -> Box<dyn Protocol> {
+    Box::new(FairnessProtocol)
+}
+
+fn driver_usb_descriptor(publishes_input: bool) -> &'static DeviceDescriptor {
+    Box::leak(Box::new(DeviceDescriptor {
+        vendor_id: 0x1209,
+        product_id: 0x0001,
+        name: "Playable Test Controller",
+        family: DeviceFamily::new_static("test", "Test"),
+        transport: TransportType::DriverUsb {
+            binding: UsbTransportBinding {
+                id: "test/playable",
+                kind: UsbTransportKind::Midi,
+                lifecycle: TransportLifecycleHints::default(),
+                publishes_input,
+                open: unreachable_test_transport,
+            },
+        },
+        protocol: hypercolor_hal::registry::ProtocolBinding {
+            id: "test/playable",
+            build: input_test_protocol,
+        },
+        firmware_predicate: None,
+        serial_quirk: None,
+    }))
+}
+
+fn pending_for(descriptor: &'static DeviceDescriptor) -> PendingUsbDevice {
+    PendingUsbDevice {
+        vendor_id: descriptor.vendor_id,
+        product_id: descriptor.product_id,
+        serial: None,
+        usb_path: None,
+        descriptor,
+        info_template: temporary_control_test_device(true, 1),
+    }
+}
+
+#[test]
+fn only_transports_that_publish_input_get_an_input_bridge() {
+    let device_id = DeviceId::new();
+    let host = crate::input::DeviceInputHandle::new();
+    let with_input = UsbBackend::new().with_device_input(Arc::new(host));
+
+    assert!(
+        with_input
+            .device_input_for(&pending_for(driver_usb_descriptor(true)), device_id)
+            .is_some()
+    );
+    assert!(
+        with_input
+            .device_input_for(&pending_for(driver_usb_descriptor(false)), device_id)
+            .is_none(),
+        "a transport that reads no input never becomes an input source"
+    );
+    assert!(
+        UsbBackend::new()
+            .device_input_for(&pending_for(driver_usb_descriptor(true)), device_id)
+            .is_none(),
+        "a host without device input gets no bridge"
+    );
+}
+
+#[tokio::test]
+async fn disconnect_retires_the_input_lease_before_shutting_down() {
+    let device_id = DeviceId::new();
+    let host = crate::input::DeviceInputHandle::new();
+    host.set_demanded(true);
+    let input = Arc::new(UsbDeviceInput::new(
+        Arc::new(host.clone()),
+        device_id,
+        "Playable Test Controller",
+    ));
+    input.activate();
+    let (command_tx, mut command_rx) = mpsc::unbounded_channel();
+    let lease_seen_at_shutdown = Arc::new(AtomicBool::new(true));
+    let registry = host.registry();
+    let actor_task = tokio::spawn({
+        let lease_seen_at_shutdown = Arc::clone(&lease_seen_at_shutdown);
+        async move {
+            if let Some(UsbDeviceCommand::Shutdown { response_tx, .. }) = command_rx.recv().await {
+                lease_seen_at_shutdown.store(
+                    registry.snapshot().child(device_id).is_some(),
+                    Ordering::Release,
+                );
+                let _ = response_tx.send(Ok(()));
+            }
+        }
+    });
+    let mut device = usb_device_with_actor_task(device_id, command_tx, actor_task);
+    device.input = Some(Arc::clone(&input));
+    assert!(host.registry().snapshot().child(device_id).is_some());
+
+    device
+        .shutdown(device_id)
+        .await
+        .expect("shutdown should complete");
+
+    assert!(
+        !lease_seen_at_shutdown.load(Ordering::Acquire),
+        "held input cancels before the shutdown sequence runs"
+    );
+    assert!(host.registry().snapshot().child(device_id).is_none());
+    // A transport callback that fires after disconnect changes nothing.
+    TransportInputSink::interrupted(input.as_ref());
+    assert!(host.registry().snapshot().child(device_id).is_none());
 }

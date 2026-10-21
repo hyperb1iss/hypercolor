@@ -1141,7 +1141,7 @@ impl ConsumerRouteState {
             // decides which holds this consumer observed being pressed.
             for touch in &snapshot.device.touches {
                 if state.observed.contains_key(&touch_control(touch)) {
-                    push_touch_reused(&mut interaction.device.touches, &mut touch_count, *touch);
+                    push_touch_reused(&mut interaction.device.touches, &mut touch_count, touch);
                 }
             }
             for hold in &snapshot.device.buttons {
@@ -1514,7 +1514,7 @@ fn push_unique_reused(output: &mut Vec<String>, length: &mut usize, value: &str)
     push_reused(output, length, value);
 }
 
-fn push_touch_reused(output: &mut Vec<TouchContact>, length: &mut usize, touch: TouchContact) {
+fn push_touch_reused(output: &mut Vec<TouchContact>, length: &mut usize, touch: &TouchContact) {
     if output[..*length]
         .iter()
         .any(|existing| existing.device_id == touch.device_id && existing.contact == touch.contact)
@@ -1522,9 +1522,9 @@ fn push_touch_reused(output: &mut Vec<TouchContact>, length: &mut usize, touch: 
         return;
     }
     if let Some(slot) = output.get_mut(*length) {
-        *slot = touch;
+        slot.clone_from(touch);
     } else {
-        output.push(touch);
+        output.push(touch.clone());
     }
     *length += 1;
 }

@@ -1,6 +1,7 @@
 //! USB backend that bridges HAL protocols to the core `DeviceBackend` trait.
 
 mod actor;
+mod input;
 
 use std::cmp::min;
 use std::collections::HashMap;
@@ -12,8 +13,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_driver_api::{
     BackendInfo, ConnectExecution, DeviceBackend, DeviceDeliveryAck, DeviceDeliveryId,
-    DeviceDeliveryObserver, DeviceDisplaySink, DeviceFrameSink, DeviceLifecyclePolicy,
-    DiscoveredDevice,
+    DeviceDeliveryObserver, DeviceDisplaySink, DeviceFrameSink, DeviceInputSink,
+    DeviceLifecyclePolicy, DiscoveredDevice,
 };
 use hypercolor_hal::database::{DeviceDescriptor, TransportType};
 use hypercolor_hal::protocol::Protocol;
@@ -27,6 +28,7 @@ use hypercolor_hal::transport::bulk::UsbBulkTransport;
 use hypercolor_hal::transport::control::UsbControlTransport;
 use hypercolor_hal::transport::hid::UsbHidTransport;
 use hypercolor_hal::transport::hidapi::UsbHidApiTransport;
+use hypercolor_hal::transport::input::TransportInputSink;
 use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{HidRawOpenRequest, Transport, TransportError};
@@ -38,6 +40,7 @@ use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace};
 
+use self::input::UsbDeviceInput;
 use super::transport_error::{DeviceTransportOperation, map_hal_transport_error};
 use crate::attachment::ComponentRegistry;
 
@@ -356,6 +359,8 @@ struct UsbDevice {
     info_template: DeviceInfo,
     frame_diagnostics_emitted: bool,
     non_black_frame_diagnostics_emitted: bool,
+    /// Input the transport decodes, published while the device is connected.
+    input: Option<Arc<UsbDeviceInput>>,
 }
 
 impl UsbDevice {
@@ -469,6 +474,11 @@ impl UsbDevice {
     }
 
     async fn shutdown(&mut self, device_id: DeviceId) -> std::result::Result<(), DeviceError> {
+        // Input stops counting the moment the device starts going away, so
+        // held touches cancel now rather than after the shutdown sequence.
+        if let Some(input) = &self.input {
+            input.close();
+        }
         {
             let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
             self.active.store(false, Ordering::Release);
@@ -583,6 +593,9 @@ impl UsbDevice {
 
 impl Drop for UsbDevice {
     fn drop(&mut self) {
+        if let Some(input) = &self.input {
+            input.close();
+        }
         let _gate = lock_lifecycle_gate(&self.lifecycle_gate);
         self.active.store(false, Ordering::Release);
         let device_id = self.info_template.id;
@@ -863,6 +876,8 @@ pub struct UsbBackend {
     pending: StdRwLock<HashMap<DeviceId, PendingUsbDevice>>,
     connected: StdRwLock<HashMap<DeviceId, Arc<ConnectedUsbDevice>>>,
     protocol_configs: UsbProtocolConfigStore,
+    /// Host sink for input from transports that decode it.
+    device_input: Option<Arc<dyn DeviceInputSink>>,
 }
 
 struct ConnectedUsbDevice {
@@ -889,6 +904,37 @@ impl UsbBackend {
         }
     }
 
+    /// Publish input from connected devices whose transport decodes it.
+    ///
+    /// Each such device publishes under a lease attached with its canonical
+    /// `DeviceId` once connect succeeds and retired at disconnect.
+    #[must_use]
+    pub fn with_device_input(mut self, sink: Arc<dyn DeviceInputSink>) -> Self {
+        self.device_input = Some(sink);
+        self
+    }
+
+    /// Input bridge for a device whose transport decodes input, when the
+    /// host accepts device input.
+    fn device_input_for(
+        &self,
+        pending: &PendingUsbDevice,
+        device_id: DeviceId,
+    ) -> Option<Arc<UsbDeviceInput>> {
+        let TransportType::DriverUsb { binding } = pending.descriptor.transport else {
+            return None;
+        };
+        if !binding.publishes_input {
+            return None;
+        }
+        let sink = Arc::clone(self.device_input.as_ref()?);
+        Some(Arc::new(UsbDeviceInput::new(
+            sink,
+            device_id,
+            &pending.info_template.name,
+        )))
+    }
+
     async fn build_protocol(
         &self,
         pending: &PendingUsbDevice,
@@ -907,6 +953,7 @@ impl UsbBackend {
     async fn build_transport(
         pending: &PendingUsbDevice,
         usb: &nusb::DeviceInfo,
+        input: Option<Arc<dyn TransportInputSink>>,
     ) -> Result<Box<dyn Transport>> {
         match pending.descriptor.transport {
             TransportType::UsbHidApi {
@@ -984,7 +1031,7 @@ impl UsbBackend {
                 report_id,
             } => Self::open_bulk_transport(pending, usb, interface, report_id).await,
             TransportType::DriverUsb { binding } => {
-                Self::open_driver_usb_transport(pending, usb, binding).await
+                Self::open_driver_usb_transport(pending, usb, binding, input).await
             }
             TransportType::UsbSerial { baud_rate } => {
                 Self::open_serial_transport(pending, baud_rate)
@@ -1051,6 +1098,7 @@ impl UsbBackend {
         pending: &PendingUsbDevice,
         usb: &nusb::DeviceInfo,
         binding: UsbTransportBinding,
+        input: Option<Arc<dyn TransportInputSink>>,
     ) -> Result<Box<dyn Transport>> {
         let device = Self::open_usb_device(pending, usb).await?;
         (binding.open)(UsbTransportOpenRequest {
@@ -1059,6 +1107,7 @@ impl UsbBackend {
             product_id: pending.product_id,
             serial: pending.serial.clone(),
             usb_path: pending.usb_path.clone(),
+            input,
         })
         .await
         .with_context(|| {
@@ -1281,7 +1330,12 @@ impl DeviceBackend for UsbBackend {
             })?;
 
         let protocol: Arc<dyn Protocol> = Arc::from(self.build_protocol(&pending, *id).await);
-        let transport: Arc<dyn Transport> = Arc::from(Self::build_transport(&pending, &usb).await?);
+        let input = self.device_input_for(&pending, *id);
+        let transport_input = input
+            .clone()
+            .map(|input| input as Arc<dyn TransportInputSink>);
+        let transport: Arc<dyn Transport> =
+            Arc::from(Self::build_transport(&pending, &usb, transport_input).await?);
         let init_sequence = protocol.init_sequence();
         let first_init_packet = init_sequence.first().map_or_else(
             || "<none>".to_owned(),
@@ -1403,6 +1457,7 @@ impl DeviceBackend for UsbBackend {
             Arc::clone(&last_async_error),
         );
 
+        let connected_input = input.clone();
         let device = UsbDevice {
             protocol,
             transport_name,
@@ -1419,6 +1474,7 @@ impl DeviceBackend for UsbBackend {
             info_template: pending.info_template,
             frame_diagnostics_emitted: false,
             non_black_frame_diagnostics_emitted: false,
+            input,
         };
         let frame_sink = device.frame_sink(*id);
         let display_sink = device
@@ -1437,6 +1493,11 @@ impl DeviceBackend for UsbBackend {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(*id, Arc::new(connected));
+        // Input counts only once the device is fully connected, so a connect
+        // that fails partway never shows up as an input source.
+        if let Some(input) = connected_input {
+            input.activate();
+        }
 
             Ok(())
         }

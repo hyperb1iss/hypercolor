@@ -153,10 +153,19 @@ pub(super) struct TouchCanvas<'a> {
 }
 
 impl TouchCanvas<'_> {
-    /// Canvas point of a device-surface position, or `None` when the device
-    /// has no single output in the layout this canvas is sampled through.
-    fn point(self, device_id: DeviceId, x: f32, y: f32) -> Option<LightScriptCanvasPointPayload> {
-        let position = self.surfaces?.canvas_position(device_id, x, y)?;
+    /// Canvas point of a device-surface position, or `None` when the touched
+    /// surface has no single output in the layout this canvas is sampled
+    /// through. `segment` is the device segment the contact landed on.
+    fn point(
+        self,
+        device_id: DeviceId,
+        segment: Option<&str>,
+        x: f32,
+        y: f32,
+    ) -> Option<LightScriptCanvasPointPayload> {
+        let position = self
+            .surfaces?
+            .segment_canvas_position(device_id, segment, x, y)?;
         // The sampler reads pixel indices with pixel centers on integers;
         // Canvas 2D puts a pixel's center half a unit further in.
         let (px, py) = position.to_pixel(self.width, self.height);
@@ -266,7 +275,12 @@ impl LightScriptDevicePayload {
                     x: sanitize_norm(touch.x),
                     y: sanitize_norm(touch.y),
                     pressure: sanitize_norm(touch.pressure),
-                    canvas: canvas.point(touch.device_id, touch.x, touch.y),
+                    canvas: canvas.point(
+                        touch.device_id,
+                        touch.segment.as_deref(),
+                        touch.x,
+                        touch.y,
+                    ),
                 })
                 .collect(),
             buttons: device
@@ -288,7 +302,7 @@ impl LightScriptDevicePayload {
 /// One contact on a device touch surface, held or at a begin/end edge.
 ///
 /// `x` and `y` are device-surface coordinates; `canvas` is `null` when the
-/// device has no single output in this canvas's layout.
+/// touched surface has no single output in this canvas's layout.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub(super) struct LightScriptTouchPayload {
     pub(super) device: DeviceId,
@@ -419,6 +433,7 @@ impl LightScriptInputEventPayload {
                 x_q16_16,
                 y_q16_16,
                 pressure_q16_16,
+                segment,
                 ..
             } => {
                 let x = unit_from_q16_16(*x_q16_16);
@@ -431,7 +446,7 @@ impl LightScriptInputEventPayload {
                     x,
                     y,
                     pressure: unit_from_q16_16(*pressure_q16_16),
-                    canvas: canvas.point(*device_id, x, y),
+                    canvas: canvas.point(*device_id, segment.as_deref(), x, y),
                 });
             }
             InputEvent::DeviceButton {
