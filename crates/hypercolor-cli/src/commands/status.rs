@@ -361,7 +361,12 @@ fn status_table_lines(data: &SystemStatus, p: &Painter) -> Vec<String> {
     let fps_pct = ratio_percent(fps_ratio);
     let bar = render_fps_bar(fps_ratio, 24, p);
     let fps_display = format!("{actual_fps:>4.1} {} {target_fps}", p.muted("/"));
-    let health_word = format_fps_health(fps_pct, p);
+    // A parked loop reports zero FPS by design, not as a failing rate.
+    let health_word = if render_loop.output_demand.parked {
+        p.muted("parked")
+    } else {
+        format_fps_health(fps_pct, p)
+    };
 
     lines.push(format!(
         "  {}   {}  {bar}  {health_word}",
@@ -995,6 +1000,18 @@ mod tests {
 
         assert!(parked_lines.contains("parked: nothing consumes frames"));
         assert!(!rendering_lines.contains("parked"));
+
+        // Zero FPS reads as a failing rate only while the loop renders.
+        let fps_line = |lines: &str| {
+            lines
+                .lines()
+                .find(|line| line.contains("/ 60"))
+                .map(str::to_owned)
+                .expect("status should print the render rate")
+        };
+        assert!(fps_line(&parked_lines).ends_with("parked"));
+        assert!(!fps_line(&parked_lines).contains("0%"));
+        assert!(fps_line(&rendering_lines).ends_with("0%"));
     }
 
     #[test]
