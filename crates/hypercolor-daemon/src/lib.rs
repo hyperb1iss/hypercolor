@@ -43,6 +43,7 @@ pub mod mcp;
 pub mod mdns;
 pub mod network;
 pub mod output_power;
+pub mod panic_hook;
 pub mod path_migration;
 pub mod performance;
 pub mod release_notifications;

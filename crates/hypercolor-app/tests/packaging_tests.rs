@@ -1804,6 +1804,37 @@ fn pawnio_lookups_see_the_64_bit_install_from_any_powershell() {
     }
 }
 
+/// The daemon exits nonzero when its render thread cannot recover in
+/// process. Every launcher that runs it as a service must restart it on
+/// that exit, not only on a crash: systemd on failure, and the Windows
+/// service manager only once the failure flag extends its recovery actions
+/// to non-crash failures.
+#[test]
+fn daemon_service_launchers_restart_a_daemon_that_exits_with_an_error() {
+    for (name, unit) in [
+        ("hypercolor.service", SYSTEMD_USER_UNIT),
+        ("hypercolor.service.system", SYSTEMD_PACKAGED_USER_UNIT),
+    ] {
+        assert!(
+            unit.lines().any(|line| line.trim() == "Restart=on-failure"),
+            "{name} must restart the daemon after an error exit"
+        );
+    }
+    let code: Vec<&str> = INSTALL_WINDOWS_SERVICE_PS1
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    for step in [
+        "sc.exe failure $ServiceName reset= 86400 actions= restart/",
+        "sc.exe failureflag $ServiceName 1",
+    ] {
+        assert!(
+            code.iter().any(|line| line.contains(step)),
+            "the daemon service installer is missing {step}"
+        );
+    }
+}
+
 /// `Start-Service` and `Stop-Service` wait without a bound while a service
 /// is pending, which would hang the installer. The broker installer bounds
 /// every wait, checks the broker stayed up, and on failure prints the

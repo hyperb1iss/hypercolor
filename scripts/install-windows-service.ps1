@@ -359,6 +359,10 @@ if ($serviceEnvironment.Count -gt 0) {
 }
 
 sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/15000/""/60000 | Out-Null
+# Without the failure flag the service manager runs those actions only when
+# the process crashes. The daemon stops itself with a nonzero exit code when
+# its render thread cannot recover, and that stop must restart it too.
+sc.exe failureflag $ServiceName 1 | Out-Null
 
 Write-Host "Installed $ServiceName"
 Write-Host "  Source: $daemonSourcePath"

@@ -99,15 +99,21 @@ use hypercolor_daemon::SceneTransactionQueue;
 #[cfg(feature = "wgpu")]
 use hypercolor_daemon::canvas_capture::{CanvasCaptureRequest, CanvasImageFormat, capture_canvas};
 use hypercolor_daemon::discovery::DiscoveryRuntime;
+use hypercolor_daemon::domain::diagnostics::render_thread_check;
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::output_power::{OutputPower, OutputPowerState};
 use hypercolor_daemon::performance::PerformanceTracker;
 #[cfg(feature = "wgpu")]
 use hypercolor_daemon::preview_runtime::ZonePreviewFrameReceiver;
 use hypercolor_daemon::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
+#[cfg(feature = "wgpu")]
+use hypercolor_daemon::render_thread::gpu_errors::gpu_error_totals;
+use hypercolor_daemon::render_thread::supervision::{InjectedRenderFault, RENDER_FAILURE_FILE};
 use hypercolor_daemon::render_thread::{
     CanvasDims, InputPublicationConsumer, InputPublicationDemand,
-    InputPublicationDemandRegistration, RenderThread, RenderThreadState,
+    InputPublicationDemandRegistration, RenderFailureKind, RenderFailureRecord,
+    RenderRecoveryAction, RenderRestartPolicy, RenderSupervision, RenderSupervisionSnapshot,
+    RenderThread, RenderThreadPhase, RenderThreadState,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -7765,4 +7771,406 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
             .all(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0),
         "release sleep should publish a blank canvas instead of the stale preview"
     );
+}
+
+// ── Render Thread Supervision Tests ─────────────────────────────────────────
+
+/// Error and warning logs from every thread, captured once per test binary
+/// so assertions can prove a failure was logged.
+fn captured_logs() -> Arc<StdMutex<Vec<u8>>> {
+    static LOGS: std::sync::OnceLock<Arc<StdMutex<Vec<u8>>>> = std::sync::OnceLock::new();
+    Arc::clone(LOGS.get_or_init(|| {
+        let logs: Arc<StdMutex<Vec<u8>>> = Arc::default();
+        let sink = Arc::clone(&logs);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || CapturedLogWriter(Arc::clone(&sink)))
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("only the supervision tests install a global subscriber");
+        logs
+    }))
+}
+
+struct CapturedLogWriter(Arc<StdMutex<Vec<u8>>>);
+
+impl std::io::Write for CapturedLogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Whether one captured log line contains every needle.
+fn logs_contain_line(logs: &Arc<StdMutex<Vec<u8>>>, needles: &[&str]) -> bool {
+    let logs = logs
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    String::from_utf8_lossy(&logs)
+        .lines()
+        .any(|line| needles.iter().all(|needle| line.contains(needle)))
+}
+
+fn fast_restart_policy(max_restarts: u32) -> RenderRestartPolicy {
+    RenderRestartPolicy {
+        max_restarts,
+        window: Duration::from_secs(60),
+        initial_backoff: Duration::from_millis(20),
+        max_backoff: Duration::from_millis(80),
+        stable_uptime: Duration::from_secs(60),
+    }
+}
+
+fn solid_strip_state() -> RenderThreadState {
+    make_render_state(
+        active_builtin_effect("solid_color", solid_color_controls(0, 255, 0)),
+        SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
+        BackendManager::new(),
+    )
+}
+
+async fn wait_for_render_frames(state: &RenderThreadState, minimum_frame_number: u64) {
+    let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+    loop {
+        let frame_number = state.render_loop.read().await.frame_number();
+        if frame_number >= minimum_frame_number {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "expected render frame {minimum_frame_number}, still at {frame_number}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+async fn wait_for_supervision<F>(
+    supervision: &RenderSupervision,
+    what: &str,
+    predicate: F,
+) -> RenderSupervisionSnapshot
+where
+    F: Fn(&RenderSupervisionSnapshot) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+    loop {
+        let snapshot = supervision.snapshot();
+        if predicate(&snapshot) {
+            return snapshot;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}: phase={:?}, restarts_total={}, last_failure={:?}",
+            snapshot.phase,
+            snapshot.restarts_total,
+            snapshot.last_failure
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+fn read_failure_record(path: &std::path::Path) -> RenderFailureRecord {
+    serde_json::from_slice(&std::fs::read(path).expect("render failure record should exist"))
+        .expect("render failure record should parse")
+}
+
+#[tokio::test]
+async fn injected_render_panic_is_logged_recorded_and_the_pipeline_resumes() {
+    hypercolor_daemon::panic_hook::install();
+    let logs = captured_logs();
+    let state_dir = tempfile::tempdir().expect("state tempdir should be created");
+    let record_path = state_dir.path().join(RENDER_FAILURE_FILE);
+    let supervision = RenderSupervision::new(fast_restart_policy(3), Some(record_path.clone()));
+    let state = solid_strip_state();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+    wait_for_render_frames(&state, 3).await;
+
+    supervision.inject_fault(InjectedRenderFault::Panic(
+        "injected panic for the logged and recorded restart",
+    ));
+
+    let snapshot = wait_for_supervision(&supervision, "the restarted pipeline", |snapshot| {
+        snapshot.restarts_total == 1 && snapshot.phase == RenderThreadPhase::Running
+    })
+    .await;
+    let resumed_from = state.render_loop.read().await.frame_number();
+    wait_for_render_frames(&state, resumed_from + 5).await;
+
+    let failure = snapshot
+        .last_failure
+        .expect("the restart should keep the failure that caused it");
+    assert!(snapshot.last_failure_in_this_process);
+    assert_eq!(failure.kind, RenderFailureKind::Panic);
+    assert_eq!(
+        failure.message,
+        "injected panic for the logged and recorded restart"
+    );
+    assert_eq!(failure.action, RenderRecoveryAction::Restart);
+    assert_eq!(failure.thread.as_deref(), Some("hypercolor-render"));
+    assert!(
+        failure
+            .location
+            .as_deref()
+            .is_some_and(|location| location.contains("pipeline_driver.rs")),
+        "{failure:?}"
+    );
+    assert!(
+        failure
+            .backtrace
+            .as_deref()
+            .is_some_and(|backtrace| backtrace.contains("pipeline_driver")),
+        "the record should carry the backtrace captured at the panic: {failure:?}"
+    );
+    assert_eq!(
+        rt.supervision().failure_record_path(),
+        Some(record_path.as_path())
+    );
+    let persisted = read_failure_record(&record_path);
+    assert_eq!(persisted.kind, RenderFailureKind::Panic);
+    assert_eq!(persisted.action, RenderRecoveryAction::Restart);
+    assert_eq!(persisted.restarts_total, 1);
+    assert_eq!(persisted.pid, std::process::id());
+    assert!(persisted.backtrace.is_some());
+    assert!(logs_contain_line(
+        &logs,
+        &[
+            "render pipeline failed; restarting it with fresh GPU and render state",
+            "injected panic for the logged and recorded restart",
+        ]
+    ));
+    assert!(logs_contain_line(
+        &logs,
+        &[
+            "thread panicked",
+            "injected panic for the logged and recorded restart"
+        ]
+    ));
+
+    state.render_loop.write().await.stop();
+    rt.shutdown()
+        .await
+        .expect("a recovered render thread should shut down cleanly");
+    assert_eq!(supervision.phase(), RenderThreadPhase::Stopped);
+}
+
+#[tokio::test]
+async fn repeated_render_panics_exhaust_the_restart_budget_and_request_termination() {
+    hypercolor_daemon::panic_hook::install();
+    let state_dir = tempfile::tempdir().expect("state tempdir should be created");
+    let record_path = state_dir.path().join(RENDER_FAILURE_FILE);
+    let supervision = RenderSupervision::new(fast_restart_policy(2), Some(record_path.clone()));
+    let state = solid_strip_state();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+    wait_for_render_frames(&state, 1).await;
+
+    for _ in 0..3 {
+        supervision.inject_fault(InjectedRenderFault::Panic("injected crash loop panic"));
+    }
+
+    let record = tokio::time::timeout(WAIT_DEADLINE, supervision.terminated())
+        .await
+        .expect("the third panic should exhaust a two-restart budget");
+    assert_eq!(record.kind, RenderFailureKind::Panic);
+    assert_eq!(record.action, RenderRecoveryAction::TerminateProcess);
+    assert_eq!(record.restart_attempt, 3);
+    assert_eq!(record.restarts_total, 2);
+    assert_eq!(supervision.phase(), RenderThreadPhase::Terminating);
+    let persisted = read_failure_record(&record_path);
+    assert_eq!(persisted.action, RenderRecoveryAction::TerminateProcess);
+    let error = rt
+        .shutdown()
+        .await
+        .expect_err("a render thread that gave up should end with an error");
+    assert!(format!("{error:#}").contains("cannot recover"), "{error:#}");
+}
+
+#[tokio::test]
+async fn lost_compositor_device_terminates_without_an_in_process_restart() {
+    let supervision = RenderSupervision::new(fast_restart_policy(5), None);
+    let state = solid_strip_state();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+    wait_for_render_frames(&state, 1).await;
+
+    supervision.inject_compositor_device_lost("injected driver reset");
+
+    let record = tokio::time::timeout(WAIT_DEADLINE, supervision.terminated())
+        .await
+        .expect("a lost compositor device should end the render thread");
+    assert_eq!(record.kind, RenderFailureKind::GpuDeviceLost);
+    assert_eq!(record.action, RenderRecoveryAction::TerminateProcess);
+    assert!(
+        record.message.contains("injected driver reset"),
+        "{record:?}"
+    );
+    assert_eq!(record.restarts_total, 0);
+    assert!(rt.shutdown().await.is_err());
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn injected_uncaptured_wgpu_error_is_logged_and_counted_without_killing_the_render_thread() {
+    let logs = captured_logs();
+    let supervision = RenderSupervision::new(fast_restart_policy(3), None);
+    let mut state = solid_strip_state();
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised GPU render thread should spawn");
+    wait_for_render_frames(&state, 3).await;
+    let before = gpu_error_totals();
+
+    supervision.inject_fault(InjectedRenderFault::GpuValidationError);
+
+    let snapshot = wait_for_supervision(&supervision, "the counted validation error", |snapshot| {
+        snapshot.gpu_errors.validation > before.validation
+    })
+    .await;
+    let counted_at = state.render_loop.read().await.frame_number();
+    wait_for_render_frames(&state, counted_at + 5).await;
+
+    assert_eq!(snapshot.phase, RenderThreadPhase::Running);
+    assert_eq!(supervision.snapshot().restarts_total, 0);
+    let last = snapshot
+        .gpu_errors
+        .last
+        .expect("the latest uncaptured error should be kept");
+    assert_eq!(last.kind, "validation");
+    assert_eq!(last.device, "SparkleFlinger GPU compositor");
+    assert!(logs_contain_line(
+        &logs,
+        &["uncaptured wgpu error", "injected validation error"]
+    ));
+
+    state.render_loop.write().await.stop();
+    rt.shutdown()
+        .await
+        .expect("a render thread that only logged a GPU error should shut down cleanly");
+}
+
+async fn render_thread_check_now(
+    state: &RenderThreadState,
+    supervision: &RenderSupervision,
+    stall_after: Duration,
+) -> hypercolor_types::api::diagnose::DiagnoseCheck {
+    let loop_state = state.render_loop.read().await.state();
+    render_thread_check(&supervision.snapshot(), loop_state, stall_after)
+}
+
+async fn wait_for_render_thread_check(
+    state: &RenderThreadState,
+    supervision: &RenderSupervision,
+    stall_after: Duration,
+    expected: &str,
+) -> hypercolor_types::api::diagnose::DiagnoseCheck {
+    wait_for_render_thread_check_where(state, supervision, stall_after, |check| {
+        check.status == expected
+    })
+    .await
+}
+
+async fn wait_for_render_thread_check_where<F>(
+    state: &RenderThreadState,
+    supervision: &RenderSupervision,
+    stall_after: Duration,
+    accept: F,
+) -> hypercolor_types::api::diagnose::DiagnoseCheck
+where
+    F: Fn(&hypercolor_types::api::diagnose::DiagnoseCheck) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + WAIT_DEADLINE;
+    loop {
+        let check = render_thread_check_now(state, supervision, stall_after).await;
+        if accept(&check) {
+            return check;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "render_thread check never reached the expected state: {} ({})",
+            check.status,
+            check.detail
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn render_thread_check_fails_while_frames_stall_and_passes_after_recovery() {
+    let stall_after = Duration::from_millis(300);
+    let supervision = RenderSupervision::new(fast_restart_policy(3), None);
+    let state = solid_strip_state();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+    wait_for_render_frames(&state, 3).await;
+    wait_for_render_thread_check(&state, &supervision, stall_after, "pass").await;
+
+    supervision.inject_fault(InjectedRenderFault::Stall(Duration::from_millis(1_500)));
+
+    let stalled = wait_for_render_thread_check(&state, &supervision, stall_after, "fail").await;
+    assert!(
+        stalled.detail.contains("has not completed a frame"),
+        "{}",
+        stalled.detail
+    );
+    wait_for_render_thread_check(&state, &supervision, stall_after, "pass").await;
+    assert_eq!(supervision.snapshot().restarts_total, 0);
+
+    state.render_loop.write().await.stop();
+    rt.shutdown().await.expect("shutdown after a stall");
+}
+
+#[tokio::test]
+async fn render_thread_check_fails_while_the_pipeline_restarts_and_passes_after() {
+    let stall_after = Duration::from_millis(300);
+    let supervision = RenderSupervision::new(
+        RenderRestartPolicy {
+            initial_backoff: Duration::from_millis(600),
+            max_backoff: Duration::from_millis(600),
+            ..fast_restart_policy(3)
+        },
+        None,
+    );
+    let state = solid_strip_state();
+    state.render_loop.write().await.start();
+    let mut rt = RenderThread::try_spawn_supervised(state.clone(), supervision.clone())
+        .expect("supervised render thread should spawn");
+    wait_for_render_frames(&state, 3).await;
+
+    supervision.inject_fault(InjectedRenderFault::Panic(
+        "injected panic for the restarting check",
+    ));
+
+    // The panic hook symbolizes a backtrace on the render thread, which can
+    // outlast the stall threshold, so a stall failure may come first.
+    wait_for_render_thread_check_where(&state, &supervision, stall_after, |check| {
+        check.status == "fail" && check.detail.contains("restarting")
+    })
+    .await;
+    let recovered = wait_for_render_thread_check(&state, &supervision, stall_after, "pass").await;
+    assert!(
+        recovered.detail.contains("restarts=1"),
+        "{}",
+        recovered.detail
+    );
+    let resumed_from = state.render_loop.read().await.frame_number();
+    wait_for_render_frames(&state, resumed_from + 3).await;
+
+    state.render_loop.write().await.stop();
+    rt.shutdown()
+        .await
+        .expect("shutdown after a recovered restart");
 }

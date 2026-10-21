@@ -9,8 +9,13 @@ use super::RenderThreadState;
 use super::frame_executor::{execute_frame, service_scene_transactions};
 use super::frame_policy::SkipDecision;
 use super::pipeline_runtime::PipelineRuntime;
+use super::supervision::RenderSupervision;
 
-pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: PipelineRuntime) {
+pub(crate) async fn run_pipeline(
+    state: RenderThreadState,
+    mut runtime: PipelineRuntime,
+    supervision: RenderSupervision,
+) {
     info!(
         mode = ?state.render_acceleration_mode,
         "render pipeline started"
@@ -23,6 +28,8 @@ pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: Pipeline
     loop {
         let scheduled_start = next_frame_at;
         wait_until_deadline(scheduled_start).await;
+        #[cfg(feature = "persistence-test-hooks")]
+        raise_injected_fault(&supervision, &mut runtime);
 
         let tick = {
             let mut render_loop = state.render_loop.write().await;
@@ -42,7 +49,9 @@ pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: Pipeline
             if let Some(execution) =
                 handle_inactive_render_loop(&state, &mut runtime, tick.state).await
             {
-                next_frame_at = execution.resolve_deadline(scheduled_start, Instant::now());
+                let now = Instant::now();
+                supervision.heartbeat(now);
+                next_frame_at = execution.resolve_deadline(scheduled_start, now);
                 continue;
             }
 
@@ -54,11 +63,37 @@ pub(crate) async fn run_pipeline(state: RenderThreadState, mut runtime: Pipeline
             runtime.frame_loop.clock.rebase(scheduled_start);
         }
         let frame = execute_frame(&state, &mut runtime, scheduled_start, skip_decision).await;
+        let now = Instant::now();
+        supervision.frame_completed(now);
         skip_decision = frame.next_skip_decision;
-        next_frame_at = frame.resolve_deadline(scheduled_start, Instant::now());
+        next_frame_at = frame.resolve_deadline(scheduled_start, now);
     }
 
     info!("render pipeline exited");
+}
+
+/// Raise a fault a test queued, on the render thread, exactly where a real
+/// one would surface: between frames, with the pipeline's state live.
+#[cfg(feature = "persistence-test-hooks")]
+fn raise_injected_fault(supervision: &RenderSupervision, runtime: &mut PipelineRuntime) {
+    use super::supervision::InjectedRenderFault;
+
+    match supervision.take_injected_fault() {
+        None => {}
+        Some(InjectedRenderFault::Panic(message)) => panic!("{message}"),
+        Some(InjectedRenderFault::Stall(duration)) => std::thread::sleep(duration),
+        Some(InjectedRenderFault::GpuValidationError) => {
+            let raised = runtime
+                .render
+                .sparkleflinger
+                .raise_uncaptured_validation_error();
+            if !raised {
+                tracing::warn!(
+                    "injected GPU validation error skipped: the compositor runs on the CPU"
+                );
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

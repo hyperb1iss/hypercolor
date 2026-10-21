@@ -1054,7 +1054,7 @@ pub enum InputPublicationStatus {
 }
 
 impl InputPublicationStatus {
-    const fn is_terminal(&self) -> bool {
+    pub(crate) const fn is_terminal(&self) -> bool {
         matches!(self, Self::Stopped | Self::Failed(_))
     }
 }

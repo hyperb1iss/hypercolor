@@ -191,7 +191,7 @@ fn reject_injected_gpu_preparation(fail_after_prepare: bool, resource: &'static 
 }
 
 pub(crate) struct GpuSparkleFlinger {
-    _render_device: GpuRenderDevice,
+    render_device: GpuRenderDevice,
     device: wgpu::Device,
     queue: wgpu::Queue,
     /// The queue position each recent render frame ended at, oldest first,

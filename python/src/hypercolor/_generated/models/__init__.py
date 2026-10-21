@@ -418,6 +418,7 @@ from .get_simulated_display_response_200 import GetSimulatedDisplayResponse200
 from .get_software_conflicts_response_200 import GetSoftwareConflictsResponse200
 from .get_system_response_200 import GetSystemResponse200
 from .gpu_compositor_probe_status import GpuCompositorProbeStatus
+from .gpu_error_status import GpuErrorStatus
 from .gradient_stop import GradientStop
 from .health_checks import HealthChecks
 from .health_response import HealthResponse
@@ -561,7 +562,9 @@ from .rejected_control_change import RejectedControlChange
 from .rejected_control_change_attempted_value import RejectedControlChangeAttemptedValue
 from .remove_favorite_response_200 import RemoveFavoriteResponse200
 from .render_acceleration_status import RenderAccelerationStatus
+from .render_failure_status import RenderFailureStatus
 from .render_loop_status import RenderLoopStatus
+from .render_supervision_status import RenderSupervisionStatus
 from .render_surface_status import RenderSurfaceStatus
 from .reorder_layers_request import ReorderLayersRequest
 from .reorder_live_zone_layers_response_200 import ReorderLiveZoneLayersResponse200
@@ -1047,6 +1050,7 @@ __all__ = (
     "GetSoftwareConflictsResponse200",
     "GetSystemResponse200",
     "GpuCompositorProbeStatus",
+    "GpuErrorStatus",
     "GradientStop",
     "HealthChecks",
     "HealthResponse",
@@ -1182,7 +1186,9 @@ __all__ = (
     "RejectedControlChangeAttemptedValue",
     "RemoveFavoriteResponse200",
     "RenderAccelerationStatus",
+    "RenderFailureStatus",
     "RenderLoopStatus",
+    "RenderSupervisionStatus",
     "RenderSurfaceStatus",
     "ReorderLayersRequest",
     "ReorderLiveZoneLayersResponse200",

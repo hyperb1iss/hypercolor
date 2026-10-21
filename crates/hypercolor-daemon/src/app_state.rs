@@ -590,6 +590,8 @@ impl AppState {
                 display_frames: Arc::clone(&display_frames),
                 device_metrics: Arc::clone(&device_metrics),
                 input_manager: input_manager.clone(),
+                // An isolated AppState never spawns a render thread.
+                render_supervision: crate::render_thread::RenderSupervision::detached(),
             },
             |layout| {
                 let discovery_runtime = crate::discovery::DiscoveryRuntime {

@@ -820,6 +820,9 @@ impl DaemonState {
                 display_frames: Arc::clone(&display_frames),
                 device_metrics: Arc::clone(&device_metrics),
                 input_manager: input_manager.clone(),
+                render_supervision: crate::render_thread::RenderSupervision::for_state_dir(
+                    &state_dir,
+                ),
             },
             |layout| {
                 let discovery_runtime = crate::discovery::DiscoveryRuntime {
@@ -1656,6 +1659,7 @@ pub(crate) struct DomainAssemblyResources {
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
     pub device_metrics: DeviceMetricsSnapshotStore,
     pub input_manager: InputManager,
+    pub render_supervision: crate::render_thread::RenderSupervision,
 }
 
 /// The assembled domain graph and the driver host it was wired around.
@@ -1696,6 +1700,7 @@ pub(crate) fn assemble_domains(
         display_frames,
         device_metrics,
         input_manager,
+        render_supervision,
     } = resources;
 
     let runtime_projection = RuntimeSessionProjection::new(
@@ -1739,6 +1744,7 @@ pub(crate) fn assemble_domains(
         preview_runtime,
         devices.clone(),
         start_time,
+        render_supervision,
     );
     let domains = DomainContexts::assemble(
         runtime_session,
