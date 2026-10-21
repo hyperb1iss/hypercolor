@@ -25,6 +25,7 @@ pub mod domain;
 pub mod driver_inventory;
 pub mod durable_stores;
 pub mod extensions;
+pub mod first_run;
 pub mod interaction_routing;
 pub mod interactive_preview;
 pub mod launcher_claim;

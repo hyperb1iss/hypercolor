@@ -30,6 +30,7 @@ uuid = { workspace = true }
 block2 = "0.6.2"
 dispatch2 = "0.3.1"
 objc2 = { workspace = true, features = ["std"] }
+objc2-avf-audio = { workspace = true, features = ["std", "AVAudioApplication"] }
 objc2-core-foundation = { workspace = true, features = [
   "std",
   "CFArray",

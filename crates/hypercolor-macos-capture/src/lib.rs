@@ -2,6 +2,9 @@
 //!
 //! Native framework ownership remains private to this crate. The public frame
 //! boundary contains only plain Rust metadata plus an opaque retained surface.
+//!
+//! The crate also owns the read-only microphone permission probe, since it
+//! already holds the other privacy-gated capture authorization checks.
 
 mod clock;
 #[cfg(feature = "capture-fixtures")]
@@ -10,6 +13,8 @@ mod diagnostics;
 mod frame;
 mod geometry;
 mod mailbox;
+#[cfg(target_os = "macos")]
+mod microphone;
 #[cfg(target_os = "macos")]
 mod native;
 #[cfg(target_os = "macos")]
@@ -22,6 +27,8 @@ mod stubs;
 #[cfg(any(target_os = "macos", test))]
 mod worker;
 
+#[cfg(target_os = "macos")]
+pub use microphone::microphone_record_permission;
 #[cfg(target_os = "macos")]
 pub use native::{
     MacosNativeTransactionError, MacosNativeTransactionPhase, MacosScreenCaptureSession,
@@ -38,6 +45,7 @@ pub use screenshot::{
 #[cfg(not(target_os = "macos"))]
 pub use stubs::{
     MacosScreenCaptureSession, MacosScreenshotReferenceCapture, MacosStreamRequestTransaction,
+    microphone_record_permission,
 };
 
 pub use clock::{MacosDisplayClock, MacosDisplayClockError};

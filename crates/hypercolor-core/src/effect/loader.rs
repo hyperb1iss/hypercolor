@@ -360,9 +360,21 @@ fn deterministic_html_effect_id(source_path: &Path) -> EffectId {
 }
 
 fn stable_bundled_html_effect_id(source_path: &Path) -> Option<EffectId> {
-    bundled_effect_slug(source_path).map(|slug| {
-        deterministic_html_effect_id_from_key(&format!("hypercolor:html-bundled:{slug}"))
-    })
+    bundled_effect_slug(source_path).map(|slug| bundled_html_effect_id(&slug))
+}
+
+/// The id a bundled HTML effect carries, derived from its file stem alone.
+///
+/// A file under an `effects/bundled` or `effects/hypercolor` root hashes only
+/// its lowercased stem, never the directory it was installed into, so a stem
+/// names the same effect on every install and platform. The same file under
+/// any other root gets a path-derived id and never matches this one.
+#[must_use]
+pub fn bundled_html_effect_id(stem: &str) -> EffectId {
+    deterministic_html_effect_id_from_key(&format!(
+        "hypercolor:html-bundled:{}",
+        stem.trim().to_ascii_lowercase()
+    ))
 }
 
 fn html_effect_id(

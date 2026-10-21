@@ -7,8 +7,8 @@ use tempfile::TempDir;
 
 use hypercolor_core::effect::{
     EffectRegistry, builtin::register_builtin_effects, bundled_effects_root,
-    default_effect_search_paths, load_html_effect_file, parse_html_effect_metadata,
-    register_html_effects, register_html_effects_stepped,
+    bundled_html_effect_id, default_effect_search_paths, load_html_effect_file,
+    parse_html_effect_metadata, register_html_effects, register_html_effects_stepped,
 };
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{EffectCategory, EffectSource};
@@ -237,6 +237,38 @@ fn bundled_html_effect_ids_are_stable_across_build_roots() {
         .expect("installed effect should register");
 
     assert_eq!(source_entry.metadata.id, installed_entry.metadata.id);
+}
+
+#[test]
+fn bundled_html_effect_id_names_only_the_bundled_copy_of_a_stem() {
+    let temp = TempDir::new().expect("failed to create tempdir");
+    let root = temp.path().join("effects");
+    let html = r#"
+<head>
+  <title>Poisonous</title>
+  <meta description="Stable generated effect identity" />
+</head>
+"#;
+    let bundled_path = root.join("hypercolor/Poisonous.html");
+    let user_path = root.join("user/poisonous.html");
+    write_html(&bundled_path, html);
+    write_html(&user_path, html);
+
+    let bundled = load_html_effect_file(&bundled_path)
+        .expect("bundled effect should load")
+        .expect("bundled effect should register");
+    let user = load_html_effect_file(&user_path)
+        .expect("user effect should load")
+        .expect("user effect should register");
+
+    assert_eq!(bundled_html_effect_id("poisonous"), bundled.metadata.id);
+    assert_eq!(bundled_html_effect_id(" POISONOUS "), bundled.metadata.id);
+    assert_ne!(bundled_html_effect_id("poisonous"), user.metadata.id);
+    // Ids that installs on macOS and Linux both reported for shipped effects.
+    assert_eq!(
+        bundled_html_effect_id("hyperbloom").to_string(),
+        "040ddf5e-bd07-4164-a71c-6415936be19b"
+    );
 }
 
 #[test]

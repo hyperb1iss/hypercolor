@@ -428,6 +428,10 @@ impl DaemonState {
                 info!(profiles, backup = %backup.display(), "Imported legacy profiles as scenes");
             }
         }
+        // Read after the legacy import, which writes this store, and before
+        // the load, which never creates it. A failed probe counts as present
+        // so a first-run seed can never land on an existing install.
+        let scene_store_absent = !scenes_path.try_exists().unwrap_or(true);
         let mut scene_store_inner = SceneStore::load(&scenes_path)
             .with_context(|| format!("failed to load scenes from {}", scenes_path.display()))?;
         if scene_store_inner
@@ -691,6 +695,9 @@ impl DaemonState {
 
         // ── Runtime Session Store ───────────────────────────────────
         let runtime_state_path = state_dir.join("runtime-state.json");
+        // Only a session that never existed at either path is fresh; an
+        // unreadable one is an existing install whose state failed to load.
+        let mut runtime_session_absent = false;
         let mut startup_runtime_snapshot = match crate::runtime_state::load_migrated(
             &data_dir.join("runtime-state.json"),
             &runtime_state_path,
@@ -701,6 +708,11 @@ impl DaemonState {
                     ?migration,
                     "Runtime session store ready"
                 );
+                runtime_session_absent = snapshot.is_none()
+                    && matches!(
+                        migration,
+                        crate::path_migration::MigrationOutcome::FreshInstall
+                    );
                 snapshot
             }
             Err(error) => {
@@ -762,6 +774,13 @@ impl DaemonState {
             .context("failed to build driver module registry")?,
         );
         let library_path = ConfigManager::data_dir().join("library.json");
+        // Opening never creates the file, and any library write leaves it
+        // behind, including one that removed the last favorite.
+        let library_absent = !library_path.try_exists().unwrap_or(true);
+        // Any one of these stores proves an earlier run, so an upgrade that
+        // never wrote its library still gets no seeded favorites.
+        let fresh_install = runtime_session_absent && scene_store_absent && library_absent;
+        info!(fresh_install, "First-run defaults eligibility resolved");
         let (library_store, library_identity) =
             open_persisted_library_store_with_effect_id_migrations(
                 &library_path,
@@ -937,6 +956,7 @@ impl DaemonState {
             device_aliases_path,
             startup_device_aliases: Some(startup_device_aliases),
             startup_runtime_snapshot,
+            fresh_install,
             discovery_in_progress,
             output_power,
             scene_transactions,

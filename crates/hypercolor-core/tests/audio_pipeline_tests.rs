@@ -17,11 +17,12 @@ use hypercolor_core::input::audio::features::{
 use hypercolor_core::input::audio::fft::{FftPipeline, RingBuffer, precompute_hann, spectral_flux};
 use hypercolor_core::input::audio::realtime::{AudioFrameRing, PushStats, push_frames};
 use hypercolor_core::input::audio::{
-    AudioCaptureBackend, AudioInput, classify_audio_capture_backend,
+    AudioCaptureBackend, AudioInput, classify_audio_capture_backend, default_input_fallback_allowed,
 };
 use hypercolor_core::input::{InputData, InputManager, InputSource, ManagedSourceRole};
 use hypercolor_types::audio::{
-    AudioData, AudioPipelineConfig, AudioSourceType, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS,
+    AudioData, AudioInputPermission, AudioPipelineConfig, AudioSourceType, CHROMA_BINS, MEL_BANDS,
+    SPECTRUM_BINS,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -709,6 +710,22 @@ fn audio_capture_backend_classification_is_platform_neutral() {
     assert_eq!(AudioCaptureBackend::Cpal.status_id(), "cpal");
     assert_eq!(AudioCaptureBackend::PulseAudio.status_id(), "pulse_audio");
     assert_eq!(AudioCaptureBackend::Disabled.status_id(), "disabled");
+}
+
+#[test]
+fn system_monitor_falls_back_to_default_input_only_without_a_surprise_prompt() {
+    assert!(default_input_fallback_allowed(
+        AudioInputPermission::NotRequired
+    ));
+    assert!(default_input_fallback_allowed(
+        AudioInputPermission::Granted
+    ));
+    assert!(!default_input_fallback_allowed(
+        AudioInputPermission::Undetermined
+    ));
+    assert!(!default_input_fallback_allowed(
+        AudioInputPermission::Denied
+    ));
 }
 
 #[test]

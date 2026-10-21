@@ -156,7 +156,11 @@ support).
 
 Screen capture is off until an explicit authorization or source-selection
 action. Keyboard capture uses Input Monitoring. Passive pointer capture does
-not use a TCC service. ScreenCaptureKit uses Screen Recording. The settings
+not use a TCC service. ScreenCaptureKit uses Screen Recording. Audio capture
+uses Microphone, which macOS applies to every audio input. The default
+system-audio source never falls back to the microphone before you have
+granted it, so the Microphone prompt appears only once the daemon opens an
+input you set up (see [Audio setup](@/guide/audio-setup.md)). The settings
 page links directly to the matching System Settings privacy pane when manual
 remediation is needed.
 

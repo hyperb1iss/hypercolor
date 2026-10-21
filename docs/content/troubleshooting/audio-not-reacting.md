@@ -124,6 +124,8 @@ Audio capture stream configured source=SystemMonitor device=alsa_output.pci-0000
 
 If that line never appears, the source name is wrong or PipeWire/PulseAudio refused the connection. Double-check the exact name from `pactl list sources short`.
 
+On macOS, `No system audio loopback device found; audio stays silent until an input is chosen in audio settings` means `device = "default"` found no loopback device and Hypercolor does not have Microphone permission yet, so it opened nothing rather than prompt for your microphone. Choose a loopback device such as BlackHole, or Default Microphone, under **Device** in the Audio settings. See [Audio setup](@/guide/audio-setup.md#macos-install-a-loopback-driver).
+
 ---
 
 ## Step 5: Apply an audio-reactive effect to test
