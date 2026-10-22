@@ -101,7 +101,7 @@ use hypercolor_daemon::canvas_capture::{CanvasCaptureRequest, CanvasImageFormat,
 use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::domain::diagnostics::render_thread_check;
 use hypercolor_daemon::logical_devices::LogicalDevice;
-use hypercolor_daemon::output_power::{OutputPower, OutputPowerState};
+use hypercolor_daemon::output_power::{OutputOverride, OutputPower, OutputPowerState};
 use hypercolor_daemon::performance::PerformanceTracker;
 #[cfg(feature = "wgpu")]
 use hypercolor_daemon::preview_runtime::ZonePreviewFrameReceiver;
@@ -4004,6 +4004,133 @@ async fn zone_previews_publish_only_the_selected_zones() {
     })
     .await
     .expect("selecting every zone brings the other zone back");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
+/// Start a multi-zone scene whose zone previews follow one zone, with the
+/// output power under the test's control. Returns once the followed zone's
+/// live frame has arrived.
+async fn sleeping_zone_preview_fixture(
+    name: &str,
+) -> (
+    RenderThreadState,
+    RenderThread,
+    watch::Sender<OutputPowerState>,
+    hypercolor_daemon::preview_runtime::ZonePreviewFrameReceiver,
+    ZoneId,
+    ZoneId,
+) {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let (power_tx, power_state) = watch::channel(OutputPowerState::default());
+    state.power_state = power_state;
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let mut scene = make_scene(name);
+    scene.zones = overlapping_zones(solid_id);
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    let red_zone = scene.zones[0].id;
+    let blue_zone = scene.zones[1].id;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    let mut previews_rx = state.preview_runtime.zone_preview_receiver();
+    previews_rx.update_demand(PreviewStreamDemand {
+        fps: 30,
+        format: PreviewPixelFormat::Rgb,
+        width: 0,
+        height: 0,
+    });
+    previews_rx.update_selection(&ZonePreviewSelection::from_zone_ids([blue_zone]));
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let rt = RenderThread::spawn(state.clone());
+    wait_for_zone_preview_pixel(&mut previews_rx, blue_zone, Rgba::new(0, 0, 255, 255)).await;
+    (state, rt, power_tx, previews_rx, red_zone, blue_zone)
+}
+
+async fn wait_for_zone_preview_pixel(
+    previews_rx: &mut hypercolor_daemon::preview_runtime::ZonePreviewFrameReceiver,
+    zone_id: ZoneId,
+    expected: Rgba,
+) {
+    tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            {
+                let previews = previews_rx.borrow_and_update();
+                if previews.iter().any(|preview| {
+                    preview.zone_id == zone_id
+                        && preview.frame.surface().get_pixel(0, 0) == expected
+                }) {
+                    break;
+                }
+            }
+            previews_rx
+                .changed()
+                .await
+                .expect("zone preview stream should stay open");
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("zone {zone_id} preview never showed {expected:?}"));
+}
+
+/// Pausing output puts the off color on every output, and a zone preview
+/// shows what its outputs show: the followed zone's preview turns the off
+/// color instead of holding its last live frame. A subscriber that only
+/// arrives during the hold, when nothing renders, still finds its zone dark.
+#[tokio::test]
+async fn paused_output_shows_the_off_color_in_zone_previews() {
+    let (state, mut rt, power_tx, mut previews_rx, red_zone, blue_zone) =
+        sleeping_zone_preview_fixture("Paused Zone Previews").await;
+    let off = [10, 20, 30];
+    power_tx.send_replace(OutputPowerState {
+        output_override: OutputOverride::Paused,
+        manual_off_output_color: off,
+        ..OutputPowerState::default()
+    });
+    let off_pixel = Rgba::new(off[0], off[1], off[2], 255);
+    wait_for_zone_preview_pixel(&mut previews_rx, blue_zone, off_pixel).await;
+
+    let mut late_rx = state.preview_runtime.zone_preview_receiver();
+    late_rx.update_selection(&ZonePreviewSelection::from_zone_ids([red_zone]));
+    assert!(
+        late_rx.borrow().iter().any(|preview| {
+            preview.zone_id == red_zone && preview.frame.surface().get_pixel(0, 0) == off_pixel
+        }),
+        "a zone selected during the pause should already hold the off color"
+    );
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
+/// Release sleep clears every output, so the followed zone's preview goes
+/// black with them rather than holding its last live frame or vanishing.
+#[tokio::test]
+async fn release_sleep_clears_zone_previews_to_black() {
+    let (state, mut rt, power_tx, mut previews_rx, _, blue_zone) =
+        sleeping_zone_preview_fixture("Released Zone Previews").await;
+    power_tx.send_replace(OutputPowerState {
+        session_sleeping: true,
+        session_brightness: 0.0,
+        off_output_behavior: OffOutputBehavior::Release,
+        ..OutputPowerState::default()
+    });
+    wait_for_zone_preview_pixel(&mut previews_rx, blue_zone, Rgba::new(0, 0, 0, 255)).await;
 
     {
         let mut rl = state.render_loop.write().await;
