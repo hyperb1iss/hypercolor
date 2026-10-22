@@ -1,4 +1,6 @@
-use hypercolor_ui::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
+use hypercolor_ui::route_ui::{
+    NowPlayingCanvasMode, now_playing_canvas_mode, page_has_own_preview,
+};
 
 #[test]
 fn mounts_keep_navigation_assets_and_relative_state_separate() {
@@ -192,4 +194,22 @@ fn remaining_shell_routes_keep_sidebar_preview_mode() {
         now_playing_canvas_mode("/settings"),
         NowPlayingCanvasMode::Preview
     );
+}
+
+#[test]
+fn pages_with_their_own_preview_carry_a_zone_picker() {
+    // The dashboard and effects cabinets carry zone chips, and Studio its
+    // zone list, so their previews follow the focused zone.
+    for path in [
+        "/",
+        "/effects",
+        "/effects/pulse-temp",
+        "/studio",
+        "/studio/output",
+    ] {
+        assert!(page_has_own_preview(path), "{path}");
+    }
+    for path in ["/devices", "/media", "/settings", "/layouts"] {
+        assert!(!page_has_own_preview(path), "{path}");
+    }
 }

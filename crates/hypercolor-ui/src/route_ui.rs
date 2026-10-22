@@ -126,9 +126,25 @@ pub enum NowPlayingCanvasMode {
 }
 
 pub fn now_playing_canvas_mode(path: &str) -> NowPlayingCanvasMode {
-    if path == "/" || path.starts_with("/effects") || path.starts_with("/studio") {
+    if page_has_own_preview(path) {
         NowPlayingCanvasMode::Palette
     } else {
         NowPlayingCanvasMode::Preview
     }
+}
+
+/// Whether a page renders its own main preview with a zone picker beside
+/// it: the dashboard and effects cabinet's zone chips, and Studio's zone
+/// list. The sidebar hides its thumbnail on these pages, and their
+/// preview follows the focused zone instead of the Default zone.
+#[must_use]
+pub fn page_has_own_preview(path: &str) -> bool {
+    path == "/" || path.starts_with("/effects") || path.starts_with("/studio")
+}
+
+/// [`page_has_own_preview`] for a pathname under the current UI mount.
+#[must_use]
+pub fn mounted_page_has_own_preview(pathname: &str) -> bool {
+    let mount = use_context::<UiMount>().unwrap_or_default();
+    page_has_own_preview(mount.relative_path(pathname).unwrap_or_default())
 }

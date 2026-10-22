@@ -570,6 +570,12 @@ struct BackpressureMessage {
     suggested_fps: Option<f64>,
 }
 
+/// The topics the main preview streams on: the scene canvas, or one
+/// zone's frames through `zone_preview`.
+fn is_main_preview_topic(topic: &str) -> bool {
+    matches!(topic, "canvas" | "zone_preview")
+}
+
 fn whole_fps(fps: f64) -> Option<u32> {
     if fps < 1.0 || fps.fract() != 0.0 {
         return None;
@@ -593,7 +599,12 @@ pub struct AudioLevel {
 
 pub(super) enum PreviewBinaryMessage {
     Frame(PreviewFrameChannel, CanvasFrame),
-    Zone(ZonePreviewFrameView),
+    /// One zone's own frame from `zone_preview`, named by its scene and zone.
+    Zone {
+        scene_id: [u8; 16],
+        zone_id: [u8; 16],
+        frame: CanvasFrame,
+    },
     Interactive(String, CanvasFrame),
     /// One display's output frame, named by the device it came from.
     Display(String, CanvasFrame),
@@ -671,7 +682,19 @@ fn decode_direct_preview(buffer: js_sys::ArrayBuffer) -> Option<PreviewBinaryMes
     if matches!(tag, ZONE_PREVIEW_FRAME_TAG | WIDE_ZONE_PREVIEW_FRAME_TAG) {
         return ZonePreviewFrameView::decode_array_buffer(&buffer)
             .ok()
-            .map(PreviewBinaryMessage::Zone);
+            .map(|frame| PreviewBinaryMessage::Zone {
+                scene_id: frame.scene_id,
+                zone_id: frame.zone_id,
+                frame: CanvasFrame {
+                    channel: PreviewFrameChannel::Canvas,
+                    frame_number: frame.frame_number,
+                    timestamp_ms: frame.timestamp_ms,
+                    width: frame.width,
+                    height: frame.height,
+                    format: frame.format,
+                    payload: frame.payload,
+                },
+            });
     }
     if let Some(frame) = decode_screen_zones_frame(&buffer) {
         return Some(PreviewBinaryMessage::ScreenZones(frame));
@@ -712,14 +735,20 @@ fn preview_metadata_matches(
         | (PreviewBinaryMessage::Display(preview_id, frame), PreviewStreamId::Display(expected)) => {
             preview_id == expected && canvas_metadata_matches(frame, metadata)
         }
-        (PreviewBinaryMessage::Zone(frame), PreviewStreamId::Zone { scene_id, zone_id }) => {
-            frame.scene_id == *scene_id
-                && frame.zone_id == *zone_id
-                && frame.frame_number == metadata.frame_number
-                && frame.timestamp_ms == metadata.timestamp_ms
-                && frame.width == metadata.width
-                && frame.height == metadata.height
-                && frame.format == metadata.format
+        (
+            PreviewBinaryMessage::Zone {
+                scene_id,
+                zone_id,
+                frame,
+            },
+            PreviewStreamId::Zone {
+                scene_id: expected_scene,
+                zone_id: expected_zone,
+            },
+        ) => {
+            scene_id == expected_scene
+                && zone_id == expected_zone
+                && canvas_metadata_matches(frame, metadata)
         }
         (PreviewBinaryMessage::ScreenZones(frame), PreviewStreamId::ScreenZones) => {
             frame.frame_number == metadata.frame_number
@@ -963,13 +992,17 @@ pub(super) fn handle_json_message(
         }
         "subscribed" => {
             // The acknowledgment reports every live subscription, so the
-            // canvas cadence is whichever entry names that topic.
+            // main preview cadence is whichever entry names its topic: the
+            // scene canvas, or the one zone a multi-zone preview follows.
             let preview_target = msg
                 .get("topics")
                 .and_then(serde_json::Value::as_array)
                 .and_then(|topics| {
                     topics.iter().find(|entry| {
-                        entry.get("topic").and_then(serde_json::Value::as_str) == Some("canvas")
+                        entry
+                            .get("topic")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(is_main_preview_topic)
                     })
                 })
                 .and_then(|entry| entry.get("config"))
@@ -985,7 +1018,10 @@ pub(super) fn handle_json_message(
             if let Ok(message) = BackpressureMessage::deserialize(msg) {
                 if let Some(suggested_fps) = message
                     .suggested_fps
-                    .filter(|_| message.topic == "canvas" && message.recommendation == "reduce_fps")
+                    .filter(|_| {
+                        is_main_preview_topic(&message.topic)
+                            && message.recommendation == "reduce_fps"
+                    })
                     .and_then(whole_fps)
                 {
                     set_preview_backpressure_cap

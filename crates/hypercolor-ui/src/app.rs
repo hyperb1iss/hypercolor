@@ -575,6 +575,10 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         preview_counters: ws.preview_counters,
     };
     provide_context(ws_ctx);
+    provide_context(crate::preview_zone::PreviewZoneContext::new(
+        ws.preview_zone,
+        ws.set_preview_zone,
+    ));
     provide_context(crate::device_metrics::install_device_metrics_store(ws_ctx));
 
     // Shared zone + scene state — one active-scene resource for the whole

@@ -99,38 +99,115 @@ fn web_viewport_preview_request_dimensions() -> (u32, u32) {
     (0, 0)
 }
 
+/// What the main preview stream follows. A multi-zone scene's scene
+/// canvas projects every zone into its devices' layout boxes (Spec 86
+/// §5.1), which reads as a patchwork, so previews follow one zone at a
+/// time through `zone_preview`. `zone: None` is the scene canvas, which
+/// a single-zone scene already shows as its only zone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MainPreviewRequest {
+    shape: PreviewSubscriptionRequest,
+    zone: Option<String>,
+}
+
+impl MainPreviewRequest {
+    pub(super) const fn fps(&self) -> u32 {
+        self.shape.fps
+    }
+
+    pub(super) fn zone(&self) -> Option<&str> {
+        self.zone.as_deref()
+    }
+
+    /// Whether a `zone_preview` frame for `zone_id` belongs to this
+    /// request. A scene-canvas request owns no zone frames.
+    pub(super) fn follows_zone(&self, zone_id: &[u8; 16]) -> bool {
+        self.zone
+            .as_deref()
+            .and_then(|zone| uuid::Uuid::parse_str(zone).ok())
+            .is_some_and(|zone| zone.as_bytes() == zone_id)
+    }
+
+    pub(super) const fn topic(&self) -> &'static str {
+        if self.zone.is_some() {
+            "zone_preview"
+        } else {
+            "canvas"
+        }
+    }
+
+    fn subscribe_message(&self) -> serde_json::Value {
+        let mut config = serde_json::json!({
+            "fps": self.shape.fps,
+            "format": self.shape.format,
+            "width": self.shape.width,
+            "height": self.shape.height
+        });
+        if let Some(zone) = &self.zone {
+            config["zones"] = serde_json::json!([zone]);
+        }
+        serde_json::json!({
+            "type": "subscribe",
+            "topics": [{ "topic": self.topic(), "config": config }]
+        })
+    }
+}
+
+/// The messages that move the main preview from `previous` to `next`.
+/// Switching between the scene canvas and a zone drops the old topic
+/// first, so the socket never streams both; retargeting one zone to
+/// another re-subscribes `zone_preview`, which replaces its selection.
+pub(super) fn main_preview_messages(
+    previous: Option<&MainPreviewRequest>,
+    next: &MainPreviewRequest,
+) -> Vec<serde_json::Value> {
+    if previous == Some(next) {
+        return Vec::new();
+    }
+    let mut messages = Vec::with_capacity(2);
+    if let Some(previous) = previous
+        && previous.topic() != next.topic()
+    {
+        messages.push(main_preview_unsubscribe_message(previous.topic()));
+    }
+    messages.push(next.subscribe_message());
+    messages
+}
+
+fn main_preview_unsubscribe_message(topic: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "unsubscribe",
+        "topics": [{ "topic": topic }]
+    })
+}
+
 pub(super) fn request_preview_subscription(
     ws: &dyn WebSocketConnection,
-    requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
+    requested_preview_request: StoredValue<Option<MainPreviewRequest>>,
     set_preview_target_fps: WriteSignal<u32>,
     engine_target_fps: u32,
     client_cap: u32,
     width_cap: u32,
+    zone: Option<String>,
 ) {
-    let request = PreviewSubscriptionRequest::canvas(
-        desired_preview_fps(engine_target_fps, client_cap),
-        width_cap,
-    );
-    if requested_preview_request.get_value() == Some(request) {
+    let request = MainPreviewRequest {
+        shape: PreviewSubscriptionRequest::canvas(
+            desired_preview_fps(engine_target_fps, client_cap),
+            width_cap,
+        ),
+        zone,
+    };
+    let previous = requested_preview_request.get_value();
+    let messages = main_preview_messages(previous.as_ref(), &request);
+    if messages.is_empty() {
         return;
     }
 
+    set_preview_target_fps.set(request.fps());
     requested_preview_request.set_value(Some(request));
-    set_preview_target_fps.set(request.fps);
-
-    let subscribe_msg = serde_json::json!({
-        "type": "subscribe",
-        "topics": [{
-            "topic": "canvas",
-            "config": {
-                "fps": request.fps,
-                "format": request.format,
-                "width": request.width,
-                "height": request.height
-            }
-        }]
-    });
-    let _ = send_json(ws, &subscribe_msg);
+    for message in &messages {
+        let _ = send_json(ws, message);
+    }
 }
 
 pub(super) fn request_screen_preview_subscription(
@@ -194,7 +271,7 @@ pub(super) fn request_web_viewport_preview_subscription(
 }
 
 pub(super) fn clear_preview_subscription(
-    requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
+    requested_preview_request: StoredValue<Option<MainPreviewRequest>>,
     set_preview_target_fps: &WriteSignal<u32>,
     set_preview_fps: &WriteSignal<f32>,
     set_canvas_frame: &WriteSignal<Option<CanvasFrame>>,
@@ -221,12 +298,12 @@ pub(super) fn clear_web_viewport_preview_subscription(
     set_web_viewport_canvas_frame.set(None);
 }
 
-pub(super) fn send_canvas_unsubscribe(ws: &dyn WebSocketConnection) {
-    let unsubscribe_msg = serde_json::json!({
-        "type": "unsubscribe",
-        "topics": [{ "topic": "canvas" }]
-    });
-    let _ = send_json(ws, &unsubscribe_msg);
+/// Drop whichever topic the main preview was streaming.
+pub(super) fn send_main_preview_unsubscribe(
+    ws: &dyn WebSocketConnection,
+    request: &MainPreviewRequest,
+) {
+    let _ = send_json(ws, &main_preview_unsubscribe_message(request.topic()));
 }
 
 pub(super) fn send_screen_zones_subscribe(ws: &dyn WebSocketConnection) {
@@ -588,11 +665,109 @@ impl PreviewCounterHandle {
 #[cfg(test)]
 mod tests {
     use super::{
-        PreviewSubscriptionRequest, REMOTE_PREVIEW_WIDTH_LOW, REMOTE_PREVIEW_WIDTH_MEDIUM,
-        canvas_frame_topics_allowed, desired_preview_fps, preview_canvas_format_for_host,
+        MainPreviewRequest, PreviewSubscriptionRequest, REMOTE_PREVIEW_WIDTH_LOW,
+        REMOTE_PREVIEW_WIDTH_MEDIUM, canvas_frame_topics_allowed, desired_preview_fps,
+        main_preview_messages, preview_canvas_format_for_host,
         preview_canvas_request_dimensions_for_host, remote_preview_width_for_fps,
         should_stream_preview, web_viewport_preview_request_dimensions,
     };
+
+    fn main_request(fps: u32, zone: Option<&str>) -> MainPreviewRequest {
+        MainPreviewRequest {
+            shape: PreviewSubscriptionRequest::canvas_for_host("localhost", fps, 0),
+            zone: zone.map(ToOwned::to_owned),
+        }
+    }
+
+    fn topics(messages: &[serde_json::Value]) -> Vec<(String, String)> {
+        messages
+            .iter()
+            .map(|message| {
+                (
+                    message["type"].as_str().unwrap_or_default().to_owned(),
+                    message["topics"][0]["topic"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_scene_preview_subscribes_the_scene_canvas() {
+        let messages = main_preview_messages(None, &main_request(60, None));
+        assert_eq!(
+            topics(&messages),
+            [("subscribe".to_owned(), "canvas".to_owned())]
+        );
+        assert!(messages[0]["topics"][0]["config"].get("zones").is_none());
+    }
+
+    #[test]
+    fn a_zone_preview_subscribes_only_that_zone() {
+        let messages = main_preview_messages(None, &main_request(60, Some("zone-a")));
+        assert_eq!(
+            topics(&messages),
+            [("subscribe".to_owned(), "zone_preview".to_owned())]
+        );
+        let config = &messages[0]["topics"][0]["config"];
+        assert_eq!(config["zones"], serde_json::json!(["zone-a"]));
+        assert_eq!(config["fps"], 60);
+        assert_eq!(config["format"], "rgba");
+    }
+
+    #[test]
+    fn moving_between_scene_and_zone_drops_the_old_topic_first() {
+        let scene = main_request(60, None);
+        let zone = main_request(60, Some("zone-a"));
+        assert_eq!(
+            topics(&main_preview_messages(Some(&scene), &zone)),
+            [
+                ("unsubscribe".to_owned(), "canvas".to_owned()),
+                ("subscribe".to_owned(), "zone_preview".to_owned()),
+            ]
+        );
+        assert_eq!(
+            topics(&main_preview_messages(Some(&zone), &scene)),
+            [
+                ("unsubscribe".to_owned(), "zone_preview".to_owned()),
+                ("subscribe".to_owned(), "canvas".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn retargeting_a_zone_resubscribes_without_unsubscribing() {
+        let messages = main_preview_messages(
+            Some(&main_request(60, Some("zone-a"))),
+            &main_request(60, Some("zone-b")),
+        );
+        assert_eq!(
+            topics(&messages),
+            [("subscribe".to_owned(), "zone_preview".to_owned())]
+        );
+        assert_eq!(
+            messages[0]["topics"][0]["config"]["zones"],
+            serde_json::json!(["zone-b"])
+        );
+    }
+
+    #[test]
+    fn zone_frames_match_only_the_followed_zone() {
+        let zone = uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
+        let other = uuid::Uuid::from_u128(7);
+        let request = main_request(60, Some(&zone.to_string()));
+        assert!(request.follows_zone(zone.as_bytes()));
+        assert!(!request.follows_zone(other.as_bytes()));
+        assert!(!main_request(60, None).follows_zone(zone.as_bytes()));
+    }
+
+    #[test]
+    fn an_unchanged_request_sends_nothing() {
+        let request = main_request(30, Some("zone-a"));
+        assert!(main_preview_messages(Some(&request), &request).is_empty());
+    }
 
     #[test]
     fn a_bridge_never_carries_canvas_frame_topics() {
