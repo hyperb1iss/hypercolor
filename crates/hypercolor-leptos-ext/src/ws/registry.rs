@@ -76,6 +76,16 @@ fn canvas_config_schema() -> Value {
     })
 }
 
+fn zone_preview_config_schema() -> Value {
+    json!({
+        "fps": {"min": STANDARD_FPS_MIN, "max": STANDARD_FPS_MAX},
+        "format": {"values": ["rgb", "rgba", "jpeg"]},
+        "width": {"min": 0},
+        "height": {"min": 0},
+        "zones": {"min_items": 1},
+    })
+}
+
 fn metrics_config_schema() -> Value {
     json!({
         "fps": {
@@ -427,6 +437,110 @@ impl TopicPatch<CanvasConfig> for CanvasConfigPatch {
     }
 }
 
+/// Per-subscription configuration for the `zone_preview` topic: the
+/// passive canvas shape plus the zones to deliver.
+///
+/// `zones` names scene zone ids, and `["all"]` selects every zone, the
+/// same convention [`FramesConfig`] uses. A name that matches no live zone
+/// selects nothing rather than failing, so a client may name a zone that
+/// a scene change is about to create or has just removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZonePreviewConfig {
+    /// Delivery cadence in frames per second.
+    pub fps: u32,
+    /// Pixel encoding.
+    pub format: CanvasFormat,
+    /// Requested width, or zero for the server default.
+    pub width: u32,
+    /// Requested height, or zero for the server default.
+    pub height: u32,
+    /// Zone ids to deliver; `["all"]` selects every zone.
+    pub zones: Vec<String>,
+}
+
+impl ZonePreviewConfig {
+    /// The passive canvas shape this subscription asks for.
+    #[must_use]
+    pub const fn canvas(&self) -> CanvasConfig {
+        CanvasConfig {
+            fps: self.fps,
+            format: self.format,
+            width: self.width,
+            height: self.height,
+        }
+    }
+
+    /// Whether the subscription selects every zone.
+    #[must_use]
+    pub fn selects_all(&self) -> bool {
+        self.zones.iter().any(|zone| zone == "all")
+    }
+}
+
+impl Default for ZonePreviewConfig {
+    fn default() -> Self {
+        let CanvasConfig {
+            fps,
+            format,
+            width,
+            height,
+        } = CanvasConfig::default();
+        Self {
+            fps,
+            format,
+            width,
+            height,
+            zones: vec!["all".to_owned()],
+        }
+    }
+}
+
+/// Patch for [`ZonePreviewConfig`].
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZonePreviewConfigPatch {
+    /// Replacement cadence.
+    #[serde(default)]
+    pub fps: Option<u32>,
+    /// Replacement pixel encoding.
+    #[serde(default)]
+    pub format: Option<CanvasFormat>,
+    /// Replacement width.
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Replacement height.
+    #[serde(default)]
+    pub height: Option<u32>,
+    /// Replacement zone selection.
+    #[serde(default)]
+    pub zones: Option<Vec<String>>,
+}
+
+impl TopicPatch<ZonePreviewConfig> for ZonePreviewConfigPatch {
+    fn apply(&self, config: &mut ZonePreviewConfig) -> Result<(), PatchError> {
+        let mut canvas = config.canvas();
+        CanvasConfigPatch {
+            fps: self.fps,
+            format: self.format,
+            width: self.width,
+            height: self.height,
+        }
+        .apply(&mut canvas)?;
+        if let Some(zones) = self.zones.as_ref() {
+            if zones.is_empty() {
+                return Err(PatchError::new("zones", "must not be empty"));
+            }
+            config.zones.clone_from(zones);
+        }
+        config.fps = canvas.fps;
+        config.format = canvas.format;
+        config.width = canvas.width;
+        config.height = canvas.height;
+        Ok(())
+    }
+}
+
 /// Slowest supported telemetry cadence.
 pub const METRICS_FPS_MIN: f64 = 0.1;
 /// Fastest supported telemetry cadence.
@@ -716,8 +830,8 @@ define_ws_topics! {
         backpressure: LatestWins,
     }
     topic ZonePreview => "zone_preview" {
-        key: unkeyed, config: CanvasConfig, patch: CanvasConfigPatch,
-        schema: canvas_config_schema,
+        key: unkeyed, config: ZonePreviewConfig, patch: ZonePreviewConfigPatch,
+        schema: zone_preview_config_schema,
         tags: [0x08, 0x0c], control: false,
         backpressure: LatestWins,
     }

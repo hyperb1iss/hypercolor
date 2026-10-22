@@ -67,7 +67,7 @@
       "name": "zone_preview",
       "kind": "binary",
       "default_fps": 15,
-      "description": "Per-zone preview frame stream.",
+      "description": "Per-zone preview frame stream. config.zones names the zones to deliver, or [\"all\"]; the daemon does preview work only for zones some subscriber selects.",
       "backpressure": "latest_wins"
     },
     {
@@ -1232,6 +1232,12 @@
       "height": {
         "min": 0,
         "default": 0
+      },
+      "zones": {
+        "min_items": 1,
+        "default": [
+          "all"
+        ]
       }
     },
     "metrics": {

@@ -22,7 +22,9 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
-use hypercolor_leptos_ext::ws::registry::{CanvasConfig, InteractivePreviewConfig, TopicId};
+use hypercolor_leptos_ext::ws::registry::{
+    CanvasConfig, InteractivePreviewConfig, TopicId, ZonePreviewConfig,
+};
 use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -227,13 +229,20 @@ pub(super) fn admit_config(
     config: &serde_json::Value,
 ) -> Result<(), WsProtocolError> {
     match topic {
-        TopicId::Canvas
-        | TopicId::ScreenCanvas
-        | TopicId::WebViewportCanvas
-        | TopicId::ZonePreview => {
+        TopicId::Canvas | TopicId::ScreenCanvas | TopicId::WebViewportCanvas => {
             let canvas = CanvasConfig::deserialize(config)
                 .expect("a validated canvas config deserializes into its own type");
             validate_passive_preview_shape(&canvas, format!("config.{}", topic.as_str()))
+        }
+        // Zone names are not validated here: like `frames`, a name that
+        // matches no live zone selects nothing.
+        TopicId::ZonePreview => {
+            let zone_preview = ZonePreviewConfig::deserialize(config)
+                .expect("a validated zone preview config deserializes into its own type");
+            validate_passive_preview_shape(
+                &zone_preview.canvas(),
+                format!("config.{}", topic.as_str()),
+            )
         }
         TopicId::InteractivePreview => {
             let preview = InteractivePreviewConfig::deserialize(config)
