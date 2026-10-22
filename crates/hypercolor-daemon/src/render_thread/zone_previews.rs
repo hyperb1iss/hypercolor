@@ -10,7 +10,7 @@
 use std::borrow::Cow;
 
 use hypercolor_types::canvas::PublishedSurface;
-use hypercolor_types::scene::{SceneId, ZoneId};
+use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use tracing::debug;
 
 use super::RenderThreadState;
@@ -185,6 +185,47 @@ pub(crate) fn zone_preview_sources<'a>(
             })
             .collect(),
     )
+}
+
+/// Add a dark preview for every selected scene zone that renders nothing
+/// this frame: a paused zone, or one with no enabled layers. The render
+/// pass skips those zones, so without an entry a preview following one
+/// would hold its last live frame; the scene canvas shows them dark, and
+/// so do their previews. Every entry shares `dark_surface`, which the
+/// caller hands back from its static surface cache, so an unchanged dark
+/// zone never re-encodes.
+pub(crate) fn with_dark_inactive_zone_previews<'a>(
+    demand: &ZonePreviewDemand,
+    sources: Cow<'a, [(ZoneId, ProducerFrame)]>,
+    zones: &[Zone],
+    dark_surface: impl FnOnce() -> PublishedSurface,
+) -> Cow<'a, [(ZoneId, ProducerFrame)]> {
+    if !demand.due {
+        return sources;
+    }
+    // Collecting an empty iterator allocates nothing, so a frame with no
+    // dark zone pays only the scan.
+    let dark_zones = zones
+        .iter()
+        .filter(|zone| {
+            zone.display_target.is_none()
+                && !super::render_zones::zone_is_active(zone)
+                && demand.selection.includes(&zone.id)
+                && !sources.iter().any(|(zone_id, _)| *zone_id == zone.id)
+        })
+        .map(|zone| zone.id)
+        .collect::<Vec<_>>();
+    if dark_zones.is_empty() {
+        return sources;
+    }
+    let surface = dark_surface();
+    let mut previews = sources.into_owned();
+    previews.extend(
+        dark_zones
+            .into_iter()
+            .map(|zone_id| (zone_id, ProducerFrame::Surface(surface.clone()))),
+    );
+    Cow::Owned(previews)
 }
 
 /// Selected scene zones whose frames live on the GPU. Display zones

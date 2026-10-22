@@ -35,7 +35,8 @@ use super::scene_snapshot::{
 use super::sparkleflinger::ComposedFrameSet;
 use super::unassigned_output::{UnassignedOutputPlanner, unassigned_behavior_generation};
 use super::zone_previews::{
-    ZonePreviewDemand, collect_gpu_zone_previews, stage_gpu_zone_previews, zone_preview_sources,
+    ZonePreviewDemand, collect_gpu_zone_previews, stage_gpu_zone_previews,
+    with_dark_inactive_zone_previews, zone_preview_sources,
 };
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
@@ -756,10 +757,21 @@ pub(crate) async fn execute_frame(
         frame_num_u32,
         u64_to_u32(scene_snapshot.elapsed_ms),
     );
-    let zone_preview_frames = zone_preview_sources(
+    let zone_preview_frames = with_dark_inactive_zone_previews(
         &zone_preview_demand,
-        &render_stage.zone_canvases,
-        &gpu_zone_previews,
+        zone_preview_sources(
+            &zone_preview_demand,
+            &render_stage.zone_canvases,
+            &gpu_zone_previews,
+        ),
+        &scene_snapshot.scene_runtime.resolved_zones,
+        || {
+            render.output_artifacts.static_surface(
+                state.canvas_dims.width(),
+                state.canvas_dims.height(),
+                [0, 0, 0],
+            )
+        },
     );
     let publish_stats = publish_frame_updates(
         state,

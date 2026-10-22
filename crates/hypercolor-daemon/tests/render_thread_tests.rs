@@ -58,7 +58,7 @@ use hypercolor_core::input::{
 };
 #[cfg(feature = "wgpu")]
 use hypercolor_core::scene::interpolate_color;
-use hypercolor_core::scene::{SceneManager, make_scene};
+use hypercolor_core::scene::{SceneManager, ZoneMetaPatch, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
@@ -4022,6 +4022,7 @@ async fn sleeping_zone_preview_fixture(
     RenderThread,
     watch::Sender<OutputPowerState>,
     hypercolor_daemon::preview_runtime::ZonePreviewFrameReceiver,
+    SceneId,
     ZoneId,
     ZoneId,
 ) {
@@ -4056,7 +4057,15 @@ async fn sleeping_zone_preview_fixture(
     }
     let rt = RenderThread::spawn(state.clone());
     wait_for_zone_preview_pixel(&mut previews_rx, blue_zone, Rgba::new(0, 0, 255, 255)).await;
-    (state, rt, power_tx, previews_rx, red_zone, blue_zone)
+    (
+        state,
+        rt,
+        power_tx,
+        previews_rx,
+        scene.id,
+        red_zone,
+        blue_zone,
+    )
 }
 
 async fn wait_for_zone_preview_pixel(
@@ -4091,7 +4100,7 @@ async fn wait_for_zone_preview_pixel(
 /// arrives during the hold, when nothing renders, still finds its zone dark.
 #[tokio::test]
 async fn paused_output_shows_the_off_color_in_zone_previews() {
-    let (state, mut rt, power_tx, mut previews_rx, red_zone, blue_zone) =
+    let (state, mut rt, power_tx, mut previews_rx, _, red_zone, blue_zone) =
         sleeping_zone_preview_fixture("Paused Zone Previews").await;
     let off = [10, 20, 30];
     power_tx.send_replace(OutputPowerState {
@@ -4122,7 +4131,7 @@ async fn paused_output_shows_the_off_color_in_zone_previews() {
 /// black with them rather than holding its last live frame or vanishing.
 #[tokio::test]
 async fn release_sleep_clears_zone_previews_to_black() {
-    let (state, mut rt, power_tx, mut previews_rx, _, blue_zone) =
+    let (state, mut rt, power_tx, mut previews_rx, _, _, blue_zone) =
         sleeping_zone_preview_fixture("Released Zone Previews").await;
     power_tx.send_replace(OutputPowerState {
         session_sleeping: true,
@@ -4130,6 +4139,34 @@ async fn release_sleep_clears_zone_previews_to_black() {
         off_output_behavior: OffOutputBehavior::Release,
         ..OutputPowerState::default()
     });
+    wait_for_zone_preview_pixel(&mut previews_rx, blue_zone, Rgba::new(0, 0, 0, 255)).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
+/// A zone that stops rendering (paused here; a zone with no enabled layers
+/// is skipped the same way) previews dark while the rest of the scene keeps
+/// rendering, so a preview following it never holds its last live frame.
+#[tokio::test]
+async fn a_followed_zone_that_stops_rendering_previews_dark() {
+    let (state, mut rt, _power_tx, mut previews_rx, scene_id, _, blue_zone) =
+        sleeping_zone_preview_fixture("Paused Zone").await;
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .update_zone_meta(
+            scene_id,
+            blue_zone,
+            ZoneMetaPatch {
+                enabled: Some(false),
+                ..ZoneMetaPatch::default()
+            },
+        )
+        .expect("the followed zone should pause");
+    commit_render_mutation(&state, mutation).await;
     wait_for_zone_preview_pixel(&mut previews_rx, blue_zone, Rgba::new(0, 0, 0, 255)).await;
 
     {
