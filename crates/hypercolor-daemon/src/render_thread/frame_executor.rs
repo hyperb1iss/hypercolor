@@ -586,7 +586,7 @@ pub(crate) async fn execute_frame(
     );
     stage_gpu_zone_previews(
         &mut render.sparkleflinger,
-        zone_preview_demand,
+        &zone_preview_demand,
         &render_stage.zone_canvases,
         &render_stage.active_display_zone_ids,
     );
@@ -723,7 +723,7 @@ pub(crate) async fn execute_frame(
     }
     let gpu_zone_previews = collect_gpu_zone_previews(
         &mut render.sparkleflinger,
-        zone_preview_demand,
+        &zone_preview_demand,
         &render_stage.zone_canvases,
         &render_stage.active_display_zone_ids,
     );
@@ -754,7 +754,7 @@ pub(crate) async fn execute_frame(
         u64_to_u32(scene_snapshot.elapsed_ms),
     );
     let zone_preview_frames = zone_preview_sources(
-        zone_preview_demand,
+        &zone_preview_demand,
         &render_stage.zone_canvases,
         &gpu_zone_previews,
     );

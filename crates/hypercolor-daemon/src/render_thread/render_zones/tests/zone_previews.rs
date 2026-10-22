@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use super::gpu_layer_latch::sample_zone_set;
 use super::*;
-use crate::preview_runtime::PreviewDemandSummary;
+use crate::preview_runtime::{PreviewDemandSummary, ZonePreviewSelection};
 use crate::render_thread::sparkleflinger::{
     CompositionLayer, CompositionMode, MediaTextureSourceKey, ZonePreviewStage,
 };
@@ -165,7 +165,7 @@ impl PreviewScene {
         result
     }
 
-    fn stage(&mut self, demand: ZonePreviewDemand, result: &ZoneResult) {
+    fn stage(&mut self, demand: &ZonePreviewDemand, result: &ZoneResult) {
         stage_gpu_zone_previews(
             &mut self.sparkleflinger,
             demand,
@@ -176,7 +176,7 @@ impl PreviewScene {
 
     fn collect(
         &mut self,
-        demand: ZonePreviewDemand,
+        demand: &ZonePreviewDemand,
         result: &ZoneResult,
     ) -> Vec<(ZoneId, PublishedSurface)> {
         collect_gpu_zone_previews(
@@ -191,7 +191,7 @@ impl PreviewScene {
     /// finished previews, the way the render thread does across frames.
     fn render_until(
         &mut self,
-        demand: ZonePreviewDemand,
+        demand: &ZonePreviewDemand,
         done: impl Fn(&[(ZoneId, PublishedSurface)]) -> bool,
     ) -> (ZoneResult, Vec<(ZoneId, PublishedSurface)>) {
         let deadline = Instant::now() + PREVIEW_DEADLINE;
@@ -215,7 +215,7 @@ impl PreviewScene {
 
     fn render_until_previews(
         &mut self,
-        demand: ZonePreviewDemand,
+        demand: &ZonePreviewDemand,
         count: usize,
     ) -> (ZoneResult, Vec<(ZoneId, PublishedSurface)>) {
         self.render_until(demand, |previews| previews.len() == count)
@@ -233,7 +233,7 @@ impl PreviewScene {
     /// this frame began rendering.
     fn preview_frame_a_frame_behind(
         &mut self,
-        demand: ZonePreviewDemand,
+        demand: &ZonePreviewDemand,
         result: &ZoneResult,
         map_carried: bool,
     ) -> LaggedPreviewFrame {
@@ -312,7 +312,7 @@ fn gpu_zone_previews_carry_each_zones_pixels_at_the_demanded_size() {
     };
     let demand = small_demand();
 
-    let (result, previews) = scene.render_until_previews(demand, 2);
+    let (result, previews) = scene.render_until_previews(&demand, 2);
 
     assert!(matches!(
         result.led_sampling_strategy,
@@ -333,14 +333,14 @@ fn gpu_zone_previews_carry_each_zones_pixels_at_the_demanded_size() {
     assert_quadrant_preview(&previews, case, SMALL_PREVIEW);
     assert_solid_preview(&previews, accents, SMALL_PREVIEW, BLUE);
 
-    let sources = zone_preview_sources(demand, &result.zone_canvases, &previews);
+    let sources = zone_preview_sources(&demand, &result.zone_canvases, &previews);
     for zone in [case, accents] {
         let Some(ProducerFrame::Surface(surface)) = find_frame(&sources, zone.id) else {
             panic!("{} should publish its transport-sized preview", zone.name);
         };
         assert_eq!((surface.width(), surface.height()), SMALL_PREVIEW);
     }
-    let case_only = zone_preview_sources(demand, &result.zone_canvases, &previews[..1]);
+    let case_only = zone_preview_sources(&demand, &result.zone_canvases, &previews[..1]);
     let landed = previews[0].0;
     for zone in [case, accents] {
         assert_eq!(
@@ -362,7 +362,7 @@ fn gpu_zone_previews_read_back_full_size_only_on_a_full_resolution_ask() {
     };
     let demand = ZonePreviewDemand::from_summary(true, true, false, full);
 
-    let (_, previews) = scene.render_until_previews(demand, 2);
+    let (_, previews) = scene.render_until_previews(&demand, 2);
 
     assert_quadrant_preview(&previews, scene.zone(0), CASE_EXTENT);
     assert_solid_preview(&previews, scene.zone(1), ACCENT_EXTENT, BLUE);
@@ -374,7 +374,7 @@ fn single_zone_gpu_scene_publishes_its_zone_preview() {
         return;
     };
 
-    let (result, previews) = scene.render_until_previews(small_demand(), 1);
+    let (result, previews) = scene.render_until_previews(&small_demand(), 1);
 
     assert!(matches!(
         result.led_sampling_strategy,
@@ -389,12 +389,12 @@ fn changed_zone_content_restages_its_preview() {
         return;
     };
     let demand = small_demand();
-    let _ = scene.render_until_previews(demand, 2);
+    let _ = scene.render_until_previews(&demand, 2);
     let staged_before = scene.stage_count();
 
     scene.sources[1].fill = LayerFill::Solid(YELLOW);
     let accents_id = scene.zone(1).id;
-    let (_, previews) = scene.render_until(demand, |previews| {
+    let (_, previews) = scene.render_until(&demand, |previews| {
         preview_for(previews, accents_id).is_some_and(|surface| surface.get_pixel(0, 0) == YELLOW)
     });
 
@@ -411,13 +411,13 @@ fn gpu_zone_previews_stage_nothing_without_a_due_subscriber() {
         ZonePreviewDemand::from_summary(false, false, false, PreviewDemandSummary::default());
     let not_due = ZonePreviewDemand::from_summary(true, false, false, sized_demand(SMALL_PREVIEW));
 
-    for demand in [unwatched, not_due] {
+    for demand in [unwatched.clone(), not_due] {
         for _ in 0..4 {
             let result = scene.render();
-            scene.stage(demand, &result);
-            assert!(scene.collect(demand, &result).is_empty());
+            scene.stage(&demand, &result);
+            assert!(scene.collect(&demand, &result).is_empty());
             assert!(matches!(
-                zone_preview_sources(demand, &result.zone_canvases, &[]),
+                zone_preview_sources(&demand, &result.zone_canvases, &[]),
                 std::borrow::Cow::Borrowed(_)
             ));
         }
@@ -434,11 +434,11 @@ fn gpu_zone_previews_stage_nothing_without_a_due_subscriber() {
         "no zone preview resources were allocated"
     );
 
-    let _ = scene.render_until_previews(small_demand(), 2);
+    let _ = scene.render_until_previews(&small_demand(), 2);
     assert_eq!(scene.lane_count(), 2);
 
     let result = scene.render();
-    scene.stage(unwatched, &result);
+    scene.stage(&unwatched, &result);
     assert_eq!(
         scene.lane_count(),
         0,
@@ -483,6 +483,48 @@ fn unchanged_zone_texture_keeps_its_latched_preview() {
     assert_eq!(scene.stage_count(), 1, "unchanged content reads back once");
 }
 
+/// A subscriber that selects one zone gets that zone's preview, and the
+/// other zone is never staged or read back. Narrowing the selection
+/// releases the deselected zone's preview lane, and selecting nothing
+/// releases every lane while a subscriber still watches.
+#[test]
+fn gpu_zone_previews_stage_only_selected_zones() {
+    let Some(mut scene) = PreviewScene::rig() else {
+        return;
+    };
+    let (case_id, accents_id) = (scene.zone(0).id, scene.zone(1).id);
+    let both = small_demand();
+    let _ = scene.render_until_previews(&both, 2);
+    assert_eq!(scene.lane_count(), 2);
+
+    let case_only = small_demand().with_selection(ZonePreviewSelection::from_zone_ids([case_id]));
+    let result = scene.render();
+    scene.stage(&case_only, &result);
+    assert_eq!(
+        scene.lane_count(),
+        1,
+        "deselecting a zone releases its preview lane"
+    );
+    let staged_before = scene.stage_count();
+    scene.sources[1].fill = LayerFill::Solid(YELLOW);
+    let (_, previews) = scene.render_until(&case_only, |previews| {
+        previews.len() == 1 && previews[0].0 == case_id
+    });
+    assert!(preview_for(&previews, accents_id).is_none());
+    assert_quadrant_preview(&previews, scene.zone(0), SMALL_PREVIEW);
+    assert!(
+        scene.stage_count() > staged_before,
+        "the selected zone keeps staging"
+    );
+    assert_eq!(scene.lane_count(), 1);
+
+    let none = small_demand().with_selection(ZonePreviewSelection::from_zone_ids([]));
+    let result = scene.render();
+    scene.stage(&none, &result);
+    assert!(scene.collect(&none, &result).is_empty());
+    assert_eq!(scene.lane_count(), 0, "an empty selection stages nothing");
+}
+
 /// The scene preview lands on the next frame, carrying the previous frame's
 /// pixels, when the GPU has not finished its readback by the end of the
 /// frame that staged it, even though every frame composes both LED zones
@@ -523,7 +565,7 @@ fn late_scene_preview_readbacks_still_land_while_zones_resize_the_compositor() {
         scene.sources[1].fill = LayerFill::Solid(accent_color(frame));
         let map_carried = scene.sparkleflinger.has_pending_preview_map_for_test();
         let result = scene.render();
-        let lagged = scene.preview_frame_a_frame_behind(demand, &result, map_carried);
+        let lagged = scene.preview_frame_a_frame_behind(&demand, &result, map_carried);
         carried_maps += u64::from(map_carried);
         surviving_maps += u64::from(lagged.carried_map_survived);
         let _ = write!(

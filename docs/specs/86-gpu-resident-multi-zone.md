@@ -424,7 +424,12 @@ render thread scales the zone's snapshot on the GPU to the zone-preview
 demand's `max_width` and `max_height` (full size when a subscriber asks for
 full resolution), reads back that transport-sized payload, and publishes it
 as a `ProducerFrame::Surface` entry. Cadence and demand gating are unchanged.
-`Cpu` zones keep publishing their canvases as today.
+`Cpu` zones keep publishing their canvases as today. Either kind publishes
+only while some subscriber selects it through the `zone_preview` topic's
+`zones` config: the render thread stages, reads back, and copies previews for
+the union of selected zones only, so a zone nobody previews does no preview
+work. A bus receiver that registered no selection counts as selecting every
+zone.
 
 ---
 

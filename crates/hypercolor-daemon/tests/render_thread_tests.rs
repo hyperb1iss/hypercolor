@@ -105,7 +105,9 @@ use hypercolor_daemon::output_power::{OutputPower, OutputPowerState};
 use hypercolor_daemon::performance::PerformanceTracker;
 #[cfg(feature = "wgpu")]
 use hypercolor_daemon::preview_runtime::ZonePreviewFrameReceiver;
-use hypercolor_daemon::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
+use hypercolor_daemon::preview_runtime::{
+    PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand, ZonePreviewSelection,
+};
 #[cfg(feature = "wgpu")]
 use hypercolor_daemon::render_thread::gpu_errors::gpu_error_totals;
 use hypercolor_daemon::render_thread::supervision::{InjectedRenderFault, RENDER_FAILURE_FILE};
@@ -3914,6 +3916,94 @@ async fn gpu_gaussian_zone_reaches_scene_consumers_that_arrive_late() {
         drop(face_rx);
         state.event_bus.remove_display_zone_output_route(face_id);
     }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
+/// A zone-preview subscriber that selects one zone of a multi-zone scene
+/// gets only that zone, and publication never carries, and so never copies,
+/// the zone nobody selected. Widening the selection brings the other zone
+/// back (Spec 86 §5.2).
+#[tokio::test]
+async fn zone_previews_publish_only_the_selected_zones() {
+    let state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let mut scene = make_scene("Selected Zone Previews");
+    scene.zones = overlapping_zones(solid_id);
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    let red_zone = scene.zones[0].id;
+    let blue_zone = scene.zones[1].id;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    let mut previews_rx = state.preview_runtime.zone_preview_receiver();
+    previews_rx.update_demand(PreviewStreamDemand {
+        fps: 30,
+        format: PreviewPixelFormat::Rgb,
+        width: 0,
+        height: 0,
+    });
+    previews_rx.update_selection(&ZonePreviewSelection::from_zone_ids([blue_zone]));
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let mut publications = 0_u32;
+    let blue_only = tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            {
+                let previews = previews_rx.borrow_and_update();
+                if !previews.is_empty() {
+                    publications += 1;
+                    assert!(
+                        previews.iter().all(|preview| preview.zone_id != red_zone),
+                        "an unselected zone was published"
+                    );
+                    if publications >= 3 {
+                        break previews.clone();
+                    }
+                }
+            }
+            previews_rx
+                .changed()
+                .await
+                .expect("zone preview stream should stay open");
+        }
+    })
+    .await
+    .expect("the selected zone's previews should publish within timeout");
+    assert_eq!(blue_only.len(), 1);
+    assert_eq!(blue_only[0].zone_id, blue_zone);
+    assert_eq!(
+        blue_only[0].frame.surface().get_pixel(0, 0),
+        Rgba::new(0, 0, 255, 255)
+    );
+
+    previews_rx.update_selection(&ZonePreviewSelection::All);
+    tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            if previews_rx.borrow_and_update().len() == 2 {
+                break;
+            }
+            previews_rx
+                .changed()
+                .await
+                .expect("zone preview stream should stay open");
+        }
+    })
+    .await
+    .expect("selecting every zone brings the other zone back");
 
     {
         let mut rl = state.render_loop.write().await;

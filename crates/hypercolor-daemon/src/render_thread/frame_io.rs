@@ -9,6 +9,7 @@ use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumD
 use hypercolor_types::scene::{SceneId, ZoneId};
 
 use crate::performance::FullFrameCopyMetrics;
+use crate::preview_runtime::ZonePreviewSelection;
 
 use super::pipeline_runtime::PublicationCadenceState;
 use super::producer_queue::ProducerFrame;
@@ -420,6 +421,7 @@ fn publish_zone_previews(
 
     let zone_previews = collect_zone_previews(
         scene_id,
+        &super::zone_previews::zone_preview_selection(state),
         display_zone_frames,
         zone_canvases,
         frame_number,
@@ -462,8 +464,11 @@ fn clear_zone_previews(
         .send_replace_weighted(Arc::from([]), 0);
 }
 
+/// The previews of every selected zone. Unselected zones are skipped
+/// before any frame is copied, so a CPU zone nobody previews costs nothing.
 fn collect_zone_previews(
     scene_id: SceneId,
+    selection: &ZonePreviewSelection,
     display_zone_frames: &[(ZoneId, DisplayZoneCanvasFrame)],
     zone_canvases: &[(ZoneId, ProducerFrame)],
     frame_number: u32,
@@ -476,7 +481,7 @@ fn collect_zone_previews(
         .collect::<HashSet<_>>();
     let mut previews = Vec::new();
     for (zone_id, frame) in zone_canvases {
-        if display_zone_ids.contains(zone_id) {
+        if display_zone_ids.contains(zone_id) || !selection.includes(zone_id) {
             continue;
         }
         if let Some(frame) = zone_preview_frame_from_producer(
@@ -493,6 +498,9 @@ fn collect_zone_previews(
         }
     }
     for (zone_id, zone_canvas) in display_zone_frames {
+        if !selection.includes(zone_id) {
+            continue;
+        }
         if let Some(frame) =
             zone_preview_frame_from_display(&zone_canvas.frame, frame_number, timestamp_ms)
         {
