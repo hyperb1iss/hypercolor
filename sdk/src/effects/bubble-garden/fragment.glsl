@@ -214,26 +214,30 @@ void main() {
 
         vec2 delta = vec2((uv.x - pos.x) * aspect, uv.y - pos.y);
         float dist = length(delta);
-        BubbleColors bubble = resolveBubbleColors(id, h5, floor(h6 * 3.0), h7, mode, iTheme, palette);
-
-        float angle = atan(delta.y, delta.x);
-        float ripple = waveNoise(angle, h5, iTime);
-        float edgeRadius = radius * (0.94 + ripple * 0.024);
         float aa = max(fwidth(dist) * 1.05, 0.001);
-        float surface = circleMask(dist, edgeRadius, aa);
-        float radial = clamp(1.0 - dist / max(edgeRadius, 0.0001), 0.0, 1.0);
-        float body = surface * (0.86 + pow(radial, 0.9) * 0.14);
-        vec2 highlightDir = normalize(vec2(cos(h6 * 6.2831853), sin(h6 * 6.2831853)) * 0.45 + vec2(-0.62, -0.78));
-        float crescentAxis = dot(normalize(delta + vec2(0.0001)), highlightDir);
-        float arcBreakup = smoothstep(-0.35, 0.9, waveNoise(angle + h7 * 2.4, h5, iTime * 0.35));
-        float rim = smoothstep(0.58, 0.9, 1.0 - radial) * surface;
-        float edge = smoothstep(0.88, 0.99, 1.0 - radial) * surface;
-        float edgeLight = mix(0.34, 0.74, smoothstep(-0.08, 0.78, crescentAxis)) * (0.76 + arcBreakup * 0.24);
-        float coverage = surface * 0.82;
 
-        vec3 ledColor = mix(bubble.body * 0.82, bubble.rim, rim * 0.46 + edge * 0.28);
-        ledColor *= mix(0.72, 0.9, body) * mix(0.86, 1.0, edgeLight);
-        color = mix(color, clamp(ledColor, 0.0, 1.0), coverage);
+        // waveNoise is bounded by 1, so the wavy edge stays inside radius.
+        // Evaluate derivatives before branching so every fragment quad participates.
+        if (dist < radius + aa) {
+            BubbleColors bubble = resolveBubbleColors(id, h5, floor(h6 * 3.0), h7, mode, iTheme, palette);
+            float angle = atan(delta.y, delta.x);
+            float ripple = waveNoise(angle, h5, iTime);
+            float edgeRadius = radius * (0.94 + ripple * 0.024);
+            float surface = circleMask(dist, edgeRadius, aa);
+            float radial = clamp(1.0 - dist / max(edgeRadius, 0.0001), 0.0, 1.0);
+            float body = surface * (0.86 + pow(radial, 0.9) * 0.14);
+            vec2 highlightDir = normalize(vec2(cos(h6 * 6.2831853), sin(h6 * 6.2831853)) * 0.45 + vec2(-0.62, -0.78));
+            float crescentAxis = dot(normalize(delta + vec2(0.0001)), highlightDir);
+            float arcBreakup = smoothstep(-0.35, 0.9, waveNoise(angle + h7 * 2.4, h5, iTime * 0.35));
+            float rim = smoothstep(0.58, 0.9, 1.0 - radial) * surface;
+            float edge = smoothstep(0.88, 0.99, 1.0 - radial) * surface;
+            float edgeLight = mix(0.34, 0.74, smoothstep(-0.08, 0.78, crescentAxis)) * (0.76 + arcBreakup * 0.24);
+            float coverage = surface * 0.82;
+
+            vec3 ledColor = mix(bubble.body * 0.82, bubble.rim, rim * 0.46 + edge * 0.28);
+            ledColor *= mix(0.72, 0.9, body) * mix(0.86, 1.0, edgeLight);
+            color = mix(color, clamp(ledColor, 0.0, 1.0), coverage);
+        }
     }
 
     fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
