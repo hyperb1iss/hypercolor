@@ -5,7 +5,7 @@ set dotenv-load := false
 set positional-arguments := true
 
 workspace_args := "--workspace"
-test_features := "--features hypercolor-daemon/persistence-test-hooks"
+test_features := "--features hypercolor-daemon/persistence-test-hooks,hypercolor-daemon/gpu-test-fixtures"
 daemon_bind := env_var_or_default("HYPERCOLOR_DAEMON_BIND", "127.0.0.1:9420")
 
 # Bundled effects live where they are installed, which for a dev build would be
@@ -225,11 +225,11 @@ alloc-contracts:
 # Run tests for a specific crate (iteration-shaped: keeps incremental rebuilds)
 [unix]
 test-crate crate *args='':
-    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test -p {{ crate }} {{ if crate == "hypercolor-daemon" { "--features persistence-test-hooks" } else { "" } }} {{ args }}
+    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test -p {{ crate }} {{ if crate == "hypercolor-daemon" { "--features persistence-test-hooks,gpu-test-fixtures" } else { "" } }} {{ args }}
 
 [windows]
 test-crate crate *args='':
-    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p {{ crate }} {{ if crate == "hypercolor-daemon" { "--features persistence-test-hooks" } else { "" } }} {{ args }}
+    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p {{ crate }} {{ if crate == "hypercolor-daemon" { "--features persistence-test-hooks,gpu-test-fixtures" } else { "" } }} {{ args }}
 
 # Run a specific test by name (iteration-shaped: keeps incremental rebuilds)
 [unix]

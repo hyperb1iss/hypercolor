@@ -98,9 +98,9 @@ impl GpuRenderDevice {
             compatible_surface: None,
             ..Default::default()
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "gpu-test-fixtures"))]
         let (instance, adapter) = shared_test_adapter(instance_descriptor, &adapter_options);
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "gpu-test-fixtures")))]
         let (instance, adapter) = {
             let instance = wgpu::Instance::new(instance_descriptor);
             let adapter = pollster::block_on(instance.request_adapter(&adapter_options));
@@ -355,7 +355,7 @@ fn pin_shipped_shader_compilation(instance_descriptor: &mut wgpu::InstanceDescri
 /// through separate adapter locks. Backend choice and fallback selection are the
 /// only varying discovery inputs in this test constructor. The discovery thread
 /// also stays alive because NVIDIA retains EGL state in thread-local storage.
-#[cfg(test)]
+#[cfg(any(test, feature = "gpu-test-fixtures"))]
 fn shared_test_adapter(
     descriptor: wgpu::InstanceDescriptor,
     options: &wgpu::RequestAdapterOptions<'_, '_>,

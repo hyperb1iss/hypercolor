@@ -60,6 +60,8 @@ workspace = true
 
 [features]
 allocation-contract-tests = []
+# Retain native adapter discovery while integration tests run independent devices.
+gpu-test-fixtures = []
 builtin-drivers = [
     "dep:hypercolor-driver-builtin",
     "hypercolor-driver-builtin/default",
