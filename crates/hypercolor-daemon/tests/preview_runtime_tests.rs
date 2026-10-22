@@ -3,8 +3,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus, PreviewKind};
-use hypercolor_daemon::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
+use hypercolor_daemon::preview_runtime::{
+    PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand, ZonePreviewSelection,
+};
 use hypercolor_types::canvas::Canvas;
+use hypercolor_types::scene::ZoneId;
 
 #[test]
 fn preview_runtime_snapshot_tracks_canvas_publication_and_receivers() {
@@ -273,4 +276,67 @@ fn preview_runtime_preserves_large_demand_values() {
     assert!(!demand.any_rgb);
     assert!(!demand.any_rgba);
     assert!(demand.any_jpeg);
+}
+
+#[test]
+fn zone_preview_selection_parses_the_wire_list() {
+    let zone = ZoneId::new();
+    assert!(ZonePreviewSelection::from_wire(&["all".to_owned()]).is_all());
+    assert!(ZonePreviewSelection::from_wire(&[zone.to_string(), "all".to_owned()]).is_all());
+
+    let named = ZonePreviewSelection::from_wire(&[
+        format!(" {zone} "),
+        zone.to_string(),
+        "not-a-zone".to_owned(),
+    ]);
+    assert_eq!(named, ZonePreviewSelection::from_zone_ids([zone]));
+    assert!(named.includes(&zone));
+    assert!(!named.includes(&ZoneId::new()));
+
+    let nothing = ZonePreviewSelection::from_wire(&["desk".to_owned()]);
+    assert!(!nothing.is_all());
+    assert!(
+        !nothing.includes(&zone),
+        "a name that is no zone id selects nothing"
+    );
+}
+
+#[test]
+fn zone_preview_selection_union_follows_every_tracked_receiver() {
+    let runtime = PreviewRuntime::new(Arc::new(HypercolorBus::new()));
+    let (zone_a, zone_b, zone_c) = (ZoneId::new(), ZoneId::new(), ZoneId::new());
+    assert_eq!(
+        runtime.zone_preview_selection(),
+        ZonePreviewSelection::from_zone_ids([]),
+        "nobody watching selects nothing"
+    );
+
+    let mut first = runtime.zone_preview_receiver();
+    assert!(
+        runtime.zone_preview_selection().is_all(),
+        "a receiver that never narrowed selects every zone"
+    );
+    first.update_selection(&ZonePreviewSelection::from_zone_ids([zone_a, zone_b]));
+    let mut second = runtime.zone_preview_receiver();
+    second.update_selection(&ZonePreviewSelection::from_zone_ids([zone_b, zone_c]));
+    assert_eq!(
+        runtime.zone_preview_selection(),
+        ZonePreviewSelection::from_zone_ids([zone_a, zone_b, zone_c]),
+        "the union is deduplicated"
+    );
+
+    second.update_selection(&ZonePreviewSelection::All);
+    assert!(runtime.zone_preview_selection().is_all(), "one all wins");
+
+    drop(second);
+    assert_eq!(
+        runtime.zone_preview_selection(),
+        ZonePreviewSelection::from_zone_ids([zone_a, zone_b]),
+        "a dropped receiver leaves the union"
+    );
+    drop(first);
+    assert_eq!(
+        runtime.zone_preview_selection(),
+        ZonePreviewSelection::from_zone_ids([])
+    );
 }

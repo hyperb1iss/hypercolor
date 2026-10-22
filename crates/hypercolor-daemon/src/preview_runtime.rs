@@ -6,7 +6,9 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use hypercolor_core::bus::{
     CanvasFrame, HypercolorBus, PreviewKind, WatchLaneStats, ZonePreviewFrame,
 };
+use hypercolor_types::scene::ZoneId;
 use tokio::sync::watch;
+use uuid::Uuid;
 
 use crate::interactive_preview::InteractivePreviewExecutor;
 
@@ -142,6 +144,77 @@ pub struct PreviewDemandSummary {
     pub any_jpeg: bool,
 }
 
+/// Which scene zones a zone-preview subscriber wants delivered.
+///
+/// Subscribers name zones on the wire (`zones` on `zone_preview`), and the
+/// render thread stages, reads back, and copies only the union of what
+/// every subscriber names, so a zone nobody previews costs no preview
+/// work.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ZonePreviewSelection {
+    /// Every zone of the live scene.
+    #[default]
+    All,
+    /// Only these zones, sorted and deduplicated. Empty selects nothing.
+    Zones(Arc<[ZoneId]>),
+}
+
+impl ZonePreviewSelection {
+    /// The selection a wire `zones` list names. `"all"` anywhere selects
+    /// every zone; entries that are not zone ids select nothing, the same
+    /// way the `frames` topic treats names that match no zone.
+    #[must_use]
+    pub fn from_wire(zones: &[String]) -> Self {
+        if zones.iter().any(|zone| zone == "all") {
+            return Self::All;
+        }
+        Self::from_zone_ids(
+            zones
+                .iter()
+                .filter_map(|zone| Uuid::parse_str(zone.trim()).ok())
+                .map(ZoneId),
+        )
+    }
+
+    /// A selection of exactly these zones.
+    #[must_use]
+    pub fn from_zone_ids(zones: impl IntoIterator<Item = ZoneId>) -> Self {
+        let mut zones = zones.into_iter().collect::<Vec<_>>();
+        zones.sort_unstable_by_key(|zone| zone.0);
+        zones.dedup();
+        Self::Zones(zones.into())
+    }
+
+    /// Whether the selection delivers `zone_id`.
+    #[must_use]
+    pub fn includes(&self, zone_id: &ZoneId) -> bool {
+        match self {
+            Self::All => true,
+            Self::Zones(zones) => zones
+                .binary_search_by_key(&zone_id.0, |zone| zone.0)
+                .is_ok(),
+        }
+    }
+
+    /// Whether the selection names every zone.
+    #[must_use]
+    pub const fn is_all(&self) -> bool {
+        matches!(self, Self::All)
+    }
+
+    /// The smallest selection covering every one of `selections`.
+    fn union<'a>(selections: impl IntoIterator<Item = &'a Self>) -> Self {
+        let mut zones = Vec::new();
+        for selection in selections {
+            match selection {
+                Self::All => return Self::All,
+                Self::Zones(selected) => zones.extend(selected.iter().copied()),
+            }
+        }
+        Self::from_zone_ids(zones)
+    }
+}
+
 #[derive(Debug)]
 struct PreviewDemandSummaryState {
     snapshot: ArcSwap<PreviewDemandSummary>,
@@ -170,6 +243,21 @@ struct PreviewRuntimeDemandState {
     screen_canvas_summary: PreviewDemandSummaryState,
     web_viewport_canvas_summary: PreviewDemandSummaryState,
     zone_preview_summary: PreviewDemandSummaryState,
+    zone_preview_selections: Mutex<Vec<(u64, ZonePreviewSelection)>>,
+    zone_preview_selection_union: ZonePreviewSelectionState,
+}
+
+#[derive(Debug)]
+struct ZonePreviewSelectionState {
+    union: ArcSwap<ZonePreviewSelection>,
+}
+
+impl Default for ZonePreviewSelectionState {
+    fn default() -> Self {
+        Self {
+            union: ArcSwap::from_pointee(ZonePreviewSelection::from_zone_ids([])),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +288,16 @@ pub struct PreviewFrameReceiver {
 pub struct ZonePreviewFrameReceiver {
     receiver: watch::Receiver<Arc<[ZonePreviewFrame]>>,
     demand_registration: PreviewDemandRegistration,
+    selection_registration: ZonePreviewSelectionRegistration,
+}
+
+/// One subscriber's zone selection, held for as long as its receiver
+/// lives. Dropping it removes the selection from the union.
+#[derive(Debug)]
+struct ZonePreviewSelectionRegistration {
+    id: u64,
+    state: Arc<PreviewRuntimeDemandState>,
+    selection: ZonePreviewSelection,
 }
 
 impl PreviewFrameReceiver {
@@ -239,9 +337,15 @@ impl ZonePreviewFrameReceiver {
         receiver: watch::Receiver<Arc<[ZonePreviewFrame]>>,
         demand_registration: PreviewDemandRegistration,
     ) -> Self {
+        let selection_registration = ZonePreviewSelectionRegistration::new(
+            Arc::clone(&demand_registration.state),
+            demand_registration.id,
+            ZonePreviewSelection::All,
+        );
         Self {
             receiver,
             demand_registration,
+            selection_registration,
         }
     }
 
@@ -259,6 +363,12 @@ impl ZonePreviewFrameReceiver {
 
     pub fn update_demand(&mut self, demand: PreviewStreamDemand) {
         self.demand_registration.update(demand);
+    }
+
+    /// Narrow or widen the zones this subscriber receives. A new receiver
+    /// selects every zone until its first update.
+    pub fn update_selection(&mut self, selection: &ZonePreviewSelection) {
+        self.selection_registration.update(selection);
     }
 }
 
@@ -460,6 +570,15 @@ impl PreviewRuntime {
         usize::try_from(self.zone_preview_demand().subscribers).unwrap_or(usize::MAX)
     }
 
+    /// The union of every tracked zone-preview subscriber's selection.
+    /// Selects nothing while no tracked subscriber exists; a caller that
+    /// also sees untracked bus receivers must treat them as selecting
+    /// every zone.
+    #[must_use]
+    pub fn zone_preview_selection(&self) -> ZonePreviewSelection {
+        ZonePreviewSelection::clone(&self.demand_state.zone_preview_selection_union.union.load())
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> PreviewRuntimeSnapshot {
         let preview = |kind| {
@@ -592,6 +711,42 @@ impl PreviewRuntimeDemandState {
     fn summary(&self, kind: PreviewStreamKind) -> PreviewDemandSummary {
         load_preview_demand_summary(self.summary_state(kind))
     }
+
+    fn register_zone_selection(&self, id: u64, selection: ZonePreviewSelection) {
+        let mut selections = self
+            .zone_preview_selections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        selections.push((id, selection));
+        self.store_zone_selection_union(&selections);
+    }
+
+    fn update_zone_selection(&self, id: u64, selection: &ZonePreviewSelection) {
+        let mut selections = self
+            .zone_preview_selections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, current)) = selections.iter_mut().find(|(entry_id, _)| *entry_id == id) {
+            current.clone_from(selection);
+            self.store_zone_selection_union(&selections);
+        }
+    }
+
+    fn unregister_zone_selection(&self, id: u64) {
+        let mut selections = self
+            .zone_preview_selections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        selections.retain(|(entry_id, _)| *entry_id != id);
+        self.store_zone_selection_union(&selections);
+    }
+
+    fn store_zone_selection_union(&self, selections: &[(u64, ZonePreviewSelection)]) {
+        let union = ZonePreviewSelection::union(selections.iter().map(|(_, selection)| selection));
+        self.zone_preview_selection_union
+            .union
+            .store(Arc::new(union));
+    }
 }
 
 fn summarize_preview_demands(entries: &[(u64, PreviewStreamDemand)]) -> PreviewDemandSummary {
@@ -664,5 +819,34 @@ impl PreviewDemandRegistration {
 impl Drop for PreviewDemandRegistration {
     fn drop(&mut self) {
         self.state.unregister(self.kind, self.id);
+    }
+}
+
+impl ZonePreviewSelectionRegistration {
+    fn new(
+        state: Arc<PreviewRuntimeDemandState>,
+        id: u64,
+        selection: ZonePreviewSelection,
+    ) -> Self {
+        state.register_zone_selection(id, selection.clone());
+        Self {
+            id,
+            state,
+            selection,
+        }
+    }
+
+    fn update(&mut self, selection: &ZonePreviewSelection) {
+        if self.selection == *selection {
+            return;
+        }
+        self.state.update_zone_selection(self.id, selection);
+        self.selection.clone_from(selection);
+    }
+}
+
+impl Drop for ZonePreviewSelectionRegistration {
+    fn drop(&mut self) {
+        self.state.unregister_zone_selection(self.id);
     }
 }
