@@ -2131,6 +2131,9 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
 
     let mut audio = AudioData::silence();
     audio.rms_level = 0.7;
+    // A parked loop also withdraws capture demand. Holding a consumer keeps
+    // the loop rendering, so the transitions are the effect-driven ones.
+    let _frame_consumer = state.event_bus.frame_receiver();
     let transitions = Arc::new(StdMutex::new(Vec::new()));
 
     {
@@ -4934,6 +4937,9 @@ async fn audio_capture_enabled_when_any_active_zone_is_reactive() {
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
+    // A parked loop also withdraws capture demand. Holding a consumer keeps
+    // the loop rendering, so the transitions are the effect-driven ones.
+    let _frame_consumer = state.event_bus.frame_receiver();
     let transitions = Arc::new(StdMutex::new(Vec::new()));
 
     let mut audio = AudioData::silence();
@@ -5015,6 +5021,9 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
         BackendManager::new(),
     );
     configure_screen_acceleration(&mut state);
+    // A parked loop also withdraws capture demand. Holding a consumer keeps
+    // the loop rendering, so the transitions are the effect-driven ones.
+    let _frame_consumer = state.event_bus.frame_receiver();
     let transitions = Arc::new(StdMutex::new(Vec::new()));
 
     {
@@ -5100,6 +5109,9 @@ async fn screen_source_added_during_live_demand_is_activated_once() {
         BackendManager::new(),
     );
     configure_screen_acceleration(&mut state);
+    // A parked loop also withdraws capture demand. Holding a consumer keeps
+    // the loop rendering, so the transitions are the effect-driven ones.
+    let _frame_consumer = state.event_bus.frame_receiver();
     let transitions = Arc::new(StdMutex::new(Vec::new()));
 
     {
