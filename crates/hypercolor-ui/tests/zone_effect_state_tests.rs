@@ -65,6 +65,21 @@ fn a_stacked_zone_names_its_top_layer_and_counts_the_rest() {
 }
 
 #[test]
+fn only_a_lone_effect_layer_owns_the_zone_frame() {
+    assert_eq!(
+        state(1, Some("bubble-garden"), &["Bubble Garden"]).sole_effect_id(),
+        Some("bubble-garden")
+    );
+    // Two layers compose one picture, so no single effect owns it.
+    assert_eq!(
+        state(2, Some("touch-ripple"), &["Bubble Garden", "Touch Ripple"]).sole_effect_id(),
+        None
+    );
+    // A lone non-effect layer owns no effect either.
+    assert_eq!(state(1, None, &["Color"]).sole_effect_id(), None);
+}
+
+#[test]
 fn a_layer_label_prefers_its_name_then_its_effect_then_its_kind() {
     assert_eq!(
         layer_label(&effect_layer(Some("Ripples")), Some("Touch Ripple")),
