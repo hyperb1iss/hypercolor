@@ -26,6 +26,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::domain::DomainError;
 use crate::domain::context::{DeviceContext, RuntimeSessionService};
+use crate::domain::scene::ScenePlanReader;
 use crate::domain::spatial::SpatialService;
 pub(crate) use crate::output_power::brightness_percent;
 use crate::output_power::{OutputOverride, OutputPower, OutputPowerState};
@@ -53,6 +54,7 @@ pub struct OutputContext {
     performance: Arc<RwLock<PerformanceTracker>>,
     render_loop: Arc<RwLock<RenderLoop>>,
     spatial: SpatialService,
+    scene_plan: ScenePlanReader,
     backend_manager: Arc<Mutex<BackendManager>>,
     preview_runtime: Arc<PreviewRuntime>,
     devices: DeviceContext,
@@ -104,6 +106,7 @@ impl OutputContext {
         performance: Arc<RwLock<PerformanceTracker>>,
         render_loop: Arc<RwLock<RenderLoop>>,
         spatial: SpatialService,
+        scene_plan: ScenePlanReader,
         backend_manager: Arc<Mutex<BackendManager>>,
         preview_runtime: Arc<PreviewRuntime>,
         devices: DeviceContext,
@@ -117,6 +120,7 @@ impl OutputContext {
             performance,
             render_loop,
             spatial,
+            scene_plan,
             backend_manager,
             preview_runtime,
             devices,
@@ -265,6 +269,14 @@ impl OutputContext {
         self.event_bus
             .scene_canvas_lane()
             .send_replace(canvas_frame.clone());
+        // The render loop pauses behind this frame, so zone previews take
+        // it here or they hold their last live frames.
+        let plan = self.scene_plan.load();
+        self.preview_runtime.publish_static_zone_previews(
+            plan.active_scene_id,
+            &plan.zones,
+            &canvas_frame,
+        );
         self.event_bus.canvas_lane().send_replace(canvas_frame);
         self.preview_runtime
             .note_canvas_frame(frame_number, elapsed_ms);

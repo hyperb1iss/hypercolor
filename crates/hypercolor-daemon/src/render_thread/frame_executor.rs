@@ -12,10 +12,7 @@ use hypercolor_types::event::{FrameData, HypercolorEvent, Severity};
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_composer::{ComposeRequest, compose_frame};
-use super::frame_io::{
-    FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates,
-    publish_static_zone_previews,
-};
+use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_metrics::{ActiveFrameMetricsInput, summarize_active_frame};
 use super::frame_policy::{FrameExecution, FramePolicy, SkipDecision};
 use super::frame_reporting::{FrameCompletionReport, report_active_frame_completion};
@@ -1067,8 +1064,7 @@ async fn force_static_sleep_snapshot(
         .event_bus
         .scene_canvas_lane()
         .send_replace(canvas_frame.clone());
-    publish_static_zone_previews(
-        state,
+    state.preview_runtime.publish_static_zone_previews(
         scene_snapshot.scene_runtime.active_scene_id,
         &scene_snapshot.scene_runtime.resolved_zones,
         &canvas_frame,

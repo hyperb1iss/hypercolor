@@ -6,7 +6,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use hypercolor_core::bus::{
     CanvasFrame, HypercolorBus, PreviewKind, WatchLaneStats, ZonePreviewFrame,
 };
-use hypercolor_types::scene::ZoneId;
+use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use tokio::sync::watch;
 use uuid::Uuid;
 
@@ -568,6 +568,37 @@ impl PreviewRuntime {
     #[must_use]
     pub fn zone_preview_receiver_count(&self) -> usize {
         usize::try_from(self.zone_preview_demand().subscribers).unwrap_or(usize::MAX)
+    }
+
+    /// Show one static frame as every scene zone's preview: the frame a
+    /// sleep, pause, or stop puts on every output. Those holds publish once
+    /// and then stop rendering, so this runs outside the preview cadence,
+    /// which could skip the one publication and leave the last live zone
+    /// previews up while the outputs sit dark. It covers every zone rather
+    /// than the selected ones: each entry shares the one static surface, so
+    /// it costs no pixel work, and a subscriber that arrives or retargets
+    /// during the hold still finds its zone dark.
+    pub fn publish_static_zone_previews(
+        &self,
+        scene_id: Option<SceneId>,
+        zones: &[Zone],
+        frame: &CanvasFrame,
+    ) {
+        let Some(scene_id) = scene_id else {
+            return;
+        };
+        let previews = zones
+            .iter()
+            .map(|zone| ZonePreviewFrame {
+                scene_id,
+                zone_id: zone.id,
+                frame: frame.clone(),
+            })
+            .collect::<Vec<_>>();
+        let published = u64::try_from(previews.len()).unwrap_or(u64::MAX);
+        self.event_bus
+            .zone_preview_lane()
+            .send_replace_weighted(previews.into(), published);
     }
 
     /// The union of every tracked zone-preview subscriber's selection.

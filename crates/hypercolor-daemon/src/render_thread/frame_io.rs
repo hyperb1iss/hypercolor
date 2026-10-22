@@ -6,7 +6,7 @@ use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, WatchLane, ZonePreview
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, PublishedSurfaceStorageIdentity};
 use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
-use hypercolor_types::scene::{SceneId, Zone, ZoneId};
+use hypercolor_types::scene::{SceneId, ZoneId};
 
 use crate::performance::FullFrameCopyMetrics;
 use crate::preview_runtime::ZonePreviewSelection;
@@ -447,37 +447,6 @@ fn publish_zone_previews(
         .event_bus
         .zone_preview_lane()
         .send_replace_weighted(zone_previews.into(), published);
-}
-
-/// Show one static frame as every zone's preview: the frame the sleep paths
-/// put on every output. Those paths publish once and then hold, so this
-/// bypasses the preview cadence, which could skip the one publication and
-/// leave the last live zone previews up while the outputs sit dark. It also
-/// covers every zone rather than the selected ones: each entry shares the
-/// one static surface, so it costs no pixel work, and a subscriber that
-/// arrives or retargets during the hold still finds its zone dark.
-pub(crate) fn publish_static_zone_previews(
-    state: &RenderThreadState,
-    scene_id: Option<SceneId>,
-    zones: &[Zone],
-    frame: &CanvasFrame,
-) {
-    let Some(scene_id) = scene_id else {
-        return;
-    };
-    let previews = zones
-        .iter()
-        .map(|zone| ZonePreviewFrame {
-            scene_id,
-            zone_id: zone.id,
-            frame: frame.clone(),
-        })
-        .collect::<Vec<_>>();
-    let published = u64::try_from(previews.len()).unwrap_or(u64::MAX);
-    state
-        .event_bus
-        .zone_preview_lane()
-        .send_replace_weighted(previews.into(), published);
 }
 
 fn clear_zone_previews(

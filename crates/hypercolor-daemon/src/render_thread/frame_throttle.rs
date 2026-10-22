@@ -8,10 +8,7 @@ use hypercolor_types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
-use super::frame_io::{
-    FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates,
-    publish_static_zone_previews,
-};
+use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
 use super::frame_metrics::{ThrottleFrameMetricsInput, build_throttle_frame_metrics};
 use super::frame_policy::{FrameExecution, FramePolicy};
 use super::pipeline_runtime::{
@@ -118,8 +115,7 @@ pub(crate) async fn maybe_sleep_throttle(
                 },
             },
         );
-        publish_static_zone_previews(
-            state,
+        state.preview_runtime.publish_static_zone_previews(
             scene_snapshot.scene_runtime.active_scene_id,
             &scene_snapshot.scene_runtime.resolved_zones,
             &zone_preview_frame,
@@ -210,8 +206,7 @@ pub(crate) async fn maybe_sleep_throttle(
             },
         },
     );
-    publish_static_zone_previews(
-        state,
+    state.preview_runtime.publish_static_zone_previews(
         scene_snapshot.scene_runtime.active_scene_id,
         &scene_snapshot.scene_runtime.resolved_zones,
         &zone_preview_frame,

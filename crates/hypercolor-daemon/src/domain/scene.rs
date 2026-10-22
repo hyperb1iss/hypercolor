@@ -208,7 +208,8 @@ pub(crate) struct ScenePersistenceTestBarrier {
     release: tokio::sync::Notify,
 }
 
-/// Lock-free render-side access to the latest admitted scene plan.
+/// Lock-free access to the latest admitted scene plan, for the render
+/// thread and for output holds that publish while it is paused.
 #[derive(Clone)]
 pub struct ScenePlanReader(Arc<SceneServiceInner>);
 
