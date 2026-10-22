@@ -110,11 +110,14 @@ impl GpuSparkleFlinger {
         let max_buffer_size = device.limits().max_buffer_size;
         let max_storage_buffer_binding_size = device.limits().max_storage_buffer_binding_size;
 
-        let pipeline = GpuCompositorPipeline::new(&device, progress);
-        let spatial_sampler = GpuSpatialSampler::new(&device, progress);
+        let timings = super::timing::GpuTimings::new(&device, &queue);
+        let pipeline = GpuCompositorPipeline::new(&device, progress, timings.clone());
+        let spatial_sampler = GpuSpatialSampler::new(&device, progress, timings);
         let native_screen = startup_step(progress, "native screen bridge", || {
             super::native_screen::install(&device, &queue, probe.max_texture_dimension_2d)
         })?;
+
+        pipeline.timings.publish();
 
         Ok(Self {
             render_device,

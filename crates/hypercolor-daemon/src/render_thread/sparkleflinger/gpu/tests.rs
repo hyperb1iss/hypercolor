@@ -3237,6 +3237,7 @@ fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
 mod display_finalize;
 mod media_upload;
 mod preview;
+mod readback_telemetry;
 mod sampler;
 mod shaders;
 mod startup_progress;

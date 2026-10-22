@@ -159,16 +159,19 @@ impl GpuSparkleFlinger {
             lane.written_params = Some(params);
         }
         {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("SparkleFlinger GPU zone preview scale pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&pipeline.preview_scale_pipeline);
-            pass.set_bind_group(0, &bind_group, &[0]);
-            pass.dispatch_workgroups(
-                width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
-                height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
-                1,
+            pipeline.timings.compute(
+                &mut encoder,
+                crate::render_thread::sparkleflinger::gpu::timing::GpuStage::PreviewScale,
+                "SparkleFlinger GPU zone preview scale pass",
+                |pass| {
+                    pass.set_pipeline(&pipeline.preview_scale_pipeline);
+                    pass.set_bind_group(0, &bind_group, &[0]);
+                    pass.dispatch_workgroups(
+                        width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
+                        height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
+                        1,
+                    );
+                },
             );
         }
         encoder.copy_buffer_to_buffer(&lane.output, 0, &lane.readback, 0, lane.used_bytes);
@@ -271,6 +274,10 @@ impl GpuSparkleFlinger {
             #[cfg(test)]
             &mut lane.last_readback_bytes,
         )?;
+        super::record_gpu_readback(
+            super::GpuReadbackKind::Preview,
+            u64::from(lane.width) * u64::from(lane.height) * 4,
+        );
         lane.latest = Some(surface);
         lane.latest_content = Some(content);
         Ok(())

@@ -168,6 +168,7 @@ impl UniformParamsRing {
 }
 
 pub(super) struct GpuCompositorPipeline {
+    pub(super) timings: super::timing::GpuTimings,
     pub(super) compose_bind_group_layout: wgpu::BindGroupLayout,
     pub(super) compose_pipeline: wgpu::ComputePipeline,
     pub(super) compose_params: UniformParamsRing,
@@ -184,7 +185,11 @@ pub(super) struct GpuCompositorPipeline {
 }
 
 impl GpuCompositorPipeline {
-    pub(super) fn new(device: &wgpu::Device, progress: Option<&StartupProgress>) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        progress: Option<&StartupProgress>,
+        timings: super::timing::GpuTimings,
+    ) -> Self {
         let compose_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("SparkleFlinger GPU compose bind group layout"),
@@ -497,6 +502,7 @@ impl GpuCompositorPipeline {
         );
 
         Self {
+            timings,
             compose_bind_group_layout,
             compose_pipeline,
             compose_params,

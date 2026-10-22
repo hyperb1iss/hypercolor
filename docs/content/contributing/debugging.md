@@ -45,6 +45,59 @@ with `RUST_LOG`.
 | `hypercolor_hal::drivers::razer` | Razer-specific USB packet detail |
 | `hypercolor_hal::drivers::prismrgb` | PrismRGB chunked protocol detail |
 
+## GPU execution and readbacks
+
+GPU utilization alone does not measure Hypercolor's rendering cost. Compare delivered FPS,
+GPU clocks, board power, and stage timings over the same workload. Keep the scene, controls,
+canvas dimensions, connected displays, and preview subscribers fixed during comparisons.
+
+For a profiling session, start the daemon with GPU timestamps enabled:
+
+```bash
+HYPERCOLOR_GPU_TIMING=1 just daemon
+```
+
+The switch is read when the compositor starts. Timestamps default to off because query
+resolution and asynchronous mapping add measurable overhead. Restart without the variable
+after profiling. Unsupported adapters keep rendering and report why timings are unavailable.
+
+Read the measurements from the system endpoint:
+
+```bash
+curl -s http://localhost:9420/api/v1/system \
+  | jq '.data.status.effect_health | {gpu_pass_timings, gpu_transfers}'
+```
+
+The timing stages cover composition, source-copy shaders, area tables, LED sampling,
+preview scaling, and display RGBA/YUV finalization. Durations are GPU execution nanoseconds.
+They exclude Servo's separate GPU context, transfer commands, and time waiting in the queue.
+Host render-loop timings therefore measure a different part of the pipeline.
+
+For each stage, divide the change in `total_ns` by the change in `completed` to obtain the
+mean time per measured pass. Divide by one million to convert nanoseconds to milliseconds.
+Use snapshots with the same `instance_id`. Check `skipped`, `failed`, and `cancelled`
+before interpreting coverage; missing observations do not represent zero-cost passes.
+
+Transfer counters remain available with timestamps off. They count completed mappings
+consumed by CPU code, excluding RGBA row padding:
+
+| Counter prefix | Consumer |
+|---|---|
+| `preview_readback_` | Main and zone preview publications |
+| `display_readback_` | LCD RGBA or YUV frames, including JPEG encoding inputs |
+| `led_readback_` | Packed colors decoded for LED output, four bytes per LED |
+| `sampling_canvas_readback_` | Full canvases read for CPU sampling or scene/display assembly |
+
+Each prefix has `count` and `bytes` fields. Divide the byte-counter delta by elapsed seconds
+for payload bytes per second. Transfer totals reset on daemon restart; timing totals reset
+when the compositor is rebuilt.
+
+The mapped pixels are copied into owned storage so asynchronous readers can retain a frame
+while the GPU reuses its staging buffers. Shared CPU frame ownership avoids an additional
+pixel copy between readers. WebSocket framing still copies the payload into a contiguous
+wire buffer. The older `full_frame_copy_count` covers producer/publication copies and does
+not include every GPU readback or wire-encoding copy.
+
 ## Built-in diagnostics
 
 `hypercolor diagnose` posts to `POST /api/v1/diagnose` and runs a set of named health checks

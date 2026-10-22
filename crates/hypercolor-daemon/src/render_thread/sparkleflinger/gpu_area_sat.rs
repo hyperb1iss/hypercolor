@@ -10,6 +10,7 @@ const SAT_PARAM_BYTES: u64 = 16;
 const HIERARCHY_PARAM_BYTES: u64 = 16;
 
 pub(super) struct GpuAreaPipeline {
+    timings: super::gpu::timing::GpuTimings,
     bind_group_layout: wgpu::BindGroupLayout,
     hierarchy_bind_group_layout: wgpu::BindGroupLayout,
     horizontal_tiles: wgpu::ComputePipeline,
@@ -51,7 +52,11 @@ struct GpuAreaHierarchyLevel {
 }
 
 impl GpuAreaPipeline {
-    pub(super) fn new(device: &wgpu::Device, progress: Option<&StartupProgress>) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        progress: Option<&StartupProgress>,
+        timings: super::gpu::timing::GpuTimings,
+    ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SparkleFlinger GPU area SAT bind group layout"),
             entries: &[
@@ -137,6 +142,7 @@ impl GpuAreaPipeline {
         };
 
         Self {
+            timings,
             bind_group_layout,
             hierarchy_bind_group_layout,
             horizontal_tiles: create_pipeline(
@@ -238,6 +244,7 @@ impl GpuAreaPipeline {
         );
         encode_pass(
             encoder,
+            &self.timings,
             "SparkleFlinger GPU area horizontal tile scan",
             &self.horizontal_tiles,
             &bind_group,
@@ -246,12 +253,14 @@ impl GpuAreaPipeline {
         );
         encode_hierarchy(
             encoder,
+            &self.timings,
             &self.hierarchy_scan,
             &self.hierarchy_add,
             &resources.horizontal_sums,
         );
         encode_pass(
             encoder,
+            &self.timings,
             "SparkleFlinger GPU area horizontal block add",
             &self.horizontal_add,
             &bind_group,
@@ -260,6 +269,7 @@ impl GpuAreaPipeline {
         );
         encode_pass(
             encoder,
+            &self.timings,
             "SparkleFlinger GPU area vertical tile scan",
             &self.vertical_tiles,
             &bind_group,
@@ -268,12 +278,14 @@ impl GpuAreaPipeline {
         );
         encode_hierarchy(
             encoder,
+            &self.timings,
             &self.hierarchy_scan,
             &self.hierarchy_add,
             &resources.vertical_sums,
         );
         encode_pass(
             encoder,
+            &self.timings,
             "SparkleFlinger GPU area vertical block add",
             &self.vertical_add,
             &bind_group,
@@ -675,23 +687,28 @@ fn encode_hierarchy_params(
 
 fn encode_pass(
     encoder: &mut wgpu::CommandEncoder,
+    timings: &super::gpu::timing::GpuTimings,
     label: &'static str,
     pipeline: &wgpu::ComputePipeline,
     bind_group: &wgpu::BindGroup,
     x: u32,
     y: u32,
 ) {
-    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        label: Some(label),
-        timestamp_writes: None,
-    });
-    pass.set_pipeline(pipeline);
-    pass.set_bind_group(0, bind_group, &[]);
-    pass.dispatch_workgroups(x, y, 1);
+    timings.compute(
+        encoder,
+        super::gpu::timing::GpuStage::AreaTable,
+        label,
+        |pass| {
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.dispatch_workgroups(x, y, 1);
+        },
+    );
 }
 
 fn encode_hierarchy(
     encoder: &mut wgpu::CommandEncoder,
+    timings: &super::gpu::timing::GpuTimings,
     scan_pipeline: &wgpu::ComputePipeline,
     add_pipeline: &wgpu::ComputePipeline,
     hierarchy: &GpuAreaHierarchy,
@@ -699,6 +716,7 @@ fn encode_hierarchy(
     for level in &hierarchy.levels {
         encode_pass(
             encoder,
+            timings,
             "SparkleFlinger GPU area hierarchy tile scan",
             scan_pipeline,
             &level.bind_group,
@@ -709,6 +727,7 @@ fn encode_hierarchy(
     for level in hierarchy.levels.iter().rev().skip(1) {
         encode_pass(
             encoder,
+            timings,
             "SparkleFlinger GPU area hierarchy offset add",
             add_pipeline,
             &level.bind_group,

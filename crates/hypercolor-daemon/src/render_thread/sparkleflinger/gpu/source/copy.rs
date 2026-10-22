@@ -464,16 +464,19 @@ fn dispatch_source_copy_pass(
     width: u32,
     height: u32,
 ) {
-    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-        label: Some("SparkleFlinger GPU source copy pass"),
-        timestamp_writes: None,
-    });
-    pass.set_pipeline(&pipeline.source_copy_pipeline);
-    pass.set_bind_group(0, bind_group, &[params_offset]);
-    pass.dispatch_workgroups(
-        width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
-        height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
-        1,
+    pipeline.timings.compute(
+        encoder,
+        crate::render_thread::sparkleflinger::gpu::timing::GpuStage::SourceCopy,
+        "SparkleFlinger GPU source copy pass",
+        |pass| {
+            pass.set_pipeline(&pipeline.source_copy_pipeline);
+            pass.set_bind_group(0, bind_group, &[params_offset]);
+            pass.dispatch_workgroups(
+                width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
+                height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
+                1,
+            );
+        },
     );
 }
 

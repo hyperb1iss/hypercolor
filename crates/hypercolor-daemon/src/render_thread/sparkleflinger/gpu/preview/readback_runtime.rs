@@ -164,18 +164,20 @@ impl GpuSparkleFlinger {
                 GpuCompositorOutputSurface::Front => &scale_output.bind_groups.front_to_preview,
                 GpuCompositorOutputSurface::Back => &scale_output.bind_groups.back_to_preview,
             };
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("SparkleFlinger GPU preview scale pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.pipeline.preview_scale_pipeline);
-            pass.set_bind_group(0, bind_group, &[params_offset]);
-            pass.dispatch_workgroups(
-                request.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
-                request.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
-                1,
+            self.pipeline.timings.compute(
+                &mut encoder,
+                crate::render_thread::sparkleflinger::gpu::timing::GpuStage::PreviewScale,
+                "SparkleFlinger GPU preview scale pass",
+                |pass| {
+                    pass.set_pipeline(&self.pipeline.preview_scale_pipeline);
+                    pass.set_bind_group(0, bind_group, &[params_offset]);
+                    pass.dispatch_workgroups(
+                        request.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
+                        request.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
+                        1,
+                    );
+                },
             );
-            drop(pass);
             encoder.copy_buffer_to_buffer(
                 &scale_output.buffer,
                 0,
@@ -223,6 +225,10 @@ impl GpuSparkleFlinger {
             #[cfg(test)]
             &mut preview_surfaces.last_readback_bytes,
         )?;
+        crate::render_thread::sparkleflinger::gpu::record_gpu_readback(
+            crate::render_thread::sparkleflinger::gpu::GpuReadbackKind::Preview,
+            u64::from(request.width) * u64::from(request.height) * 4,
+        );
         if let Some(key) = readback_key {
             if cache_as_full_size {
                 self.cached_readback_surface = Some(CachedReadbackSurface {

@@ -121,6 +121,7 @@ pub(super) fn finish_yuv420_display_readback(
     data.extend_from_slice(&mapped[..used_len]);
     drop(mapped);
     pending.buffer.unmap();
+    super::super::record_gpu_readback(super::super::GpuReadbackKind::Display, pending.used_bytes);
     let layout = pending.yuv_layout;
 
     DisplayYuv420Frame::from_vec(

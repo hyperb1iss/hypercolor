@@ -92,17 +92,26 @@ impl GpuRenderDevice {
         };
         #[cfg(test)]
         pin_shipped_shader_compilation(&mut instance_descriptor);
-        let instance = wgpu::Instance::new(instance_descriptor);
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        let adapter_options = wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: test_fallback_adapter_requested(),
             compatible_surface: None,
             ..Default::default()
-        }))
-        .with_context(|| format!("no compatible wgpu adapter was available for {label}"))?;
+        };
+        #[cfg(test)]
+        let (instance, adapter) = shared_test_adapter(instance_descriptor, &adapter_options);
+        #[cfg(not(test))]
+        let (instance, adapter) = {
+            let instance = wgpu::Instance::new(instance_descriptor);
+            let adapter = pollster::block_on(instance.request_adapter(&adapter_options));
+            (instance, adapter)
+        };
+        let adapter = adapter
+            .with_context(|| format!("no compatible wgpu adapter was available for {label}"))?;
 
         let adapter_features = adapter.features();
         let mut required_features = wgpu::Features::CLEAR_TEXTURE;
+        required_features |= adapter_features & wgpu::Features::TIMESTAMP_QUERY;
         let adapter_info = adapter.get_info();
         let vulkan_external_memory_win32 =
             adapter_features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_WIN32);
@@ -245,6 +254,11 @@ impl GpuRenderDevice {
         &self.inner.queue
     }
 
+    #[cfg(test)]
+    pub(crate) fn adapter_for_test(&self) -> &wgpu::Adapter {
+        &self.inner.adapter
+    }
+
     pub(crate) fn info(&self) -> GpuRenderDeviceInfo {
         self.inner.info.clone()
     }
@@ -333,6 +347,62 @@ pub(crate) fn raise_uncaptured_validation_error(device: &wgpu::Device) {
 fn pin_shipped_shader_compilation(instance_descriptor: &mut wgpu::InstanceDescriptor) {
     instance_descriptor.flags.remove(wgpu::InstanceFlags::DEBUG);
     instance_descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+}
+
+/// Discover adapters once and retain their loader ownership while tests create
+/// independent logical devices. NVIDIA's Vulkan and EGL instance destructors can
+/// deadlock each other; repeated GLES discovery also exposes the same EGL context
+/// through separate adapter locks. Backend choice and fallback selection are the
+/// only varying discovery inputs in this test constructor. The discovery thread
+/// also stays alive because NVIDIA retains EGL state in thread-local storage.
+#[cfg(test)]
+fn shared_test_adapter(
+    descriptor: wgpu::InstanceDescriptor,
+    options: &wgpu::RequestAdapterOptions<'_, '_>,
+) -> (
+    wgpu::Instance,
+    std::result::Result<wgpu::Adapter, wgpu::RequestAdapterError>,
+) {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+
+    type Discovery = (
+        wgpu::Instance,
+        std::result::Result<wgpu::Adapter, wgpu::RequestAdapterError>,
+    );
+    static ADAPTERS: LazyLock<Mutex<HashMap<(wgpu::Backends, bool), Discovery>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    ADAPTERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry((descriptor.backends, options.force_fallback_adapter))
+        .or_insert_with(|| {
+            let options = wgpu::RequestAdapterOptions {
+                power_preference: options.power_preference,
+                force_fallback_adapter: options.force_fallback_adapter,
+                compatible_surface: None,
+                apply_limit_buckets: options.apply_limit_buckets,
+            };
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            std::thread::Builder::new()
+                .name("gpu-test-discovery".into())
+                .spawn(move || {
+                    let instance = wgpu::Instance::new(descriptor);
+                    let adapter = pollster::block_on(instance.request_adapter(&options));
+                    let discovery = (instance, adapter);
+                    let _ = sender.send(discovery.clone());
+                    // Keep the loader's EGL thread-local state alive alongside
+                    // its instance, even after the initializing test exits.
+                    loop {
+                        std::thread::park();
+                    }
+                })
+                .expect("GPU test discovery thread must start");
+            receiver
+                .recv()
+                .expect("GPU test adapter discovery must finish")
+        })
+        .clone()
 }
 
 /// Environment switch that puts GPU tests on the software fallback adapter

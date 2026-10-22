@@ -215,16 +215,19 @@ impl GpuSparkleFlinger {
         let (used_bytes, mapped_bytes) = match format {
             GpuDisplayFinalizeFormat::Rgba => {
                 {
-                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: Some("SparkleFlinger GPU display finalize pass"),
-                        timestamp_writes: None,
-                    });
-                    pass.set_pipeline(&pipeline.display_finalize_pipeline);
-                    pass.set_bind_group(0, &bind_group, &[params_offset]);
-                    pass.dispatch_workgroups(
-                        params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
-                        params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
-                        1,
+                    pipeline.timings.compute(
+                        &mut encoder,
+                        crate::render_thread::sparkleflinger::gpu::timing::GpuStage::DisplayRgba,
+                        "SparkleFlinger GPU display finalize pass",
+                        |pass| {
+                            pass.set_pipeline(&pipeline.display_finalize_pipeline);
+                            pass.set_bind_group(0, &bind_group, &[params_offset]);
+                            pass.dispatch_workgroups(
+                                params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
+                                params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
+                                1,
+                            );
+                        },
                     );
                 }
                 encoder.copy_texture_to_buffer(
@@ -254,16 +257,19 @@ impl GpuSparkleFlinger {
             GpuDisplayFinalizeFormat::Yuv420 => {
                 encoder.clear_buffer(&surfaces.yuv_output, 0, None);
                 {
-                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                        label: Some("SparkleFlinger GPU display finalize YUV420 pass"),
-                        timestamp_writes: None,
-                    });
-                    pass.set_pipeline(&pipeline.display_finalize_yuv_pipeline);
-                    pass.set_bind_group(0, &bind_group, &[params_offset]);
-                    pass.dispatch_workgroups(
-                        params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
-                        params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
-                        1,
+                    pipeline.timings.compute(
+                        &mut encoder,
+                        crate::render_thread::sparkleflinger::gpu::timing::GpuStage::DisplayYuv,
+                        "SparkleFlinger GPU display finalize YUV420 pass",
+                        |pass| {
+                            pass.set_pipeline(&pipeline.display_finalize_yuv_pipeline);
+                            pass.set_bind_group(0, &bind_group, &[params_offset]);
+                            pass.dispatch_workgroups(
+                                params.width.div_ceil(COMPOSE_WORKGROUP_WIDTH),
+                                params.height.div_ceil(COMPOSE_WORKGROUP_HEIGHT),
+                                1,
+                            );
+                        },
                     );
                 }
                 encoder.copy_buffer_to_buffer(
@@ -433,7 +439,13 @@ impl GpuSparkleFlinger {
                     #[cfg(test)]
                     &mut surfaces.last_readback_bytes,
                 )
-                .map(GpuDisplayFinalizeFrame::Rgba)
+                .map(|surface| {
+                    super::super::record_gpu_readback(
+                        super::super::GpuReadbackKind::Display,
+                        u64::from(pending.width) * u64::from(pending.height) * 4,
+                    );
+                    GpuDisplayFinalizeFrame::Rgba(surface)
+                })
             }
             GpuDisplayFinalizeFormat::Yuv420 => Ok(GpuDisplayFinalizeFrame::Yuv420(
                 finish_yuv420_display_readback(pending),

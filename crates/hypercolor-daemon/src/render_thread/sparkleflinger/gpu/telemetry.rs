@@ -4,7 +4,63 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 use std::time::Duration;
 
+use hypercolor_types::api::system::GpuTransferStatus;
 use hypercolor_types::canvas::BYTES_PER_PIXEL;
+
+/// Completed GPU mappings consumed by CPU readers, classified by their purpose.
+pub(crate) enum GpuReadbackKind {
+    Preview,
+    Display,
+    Led,
+    SamplingCanvas,
+}
+
+#[derive(Default)]
+struct ReadbackCounter {
+    count: AtomicU64,
+    bytes: AtomicU64,
+}
+
+static PREVIEW_READBACK: ReadbackCounter = ReadbackCounter {
+    count: AtomicU64::new(0),
+    bytes: AtomicU64::new(0),
+};
+static DISPLAY_READBACK: ReadbackCounter = ReadbackCounter {
+    count: AtomicU64::new(0),
+    bytes: AtomicU64::new(0),
+};
+static LED_READBACK: ReadbackCounter = ReadbackCounter {
+    count: AtomicU64::new(0),
+    bytes: AtomicU64::new(0),
+};
+static SAMPLING_CANVAS_READBACK: ReadbackCounter = ReadbackCounter {
+    count: AtomicU64::new(0),
+    bytes: AtomicU64::new(0),
+};
+
+pub(crate) fn record_gpu_readback(kind: GpuReadbackKind, bytes: u64) {
+    let counter = match kind {
+        GpuReadbackKind::Preview => &PREVIEW_READBACK,
+        GpuReadbackKind::Display => &DISPLAY_READBACK,
+        GpuReadbackKind::Led => &LED_READBACK,
+        GpuReadbackKind::SamplingCanvas => &SAMPLING_CANVAS_READBACK,
+    };
+    counter.bytes.fetch_add(bytes, Ordering::Relaxed);
+    counter.count.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn gpu_transfer_telemetry_snapshot() -> GpuTransferStatus {
+    GpuTransferStatus {
+        preview_readback_count: PREVIEW_READBACK.count.load(Ordering::Relaxed),
+        preview_readback_bytes: PREVIEW_READBACK.bytes.load(Ordering::Relaxed),
+        display_readback_count: DISPLAY_READBACK.count.load(Ordering::Relaxed),
+        display_readback_bytes: DISPLAY_READBACK.bytes.load(Ordering::Relaxed),
+        led_readback_count: LED_READBACK.count.load(Ordering::Relaxed),
+        led_readback_bytes: LED_READBACK.bytes.load(Ordering::Relaxed),
+        sampling_canvas_readback_count: SAMPLING_CANVAS_READBACK.count.load(Ordering::Relaxed),
+        sampling_canvas_readback_bytes: SAMPLING_CANVAS_READBACK.bytes.load(Ordering::Relaxed),
+    }
+}
 
 static GPU_SOURCE_UPLOAD_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static GPU_MEDIA_TEXTURE_ALLOCATIONS_TOTAL: AtomicU64 = AtomicU64::new(0);

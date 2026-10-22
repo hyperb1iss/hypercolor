@@ -39,6 +39,7 @@ mod snapshot;
 mod source;
 mod submission;
 mod telemetry;
+pub(crate) mod timing;
 mod zone_preview;
 
 #[cfg(test)]
@@ -77,6 +78,7 @@ use screen_upload::{
 };
 use source::{CachedSourceUpload, SourceCopyBindGroupCache};
 use submission::FrameInFlight;
+pub(crate) use telemetry::{GpuReadbackKind, gpu_transfer_telemetry_snapshot, record_gpu_readback};
 pub(crate) use telemetry::{GpuSparkleFlingerTelemetrySnapshot, record_gpu_display_finalize_latch};
 use zone_preview::GpuZonePreviewLane;
 

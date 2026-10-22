@@ -677,6 +677,7 @@ const fn high_word(value: u64) -> u32 {
 }
 
 pub(super) struct GpuSpatialSampler {
+    timings: super::gpu::timing::GpuTimings,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
     area_pipeline: GpuAreaPipeline,
@@ -725,7 +726,11 @@ pub(super) struct GpuSpatialSampler {
 }
 
 impl GpuSpatialSampler {
-    pub(super) fn new(device: &wgpu::Device, progress: Option<&StartupProgress>) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        progress: Option<&StartupProgress>,
+        timings: super::gpu::timing::GpuTimings,
+    ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("SparkleFlinger GPU sample bind group layout"),
             entries: &[
@@ -832,7 +837,8 @@ impl GpuSpatialSampler {
         Self {
             bind_group_layout,
             pipeline,
-            area_pipeline: GpuAreaPipeline::new(device, progress),
+            area_pipeline: GpuAreaPipeline::new(device, progress, timings.clone()),
+            timings,
             area_resources: Vec::new(),
             area_generation: 0,
             admitted_plan: None,
@@ -1328,13 +1334,16 @@ impl GpuSpatialSampler {
                 &summed_area_buffer,
             );
             {
-                let mut compute = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("SparkleFlinger GPU sample pass"),
-                    timestamp_writes: None,
-                });
-                compute.set_pipeline(&self.pipeline);
-                compute.set_bind_group(0, &bind_group, &[]);
-                compute.dispatch_workgroups(cached_pass.dispatch_workgroups, 1, 1);
+                self.timings.compute(
+                    &mut encoder,
+                    crate::render_thread::sparkleflinger::gpu::timing::GpuStage::Sample,
+                    "SparkleFlinger GPU sample pass",
+                    |compute| {
+                        compute.set_pipeline(&self.pipeline);
+                        compute.set_bind_group(0, &bind_group, &[]);
+                        compute.dispatch_workgroups(cached_pass.dispatch_workgroups, 1, 1);
+                    },
+                );
             }
             self.sample_dispatch_count = self.sample_dispatch_count.saturating_add(1);
         }
@@ -1958,6 +1967,10 @@ fn finish_zone_color_readback(
     rebuild_zone_colors_from_mapped_bytes(&pending_readback.zones, &mapped, zones);
     drop(mapped);
     pending_readback.buffer.unmap();
+    super::gpu::record_gpu_readback(
+        super::gpu::GpuReadbackKind::Led,
+        pending_readback.used_bytes,
+    );
 }
 
 fn rebuild_zone_colors_from_mapped_bytes(
