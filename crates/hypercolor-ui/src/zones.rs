@@ -200,11 +200,12 @@ impl ZoneEffectState {
     }
 
     /// The effect that owns this zone's picture by itself: its only
-    /// layer, when that layer is an effect. A stacked zone composes
-    /// several sources, so no one effect owns its frame.
+    /// layer, when that layer is an enabled effect and the zone is live.
+    /// A stacked zone composes several sources, and a paused zone or
+    /// layer shows none, so no one effect owns those frames.
     #[must_use]
     pub fn sole_effect_id(&self) -> Option<&str> {
-        if self.zone.layer_ids.len() != 1 {
+        if !self.zone.enabled || self.zone.layer_ids.len() != 1 || self.layer_labels.len() != 1 {
             return None;
         }
         self.effect_id.as_deref()

@@ -77,6 +77,12 @@ fn only_a_lone_effect_layer_owns_the_zone_frame() {
     );
     // A lone non-effect layer owns no effect either.
     assert_eq!(state(1, None, &["Color"]).sole_effect_id(), None);
+    // A paused zone shows nothing, and a disabled lone layer leaves no
+    // enabled label, so neither frame belongs to the effect.
+    let mut paused = state(1, Some("bubble-garden"), &["Bubble Garden"]);
+    paused.zone.enabled = false;
+    assert_eq!(paused.sole_effect_id(), None);
+    assert_eq!(state(1, Some("bubble-garden"), &[]).sole_effect_id(), None);
 }
 
 #[test]

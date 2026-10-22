@@ -244,9 +244,13 @@ pub fn ZoneEffectChips() -> impl IntoView {
                                         "border-edge-subtle/60 bg-black/45 \
                                          hover:border-edge-strong hover:bg-black/60"
                                     };
-                                    format!("{base} {state}")
+                                    // Dimming rides in the same string: a
+                                    // reactive `class` rebuild replaces the
+                                    // whole attribute, dropping any class a
+                                    // `class:` directive added beside it.
+                                    let paused = if enabled { "" } else { " opacity-60" };
+                                    format!("{base} {state}{paused}")
                                 }
-                                class:opacity-60=!enabled
                                 on:click=move |_| focus_zone(zones_ctx, fx, &zone_id, role)
                             >
                                 <span
