@@ -71,12 +71,43 @@ pub fn PreviewCabinet(
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
     let thumb_store = use_context::<ThumbnailStore>();
 
+    // A multi-zone preview shows one zone at a time, picked by the zone
+    // chips, so the accent and the preset strip follow that zone's effect.
+    // A single-zone scene shows its primary, which `fx.active_*` describes.
+    let shown_zone_effect = Memo::new(move |_| {
+        if !zones_ctx.multi_zone.get() {
+            return None;
+        }
+        let zone_id = zones_ctx.target_zone()?.id;
+        fx.zone_effects
+            .with(|zones| zones.iter().find(|state| state.zone.id == zone_id).cloned())
+    });
+    let effect_id = Signal::derive(move || {
+        if zones_ctx.multi_zone.get() {
+            shown_zone_effect.with(|state| state.as_ref().and_then(|state| state.effect_id.clone()))
+        } else {
+            fx.active_effect_id.get()
+        }
+    });
+    let effect_category = Signal::derive(move || {
+        if zones_ctx.multi_zone.get() {
+            shown_zone_effect.with(|state| {
+                state
+                    .as_ref()
+                    .and_then(|state| state.effect_category.clone())
+                    .unwrap_or_default()
+            })
+        } else {
+            fx.active_effect_category.get()
+        }
+    });
+
     // Palette-aware accent — prefer the thumbnail's extracted primary so
     // the overlay text harmonises with the rendered frame, falling back
     // to the category accent before any thumbnail has been captured.
     let accent_rgb = Memo::new(move |_| {
         if let Some(store) = thumb_store
-            && let Some(id) = fx.active_effect_id.get()
+            && let Some(id) = effect_id.get()
         {
             let palette_primary = fx.effects_index.with(|effects| {
                 effects
@@ -88,7 +119,7 @@ pub fn PreviewCabinet(
                 return primary;
             }
         }
-        category_accent_rgb(&fx.active_effect_category.get()).to_string()
+        category_accent_rgb(&effect_category.get()).to_string()
     });
     let accent_signal: Signal<String> = accent_rgb.into();
 
@@ -108,19 +139,45 @@ pub fn PreviewCabinet(
         })
     });
 
-    let control_values: Signal<HashMap<String, ControlValue>> = fx.active_control_values.into();
-    let effect_id = Signal::derive(move || fx.active_effect_id.get());
-    let active_preset_id_signal = Signal::derive(move || fx.active_preset_id.get());
-    let has_effect = Memo::new(move |_| fx.active_effect_id.get().is_some());
+    let control_values: Signal<HashMap<String, ControlValue>> = Signal::derive(move || {
+        if zones_ctx.multi_zone.get() {
+            shown_zone_effect.with(|state| {
+                state
+                    .as_ref()
+                    .map(|state| state.control_values.clone())
+                    .unwrap_or_default()
+            })
+        } else {
+            fx.active_control_values.get()
+        }
+    });
+    let active_preset_id_signal = Signal::derive(move || {
+        if zones_ctx.multi_zone.get() {
+            shown_zone_effect.with(|state| state.as_ref().and_then(|state| state.preset_id.clone()))
+        } else {
+            fx.active_preset_id.get()
+        }
+    });
+    let has_effect = Memo::new(move |_| effect_id.get().is_some());
 
     // Ignition pulse — toggles briefly whenever the active effect changes so
     // keyframe-based swap animations restart. Setting false then re-enabling
     // via `requestAnimationFrame` ensures the class is removed and re-added
     // across a single paint boundary, so the element snaps to the keyframe
     // start state (opacity:0, blurred) without flashing the visible default
-    // in between. Prev-id is stored so initial mount doesn't animate.
+    // in between. The previous key is stored so initial mount doesn't animate.
     let igniting = RwSignal::new(false);
-    let prev_effect_id = StoredValue::new(fx.active_effect_id.get_untracked());
+    // Switching the shown zone ignites too: the picture changes as fully
+    // as it does on an effect swap.
+    let ignition_key = Memo::new(move |_| {
+        let zone = zones_ctx
+            .multi_zone
+            .get()
+            .then(|| zones_ctx.target_zone().map(|zone| zone.id))
+            .flatten();
+        (zone, effect_id.get())
+    });
+    let prev_ignition_key = StoredValue::new(ignition_key.get_untracked());
     let ignition_scheduler = Rc::new(RefCell::new(None::<Scheduler>));
     let ignition_timeout = Rc::new(RefCell::new(None::<BrowserTimeoutHandle>));
 
@@ -128,8 +185,8 @@ pub fn PreviewCabinet(
         let ignition_scheduler = Rc::clone(&ignition_scheduler);
         let ignition_timeout = Rc::clone(&ignition_timeout);
         move |_| {
-            let current = fx.active_effect_id.get();
-            let previous = prev_effect_id.get_value();
+            let current = ignition_key.get();
+            let previous = prev_ignition_key.get_value();
             if previous != current {
                 igniting.set(false);
                 ignition_timeout.borrow_mut().take();
@@ -147,7 +204,7 @@ pub fn PreviewCabinet(
                 });
                 ignition_timeout.borrow_mut().replace(timeout);
             }
-            prev_effect_id.set_value(current);
+            prev_ignition_key.set_value(current);
         }
     });
 
@@ -271,8 +328,8 @@ pub fn PreviewCabinet(
 
                 // Info overlay — title + author, description, category + source/audio badges.
                 // A multi-zone scene swaps the singular metadata for per-zone
-                // chips: the canvas composes several effects at once, and
-                // naming only the primary's would misattribute the picture.
+                // chips: the preview shows one zone at a time, and the chips
+                // name every zone and pick which one is on screen.
                 <div class="absolute left-0 right-0 bottom-0 px-4 pb-3 pt-10 pointer-events-none">
                     <Show when=move || zones_ctx.multi_zone.get()>
                         <div class="mb-1">

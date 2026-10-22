@@ -12,9 +12,12 @@ use leptos::task::spawn_local;
 use leptos_icons::Icon;
 use leptos_router::components::A;
 
+use hypercolor_types::scene::ZoneRole;
+
 use crate::api;
 use crate::api::zones::ZoneOutcome;
 use crate::app::EffectsContext;
+use crate::apply_target::ApplyTarget;
 use crate::icons::*;
 use crate::toasts;
 use crate::zones::{ZoneEffectState, ZonesContext};
@@ -160,15 +163,42 @@ fn SidebarZoneRow(state: ZoneEffectState) -> impl IntoView {
     }
 }
 
-/// Per-zone chips for the preview cabinet overlay — one chip per LED
-/// zone (color dot + zone name + what it is showing). Display-only;
-/// rendered inside the cabinet's `pointer-events-none` info overlay.
+/// Point the preview, quick-applies, and the controls at one LED zone,
+/// the same choice Studio's selection and the effects page's apply-to
+/// picker make. The Default zone is the unfocused state.
+pub fn focus_zone(zones_ctx: ZonesContext, fx: EffectsContext, zone_id: &str, role: ZoneRole) {
+    let (focused, target) = if role == ZoneRole::Primary {
+        (None, ApplyTarget::Primary)
+    } else {
+        (
+            Some(zone_id.to_owned()),
+            ApplyTarget::Zone(zone_id.to_owned()),
+        )
+    };
+    if zones_ctx.focused_zone.get_untracked() != focused {
+        zones_ctx.focused_zone.set(focused);
+    }
+    if fx.apply_target.get_untracked() != target {
+        fx.apply_target.set(target);
+    }
+}
+
+/// Per-zone chips for the preview cabinet overlay, one per LED zone
+/// (color dot, zone name, what it shows). The preview shows one zone at a
+/// time; each chip picks that zone, which is also the zone the cabinet's
+/// presets, quick-applies, and controls target.
 #[component]
 pub fn ZoneEffectChips() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
+    let zones_ctx = expect_context::<ZonesContext>();
+    let shown_zone = Memo::new(move |_| zones_ctx.target_zone().map(|zone| zone.id));
 
     view! {
-        <div class="flex flex-wrap items-center gap-1.5">
+        <div
+            class="pointer-events-auto flex flex-wrap items-center gap-1.5"
+            role="group"
+            aria-label="Zone shown in the preview"
+        >
             {move || {
                 fx.zone_effects
                     .get()
@@ -180,15 +210,44 @@ pub fn ZoneEffectChips() -> impl IntoView {
                             .clone()
                             .unwrap_or_else(|| "var(--color-accent)".to_owned());
                         let dot_glow = format!("0 0 6px {dot}");
-                        let label = state.display_label();
+                        let label = state.stack_label();
                         let enabled = state.zone.enabled;
+                        let zone_name = state.zone.name.clone();
+                        let title = match (enabled, state.stack_description()) {
+                            (false, _) => format!("Show {zone_name} (paused)"),
+                            (true, Some(stack)) => format!("Show {zone_name}: {stack}"),
+                            (true, None) => format!("Show {zone_name}"),
+                        };
+                        let zone_id = state.zone.id.clone();
+                        let role = state.zone.role;
+                        let selected = {
+                            let zone_id = zone_id.clone();
+                            Signal::derive(move || {
+                                shown_zone.get().as_deref() == Some(zone_id.as_str())
+                            })
+                        };
                         view! {
-                            <span
-                                class="inline-flex items-center gap-1.5 max-w-full rounded-full \
-                                       border border-edge-subtle/60 bg-black/45 backdrop-blur-sm \
-                                       px-2 py-1"
+                            <button
+                                type="button"
+                                aria-pressed=move || selected.get().to_string()
+                                title=title
+                                class=move || {
+                                    let base = "inline-flex items-center gap-1.5 max-w-full rounded-full \
+                                                border backdrop-blur-sm px-2 py-1 \
+                                                transition-all duration-150 btn-press \
+                                                focus-visible:outline-none focus-visible:ring-1 \
+                                                focus-visible:ring-accent/60";
+                                    let state = if selected.get() {
+                                        "border-accent/60 bg-accent/20 \
+                                         shadow-[0_0_10px_var(--glow-accent-50)]"
+                                    } else {
+                                        "border-edge-subtle/60 bg-black/45 \
+                                         hover:border-edge-strong hover:bg-black/60"
+                                    };
+                                    format!("{base} {state}")
+                                }
                                 class:opacity-60=!enabled
-                                title=if enabled { "" } else { "Zone paused" }
+                                on:click=move |_| focus_zone(zones_ctx, fx, &zone_id, role)
                             >
                                 <span
                                     class="w-1.5 h-1.5 rounded-full shrink-0"
@@ -197,7 +256,7 @@ pub fn ZoneEffectChips() -> impl IntoView {
                                 />
                                 <span class="text-[10px] font-medium text-fg-primary truncate max-w-[110px] \
                                              drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]">
-                                    {state.zone.name.clone()}
+                                    {zone_name}
                                 </span>
                                 {label.map(|text| view! {
                                     <span class="text-[10px] text-fg-tertiary truncate max-w-[120px] \
@@ -205,7 +264,7 @@ pub fn ZoneEffectChips() -> impl IntoView {
                                         {text}
                                     </span>
                                 })}
-                            </span>
+                            </button>
                         }
                     })
                     .collect_view()

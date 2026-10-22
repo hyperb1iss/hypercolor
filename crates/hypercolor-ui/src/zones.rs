@@ -152,6 +152,8 @@ pub struct ZoneEffectState {
     pub preset_id: Option<String>,
     /// Scene revision observed with the control values.
     pub revision: u64,
+    /// Labels of the zone's enabled layers, bottom to top.
+    pub layer_labels: Vec<String>,
 }
 
 impl ZoneEffectState {
@@ -162,6 +164,39 @@ impl ZoneEffectState {
         self.effect_name
             .clone()
             .or_else(|| self.zone.top_layer.clone())
+    }
+
+    /// What the zone shows, in one short line: its top layer plus how
+    /// many layers sit under it ("Touch Ripple +1").
+    #[must_use]
+    pub fn stack_label(&self) -> Option<String> {
+        let top = self
+            .layer_labels
+            .last()
+            .cloned()
+            .or_else(|| self.display_label())?;
+        let below = self.layer_labels.len().saturating_sub(1);
+        Some(if below == 0 {
+            top
+        } else {
+            format!("{top} +{below}")
+        })
+    }
+
+    /// Every enabled layer, top first ("Touch Ripple over Bubble Garden").
+    #[must_use]
+    pub fn stack_description(&self) -> Option<String> {
+        if self.layer_labels.is_empty() {
+            return self.display_label();
+        }
+        Some(
+            self.layer_labels
+                .iter()
+                .rev()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(" over "),
+        )
     }
 
     /// Whether the zone is actively rendering something.
