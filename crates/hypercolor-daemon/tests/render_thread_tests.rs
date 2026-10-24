@@ -3280,7 +3280,6 @@ async fn gpu_interrupted_fade_through_overlapping_zones_keeps_each_led_its_own()
     }
 }
 
-#[cfg(feature = "wgpu")]
 fn overlapping_zones(solid_id: EffectId) -> Vec<Zone> {
     vec![
         custom_zone(
