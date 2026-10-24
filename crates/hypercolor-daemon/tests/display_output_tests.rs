@@ -3301,34 +3301,37 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     display_writes.lock().await.clear();
     display_write_times.lock().await.clear();
 
-    for frame in 0_u32..12 {
-        let red = u8::try_from(20_u32.saturating_mul(frame.saturating_add(1))).unwrap_or(u8::MAX);
-        event_bus
-            .scene_canvas_lane()
-            .send_replace(CanvasFrame::from_canvas(
-                &solid_canvas(Rgba::new(red, 0, 0, 255)),
-                frame.saturating_add(2),
-                frame.saturating_add(2).saturating_mul(16),
-            ));
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-
+    // A single gap between writes jitters with the OS timer: on Windows a
+    // late dispatch tick can be followed by a prompt one, so two writes can
+    // land closer together than the cap while the pacer still holds 30 fps.
+    // Keep fresh content flowing and judge the mean over many writes.
+    const MEASURED_WRITES: usize = 11;
     tokio::time::timeout(DISPLAY_TEST_TIMEOUT, async {
-        loop {
-            if display_write_times.lock().await.len() >= 2 {
-                return;
-            }
+        let mut frame = 0_u32;
+        while display_write_times.lock().await.len() < MEASURED_WRITES {
+            let red =
+                u8::try_from((frame % 12).saturating_add(1).saturating_mul(20)).unwrap_or(u8::MAX);
+            event_bus
+                .scene_canvas_lane()
+                .send_replace(CanvasFrame::from_canvas(
+                    &solid_canvas(Rgba::new(red, 0, 0, 255)),
+                    frame.saturating_add(2),
+                    frame.saturating_add(2).saturating_mul(16),
+                ));
+            frame = frame.saturating_add(1);
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .expect("display output should produce multiple writes within timeout");
+    .expect("display output should produce enough writes within timeout");
 
     let write_times = display_write_times.lock().await.clone();
-    let cadence = write_times[1].saturating_duration_since(write_times[0]);
+    let span = write_times[MEASURED_WRITES - 1].saturating_duration_since(write_times[0]);
+    let intervals = u32::try_from(MEASURED_WRITES - 1).expect("interval count fits in u32");
+    let mean_cadence = span / intervals;
     assert!(
-        cadence >= Duration::from_millis(24),
-        "expected alpha display-face cadence to stay near 30 fps on a 60 fps device, got {cadence:?}"
+        mean_cadence >= Duration::from_millis(30),
+        "expected alpha display-face cadence to stay near 30 fps on a 60 fps device, got a mean of {mean_cadence:?} over {intervals} writes"
     );
 
     thread.shutdown().await.expect("display thread should stop");
