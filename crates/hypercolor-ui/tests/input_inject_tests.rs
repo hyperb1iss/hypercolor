@@ -385,3 +385,54 @@ fn effect_summary_defaults_new_capabilities_for_older_payloads() {
     assert!(!summary.input_reactive);
     assert_eq!(summary.capabilities, EffectCapabilitySet::default());
 }
+
+#[test]
+fn another_subscribes_acknowledgment_restates_an_open_preview_without_rejecting_it() {
+    // Following another zone re-subscribes the main preview and retargets
+    // the interactive one together. Both acknowledgments list the live
+    // interactive preview, and only one of them answers its retarget.
+    let mut tracker = InteractivePreviewLifecycleTracker::default();
+    let opened = |publication_id| InteractivePreviewServerUpdate::Opened {
+        preview_id: "main".to_owned(),
+        publication_id,
+    };
+    tracker.request_open("main");
+    tracker.apply(opened(5));
+    tracker.apply(opened(5));
+    assert_eq!(
+        tracker.lifecycles().get("main"),
+        Some(&InteractivePreviewLifecycle::Opened { publication_id: 5 })
+    );
+
+    tracker.request_open("main");
+    tracker.apply(opened(5));
+    tracker.apply(opened(5));
+    assert_eq!(
+        tracker.lifecycles().get("main"),
+        Some(&InteractivePreviewLifecycle::Opened { publication_id: 5 }),
+        "a retarget stays open through the ack that lands beside it"
+    );
+}
+
+#[test]
+fn an_acknowledgment_sent_before_an_open_does_not_answer_it() {
+    let mut tracker = InteractivePreviewLifecycleTracker::default();
+    tracker.request_open("main");
+    // The ack of a subscribe sent just before the open predates it, so
+    // the preview is not in its live set yet.
+    tracker.apply(InteractivePreviewServerUpdate::Closed {
+        preview_id: "main".to_owned(),
+    });
+    assert_eq!(
+        tracker.lifecycles().get("main"),
+        Some(&InteractivePreviewLifecycle::Requested)
+    );
+    tracker.apply(InteractivePreviewServerUpdate::Opened {
+        preview_id: "main".to_owned(),
+        publication_id: 9,
+    });
+    assert_eq!(
+        tracker.lifecycles().get("main"),
+        Some(&InteractivePreviewLifecycle::Opened { publication_id: 9 })
+    );
+}

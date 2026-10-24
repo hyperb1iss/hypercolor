@@ -87,27 +87,46 @@ impl InteractivePreviewLifecycleTracker {
         let Some(state) = self.previews.get_mut(&preview_id) else {
             return;
         };
-        let expected = state.pending.pop_front();
-        state.publication_id = None;
 
-        match (update, expected) {
+        match (update, state.pending.front().copied()) {
             (
                 InteractivePreviewServerUpdate::Opened { publication_id, .. },
                 Some(PendingOperation::Open),
             ) => {
-                if state.pending.is_empty() {
-                    state.publication_id = Some(publication_id);
-                }
+                state.pending.pop_front();
+                state.publication_id = state.pending.is_empty().then_some(publication_id);
                 state.rejected = false;
             }
             (InteractivePreviewServerUpdate::Closed { .. }, Some(PendingOperation::Close)) => {
+                state.pending.pop_front();
+                state.publication_id = None;
                 state.rejected = false;
             }
             (InteractivePreviewServerUpdate::Rejected { .. }, Some(_)) => {
+                state.pending.pop_front();
+                state.publication_id = None;
                 state.rejected = state.pending.is_empty();
             }
-            _ => {
-                state.pending.clear();
+            // An acknowledgment restates the connection's whole live set,
+            // so the ack of any other subscribe on this socket (the main
+            // preview's, when it follows another zone) lists this preview
+            // too. With nothing of ours pending it only restates the lane.
+            (InteractivePreviewServerUpdate::Opened { publication_id, .. }, None) => {
+                if !state.rejected {
+                    state.publication_id = Some(publication_id);
+                }
+            }
+            (InteractivePreviewServerUpdate::Closed { .. }, None) => {
+                state.publication_id = None;
+                state.rejected = false;
+            }
+            // Acknowledgments arrive in request order, so one that disagrees
+            // with the request at the front answered a request sent before
+            // it and says nothing about ours.
+            (InteractivePreviewServerUpdate::Opened { .. }, Some(PendingOperation::Close))
+            | (InteractivePreviewServerUpdate::Closed { .. }, Some(PendingOperation::Open)) => {}
+            (InteractivePreviewServerUpdate::Rejected { .. }, None) => {
+                state.publication_id = None;
                 state.rejected = true;
             }
         }
