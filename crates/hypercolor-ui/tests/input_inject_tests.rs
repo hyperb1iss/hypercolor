@@ -589,3 +589,39 @@ fn an_acknowledgment_sent_before_an_open_does_not_answer_it() {
         Some(&InteractivePreviewLifecycle::Opened { publication_id: 9 })
     );
 }
+
+#[test]
+fn an_addressed_refusal_of_an_open_preview_sticks_until_the_preview_closes() {
+    let mut tracker = InteractivePreviewLifecycleTracker::default();
+    let update = |kind: &str| match kind {
+        "opened" => InteractivePreviewServerUpdate::Opened {
+            preview_id: "main".to_owned(),
+            publication_id: 4,
+        },
+        "closed" => InteractivePreviewServerUpdate::Closed {
+            preview_id: "main".to_owned(),
+        },
+        _ => InteractivePreviewServerUpdate::Rejected {
+            preview_id: "main".to_owned(),
+        },
+    };
+    tracker.request_open("main");
+    tracker.apply(update("opened"));
+
+    // A refusal addressed to the open preview with nothing of ours
+    // pending still means the preview cannot be trusted.
+    tracker.apply(update("rejected"));
+    assert_eq!(
+        tracker.lifecycles().get("main"),
+        Some(&InteractivePreviewLifecycle::Rejected)
+    );
+    // An unrelated ack that still lists the old lane does not revive it.
+    tracker.apply(update("opened"));
+    assert_eq!(
+        tracker.lifecycles().get("main"),
+        Some(&InteractivePreviewLifecycle::Rejected)
+    );
+    // An ack that no longer lists it closes it for good.
+    tracker.apply(update("closed"));
+    assert!(tracker.lifecycles().get("main").is_none());
+}
