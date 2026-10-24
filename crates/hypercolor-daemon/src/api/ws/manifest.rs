@@ -574,6 +574,36 @@ mod tests {
                         field
                     );
                 }
+                // A tagged variant such as `{"zone": "<id>"}` declares the
+                // format of its payload under its tag.
+                if let Some(variants) = bounds.get("variants").and_then(Value::as_object) {
+                    for (tag, variant) in variants {
+                        assert_eq!(
+                            variant.get("format").and_then(Value::as_str),
+                            Some("uuid"),
+                            "{}.{} variant {tag} declares a known payload format",
+                            vtable.name,
+                            field
+                        );
+                        let tagged = |payload: &str| {
+                            let mut value = Map::new();
+                            value.insert(tag.clone(), Value::String(payload.to_owned()));
+                            Value::Object(value)
+                        };
+                        assert!(
+                            apply(tagged("01a15100-16a2-7300-91d2-507b4d2f85ff")).is_ok(),
+                            "{}.{} variant {tag} admits a UUID",
+                            vtable.name,
+                            field
+                        );
+                        assert!(
+                            apply(tagged("desk")).is_err(),
+                            "{}.{} variant {tag} refuses a non-UUID",
+                            vtable.name,
+                            field
+                        );
+                    }
+                }
                 if let Some(min_items) = bounds.get("min_items").and_then(Value::as_u64) {
                     assert!(min_items > 0, "{}.{} min_items", vtable.name, field);
                     assert!(

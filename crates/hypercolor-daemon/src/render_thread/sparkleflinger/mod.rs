@@ -1163,6 +1163,34 @@ impl SparkleFlinger {
         composed.preview_surface.or(composed.sampling_surface)
     }
 
+    /// Compose a GPU frame alone and read it back at `request`'s size,
+    /// scaled on the GPU, for a consumer that drives its own readbacks.
+    /// The readback is encoded here and lands on a later
+    /// [`Self::resolve_preview_surface`]; the surface returned now, if any,
+    /// is one an earlier readback already finished.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the composition failed, rather than the black
+    /// stand-in the GPU fallback carries.
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn materialize_scaled_surface(
+        &mut self,
+        frame: ProducerFrame,
+        request: PreviewSurfaceRequest,
+    ) -> Result<Option<PublishedSurface>> {
+        if frame.width() == 0 || frame.height() == 0 || request.width == 0 || request.height == 0 {
+            return Ok(None);
+        }
+        let plan = CompositionPlan::single(
+            frame.width(),
+            frame.height(),
+            CompositionLayer::replace(frame),
+        )
+        .with_cpu_replay_cacheable(false);
+        scaled_readback(self.compose_for_outputs(plan, false, Some(request)))
+    }
+
     /// Close this render frame's GPU work. The empty submission marks where
     /// the frame's work ends for [`Self::wait_for_gpu_frame_budget`] and hands
     /// wgpu every queue write the frame made, so their staging buffers never
@@ -2044,6 +2072,18 @@ fn map_gpu_display_finalize_frame(frame: GpuDisplayFinalizeFrame) -> DisplayFina
         GpuDisplayFinalizeFrame::Rgba(surface) => DisplayFinalizeFrame::Rgba(surface),
         GpuDisplayFinalizeFrame::Yuv420(frame) => DisplayFinalizeFrame::Yuv420(frame),
     }
+}
+
+/// A scaled readback's surface, or the failure its composition hit. A
+/// failed GPU composition stands in a black preview for a smaller request,
+/// which must never pass for the frame.
+#[cfg(feature = "wgpu")]
+fn scaled_readback(composed: ComposedFrameSet) -> Result<Option<PublishedSurface>> {
+    anyhow::ensure!(
+        !composed.gpu_readback_failed,
+        "GPU composition failed before its readback"
+    );
+    Ok(composed.preview_surface)
 }
 
 #[cfg(feature = "wgpu")]

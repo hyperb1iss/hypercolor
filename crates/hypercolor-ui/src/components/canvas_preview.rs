@@ -23,13 +23,16 @@ use crate::app::{EffectsContext, WsContext};
 use crate::icons::LuMousePointerClick;
 use crate::pointer_gesture::{ButtonEdge, HeldButtons};
 use crate::preview_telemetry::{PreviewPresenterTelemetry, PreviewTelemetryContext};
+use crate::preview_zone::PreviewZoneContext;
 use crate::ws::input::{
     InputEdgeButton, InputEdgeScrollPhase, InputEdgeScrollUnit, InputEdgeState, InputInjectEdge,
 };
+use crate::ws::interactive_preview::{InteractivePreviewShape, interactive_preview_request};
 use crate::ws::{
     CanvasFrame, InteractivePreviewLifecycle, InteractivePreviewRequest, PreviewCounterHandle,
     PreviewTag,
 };
+use crate::zones::ZoneEffectState;
 use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 
 use super::preview_runtime::{
@@ -115,6 +118,24 @@ impl CountedSurface {
 /// Whether the effect explicitly declares interactive input demand.
 pub fn effect_wants_interaction(effect: &api::EffectSummary) -> bool {
     effect.input_reactive
+}
+
+/// The effect whose interactivity offers interactive input: the shown
+/// zone's effect while the preview shows one zone, else the scene's
+/// primary effect. A zone the scene state does not list yet offers none.
+#[must_use]
+pub fn interactive_effect_id(
+    shown_zone: Option<&str>,
+    zone_effects: &[ZoneEffectState],
+    primary_effect_id: Option<&str>,
+) -> Option<String> {
+    match shown_zone {
+        Some(zone_id) => zone_effects
+            .iter()
+            .find(|state| state.zone.id == zone_id)
+            .and_then(|state| state.effect_id.clone()),
+        None => primary_effect_id.map(ToOwned::to_owned),
+    }
 }
 
 /// Map a `KeyboardEvent.code` to the daemon's canonical browser-style key
@@ -325,9 +346,11 @@ pub fn CanvasPreview(
     #[prop(default = false)] report_presenter_telemetry: bool,
     #[prop(optional)] consumer_count: Option<WriteSignal<u32>>,
     /// Opt-in host flag for the interactive-injection toggle (spec 71 W4).
-    /// When `true` and the active effect wants interaction, the preview
+    /// When `true` and the shown effect wants interaction, the preview
     /// offers a toggle that forwards pointer/keyboard/wheel input to the
-    /// daemon as `input_inject` messages. Off for passive surfaces
+    /// daemon as `input_inject` messages. On the main canvas the shown
+    /// effect is the effect of the zone the preview shows, and the
+    /// interactive lane renders that zone. Off for passive surfaces
     /// (sidebar mini-preview, pickers, layout ghosts).
     #[prop(default = false)]
     allow_interactive: bool,
@@ -372,10 +395,26 @@ pub fn CanvasPreview(
     let interactive_preview_id = StoredValue::new(interactive_preview_id);
     let interactive_on = RwSignal::new(false);
     let capture_focused = RwSignal::new(false);
+    // The main canvas shows one zone of a multi-zone scene at a time, so
+    // interactive mode follows that zone: its effect offers the toggle,
+    // and its lane is what the interactive frames show.
+    let preview_zone = main_canvas
+        .then(use_context::<PreviewZoneContext>)
+        .flatten();
+    let shown_zone = Memo::new(move |_| preview_zone.and_then(|context| context.zone.get()));
     let interactive_effect_eligible = Memo::new(move |_| {
         allow_interactive
             && effects_ctx.is_some_and(|fx| {
-                fx.active_effect_id.get().is_some_and(|id| {
+                let effect_id = shown_zone.with(|zone| {
+                    fx.zone_effects.with(|zone_effects| {
+                        interactive_effect_id(
+                            zone.as_deref(),
+                            zone_effects,
+                            fx.active_effect_id.get().as_deref(),
+                        )
+                    })
+                });
+                effect_id.is_some_and(|id| {
                     fx.effects_index.with(|effects| {
                         effects
                             .iter()
@@ -769,36 +808,48 @@ pub fn CanvasPreview(
     let send_input_inject = ws.map(|ws| ws.send_input_inject);
     let open_interactive_preview = ws.map(|ws| ws.open_interactive_preview);
     let close_interactive_preview = ws.map(|ws| ws.close_interactive_preview);
-    let requested_interactive_preview = StoredValue::new(None::<(u64, u32, u32, u32)>);
+    let requested_interactive_preview = StoredValue::new(None::<(u64, InteractivePreviewRequest)>);
+    let held_interactive_shape = StoredValue::new(None::<InteractivePreviewShape>);
 
     Effect::new(move |_| {
         let requested = interactive_requested.get();
         let generation = ws.map_or(0, |ws| ws.connection_generation.get());
         let fps = fps_target.get().clamp(1, 60);
-        let extent = authoritative_frame.with(|current| {
+        let shape = authoritative_frame.with(|current| {
             current
                 .as_ref()
                 .filter(|frame| has_preview_extent(frame))
-                .map(|frame| (frame.width, frame.height))
+                .map(|frame| {
+                    InteractivePreviewShape::new(frame.width, frame.height, frame.pixel_format())
+                })
         });
-        let next = requested
-            .then_some(extent)
-            .flatten()
-            .map(|(width, height)| (generation, fps, width, height));
-        if requested_interactive_preview.get_value() == next {
+        let held_shape = held_interactive_shape.get_value();
+        if shape.is_some() {
+            held_interactive_shape.set_value(shape);
+        }
+        let next = shown_zone
+            .with(|zone| {
+                interactive_preview_id.with_value(|preview_id| {
+                    interactive_preview_request(
+                        requested,
+                        preview_id,
+                        zone.as_deref(),
+                        fps,
+                        shape,
+                        held_shape,
+                    )
+                })
+            })
+            .map(|request| (generation, request));
+        if requested_interactive_preview.with_value(|current| *current == next) {
             return;
         }
 
-        if let Some((_, fps, width, height)) = next
+        if let Some((_, request)) = next.as_ref()
             && let Some(open) = open_interactive_preview
         {
-            open.run(InteractivePreviewRequest {
-                preview_id: interactive_preview_id.get_value(),
-                fps,
-                width,
-                height,
-            });
-        } else if requested_interactive_preview.get_value().is_some()
+            open.run(request.clone());
+        } else if requested_interactive_preview.with_value(Option::is_some)
             && let Some(close) = close_interactive_preview
         {
             close.run(interactive_preview_id.get_value());
@@ -925,7 +976,7 @@ pub fn CanvasPreview(
     on_cleanup(move || {
         interactive_release.with_value(|release| release());
         interactive_scheduler.with_value(Scheduler::pause);
-        if requested_interactive_preview.get_value().is_some()
+        if requested_interactive_preview.with_value(Option::is_some)
             && let Some(close) = close_interactive_preview
         {
             close.run(interactive_preview_id.get_value());
@@ -1191,7 +1242,7 @@ pub fn CanvasPreview(
 
             // Interactive-mode chrome: toggle button (top-left), focus glow
             // ring, and a capture-state hint chip. Rendered only while the
-            // active effect wants interaction, so passive effects keep a
+            // shown effect wants interaction, so passive effects keep a
             // clean frame.
             {move || interactive_available.get().then(|| view! {
                 <button

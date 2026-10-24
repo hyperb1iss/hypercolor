@@ -12,8 +12,9 @@ use std::collections::BTreeSet;
 use hypercolor_leptos_ext::ws::registry::{
     CanvasConfig, CanvasConfigPatch, CanvasFormat, DeviceKey, DisplayPreviewConfig,
     DisplayPreviewConfigPatch, FramesConfig, FramesConfigPatch, InteractivePreviewConfig,
-    MetricsConfig, MetricsConfigPatch, PreviewKey, SpectrumConfig, SpectrumConfigPatch, TopicId,
-    ZonePreviewConfig, ZonePreviewConfigPatch,
+    InteractivePreviewConfigPatch, InteractivePreviewTarget, MetricsConfig, MetricsConfigPatch,
+    PreviewKey, SpectrumConfig, SpectrumConfigPatch, TopicId, ZonePreviewConfig,
+    ZonePreviewConfigPatch,
 };
 use hypercolor_leptos_ext::ws::topic::{KeyError, TopicKey, apply_patch_transactionally};
 use serde_json::json;
@@ -516,4 +517,56 @@ fn interactive_preview_dimensions_must_be_real() {
             "format": "jpeg"
         })
     );
+}
+
+#[test]
+fn an_interactive_preview_retargets_between_the_scene_and_one_zone() {
+    let zone = "019f26d3-d4ee-7dd1-a806-d7114f26919b";
+    let vtable = TopicId::InteractivePreview.vtable();
+    let defaults = (vtable.default_config_json)();
+
+    let zoned = (vtable.apply_patch_json)(&defaults, &json!({"target": {"zone": zone}}))
+        .expect("a zone target applies");
+    assert_eq!(zoned["target"], json!({"zone": zone}));
+    assert_eq!(
+        zoned["width"], defaults["width"],
+        "a target-only patch keeps the lane's shape"
+    );
+    let config: InteractivePreviewConfig =
+        serde_json::from_value(zoned.clone()).expect("a zone-targeted config parses");
+    assert_eq!(
+        config.target,
+        InteractivePreviewTarget::Zone(zone.to_owned())
+    );
+    assert_eq!(config.target.zone(), Some(zone));
+
+    let scene = (vtable.apply_patch_json)(&zoned, &json!({"target": "active_scene"}))
+        .expect("the scene target applies over a zone");
+    assert_eq!(scene, defaults);
+    assert_eq!(InteractivePreviewTarget::ActiveScene.zone(), None);
+
+    for not_an_id in [
+        "",
+        "desk",
+        "019f26d3d4ee7dd1a806d7114f26919b",
+        "019f26d3-d4ee-7dd1-a806-d7114f26919g",
+    ] {
+        let patch = InteractivePreviewConfigPatch {
+            target: Some(InteractivePreviewTarget::Zone(not_an_id.to_owned())),
+            ..InteractivePreviewConfigPatch::default()
+        };
+        let error = apply_patch_transactionally(&config, &patch).expect_err("not a zone id");
+        assert_eq!(error.field, "target", "{not_an_id:?}");
+        assert_eq!(error.reason, "zone must be a zone id (a UUID)");
+    }
+
+    for malformed in [
+        json!({"target": {"zones": [zone]}}),
+        json!({"target": {"zone": zone, "scene": zone}}),
+        json!({"target": "zone"}),
+    ] {
+        let error = (vtable.apply_patch_json)(&defaults, &malformed)
+            .expect_err("a malformed target must not apply");
+        assert_eq!(error.field, "patch", "{malformed}");
+    }
 }

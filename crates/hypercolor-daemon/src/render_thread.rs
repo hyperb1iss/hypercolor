@@ -159,6 +159,55 @@ impl InteractivePreviewZoneRuntime {
             .render_scene(context, sparkleflinger, zones)
             .map(|rendered| rendered.scene_frame)
     }
+
+    /// Render `context.zones`, which holds the one zone an interactive
+    /// preview follows, and hand back that zone's own frame: the texture
+    /// its LEDs sample and its zone previews show, not the scene
+    /// projection. A zone that renders nothing previews dark, the way
+    /// its zone previews do.
+    pub(crate) fn render_zone(
+        &mut self,
+        context: RenderSceneContext<'_>,
+        zone_id: hypercolor_types::scene::ZoneId,
+        sparkleflinger: &mut sparkleflinger::SparkleFlinger,
+        zones: &mut Vec<ZoneColors>,
+    ) -> anyhow::Result<InteractivePreviewRender> {
+        let renders_nothing = context.zones.iter().any(|zone| {
+            zone.id == zone_id
+                && zone.display_target.is_none()
+                && !render_zones::zone_is_active(zone)
+        });
+        self.0.admit_reconcile(
+            context.zones,
+            context.active_scene_id,
+            context.dependency_key,
+            context.registry,
+            context.display_zone_descriptors,
+            context.authoritative_spatial_engine,
+            sparkleflinger,
+        )?;
+        let rendered = self.0.render_scene(context, sparkleflinger, zones)?;
+        let frame = rendered
+            .zone_canvases
+            .into_iter()
+            .find_map(|(id, frame)| (id == zone_id).then_some(frame));
+        Ok(match frame {
+            Some(frame) => InteractivePreviewRender::Frame(frame),
+            None if renders_nothing => InteractivePreviewRender::Dark,
+            None => InteractivePreviewRender::Pending,
+        })
+    }
+}
+
+/// What one interactive preview render pass leaves to publish.
+pub(crate) enum InteractivePreviewRender<F = ProducerFrame> {
+    /// A frame to publish.
+    Frame(F),
+    /// The followed zone renders nothing, because it is paused or has no
+    /// enabled layers, so its preview goes dark.
+    Dark,
+    /// Nothing new: the followed zone's layers have not produced a frame.
+    Pending,
 }
 
 const RENDER_RUNTIME_WORKERS: usize = 2;
