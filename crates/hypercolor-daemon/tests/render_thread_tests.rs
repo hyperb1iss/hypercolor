@@ -4315,6 +4315,96 @@ async fn the_frame_that_enters_idle_darkens_every_preview_outside_the_cadence() 
     rt.shutdown().await.expect("shutdown");
 }
 
+/// Publish a hold's black frame on the preview lanes the way
+/// `OutputContext::publish_static_snapshot` does: the scene canvas, every
+/// zone of the live scene, then the `canvas` topic.
+fn publish_black_hold_frame(state: &RenderThreadState) {
+    let mut canvas = hypercolor_types::canvas::Canvas::new(
+        state.canvas_dims.width(),
+        state.canvas_dims.height(),
+    );
+    canvas.fill(Rgba::new(0, 0, 0, 255));
+    let frame_number = state.event_bus.frame_lane().borrow().frame_number + 1;
+    let frame = CanvasFrame::from_canvas(&canvas, frame_number, 0);
+    state
+        .event_bus
+        .scene_canvas_lane()
+        .send_replace(frame.clone());
+    let plan = state.scene_plan.load();
+    state
+        .preview_runtime
+        .publish_static_zone_previews(plan.active_scene_id, &plan.zones, &frame);
+    state.event_bus.canvas_lane().send_replace(frame);
+}
+
+/// A stop pauses the loop, marks output stopped, and then leaves one black
+/// frame on every output and preview (`quiesce_after_effect_stop`). A frame
+/// the render thread had already rendered when the stop began can still
+/// publish after that black frame, and the paused loop renders nothing to
+/// replace it. Here the whole stop lands while such a frame waits in front
+/// of its publication; the frame has to end on the stop's black frame on
+/// the scene canvas, the `canvas` topic, and every zone preview.
+#[tokio::test]
+async fn a_frame_in_flight_when_output_stops_ends_on_the_stop_frame() {
+    let (state, mut rt, power_tx, _previews_rx, _, red_zone, blue_zone) =
+        sleeping_zone_preview_fixture("Stopped Mid-Frame").await;
+    // Receivers that register no demand make every frame preview-due, so
+    // the held frame publishes on every lane.
+    let mut canvas_rx = state.event_bus.canvas_receiver();
+    let mut scene_rx = state.event_bus.scene_canvas_receiver();
+    let zones_rx = state.event_bus.zone_preview_receiver();
+    let live = |frame: &CanvasFrame| frame.width > 0 && !canvas_frame_is_dark(frame);
+    wait_for_canvas_where(&mut canvas_rx, live).await;
+    wait_for_canvas_where(&mut scene_rx, live).await;
+
+    let mut held = state.preview_runtime.hold_next_frame_publication();
+    tokio::time::timeout(WAIT_DEADLINE, held.reached())
+        .await
+        .expect("a live frame should reach its publication");
+    let held_frame_number = state.render_loop.read().await.frame_number();
+
+    state.render_loop.write().await.pause();
+    power_tx.send_replace(OutputPowerState {
+        output_override: OutputOverride::Stopped,
+        ..OutputPowerState::default()
+    });
+    publish_black_hold_frame(&state);
+    held.release();
+    wait_until("the held frame to finish", || {
+        state
+            .render_loop
+            .try_read()
+            .is_ok_and(|render_loop| render_loop.frame_number() > held_frame_number)
+    })
+    .await;
+
+    assert!(
+        canvas_frame_is_dark(&canvas_rx.borrow()),
+        "the canvas preview should end on the stop's black frame"
+    );
+    assert!(
+        canvas_frame_is_dark(&scene_rx.borrow()),
+        "the scene canvas should end on the stop's black frame"
+    );
+    let previews = zones_rx.borrow().clone();
+    for zone_id in [red_zone, blue_zone] {
+        let preview = previews
+            .iter()
+            .find(|preview| preview.zone_id == zone_id)
+            .unwrap_or_else(|| panic!("zone {zone_id} should hold a preview"));
+        assert!(
+            canvas_frame_is_dark(&preview.frame),
+            "zone {zone_id} should preview the stop's black frame"
+        );
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
 /// Studio's zone previews of a GPU multi-zone scene arrive at the demanded
 /// size with each zone's own pixels, scaled from that zone's GPU texture
 /// rather than materialized on the CPU (Spec 86 §5.2).

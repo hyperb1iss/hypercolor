@@ -433,15 +433,17 @@ zone.
 
 Two states publish once and then render nothing, so they never give a
 publication the cadence skipped a second chance, and both publish outside
-it. A hold (a sleep, a pause, or a stop) puts one static off-color frame on
-every output, the scene canvas, the `canvas` topic, and every scene zone's
-preview. When no zone renders anything, the loop renders one idle frame and
-then idles: that frame publishes its own picture on the scene canvas and the
-`canvas` topic, and a dark preview for every scene zone. Both cover every
-zone rather than the selected ones. The entries share one static surface, so
-they cost no pixel work, and a subscriber that arrives or retargets during
-the hold or the idle still finds its zone dark. Frames that keep rendering
-keep the cadence.
+it. A hold (a sleep, a pause, or a stop) shows one static off-color frame on
+the scene canvas, the `canvas` topic, and every scene zone's preview: the
+frame it leaves on the outputs it still drives, or black for a release sleep
+and a stop. A frame already rendering when a hold begins ends on the hold's
+frame too, so its live picture never lands after the hold's. When no zone
+renders anything, the loop renders an idle frame and then idles: that frame
+publishes its own picture on the scene canvas and the `canvas` topic, and a
+dark preview for every scene zone. Both cover every zone rather than the
+selected ones. The entries share one static surface, so they cost no pixel
+work, and a subscriber that arrives or retargets during the hold or the idle
+still finds its zone dark. Frames that keep rendering keep the cadence.
 
 ---
 
