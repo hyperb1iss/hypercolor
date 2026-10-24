@@ -23,6 +23,14 @@ export function compilerEnvironment(env) {
   )).sort(([a], [b]) => a.localeCompare(b));
 }
 
+// A Linux build links the runner image's glibc, so a target directory or a
+// compiled object from a newer image can leave a binary that needs a newer
+// glibc than the image it ships for. Linux caches are kept per image.
+export function runnerKey(env) {
+  const runner = `${env.RUNNER_OS}-${env.RUNNER_ARCH}`;
+  return env.RUNNER_OS === 'Linux' && env.ImageOS ? `${runner}-${env.ImageOS}` : runner;
+}
+
 export function cacheWriter(saveIf, ref, defaultBranch, eventName) {
   if (!['auto', 'true', 'false'].includes(saveIf)) throw new Error(`Invalid save-if: ${saveIf}`);
   // A caller cannot turn an untrusted pull request or tag into a writer.
@@ -48,7 +56,7 @@ export function remoteCompilerCache(env, write) {
       SCCACHE_BUCKET: settings.bucket,
       SCCACHE_ENDPOINT: settings.endpoint.replace(/\/$/, ''),
       SCCACHE_REGION: 'auto',
-      SCCACHE_S3_KEY_PREFIX: `sccache/${String(env.RUNNER_OS).toLowerCase()}-${String(env.RUNNER_ARCH).toLowerCase()}`,
+      SCCACHE_S3_KEY_PREFIX: `sccache/${runnerKey(env).toLowerCase()}`,
       SCCACHE_S3_RW_MODE: write ? 'READ_WRITE' : 'READ_ONLY',
       AWS_ACCESS_KEY_ID: settings.keyId,
       AWS_SECRET_ACCESS_KEY: settings.secret,
@@ -140,7 +148,7 @@ export function configure(env = process.env, compilerVersion, probe = probeRemot
   }
   const keys = cacheKeys({
     shape: env.CACHE_SHAPE || 'workspace', variant: env.CACHE_VARIANT,
-    runner: `${env.RUNNER_OS}-${env.RUNNER_ARCH}`,
+    runner: runnerKey(env),
     compiler: compilerVersion ?? execFileSync('rustc', ['-vV'], { encoding: 'utf8' }),
     environment: compilerEnvironment({ ...env, ...profile }),
     workspaces: mappings, revisions, locks, scope: env.CACHE_ARCHIVE_KEY || 'revision',
