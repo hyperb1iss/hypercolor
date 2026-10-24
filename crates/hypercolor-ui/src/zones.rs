@@ -15,6 +15,7 @@ use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
 use crate::api;
+use crate::app::WsContext;
 use crate::toasts;
 use crate::ws::SceneEventHint;
 use surface::{Surface, SurfaceKind, led_zone_count, surfaces_from_zones};
@@ -33,6 +34,10 @@ pub struct ZonesContext {
     /// Whether the scene composes more than one LED zone. The trigger
     /// for per-zone affordances (now-playing rows, zone tabs, badges).
     pub multi_zone: Memo<bool>,
+    /// Whether the active scene has been read for this connection, so
+    /// `multi_zone` and the zone lists describe it rather than an empty
+    /// page still loading. See [`scene_read_settles`].
+    pub scene_resolved: Memo<bool>,
     /// The zone quick-applies and the controls panel target. `None`
     /// means the primary zone. Set by Studio's selection and by explicit
     /// zone pickers; surfaces that consume it must render it visibly.
@@ -256,17 +261,53 @@ impl ScenesContext {
     }
 }
 
+/// Whether one read of the active scene tells the page what scene this
+/// connection serves.
+///
+/// A document always does, even one read on an earlier connection: a
+/// refetch keeps the last document until the next one lands. A failed
+/// read counts only when it was made on the current, admitted connection.
+/// One made before the socket opened (generation 0, or an earlier socket:
+/// the daemon still binding at app boot) says nothing about the scene it
+/// is about to serve.
+#[must_use]
+pub const fn scene_read_settles(
+    read_generation: u64,
+    read_ok: bool,
+    connection_generation: u64,
+) -> bool {
+    read_ok || (connection_generation > 0 && read_generation == connection_generation)
+}
+
 /// Build and provide [`ZonesContext`] + [`ScenesContext`]. Called once
 /// from the app root, after the WebSocket manager exists.
 pub fn provide_scene_contexts(
     last_scene_event: ReadSignal<Option<SceneEventHint>>,
 ) -> (ZonesContext, ScenesContext) {
-    let active_scene_resource = api::daemon_resource(api::fetch_active_scene);
+    // Each read remembers the connection it was made on, so a failure
+    // from before the socket opened is not taken for this connection's.
+    let connection_generation = expect_context::<WsContext>().connection_generation;
+    let active_scene_resource = api::daemon_resource(move || {
+        let generation = connection_generation.get_untracked();
+        async move { (generation, api::fetch_active_scene().await) }
+    });
     let scenes_resource = api::daemon_resource(api::list_scenes);
 
     // Memo (not derive) so refetches that return identical state don't
     // wake every zone-aware surface in the app.
-    let active_scene = Memo::new(move |_| active_scene_resource.get().and_then(Result::ok));
+    let active_scene = Memo::new(move |_| {
+        active_scene_resource
+            .get()
+            .and_then(|(_, scene)| scene.ok())
+    });
+    let scene_resolved = Memo::new(move |_| {
+        let generation = connection_generation.get();
+        active_scene_resource.with(|read| {
+            read.as_ref().is_some_and(|(read_generation, scene)| {
+                scene_read_settles(*read_generation, scene.is_ok(), generation)
+            })
+        })
+    });
     let scenes = Memo::new(move |_| {
         scenes_resource
             .get()
@@ -376,6 +417,7 @@ pub fn provide_scene_contexts(
         zones,
         led_zones,
         multi_zone,
+        scene_resolved,
         focused_zone: RwSignal::new(None),
         refresh: refresh_active,
     };

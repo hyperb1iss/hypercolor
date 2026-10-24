@@ -287,7 +287,13 @@ impl EffectsContext {
     /// the user's saved preset + controls in a single scene mutation
     /// instead of starting at defaults and being corrected afterwards.
     pub fn apply_effect(&self, id: String) {
-        let apply_target = self.apply_target.get_untracked();
+        self.apply_effect_to(id, self.apply_target.get_untracked());
+    }
+
+    /// Apply an effect to one target rather than wherever quick-applies
+    /// go. A control tied to the zone a preview shows names that zone, so
+    /// it never lands on a zone focused on another page.
+    pub fn apply_effect_to(&self, id: String, apply_target: ApplyTarget) {
         let stored_prefs = self.preferences.get(&id);
         if apply_target == ApplyTarget::AllZones {
             let ctx = *self;
@@ -578,6 +584,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     provide_context(crate::preview_zone::PreviewZoneContext::new(
         ws.preview_zone,
         ws.set_preview_zone,
+        ws.set_preview_zone_resolved,
     ));
     provide_context(crate::device_metrics::install_device_metrics_store(ws_ctx));
 
@@ -793,20 +800,24 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
 
     // Effect thumbnail store — captures screenshots opportunistically while
     // effects are playing and exposes them to the browse grid for card art.
-    // A frame is captured as the effect that owns it: the primary effect
-    // on the scene canvas, or a followed zone's effect when that effect is
-    // the zone's only layer. A stacked zone's frame belongs to no one effect.
+    // A frame is captured as the effect that owns it (see
+    // `preview_frame_owner`).
     let thumbnail_store = ThumbnailStore::new();
     provide_context(thumbnail_store);
     let preview_zone = ws.preview_zone;
-    let captured_effect_id = Signal::derive(move || match preview_zone.get() {
-        None => active_effect_id.get(),
-        Some(zone_id) => zone_effects.with(|zones| {
-            zones
-                .iter()
-                .find(|state| state.zone.id == zone_id)
-                .and_then(|state| state.sole_effect_id().map(ToOwned::to_owned))
-        }),
+    let captured_effect_id = Signal::derive(move || {
+        let single_zone_scene =
+            zones_ctx.active_scene.with(Option::is_some) && !zones_ctx.multi_zone.get();
+        let primary_effect = active_effect_id.get();
+        let zone_id = preview_zone.get();
+        zone_effects.with(|zones| {
+            crate::preview_zone::preview_frame_owner(
+                zone_id.as_deref(),
+                single_zone_scene,
+                primary_effect,
+                zones,
+            )
+        })
     });
     thumbnails::install_auto_capture(
         thumbnail_store,
