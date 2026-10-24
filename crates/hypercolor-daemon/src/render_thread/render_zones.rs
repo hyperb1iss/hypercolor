@@ -128,6 +128,9 @@ pub(crate) struct ZoneRuntime {
     fail_next_projected_scene_composition: bool,
     #[cfg(all(test, feature = "wgpu"))]
     fail_next_scene_render: bool,
+    /// Every scene render fails with this effect error until cleared.
+    #[cfg(all(test, feature = "wgpu"))]
+    failing_scene_render_effect_error: Option<ZoneEffectError>,
     #[cfg(all(test, feature = "wgpu"))]
     injected_effect_layer_frames: HashMap<hypercolor_types::layer::SceneLayerId, ProducerFrame>,
     /// Effect renders each layer still reports `Pending` for.
@@ -249,6 +252,8 @@ impl ZoneRuntime {
             fail_next_projected_scene_composition: false,
             #[cfg(all(test, feature = "wgpu"))]
             fail_next_scene_render: false,
+            #[cfg(all(test, feature = "wgpu"))]
+            failing_scene_render_effect_error: None,
             #[cfg(all(test, feature = "wgpu"))]
             injected_effect_layer_frames: HashMap::new(),
             #[cfg(all(test, feature = "wgpu"))]

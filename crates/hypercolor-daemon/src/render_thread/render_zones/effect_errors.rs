@@ -27,6 +27,14 @@ impl ZoneRuntime {
         self.recovered_effect_error.take()
     }
 
+    /// Forget the effect error state without reporting a recovery, for a
+    /// scene that no longer renders any zone. The next failure, even the
+    /// same one, publishes again.
+    pub(crate) fn forget_effect_error(&mut self) {
+        self.last_effect_error = None;
+        self.recovered_effect_error = None;
+    }
+
     /// Count a frame whose scene zones failed to render, `retained` saying
     /// whether it published the last good frame instead. Returns whether the
     /// failure is new and should be logged: the first since the scene last

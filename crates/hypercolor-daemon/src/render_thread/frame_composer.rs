@@ -515,7 +515,7 @@ impl ComposeContext<'_> {
                         stage_start,
                     );
                 }
-                self.compose.clear_inactive_zones();
+                self.compose.release_zone_resources();
                 if self
                     .compose
                     .render_zone_runtime

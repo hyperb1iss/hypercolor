@@ -186,6 +186,16 @@ impl ZoneRuntime {
         self.fail_next_scene_render = true;
     }
 
+    /// Every scene render fails with `error`, the way an effect that keeps
+    /// failing does, until a call with `None`.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(super) fn fail_scene_renders_with_effect_error_for_test(
+        &mut self,
+        error: Option<super::model::ZoneEffectError>,
+    ) {
+        self.failing_scene_render_effect_error = error;
+    }
+
     /// Whether an injected scene failure is still waiting for a render.
     #[cfg(all(test, feature = "wgpu"))]
     pub(super) const fn injected_scene_failure_pending_for_test(&self) -> bool {

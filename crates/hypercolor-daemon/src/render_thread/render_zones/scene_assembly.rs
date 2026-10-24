@@ -42,6 +42,10 @@ impl ZoneRuntime {
         if std::mem::take(&mut self.fail_next_scene_render) {
             anyhow::bail!("injected scene render failure");
         }
+        #[cfg(all(test, feature = "wgpu"))]
+        if let Some(error) = &self.failing_scene_render_effect_error {
+            return Err(error.clone().into());
+        }
         #[cfg(feature = "wgpu")]
         sparkleflinger.begin_media_upload_frame();
 

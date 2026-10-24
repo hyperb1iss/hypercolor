@@ -1568,7 +1568,17 @@ impl DisplayFinalizeRuntime {
 }
 
 impl ComposeRuntime<'_> {
+    /// The scene renders no zones: release their resources and forget any
+    /// effect error, which no longer describes a running effect.
     pub(crate) fn clear_inactive_zones(&mut self) {
+        self.release_zone_resources();
+        self.render_zone_runtime.forget_effect_error();
+    }
+
+    /// Release every zone resource after a frame failed to render. The
+    /// effect error state survives, so a failure that persists publishes its
+    /// events once and its recovery publishes when the scene renders again.
+    pub(crate) fn release_zone_resources(&mut self) {
         #[cfg(feature = "wgpu")]
         for pending in self.display_finalize_runtime.drain() {
             self.display_sparkleflinger
@@ -1946,6 +1956,7 @@ impl RenderCaches {
         self.display_sparkleflinger
             .retain_display_finalize_zones(&[]);
         self.render_zone_runtime.clear_inactive_zones();
+        self.render_zone_runtime.forget_effect_error();
         self.effect_delta_clock.clear();
     }
 
