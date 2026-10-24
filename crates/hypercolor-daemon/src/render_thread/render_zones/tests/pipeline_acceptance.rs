@@ -27,6 +27,7 @@ use crate::domain::spatial::SpatialService;
 use crate::output_power::OutputPowerState;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
+use crate::render_thread::failure_log::CapturedLogs;
 use crate::render_thread::frame_executor::execute_frame;
 use crate::render_thread::frame_policy::SkipDecision;
 use crate::render_thread::pipeline_runtime::PipelineRuntime;
@@ -234,12 +235,14 @@ async fn gpu_multi_zone_render_failures_resume_from_retained_colors() {
 }
 
 /// An effect that keeps failing before the scene ever rendered leaves no
-/// retained frame, so every failed frame releases the zone resources. Its
-/// `EffectError` and failed `EffectDegraded` still publish once when the
-/// failure starts and once more when it changes, not on every frame, and
-/// the scene's first good frame publishes one recovery.
+/// retained frame, so every failed frame publishes black. Its `EffectError`
+/// and failed `EffectDegraded` publish, and the frame composer warns, once
+/// when the failure starts and once more when it changes, not on every
+/// frame. The scene's first good frame publishes one recovery and logs that
+/// the scene renders again, and a later failure that a retained frame
+/// covers warns once too.
 #[tokio::test]
-async fn persistent_effect_failure_publishes_its_events_once_per_transition() {
+async fn persistent_effect_failure_reports_once_per_transition() {
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut scene = make_scene("Failing Effect");
@@ -258,6 +261,10 @@ async fn persistent_effect_failure_publishes_its_events_once_per_transition() {
         return;
     };
     let mut events = pipeline.state.event_bus.subscribe_all();
+    // The frames render on this test's thread, so a thread default catches
+    // the frame composer's logs.
+    let logs = CapturedLogs::default();
+    let _log_guard = tracing::subscriber::set_default(logs.subscriber());
     let failure = |error: &str| ZoneEffectError {
         effect_id: solid_id.to_string(),
         effect_name: "Solid Color".into(),
@@ -283,6 +290,12 @@ async fn persistent_effect_failure_publishes_its_events_once_per_transition() {
             "{frames} frames failing with \"{error}\" should publish its events once"
         );
     }
+    assert_eq!(
+        logs.lines_containing("publishing black frame"),
+        2,
+        "each failure should warn once:\n{}",
+        logs.text()
+    );
 
     pipeline
         .zone_runtime()
@@ -303,6 +316,42 @@ async fn persistent_effect_failure_publishes_its_events_once_per_transition() {
             recovered: 1,
         },
         "the first good frame should publish one recovery"
+    );
+    assert_eq!(
+        logs.lines_containing("active scene zones render again failed_frames=6"),
+        1,
+        "the recovery should log once, counting the second failure's frames:\n{}",
+        logs.text()
+    );
+    assert_eq!(logs.lines_containing("publishing black frame"), 2);
+
+    // With a good frame retained, the next failure keeps the LEDs on it and
+    // warns once while it persists.
+    pipeline
+        .zone_runtime()
+        .fail_scene_renders_with_effect_error_for_test(Some(failure("renderer lost its device")));
+    for frame in 0..8 {
+        let published = pipeline.frame().await;
+        assert_eq!(
+            zone_led(&published, "zone_red"),
+            Some([255, 0, 0]),
+            "retained failure frame {frame} should keep the last good colors"
+        );
+    }
+    assert_eq!(
+        drain_effect_events(&mut events),
+        EffectEventCounts {
+            errors: 1,
+            failed: 1,
+            recovered: 0,
+        },
+        "a failure after the recovery is a new one"
+    );
+    assert_eq!(
+        logs.lines_containing("retaining the last frame"),
+        1,
+        "the retained failure should warn once:\n{}",
+        logs.text()
     );
 }
 

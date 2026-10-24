@@ -16,6 +16,7 @@ use super::{
     ensure_storage_buffer_capacity, gpu_canvas_admission,
 };
 use crate::performance::CompositorBackendKind;
+use crate::render_thread::failure_log::CapturedLogs;
 use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin, ProducerFrame};
 #[cfg(feature = "servo-gpu-import")]
 use crate::render_thread::producer_queue::{ProducerFrameState, ProducerQueue};
@@ -607,13 +608,8 @@ fn persistent_projected_scene_failure_warns_once_per_transition() {
     let Some(mut sparkleflinger) = gpu_test_sparkleflinger() else {
         return;
     };
-    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-    let sink = std::sync::Arc::clone(&logs);
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_max_level(tracing::Level::INFO)
-        .with_writer(move || CapturedLog(std::sync::Arc::clone(&sink)))
-        .finish();
+    let logs = CapturedLogs::default();
+    let subscriber = logs.subscriber();
     let solid_layers = || {
         vec![CompositionLayer::replace(ProducerFrame::Canvas(
             solid_canvas(Rgba::new(255, 0, 0, 255)),
@@ -637,45 +633,22 @@ fn persistent_projected_scene_failure_warns_once_per_transition() {
         }
     });
 
-    let logs = String::from_utf8_lossy(
-        &logs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
-    .into_owned();
-    let lines_with = |needle: &str| logs.lines().filter(|line| line.contains(needle)).count();
+    let logs_text = logs.text();
     assert_eq!(
-        lines_with("GPU projected scene composition failed"),
+        logs.lines_containing("GPU projected scene composition failed"),
         1,
-        "{logs}"
+        "{logs_text}"
     );
     assert_eq!(
-        lines_with("Unsupported projected GPU scene plan"),
+        logs.lines_containing("Unsupported projected GPU scene plan"),
         1,
-        "{logs}"
+        "{logs_text}"
     );
     assert_eq!(
-        lines_with("GPU projected scene composition recovered failed_frames=8"),
+        logs.lines_containing("GPU projected scene composition recovered failed_frames=8"),
         1,
-        "{logs}"
+        "{logs_text}"
     );
-}
-
-/// Collects one test's formatted log lines.
-struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl std::io::Write for CapturedLog {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 #[test]
