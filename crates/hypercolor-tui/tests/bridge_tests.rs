@@ -9,9 +9,10 @@ use axum::routing::get;
 use axum::{Json, Router};
 use hypercolor_tui::action::Action;
 use hypercolor_tui::bridge::spawn_data_bridge;
+use hypercolor_tui::state::PreviewTarget;
 use hypercolor_types::api::system::{RenderLoopStatus, ServerInfo, SystemResource, SystemStatus};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -75,12 +76,14 @@ async fn active_scene_event_refreshes_the_canonical_document() {
     let cancel = CancellationToken::new();
     let (action_tx, mut action_rx) = mpsc::unbounded_channel();
     let bridge_cancel = cancel.clone();
+    let (_preview_target_tx, preview_target) = watch::channel(PreviewTarget::SceneCanvas);
     let bridge = tokio::spawn(async move {
         spawn_data_bridge(
             "127.0.0.1".to_string(),
             addr.port(),
             None,
             action_tx,
+            preview_target,
             bridge_cancel,
         )
         .await;
@@ -145,12 +148,14 @@ async fn control_surface_event_refreshes_device_surface() {
     let cancel = CancellationToken::new();
     let (action_tx, mut action_rx) = mpsc::unbounded_channel();
     let bridge_cancel = cancel.clone();
+    let (_preview_target_tx, preview_target) = watch::channel(PreviewTarget::SceneCanvas);
     let bridge = tokio::spawn(async move {
         spawn_data_bridge(
             "127.0.0.1".to_string(),
             addr.port(),
             None,
             action_tx,
+            preview_target,
             bridge_cancel,
         )
         .await;

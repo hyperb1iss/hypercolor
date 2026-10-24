@@ -10,7 +10,7 @@ pub use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::EffectCategory;
 use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::ZoneRole;
+use hypercolor_types::scene::{ZoneId, ZoneRole};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::screen::ScreenId;
@@ -60,6 +60,93 @@ impl AppState {
             .and_then(|id| scene_zone(scene, id))
             .or_else(|| primary_zone(scene))
     }
+
+    /// The zone the live preview shows, or `None` while it shows the scene
+    /// canvas. See [`preview_zone`].
+    #[must_use]
+    pub fn preview_zone(&self) -> Option<&ZoneResource> {
+        preview_zone(self.active_scene.as_deref()?, self.focused_zone.as_deref())
+    }
+
+    /// The stream the live preview follows: [`Self::preview_zone`]'s own
+    /// frames, or the scene canvas when it names no zone.
+    #[must_use]
+    pub fn preview_target(&self) -> PreviewTarget {
+        self.preview_zone()
+            .map_or(PreviewTarget::SceneCanvas, |zone| {
+                PreviewTarget::Zone(zone.id)
+            })
+    }
+
+    /// Replace the live scene, dropping the zone focus when its zone left
+    /// the scene so the target and the preview fall back to the primary
+    /// zone. Returns whether the focus was dropped.
+    pub fn set_active_scene(&mut self, scene: Arc<SceneDocument>) -> bool {
+        let focus_stale = self
+            .focused_zone
+            .as_deref()
+            .is_some_and(|id| scene_zone(&scene, id).is_none());
+        self.active_scene = Some(scene);
+        if focus_stale {
+            self.focused_zone = None;
+        }
+        focus_stale
+    }
+
+    /// Move the zone focus to the next or previous zone of the active
+    /// scene, wrapping at either end. Returns the newly focused zone's
+    /// name, or `None` when the scene has fewer than two zones.
+    pub fn cycle_zone_focus(&mut self, forward: bool) -> Option<String> {
+        let (zone_id, zone_name) = {
+            let scene = self.active_scene.as_deref()?;
+            if scene.zones.len() < 2 {
+                return None;
+            }
+            let current = self
+                .target_zone()
+                .and_then(|target| scene.zones.iter().position(|zone| zone.id == target.id))
+                .unwrap_or(0);
+            let count = scene.zones.len();
+            let next = if forward {
+                (current + 1) % count
+            } else {
+                (current + count - 1) % count
+            };
+            let zone = &scene.zones[next];
+            (zone.id.to_string(), zone.name.clone())
+        };
+        self.focused_zone = Some(zone_id);
+        Some(zone_name)
+    }
+}
+
+// ── Preview Target ──────────────────────────────────────────────────
+
+/// The stream the live preview follows.
+///
+/// A multi-zone scene's scene canvas projects every zone into its devices'
+/// layout boxes (Spec 86 §5.1), which reads as a patchwork, so the preview
+/// shows one zone at a time through `zone_preview`. A single-zone scene's
+/// canvas already is its one zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PreviewTarget {
+    /// The `canvas` topic.
+    #[default]
+    SceneCanvas,
+    /// One zone's own frames from the `zone_preview` topic.
+    Zone(ZoneId),
+}
+
+impl PreviewTarget {
+    /// Whether a `zone_preview` frame naming `zone_id` belongs to this
+    /// target. A scene-canvas target owns no zone frames.
+    #[must_use]
+    pub fn follows_zone(&self, zone_id: &[u8; 16]) -> bool {
+        match self {
+            Self::SceneCanvas => false,
+            Self::Zone(id) => id.0.as_bytes() == zone_id,
+        }
+    }
 }
 
 // ── Scenes & Zones ──────────────────────────────────────────────────
@@ -71,6 +158,40 @@ pub use hypercolor_types::api::scenes::SceneSummary;
 #[must_use]
 pub fn scene_is_multi_zone(scene: &SceneDocument) -> bool {
     scene.zones.len() > 1
+}
+
+/// Whether a zone lights LEDs. Display zones drive LCD faces, which the
+/// preview never follows.
+fn is_led_zone(zone: &ZoneResource) -> bool {
+    zone.role != ZoneRole::Display
+}
+
+/// The zone a preview of `scene` shows, or `None` for the scene canvas.
+///
+/// A scene with one LED zone keeps its scene canvas, which already is
+/// that zone. With more, the preview follows the zone target, so the
+/// preview and every apply or control edit land on the same zone. The
+/// web UI's zone chips work the same way. A target that is missing or is
+/// a display zone falls back to the primary LED zone, the scene's Default
+/// zone.
+#[must_use]
+pub fn preview_zone<'a>(
+    scene: &'a SceneDocument,
+    focused_zone: Option<&str>,
+) -> Option<&'a ZoneResource> {
+    if scene.zones.iter().filter(|zone| is_led_zone(zone)).count() < 2 {
+        return None;
+    }
+    focused_zone
+        .and_then(|id| scene_zone(scene, id))
+        .filter(|zone| is_led_zone(zone))
+        .or_else(|| {
+            scene
+                .zones
+                .iter()
+                .find(|zone| zone.role == ZoneRole::Primary)
+                .or_else(|| scene.zones.iter().find(|zone| is_led_zone(zone)))
+        })
 }
 
 /// Look up a zone by its canonical wire id.

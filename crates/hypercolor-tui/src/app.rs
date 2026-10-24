@@ -12,7 +12,7 @@ use hypercolor_types::api::scene::PatchControlsRequest;
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::action::Action;
@@ -26,7 +26,7 @@ use crate::scene_picker::{ScenePicker, ScenePickerAction};
 use crate::screen::ScreenId;
 use crate::state::{
     AppState, CanvasFrame, ConnectionStatus, ControlValue, Notification, NotificationLevel,
-    PreviewSource, SimulatedDisplaySummary, scene_is_multi_zone, scene_zone,
+    PreviewSource, PreviewTarget, SimulatedDisplaySummary, scene_is_multi_zone,
     set_zone_effect_control, zone_effect_layer,
 };
 use crate::theme_picker::ThemePicker;
@@ -77,6 +77,9 @@ pub struct App {
     action_tx: mpsc::UnboundedSender<Action>,
     /// Action receiver (drained each frame).
     action_rx: mpsc::UnboundedReceiver<Action>,
+    /// What the live preview follows, published to the data bridge so the
+    /// WebSocket subscription tracks the scene and the zone target.
+    preview_target_tx: watch::Sender<PreviewTarget>,
     /// REST client for sending commands to the daemon.
     client: DaemonClient,
     /// Cancellation token for the data bridge.
@@ -165,6 +168,7 @@ impl App {
             notification: None,
             action_tx,
             action_rx,
+            preview_target_tx: watch::Sender::new(PreviewTarget::SceneCanvas),
             client,
             data_cancel: CancellationToken::new(),
             host,
@@ -208,12 +212,14 @@ impl App {
         let bridge_host = self.host.clone();
         let bridge_port = self.port;
         let bridge_api_key = self.api_key.clone();
+        let bridge_preview_target = self.preview_target_tx.subscribe();
         tokio::spawn(async move {
             crate::bridge::spawn_data_bridge(
                 bridge_host,
                 bridge_port,
                 bridge_api_key,
                 bridge_tx,
+                bridge_preview_target,
                 bridge_cancel,
             )
             .await;
@@ -279,6 +285,12 @@ impl App {
 
                 self.process_action(&action);
                 self.view.render_dirty = true;
+            }
+
+            // A scene update or a zone cycle can move the preview. A frame
+            // held back from this drain then belongs to the old target.
+            if self.sync_preview_target() {
+                latest_canvas_frame = None;
             }
 
             if let Some(snapshot) = latest_spectrum {
@@ -737,16 +749,7 @@ impl App {
                 }
             }
             Action::ActiveSceneUpdated(scene) => {
-                self.state.active_scene = Some(scene.clone());
-                // Drop the zone focus when its zone left the scene.
-                let focus_stale = self.state.focused_zone.as_deref().is_some_and(|id| {
-                    self.state
-                        .active_scene
-                        .as_deref()
-                        .is_none_or(|scene| scene_zone(scene, id).is_none())
-                });
-                if focus_stale {
-                    self.state.focused_zone = None;
+                if self.state.set_active_scene(scene.clone()) {
                     let _ = self.action_tx.send(Action::ZoneFocusChanged(None));
                 }
                 if let Some(picker) = self.scene_picker.as_mut() {
@@ -1000,8 +1003,11 @@ impl App {
                 };
             }
             Action::CycleZoneFocus { forward } => {
-                if let Some(follow_up) = self.cycle_zone_focus(*forward) {
-                    let _ = self.action_tx.send(follow_up);
+                if let Some(zone_name) = self.state.cycle_zone_focus(*forward) {
+                    self.notify(format!("Zone target: {zone_name}"), NotificationLevel::Info);
+                    let _ = self
+                        .action_tx
+                        .send(Action::ZoneFocusChanged(self.state.focused_zone.clone()));
                 }
             }
             Action::SetZoneEnabled { zone_id, enabled } => {
@@ -1290,31 +1296,17 @@ impl App {
         }
     }
 
-    /// Move the zone focus to the next/previous zone of the active scene.
-    /// Returns the broadcast action announcing the new focus.
-    fn cycle_zone_focus(&mut self, forward: bool) -> Option<Action> {
-        let (zone_id, zone_name) = {
-            let scene = self.state.active_scene.as_deref()?;
-            if scene.zones.len() < 2 {
-                return None;
-            }
-            let current = self
-                .state
-                .target_zone()
-                .and_then(|target| scene.zones.iter().position(|zone| zone.id == target.id))
-                .unwrap_or(0);
-            let count = scene.zones.len();
-            let next = if forward {
-                (current + 1) % count
-            } else {
-                (current + count - 1) % count
-            };
-            let zone = &scene.zones[next];
-            (zone.id.to_string(), zone.name.clone())
-        };
-        self.state.focused_zone = Some(zone_id);
-        self.notify(format!("Zone target: {zone_name}"), NotificationLevel::Info);
-        Some(Action::ZoneFocusChanged(self.state.focused_zone.clone()))
+    /// Publish the preview target when the scene or the zone target moved
+    /// it, returning whether it moved. The data bridge re-subscribes on the
+    /// change. Runs once per drained batch of actions, so no handler that
+    /// touches the scene or the focus has to remember it.
+    fn sync_preview_target(&self) -> bool {
+        let target = self.state.preview_target();
+        self.preview_target_tx.send_if_modified(|current| {
+            let changed = *current != target;
+            *current = target;
+            changed
+        })
     }
 
     fn active_effect_browser_simulator_id(&self) -> Option<&str> {
