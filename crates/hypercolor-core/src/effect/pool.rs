@@ -112,10 +112,18 @@ impl EffectPool {
 
     /// Construct every replacement renderer before changing the live pool.
     ///
+    /// Every layer resolves and validates before any renderer is built. A
+    /// scene that fails to admit retries every frame, so a layer that cannot
+    /// admit (an effect that is not registered, or a control its metadata
+    /// rejects) fails the attempt before the layers ahead of it build
+    /// renderers the failure would throw away, such as one Servo page load
+    /// per HTML layer.
+    ///
     /// # Errors
     ///
-    /// Returns an error if an effect is unavailable or its replacement renderer
-    /// cannot be initialized. The live pool is unchanged on failure.
+    /// Returns an error if an effect is unavailable, a layer's controls are
+    /// invalid, or a replacement renderer cannot be initialized. The live pool
+    /// is unchanged on failure.
     pub fn prepare_reconcile(
         &self,
         zones: &[Zone],
@@ -129,6 +137,8 @@ impl EffectPool {
         reused_keys.try_reserve(desired_layers.len())?;
         let mut control_updates = Vec::new();
         control_updates.try_reserve(desired_layers.len())?;
+        let mut replacements = Vec::new();
+        replacements.try_reserve(desired_layers.len())?;
 
         for (zone, layer) in desired_layers {
             let Some(source) = layer_effect_source(&layer) else {
@@ -142,8 +152,9 @@ impl EffectPool {
                 .display_target
                 .as_ref()
                 .and_then(|_| display_descriptors.get(&zone.id));
-            let needs_replacement = self.slots.get(&key).is_none_or(|slot| {
-                slot.needs_rebuild(
+            let revision = SetRevision::new(zone.layers_version);
+            let reusable = self.slots.get(&key).filter(|slot| {
+                !slot.needs_rebuild(
                     source.effect_id,
                     entry,
                     display_descriptor,
@@ -151,21 +162,7 @@ impl EffectPool {
                     zone.layout.canvas_height,
                 )
             });
-            if needs_replacement {
-                let slot = EffectSlot::build(
-                    entry,
-                    zone,
-                    source,
-                    self.asset_library.as_ref(),
-                    display_descriptor.cloned(),
-                )?;
-                slots.insert(key, slot);
-            } else {
-                let slot = self
-                    .slots
-                    .get(&key)
-                    .expect("replacement check requires an existing effect slot");
-                let revision = SetRevision::new(zone.layers_version);
+            if let Some(slot) = reusable {
                 if slot.controls.set_revision() != revision
                     || slot.control_bindings != source.control_bindings
                 {
@@ -175,7 +172,23 @@ impl EffectPool {
                     });
                 }
                 reused_keys.push(key);
+            } else {
+                // The slot built from these controls validates them the same
+                // way, so this check only moves the failure ahead of the build.
+                canonical_control_set(revision, &entry.metadata, &source)?;
+                replacements.push((key, zone, entry, source, display_descriptor));
             }
+        }
+
+        for (key, zone, entry, source, display_descriptor) in replacements {
+            let slot = EffectSlot::build(
+                entry,
+                zone,
+                source,
+                self.asset_library.as_ref(),
+                display_descriptor.cloned(),
+            )?;
+            slots.insert(key, slot);
         }
 
         Ok(PreparedEffectPoolReconcile {
@@ -493,6 +506,8 @@ impl EffectSlot {
         asset_library: Option<&Arc<RwLock<AssetLibrary>>>,
         display_descriptor: Option<DisplayDescriptor>,
     ) -> Result<Self> {
+        #[cfg(test)]
+        tests::SLOT_BUILDS.with(|builds| builds.set(builds.get() + 1));
         let mut renderer = create_renderer_for_metadata(&entry.metadata)?;
         if let Some(asset_library) = asset_library {
             renderer.bind_asset_library(Arc::clone(asset_library));
@@ -938,6 +953,12 @@ mod tests {
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
         StripDirection,
     };
+
+    thread_local! {
+        /// Effect slots this test thread built, renderer construction
+        /// included.
+        pub(super) static SLOT_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
 
     struct DestroySpyRenderer {
         destroyed: Arc<AtomicBool>,
@@ -1937,6 +1958,56 @@ mod tests {
 
         assert!(destroyed.load(Ordering::SeqCst));
         assert_eq!(pool.slots.len(), 1);
+    }
+
+    /// A scene whose later layer cannot admit fails before the layers ahead of
+    /// it build their renderers, attempt after attempt, so the per-frame retry
+    /// does no renderer construction. The retry still admits the scene once
+    /// the missing effect registers.
+    #[test]
+    fn failing_admission_builds_no_renderer_ahead_of_the_failure() {
+        let mut registry = registry_with_builtins();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let missing_id = EffectId::new(uuid::Uuid::from_u128(0xdead_beef));
+        let mut invalid_controls = render_zone(ZoneId::new(), solid_id);
+        let LayerSource::Effect { controls, .. } = &mut invalid_controls.layers[0].source else {
+            panic!("test layer should be an effect");
+        };
+        controls.insert("color".into(), ControlValue::Bool(true));
+        let pool = EffectPool::new();
+        let builds_before = SLOT_BUILDS.with(std::cell::Cell::get);
+
+        for failing in [render_zone(ZoneId::new(), missing_id), invalid_controls] {
+            let zones = [render_zone(ZoneId::new(), solid_id), failing];
+            for attempt in 0..5 {
+                assert!(
+                    pool.prepare_reconcile(&zones, &registry, &HashMap::new())
+                        .is_err(),
+                    "attempt {attempt} should fail to admit"
+                );
+            }
+        }
+        assert_eq!(
+            SLOT_BUILDS.with(std::cell::Cell::get),
+            builds_before,
+            "a failing admission built renderers it then threw away"
+        );
+
+        let mut late_entry = registry
+            .get(&solid_id)
+            .expect("solid color should be registered")
+            .clone();
+        late_entry.metadata.id = missing_id;
+        registry.register(late_entry);
+        let zones = [
+            render_zone(ZoneId::new(), solid_id),
+            render_zone(ZoneId::new(), missing_id),
+        ];
+        let prepared = pool
+            .prepare_reconcile(&zones, &registry, &HashMap::new())
+            .expect("the scene should admit once its effect registers");
+        assert_eq!(prepared.slots.len(), 2);
+        assert_eq!(SLOT_BUILDS.with(std::cell::Cell::get), builds_before + 2);
     }
 
     #[test]
