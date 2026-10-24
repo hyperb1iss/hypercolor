@@ -745,6 +745,16 @@ without it:
   frame sampled the overlap-baked crossfade. Held LEDs now keep their own
   provenance, and a fade that starts per zone stays in LED space until it
   ends.
+- A zone with layers but no outputs, which Studio creates before any device
+  joins it, blacked out every LED and the scene canvas. Its empty projection
+  failed projection admission, so the whole scene fell to the CPU scene
+  reconstruction, which reconcile had not admitted for a GPU-resident scene.
+  Every frame then failed, released every zone resource, re-reconciled, and
+  logged the same warning. Projection admission now takes any zone (§5.1),
+  and the CPU paths of a GPU-admitted scene admit their resources on demand
+  (§11.1). The frame composer logs a scene render failure when it starts or
+  changes, and once more when the scene renders again, rather than on every
+  frame it persists.
 - A fade into a scene-sized HTML effect sampled the crossfade too, because
   the GPU sampler cannot read an imported Servo texture. The composer now
   copies the imported frame into an immutable compositor snapshot for the

@@ -115,6 +115,9 @@ pub(crate) struct ZoneRuntime {
     zone_sampling_scratch: Vec<ZoneColors>,
     last_effect_error: Option<ZoneEffectError>,
     recovered_effect_error: Option<ZoneEffectError>,
+    /// Survives `clear_inactive_zones`, which every failed frame without a
+    /// retained frame runs.
+    scene_render_failure: effect_errors::SceneRenderFailureLog,
     layer_runtime: LayerRuntimeRegistry,
     combined_led_layout: Arc<SpatialLayout>,
     combined_led_spatial_engine: SpatialEngine,
@@ -235,6 +238,7 @@ impl ZoneRuntime {
             zone_sampling_scratch: Vec::new(),
             last_effect_error: None,
             recovered_effect_error: None,
+            scene_render_failure: effect_errors::SceneRenderFailureLog::default(),
             layer_runtime: LayerRuntimeRegistry::default(),
             combined_led_layout,
             combined_led_spatial_engine,

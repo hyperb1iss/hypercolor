@@ -26,6 +26,59 @@ impl ZoneRuntime {
     pub(crate) fn take_recovered_effect_error(&mut self) -> Option<ZoneEffectError> {
         self.recovered_effect_error.take()
     }
+
+    /// Count a frame whose scene zones failed to render, `retained` saying
+    /// whether it published the last good frame instead. Returns whether the
+    /// failure is new and should be logged: the first since the scene last
+    /// rendered, or one whose error or outcome differs from the one logged.
+    /// A failure that persists frame after frame logs once.
+    pub(crate) fn note_scene_render_failure(&mut self, error: &Error, retained: bool) -> bool {
+        self.scene_render_failure
+            .note(format!("{error:#}"), retained)
+    }
+
+    /// End the logged scene render failure, if one is open, returning how
+    /// many frames failed since it was logged.
+    pub(crate) fn clear_scene_render_failure(&mut self) -> Option<u64> {
+        self.scene_render_failure.clear()
+    }
+}
+
+/// The scene render failure last logged. It outlives the zone resources a
+/// failed frame releases, so a failure that persists across frames stays
+/// recognized as the same one.
+#[derive(Debug, Default)]
+pub(super) struct SceneRenderFailureLog {
+    logged: Option<LoggedSceneRenderFailure>,
+}
+
+#[derive(Debug)]
+struct LoggedSceneRenderFailure {
+    message: String,
+    retained: bool,
+    failed_frames: u64,
+}
+
+impl SceneRenderFailureLog {
+    fn note(&mut self, message: String, retained: bool) -> bool {
+        if let Some(logged) = &mut self.logged
+            && logged.message == message
+            && logged.retained == retained
+        {
+            logged.failed_frames = logged.failed_frames.saturating_add(1);
+            return false;
+        }
+        self.logged = Some(LoggedSceneRenderFailure {
+            message,
+            retained,
+            failed_frames: 1,
+        });
+        true
+    }
+
+    fn clear(&mut self) -> Option<u64> {
+        self.logged.take().map(|logged| logged.failed_frames)
+    }
 }
 
 pub(super) fn render_layer_effect_error(

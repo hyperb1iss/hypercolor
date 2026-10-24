@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 #[cfg(feature = "wgpu")]
 use tracing::debug;
-use tracing::warn;
+use tracing::{info, warn};
 
 use hypercolor_types::canvas::PublishedSurface;
 use hypercolor_types::event::{EffectDegradationState, HypercolorEvent};
@@ -210,6 +210,10 @@ impl ComposeContext<'_> {
 
     async fn compose_render_zone_frame_set(&mut self, stage_start: Instant) -> RenderStageStats {
         if self.scene_snapshot.scene_runtime.active_render_zone_count() == 0 {
+            // No zone renders, so no render failure is still in progress.
+            self.compose
+                .render_zone_runtime
+                .clear_scene_render_failure();
             return self.compose_idle_frame_set(stage_start);
         }
 
@@ -360,6 +364,14 @@ impl ComposeContext<'_> {
     ) -> RenderStageStats {
         match render_zone_result {
             Ok(render_zone_result) => {
+                if !effect_retained
+                    && let Some(failed_frames) = self
+                        .compose
+                        .render_zone_runtime
+                        .clear_scene_render_failure()
+                {
+                    info!(failed_frames, "active scene zones render again");
+                }
                 self.publish_effect_recovered();
                 self.publish_layer_runtime_events();
                 let scene_frame = render_zone_result.scene_frame.clone();
@@ -484,10 +496,16 @@ impl ComposeContext<'_> {
             }
             Err(error) => {
                 self.publish_layer_runtime_events();
-                let published_effect_error = self.publish_effect_error(&error);
+                self.publish_effect_error(&error);
                 if let Some(retained) = self.compose.render_zone_runtime.reuse_scene(dependency_key)
                 {
-                    warn!(%error, "failed to render active scene zones; retaining the last frame");
+                    if self
+                        .compose
+                        .render_zone_runtime
+                        .note_scene_render_failure(&error, true)
+                    {
+                        warn!(%error, "failed to render active scene zones; retaining the last frame");
+                    }
                     return self.finish_render_zone_frame_set(
                         Ok(retained),
                         producer_us,
@@ -498,7 +516,11 @@ impl ComposeContext<'_> {
                     );
                 }
                 self.compose.clear_inactive_zones();
-                if published_effect_error || error.downcast_ref::<ZoneEffectError>().is_none() {
+                if self
+                    .compose
+                    .render_zone_runtime
+                    .note_scene_render_failure(&error, false)
+                {
                     warn!(%error, "failed to render active scene zones without a retained frame; publishing black frame");
                 }
                 let source_frame =
@@ -679,16 +701,16 @@ impl ComposeContext<'_> {
         fallback.clone()
     }
 
-    fn publish_effect_error(&mut self, error: &anyhow::Error) -> bool {
+    fn publish_effect_error(&mut self, error: &anyhow::Error) {
         let Some(effect_error) = error.downcast_ref::<ZoneEffectError>() else {
-            return false;
+            return;
         };
         let Some(effect_error) = self
             .compose
             .render_zone_runtime
             .note_effect_error(effect_error)
         else {
-            return false;
+            return;
         };
 
         self.state.event_bus.publish(HypercolorEvent::EffectError {
@@ -697,7 +719,6 @@ impl ComposeContext<'_> {
             fallback: None,
         });
         self.publish_effect_degraded(&effect_error, EffectDegradationState::Failed, Some(error));
-        true
     }
 
     fn publish_effect_recovered(&mut self) {
