@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -40,8 +40,24 @@ test('release image builds reuse verified native Linux distributions before expo
     assert.match(body, /run: node scripts\/tests\/docker-smoke\.mjs hypercolor-container:/);
     assert.doesNotMatch(body, /packages: write|docker\/login-action|push: true/);
   }
-  assert.match(job('build-release'), /target: linux-amd64\n\s+os: ubuntu-latest/);
+  assert.match(job('build-release'), /target: linux-amd64\n\s+os: ubuntu-24\.04\n/);
   assert.match(job('build-release'), /target: linux-arm64\n\s+os: ubuntu-24\.04-arm/);
+});
+
+// The Docker image and the documented release runtime are Ubuntu 24.04
+// (glibc 2.39). A binary built on a newer image links a newer glibc and
+// cannot start there, so no workflow may float on ubuntu-latest.
+test('every Linux job runs on the Ubuntu 24.04 release baseline', () => {
+  const workflows = new URL('../../.github/workflows/', import.meta.url);
+  for (const file of readdirSync(workflows).filter((name) => name.endsWith('.yml'))) {
+    const text = readFileSync(new URL(file, workflows), 'utf8');
+    assert.doesNotMatch(text, /ubuntu-latest/, `${file} floats on ubuntu-latest`);
+    for (const [, image] of text.matchAll(/(?:runs-on|os): (ubuntu-[\w.-]+)/g)) {
+      assert.match(image, /^ubuntu-24\.04(-arm)?$/, `${file} runs on ${image}`);
+    }
+  }
+  const dockerfile = readFileSync(new URL('../../packaging/docker/Dockerfile', import.meta.url), 'utf8');
+  assert.match(dockerfile, /^FROM ubuntu:24\.04$/m);
 });
 
 test('PR and main Docker smoke reuses the Servo e2e stack without rebuilding Rust', () => {
