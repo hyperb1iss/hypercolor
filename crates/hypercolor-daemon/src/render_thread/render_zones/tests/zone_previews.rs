@@ -505,13 +505,16 @@ fn gpu_zone_previews_stage_only_selected_zones() {
         1,
         "deselecting a zone releases its preview lane"
     );
+    // Both zones change, so the selected zone must restage to show its new
+    // color while the deselected zone's change never reaches a preview.
     let staged_before = scene.stage_count();
-    scene.sources[1].fill = LayerFill::Solid(YELLOW);
+    scene.sources[0].fill = LayerFill::Solid(YELLOW);
+    scene.sources[1].fill = LayerFill::Solid(RED);
     let (_, previews) = scene.render_until(&case_only, |previews| {
-        previews.len() == 1 && previews[0].0 == case_id
+        preview_for(previews, case_id).is_some_and(|surface| surface.get_pixel(0, 0) == YELLOW)
     });
     assert!(preview_for(&previews, accents_id).is_none());
-    assert_quadrant_preview(&previews, scene.zone(0), SMALL_PREVIEW);
+    assert_solid_preview(&previews, scene.zone(0), SMALL_PREVIEW, YELLOW);
     assert!(
         scene.stage_count() > staged_before,
         "the selected zone keeps staging"
