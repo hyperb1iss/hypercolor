@@ -1168,14 +1168,19 @@ impl SparkleFlinger {
     /// The readback is encoded here and lands on a later
     /// [`Self::resolve_preview_surface`]; the surface returned now, if any,
     /// is one an earlier readback already finished.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the composition failed, rather than the black
+    /// stand-in the GPU fallback carries.
     #[cfg(feature = "wgpu")]
     pub(crate) fn materialize_scaled_surface(
         &mut self,
         frame: ProducerFrame,
         request: PreviewSurfaceRequest,
-    ) -> Option<PublishedSurface> {
+    ) -> Result<Option<PublishedSurface>> {
         if frame.width() == 0 || frame.height() == 0 || request.width == 0 || request.height == 0 {
-            return None;
+            return Ok(None);
         }
         let plan = CompositionPlan::single(
             frame.width(),
@@ -1183,8 +1188,7 @@ impl SparkleFlinger {
             CompositionLayer::replace(frame),
         )
         .with_cpu_replay_cacheable(false);
-        self.compose_for_outputs(plan, false, Some(request))
-            .preview_surface
+        scaled_readback(self.compose_for_outputs(plan, false, Some(request)))
     }
 
     /// Close this render frame's GPU work. The empty submission marks where
@@ -2068,6 +2072,18 @@ fn map_gpu_display_finalize_frame(frame: GpuDisplayFinalizeFrame) -> DisplayFina
         GpuDisplayFinalizeFrame::Rgba(surface) => DisplayFinalizeFrame::Rgba(surface),
         GpuDisplayFinalizeFrame::Yuv420(frame) => DisplayFinalizeFrame::Yuv420(frame),
     }
+}
+
+/// A scaled readback's surface, or the failure its composition hit. A
+/// failed GPU composition stands in a black preview for a smaller request,
+/// which must never pass for the frame.
+#[cfg(feature = "wgpu")]
+fn scaled_readback(composed: ComposedFrameSet) -> Result<Option<PublishedSurface>> {
+    anyhow::ensure!(
+        !composed.gpu_readback_failed,
+        "GPU composition failed before its readback"
+    );
+    Ok(composed.preview_surface)
 }
 
 #[cfg(feature = "wgpu")]

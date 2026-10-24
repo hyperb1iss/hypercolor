@@ -1753,10 +1753,14 @@ fn preview_surface(
         // outlives the pass unsubmitted.
         #[cfg(feature = "wgpu")]
         ProducerFrame::GpuTexture(_) => {
-            let ready = sparkleflinger.materialize_scaled_surface(frame, request);
+            let readback_failed =
+                |error: anyhow::Error| format!("preview readback failed: {error}");
+            let ready = sparkleflinger
+                .materialize_scaled_surface(frame, request)
+                .map_err(readback_failed)?;
             let resolved = sparkleflinger
                 .resolve_preview_surface()
-                .map_err(|error| format!("preview readback failed: {error}"))?;
+                .map_err(readback_failed)?;
             Ok(resolved.or(ready))
         }
         #[cfg(feature = "servo-gpu-import")]
