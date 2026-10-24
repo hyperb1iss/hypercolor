@@ -1074,6 +1074,7 @@ jobs:
           --lib --test render_thread_tests
           -E '(test(sparkleflinger::) or test(render_zones::tests::)
           or test(frame_composer::) or test(composition_planner::)
+          or test(failed_frame_discards_display_finalizations_in_flight)
           or binary(render_thread_tests))
           and not test(gpu_pipeline_warmup_fits_daemon_startup_budget)
           and not test(previews_hold_their_cadence)'
