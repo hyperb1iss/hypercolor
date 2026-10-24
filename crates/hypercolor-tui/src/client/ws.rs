@@ -13,7 +13,7 @@ use hypercolor_leptos_ext::ws::{
     PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG, PreviewCancelFrame, PreviewChunkReassembler,
     PreviewFrame, PreviewFrameChannel, PreviewPixelFormat, PreviewReassemblyLimits,
     PreviewStreamId, ReassembledPreviewPublication, SPECTRUM_FRAME_TAG, SpectrumFrame,
-    WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
+    WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame,
 };
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -33,8 +33,15 @@ pub struct SubscribedAck {
 pub enum WsMessage {
     /// Server hello with initial state.
     Hello(serde_json::Value),
-    /// A canvas frame (binary, type 0x03).
+    /// A scene canvas frame (binary, type 0x03).
     Canvas(CanvasFrame),
+    /// One zone's own frame from `zone_preview` (binary, type 0x08/0x0c),
+    /// named by its scene and zone.
+    ZonePreview {
+        scene_id: [u8; 16],
+        zone_id: [u8; 16],
+        frame: CanvasFrame,
+    },
     /// A spectrum snapshot (binary, type 0x02).
     Spectrum(SpectrumSnapshot),
     /// A JSON event from the events channel.
@@ -197,9 +204,10 @@ fn percent_encode(input: &str) -> String {
 
 /// Decode a binary WebSocket message via the shared wire codec.
 ///
-/// Canvas frames are decoded zero-copy (the pixel payload is a refcounted
-/// slice of the message). Preview channels the TUI doesn't render yet
-/// (screen/web-viewport/display/zone previews) are recognized and dropped.
+/// Canvas and zone frames are decoded zero-copy (the pixel payload is a
+/// refcounted slice of the message). Preview channels the TUI doesn't
+/// render yet (screen/web-viewport/display previews) are recognized and
+/// dropped.
 pub fn decode_binary(decoder: &mut WsBinaryDecoder, data: &Bytes) -> Option<WsMessage> {
     decoder.decode(data)
 }
@@ -277,33 +285,62 @@ impl WsBinaryDecoder {
 }
 
 fn decode_reassembled_preview(publication: &ReassembledPreviewPublication) -> Option<WsMessage> {
-    let frame = PreviewFrame::decode_bytes(&publication.encoded).ok()?;
-    let PreviewStreamId::Passive(channel) = &publication.metadata.stream else {
-        tracing::trace!("Ignoring non-passive chunked preview publication");
-        return None;
-    };
-    if frame.channel != *channel
-        || frame.frame_number != publication.metadata.frame_number
-        || frame.timestamp_ms != publication.metadata.timestamp_ms
-        || frame.width != publication.metadata.width
-        || frame.height != publication.metadata.height
-        || frame.format != publication.metadata.format
-    {
-        tracing::warn!("Rejected preview publication with mismatched chunk metadata");
-        return None;
+    let metadata = &publication.metadata;
+    match &metadata.stream {
+        PreviewStreamId::Passive(channel) => {
+            let frame = PreviewFrame::decode_bytes(&publication.encoded).ok()?;
+            if frame.channel != *channel
+                || frame.frame_number != metadata.frame_number
+                || frame.timestamp_ms != metadata.timestamp_ms
+                || frame.width != metadata.width
+                || frame.height != metadata.height
+                || frame.format != metadata.format
+            {
+                tracing::warn!("Rejected preview publication with mismatched chunk metadata");
+                return None;
+            }
+            decode_preview(&publication.encoded)
+        }
+        // The reassembler already held the frame to its stream's scene,
+        // zone, and shape before completing the publication.
+        PreviewStreamId::Zone { .. } => decode_zone_preview(&publication.encoded),
+        _ => {
+            tracing::trace!("Ignoring chunked preview publication the TUI does not render");
+            None
+        }
     }
-    decode_preview(&publication.encoded)
 }
 
 fn decode_unchunked_binary(data: &Bytes) -> Option<WsMessage> {
     match *data.first()? {
         SPECTRUM_FRAME_TAG => decode_spectrum(data),
-        ZONE_PREVIEW_FRAME_TAG | WIDE_ZONE_PREVIEW_FRAME_TAG => {
-            tracing::trace!("Ignoring zone preview frame (not consumed yet)");
-            None
-        }
+        ZONE_PREVIEW_FRAME_TAG | WIDE_ZONE_PREVIEW_FRAME_TAG => decode_zone_preview(data),
         _ => decode_preview(data),
     }
+}
+
+fn decode_zone_preview(data: &Bytes) -> Option<WsMessage> {
+    match ZonePreviewFrame::decode_bytes(data) {
+        Ok(frame) => zone_preview_message(frame),
+        Err(error) => {
+            tracing::trace!(%error, "Failed to decode binary zone preview frame");
+            None
+        }
+    }
+}
+
+fn zone_preview_message(frame: ZonePreviewFrame) -> Option<WsMessage> {
+    Some(WsMessage::ZonePreview {
+        scene_id: frame.scene_id,
+        zone_id: frame.zone_id,
+        frame: CanvasFrame {
+            frame_number: frame.frame_number,
+            timestamp_ms: frame.timestamp_ms,
+            width: frame.width,
+            height: frame.height,
+            pixels: rgb_pixels(frame.format, frame.payload)?,
+        },
+    })
 }
 
 fn decode_preview(data: &Bytes) -> Option<WsMessage> {
@@ -320,22 +357,26 @@ fn decode_preview(data: &Bytes) -> Option<WsMessage> {
         return None;
     }
 
-    let pixels = match frame.format {
-        PreviewPixelFormat::Rgb => frame.payload,
-        PreviewPixelFormat::Rgba => Bytes::from(rgba_to_rgb(&frame.payload)?),
-        PreviewPixelFormat::Jpeg => {
-            tracing::trace!("Ignoring JPEG canvas frame (TUI subscribes raw)");
-            return None;
-        }
-    };
-
     Some(WsMessage::Canvas(CanvasFrame {
         frame_number: frame.frame_number,
         timestamp_ms: frame.timestamp_ms,
         width: frame.width,
         height: frame.height,
-        pixels,
+        pixels: rgb_pixels(frame.format, frame.payload)?,
     }))
+}
+
+/// Normalize a preview payload to packed RGB. RGB passes through without
+/// a copy; JPEG is dropped, since the TUI subscribes raw.
+fn rgb_pixels(format: PreviewPixelFormat, payload: Bytes) -> Option<Bytes> {
+    match format {
+        PreviewPixelFormat::Rgb => Some(payload),
+        PreviewPixelFormat::Rgba => rgba_to_rgb(&payload).map(Bytes::from),
+        PreviewPixelFormat::Jpeg => {
+            tracing::trace!("Ignoring JPEG preview frame (TUI subscribes raw)");
+            None
+        }
+    }
 }
 
 fn rgba_to_rgb(pixel_data: &[u8]) -> Option<Vec<u8>> {

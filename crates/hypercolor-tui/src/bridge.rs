@@ -121,7 +121,7 @@ pub async fn spawn_data_bridge(
                                     }
                                 }
                             }
-                            Some(WsMessage::Canvas(frame)) => {
+                            Some(WsMessage::Canvas(frame) | WsMessage::ZonePreview { frame, .. }) => {
                                 let _ = action_tx.send(Action::CanvasFrameReceived(Arc::new(frame)));
                             }
                             Some(WsMessage::Spectrum(snapshot)) => {
