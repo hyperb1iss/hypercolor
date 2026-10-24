@@ -499,9 +499,9 @@ frames do. The zone ID must be a UUID, but one that names no zone of the active
 scene is admitted and renders nothing, the way a `zone_preview` selection naming
 it selects nothing, so a client can follow a zone a scene change is about to
 create. If the zone leaves the scene, the lane stops publishing until the zone
-returns or the client retargets. Moving a live lane to another zone is the same re-subscribe as a
-resize: the lane keeps its publication, and frames rendered for the old target
-are never sent.
+returns or the client retargets. Moving a live lane to another zone is the same
+re-subscribe as a resize: the lane keeps its publication, and frames rendered
+for the old target are never sent.
 
 Pointer and key batches name the live preview:
 
@@ -518,9 +518,12 @@ Pointer and key batches name the live preview:
 
 The daemon also accepts `interactive_preview_claim_authoritative` and
 `interactive_preview_release_authoritative` for explicitly routing that browser
-source to authoritative device output. Those messages and the subscription
-itself require a control-tier connection. Closing the socket releases previews,
-injected held state, and authoritative claims.
+source to authoritative device output. The device output renders the whole
+scene, so a claimed pointer reaches every zone's effects there, each reading the
+preview's normalized position against its own canvas, even when the lane
+follows one zone. Those messages and the subscription itself require a
+control-tier connection. Closing the socket releases previews, injected held
+state, and authoritative claims.
 
 Source-less `input_inject` messages are not accepted: every batch names the
 preview it drives.

@@ -1590,12 +1590,13 @@ fn interactive_preview_error(
     WsProtocolError::invalid_request(error.to_string())
 }
 
-/// Address a refused subscribe to the one interactive preview it named.
+/// Address a refused subscribe or unsubscribe to the one interactive
+/// preview it named.
 ///
-/// A client tracks each preview's open and retarget requests by preview
-/// id, so a refusal it cannot attribute leaves that preview waiting on an
-/// answer that never comes. A subscribe naming exactly one interactive
-/// preview was refused as a whole, that preview's request included, so the
+/// A client tracks each preview's open, retarget, and close requests by
+/// preview id, so a refusal it cannot attribute leaves that preview waiting
+/// on an answer that never comes. A request naming exactly one interactive
+/// preview was refused as a whole, that preview's part included, so the
 /// refusal is its answer. An error that already names a preview, or a
 /// subscribe naming several, is left as it is.
 pub(super) fn address_refusal_to_interactive_preview(
@@ -1948,7 +1949,8 @@ async fn handle_client_message(
             let projected_demand = match input_demand_leases.project(&next_subscriptions) {
                 Ok(projected) => projected,
                 Err(error) => {
-                    let _ = send_json(socket, &error.into_message()).await;
+                    let refused = address_refusal_to_interactive_preview(error, &selections);
+                    let _ = send_json(socket, &refused.into_message()).await;
                     return;
                 }
             };
