@@ -933,11 +933,21 @@ impl PreviewLane {
         let resolved = catalog
             .resolve(context.spec.target)
             .ok_or_else(|| "preview target disappeared during open".to_owned())?;
-        let (sparkleflinger, backend) = create_preview_compositor(&context.acceleration);
-        let zone_runtime = preview_zone_runtime(
-            resolved.canvas_width,
-            resolved.canvas_height,
+        // Opening builds the same resources a retarget does, canvas size
+        // included: a GPU compositor left at its construction size never
+        // materializes a frame.
+        let PreviewLaneCandidate {
+            zone_runtime,
+            sparkleflinger,
+            resources,
+            backend,
+            zones,
+            display_descriptors,
+        } = PreviewLaneCandidate::new(
+            &resolved,
             context.asset_library.clone(),
+            &context.acceleration,
+            context.resources,
         )?;
         let current_demand = preview_input_demand(&resolved, context.spec.fps);
         let demand = context
@@ -961,7 +971,7 @@ impl PreviewLane {
                 acceleration: context.acceleration,
                 zone_runtime,
                 sparkleflinger,
-                resources: context.resources,
+                resources,
                 input,
                 demand,
                 current_demand,
@@ -974,8 +984,8 @@ impl PreviewLane {
                 last_tick: now,
                 retained_frame: None,
                 showing_dark: false,
-                zones: Vec::new(),
-                display_descriptors: HashMap::new(),
+                zones,
+                display_descriptors,
             },
             backend,
         ))
@@ -1709,16 +1719,20 @@ fn preview_surface(
                 .preview_only_frame(frame, request)
                 .preview_surface
         }
+        // Materializing encodes a readback, and the readback only lands once
+        // its work is submitted and its map resolves, the step the render
+        // thread takes after every composition. Without it a GPU lane never
+        // publishes, and dropping the lane's compositor on a retarget drops a
+        // frame whose readback was never submitted.
         #[cfg(feature = "wgpu")]
-        ProducerFrame::GpuTexture(_) => {
-            sparkleflinger
-                .materialize_output_surface(frame)
-                .and_then(|surface| {
-                    sparkleflinger
-                        .preview_only_frame(ProducerFrame::Surface(surface), request)
-                        .preview_surface
-                })
-        }
+        ProducerFrame::GpuTexture(_) => sparkleflinger
+            .materialize_output_surface(frame)
+            .or_else(|| sparkleflinger.resolve_preview_surface().ok().flatten())
+            .and_then(|surface| {
+                sparkleflinger
+                    .preview_only_frame(ProducerFrame::Surface(surface), request)
+                    .preview_surface
+            }),
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => None,
     }

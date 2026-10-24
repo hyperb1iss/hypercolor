@@ -53,6 +53,19 @@ impl PreviewTestRig {
     }
 
     async fn with_zones(zones: Vec<Zone>, resource_capacity_bytes: u64) -> Self {
+        Self::with_acceleration(
+            zones,
+            resource_capacity_bytes,
+            InteractivePreviewAcceleration::cpu(),
+        )
+        .await
+    }
+
+    async fn with_acceleration(
+        zones: Vec<Zone>,
+        resource_capacity_bytes: u64,
+        acceleration: InteractivePreviewAcceleration,
+    ) -> Self {
         let browser_handle = BrowserInputHandle::new();
         let routing = InteractionRoutingControl::new(
             browser_handle.registry(),
@@ -63,7 +76,7 @@ impl PreviewTestRig {
         let demands = InputPublicationDemandHandle::default();
         let input_manager = InputManager::new();
         let event_bus = Arc::new(HypercolorBus::new());
-        let executor = InteractivePreviewExecutor::start_cpu(InteractivePreviewContext {
+        let executor = InteractivePreviewExecutor::start(InteractivePreviewContext {
             scene_manager: crate::domain::scene::SceneService::in_memory(
                 scene_manager(zones),
                 Arc::clone(&event_bus),
@@ -77,7 +90,7 @@ impl PreviewTestRig {
             screen_publications: input_manager.screen_publication_hub(),
             canvas_width: 8,
             canvas_height: 6,
-            acceleration: InteractivePreviewAcceleration::cpu(),
+            acceleration,
             resource_capacity_bytes,
         })
         .await
@@ -1074,4 +1087,62 @@ fn injected_pointer_reaches_only_the_followed_zone_at_the_clients_coordinates() 
         (0.25, 0.75),
         "the zone's effects read the pointer in the preview's own normalized space"
     );
+}
+
+#[cfg(feature = "wgpu")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gpu_zone_lane_publishes_from_open_and_through_retargets() {
+    let render_device =
+        match crate::render_thread::gpu_device::GpuRenderDevice::new_required_for_test(
+            "interactive preview GPU test",
+        ) {
+            Ok(device) => device,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_none(),
+                    "required real-GPU test environment is unavailable: {error:#}"
+                );
+                eprintln!(
+                    "real-GPU test skipped because no compatible adapter is available: {error:#}"
+                );
+                return;
+            }
+        };
+    let primary = color_zone([1.0, 0.0, 0.0, 1.0]);
+    let side = side_zone([0.0, 0.0, 1.0, 1.0], 8, 6);
+    let (primary_id, side_id) = (primary.id, side.id);
+    let rig = PreviewTestRig::with_acceleration(
+        vec![primary, side],
+        64 * 1024 * 1024,
+        InteractivePreviewAcceleration::from_authoritative(
+            hypercolor_types::config::RenderAccelerationMode::Gpu,
+            Some(render_device),
+        ),
+    )
+    .await;
+    let attachment = rig.attach(1, "gpu");
+    let lane = rig
+        .executor
+        .open(&attachment, zone_spec(side_id, 4, 3))
+        .await
+        .expect("a GPU zone lane should open");
+    assert_eq!(
+        lane.snapshot().backend,
+        super::InteractivePreviewBackend::Gpu
+    );
+    let mut receiver = lane.frame_receiver();
+    let opened = next_frame(&mut receiver).await;
+    assert!(
+        every_pixel_is(&opened, BLUE),
+        "a GPU lane publishes from its first frames, before any retarget"
+    );
+
+    for (zone, color) in [(primary_id, RED), (side_id, BLUE)] {
+        let before = lane.snapshot().spec_generation;
+        lane.resize_or_retarget(zone_spec(zone, 4, 3))
+            .await
+            .expect("a GPU lane retargets in place");
+        let frame = next_frame_where(&mut receiver, |frame| frame.spec_generation > before).await;
+        assert!(every_pixel_is(&frame, color));
+    }
 }
