@@ -41,7 +41,7 @@
       "description": "Per-display JPEG preview frame stream, keyed by device."
     },
     "interactive_preview": {
-      "description": "Interactive scene preview lane keyed by a client-chosen preview id. Subscribing opens the lane; unsubscribing closes it."
+      "description": "Interactive preview lane keyed by a client-chosen preview id, over the active scene or, with config.target {\"zone\": id}, one of its zones. Subscribing opens the lane; unsubscribing closes it."
     },
     "input_events": {
       "payload_schema": "timed_input_event_v1",

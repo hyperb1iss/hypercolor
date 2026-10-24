@@ -1179,11 +1179,14 @@ impl BrowserPreviewSession {
 
         let mut applied: Vec<AppliedPreviewChange> = Vec::new();
         for (preview_id, config) in &desired {
-            let previous = self.previews.get(preview_id).map(|binding| binding.config);
-            if previous == Some(*config) {
+            let previous = self
+                .previews
+                .get(preview_id)
+                .map(|binding| binding.config.clone());
+            if previous.as_ref() == Some(config) {
                 continue;
             }
-            if let Err(error) = self.open(preview_id.clone(), *config).await {
+            if let Err(error) = self.open(preview_id.clone(), config.clone()).await {
                 self.undo(applied).await;
                 self.resume_relays(&changed_existing);
                 return Err(error);
@@ -1280,10 +1283,11 @@ impl BrowserPreviewSession {
         config: InteractivePreviewConfig,
     ) -> Result<(), WsProtocolError> {
         validate_interactive_preview_shape(config.width, config.height, config.format)?;
+        let spec = runtime_preview_spec(&config)?;
         if let Some(binding) = self.previews.get_mut(&preview_id) {
             binding
                 .lane
-                .resize_or_retarget(runtime_preview_spec(config))
+                .resize_or_retarget(spec)
                 .await
                 .map_err(interactive_preview_error)?;
             binding.config = config;
@@ -1302,10 +1306,7 @@ impl BrowserPreviewSession {
             .browser_input
             .attach(key)
             .map_err(browser_registry_error)?;
-        let lane = match executor
-            .open(&attachment, runtime_preview_spec(config))
-            .await
-        {
+        let lane = match executor.open(&attachment, spec).await {
             Ok(lane) => lane,
             Err(error) => {
                 self.interaction_routing.close_preview(&attachment);
@@ -1390,7 +1391,20 @@ impl BrowserPreviewSession {
     /// The shape one open preview is currently rendering at.
     #[cfg(test)]
     pub(super) fn preview_config(&self, preview_id: &str) -> Option<InteractivePreviewConfig> {
-        self.previews.get(preview_id).map(|binding| binding.config)
+        self.previews
+            .get(preview_id)
+            .map(|binding| binding.config.clone())
+    }
+
+    /// What one open preview's lane is rendering right now.
+    #[cfg(test)]
+    pub(super) fn preview_lane_target(
+        &self,
+        preview_id: &str,
+    ) -> Option<RuntimeInteractivePreviewTarget> {
+        self.previews
+            .get(preview_id)
+            .map(|binding| binding.lane.snapshot().spec.target)
     }
 
     /// This connection's server-assigned identity. Interactive preview
@@ -1534,11 +1548,11 @@ async fn finish_preview_binding_cleanup(binding: BrowserPreviewBinding) {
     let _ = lane.close_and_wait().await;
 }
 
-const fn runtime_preview_spec(config: InteractivePreviewConfig) -> RuntimeInteractivePreviewSpec {
-    RuntimeInteractivePreviewSpec {
-        target: match config.target {
-            InteractivePreviewTarget::ActiveScene => RuntimeInteractivePreviewTarget::ActiveScene,
-        },
+fn runtime_preview_spec(
+    config: &InteractivePreviewConfig,
+) -> Result<RuntimeInteractivePreviewSpec, WsProtocolError> {
+    Ok(RuntimeInteractivePreviewSpec {
+        target: runtime_preview_target(&config.target)?,
         fps: config.fps,
         width: config.width,
         height: config.height,
@@ -1547,6 +1561,26 @@ const fn runtime_preview_spec(config: InteractivePreviewConfig) -> RuntimeIntera
             CanvasFormat::Rgba => PreviewPixelFormat::Rgba,
             CanvasFormat::Jpeg => PreviewPixelFormat::Jpeg,
         },
+    })
+}
+
+/// Resolve a wire target into the lane's. The wire already holds a zone
+/// target to a UUID; whether the active scene holds that zone is the
+/// lane's question, and one it does not hold renders nothing until it
+/// appears.
+fn runtime_preview_target(
+    target: &InteractivePreviewTarget,
+) -> Result<RuntimeInteractivePreviewTarget, WsProtocolError> {
+    match target {
+        InteractivePreviewTarget::ActiveScene => Ok(RuntimeInteractivePreviewTarget::ActiveScene),
+        InteractivePreviewTarget::Zone(zone_id) => Uuid::parse_str(zone_id)
+            .map(|zone_id| RuntimeInteractivePreviewTarget::Zone(ZoneId(zone_id)))
+            .map_err(|_| {
+                WsProtocolError::invalid_config(
+                    format!("config.{}.target", TopicId::InteractivePreview.as_str()),
+                    "zone must be a zone id (a UUID)",
+                )
+            }),
     }
 }
 
@@ -1554,6 +1588,33 @@ fn interactive_preview_error(
     error: crate::interactive_preview::InteractivePreviewError,
 ) -> WsProtocolError {
     WsProtocolError::invalid_request(error.to_string())
+}
+
+/// Address a refused subscribe or unsubscribe to the one interactive
+/// preview it named.
+///
+/// A client tracks each preview's open, retarget, and close requests by
+/// preview id, so a refusal it cannot attribute leaves that preview waiting
+/// on an answer that never comes. A request naming exactly one interactive
+/// preview was refused as a whole, that preview's part included, so the
+/// refusal is its answer. An error that already names a preview, or a
+/// subscribe naming several, is left as it is.
+pub(super) fn address_refusal_to_interactive_preview(
+    error: WsProtocolError,
+    selections: &[TopicSelection],
+) -> WsProtocolError {
+    let already_addressed = error
+        .details
+        .as_ref()
+        .is_some_and(|details| details.get("preview_id").is_some());
+    let mut previews = selections
+        .iter()
+        .filter(|selection| selection.topic == TopicId::InteractivePreview)
+        .filter_map(|selection| selection.key.as_deref());
+    match (previews.next(), previews.next()) {
+        (Some(preview_id), None) if !already_addressed => scope_preview_error(error, preview_id),
+        _ => error,
+    }
 }
 
 fn scope_preview_error(mut error: WsProtocolError, preview_id: &str) -> WsProtocolError {
@@ -1838,15 +1899,18 @@ async fn handle_client_message(
                 .iter()
                 .map(|request| request.selection.clone())
                 .collect();
+            let refused = |error: WsProtocolError| {
+                address_refusal_to_interactive_preview(error, &selections).into_message()
+            };
             if let Err(error) = authorize_subscription_topics(auth_context, &selections) {
-                let _ = send_json(socket, &error.into_message()).await;
+                let _ = send_json(socket, &refused(error)).await;
                 return;
             }
 
             let next_subscriptions = match subscriptions.subscribe(&requests) {
                 Ok(next) => next,
                 Err(error) => {
-                    let _ = send_json(socket, &error.into_message()).await;
+                    let _ = send_json(socket, &refused(error)).await;
                     return;
                 }
             };
@@ -1854,13 +1918,13 @@ async fn handle_client_message(
             let projected_demand = match input_demand_leases.project(&next_subscriptions) {
                 Ok(projected) => projected,
                 Err(error) => {
-                    let _ = send_json(socket, &error.into_message()).await;
+                    let _ = send_json(socket, &refused(error)).await;
                     return;
                 }
             };
 
             if let Err(error) = browser_previews.reconcile(&next_subscriptions).await {
-                let _ = send_json(socket, &error.into_message()).await;
+                let _ = send_json(socket, &refused(error)).await;
                 return;
             }
             input_demand_leases.commit(projected_demand);
@@ -1885,7 +1949,8 @@ async fn handle_client_message(
             let projected_demand = match input_demand_leases.project(&next_subscriptions) {
                 Ok(projected) => projected,
                 Err(error) => {
-                    let _ = send_json(socket, &error.into_message()).await;
+                    let refused = address_refusal_to_interactive_preview(error, &selections);
+                    let _ = send_json(socket, &refused.into_message()).await;
                     return;
                 }
             };

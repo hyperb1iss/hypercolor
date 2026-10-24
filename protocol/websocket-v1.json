@@ -102,7 +102,7 @@
       "name": "interactive_preview",
       "kind": "binary",
       "default_fps": 30,
-      "description": "Interactive scene preview lane keyed by a client-chosen preview id. Subscribing opens the lane; unsubscribing closes it.",
+      "description": "Interactive preview lane keyed by a client-chosen preview id, over the active scene or, with config.target {\"zone\": id}, one of its zones. Subscribing opens the lane; unsubscribing closes it.",
       "requires_control": true,
       "key": "preview_id",
       "backpressure": "latest_wins"
@@ -1266,6 +1266,11 @@
         "values": [
           "active_scene"
         ],
+        "variants": {
+          "zone": {
+            "format": "uuid"
+          }
+        },
         "default": "active_scene"
       },
       "fps": {

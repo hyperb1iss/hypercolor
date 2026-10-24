@@ -939,18 +939,20 @@ class HypercolorEventStream:
         width: int,
         height: int,
         format: str = "jpeg",
-        target: str = "active_scene",
+        target: str | Mapping[str, str] = "active_scene",
     ) -> SubscribedMessage:
         """Open or reconfigure one interactive preview.
 
         Opening is a keyed subscribe: the preview id is the key, and the
         daemon opens the render lane when the subscription is admitted.
+        ``target`` is ``"active_scene"``, or ``{"zone": zone_id}`` to render
+        one zone of the active scene on that zone's own canvas.
         """
         return await self.subscribe(
             "interactive_preview",
             key=preview_id,
             config={
-                "target": target,
+                "target": target if isinstance(target, str) else dict(target),
                 "fps": fps,
                 "width": width,
                 "height": height,

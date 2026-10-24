@@ -13,7 +13,7 @@ use super::{
     PreviewSurfaceRequest, SparkleFlinger,
 };
 #[cfg(feature = "wgpu")]
-use super::{gpu_frame_without_cpu_fallback, new_preview_surface_pool};
+use super::{gpu_frame_without_cpu_fallback, new_preview_surface_pool, scaled_readback};
 use crate::render_thread::producer_queue::ProducerFrame;
 
 #[test]
@@ -959,3 +959,24 @@ fn sparkleflinger_does_not_reuse_cached_composition_after_canvas_mutation() {
 
 #[cfg(feature = "wgpu")]
 mod gpu;
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn a_scaled_readback_of_a_failed_gpu_composition_is_an_error() {
+    let mut preview_surface_pool = new_preview_surface_pool();
+    let request = PreviewSurfaceRequest {
+        width: 2,
+        height: 2,
+    };
+    let failed = gpu_frame_without_cpu_fallback(4, 4, Some(request), &mut preview_surface_pool);
+    assert!(
+        failed.preview_surface.is_some(),
+        "the fallback carries a black stand-in for a smaller request"
+    );
+    assert!(scaled_readback(failed).is_err());
+
+    let mut landed = gpu_frame_without_cpu_fallback(4, 4, None, &mut preview_surface_pool);
+    landed.gpu_readback_failed = false;
+    landed.preview_surface = Some(PublishedSurface::from_owned_canvas(Canvas::new(2, 2), 0, 0));
+    assert!(matches!(scaled_readback(landed), Ok(Some(_))));
+}

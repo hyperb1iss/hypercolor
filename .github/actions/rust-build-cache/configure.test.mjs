@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  cacheKeys, cacheWriter, compilerEnvironment, configure, probeRemoteCache, remoteCompilerCache,
+  cacheKeys, cacheWriter, compilerEnvironment, configure, probeRemoteCache, remoteCompilerCache, runnerKey,
 } from './configure.mjs';
 
 const base = {
@@ -149,6 +149,17 @@ const r2 = {
   SCCACHE_R2_BUCKET: 'hypercolor-oss-sccache', SCCACHE_R2_ENDPOINT: 'https://account.r2.cloudflarestorage.com',
   RUNNER_OS: 'Linux', RUNNER_ARCH: 'X64',
 };
+
+test('Linux caches never cross runner images', () => {
+  assert.equal(runnerKey({ RUNNER_OS: 'Linux', RUNNER_ARCH: 'X64', ImageOS: 'ubuntu24' }), 'Linux-X64-ubuntu24');
+  assert.notEqual(runnerKey({ RUNNER_OS: 'Linux', RUNNER_ARCH: 'X64', ImageOS: 'ubuntu26' }),
+    runnerKey({ RUNNER_OS: 'Linux', RUNNER_ARCH: 'X64', ImageOS: 'ubuntu24' }));
+  assert.equal(runnerKey({ RUNNER_OS: 'macOS', RUNNER_ARCH: 'ARM64', ImageOS: 'macos26' }), 'macOS-ARM64');
+  assert.equal(runnerKey({ RUNNER_OS: 'Windows', RUNNER_ARCH: 'X64', ImageOS: 'win25' }), 'Windows-X64');
+  assert.equal(runnerKey({ RUNNER_OS: 'Linux', RUNNER_ARCH: 'X64' }), 'Linux-X64');
+  assert.equal(remoteCompilerCache({ ...r2, ImageOS: 'ubuntu24' }, true).values.SCCACHE_S3_KEY_PREFIX,
+    'sccache/linux-x64-ubuntu24');
+});
 
 test('only the trusted cache writer writes the shared compiler cache; everyone else reads', () => {
   const writer = remoteCompilerCache(r2, true).values;

@@ -17,7 +17,9 @@ use super::frame_metrics::{ActiveFrameMetricsInput, summarize_active_frame};
 use super::frame_policy::{FrameExecution, FramePolicy, SkipDecision};
 use super::frame_reporting::{FrameCompletionReport, report_active_frame_completion};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
-use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
+use super::frame_throttle::{
+    IdleGate, maybe_idle_throttle, maybe_sleep_throttle, static_zone_preview_frame,
+};
 use super::output_gate::{GateDecision, ProducerSignature};
 use super::pipeline_runtime::PreparedCanvasResize;
 use super::pipeline_runtime::{
@@ -37,6 +39,7 @@ use super::zone_previews::{
 };
 use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
+use crate::output_power::OutputOverride;
 use crate::performance::OutputFrameSourceKind;
 use crate::scene_transactions::{
     LayoutActivationDecision, LayoutPublicationMode, LayoutTransactionRejection, SceneTransaction,
@@ -438,7 +441,7 @@ pub(crate) async fn execute_frame(
         render.sparkleflinger.release_native_screen_caches();
     }
 
-    if let Some(frame) = maybe_idle_throttle(
+    let entering_idle = match maybe_idle_throttle(
         state,
         &mut runtime.frame_policy,
         scene_snapshot.effect_demand.effect_running || frame_loop.has_active_input_demand(),
@@ -447,8 +450,17 @@ pub(crate) async fn execute_frame(
     )
     .await
     {
-        render.sparkleflinger.end_gpu_frame();
-        return frame;
+        IdleGate::Throttled(frame) => {
+            render.sparkleflinger.end_gpu_frame();
+            return frame;
+        }
+        IdleGate::EnterIdle => true,
+        IdleGate::Render => false,
+    };
+    if entering_idle {
+        // The idle loop publishes nothing after this frame, so a preview the
+        // cadence skipped here would keep the last live picture for good.
+        frame_loop.publication_cadence.make_scene_previews_due();
     }
 
     let input_start = Instant::now();
@@ -770,6 +782,8 @@ pub(crate) async fn execute_frame(
             )
         },
     );
+    #[cfg(feature = "persistence-test-hooks")]
+    state.preview_runtime.pass_frame_publication_hold().await;
     let publish_stats = publish_frame_updates(
         state,
         &mut frame_loop.publication_cadence,
@@ -803,6 +817,26 @@ pub(crate) async fn execute_frame(
             },
         },
     );
+    if entering_idle && !reuses_published_frame {
+        // Idle renders nothing, so every zone shows dark. The zone previews
+        // take that here the way a hold's frame reaches them: every zone,
+        // outside the cadence, so a subscriber that arrives or retargets
+        // while idle still finds its zone dark.
+        let dark_surface = render.output_artifacts.static_surface(
+            state.canvas_dims.width(),
+            state.canvas_dims.height(),
+            [0, 0, 0],
+        );
+        state.preview_runtime.publish_static_zone_previews(
+            scene_snapshot.scene_runtime.active_scene_id,
+            &scene_snapshot.scene_runtime.resolved_zones,
+            &static_zone_preview_frame(
+                &dark_surface,
+                frame_num_u32,
+                u64_to_u32(scene_snapshot.elapsed_ms),
+            ),
+        );
+    }
     let latest_output_power = *state.power_state.borrow();
     if should_switch_to_late_sleep_frame(output_power, latest_output_power) {
         scene_snapshot.output_power = latest_output_power;
@@ -1077,19 +1111,29 @@ async fn force_static_sleep_snapshot(
 
 /// Whether a frame admitted while awake should end as a static sleep frame.
 ///
-/// Only the static off behavior can be satisfied by writing one off-color
-/// frame here. A release sleep has to clear the published zones and stop
-/// driving devices, which the sleep throttle path owns; taking the static
-/// shortcut for it would latch the sleep frame as pushed with populated
-/// zones still on the bus, so release lets this frame finish and the next
-/// frame runs the release path.
+/// A hold changes the power state before it publishes its frame, so run
+/// after a frame's own publication this check keeps the hold's frame last:
+/// either it sees the hold and the frame publishes the hold's frame again
+/// itself, or it reads the state before the hold began, and the hold's
+/// publication lands after this frame's.
+///
+/// The static off behavior and a stop both hold one off-color frame, which
+/// writing it here satisfies. A stop reports the release behavior because
+/// it releases network devices, but the output domain still holds a static
+/// black frame and pauses the loop, so no later frame would replace this
+/// one. A release sleep has to clear the published zones and stop driving
+/// devices, which the sleep throttle path owns; taking the static shortcut
+/// for it would latch the sleep frame as pushed with populated zones still
+/// on the bus, so release lets this frame finish and the next frame runs
+/// the release path.
 fn should_switch_to_late_sleep_frame(
     frame_output_power: crate::output_power::OutputPowerState,
     latest_output_power: crate::output_power::OutputPowerState,
 ) -> bool {
     !frame_output_power.sleeping()
         && latest_output_power.sleeping()
-        && latest_output_power.effective_off_output_behavior() == OffOutputBehavior::Static
+        && (latest_output_power.effective_off_output_behavior() == OffOutputBehavior::Static
+            || latest_output_power.output_override == OutputOverride::Stopped)
 }
 
 const fn output_frame_source_kind(source: OutputFrameSource) -> OutputFrameSourceKind {
@@ -1102,7 +1146,7 @@ const fn output_frame_source_kind(source: OutputFrameSource) -> OutputFrameSourc
 
 #[cfg(test)]
 mod tests {
-    use crate::output_power::OutputPowerState;
+    use crate::output_power::{OutputOverride, OutputPowerState};
     use crate::performance::CompositorBackendKind;
     use crate::render_thread::frame_composer::RenderStageStats;
     use crate::render_thread::frame_sampling::LedSamplingStrategy;
@@ -1234,6 +1278,18 @@ mod tests {
         assert!(!super::should_switch_to_late_sleep_frame(
             releasing, releasing
         ));
+    }
+
+    #[test]
+    fn late_sleep_frame_takes_over_when_output_stops() {
+        let running = OutputPowerState::default();
+        let stopped = OutputPowerState {
+            output_override: OutputOverride::Stopped,
+            ..OutputPowerState::default()
+        };
+
+        assert!(super::should_switch_to_late_sleep_frame(running, stopped));
+        assert!(!super::should_switch_to_late_sleep_frame(stopped, stopped));
     }
 
     fn sample_layout(zone_ids: &[&str]) -> SpatialLayout {

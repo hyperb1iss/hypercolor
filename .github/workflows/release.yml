@@ -39,7 +39,7 @@ env:
 jobs:
   release:
     name: Cut Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       commit: ${{ steps.commit.outputs.commit }}
@@ -333,7 +333,7 @@ jobs:
     name: Dispatch Build and Publish
     needs: release
     if: inputs.dry_run == false
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
