@@ -18,33 +18,47 @@ use super::scene_snapshot::FrameSceneSnapshot;
 use super::{RenderThreadState, micros_between, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 
+/// What the idle gate decided for a frame.
+pub(crate) enum IdleGate {
+    /// Something renders, so the frame runs as usual.
+    Render,
+    /// Nothing renders, and the loop idles after this frame unless it held
+    /// the previous frame's outputs, in which case the next frame enters
+    /// again. Nothing publishes once the loop idles, so these frames'
+    /// previews cannot wait for the cadence.
+    EnterIdle,
+    /// The loop is idle, and the frame ends here.
+    Throttled(FrameExecution),
+}
+
 pub(crate) async fn maybe_idle_throttle(
     state: &RenderThreadState,
     frame_policy: &mut FramePolicy,
     effect_running: bool,
     screen_capture_active: bool,
     throttle: &mut ThrottleState,
-) -> Option<FrameExecution> {
+) -> IdleGate {
     let should_idle_throttle =
         frame_policy.should_idle_throttle(effect_running, screen_capture_active);
 
     if effect_running {
         throttle.note_effect_running();
-        return None;
+        return IdleGate::Render;
     }
 
-    if should_idle_throttle && !throttle.idle_black_pushed() {
+    if !should_idle_throttle {
+        return IdleGate::Render;
+    }
+
+    if !throttle.idle_black_pushed() {
         debug!(
             "No active effect or capture input; layout changes render black until an effect or input source starts"
         );
+        return IdleGate::EnterIdle;
     }
 
-    if should_idle_throttle && throttle.idle_black_pushed() {
-        let mut render_loop = state.render_loop.write().await;
-        return Some(frame_policy.idle_throttle_execution(&mut render_loop));
-    }
-
-    None
+    let mut render_loop = state.render_loop.write().await;
+    IdleGate::Throttled(frame_policy.idle_throttle_execution(&mut render_loop))
 }
 
 #[allow(
@@ -245,9 +259,9 @@ pub(crate) async fn maybe_sleep_throttle(
     Some(frame_policy.sleep_throttle_execution(&mut render_loop))
 }
 
-/// The sleep frame as a zone preview: the same static surface the outputs
+/// A static frame as a zone preview: the same static surface the outputs
 /// and the scene canvas get, stamped with this frame's metadata.
-fn static_zone_preview_frame(
+pub(super) fn static_zone_preview_frame(
     surface: &PublishedSurface,
     frame_number: u32,
     timestamp_ms: u32,

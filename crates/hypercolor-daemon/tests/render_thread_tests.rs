@@ -4175,6 +4175,146 @@ async fn a_followed_zone_that_stops_rendering_previews_dark() {
     rt.shutdown().await.expect("shutdown");
 }
 
+fn canvas_frame_is_dark(frame: &CanvasFrame) -> bool {
+    frame.width > 0
+        && frame
+            .rgba_bytes()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[..3] == [0, 0, 0])
+}
+
+async fn wait_for_preview_where<F>(
+    rx: &mut hypercolor_daemon::preview_runtime::PreviewFrameReceiver,
+    description: &str,
+    predicate: F,
+) where
+    F: Fn(&CanvasFrame) -> bool,
+{
+    tokio::time::timeout(WAIT_DEADLINE, async {
+        loop {
+            if predicate(&rx.borrow_and_update()) {
+                break;
+            }
+            rx.changed()
+                .await
+                .expect("preview stream should stay open");
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        let frame = rx.borrow();
+        panic!(
+            "timed out waiting for {description}; the stream holds frame {} ({}x{}, first pixel {:?})",
+            frame.frame_number,
+            frame.width,
+            frame.height,
+            frame.rgba_bytes().get(..4),
+        )
+    });
+}
+
+/// When the last zone stops, the loop renders one idle frame and then
+/// publishes nothing until something renders again. Every preview here is
+/// paced at 1 fps and the whole run stays inside the first cadence slot
+/// (render time stops while the loop is paused), so that idle frame is
+/// never preview-due: only a publication outside the cadence can show it.
+/// The scene canvas, the `canvas` topic, and the followed zone all go dark
+/// with the outputs, and a zone selected only once the loop idles finds
+/// its zone dark too.
+#[tokio::test]
+async fn the_frame_that_enters_idle_darkens_every_preview_outside_the_cadence() {
+    let state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let mut scene = make_scene("Idle Previews");
+    scene.zones = overlapping_zones(solid_id);
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    // No fade in, so the first frame already shows the zones themselves.
+    scene.transition.duration_ms = 0;
+    let red_zone = scene.zones[0].id;
+    let blue_zone = scene.zones[1].id;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    let one_fps = PreviewStreamDemand {
+        fps: 1,
+        format: PreviewPixelFormat::Rgb,
+        width: 0,
+        height: 0,
+    };
+    let mut canvas_rx = state.preview_runtime.canvas_receiver();
+    canvas_rx.update_demand(one_fps);
+    let mut scene_rx = state.preview_runtime.scene_canvas_receiver();
+    scene_rx.update_demand(one_fps);
+    let mut previews_rx = state.preview_runtime.zone_preview_receiver();
+    previews_rx.update_demand(one_fps);
+    previews_rx.update_selection(&ZonePreviewSelection::from_zone_ids([blue_zone]));
+    {
+        // Start paused so the render thread's own startup stays out of
+        // render time, and with it out of the first cadence slot.
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+        rl.pause();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    state.render_loop.write().await.resume();
+
+    wait_for_zone_preview_pixel(&mut previews_rx, blue_zone, Rgba::new(0, 0, 255, 255)).await;
+    wait_for_preview_where(&mut canvas_rx, "a live canvas preview", |frame| {
+        frame.width > 0 && !canvas_frame_is_dark(frame)
+    })
+    .await;
+    wait_for_preview_where(&mut scene_rx, "a live scene canvas", |frame| {
+        frame.width > 0 && !canvas_frame_is_dark(frame)
+    })
+    .await;
+
+    // Stop both zones while render time stands still, so the very next
+    // frame enters idle in the slot the live previews already used.
+    state.render_loop.write().await.pause();
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    for zone_id in [red_zone, blue_zone] {
+        mutation
+            .update_zone_meta(
+                scene.id,
+                zone_id,
+                ZoneMetaPatch {
+                    enabled: Some(false),
+                    ..ZoneMetaPatch::default()
+                },
+            )
+            .expect("the zone should pause");
+    }
+    commit_render_mutation(&state, mutation).await;
+    state.render_loop.write().await.resume();
+
+    wait_for_preview_where(
+        &mut canvas_rx,
+        "a dark canvas preview",
+        canvas_frame_is_dark,
+    )
+    .await;
+    wait_for_preview_where(&mut scene_rx, "a dark scene canvas", canvas_frame_is_dark).await;
+    wait_for_zone_preview_pixel(&mut previews_rx, blue_zone, Rgba::new(0, 0, 0, 255)).await;
+    let mut late_rx = state.preview_runtime.zone_preview_receiver();
+    late_rx.update_selection(&ZonePreviewSelection::from_zone_ids([red_zone]));
+    // Nothing renders once the loop idles, so only the idle entry frame can
+    // have published this zone's preview.
+    wait_for_zone_preview_pixel(&mut late_rx, red_zone, Rgba::new(0, 0, 0, 255)).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
 /// Studio's zone previews of a GPU multi-zone scene arrive at the demanded
 /// size with each zone's own pixels, scaled from that zone's GPU texture
 /// rather than materialized on the CPU (Spec 86 §5.2).

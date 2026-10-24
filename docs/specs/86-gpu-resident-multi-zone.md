@@ -431,6 +431,18 @@ the union of selected zones only, so a zone nobody previews does no preview
 work. A bus receiver that registered no selection counts as selecting every
 zone.
 
+Two states publish once and then render nothing, so they never give a
+publication the cadence skipped a second chance, and both publish outside
+it. A hold (a sleep, a pause, or a stop) puts one static off-color frame on
+every output, the scene canvas, the `canvas` topic, and every scene zone's
+preview. When no zone renders anything, the loop renders one idle frame and
+then idles: that frame publishes its own picture on the scene canvas and the
+`canvas` topic, and a dark preview for every scene zone. Both cover every
+zone rather than the selected ones. The entries share one static surface, so
+they cost no pixel work, and a subscriber that arrives or retargets during
+the hold or the idle still finds its zone dark. Frames that keep rendering
+keep the cadence.
+
 ---
 
 ## 6. Unsupported plans and the CPU path

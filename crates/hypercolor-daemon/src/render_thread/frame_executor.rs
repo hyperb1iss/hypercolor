@@ -17,7 +17,9 @@ use super::frame_metrics::{ActiveFrameMetricsInput, summarize_active_frame};
 use super::frame_policy::{FrameExecution, FramePolicy, SkipDecision};
 use super::frame_reporting::{FrameCompletionReport, report_active_frame_completion};
 use super::frame_sampling::{LedSamplingOutcome, resolve_led_sampling};
-use super::frame_throttle::{maybe_idle_throttle, maybe_sleep_throttle};
+use super::frame_throttle::{
+    IdleGate, maybe_idle_throttle, maybe_sleep_throttle, static_zone_preview_frame,
+};
 use super::output_gate::{GateDecision, ProducerSignature};
 use super::pipeline_runtime::PreparedCanvasResize;
 use super::pipeline_runtime::{
@@ -438,7 +440,7 @@ pub(crate) async fn execute_frame(
         render.sparkleflinger.release_native_screen_caches();
     }
 
-    if let Some(frame) = maybe_idle_throttle(
+    let entering_idle = match maybe_idle_throttle(
         state,
         &mut runtime.frame_policy,
         scene_snapshot.effect_demand.effect_running || frame_loop.has_active_input_demand(),
@@ -447,8 +449,17 @@ pub(crate) async fn execute_frame(
     )
     .await
     {
-        render.sparkleflinger.end_gpu_frame();
-        return frame;
+        IdleGate::Throttled(frame) => {
+            render.sparkleflinger.end_gpu_frame();
+            return frame;
+        }
+        IdleGate::EnterIdle => true,
+        IdleGate::Render => false,
+    };
+    if entering_idle {
+        // The idle loop publishes nothing after this frame, so a preview the
+        // cadence skipped here would keep the last live picture for good.
+        frame_loop.publication_cadence.make_scene_previews_due();
     }
 
     let input_start = Instant::now();
@@ -803,6 +814,26 @@ pub(crate) async fn execute_frame(
             },
         },
     );
+    if entering_idle && !reuses_published_frame {
+        // Idle renders nothing, so every zone shows dark. The zone previews
+        // take that here the way a hold's frame reaches them: every zone,
+        // outside the cadence, so a subscriber that arrives or retargets
+        // while idle still finds its zone dark.
+        let dark_surface = render.output_artifacts.static_surface(
+            state.canvas_dims.width(),
+            state.canvas_dims.height(),
+            [0, 0, 0],
+        );
+        state.preview_runtime.publish_static_zone_previews(
+            scene_snapshot.scene_runtime.active_scene_id,
+            &scene_snapshot.scene_runtime.resolved_zones,
+            &static_zone_preview_frame(
+                &dark_surface,
+                frame_num_u32,
+                u64_to_u32(scene_snapshot.elapsed_ms),
+            ),
+        );
+    }
     let latest_output_power = *state.power_state.borrow();
     if should_switch_to_late_sleep_frame(output_power, latest_output_power) {
         scene_snapshot.output_power = latest_output_power;
