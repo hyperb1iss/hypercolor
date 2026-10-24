@@ -17,12 +17,17 @@
 //! - `previewState()` returns `"unsupported"`, `"connecting"` or `"live"`.
 //! - `previewStream()` returns the `MediaStream` holding the track, or `null`
 //!   before one exists.
-//! - `setPreview({ enabled, maxWidth })` takes the page's whole preview
-//!   demand and replaces the previous one: `enabled` while any preview is on
-//!   screen in a visible page, and `maxWidth` the longest edge, in device
-//!   pixels, of the largest preview on screen (0 when none is, and kept
-//!   while the page is hidden). The UI calls it the moment its demand
-//!   changes, and only then.
+//! - `setPreview({ enabled, maxWidth, zone })` takes the page's whole
+//!   preview demand and replaces the previous one: `enabled` while any
+//!   preview is on screen in a visible page, and `maxWidth` the longest
+//!   edge, in device pixels, of the largest preview on screen (0 when none
+//!   is, and kept while the page is hidden). `zone` is `{ sceneId, zoneId }`
+//!   while the page's previews show one zone of a multi-zone scene, and
+//!   `null` while they show the scene canvas. The UI calls it the moment its
+//!   demand changes, and only then.
+//!
+//! `zone` is optional for both sides. An embedder that never reads it, or
+//! whose computer cannot follow one zone, streams the scene canvas.
 //!
 //! The embedder keeps the latest demand whatever state its session is in
 //! and never throws from `setPreview`: a call that throws is offered again
@@ -38,6 +43,8 @@
 //!
 //! Under a contract 1 bridge the UI shows stills and never asks for video.
 //! Under any bridge it never subscribes to the socket's canvas frame topics.
+
+use hypercolor_types::scene::{SceneId, ZoneId};
 
 use crate::route_ui::UiMount;
 
@@ -113,6 +120,15 @@ pub struct PreviewDemand {
     pub enabled: bool,
     /// Longest edge in device pixels of the largest preview on screen.
     pub max_width: u32,
+    /// The zone the page's previews show, or `None` for the scene canvas.
+    pub zone: Option<PreviewZone>,
+}
+
+/// One zone of the active scene, as `setPreview`'s `zone` names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreviewZone {
+    pub scene_id: SceneId,
+    pub zone_id: ZoneId,
 }
 
 /// Native builds never install a bridge, so they never hold its preview.
@@ -268,8 +284,8 @@ mod browser {
     };
 
     use super::{
-        PREVIEW_VIDEO_CONTRACT, PreviewDemand, PreviewState, UiMount, negotiate_contract,
-        resolve_remote_api_url, resolve_remote_api_url_from_base,
+        PREVIEW_VIDEO_CONTRACT, PreviewDemand, PreviewState, PreviewZone, UiMount,
+        negotiate_contract, resolve_remote_api_url, resolve_remote_api_url_from_base,
     };
 
     thread_local! {
@@ -363,9 +379,13 @@ mod browser {
         /// the bridge accepted the call.
         pub fn set_preview(&self, demand: PreviewDemand) -> bool {
             let init = Object::new();
+            let Some(zone) = demand.zone.map_or(Some(JsValue::NULL), zone_value) else {
+                return false;
+            };
             let fields = [
                 ("enabled", JsValue::from_bool(demand.enabled)),
                 ("maxWidth", JsValue::from_f64(f64::from(demand.max_width))),
+                ("zone", zone),
             ];
             if fields
                 .iter()
@@ -381,6 +401,21 @@ mod browser {
                 })
                 .is_ok()
         }
+    }
+
+    /// `setPreview`'s `zone` member for `zone`.
+    fn zone_value(zone: PreviewZone) -> Option<JsValue> {
+        let value = Object::new();
+        let fields = [
+            ("sceneId", zone.scene_id.to_string()),
+            ("zoneId", zone.zone_id.to_string()),
+        ];
+        fields
+            .iter()
+            .all(|(name, id)| {
+                Reflect::set(&value, &JsValue::from_str(name), &JsValue::from_str(id)).is_ok()
+            })
+            .then(|| value.into())
     }
 
     #[must_use]
