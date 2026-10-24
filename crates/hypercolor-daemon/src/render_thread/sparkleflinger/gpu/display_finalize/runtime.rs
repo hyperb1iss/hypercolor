@@ -312,6 +312,10 @@ impl GpuSparkleFlinger {
             self.discard_pending_display_finalization_slot(pending);
             return Err(error);
         }
+        #[cfg(test)]
+        if std::mem::take(&mut self.defer_display_finalize_resolve_once) {
+            return Ok(None);
+        }
         if !pending.map_ready() {
             return Ok(None);
         }
@@ -334,6 +338,14 @@ impl GpuSparkleFlinger {
         );
         record_gpu_display_finalize_result(true);
         Ok(Some(frame))
+    }
+
+    /// Leave the next display finalization unfinished for one resolve, the
+    /// way a GPU still busy with the frame leaves it. A software adapter
+    /// often finishes the readback within the call that dispatched it.
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger) fn defer_next_display_finalize_resolve(&mut self) {
+        self.defer_display_finalize_resolve_once = true;
     }
 
     pub(crate) fn discard_pending_display_finalization(

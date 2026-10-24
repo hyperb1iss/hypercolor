@@ -163,6 +163,8 @@ impl GpuSparkleFlinger {
             #[cfg(test)]
             defer_preview_map_resolve_once: false,
             #[cfg(test)]
+            defer_display_finalize_resolve_once: false,
+            #[cfg(test)]
             fail_next_sampling_readback_preparation: false,
             #[cfg(test)]
             fail_next_preview_scale_output_preparation: false,
