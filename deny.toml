@@ -2,7 +2,14 @@
 # vulnerability field removed in cargo-deny 0.18+ (all vulns are errors now)
 unmaintained = "workspace"
 yanked = "warn"
-ignore = []
+ignore = [
+    # crypto-bigint 0.5.5 has no patched release; the fix ships in 0.7.6.
+    # It reaches us only through webrtc-dtls 0.12 (the latest) via
+    # elliptic-curve 0.13, and the Hue driver restricts DTLS to
+    # TLS_PSK_WITH_AES_128_GCM_SHA256, so no ECDHE or ECDSA arithmetic runs
+    # on secrets. Drop this once webrtc-dtls moves to elliptic-curve 0.14.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 via webrtc-dtls; Hue DTLS is PSK only" },
+]
 
 [licenses]
 unused-allowed-license = "allow"
