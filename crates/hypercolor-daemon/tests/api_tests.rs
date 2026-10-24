@@ -6785,8 +6785,11 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
         .await;
     let app = test_app_with_state(Arc::clone(&state));
 
+    // The reconnect scan blocks on `release_scan` until the end of the test,
+    // so an apply that waited for it would never return. The timeout only
+    // guards against that hang; it is not a latency budget.
     let response = tokio::time::timeout(
-        Duration::from_millis(200),
+        Duration::from_secs(10),
         app.oneshot(
             Request::builder()
                 .method("POST")
@@ -6807,13 +6810,18 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
     let power_state = state.output_power.snapshot();
     assert!(!power_state.sleeping());
     assert_eq!(power_state.session_brightness, 1.0);
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         while discoveries.load(Ordering::Relaxed) == 0 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .expect("reconnect scan should run in the background");
+    assert_eq!(
+        release_scan.available_permits(),
+        0,
+        "the scan was still blocked when the apply returned"
+    );
     release_scan.add_permits(1);
 }
 
