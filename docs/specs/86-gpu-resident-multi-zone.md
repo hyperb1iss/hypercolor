@@ -388,8 +388,13 @@ opaque black base) whenever a consumer requests it: a preview receiver, a
 display face that blends the scene, or a canvas capture. The primary
 composition plan, including active transitions, runs over it exactly as
 today, so display backdrops see transitions. It never feeds LED output, so
-admission drops the sampling-mode and edge-behavior requirements and keeps
-the affine requirement.
+admission drops the sampling-mode and edge-behavior requirements. No zone's
+layout refuses it either. Each output projects through its affine placement,
+and an output without one (no extent, or a non-finite one) projects nothing,
+the way the CPU reconstruction skips it. A zone with no outputs, such as one
+Studio has just created, projects nothing at all. Neither keeps the other
+zones off the GPU projection. The memberless zone still renders, keeps its
+snapshot, and publishes its zone preview (§5.2).
 
 Projection layers land in two strata. Every LED output's layer comes first,
 in zone order, so overlapping LED outputs keep zone-order overwrite, which
