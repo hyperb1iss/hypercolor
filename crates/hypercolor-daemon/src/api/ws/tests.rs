@@ -4995,6 +4995,58 @@ fn an_interactive_preview_zone_target_must_name_a_zone_id() {
     );
 }
 
+#[test]
+fn a_refused_subscribe_answers_the_one_interactive_preview_it_named() {
+    let refusal = || {
+        SubscriptionState::default()
+            .subscribed(vec![
+                TopicSubscription::keyed("interactive_preview", "main")
+                    .with_config(serde_json::json!({"target": {"zone": "desk"}})),
+            ])
+            .expect_err("a zone target that is not a zone id is refused")
+    };
+    let preview = |key: &str| super::protocol::TopicSelection {
+        topic: TopicId::InteractivePreview,
+        key: Some(key.to_owned()),
+    };
+    let canvas = super::protocol::TopicSelection {
+        topic: TopicId::Canvas,
+        key: None,
+    };
+    let preview_id = |error: &super::protocol::WsProtocolError| {
+        error
+            .details
+            .as_ref()
+            .and_then(|details| details["preview_id"].as_str())
+            .map(ToOwned::to_owned)
+    };
+
+    let addressed = super::session::address_refusal_to_interactive_preview(
+        refusal(),
+        &[canvas.clone(), preview("main")],
+    );
+    assert_eq!(preview_id(&addressed).as_deref(), Some("main"));
+    assert_eq!(
+        addressed
+            .details
+            .as_ref()
+            .and_then(|details| details["field"].as_str()),
+        Some("config.interactive_preview.target"),
+        "addressing keeps the refusal's own details"
+    );
+
+    let ambiguous = super::session::address_refusal_to_interactive_preview(
+        refusal(),
+        &[preview("main"), preview("inspector")],
+    );
+    assert_eq!(preview_id(&ambiguous), None);
+    let unrelated = super::session::address_refusal_to_interactive_preview(refusal(), &[canvas]);
+    assert_eq!(preview_id(&unrelated), None);
+    let already =
+        super::session::address_refusal_to_interactive_preview(addressed, &[preview("other")]);
+    assert_eq!(preview_id(&already).as_deref(), Some("main"));
+}
+
 #[tokio::test]
 async fn retargeting_an_interactive_preview_keeps_its_lane_and_publication() {
     let (handle, routing) = browser_preview_test_context();

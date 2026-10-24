@@ -1268,7 +1268,7 @@
         ],
         "variants": {
           "zone": {
-            "min_len": 1
+            "format": "uuid"
           }
         },
         "default": "active_scene"

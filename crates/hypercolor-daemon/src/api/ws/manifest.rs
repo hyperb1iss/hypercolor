@@ -575,33 +575,33 @@ mod tests {
                     );
                 }
                 // A tagged variant such as `{"zone": "<id>"}` declares the
-                // bounds of its payload under its tag.
+                // format of its payload under its tag.
                 if let Some(variants) = bounds.get("variants").and_then(Value::as_object) {
                     for (tag, variant) in variants {
-                        let min_len = variant
-                            .get("min_len")
-                            .and_then(Value::as_u64)
-                            .and_then(|min_len| usize::try_from(min_len).ok())
-                            .expect("a string variant declares its min_len");
-                        let tagged = |payload: String| {
-                            let mut value = Map::new();
-                            value.insert(tag.clone(), Value::String(payload));
-                            Value::Object(value)
-                        };
-                        assert!(
-                            apply(tagged("z".repeat(min_len))).is_ok(),
-                            "{}.{} variant {tag} at min_len",
+                        assert_eq!(
+                            variant.get("format").and_then(Value::as_str),
+                            Some("uuid"),
+                            "{}.{} variant {tag} declares a known payload format",
                             vtable.name,
                             field
                         );
-                        if min_len > 0 {
-                            assert!(
-                                apply(tagged("z".repeat(min_len - 1))).is_err(),
-                                "{}.{} variant {tag} below min_len",
-                                vtable.name,
-                                field
-                            );
-                        }
+                        let tagged = |payload: &str| {
+                            let mut value = Map::new();
+                            value.insert(tag.clone(), Value::String(payload.to_owned()));
+                            Value::Object(value)
+                        };
+                        assert!(
+                            apply(tagged("01a15100-16a2-7300-91d2-507b4d2f85ff")).is_ok(),
+                            "{}.{} variant {tag} admits a UUID",
+                            vtable.name,
+                            field
+                        );
+                        assert!(
+                            apply(tagged("desk")).is_err(),
+                            "{}.{} variant {tag} refuses a non-UUID",
+                            vtable.name,
+                            field
+                        );
                     }
                 }
                 if let Some(min_items) = bounds.get("min_items").and_then(Value::as_u64) {

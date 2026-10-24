@@ -493,13 +493,13 @@ zone, target it by ID:
 A zone lane renders only that zone's layer stack, on the zone's own canvas, so
 its frames show what that zone's `zone_preview` frames show. Injected pointer
 positions are normalized to the preview, and the preview is the zone's canvas,
-so they land in the zone's effects at the zone's own coordinates. A zone that is
-paused or has no enabled layers previews dark. A zone ID that names no zone of
-the active scene is admitted and renders nothing, the way a `zone_preview`
-selection naming it selects nothing, so a client can follow a zone a scene
-change is about to create. If the zone leaves the scene, the lane stops
-publishing and keeps its last frame until the zone returns or the client
-retargets. Moving a live lane to another zone is the same re-subscribe as a
+so they land in the zone's effects at the zone's own coordinates. An LED zone
+that is paused or has no enabled layers previews dark, as its `zone_preview`
+frames do. The zone ID must be a UUID, but one that names no zone of the active
+scene is admitted and renders nothing, the way a `zone_preview` selection naming
+it selects nothing, so a client can follow a zone a scene change is about to
+create. If the zone leaves the scene, the lane stops publishing until the zone
+returns or the client retargets. Moving a live lane to another zone is the same re-subscribe as a
 resize: the lane keeps its publication, and frames rendered for the old target
 are never sent.
 
@@ -854,7 +854,7 @@ the requested shape, so zero dimensions are refused rather than resolved.
 
 | Field | Type | Default | Range / values |
 | --- | --- | --- | --- |
-| `target` | string or object | `"active_scene"` | `"active_scene"`, or `{"zone": "<zone ID>"}` for one zone of the active scene |
+| `target` | string or object | `"active_scene"` | `"active_scene"`, or `{"zone": "<zone UUID>"}` for one zone of the active scene |
 | `fps` | integer | `30` | 1..=60 |
 | `width` | integer | `640` | unsigned 32-bit, non-zero |
 | `height` | integer | `480` | unsigned 32-bit, non-zero |

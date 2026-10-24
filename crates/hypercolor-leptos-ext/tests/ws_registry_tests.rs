@@ -545,13 +545,20 @@ fn an_interactive_preview_retargets_between_the_scene_and_one_zone() {
     assert_eq!(scene, defaults);
     assert_eq!(InteractivePreviewTarget::ActiveScene.zone(), None);
 
-    let empty = InteractivePreviewConfigPatch {
-        target: Some(InteractivePreviewTarget::Zone(String::new())),
-        ..InteractivePreviewConfigPatch::default()
-    };
-    let error = apply_patch_transactionally(&config, &empty).expect_err("an empty zone id");
-    assert_eq!(error.field, "target");
-    assert_eq!(error.reason, "zone must not be empty");
+    for not_an_id in [
+        "",
+        "desk",
+        "019f26d3d4ee7dd1a806d7114f26919b",
+        "019f26d3-d4ee-7dd1-a806-d7114f26919g",
+    ] {
+        let patch = InteractivePreviewConfigPatch {
+            target: Some(InteractivePreviewTarget::Zone(not_an_id.to_owned())),
+            ..InteractivePreviewConfigPatch::default()
+        };
+        let error = apply_patch_transactionally(&config, &patch).expect_err("not a zone id");
+        assert_eq!(error.field, "target", "{not_an_id:?}");
+        assert_eq!(error.reason, "zone must be a zone id (a UUID)");
+    }
 
     for malformed in [
         json!({"target": {"zones": [zone]}}),
