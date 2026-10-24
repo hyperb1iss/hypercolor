@@ -209,6 +209,39 @@ fn failed_effect_pool_preparation_preserves_live_slots() {
     .expect("live slot should remain renderable after rejected preparation");
 }
 
+/// A scene with a valid layer ahead of one whose effect is not registered
+/// fails to admit without touching the live pool, and admits on the retry
+/// after the missing effect registers.
+#[test]
+fn failed_admission_retries_until_the_missing_effect_registers() {
+    let mut registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let missing_id = EffectId::new(uuid::Uuid::from_u128(0xfeed_beef));
+    let zones = [
+        render_zone(ZoneId::new(), solid_id),
+        render_zone(ZoneId::new(), missing_id),
+    ];
+    let mut pool = EffectPool::new();
+
+    for attempt in 0..3 {
+        assert!(
+            pool.reconcile(&zones, &registry, &HashMap::new()).is_err(),
+            "attempt {attempt} should fail to admit"
+        );
+        assert_eq!(pool.slot_count(), 0);
+    }
+
+    let mut late_entry = registry
+        .get(&solid_id)
+        .expect("solid color should be registered")
+        .clone();
+    late_entry.metadata.id = missing_id;
+    registry.register(late_entry);
+    pool.reconcile(&zones, &registry, &HashMap::new())
+        .expect("the scene should admit once its effect registers");
+    assert_eq!(pool.slot_count(), 2);
+}
+
 #[test]
 fn invalid_effect_control_is_rejected_before_live_state_changes() {
     let registry = registry_with_builtins();

@@ -660,6 +660,66 @@ mod tests {
         );
     }
 
+    /// A frame that fails without a retained frame publishes no display
+    /// frame, so it discards the display finalizations in flight and frees
+    /// their readback slots rather than holding them for a frame that never
+    /// claims them.
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn failed_frame_discards_display_finalizations_in_flight() {
+        let Some(mut harness) = DisplayLaneHarness::with_gpu_display() else {
+            assert!(
+                std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_none(),
+                "GPU display finalization test was required but no GPU compositor started"
+            );
+            return;
+        };
+        let zone_id = ZoneId::new();
+        let device_id = DeviceId::new();
+        let display_target = DisplayFaceTarget::new(device_id);
+        let display_route = rgb_display_route(device_id);
+        let dependency_key = SceneDependencyKey::new(1, 1);
+        let mut elapsed_ms = 100;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while harness.display_finalize_runtime.pending_zone_count() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no display finalization stayed in flight"
+            );
+            elapsed_ms += 33;
+            let _ = materialize_display_color(
+                &mut harness,
+                zone_id,
+                &display_target,
+                &display_route,
+                dependency_key,
+                elapsed_ms,
+                [255, 0, 0],
+            );
+        }
+        let slots_in_use = |harness: &DisplayLaneHarness| {
+            harness
+                .display_sparkleflinger
+                .display_finalize_readback_slots_in_use_for_test()
+                .expect("the GPU display compositor counts its readback slots")
+        };
+        assert!(
+            slots_in_use(&harness) > 0,
+            "the finalization in flight holds a slot"
+        );
+
+        harness
+            .compose_runtime()
+            .release_failed_frame_outputs(dependency_key);
+
+        assert_eq!(harness.display_finalize_runtime.pending_zone_count(), 0);
+        assert_eq!(
+            slots_in_use(&harness),
+            0,
+            "a failed frame should free every display finalize readback slot"
+        );
+    }
+
     #[cfg(feature = "wgpu")]
     #[test]
     fn unsupported_and_saturated_display_finalize_dispatches_retain_previous_frame() {

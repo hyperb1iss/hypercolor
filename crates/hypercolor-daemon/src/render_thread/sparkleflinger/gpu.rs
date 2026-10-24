@@ -351,6 +351,14 @@ enum GpuCompositorOutputSurface {
 }
 
 impl GpuSparkleFlinger {
+    #[cfg(test)]
+    pub(crate) fn display_finalize_readback_slots_in_use(&self) -> usize {
+        self.display_finalize_surfaces
+            .values()
+            .map(GpuDisplayFinalizeSurfaceSet::readback_slots_in_use)
+            .sum()
+    }
+
     pub(crate) fn surface_pool_counts(&mut self) -> SparkleFlingerSurfacePoolCounts {
         let preview = self.preview_surfaces.as_mut().map_or_else(
             SurfaceStateCounts::default,

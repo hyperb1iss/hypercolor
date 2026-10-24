@@ -1557,6 +1557,12 @@ impl DisplayFinalizeRuntime {
         self.pending.drain().map(|(_, pending)| pending)
     }
 
+    /// Display zones whose finalization is still in flight.
+    #[cfg(test)]
+    pub(crate) fn pending_zone_count(&self) -> usize {
+        self.pending.len()
+    }
+
     pub(crate) fn take_inactive(
         &mut self,
         active_zone_ids: &[ZoneId],
