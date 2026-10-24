@@ -26,8 +26,8 @@ use crate::scene_picker::{ScenePicker, ScenePickerAction};
 use crate::screen::ScreenId;
 use crate::state::{
     AppState, CanvasFrame, ConnectionStatus, ControlValue, Notification, NotificationLevel,
-    PreviewSource, PreviewTarget, SimulatedDisplaySummary, scene_is_multi_zone,
-    set_zone_effect_control, zone_effect_layer,
+    PreviewSource, PreviewTarget, SimulatedDisplaySummary, set_zone_effect_control,
+    zone_effect_layer,
 };
 use crate::theme_picker::ThemePicker;
 use opaline::widgets::ThemeSelectorAction;
@@ -422,6 +422,8 @@ impl App {
             return match key.code {
                 KeyCode::Esc | KeyCode::Char('z' | 'Z') => Some(Action::ToggleFullscreenPreview),
                 KeyCode::Char('q') => Some(Action::Quit),
+                KeyCode::Char('[') => Some(Action::CycleZoneFocus { forward: false }),
+                KeyCode::Char(']') => Some(Action::CycleZoneFocus { forward: true }),
                 _ => None,
             };
         }
@@ -1550,7 +1552,7 @@ impl App {
             ("Tab".to_string(), "Switch pane / control".to_string()),
             ("Z".to_string(), "Fullscreen preview".to_string()),
             ("C".to_string(), "Scene picker".to_string()),
-            ("[/]".to_string(), "Cycle zone target".to_string()),
+            ("[/]".to_string(), "Cycle zone (view + edit)".to_string()),
             ("Esc".to_string(), "Go back".to_string()),
         ];
         if self.state.show_donate {
@@ -1662,15 +1664,15 @@ impl App {
             frame.render_widget(text, Rect::new(msg_x, msg_y, msg_width, 1));
         }
 
-        // Info bar: effect name + hint to exit. A multi-zone canvas is a
-        // composite, so label it with the zone count rather than
-        // attributing it to the primary zone's effect.
-        let multi_zone_label = self
+        // Info bar: what the preview shows + hint to exit. A scene with
+        // several LED zones previews one at a time, so name that zone and
+        // its scene, and offer the keys that move between zones.
+        let preview_zone_label = self
             .state
             .active_scene
             .as_deref()
-            .filter(|scene| scene_is_multi_zone(scene))
-            .map(|scene| format!("{} \u{00B7} {} zones", scene.name, scene.zones.len()));
+            .zip(self.state.preview_zone())
+            .map(|(scene, zone)| format!("{} \u{00B7} {}", zone.name, scene.name));
         let effect_name = if let Some(simulator_id) = self.active_effect_browser_simulator_id() {
             self.simulator_preview
                 .simulators
@@ -1678,7 +1680,7 @@ impl App {
                 .find(|simulator| simulator.id.to_string() == simulator_id)
                 .map_or("Simulator", |simulator| simulator.name.as_str())
         } else {
-            multi_zone_label.as_deref().unwrap_or("—")
+            preview_zone_label.as_deref().unwrap_or("—")
         };
 
         let fps = self.state.daemon.as_ref().map_or(0.0, |d| d.fps_actual);
@@ -1686,10 +1688,24 @@ impl App {
         let left_preview = " PREVIEW ";
         let left_name = format!(" {effect_name} ");
         let left_fps = format!("{fps:.0} fps");
-        let right_hint = "Z/Esc to exit ";
-        let used: u16 = (left_preview.len() + left_name.len() + left_fps.len() + right_hint.len())
-            .try_into()
-            .unwrap_or(0);
+        let right_hint = if preview_zone_label.is_some()
+            && self.active_effect_browser_simulator_id().is_none()
+        {
+            "[/] zone \u{00B7} Z/Esc to exit "
+        } else {
+            "Z/Esc to exit "
+        };
+        let used: u16 = [
+            left_preview,
+            left_name.as_str(),
+            left_fps.as_str(),
+            right_hint,
+        ]
+        .iter()
+        .map(|part| part.chars().count())
+        .sum::<usize>()
+        .try_into()
+        .unwrap_or(0);
         let pad = area.width.saturating_sub(used);
 
         let muted = Style::default().fg(Color::Rgb(100, 100, 120));
