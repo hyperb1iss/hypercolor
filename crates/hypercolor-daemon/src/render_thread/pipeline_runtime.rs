@@ -1571,14 +1571,6 @@ impl ComposeRuntime<'_> {
     /// The scene renders no zones: release their resources and forget any
     /// effect error, which no longer describes a running effect.
     pub(crate) fn clear_inactive_zones(&mut self) {
-        self.release_zone_resources();
-        self.render_zone_runtime.forget_effect_error();
-    }
-
-    /// Release every zone resource after a frame failed to render. The
-    /// effect error state survives, so a failure that persists publishes its
-    /// events once and its recovery publishes when the scene renders again.
-    pub(crate) fn release_zone_resources(&mut self) {
         #[cfg(feature = "wgpu")]
         for pending in self.display_finalize_runtime.drain() {
             self.display_sparkleflinger
@@ -1588,7 +1580,29 @@ impl ComposeRuntime<'_> {
         self.display_sparkleflinger
             .retain_display_finalize_zones(&[]);
         self.render_zone_runtime.clear_inactive_zones();
+        self.render_zone_runtime.forget_effect_error();
         self.effect_delta_clock.clear();
+    }
+
+    /// Give up what a frame that failed without a retained frame cannot
+    /// use: display finalizations in flight, which no display frame of this
+    /// black frame claims, and a retained scene from an earlier dependency,
+    /// which must not resume once black is published.
+    ///
+    /// Zone resources admitted for `dependency_key` stay, so a render
+    /// failure that persists retries the same scene with them instead of
+    /// tearing them down and rebuilding them every frame, the way a failure
+    /// covered by a retained frame already does. Resources still admitted
+    /// for an earlier dependency belong to a scene this frame failed to
+    /// replace, so they go, as they would for an idle scene; once released
+    /// there is nothing left to release on the frames after.
+    pub(crate) fn release_failed_frame_outputs(&mut self, dependency_key: SceneDependencyKey) {
+        #[cfg(feature = "wgpu")]
+        self.discard_display_finalizations_except(&[]);
+        self.render_zone_runtime.release_retained_scene_frame();
+        if self.render_zone_runtime.needs_reconcile(dependency_key) {
+            self.render_zone_runtime.clear_inactive_zones();
+        }
     }
 
     #[cfg(feature = "wgpu")]

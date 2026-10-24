@@ -117,8 +117,7 @@ pub(crate) struct ZoneRuntime {
     last_effect_error: Option<ZoneEffectError>,
     recovered_effect_error: Option<ZoneEffectError>,
     /// The logged scene render failure's error and whether its frame fell
-    /// back to the retained one. Survives `clear_inactive_zones`, which
-    /// every failed frame without a retained frame runs.
+    /// back to the retained one. Survives `clear_inactive_zones`.
     scene_render_failure: FailureLog<(String, bool)>,
     layer_runtime: LayerRuntimeRegistry,
     combined_led_layout: Arc<SpatialLayout>,
@@ -130,7 +129,8 @@ pub(crate) struct ZoneRuntime {
     fail_next_projected_scene_composition: bool,
     #[cfg(all(test, feature = "wgpu"))]
     fail_next_scene_render: bool,
-    /// Every scene render fails with this effect error until cleared.
+    /// Every scene render fails with this effect error after its zones
+    /// render, until cleared.
     #[cfg(all(test, feature = "wgpu"))]
     failing_scene_render_effect_error: Option<ZoneEffectError>,
     #[cfg(all(test, feature = "wgpu"))]

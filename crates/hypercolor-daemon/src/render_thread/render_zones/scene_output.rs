@@ -186,8 +186,9 @@ impl ZoneRuntime {
         self.fail_next_scene_render = true;
     }
 
-    /// Every scene render fails with `error`, the way an effect that keeps
-    /// failing does, until a call with `None`.
+    /// Every scene render fails with `error` once its zones rendered, the
+    /// way an effect that keeps failing partway through the scene does,
+    /// until a call with `None`.
     #[cfg(all(test, feature = "wgpu"))]
     pub(super) fn fail_scene_renders_with_effect_error_for_test(
         &mut self,

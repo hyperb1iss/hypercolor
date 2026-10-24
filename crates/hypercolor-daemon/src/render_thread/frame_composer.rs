@@ -515,7 +515,7 @@ impl ComposeContext<'_> {
                         stage_start,
                     );
                 }
-                self.compose.release_zone_resources();
+                self.compose.release_failed_frame_outputs(dependency_key);
                 if self
                     .compose
                     .render_zone_runtime

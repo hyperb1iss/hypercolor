@@ -42,14 +42,12 @@ impl ZoneRuntime {
         if std::mem::take(&mut self.fail_next_scene_render) {
             anyhow::bail!("injected scene render failure");
         }
-        #[cfg(all(test, feature = "wgpu"))]
-        if let Some(error) = &self.failing_scene_render_effect_error {
-            return Err(error.clone().into());
-        }
         #[cfg(feature = "wgpu")]
         sparkleflinger.begin_media_upload_frame();
 
         if let Some(result) = self.render_single_full_scene_zone(context, sparkleflinger, zones)? {
+            #[cfg(all(test, feature = "wgpu"))]
+            self.injected_effect_failure_for_test()?;
             self.clear_effect_error();
             self.retain_frame(context.dependency_key, &result, &[]);
             return Ok(result);
@@ -162,9 +160,22 @@ impl ZoneRuntime {
             scene_compose_us,
             logical_layer_count,
         };
+        #[cfg(all(test, feature = "wgpu"))]
+        self.injected_effect_failure_for_test()?;
         self.clear_effect_error();
         self.retain_frame(context.dependency_key, &result, zones);
         Ok(result)
+    }
+
+    /// Fails a scene render whose zones already rendered, the way an effect
+    /// that fails partway through the scene does, while a test keeps that
+    /// failure armed.
+    #[cfg(all(test, feature = "wgpu"))]
+    fn injected_effect_failure_for_test(&self) -> Result<()> {
+        match &self.failing_scene_render_effect_error {
+            Some(error) => Err(error.clone().into()),
+            None => Ok(()),
+        }
     }
 
     /// Render a lone scene zone at the scene extent straight into the scene

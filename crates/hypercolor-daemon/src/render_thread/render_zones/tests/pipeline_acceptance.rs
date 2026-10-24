@@ -306,6 +306,146 @@ async fn persistent_effect_failure_publishes_its_events_once_per_transition() {
     );
 }
 
+/// A scene that keeps failing after its zones rendered publishes black, but
+/// keeps its admitted zone resources: it does not tear down and rebuild its
+/// effect pool and layer registry every frame, so its layers report their
+/// health once rather than reporting it again as new on every frame.
+#[tokio::test]
+async fn persistent_scene_failure_keeps_zone_resources_and_layer_health_steady() {
+    const FAILED_FRAMES: usize = 12;
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut scene = make_scene("Failing Scene");
+    scene.transition.duration_ms = 0;
+    scene.zones = overlapping_zones(solid_id, [255, 0, 0], [0, 0, 255]);
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    let failing_zone = scene.zones[1].clone();
+    let Some(mut pipeline) = SteppedPipeline::start(
+        RenderAccelerationMode::Cpu,
+        vec![scene.clone()],
+        scene.id,
+        BackendManager::new(),
+    )
+    .await
+    else {
+        return;
+    };
+    let mut events = pipeline.state.event_bus.subscribe_all();
+    pipeline
+        .zone_runtime()
+        .fail_scene_renders_with_effect_error_for_test(Some(ZoneEffectError {
+            effect_id: solid_id.to_string(),
+            effect_name: "Solid Color".into(),
+            zone_id: failing_zone.id,
+            zone_name: failing_zone.name.clone(),
+            error: "renderer lost its device".into(),
+        }));
+
+    let mut health_reports = Vec::with_capacity(FAILED_FRAMES);
+    for frame in 0..FAILED_FRAMES {
+        let published = pipeline.frame().await;
+        assert_eq!(
+            zone_led(&published, "zone_red"),
+            None,
+            "failed frame {frame} should publish black, not the zones"
+        );
+        let runtime = pipeline.zone_runtime();
+        assert!(
+            runtime.reconciled_dependency_key.is_some(),
+            "failed frame {frame} released the scene's admitted zone resources"
+        );
+        assert_eq!(
+            runtime.effect_pool.slot_count(),
+            scene.zones.len(),
+            "failed frame {frame} tore down the effect pool"
+        );
+        health_reports.push(drain_layer_health_events(&mut events));
+    }
+
+    assert!(
+        health_reports[0] > 0,
+        "the first frame should report the rendered layers' health"
+    );
+    assert!(
+        health_reports[1..].iter().all(|reports| *reports == 0),
+        "layer health should publish only when it changes, got {health_reports:?}"
+    );
+}
+
+/// A scene whose zones fail to admit, here because its effect is not
+/// registered, publishes black and releases the zones the previous scene
+/// left admitted, since no frame renders them anymore. Once they are gone
+/// the failing frames after it have nothing left to release.
+#[tokio::test]
+async fn scene_that_fails_to_admit_releases_the_previous_scenes_zones() {
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut working = make_scene("Working Scene");
+    working.transition.duration_ms = 0;
+    working.zones = overlapping_zones(solid_id, [255, 0, 0], [0, 0, 255]);
+    working.unassigned_behavior = UnassignedBehavior::Off;
+    let mut unadmittable = make_scene("Unregistered Effect");
+    unadmittable.transition.duration_ms = 0;
+    unadmittable.zones =
+        overlapping_zones(EffectId::from(Uuid::now_v7()), [0, 255, 0], [0, 255, 0]);
+    unadmittable.unassigned_behavior = UnassignedBehavior::Off;
+    let Some(mut pipeline) = SteppedPipeline::start(
+        RenderAccelerationMode::Cpu,
+        vec![working.clone(), unadmittable.clone()],
+        working.id,
+        BackendManager::new(),
+    )
+    .await
+    else {
+        return;
+    };
+    pipeline
+        .frame_where("the working scene lit", |frame| {
+            zone_led(frame, "zone_red") == Some([255, 0, 0])
+        })
+        .await;
+    assert_eq!(pipeline.zone_runtime().effect_pool.slot_count(), 2);
+
+    pipeline.activate(unadmittable.id).await;
+    let mut events = pipeline.state.event_bus.subscribe_all();
+    for frame in 0..8 {
+        let published = pipeline.frame().await;
+        assert_eq!(
+            zone_led(&published, "zone_red"),
+            None,
+            "unadmitted frame {frame} should publish black"
+        );
+        let runtime = pipeline.zone_runtime();
+        assert_eq!(
+            runtime.effect_pool.slot_count(),
+            0,
+            "unadmitted frame {frame} kept the previous scene's effects alive"
+        );
+        assert!(runtime.reconciled_dependency_key.is_none());
+    }
+    assert_eq!(drain_layer_health_events(&mut events), 0);
+}
+
+/// Count the `LayerHealthChanged` events published since the last drain.
+fn drain_layer_health_events(
+    events: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> usize {
+    let mut reports = 0;
+    loop {
+        match events.try_recv() {
+            Ok(event) => {
+                if matches!(event.event, HypercolorEvent::LayerHealthChanged { .. }) {
+                    reports += 1;
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                panic!("the test event receiver lagged {skipped} events");
+            }
+            Err(_) => return reports,
+        }
+    }
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 struct EffectEventCounts {
     errors: usize,
