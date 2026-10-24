@@ -189,9 +189,9 @@ impl ZoneRuntime {
         snapshot
     }
 
-    /// Release every zone resource. The effect error state survives, so a
-    /// failure that keeps releasing them is still recognized as the same
-    /// one; a scene that stops rendering zones forgets it separately.
+    /// Release every zone resource. The effect error state is left to
+    /// [`Self::forget_effect_error`], which runs whether or not any resource
+    /// was still held.
     pub(crate) fn clear_inactive_zones(&mut self) {
         if !self.has_inactive_zone_resources() {
             return;

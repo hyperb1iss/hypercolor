@@ -44,3 +44,55 @@ impl<K: PartialEq> FailureLog<K> {
         self.logged.take().map(|logged| logged.failed_frames)
     }
 }
+
+/// A log sink for tests that assert how often a per-frame path logged.
+/// Install [`Self::subscriber`] with `tracing::subscriber::set_default`
+/// on the thread that renders the frames.
+#[cfg(all(test, feature = "wgpu"))]
+#[derive(Clone, Default)]
+pub(crate) struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+#[cfg(all(test, feature = "wgpu"))]
+impl CapturedLogs {
+    /// A subscriber that writes formatted `INFO` and higher events here.
+    pub(crate) fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync + 'static {
+        let sink = self.clone();
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || sink.clone())
+            .finish()
+    }
+
+    /// Every line captured so far.
+    pub(crate) fn text(&self) -> String {
+        let bytes = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// How many captured lines contain `needle`.
+    pub(crate) fn lines_containing(&self, needle: &str) -> usize {
+        self.text()
+            .lines()
+            .filter(|line| line.contains(needle))
+            .count()
+    }
+}
+
+#[cfg(all(test, feature = "wgpu"))]
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
