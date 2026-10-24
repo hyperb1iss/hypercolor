@@ -782,7 +782,34 @@ fn wayland_decode_round(data: &[u8], buffers: &mut DoubleBuffer) -> Stats {
     region.change()
 }
 
-#[test]
+const CONTRACT_NAME: &str = "counting_allocator_is_active_and_scoped";
+
+/// Runs the contract on the process main thread instead of under libtest.
+///
+/// libtest runs each test on a spawned thread while its own main thread
+/// blocks on a result channel. That first blocking receive lazily allocates
+/// a channel waiter context and a waiter list (two allocations, 144 bytes)
+/// whenever the scheduler next runs the harness thread, so a descheduled
+/// harness drops them into whichever measured window is open. Without the
+/// harness, every other thread in the process was started by the code under
+/// test, and the windows keep counting allocations from all of them.
+///
+/// `--list` answers in libtest's terse format so test runners can discover
+/// the contract without running it. Every other argument is ignored.
+fn main() {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let has_flag = |flag: &str| args.iter().any(|arg| arg == flag);
+    if has_flag("--list") {
+        if !has_flag("--ignored") {
+            println!("{CONTRACT_NAME}: test");
+        }
+        return;
+    }
+
+    counting_allocator_is_active_and_scoped();
+    println!("test {CONTRACT_NAME} ... ok");
+}
+
 fn counting_allocator_is_active_and_scoped() {
     drop(black_box(vec![0_u8; 4_096]));
 
