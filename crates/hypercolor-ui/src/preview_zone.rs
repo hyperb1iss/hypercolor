@@ -7,10 +7,12 @@
 //! it has focused; every other page shows the Default zone. A single-zone
 //! scene's canvas already is its one zone, so it keeps the scene canvas.
 
+use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
+use crate::apply_target::ApplyTarget;
 use crate::route_ui::mounted_page_has_own_preview;
-use crate::zones::ZonesContext;
+use crate::zones::{ZoneEffectState, ZonesContext};
 
 /// The main preview's zone target, provided at the app root.
 #[derive(Clone, Copy)]
@@ -51,6 +53,47 @@ pub fn preview_zone_for(
         primary_zone
     };
     zone.map(ToOwned::to_owned)
+}
+
+/// What a player beside a preview acts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerTarget {
+    /// The effect previous, next, and shuffle step away from.
+    pub current_effect: Option<String>,
+    /// Where the stepped-to effect applies.
+    pub apply_target: ApplyTarget,
+}
+
+/// The target of a player that sits beside a preview: the zone that
+/// preview shows.
+///
+/// `shown` is the state of [`PreviewZoneContext::zone`]'s zone. While a
+/// zone is shown, the player applies to it, so a thumbnail of the Default
+/// zone never steers a zone focused on another page. The Default zone
+/// steps from the primary effect, which an apply updates at once and which
+/// is what a Default zone apply replaces; another zone steps from its top
+/// effect. On the scene canvas the player keeps the scene-wide behavior:
+/// step from the primary effect and apply wherever quick-applies go.
+#[must_use]
+pub fn player_target(
+    shown: Option<&ZoneEffectState>,
+    primary_effect: Option<&str>,
+    quick_apply_target: &ApplyTarget,
+) -> PlayerTarget {
+    match shown {
+        Some(state) if state.zone.role != ZoneRole::Primary => PlayerTarget {
+            current_effect: state.effect_id.clone(),
+            apply_target: ApplyTarget::Zone(state.zone.id.clone()),
+        },
+        Some(_) => PlayerTarget {
+            current_effect: primary_effect.map(ToOwned::to_owned),
+            apply_target: ApplyTarget::Primary,
+        },
+        None => PlayerTarget {
+            current_effect: primary_effect.map(ToOwned::to_owned),
+            apply_target: quick_apply_target.clone(),
+        },
+    }
 }
 
 /// Keep the main preview on the zone the current page should show. Call

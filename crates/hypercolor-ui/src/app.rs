@@ -287,7 +287,13 @@ impl EffectsContext {
     /// the user's saved preset + controls in a single scene mutation
     /// instead of starting at defaults and being corrected afterwards.
     pub fn apply_effect(&self, id: String) {
-        let apply_target = self.apply_target.get_untracked();
+        self.apply_effect_to(id, self.apply_target.get_untracked());
+    }
+
+    /// Apply an effect to one target rather than wherever quick-applies
+    /// go. A control tied to the zone a preview shows names that zone, so
+    /// it never lands on a zone focused on another page.
+    pub fn apply_effect_to(&self, id: String, apply_target: ApplyTarget) {
         let stored_prefs = self.preferences.get(&id);
         if apply_target == ApplyTarget::AllZones {
             let ctx = *self;

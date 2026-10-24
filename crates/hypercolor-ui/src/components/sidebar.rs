@@ -19,6 +19,7 @@ use crate::config_state::ConfigContext;
 use crate::extensions::SidebarExtensionWidgets;
 use crate::icons::*;
 use crate::nav::{NavExtensionItems, nav_model};
+use crate::preview_zone::{PlayerTarget, PreviewZoneContext, player_target};
 use crate::route_ui::NowPlayingCanvasMode;
 use crate::style_utils::category_accent_rgb;
 use crate::tauri_bridge;
@@ -125,6 +126,24 @@ pub fn Sidebar() -> impl IntoView {
         });
     }
 
+    // The player acts on the zone the preview shows: the thumbnail's
+    // Default zone here, or the zone a page's picker focused.
+    let preview_zone = use_context::<PreviewZoneContext>();
+    let shown_zone_effect = Memo::new(move |_| {
+        let zone_id = preview_zone.and_then(|preview| preview.zone.get())?;
+        fx.zone_effects
+            .with(|zones| zones.iter().find(|state| state.zone.id == zone_id).cloned())
+    });
+    let player = move || {
+        shown_zone_effect.with_untracked(|shown| {
+            player_target(
+                shown.as_ref(),
+                fx.active_effect_id.get_untracked().as_deref(),
+                &fx.apply_target.get_untracked(),
+            )
+        })
+    };
+
     // Navigate effects list (for prev/next)
     let navigate_effect = move |direction: i32| {
         let list = fx
@@ -137,13 +156,16 @@ pub fn Sidebar() -> impl IntoView {
         if list.is_empty() {
             return;
         }
-        let current = fx.active_effect_id.get();
-        let idx = current
+        let PlayerTarget {
+            current_effect,
+            apply_target,
+        } = player();
+        let idx = current_effect
             .as_ref()
             .and_then(|id| list.iter().position(|e| &e.id == id))
             .unwrap_or(0);
         let next_idx = ((idx as i32 + direction).rem_euclid(list.len() as i32)) as usize;
-        fx.apply_effect(list[next_idx].id.clone());
+        fx.apply_effect_to(list[next_idx].id.clone(), apply_target);
     };
 
     // Random effect
@@ -158,19 +180,31 @@ pub fn Sidebar() -> impl IntoView {
         if list.is_empty() {
             return;
         }
-        let current = fx.active_effect_id.get();
+        let PlayerTarget {
+            current_effect,
+            apply_target,
+        } = player();
         let rand = random_unit();
         let mut idx = (rand * list.len() as f64) as usize;
         if list.len() > 1
-            && let Some(ref cur) = current
+            && let Some(ref cur) = current_effect
             && list.get(idx).is_some_and(|e| &e.id == cur)
         {
             idx = (idx + 1) % list.len();
         }
         if let Some(effect) = list.get(idx) {
-            fx.apply_effect(effect.id.clone());
+            fx.apply_effect_to(effect.id.clone(), apply_target);
         }
     };
+
+    // The accent falls back to the shown zone's effect category until
+    // the live palette arrives, so the panel reads as the zone it steers.
+    let accent_category = Memo::new(move |_| {
+        shown_zone_effect.with(|shown| match shown {
+            Some(state) => state.effect_category.clone().unwrap_or_default(),
+            None => fx.active_effect_category.get(),
+        })
+    });
 
     // Memoized palette colors. Published once per live_palette tick as
     // --np-primary / --np-secondary / --np-tertiary CSS custom properties on
@@ -179,7 +213,7 @@ pub fn Sidebar() -> impl IntoView {
     // wakes on every tick. All live-palette colors pass through harmonize_rgb
     // so the three hues sit in a cohesive L/S band.
     let primary_rgb = Memo::new(move |_| {
-        let cat = fx.active_effect_category.get();
+        let cat = accent_category.get();
         if canvas_mode.get() != NowPlayingCanvasMode::Palette {
             category_accent_rgb(&cat).to_string()
         } else {
@@ -190,7 +224,7 @@ pub fn Sidebar() -> impl IntoView {
         }
     });
     let secondary_rgb = Memo::new(move |_| {
-        let cat = fx.active_effect_category.get();
+        let cat = accent_category.get();
         if canvas_mode.get() != NowPlayingCanvasMode::Palette {
             category_accent_rgb(&cat).to_string()
         } else {
@@ -201,7 +235,7 @@ pub fn Sidebar() -> impl IntoView {
         }
     });
     let tertiary_rgb = Memo::new(move |_| {
-        let cat = fx.active_effect_category.get();
+        let cat = accent_category.get();
         if canvas_mode.get() != NowPlayingCanvasMode::Palette {
             category_accent_rgb(&cat).to_string()
         } else {
