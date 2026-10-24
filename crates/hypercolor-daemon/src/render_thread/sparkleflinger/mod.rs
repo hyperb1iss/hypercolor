@@ -53,6 +53,8 @@ use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 use hypercolor_types::viewport::FitMode;
 
 #[cfg(feature = "wgpu")]
+use super::failure_log::FailureLog;
+#[cfg(feature = "wgpu")]
 use super::producer_queue::GpuTextureFrame;
 use crate::performance::CompositorBackendKind;
 #[cfg(feature = "wgpu")]
@@ -585,6 +587,19 @@ pub struct SparkleFlinger {
     /// Texture passes the GPU sampler encoded for LED sampling since the
     /// last `take_led_sample_passes`.
     led_sample_passes: u32,
+    /// The projected scene composition failure last logged, so one that
+    /// persists warns once rather than every frame.
+    #[cfg(feature = "wgpu")]
+    projected_scene_failures: FailureLog<ProjectedSceneFailure>,
+}
+
+/// Why a projected scene composition failed, as its failure log tells
+/// failures apart.
+#[cfg(feature = "wgpu")]
+#[derive(Debug, PartialEq, Eq)]
+enum ProjectedSceneFailure {
+    UnsupportedPlan,
+    Composition(String),
 }
 
 pub(crate) enum SparkleFlingerCanvasPreparation {
@@ -918,6 +933,8 @@ impl SparkleFlinger {
             composition_surface_pool: new_composition_surface_pool(),
             face_overlay_surface_pool: new_composition_surface_pool(),
             led_sample_passes: 0,
+            #[cfg(feature = "wgpu")]
+            projected_scene_failures: FailureLog::default(),
         }
     }
 
@@ -969,6 +986,8 @@ impl SparkleFlinger {
             composition_surface_pool: new_composition_surface_pool(),
             face_overlay_surface_pool: new_composition_surface_pool(),
             led_sample_passes: 0,
+            #[cfg(feature = "wgpu")]
+            projected_scene_failures: FailureLog::default(),
         })
     }
 
@@ -1082,7 +1101,12 @@ impl SparkleFlinger {
             );
         };
         if !gpu.supports_plan(plan) {
-            tracing::warn!("Unsupported projected GPU scene plan; refusing CPU fallback");
+            if self
+                .projected_scene_failures
+                .note(ProjectedSceneFailure::UnsupportedPlan)
+            {
+                tracing::warn!("Unsupported projected GPU scene plan; refusing CPU fallback");
+            }
             return gpu_frame_without_cpu_fallback(
                 width,
                 height,
@@ -1091,9 +1115,19 @@ impl SparkleFlinger {
             );
         }
         match gpu.compose(plan, false, None) {
-            Ok(composed) => composed,
+            Ok(composed) => {
+                if let Some(failed_frames) = self.projected_scene_failures.clear() {
+                    tracing::info!(failed_frames, "GPU projected scene composition recovered");
+                }
+                composed
+            }
             Err(error) => {
-                tracing::warn!(%error, "GPU projected scene composition failed");
+                if self
+                    .projected_scene_failures
+                    .note(ProjectedSceneFailure::Composition(format!("{error:#}")))
+                {
+                    tracing::warn!(%error, "GPU projected scene composition failed");
+                }
                 gpu_frame_without_cpu_fallback(width, height, None, &mut self.preview_surface_pool)
             }
         }

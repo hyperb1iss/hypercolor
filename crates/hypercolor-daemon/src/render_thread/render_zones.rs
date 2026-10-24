@@ -34,6 +34,7 @@ use hypercolor_types::spatial::SpatialLayout;
 #[cfg(test)]
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode};
 
+use super::failure_log::FailureLog;
 #[cfg(test)]
 use super::frame_sampling::LedSamplingStrategy;
 use super::layer_runtime::LayerRuntimeRegistry;
@@ -115,9 +116,10 @@ pub(crate) struct ZoneRuntime {
     zone_sampling_scratch: Vec<ZoneColors>,
     last_effect_error: Option<ZoneEffectError>,
     recovered_effect_error: Option<ZoneEffectError>,
-    /// Survives `clear_inactive_zones`, which every failed frame without a
-    /// retained frame runs.
-    scene_render_failure: effect_errors::SceneRenderFailureLog,
+    /// The logged scene render failure's error and whether its frame fell
+    /// back to the retained one. Survives `clear_inactive_zones`, which
+    /// every failed frame without a retained frame runs.
+    scene_render_failure: FailureLog<(String, bool)>,
     layer_runtime: LayerRuntimeRegistry,
     combined_led_layout: Arc<SpatialLayout>,
     combined_led_spatial_engine: SpatialEngine,
@@ -241,7 +243,7 @@ impl ZoneRuntime {
             zone_sampling_scratch: Vec::new(),
             last_effect_error: None,
             recovered_effect_error: None,
-            scene_render_failure: effect_errors::SceneRenderFailureLog::default(),
+            scene_render_failure: FailureLog::default(),
             layer_runtime: LayerRuntimeRegistry::default(),
             combined_led_layout,
             combined_led_spatial_engine,
