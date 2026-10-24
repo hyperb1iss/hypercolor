@@ -781,6 +781,150 @@ fn output_without_extent_projects_nothing_and_keeps_the_scene_on_the_gpu() {
     }
 }
 
+/// A GPU-backed scene whose zone textures go away after admission composes
+/// on the CPU instead of failing: the CPU path admits the zone targets and
+/// scene surface it needs on demand, so the LEDs and the scene canvas keep
+/// every zone's color rather than the frame going black.
+#[test]
+fn scene_that_loses_its_zone_textures_composes_on_the_cpu() {
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut case = bilinear_led_zone("Case", "case_leds", 0.3, solid_id);
+    case.layers = vec![color_fill_layer(GREEN)];
+    let mut accents = bilinear_led_zone("WLED Accents", "accent_leds", 0.7, solid_id);
+    accents.layers = vec![color_fill_layer(BLUE)];
+    let zones = [case, accents];
+    let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
+    let mut zone_colors = Vec::new();
+    let resident = render_scene_for_test_with_screen_and_sparkleflinger(
+        &mut runtime,
+        &zones,
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut zone_colors,
+        None,
+        &mut sparkleflinger,
+    )
+    .expect("multi-zone GPU scene should render");
+    let _ = zone_set(&resident);
+    assert!(
+        runtime.scene_surface_pool.is_none() && runtime.target_canvases.is_empty(),
+        "a GPU-resident scene admits no CPU scene backing"
+    );
+
+    let disabled = sparkleflinger.prepare_projected_scene_resources(
+        &[],
+        false,
+        SCENE_WIDTH,
+        SCENE_HEIGHT,
+        None,
+    );
+    sparkleflinger.apply_projected_scene_resources(disabled);
+    for frame in 1..4_u64 {
+        let result = render_scene_for_test_with_screen_and_sparkleflinger(
+            &mut runtime,
+            &zones,
+            1,
+            frame * 16,
+            &HashMap::new(),
+            &registry,
+            &mut zone_colors,
+            None,
+            &mut sparkleflinger,
+        )
+        .unwrap_or_else(|error| {
+            panic!("frame {frame}: losing zone textures failed the whole scene: {error:#}")
+        });
+        assert!(
+            matches!(
+                result.led_sampling_strategy,
+                LedSamplingStrategy::PreSampled(_)
+            ),
+            "frame {frame}: zones without textures should sample on the CPU"
+        );
+        assert_eq!(
+            leds_of(&zone_colors, "case_leds"),
+            Some(vec![[0, 255, 0]; 4]),
+            "frame {frame}"
+        );
+        assert_eq!(
+            leds_of(&zone_colors, "accent_leds"),
+            Some(vec![[0, 0, 255]; 4]),
+            "frame {frame}"
+        );
+        assert_eq!(
+            scene_colors_at(
+                &mut sparkleflinger,
+                &result.scene_frame,
+                &[(0.3, 0.5), (0.7, 0.5), (0.5, 0.1)],
+            ),
+            vec![[0, 255, 0], [0, 0, 255], [0, 0, 0]],
+            "frame {frame}: the CPU scene canvas should show every zone"
+        );
+        std::thread::sleep(FRAME_PACING);
+    }
+}
+
+/// A GPU-resident scene whose projection fails before any zone has produced
+/// a frame has nothing a projection would show, so the CPU reconstruction
+/// stands in: the frame publishes an empty scene canvas and holds every
+/// zone's LEDs instead of failing for want of a CPU scene surface.
+#[test]
+fn projection_failure_before_any_zone_frame_publishes_an_empty_scene() {
+    let Some(mut sparkleflinger) = gpu_sparkleflinger_at(SCENE_WIDTH, SCENE_HEIGHT) else {
+        return;
+    };
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let case = bilinear_led_zone("Case", "case_leds", 0.3, solid_id);
+    let accents = bilinear_led_zone("WLED Accents", "accent_leds", 0.7, solid_id);
+    let zones = [case.clone(), accents.clone()];
+    let mut runtime = ZoneRuntime::new(SCENE_WIDTH, SCENE_HEIGHT);
+    let mut zone_colors = Vec::new();
+    // Both polls of the frame come back pending, so no zone has a frame.
+    runtime.pend_effect_layer_renders_for_test(case.layers[0].id, 2);
+    runtime.pend_effect_layer_renders_for_test(accents.layers[0].id, 2);
+    runtime.fail_next_projected_scene_composition_for_test();
+
+    let result = render_scene_for_test_with_screen_and_sparkleflinger(
+        &mut runtime,
+        &zones,
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut zone_colors,
+        None,
+        &mut sparkleflinger,
+    )
+    .unwrap_or_else(|error| panic!("a failed empty projection failed the scene: {error:#}"));
+
+    assert_eq!(
+        zone_set(&result).source_counts(),
+        ZoneSourceCounts {
+            gpu: 0,
+            cpu: 0,
+            held: 2,
+        },
+        "zones without a frame hold their LEDs"
+    );
+    assert!(!result.scene_frame.is_gpu_resident());
+    assert_eq!(
+        scene_colors_at(
+            &mut sparkleflinger,
+            &result.scene_frame,
+            &[(0.3, 0.5), (0.7, 0.5)],
+        ),
+        vec![[0, 0, 0], [0, 0, 0]],
+        "no zone has a frame to show"
+    );
+}
+
 /// Area-sampled zones at three extents beside a blended LCD face, which
 /// switches the shared compositor's size every frame, allocate their
 /// summed-area tables once: after warmup the table, snapshot, and projected

@@ -683,6 +683,17 @@ Lightpad and the LUMI keys raised ripples over the bubbles on both blocks.
   while their shape matches, so a newly chosen fallback zone shows black for
   a frame rather than the previous zone's pixels.
 
+- **CPU fallback on a GPU-admitted scene (§6).** Reconcile admits CPU zone
+  targets and the CPU scene surface only for a scene it cannot keep on the
+  GPU, which keeps them out of memory for GPU-resident scenes at any canvas
+  size. A frame of a GPU-admitted scene can still need the CPU path. When
+  its zone textures went away after admission, the frame renders on the
+  CPU. When its projection fails before any zone has a frame, the CPU
+  reconstruction stands in for the empty projection. Either path admits
+  what it needs on its first such frame and warns once. The next reconcile
+  that admits the scene GPU-resident drops them again. Before this, those
+  frames failed the whole scene for want of a CPU target or scene surface.
+
 - **Telemetry (§7).** With no `Unsupported` source, `held_zone_count`
   takes the place of `unsupported_zone_count`, and `multi_zone_sampling`
   warns when a frame held zones (a zone with nothing to sample yet) rather

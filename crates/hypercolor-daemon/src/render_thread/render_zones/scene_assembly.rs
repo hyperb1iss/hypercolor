@@ -67,6 +67,12 @@ impl ZoneRuntime {
                         zone.layout.canvas_height,
                     )
                 });
+        // Reconcile admits CPU targets and the CPU scene surface only for a
+        // scene it cannot keep on the GPU; one that loses residency after
+        // admission composes on the CPU instead of failing the frame.
+        if !gpu_resident {
+            self.admit_cpu_scene_fallback(context.zones)?;
+        }
         let project_scene_with_sparkleflinger = gpu_resident
             && zones_support_projection_composition(context.zones, &self.scene_projection_cache);
         let mut projected_scene = self.render_scene_contributor_frames(

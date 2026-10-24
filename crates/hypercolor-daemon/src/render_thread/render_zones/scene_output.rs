@@ -50,7 +50,64 @@ impl ZoneRuntime {
         Ok(())
     }
 
+    /// Admit what composing a scene on the CPU needs, a target canvas per
+    /// scene zone and the scene surface pool, for a frame that cannot stay
+    /// GPU-resident although reconcile admitted the scene that way and left
+    /// both out. Reconcile drops them again the next time it admits the
+    /// scene GPU-resident, so this warns once per admission.
+    pub(super) fn admit_cpu_scene_fallback(&mut self, zones: &[Zone]) -> Result<()> {
+        let mut admitted_targets = 0_usize;
+        for zone in zones
+            .iter()
+            .filter(|zone| zone_contributes_to_scene_canvas(zone))
+        {
+            let (width, height) = (zone.layout.canvas_width, zone.layout.canvas_height);
+            if self
+                .target_canvases
+                .get(&zone.id)
+                .is_some_and(|target| target.width() == width && target.height() == height)
+            {
+                continue;
+            }
+            self.target_canvases.try_reserve(1)?;
+            self.target_canvases
+                .insert(zone.id, Canvas::try_new(width, height)?);
+            admitted_targets = admitted_targets.saturating_add(1);
+        }
+        let admitted_scene_surface = self.admit_cpu_scene_surface_pool()?;
+        if admitted_targets > 0 || admitted_scene_surface {
+            tracing::warn!(
+                admitted_targets,
+                admitted_scene_surface,
+                "scene zones lost GPU residency; composing them on the CPU"
+            );
+        }
+        Ok(())
+    }
+
+    /// Admit the CPU scene surface pool when reconcile left the scene
+    /// without one, returning whether it had to.
+    fn admit_cpu_scene_surface_pool(&mut self) -> Result<bool> {
+        if self.scene_surface_pool.is_some() {
+            return Ok(false);
+        }
+        self.scene_surface_pool = Some(Self::prepare_scene_surface_pool(
+            self.scene_width,
+            self.scene_height,
+            self.scene_surface_pool_initial_slots,
+            self.scene_surface_pool_max_slots,
+        )?);
+        Ok(true)
+    }
+
+    /// Reconstruct the scene canvas on the CPU from the zones' target
+    /// canvases. A GPU-admitted scene arrives here without a pool only when
+    /// its projection could not compose, so the pool is admitted on demand
+    /// rather than failing the frame.
     pub(super) fn compose_scene_frame(&mut self, zones: &[Zone]) -> Result<ProducerFrame> {
+        if self.admit_cpu_scene_surface_pool()? {
+            tracing::warn!("scene projection unavailable; composing the scene canvas on the CPU");
+        }
         let scene_surface_pool = self
             .scene_surface_pool
             .as_mut()
