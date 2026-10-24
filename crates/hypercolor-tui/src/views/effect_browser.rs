@@ -19,8 +19,8 @@ use crate::action::Action;
 use crate::component::Component;
 use crate::state::{
     CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary, PreviewSource,
-    SceneDocument, SimulatedDisplaySummary, ZoneResource, primary_zone, scene_is_multi_zone,
-    scene_zone, zone_effect_controls, zone_effect_id,
+    SceneDocument, SimulatedDisplaySummary, ZoneResource, preview_zone, primary_zone,
+    scene_is_multi_zone, scene_zone, zone_effect_controls, zone_effect_id,
 };
 use crate::widgets::{
     ColorPickerPopup, ParamSlider, Split, SplitDirection, hsl_to_rgb, rgb_to_hsl,
@@ -231,7 +231,12 @@ impl EffectBrowserView {
 
     fn preview_source_label(&self) -> String {
         match &self.preview_source {
-            PreviewSource::Canvas => "Canvas".to_string(),
+            // The canvas source shows one zone of a scene with several.
+            PreviewSource::Canvas => self
+                .active_scene
+                .as_deref()
+                .and_then(|scene| preview_zone(scene, self.focused_zone.as_deref()))
+                .map_or_else(|| "Canvas".to_string(), |zone| zone.name.clone()),
             PreviewSource::Simulator(id) => self
                 .simulators
                 .iter()

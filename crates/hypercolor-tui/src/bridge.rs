@@ -2,19 +2,19 @@
 //!
 //! Spawns a background task that:
 //! 1. Fetches initial state via REST (effects, devices, favorites, status)
-//! 2. Opens a WebSocket for live canvas frames, spectrum, and events
+//! 2. Opens a WebSocket for live preview frames, spectrum, and events
 //! 3. Converts all incoming data into Actions pushed to the main loop
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::action::Action;
 use crate::client::rest::DaemonClient;
 use crate::client::ws::{self, WsMessage};
-use crate::state::DaemonState;
+use crate::state::{DaemonState, PreviewTarget};
 use hypercolor_types::controls::ControlSurfaceScope;
 
 /// Spawn the data bridge as a background task.
@@ -23,6 +23,11 @@ use hypercolor_types::controls::ControlSurfaceScope;
 /// Pushes `Action` variants to the provided sender. Shuts down when the
 /// cancellation token fires.
 ///
+/// The preview follows `preview_target` across reconnects: every new
+/// connection subscribes to its current value, and frames for the shown
+/// target arrive as `Action::CanvasFrameReceived` whichever topic carried
+/// them.
+///
 /// Connection errors are reported once per disconnection event — the bridge
 /// does NOT spam repeated `DaemonDisconnected` actions during reconnection.
 pub async fn spawn_data_bridge(
@@ -30,6 +35,7 @@ pub async fn spawn_data_bridge(
     port: u16,
     api_key: Option<String>,
     action_tx: mpsc::UnboundedSender<Action>,
+    preview_target: watch::Receiver<PreviewTarget>,
     cancel: CancellationToken,
 ) {
     let client = DaemonClient::new(&host, port, api_key.as_deref());
@@ -72,9 +78,10 @@ pub async fn spawn_data_bridge(
             let ws_host = host.clone();
             let ws_api_key = api_key.clone();
             let ws_cancel = cancel.clone();
+            let ws_preview_target = preview_target.clone();
             let ws_handle = tokio::spawn(async move {
                 tokio::select! {
-                    result = ws::connect(&ws_host, port, ws_api_key.as_deref(), ws_tx) => {
+                    result = ws::connect(&ws_host, port, ws_api_key.as_deref(), ws_tx, ws_preview_target) => {
                         if let Err(e) = result {
                             tracing::debug!("WebSocket connection error: {e}");
                         }
@@ -121,7 +128,7 @@ pub async fn spawn_data_bridge(
                                     }
                                 }
                             }
-                            Some(WsMessage::Canvas(frame)) => {
+                            Some(WsMessage::Canvas(frame) | WsMessage::ZonePreview { frame, .. }) => {
                                 let _ = action_tx.send(Action::CanvasFrameReceived(Arc::new(frame)));
                             }
                             Some(WsMessage::Spectrum(snapshot)) => {

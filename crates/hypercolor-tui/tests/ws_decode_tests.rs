@@ -8,7 +8,8 @@ use bytes::Bytes;
 use hypercolor_leptos_ext::ws::{
     PreviewCancelFrame, PreviewFrame, PreviewFrameChannel, PreviewPixelFormat,
     PreviewPublicationMetadata, PreviewStreamId, SpectrumFrame, TimedInputEventPayload,
-    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, split_preview_publication,
+    WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG,
+    ZonePreviewFrame, split_preview_publication,
 };
 use hypercolor_tui::client::ws::{self, WsBinaryDecoder, WsMessage};
 
@@ -214,21 +215,121 @@ fn decode_non_canvas_preview_channels_return_none() {
     }
 }
 
+// ── Zone preview decode tests ────────────────────────────────────
+
+const SCENE: [u8; 16] = [0x11; 16];
+const ZONE: [u8; 16] = [0x22; 16];
+const OTHER_ZONE: [u8; 16] = [0x33; 16];
+
+fn zone_frame(
+    zone_id: [u8; 16],
+    format: PreviewPixelFormat,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> Bytes {
+    ZonePreviewFrame {
+        scene_id: SCENE,
+        zone_id,
+        frame_number: 7,
+        timestamp_ms: 70,
+        width,
+        height,
+        format,
+        payload: Bytes::copy_from_slice(pixels),
+    }
+    .encode()
+}
+
 #[test]
-fn decode_zone_preview_returns_none_for_now() {
-    let data = ZonePreviewFrame {
-        scene_id: [0x11; 16],
-        zone_id: [0x22; 16],
-        frame_number: 1,
-        timestamp_ms: 1,
-        width: 1,
+fn decode_zone_preview_names_its_zone_zero_copy() {
+    let data = zone_frame(ZONE, PreviewPixelFormat::Rgb, 1, 1, &[9, 8, 7]);
+    assert_eq!(data[0], ZONE_PREVIEW_FRAME_TAG);
+    let Some(WsMessage::ZonePreview {
+        scene_id,
+        zone_id,
+        frame,
+    }) = decode_binary_once(&data)
+    else {
+        panic!("expected ZonePreview variant");
+    };
+    assert_eq!(scene_id, SCENE);
+    assert_eq!(zone_id, ZONE);
+    assert_eq!((frame.frame_number, frame.timestamp_ms), (7, 70));
+    assert_eq!((frame.width, frame.height), (1, 1));
+    assert_eq!(frame.pixels.as_ref(), &[9, 8, 7]);
+    // Zero-copy: pixels point into the original message buffer.
+    assert_eq!(
+        frame.pixels.as_ptr() as usize,
+        data.as_ptr() as usize + ZONE_PREVIEW_FRAME_HEADER_LEN
+    );
+}
+
+#[test]
+fn decode_wide_zone_preview_preserves_u32_dimensions() {
+    let pixels = vec![0_u8; 65_536 * 3];
+    let data = zone_frame(ZONE, PreviewPixelFormat::Rgb, 65_536, 1, &pixels);
+    assert_eq!(data[0], WIDE_ZONE_PREVIEW_FRAME_TAG);
+    let Some(WsMessage::ZonePreview { frame, .. }) = decode_binary_once(&data) else {
+        panic!("wide zone preview should decode");
+    };
+    assert_eq!((frame.width, frame.height), (65_536, 1));
+}
+
+#[test]
+fn decode_zone_preview_rgba_strips_alpha() {
+    let data = zone_frame(ZONE, PreviewPixelFormat::Rgba, 1, 1, &[10, 20, 30, 255]);
+    let Some(WsMessage::ZonePreview { frame, .. }) = decode_binary_once(&data) else {
+        panic!("rgba zone preview should decode");
+    };
+    assert_eq!(frame.pixels.as_ref(), &[10, 20, 30]);
+}
+
+fn zone_publication_metadata(stream_zone: [u8; 16]) -> PreviewPublicationMetadata {
+    PreviewPublicationMetadata {
+        stream: PreviewStreamId::Zone {
+            scene_id: SCENE,
+            zone_id: stream_zone,
+        },
+        publication_id: 21,
+        frame_number: 7,
+        timestamp_ms: 70,
+        width: 2,
         height: 1,
         format: PreviewPixelFormat::Rgb,
-        payload: Bytes::from_static(&[1, 2, 3]),
     }
-    .encode();
-    assert_eq!(data[0], ZONE_PREVIEW_FRAME_TAG);
-    assert!(decode_binary_once(&data).is_none());
+}
+
+#[test]
+fn stateful_decoder_reassembles_chunked_zone_preview_once() {
+    let encoded = zone_frame(ZONE, PreviewPixelFormat::Rgb, 2, 1, &[1, 2, 3, 4, 5, 6]);
+    let chunks = split_preview_publication(&encoded, &zone_publication_metadata(ZONE), 100)
+        .expect("zone frame chunks");
+    assert!(chunks.len() > 1);
+    let mut decoder = WsBinaryDecoder::new();
+    for chunk in &chunks[..chunks.len() - 1] {
+        assert!(ws::decode_binary(&mut decoder, chunk).is_none());
+    }
+    let Some(WsMessage::ZonePreview { zone_id, frame, .. }) =
+        ws::decode_binary(&mut decoder, chunks.last().expect("last chunk"))
+    else {
+        panic!("complete zone publication should activate once");
+    };
+    assert_eq!(zone_id, ZONE);
+    assert_eq!(frame.pixels.as_ref(), &[1, 2, 3, 4, 5, 6]);
+    assert!(decoder.decode(chunks.last().expect("last chunk")).is_none());
+}
+
+#[test]
+fn chunked_zone_preview_rejects_a_mismatched_stream() {
+    // The chunks claim another zone's stream but carry this zone's frame.
+    let encoded = zone_frame(ZONE, PreviewPixelFormat::Rgb, 2, 1, &[1, 2, 3, 4, 5, 6]);
+    let chunks = split_preview_publication(&encoded, &zone_publication_metadata(OTHER_ZONE), 100)
+        .expect("zone frame chunks");
+    let mut decoder = WsBinaryDecoder::new();
+    for chunk in &chunks {
+        assert!(ws::decode_binary(&mut decoder, chunk).is_none());
+    }
 }
 
 // ── Spectrum decode tests ────────────────────────────────────────

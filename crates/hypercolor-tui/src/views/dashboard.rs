@@ -16,7 +16,7 @@ use crate::action::Action;
 use crate::component::Component;
 use crate::state::{
     CanvasPreviewState, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary, SceneDocument,
-    ZoneResource, primary_zone, scene_is_multi_zone, scene_zone, zone_effect_id,
+    ZoneResource, preview_zone, primary_zone, scene_is_multi_zone, scene_zone, zone_effect_id,
 };
 use crate::widgets::{ParamSlider, Split, SplitDirection};
 
@@ -437,7 +437,7 @@ impl DashboardView {
         if y < max_y {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    "[/] cycle target \u{00B7} x pause zone",
+                    "[/] cycle zone \u{00B7} x pause zone",
                     Style::default().fg(DIM_GRAY),
                 ))),
                 Rect::new(x, y, w, 1),
@@ -554,13 +554,25 @@ impl DashboardView {
     /// by App as an overlay using the live ratatui-image protocol — see
     /// `Component::canvas_preview_area()` and `App::render`.
     fn render_preview_panel(&self, frame: &mut Frame, area: Rect) {
+        // A scene with several LED zones previews one of them; name it.
+        let mut title = vec![Span::styled(
+            " Preview ",
+            Style::default()
+                .fg(ELECTRIC_PURPLE)
+                .add_modifier(Modifier::BOLD),
+        )];
+        if let Some(zone) = self
+            .active_scene
+            .as_deref()
+            .and_then(|scene| preview_zone(scene, self.focused_zone.as_deref()))
+        {
+            title.push(Span::styled(
+                format!("\u{00B7} {} ", zone.name),
+                Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD),
+            ));
+        }
         let block = Block::default()
-            .title(Span::styled(
-                " Preview ",
-                Style::default()
-                    .fg(ELECTRIC_PURPLE)
-                    .add_modifier(Modifier::BOLD),
-            ))
+            .title(Line::from(title))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(BORDER_DIM));
         let inner = block.inner(area);
