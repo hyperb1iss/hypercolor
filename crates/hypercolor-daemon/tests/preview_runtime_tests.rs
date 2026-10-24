@@ -340,3 +340,40 @@ fn zone_preview_selection_union_follows_every_tracked_receiver() {
         ZonePreviewSelection::from_zone_ids([])
     );
 }
+
+#[test]
+fn a_selected_zone_preview_receiver_never_reads_as_wider_than_its_zones() {
+    let runtime = PreviewRuntime::new(Arc::new(HypercolorBus::new()));
+    let zone = ZoneId::new();
+    let receiver = runtime.selected_zone_preview_receiver(
+        ZonePreviewSelection::from_zone_ids([zone]),
+        PreviewStreamDemand {
+            fps: 30,
+            format: PreviewPixelFormat::Rgba,
+            width: 480,
+            height: 270,
+        },
+    );
+    assert_eq!(
+        runtime.zone_preview_selection(),
+        ZonePreviewSelection::from_zone_ids([zone]),
+        "the receiver selects only its zone from the start"
+    );
+    let demand = runtime.zone_preview_demand();
+    assert_eq!(demand.subscribers, 1);
+    assert_eq!(demand.max_fps, 30);
+    assert_eq!((demand.max_width, demand.max_height), (480, 270));
+    assert!(
+        !demand.any_full_resolution,
+        "the receiver never asks for full-size previews"
+    );
+    assert!(demand.any_rgba);
+    assert_eq!(runtime.zone_preview_receiver_count(), 1);
+
+    drop(receiver);
+    assert_eq!(
+        runtime.zone_preview_selection(),
+        ZonePreviewSelection::from_zone_ids([])
+    );
+    assert_eq!(runtime.zone_preview_demand().subscribers, 0);
+}

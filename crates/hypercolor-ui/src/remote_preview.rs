@@ -5,14 +5,20 @@
 //! that track and reports how much of it the page needs, and this module
 //! folds the reports into the one demand the bridge receives. A contract 1
 //! bridge carries no video, so every surface shows a still.
+//!
+//! The demand also names the zone the main preview follows, so a bridge
+//! that can stream one zone shows the same zone the socket path would.
 
 use std::collections::BTreeMap;
 
+use hypercolor_types::scene::{SceneId, ZoneId};
 use leptos::prelude::*;
 use leptos::reactive::owner::LocalStorage;
 
 use crate::color::CanvasFrameAnalysis;
-use crate::remote_bridge::{PREVIEW_STATE_EVENT, PreviewChannel, PreviewDemand, PreviewState};
+use crate::remote_bridge::{
+    PREVIEW_STATE_EVENT, PreviewChannel, PreviewDemand, PreviewState, PreviewZone,
+};
 
 /// Minimum spacing of ambient samples taken from the video, matching the
 /// cadence of the socket path's frame analysis.
@@ -52,11 +58,25 @@ pub fn device_pixel_extent(width: f64, height: f64, device_pixel_ratio: f64) -> 
     edge
 }
 
+/// The zone the bridge's video should show: `zone`, the zone the main
+/// preview follows, in the active scene `scene_id`. `None`, the scene
+/// canvas, while the preview follows no zone, while the scene is unknown,
+/// and for an id that names no zone.
+#[must_use]
+pub fn preview_zone_target(scene_id: Option<SceneId>, zone: Option<&str>) -> Option<PreviewZone> {
+    let zone_id = uuid::Uuid::parse_str(zone?).ok().map(ZoneId)?;
+    Some(PreviewZone {
+        scene_id: scene_id?,
+        zone_id,
+    })
+}
+
 /// Every mounted surface's demand, folded into the page's.
 #[derive(Debug, Default)]
 pub struct PreviewDemandRegistry {
     next_surface: u64,
     surfaces: BTreeMap<u64, SurfaceDemand>,
+    zone: Option<PreviewZone>,
 }
 
 impl PreviewDemandRegistry {
@@ -78,9 +98,15 @@ impl PreviewDemandRegistry {
         self.surfaces.remove(&surface);
     }
 
+    /// Show `zone` from now on, or the scene canvas for `None`.
+    pub fn set_zone(&mut self, zone: Option<PreviewZone>) {
+        self.zone = zone;
+    }
+
     /// The page's demand: on while a surface with a real extent is on screen
     /// in a visible page, sized to the largest such surface. The size holds
-    /// while the page is hidden, so the preview resumes at the same width.
+    /// while the page is hidden, so the preview resumes at the same width,
+    /// and so does the zone.
     #[must_use]
     pub fn demand(&self, page_visible: bool) -> PreviewDemand {
         let max_width = self
@@ -93,6 +119,7 @@ impl PreviewDemandRegistry {
         PreviewDemand {
             enabled: page_visible && max_width > 0,
             max_width,
+            zone: self.zone,
         }
     }
 }
@@ -228,6 +255,26 @@ impl RemotePreviewContext {
     pub fn set_page_visible(self, visible: bool) {
         let _ = self.page_visible.try_set_value(visible);
         self.flush();
+    }
+
+    /// Show `zone` in the video from now on, or the scene canvas for
+    /// `None`.
+    pub fn set_zone(self, zone: Option<PreviewZone>) {
+        let _ = self
+            .registry
+            .try_update_value(|registry| registry.set_zone(zone));
+        self.flush();
+    }
+
+    /// Keep the video on the zone the main preview follows: `zone`, as
+    /// [`crate::preview_zone::PreviewZoneContext`] holds it, in the active
+    /// scene `scene_id`. Follows both until the current reactive owner is
+    /// disposed.
+    pub fn follow_zone(self, zone: Signal<Option<String>>, scene_id: Signal<Option<SceneId>>) {
+        Effect::new(move |_| {
+            let target = zone.with(|zone| preview_zone_target(scene_id.get(), zone.as_deref()));
+            self.set_zone(target);
+        });
     }
 
     fn flush(self) {

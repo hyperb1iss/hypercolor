@@ -1,8 +1,11 @@
 //! The bridged preview surface's notes and the page's preview demand.
 
+use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_ui::components::remote_video_preview::preview_note;
-use hypercolor_ui::remote_bridge::{PreviewDemand, PreviewState};
-use hypercolor_ui::remote_preview::{PreviewDemandRegistry, SurfaceDemand, device_pixel_extent};
+use hypercolor_ui::remote_bridge::{PreviewDemand, PreviewState, PreviewZone};
+use hypercolor_ui::remote_preview::{
+    PreviewDemandRegistry, SurfaceDemand, device_pixel_extent, preview_zone_target,
+};
 
 #[test]
 fn each_state_shows_its_note_until_video_plays() {
@@ -58,7 +61,8 @@ fn the_page_demand_follows_its_largest_visible_surface() {
         registry.demand(true),
         PreviewDemand {
             enabled: true,
-            max_width: 480
+            max_width: 480,
+            zone: None,
         }
     );
     registry.update(cabinet, on_screen(1_920));
@@ -75,7 +79,8 @@ fn the_page_demand_follows_its_largest_visible_surface() {
         registry.demand(true),
         PreviewDemand {
             enabled: true,
-            max_width: 480
+            max_width: 480,
+            zone: None,
         },
         "an off-screen surface asks for nothing"
     );
@@ -84,7 +89,8 @@ fn the_page_demand_follows_its_largest_visible_surface() {
         registry.demand(false),
         PreviewDemand {
             enabled: false,
-            max_width: 480
+            max_width: 480,
+            zone: None,
         },
         "a hidden page turns the preview off and keeps its size"
     );
@@ -99,4 +105,74 @@ fn the_page_demand_follows_its_largest_visible_surface() {
     registry.release(cabinet);
     registry.update(sidebar, on_screen(640));
     assert_eq!(registry.demand(true), PreviewDemand::default());
+}
+
+#[test]
+fn the_zone_target_is_the_followed_zone_of_the_active_scene() {
+    let scene = SceneId::new();
+    let zone = ZoneId::new();
+    assert_eq!(
+        preview_zone_target(Some(scene), Some(&zone.to_string())),
+        Some(PreviewZone {
+            scene_id: scene,
+            zone_id: zone
+        })
+    );
+    assert_eq!(
+        preview_zone_target(Some(scene), None),
+        None,
+        "a preview that follows no zone shows the scene canvas"
+    );
+    assert_eq!(
+        preview_zone_target(None, Some(&zone.to_string())),
+        None,
+        "a zone of an unknown scene names nothing"
+    );
+    assert_eq!(
+        preview_zone_target(Some(scene), Some("desk")),
+        None,
+        "an id that is no zone names nothing"
+    );
+}
+
+#[test]
+fn the_page_demand_carries_the_followed_zone() {
+    let mut registry = PreviewDemandRegistry::default();
+    let surface = registry.register();
+    registry.update(
+        surface,
+        SurfaceDemand {
+            visible: true,
+            longest_edge_px: 640,
+        },
+    );
+    let scene_canvas = registry.demand(true);
+    assert_eq!(scene_canvas.zone, None);
+
+    let zone = PreviewZone {
+        scene_id: SceneId::new(),
+        zone_id: ZoneId::new(),
+    };
+    registry.set_zone(Some(zone));
+    let following = registry.demand(true);
+    assert_eq!(
+        following,
+        PreviewDemand {
+            enabled: true,
+            max_width: 640,
+            zone: Some(zone),
+        }
+    );
+    assert_ne!(
+        following, scene_canvas,
+        "a new zone is a new demand, so the bridge hears it"
+    );
+    assert_eq!(
+        registry.demand(false).zone,
+        Some(zone),
+        "a hidden page keeps the zone for its return"
+    );
+
+    registry.set_zone(None);
+    assert_eq!(registry.demand(true), scene_canvas);
 }

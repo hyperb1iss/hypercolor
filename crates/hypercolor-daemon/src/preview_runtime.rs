@@ -333,17 +333,21 @@ impl PreviewFrameReceiver {
 }
 
 impl ZonePreviewFrameReceiver {
+    /// Registers the demand and the selection before subscribing to the
+    /// lane: the render thread treats a bus receiver it cannot match to a
+    /// registration as one that wants every zone at full size.
     fn new(
-        receiver: watch::Receiver<Arc<[ZonePreviewFrame]>>,
+        event_bus: &HypercolorBus,
         demand_registration: PreviewDemandRegistration,
+        selection: ZonePreviewSelection,
     ) -> Self {
         let selection_registration = ZonePreviewSelectionRegistration::new(
             Arc::clone(&demand_registration.state),
             demand_registration.id,
-            ZonePreviewSelection::All,
+            selection,
         );
         Self {
-            receiver,
+            receiver: event_bus.zone_preview_receiver(),
             demand_registration,
             selection_registration,
         }
@@ -365,8 +369,9 @@ impl ZonePreviewFrameReceiver {
         self.demand_registration.update(demand);
     }
 
-    /// Narrow or widen the zones this subscriber receives. A new receiver
-    /// selects every zone until its first update.
+    /// Narrow or widen the zones this subscriber receives. A receiver from
+    /// [`PreviewRuntime::zone_preview_receiver`] selects every zone until
+    /// its first update.
     pub fn update_selection(&mut self, selection: &ZonePreviewSelection) {
         self.selection_registration.update(selection);
     }
@@ -555,13 +560,30 @@ impl PreviewRuntime {
 
     #[must_use]
     pub fn zone_preview_receiver(&self) -> ZonePreviewFrameReceiver {
+        self.selected_zone_preview_receiver(
+            ZonePreviewSelection::All,
+            PreviewStreamDemand::default(),
+        )
+    }
+
+    /// A zone-preview receiver that registers `selection` at `demand`, for a
+    /// subscriber that knows its zones up front. Unlike a receiver narrowed
+    /// after the fact, it never asks the render thread for every zone at
+    /// full size while its first update is on the way.
+    #[must_use]
+    pub fn selected_zone_preview_receiver(
+        &self,
+        selection: ZonePreviewSelection,
+        demand: PreviewStreamDemand,
+    ) -> ZonePreviewFrameReceiver {
         ZonePreviewFrameReceiver::new(
-            self.event_bus.zone_preview_receiver(),
+            &self.event_bus,
             PreviewDemandRegistration::new(
                 Arc::clone(&self.demand_state),
                 PreviewStreamKind::ZonePreview,
-                PreviewStreamDemand::default(),
+                demand,
             ),
+            selection,
         )
     }
 

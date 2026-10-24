@@ -2,8 +2,9 @@
 //! video element under a live bridge, and the demand the page reports.
 #![cfg(target_arch = "wasm32")]
 
+use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_ui::components::remote_video_preview::RemoteVideoPreview;
-use hypercolor_ui::remote_bridge::{PreviewChannel, PreviewDemand, PreviewState};
+use hypercolor_ui::remote_bridge::{PreviewChannel, PreviewDemand, PreviewState, PreviewZone};
 use hypercolor_ui::remote_preview::RemotePreviewContext;
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
@@ -46,7 +47,7 @@ export function previewBridge(state, withStream) {
         probe.refused += 1;
         throw new Error("no session yet");
       }
-      probe.calls.push({ enabled: demand.enabled, maxWidth: demand.maxWidth });
+      probe.calls.push({ enabled: demand.enabled, maxWidth: demand.maxWidth, zone: demand.zone });
       if (probe.announcing) {
         window.dispatchEvent(new CustomEvent("hypercolor:remote-preview-state"));
       }
@@ -144,8 +145,23 @@ fn calls() -> Vec<PreviewDemand> {
         .map(|call| PreviewDemand {
             enabled: call["enabled"].as_bool().expect("enabled"),
             max_width: u32::try_from(call["maxWidth"].as_u64().expect("maxWidth")).expect("width"),
+            zone: zone_of(&call["zone"]),
         })
         .collect()
+}
+
+/// A recorded `zone` member: `null`, or both ids as strings.
+fn zone_of(zone: &serde_json::Value) -> Option<PreviewZone> {
+    if zone.is_null() {
+        return None;
+    }
+    let id = |name: &str| {
+        uuid::Uuid::parse_str(zone[name].as_str().expect("an id string")).expect("a uuid")
+    };
+    Some(PreviewZone {
+        scene_id: SceneId(id("sceneId")),
+        zone_id: ZoneId(id("zoneId")),
+    })
 }
 
 fn surface(host: &web_sys::HtmlElement) -> web_sys::Element {
@@ -192,14 +208,80 @@ fn the_channel_reads_each_bridge_state() {
     assert!(live.set_preview(PreviewDemand {
         enabled: true,
         max_width: 640,
+        zone: None,
     }));
     assert_eq!(
         calls(),
         [PreviewDemand {
             enabled: true,
-            max_width: 640
+            max_width: 640,
+            zone: None,
         }]
     );
+}
+
+#[wasm_bindgen_test]
+fn the_channel_hands_the_bridge_the_followed_zone() {
+    let live = channel("live", true);
+    let zone = PreviewZone {
+        scene_id: SceneId::new(),
+        zone_id: ZoneId::new(),
+    };
+    let demand = PreviewDemand {
+        enabled: true,
+        max_width: 640,
+        zone: Some(zone),
+    };
+    assert!(live.set_preview(demand));
+    assert_eq!(calls(), [demand]);
+}
+
+#[wasm_bindgen_test]
+async fn the_demand_follows_the_zone_and_back_to_the_scene_canvas() {
+    let owner = Owner::new();
+    let context = owner.with(|| RemotePreviewContext::new(Some(channel("live", true)), None));
+    let host = surface_host();
+    let mounted = leptos::mount::mount_to(host.clone(), move || {
+        view! { <RemoteVideoPreview context=context /> }
+    });
+    let on_screen = PreviewDemand {
+        enabled: true,
+        max_width: expected_width(),
+        zone: None,
+    };
+    wait_until("demand from the observers", || {
+        calls().last() == Some(&on_screen)
+    })
+    .await;
+
+    let zone = PreviewZone {
+        scene_id: SceneId::new(),
+        zone_id: ZoneId::new(),
+    };
+    context.set_zone(Some(zone));
+    let following = PreviewDemand {
+        zone: Some(zone),
+        ..on_screen
+    };
+    assert_eq!(calls().last(), Some(&following));
+    let before = calls().len();
+    context.set_zone(Some(zone));
+    assert_eq!(calls().len(), before, "the same zone is not resent");
+
+    context.set_page_visible(false);
+    assert_eq!(
+        calls().last(),
+        Some(&PreviewDemand {
+            enabled: false,
+            ..following
+        }),
+        "a hidden page keeps the zone for its return"
+    );
+    context.set_page_visible(true);
+    context.set_zone(None);
+    assert_eq!(calls().last(), Some(&on_screen));
+    drop(mounted);
+    host.remove();
 }
 
 #[wasm_bindgen_test]
@@ -293,6 +375,7 @@ async fn a_visible_surface_reports_its_demand_until_it_unmounts() {
     let on_screen = PreviewDemand {
         enabled: true,
         max_width: expected_width,
+        zone: None,
     };
     wait_until("demand from the observers", || {
         calls().last() == Some(&on_screen)
@@ -306,6 +389,7 @@ async fn a_visible_surface_reports_its_demand_until_it_unmounts() {
         Some(&PreviewDemand {
             enabled: false,
             max_width: expected_width,
+            zone: None,
         })
     );
     context.set_page_visible(true);
@@ -369,6 +453,7 @@ async fn a_hidden_page_and_a_scrolled_away_surface_turn_the_demand_off() {
     let on_screen = PreviewDemand {
         enabled: true,
         max_width: expected_width(),
+        zone: None,
     };
     wait_until("demand from the observers", || {
         calls().last() == Some(&on_screen)
@@ -381,6 +466,7 @@ async fn a_hidden_page_and_a_scrolled_away_surface_turn_the_demand_off() {
         Some(&PreviewDemand {
             enabled: false,
             max_width: expected_width(),
+            zone: None,
         }),
         "a real visibilitychange stops the preview at once"
     );
@@ -413,6 +499,7 @@ async fn a_refused_demand_is_offered_again() {
     let on_screen = PreviewDemand {
         enabled: true,
         max_width: expected_width(),
+        zone: None,
     };
     wait_until("a refused call", || refused_calls() > 0).await;
     assert!(calls().is_empty());
@@ -442,6 +529,7 @@ async fn a_bridge_announcing_from_inside_set_preview_gets_each_demand_once() {
     let on_screen = PreviewDemand {
         enabled: true,
         max_width: expected_width(),
+        zone: None,
     };
     wait_until("the first report", || !calls().is_empty()).await;
     JsFuture::from(sleep(100)).await.expect("timer");
