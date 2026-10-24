@@ -150,6 +150,30 @@ impl SteppedPipeline {
         self.state.event_bus.frame_lane().borrow().clone()
     }
 
+    /// The color at the center of the frame the main compositor last
+    /// composed, the scene canvas of a GPU pipeline.
+    fn scene_output_center(&mut self) -> [u8; 3] {
+        let sparkleflinger = &mut self.runtime.render.sparkleflinger;
+        let Some(ProducerFrame::GpuTexture(output)) = sparkleflinger
+            .immutable_current_output_frame()
+            .expect("the composed output should snapshot")
+        else {
+            panic!("a GPU pipeline should hold a composed GPU output");
+        };
+        let mut probe = point_zone("scene_center");
+        probe.size = NormalizedPosition::new(0.01, 0.01);
+        probe.sampling_mode = Some(SamplingMode::Nearest);
+        let mut layout = zone_layout(vec![probe]);
+        layout.canvas_width = output.width;
+        layout.canvas_height = output.height;
+        let probe = SpatialEngine::new(layout);
+        sparkleflinger
+            .sample_texture_zone_plan(&output, probe.sampling_plan().as_ref())
+            .expect("the scene probe should sample")
+            .expect("the scene probe should be admitted")[0]
+            .colors[0]
+    }
+
     async fn frame_where(
         &mut self,
         description: &str,
@@ -473,6 +497,80 @@ async fn scene_that_fails_to_admit_releases_the_previous_scenes_zones() {
         assert!(runtime.reconciled_dependency_key.is_none());
     }
     assert_eq!(drain_layer_health_events(&mut events), 0);
+}
+
+/// A scene switch whose first frame fails publishes black and lets go of
+/// the frame the previous scene left retained. A later projection failure,
+/// which resumes the last good scene, therefore has nothing to resume, and
+/// the previous scene never comes back onto the scene canvas.
+#[tokio::test]
+async fn failed_scene_switch_never_resumes_the_previous_scene() {
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut first = make_scene("First");
+    first.transition.duration_ms = 0;
+    first.zones = overlapping_zones(solid_id, [255, 0, 0], [0, 0, 255]);
+    first.unassigned_behavior = UnassignedBehavior::Off;
+    let mut second = make_scene("Second");
+    second.transition.duration_ms = 0;
+    second.zones = overlapping_zones(solid_id, [0, 255, 0], [255, 255, 0]);
+    second.unassigned_behavior = UnassignedBehavior::Off;
+    let failing_zone = second.zones[0].clone();
+    let Some(mut pipeline) = SteppedPipeline::start(
+        RenderAccelerationMode::Gpu,
+        vec![first.clone(), second.clone()],
+        first.id,
+        BackendManager::new(),
+    )
+    .await
+    else {
+        return;
+    };
+    pipeline
+        .frame_where("the first scene lit", |frame| {
+            zone_led(frame, "zone_red") == Some([255, 0, 0])
+        })
+        .await;
+    // Where both zones' outputs overlap, the scene canvas shows the later
+    // zone: blue for the first scene.
+    assert_eq!(pipeline.scene_output_center(), [0, 0, 255]);
+
+    pipeline
+        .zone_runtime()
+        .fail_scene_renders_with_effect_error_for_test(Some(ZoneEffectError {
+            effect_id: solid_id.to_string(),
+            effect_name: "Solid Color".into(),
+            zone_id: failing_zone.id,
+            zone_name: failing_zone.name.clone(),
+            error: "renderer lost its device".into(),
+        }));
+    pipeline.activate(second.id).await;
+    let failed = pipeline.frame().await;
+    assert_eq!(
+        zone_led(&failed, "zone_red"),
+        None,
+        "{}",
+        frame_summary(&failed)
+    );
+
+    pipeline
+        .zone_runtime()
+        .fail_scene_renders_with_effect_error_for_test(None);
+    pipeline
+        .zone_runtime()
+        .fail_next_projected_scene_composition_for_test();
+    let _ = pipeline.frame().await;
+    assert!(
+        !pipeline
+            .zone_runtime()
+            .injected_scene_failure_pending_for_test(),
+        "the projection failure should have hit the rendered frame"
+    );
+    assert_ne!(
+        pipeline.scene_output_center(),
+        [0, 0, 255],
+        "the projection failure resumed the previous scene on the scene canvas"
+    );
 }
 
 /// Count the `LayerHealthChanged` events published since the last drain.

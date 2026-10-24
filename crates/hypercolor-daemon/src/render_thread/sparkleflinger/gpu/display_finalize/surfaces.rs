@@ -177,6 +177,14 @@ impl GpuDisplayFinalizeSurfaceSet {
         None
     }
 
+    #[cfg(test)]
+    pub(in crate::render_thread::sparkleflinger::gpu) fn readback_slots_in_use(&self) -> usize {
+        self.readback_slots_in_use
+            .iter()
+            .filter(|in_use| **in_use)
+            .count()
+    }
+
     pub(in crate::render_thread::sparkleflinger::gpu) fn release_readback_slot(
         &mut self,
         slot: usize,

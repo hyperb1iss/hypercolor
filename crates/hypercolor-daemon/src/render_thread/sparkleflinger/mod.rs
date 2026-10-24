@@ -1212,6 +1212,18 @@ impl SparkleFlinger {
         }
     }
 
+    /// Display finalize readback slots held by finalizations in flight,
+    /// across every display.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn display_finalize_readback_slots_in_use_for_test(&self) -> Option<usize> {
+        match &self.backend {
+            SparkleFlingerBackend::Cpu(_) => None,
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                Some(gpu.display_finalize_readback_slots_in_use())
+            }
+        }
+    }
+
     #[cfg(all(test, feature = "wgpu"))]
     pub(crate) fn gpu_frames_in_flight_for_test(&self) -> Option<usize> {
         match &self.backend {
