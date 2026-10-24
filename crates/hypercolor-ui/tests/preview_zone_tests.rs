@@ -6,8 +6,8 @@ use hypercolor_types::scene::ZoneRole;
 
 use hypercolor_ui::apply_target::ApplyTarget;
 use hypercolor_ui::preview_zone::{PlayerTarget, player_target, preview_zone_for};
-use hypercolor_ui::zones::ZoneEffectState;
 use hypercolor_ui::zones::surface::{Surface, SurfaceKind};
+use hypercolor_ui::zones::{ZoneEffectState, scene_read_settles};
 
 fn zone(id: &str, role: ZoneRole, effect_id: &str) -> ZoneEffectState {
     ZoneEffectState {
@@ -120,4 +120,23 @@ fn a_player_beside_the_scene_canvas_keeps_the_quick_apply_target() {
             apply_target: ApplyTarget::AllZones,
         }
     );
+}
+
+#[test]
+fn a_scene_document_settles_the_preview_target_whenever_it_was_read() {
+    // A refetch after a reconnect keeps the last document until the
+    // next one lands.
+    assert!(scene_read_settles(1, true, 1));
+    assert!(scene_read_settles(1, true, 2));
+}
+
+#[test]
+fn a_failed_scene_read_settles_the_preview_target_only_on_its_own_connection() {
+    // At app boot the first read can fail while the daemon is still
+    // binding, before any socket was admitted; the socket that opens next
+    // serves a scene that read never saw, so the preview keeps holding for
+    // that connection's read.
+    assert!(!scene_read_settles(0, false, 0));
+    assert!(!scene_read_settles(0, false, 1));
+    assert!(scene_read_settles(1, false, 1));
 }

@@ -584,6 +584,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     provide_context(crate::preview_zone::PreviewZoneContext::new(
         ws.preview_zone,
         ws.set_preview_zone,
+        ws.set_preview_zone_resolved,
     ));
     provide_context(crate::device_metrics::install_device_metrics_store(ws_ctx));
 

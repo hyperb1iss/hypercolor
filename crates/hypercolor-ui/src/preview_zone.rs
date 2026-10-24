@@ -21,6 +21,9 @@ pub struct PreviewZoneContext {
     /// carries the scene canvas.
     pub zone: ReadSignal<Option<String>>,
     pub(crate) set_zone: WriteSignal<Option<String>>,
+    /// Lifts the main preview's hold on its first subscription once the
+    /// zone it should follow is known.
+    pub(crate) set_resolved: WriteSignal<bool>,
 }
 
 impl PreviewZoneContext {
@@ -28,8 +31,13 @@ impl PreviewZoneContext {
     pub const fn new(
         zone: ReadSignal<Option<String>>,
         set_zone: WriteSignal<Option<String>>,
+        set_resolved: WriteSignal<bool>,
     ) -> Self {
-        Self { zone, set_zone }
+        Self {
+            zone,
+            set_zone,
+            set_resolved,
+        }
     }
 }
 
@@ -117,9 +125,19 @@ pub fn follow_preview_zone(pathname: Memo<String>) {
         )
     });
     Effect::new(move |_| {
+        // Until the scene is read, a multi-zone scene looks like a
+        // single-zone one, and following that guess would open the preview
+        // on its patchwork scene canvas. The main preview holds its first
+        // subscription until this lifts it.
+        if !zones.scene_resolved.get() {
+            return;
+        }
         let zone = target.get();
         if preview.zone.get_untracked() != zone {
             preview.set_zone.set(zone);
         }
+        preview
+            .set_resolved
+            .maybe_update(|resolved| !std::mem::replace(resolved, true));
     });
 }

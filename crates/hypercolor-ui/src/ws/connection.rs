@@ -33,12 +33,13 @@ use super::messages::{
     interactive_preview_supported, is_resync_required, reset_layer_health_cache,
 };
 use super::preview::{
-    DEFAULT_PREVIEW_FPS_CAP, MainPreviewRequest, PreviewCounterHandle, PreviewSubscriptionRequest,
-    canvas_frame_topics_allowed, clear_preview_subscription, clear_screen_preview_subscription,
-    clear_web_viewport_preview_subscription, request_preview_subscription,
-    request_screen_preview_subscription, request_web_viewport_preview_subscription,
-    send_main_preview_unsubscribe, send_screen_canvas_unsubscribe, send_screen_zones_subscribe,
-    send_screen_zones_unsubscribe, send_web_viewport_canvas_unsubscribe, should_stream_preview,
+    DEFAULT_PREVIEW_FPS_CAP, MainPreviewRequest, MainPreviewStep, PreviewCounterHandle,
+    PreviewSubscriptionRequest, canvas_frame_topics_allowed, clear_preview_subscription,
+    clear_screen_preview_subscription, clear_web_viewport_preview_subscription, main_preview_step,
+    request_preview_subscription, request_screen_preview_subscription,
+    request_web_viewport_preview_subscription, send_main_preview_unsubscribe,
+    send_screen_canvas_unsubscribe, send_screen_zones_subscribe, send_screen_zones_unsubscribe,
+    send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
 use super::transport::{
     WebSocketConnectRequest, WebSocketConnection, WebSocketEvent, WebSocketMessage,
@@ -49,6 +50,9 @@ use crate::remote_bridge;
 
 const BACKPRESSURE_RECOVERY_MS: f64 = 2_000.0;
 const INITIAL_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long an open socket's main preview waits for the page to work out
+/// which zone to follow before it streams the current target anyway.
+const PREVIEW_TARGET_HOLD_TIMEOUT: Duration = Duration::from_secs(2);
 const TAURI_WINDOW_VISIBILITY_EVENT: &str = "hypercolor-window-visibility";
 const VERIFIED_DAEMON_CONNECTION_EVENT: &str = "hypercolor-verified-daemon-connection-changed";
 const TAURI_WINDOW_VISIBLE_GLOBAL: &str = "__HYPERCOLOR_TAURI_WINDOW_VISIBLE";
@@ -258,6 +262,11 @@ pub struct WsManager {
     pub preview_zone: ReadSignal<Option<String>>,
     /// Retarget the main preview at one zone, or back to the scene canvas.
     pub set_preview_zone: WriteSignal<Option<String>>,
+    /// Set once the page knows which zone the main preview follows. The
+    /// preview holds its first subscription until then, or for at most
+    /// two seconds of an open socket, so a multi-zone scene opens on its
+    /// zone rather than its scene canvas patchwork.
+    pub set_preview_zone_resolved: WriteSignal<bool>,
     pub set_preview_cap: WriteSignal<u32>,
     pub set_preview_width_cap: WriteSignal<u32>,
     pub set_preview_consumers: WriteSignal<u32>,
@@ -337,6 +346,7 @@ impl WsManager {
         let (audio_level, set_audio_level) = signal(AudioLevel::default());
         let (preview_target_fps, set_preview_target_fps) = signal(0_u32);
         let (preview_zone, set_preview_zone) = signal(None::<String>);
+        let (preview_zone_resolved, set_preview_zone_resolved) = signal(false);
         let (engine_preview_target, set_engine_preview_target) = signal(0_u32);
         let (preview_page_cap, set_preview_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
         let (preview_width_cap, set_preview_width_cap) = signal(0_u32);
@@ -381,6 +391,8 @@ impl WsManager {
         let reconnect_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage> =
             StoredValue::new_local(None);
         let initial_subscription_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage> =
+            StoredValue::new_local(None);
+        let preview_hold_timeout: StoredValue<Option<BrowserTimeoutHandle>, LocalStorage> =
             StoredValue::new_local(None);
         let awaiting_initial_subscription = StoredValue::new(false);
 
@@ -750,27 +762,35 @@ impl WsManager {
             let consumer_count = preview_consumers.get();
             let client_cap = preview_page_cap.get().min(preview_backpressure_cap.get());
             let width_cap = preview_width_cap.get();
-            let zone = preview_zone.get();
             let is_visible = page_visible.get();
             let window_visible = app_window_visible.get();
-            if !should_stream_preview(is_visible, window_visible, engine_target, consumer_count) {
-                // Only a requested stream has anything to unsubscribe. The
-                // effect reruns on every engine target report, about twice
-                // a second, and each rerun would otherwise send another.
-                if let Some(request) = requested_preview.get_value()
-                    && let Some(ws) = ws_handle.get_value()
-                {
-                    clear_preview_subscription(
-                        requested_preview,
-                        &set_preview_target_fps,
-                        &set_preview_fps,
-                        &set_canvas_frame,
-                    );
-                    preview_counters.end_stream();
-                    send_main_preview_unsubscribe(ws.as_ref(), &request);
+            let streaming =
+                should_stream_preview(is_visible, window_visible, engine_target, consumer_count);
+            let step =
+                main_preview_step(streaming, preview_zone_resolved.get(), preview_zone.get());
+            let zone = match step {
+                MainPreviewStep::Stream(zone) => zone,
+                MainPreviewStep::Hold => return,
+                MainPreviewStep::Stop => {
+                    // Only a requested stream has anything to unsubscribe.
+                    // The effect reruns on every engine target report,
+                    // about twice a second, and each rerun would otherwise
+                    // send another.
+                    if let Some(request) = requested_preview.get_value()
+                        && let Some(ws) = ws_handle.get_value()
+                    {
+                        clear_preview_subscription(
+                            requested_preview,
+                            &set_preview_target_fps,
+                            &set_preview_fps,
+                            &set_canvas_frame,
+                        );
+                        preview_counters.end_stream();
+                        send_main_preview_unsubscribe(ws.as_ref(), &request);
+                    }
+                    return;
                 }
-                return;
-            }
+            };
 
             // A new target owns none of the frames shown so far: drop the
             // last one so nothing captures or analyzes it as the new zone.
@@ -795,6 +815,25 @@ impl WsManager {
                     zone,
                 );
             }
+        });
+
+        // A page that never works out its preview's zone (the scene read
+        // hangs, or nothing follows the scene) still gets a picture: once
+        // the socket has been open a moment, the hold lifts onto whatever
+        // target is set, the scene canvas by default. One deadline per
+        // open socket, never a loop.
+        Effect::new(move |_| {
+            if connection_state.get() != ConnectionState::Connected || preview_zone_resolved.get() {
+                clear_timeout(preview_hold_timeout);
+                return;
+            }
+            if preview_hold_timeout.with_value(Option::is_some) {
+                return;
+            }
+            let timeout = browser_set_timeout(PREVIEW_TARGET_HOLD_TIMEOUT, move || {
+                set_preview_zone_resolved.set(true);
+            });
+            preview_hold_timeout.set_value(Some(timeout));
         });
 
         Effect::new(move |_| {
@@ -1133,6 +1172,7 @@ impl WsManager {
             preview_target_fps,
             preview_zone,
             set_preview_zone,
+            set_preview_zone_resolved,
             set_preview_cap,
             set_preview_width_cap,
             set_preview_consumers,

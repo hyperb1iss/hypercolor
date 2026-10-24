@@ -153,6 +153,34 @@ impl MainPreviewRequest {
     }
 }
 
+/// What one pass of the main preview subscription does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum MainPreviewStep {
+    /// Nothing should stream: drop whatever is live.
+    Stop,
+    /// A consumer is waiting, but the page has not worked out which zone
+    /// to follow. Subscribing now would open on the scene canvas, which a
+    /// multi-zone scene draws as a patchwork of every zone, and switch a
+    /// moment later, so nothing is sent yet.
+    Hold,
+    /// Stream one zone, or the scene canvas for `None`.
+    Stream(Option<String>),
+}
+
+pub(super) fn main_preview_step(
+    streaming: bool,
+    target_resolved: bool,
+    zone: Option<String>,
+) -> MainPreviewStep {
+    if !streaming {
+        MainPreviewStep::Stop
+    } else if target_resolved {
+        MainPreviewStep::Stream(zone)
+    } else {
+        MainPreviewStep::Hold
+    }
+}
+
 /// The messages that move the main preview from `previous` to `next`.
 /// Switching between the scene canvas and a zone drops the old topic
 /// first, so the socket never streams both; retargeting one zone to
@@ -665,9 +693,9 @@ impl PreviewCounterHandle {
 #[cfg(test)]
 mod tests {
     use super::{
-        MainPreviewRequest, PreviewSubscriptionRequest, REMOTE_PREVIEW_WIDTH_LOW,
+        MainPreviewRequest, MainPreviewStep, PreviewSubscriptionRequest, REMOTE_PREVIEW_WIDTH_LOW,
         REMOTE_PREVIEW_WIDTH_MEDIUM, canvas_frame_topics_allowed, desired_preview_fps,
-        main_preview_messages, preview_canvas_format_for_host,
+        main_preview_messages, main_preview_step, preview_canvas_format_for_host,
         preview_canvas_request_dimensions_for_host, remote_preview_width_for_fps,
         should_stream_preview, web_viewport_preview_request_dimensions,
     };
@@ -692,6 +720,50 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    /// Drive the main preview through one pass per `(target_resolved,
+    /// zone)` state the way its effect does, collecting what it sends.
+    fn sent_across(states: &[(bool, Option<&str>)]) -> Vec<serde_json::Value> {
+        let mut requested = None::<MainPreviewRequest>;
+        let mut sent = Vec::new();
+        for (resolved, zone) in states {
+            let step = main_preview_step(true, *resolved, zone.map(ToOwned::to_owned));
+            if let MainPreviewStep::Stream(zone) = step {
+                let next = main_request(60, zone.as_deref());
+                sent.extend(main_preview_messages(requested.as_ref(), &next));
+                requested = Some(next);
+            }
+        }
+        sent
+    }
+
+    #[test]
+    fn a_multi_zone_first_paint_subscribes_its_zone_without_the_scene_canvas() {
+        // The socket opens before the scene is read; the zone lands next.
+        let sent = sent_across(&[(false, None), (false, None), (true, Some("zone-a"))]);
+        assert_eq!(
+            topics(&sent),
+            [("subscribe".to_owned(), "zone_preview".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_single_zone_first_paint_subscribes_the_scene_canvas_once_resolved() {
+        let sent = sent_across(&[(false, None), (true, None)]);
+        assert_eq!(
+            topics(&sent),
+            [("subscribe".to_owned(), "canvas".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_hidden_page_stops_even_while_its_target_is_unresolved() {
+        assert_eq!(main_preview_step(false, false, None), MainPreviewStep::Stop);
+        assert_eq!(
+            main_preview_step(false, true, Some("zone-a".to_owned())),
+            MainPreviewStep::Stop
+        );
     }
 
     #[test]
