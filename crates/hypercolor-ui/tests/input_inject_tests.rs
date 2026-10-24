@@ -1,13 +1,17 @@
+use hypercolor_leptos_ext::ws::PreviewPixelFormat;
+use hypercolor_leptos_ext::ws::registry::CanvasFormat;
 use hypercolor_types::api::effects::EffectSourceKind;
 use hypercolor_types::effect::EffectCategory;
+use hypercolor_types::scene::ZoneRole;
 use hypercolor_ui::api::{EffectCapabilitySet, EffectSummary};
 use hypercolor_ui::components::canvas_preview::{
-    canonical_injection_key, effect_wants_interaction, normalized_canvas_position,
-    wheel_scroll_edge,
+    canonical_injection_key, effect_wants_interaction, interactive_effect_id,
+    normalized_canvas_position, wheel_scroll_edge,
 };
 use hypercolor_ui::ws::interactive_preview::{
     InteractivePreviewLifecycle, InteractivePreviewLifecycleTracker,
-    InteractivePreviewServerUpdate, close_message, closed_previews, input_inject_message,
+    InteractivePreviewServerUpdate, InteractivePreviewShape, InteractivePreviewTarget,
+    close_message, closed_previews, input_inject_message, interactive_preview_request,
     open_message, server_updates,
 };
 use hypercolor_ui::ws::messages::interactive_preview_supported;
@@ -15,6 +19,8 @@ use hypercolor_ui::ws::{
     InputEdgeButton, InputEdgeScrollPhase, InputEdgeScrollUnit, InputEdgeState, InputInjectEdge,
     InteractivePreviewRequest,
 };
+use hypercolor_ui::zones::ZoneEffectState;
+use hypercolor_ui::zones::surface::{Surface, SurfaceKind};
 
 fn summary(input_reactive: bool, category: EffectCategory, tags: &[&str]) -> EffectSummary {
     EffectSummary {
@@ -86,9 +92,11 @@ fn edges_serialize_to_daemon_wire_shape() {
 fn interactive_preview_control_messages_are_addressed() {
     let request = InteractivePreviewRequest {
         preview_id: "main".to_owned(),
+        target: InteractivePreviewTarget::ActiveScene,
         fps: 30,
         width: 640,
         height: 480,
+        format: CanvasFormat::Jpeg,
     };
     assert_eq!(
         open_message(&request),
@@ -384,6 +392,151 @@ fn effect_summary_defaults_new_capabilities_for_older_payloads() {
 
     assert!(!summary.input_reactive);
     assert_eq!(summary.capabilities, EffectCapabilitySet::default());
+}
+
+#[test]
+fn a_zone_interactive_preview_names_its_zone_in_the_target() {
+    let request = InteractivePreviewRequest {
+        preview_id: "main".to_owned(),
+        target: InteractivePreviewTarget::Zone("roli".to_owned()),
+        fps: 30,
+        width: 640,
+        height: 630,
+        format: CanvasFormat::Rgba,
+    };
+    let message = open_message(&request);
+    assert_eq!(
+        message["topics"][0]["config"]["target"],
+        serde_json::json!({ "zone": "roli" })
+    );
+    assert_eq!(message["topics"][0]["config"]["format"], "rgba");
+    assert_eq!(message["topics"][0]["key"], "main");
+}
+
+fn shape(width: u32, height: u32) -> Option<InteractivePreviewShape> {
+    Some(InteractivePreviewShape::new(
+        width,
+        height,
+        PreviewPixelFormat::Rgba,
+    ))
+}
+
+#[test]
+fn an_interactive_preview_follows_the_zone_the_main_preview_shows() {
+    let request = |zone: Option<&str>, latest, held| {
+        interactive_preview_request(true, "main", zone, 30, latest, held)
+    };
+
+    let scene = request(None, shape(640, 480), None).expect("the scene preview opens");
+    assert_eq!(scene.target, InteractivePreviewTarget::ActiveScene);
+    assert_eq!((scene.width, scene.height), (640, 480));
+
+    let zone = request(Some("roli"), shape(640, 630), shape(640, 480))
+        .expect("a zone preview opens at the zone's frame size");
+    assert_eq!(
+        zone.target,
+        InteractivePreviewTarget::Zone("roli".to_owned())
+    );
+    assert_eq!((zone.width, zone.height), (640, 630));
+}
+
+#[test]
+fn an_interactive_lane_encodes_in_the_main_previews_own_format() {
+    // A loopback main preview streams raw RGBA, which a WebGL presenter
+    // paints; that canvas cannot hand itself to a JPEG decoder, so the
+    // lane must not switch formats on it.
+    for (format, wire) in [
+        (PreviewPixelFormat::Rgba, CanvasFormat::Rgba),
+        (PreviewPixelFormat::Rgb, CanvasFormat::Rgb),
+        (PreviewPixelFormat::Jpeg, CanvasFormat::Jpeg),
+    ] {
+        let latest = Some(InteractivePreviewShape::new(640, 480, format));
+        let request = interactive_preview_request(true, "main", None, 30, latest, None)
+            .expect("the lane opens");
+        assert_eq!(request.format, wire);
+        assert_eq!(
+            open_message(&request)["topics"][0]["config"]["format"],
+            serde_json::to_value(wire).expect("format serializes")
+        );
+    }
+}
+
+#[test]
+fn moving_to_another_zone_retargets_the_open_lane_instead_of_closing_it() {
+    // The main preview drops its last frame when it switches zones, so the
+    // newest extent is briefly unknown. The lane must keep its size and
+    // carry the new target rather than close.
+    let retarget =
+        interactive_preview_request(true, "main", Some("push"), 30, None, shape(640, 630))
+            .expect("a switch with no new frame yet keeps the lane open");
+    assert_eq!(
+        retarget.target,
+        InteractivePreviewTarget::Zone("push".to_owned())
+    );
+    assert_eq!((retarget.width, retarget.height), (640, 630));
+
+    assert_eq!(
+        interactive_preview_request(true, "main", Some("push"), 30, None, None),
+        None,
+        "a lane never opens before any frame has said how big it is"
+    );
+    assert_eq!(
+        interactive_preview_request(false, "main", Some("push"), 30, shape(640, 630), None),
+        None,
+        "interactive mode off closes the lane"
+    );
+}
+
+fn zone_state(zone_id: &str, effect_id: Option<&str>) -> ZoneEffectState {
+    ZoneEffectState {
+        zone: Surface {
+            id: zone_id.to_owned(),
+            name: zone_id.to_owned(),
+            kind: SurfaceKind::Light,
+            enabled: true,
+            role: ZoneRole::Custom,
+            color: None,
+            display_device_id: None,
+            layer_ids: Vec::new(),
+            top_layer: None,
+        },
+        effect_id: effect_id.map(ToOwned::to_owned),
+        effect_name: None,
+        effect_category: None,
+        control_values: std::collections::HashMap::new(),
+        preset_id: None,
+        revision: 1,
+        layer_labels: Vec::new(),
+    }
+}
+
+#[test]
+fn the_interactive_toggle_keys_on_the_shown_zones_effect() {
+    let zones = [
+        zone_state("default", Some("bubble-garden")),
+        zone_state("roli", Some("touch-ripple")),
+        zone_state("empty", None),
+    ];
+
+    assert_eq!(
+        interactive_effect_id(Some("roli"), &zones, Some("bubble-garden")).as_deref(),
+        Some("touch-ripple"),
+        "a shown zone offers its own effect, not the Default zone's"
+    );
+    assert_eq!(
+        interactive_effect_id(None, &zones, Some("bubble-garden")).as_deref(),
+        Some("bubble-garden"),
+        "the scene canvas offers the primary effect"
+    );
+    assert_eq!(
+        interactive_effect_id(Some("empty"), &zones, Some("bubble-garden")),
+        None
+    );
+    assert_eq!(
+        interactive_effect_id(Some("gone"), &zones, Some("bubble-garden")),
+        None,
+        "a zone the scene state does not list offers nothing"
+    );
 }
 
 #[test]

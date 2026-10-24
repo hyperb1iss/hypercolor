@@ -2,7 +2,9 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use hypercolor_leptos_ext::ws::INTERACTIVE_PREVIEW_ID_MAX_BYTES;
+use hypercolor_leptos_ext::ws::registry::CanvasFormat;
+pub use hypercolor_leptos_ext::ws::registry::InteractivePreviewTarget;
+use hypercolor_leptos_ext::ws::{INTERACTIVE_PREVIEW_ID_MAX_BYTES, PreviewPixelFormat};
 use serde_json::Value;
 
 use super::input::InputInjectEdge;
@@ -11,9 +13,88 @@ use super::transport::{WebSocketConnection, send_json};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractivePreviewRequest {
     pub preview_id: String,
+    pub target: InteractivePreviewTarget,
     pub fps: u32,
     pub width: u32,
     pub height: u32,
+    pub format: CanvasFormat,
+}
+
+/// The size and pixel format of the main preview's frames, which an
+/// interactive lane standing in for it renders at.
+///
+/// Matching the format matters as much as the size: the canvas keeps the
+/// presenter the main preview's frames set up, and a raw-pixel presenter
+/// owns a WebGL context that a JPEG decoder cannot take over, so frames in
+/// another format would never paint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InteractivePreviewShape {
+    pub width: u32,
+    pub height: u32,
+    pub format: CanvasFormat,
+}
+
+impl InteractivePreviewShape {
+    #[must_use]
+    pub const fn new(width: u32, height: u32, format: PreviewPixelFormat) -> Self {
+        Self {
+            width,
+            height,
+            format: match format {
+                PreviewPixelFormat::Rgb => CanvasFormat::Rgb,
+                PreviewPixelFormat::Rgba => CanvasFormat::Rgba,
+                PreviewPixelFormat::Jpeg => CanvasFormat::Jpeg,
+            },
+        }
+    }
+}
+
+/// What an interactive preview renders when it stands in for the main
+/// preview: the zone that preview shows, or the scene while it shows the
+/// scene canvas. Following the same zone keeps a click on the picture
+/// landing in the effect the picture shows.
+#[must_use]
+pub fn interactive_preview_target(shown_zone: Option<&str>) -> InteractivePreviewTarget {
+    shown_zone.map_or(InteractivePreviewTarget::ActiveScene, |zone| {
+        InteractivePreviewTarget::Zone(zone.to_owned())
+    })
+}
+
+/// The interactive preview a surface should hold open, or `None` to close
+/// it.
+///
+/// The lane renders `shown_zone`, or the scene for `None`, in the shape
+/// of the main preview's newest frame. That preview drops its last frame
+/// when it moves to another zone, so until the new zone's frames land the
+/// lane keeps the shape it last had (`held_shape`). Following another
+/// zone therefore re-sends the open lane's config with the new target,
+/// which the daemon applies to the live lane, rather than closing it and
+/// opening a new one.
+#[must_use]
+pub fn interactive_preview_request(
+    requested: bool,
+    preview_id: &str,
+    shown_zone: Option<&str>,
+    fps: u32,
+    latest_shape: Option<InteractivePreviewShape>,
+    held_shape: Option<InteractivePreviewShape>,
+) -> Option<InteractivePreviewRequest> {
+    if !requested {
+        return None;
+    }
+    let InteractivePreviewShape {
+        width,
+        height,
+        format,
+    } = latest_shape.or(held_shape)?;
+    Some(InteractivePreviewRequest {
+        preview_id: preview_id.to_owned(),
+        target: interactive_preview_target(shown_zone),
+        fps,
+        width,
+        height,
+        format,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,11 +358,11 @@ pub fn open_message(request: &InteractivePreviewRequest) -> Value {
             "topic": "interactive_preview",
             "key": request.preview_id,
             "config": {
-                "target": "active_scene",
+                "target": request.target,
                 "fps": request.fps,
                 "width": request.width,
                 "height": request.height,
-                "format": "jpeg",
+                "format": request.format,
             }
         }]
     })
