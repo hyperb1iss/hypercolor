@@ -31,7 +31,7 @@ use super::{
     InteractivePreviewFrame, InteractivePreviewSpec, InteractivePreviewTarget, PixelExtent,
     PreviewCapacityLedger, PreviewLaneCommand, PreviewLaneId, PreviewLaneInput,
     PreviewResourceLedger, ResolvedPreviewScene, advance_deadline, duration_millis_u32,
-    preview_input_demand, preview_render_context, request_preview_lane_update,
+    preview_input_demand, preview_render_context, publishable, request_preview_lane_update,
 };
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::preview_runtime::PreviewPixelFormat;
@@ -41,6 +41,9 @@ struct PreviewTestRig {
     executor: InteractivePreviewExecutor,
     browser_handle: BrowserInputHandle,
     demands: InputPublicationDemandHandle,
+    scenes: crate::domain::scene::SceneService,
+    /// An inactive scene with no zones, to switch the rig's scene away.
+    spare_scene: hypercolor_types::scene::SceneId,
 }
 
 impl PreviewTestRig {
@@ -76,11 +79,13 @@ impl PreviewTestRig {
         let demands = InputPublicationDemandHandle::default();
         let input_manager = InputManager::new();
         let event_bus = Arc::new(HypercolorBus::new());
+        let mut manager = scene_manager(zones);
+        let spare = make_scene("Spare");
+        let spare_scene = spare.id;
+        manager.create(spare).expect("spare scene should be valid");
+        let scenes = crate::domain::scene::SceneService::in_memory(manager, Arc::clone(&event_bus));
         let executor = InteractivePreviewExecutor::start(InteractivePreviewContext {
-            scene_manager: crate::domain::scene::SceneService::in_memory(
-                scene_manager(zones),
-                Arc::clone(&event_bus),
-            ),
+            scene_manager: scenes.clone(),
             effect_registry: Arc::new(RwLock::new(EffectRegistry::new(Vec::new()))),
             asset_library: None,
             event_bus,
@@ -99,7 +104,24 @@ impl PreviewTestRig {
             executor,
             browser_handle,
             demands,
+            scenes,
+            spare_scene,
         }
+    }
+
+    async fn activate(&self, scene_id: hypercolor_types::scene::SceneId) {
+        let mut mutation = self.scenes.begin_mutation().await;
+        mutation
+            .activate(
+                scene_id,
+                None,
+                hypercolor_types::event::SceneChangeReason::UserActivate,
+            )
+            .expect("test scene should activate");
+        self.scenes
+            .commit_mutation(mutation)
+            .await
+            .expect("scene activation should commit");
     }
 
     fn attach(&self, connection: u64, preview_id: &str) -> BrowserInputAttachment {
@@ -310,17 +332,23 @@ fn spec(width: u32, height: u32) -> InteractivePreviewSpec {
     }
 }
 
+/// The lane's next published frame, past any withdrawal of an old one.
 async fn next_frame(
     receiver: &mut tokio::sync::watch::Receiver<Option<Arc<InteractivePreviewFrame>>>,
 ) -> Arc<InteractivePreviewFrame> {
-    timeout(Duration::from_secs(2), receiver.changed())
-        .await
-        .expect("preview frame should arrive before timeout")
-        .expect("preview lane should stay open");
-    receiver
-        .borrow_and_update()
-        .clone()
-        .expect("preview publication should carry a frame")
+    timeout(Duration::from_secs(2), async {
+        loop {
+            receiver
+                .changed()
+                .await
+                .expect("preview lane should stay open");
+            if let Some(frame) = receiver.borrow_and_update().clone() {
+                return frame;
+            }
+        }
+    })
+    .await
+    .expect("preview frame should arrive before timeout")
 }
 
 async fn wait_for_preview_demands(demands: &InputPublicationDemandHandle, expected: usize) {
@@ -1108,8 +1136,13 @@ async fn a_gpu_zone_lane_publishes_from_open_and_through_retargets() {
                 return;
             }
         };
-    let primary = color_zone([1.0, 0.0, 0.0, 1.0]);
-    let side = side_zone([0.0, 0.0, 1.0, 1.0], 8, 6);
+    // Both zones drive an LED strip, the way a real rig's zones do, and
+    // the side zone has a canvas of its own size, so it renders through
+    // the GPU projection path rather than straight into the scene frame.
+    let mut primary = color_zone([1.0, 0.0, 0.0, 1.0]);
+    primary.layout.zones = vec![led_strip("primary-strip")];
+    let mut side = side_zone([0.0, 0.0, 1.0, 1.0], 4, 2);
+    side.layout.zones = vec![led_strip("side-strip")];
     let (primary_id, side_id) = (primary.id, side.id);
     let rig = PreviewTestRig::with_acceleration(
         vec![primary, side],
@@ -1145,4 +1178,147 @@ async fn a_gpu_zone_lane_publishes_from_open_and_through_retargets() {
         let frame = next_frame_where(&mut receiver, |frame| frame.spec_generation > before).await;
         assert!(every_pixel_is(&frame, color));
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retargeting_to_a_target_with_nothing_to_show_releases_the_old_frame() {
+    let side = side_zone([0.0, 0.0, 1.0, 1.0], 4, 2);
+    let side_id = side.id;
+    let rig = PreviewTestRig::with_zones(
+        vec![color_zone([1.0, 0.0, 0.0, 1.0]), side],
+        64 * 1024 * 1024,
+    )
+    .await;
+    let attachment = rig.attach(1, "release");
+    let lane = rig
+        .executor
+        .open(&attachment, zone_spec(side_id, 4, 3))
+        .await
+        .expect("a zone lane should open");
+    let mut receiver = lane.frame_receiver();
+    drop(next_frame(&mut receiver).await);
+    let one_lane = rig.executor.resource_snapshot().used;
+
+    lane.resize_or_retarget(zone_spec(ZoneId::new(), 4, 3))
+        .await
+        .expect("a lane retargets to a zone the scene lacks");
+
+    assert!(
+        receiver.borrow().is_none(),
+        "the old target's frame is withdrawn"
+    );
+    assert_eq!(
+        rig.executor.resource_snapshot().used,
+        one_lane,
+        "only the new target's resources stay reserved"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_followed_zone_stops_with_its_scene_and_returns_with_it() {
+    let side = side_zone([0.0, 0.0, 1.0, 1.0], 4, 2);
+    let side_id = side.id;
+    let rig = PreviewTestRig::with_zones(
+        vec![color_zone([1.0, 0.0, 0.0, 1.0]), side],
+        64 * 1024 * 1024,
+    )
+    .await;
+    let home = rig
+        .scenes
+        .snapshot()
+        .await
+        .active_scene_id()
+        .copied()
+        .expect("the rig's scene is active");
+    let attachment = rig.attach(1, "follow");
+    let lane = rig
+        .executor
+        .open(&attachment, zone_spec(side_id, 4, 3))
+        .await
+        .expect("a zone lane should open");
+    let mut receiver = lane.frame_receiver();
+    let first = next_frame(&mut receiver).await;
+    assert!(every_pixel_is(&first, BLUE));
+    drop(first);
+
+    rig.activate(rig.spare_scene).await;
+    timeout(Duration::from_secs(2), async {
+        while receiver.borrow_and_update().is_some() {
+            receiver
+                .changed()
+                .await
+                .expect("the lane stays open while its zone is away");
+        }
+    })
+    .await
+    .expect("the lane withdraws its frame once the zone leaves");
+    assert_eq!(
+        lane.snapshot().last_error.as_deref(),
+        Some("preview zone is not in the active scene")
+    );
+
+    rig.activate(home).await;
+    let back = next_frame(&mut receiver).await;
+    assert!(
+        every_pixel_is(&back, BLUE),
+        "the lane picks the zone back up when its scene returns"
+    );
+}
+
+#[cfg(feature = "wgpu")]
+fn led_strip(id: &str) -> hypercolor_types::spatial::Output {
+    use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
+    Output {
+        id: id.into(),
+        name: id.into(),
+        device_id: id.into(),
+        zone_name: None,
+        position: NormalizedPosition { x: 0.5, y: 0.5 },
+        size: NormalizedPosition { x: 0.4, y: 0.4 },
+        rotation: 0.0,
+        scale: 1.0,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: 4,
+            direction: StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        display_order: 0,
+        attachment: None,
+        brightness: None,
+    }
+}
+
+#[test]
+fn a_frame_still_reading_back_is_pending_not_failed() {
+    use crate::render_thread::{InteractivePreviewRender, ProducerFrame};
+    use hypercolor_types::canvas::{Canvas, PublishedSurface};
+
+    let frame = || InteractivePreviewRender::Frame(ProducerFrame::Canvas(Canvas::new(2, 2)));
+    assert!(matches!(
+        publishable(frame(), |_| Ok(None)),
+        Ok(InteractivePreviewRender::Pending)
+    ));
+    assert!(matches!(
+        publishable(frame(), |_| Ok(Some(PublishedSurface::from_owned_canvas(
+            Canvas::new(2, 2),
+            0,
+            0
+        )))),
+        Ok(InteractivePreviewRender::Frame(_))
+    ));
+    assert_eq!(
+        publishable(frame(), |_| Err("lost".to_owned())).err(),
+        Some("lost".to_owned()),
+        "a readback that failed still fails the pass"
+    );
+    assert!(matches!(
+        publishable(InteractivePreviewRender::Dark, |_| Err("unread".to_owned())),
+        Ok(InteractivePreviewRender::Dark)
+    ));
 }

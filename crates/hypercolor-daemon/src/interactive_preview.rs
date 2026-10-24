@@ -1039,6 +1039,7 @@ impl PreviewLane {
         // nothing; the lane picks it back up if the zone returns.
         if scene.targets_missing_zone() {
             self.last_tick = now;
+            self.withdraw_frame();
             self.telemetry
                 .publish_error("preview zone is not in the active scene");
             return;
@@ -1124,9 +1125,20 @@ impl PreviewLane {
             .spec_generation
             .store(self.spec_generation, Ordering::Release);
         self.spec_generation_tx.send_replace(self.spec_generation);
-        self.showing_dark = false;
+        // The previous target's frame never publishes again, so a target
+        // with nothing to show yet does not keep its resources reserved.
+        self.withdraw_frame();
         self.publish_lane_frame(frame);
         Ok(())
+    }
+
+    /// Stop offering the newest frame: it shows a target the lane no longer
+    /// renders, and holding it would keep its resource lease reserved.
+    fn withdraw_frame(&mut self) {
+        self.showing_dark = false;
+        if self.retained_frame.take().is_some() {
+            self.frame_tx.send_replace(None);
+        }
     }
 
     fn publish_lane_frame(&mut self, frame: InteractivePreviewRender<PublishedSurface>) {
@@ -1247,19 +1259,31 @@ fn render_preview_scene(
     };
     let frame = rendered
         .map_err(|error| error.to_string())
-        .and_then(|rendered| match rendered {
-            InteractivePreviewRender::Frame(frame) => {
+        .and_then(|rendered| {
+            publishable(rendered, |frame| {
                 preview_surface(sparkleflinger, frame, spec.width, spec.height)
-                    .map(InteractivePreviewRender::Frame)
-                    .ok_or_else(|| {
-                        "preview frame could not be materialized on its isolated device".to_owned()
-                    })
-            }
-            InteractivePreviewRender::Dark => Ok(InteractivePreviewRender::Dark),
-            InteractivePreviewRender::Pending => Ok(InteractivePreviewRender::Pending),
+            })
         });
     sparkleflinger.end_gpu_frame();
     frame
+}
+
+/// What a pass leaves to publish once `read_back` brings its frame to the
+/// requested size. A frame whose GPU readback is still in flight is
+/// pending, not failed: it lands on a later pass, and a retarget whose
+/// first pass is still reading back stands.
+fn publishable(
+    rendered: InteractivePreviewRender,
+    read_back: impl FnOnce(ProducerFrame) -> Result<Option<PublishedSurface>, String>,
+) -> Result<InteractivePreviewRender<PublishedSurface>, String> {
+    Ok(match rendered {
+        InteractivePreviewRender::Frame(frame) => read_back(frame)?.map_or(
+            InteractivePreviewRender::Pending,
+            InteractivePreviewRender::Frame,
+        ),
+        InteractivePreviewRender::Dark => InteractivePreviewRender::Dark,
+        InteractivePreviewRender::Pending => InteractivePreviewRender::Pending,
+    })
 }
 
 /// What one pass hands the zone runtime: the zones the target renders,
@@ -1704,39 +1728,44 @@ fn create_preview_compositor(
     )
 }
 
+/// The lane's frame at the requested size, or `None` while a GPU readback
+/// of it is still in flight.
 fn preview_surface(
     sparkleflinger: &mut SparkleFlinger,
     frame: ProducerFrame,
     width: u32,
     height: u32,
-) -> Option<PublishedSurface> {
-    let request = Some(PreviewSurfaceRequest { width, height });
+) -> Result<Option<PublishedSurface>, String> {
+    let request = PreviewSurfaceRequest { width, height };
     match frame {
         ProducerFrame::Canvas(_)
         | ProducerFrame::Surface(_)
-        | ProducerFrame::ScreenPublication(_) => {
-            sparkleflinger
-                .preview_only_frame(frame, request)
-                .preview_surface
-        }
-        // Materializing encodes a readback, and the readback only lands once
-        // its work is submitted and its map resolves, the step the render
-        // thread takes after every composition. Without it a GPU lane never
-        // publishes, and dropping the lane's compositor on a retarget drops a
-        // frame whose readback was never submitted.
+        | ProducerFrame::ScreenPublication(_) => sparkleflinger
+            .preview_only_frame(frame, Some(request))
+            .preview_surface
+            .map(Some)
+            .ok_or_else(|| UNMATERIALIZED_PREVIEW.to_owned()),
+        // A GPU frame reads back asynchronously and scaled on the GPU. Each
+        // pass encodes this frame's readback, then submits it and resolves
+        // whichever readback has landed, the step the render thread takes
+        // after every composition. The newest landed frame publishes; until
+        // one lands the frame is pending, not failed, and no readback
+        // outlives the pass unsubmitted.
         #[cfg(feature = "wgpu")]
-        ProducerFrame::GpuTexture(_) => sparkleflinger
-            .materialize_output_surface(frame)
-            .or_else(|| sparkleflinger.resolve_preview_surface().ok().flatten())
-            .and_then(|surface| {
-                sparkleflinger
-                    .preview_only_frame(ProducerFrame::Surface(surface), request)
-                    .preview_surface
-            }),
+        ProducerFrame::GpuTexture(_) => {
+            let ready = sparkleflinger.materialize_scaled_surface(frame, request);
+            let resolved = sparkleflinger
+                .resolve_preview_surface()
+                .map_err(|error| format!("preview readback failed: {error}"))?;
+            Ok(resolved.or(ready))
+        }
         #[cfg(feature = "servo-gpu-import")]
-        ProducerFrame::Gpu(_) => None,
+        ProducerFrame::Gpu(_) => Err(UNMATERIALIZED_PREVIEW.to_owned()),
     }
 }
+
+const UNMATERIALIZED_PREVIEW: &str =
+    "preview frame could not be materialized on its isolated device";
 
 fn preview_interval(fps: u32) -> Duration {
     Duration::from_secs_f64(1.0 / f64::from(fps.max(1)))

@@ -1163,6 +1163,30 @@ impl SparkleFlinger {
         composed.preview_surface.or(composed.sampling_surface)
     }
 
+    /// Compose a GPU frame alone and read it back at `request`'s size,
+    /// scaled on the GPU, for a consumer that drives its own readbacks.
+    /// The readback is encoded here and lands on a later
+    /// [`Self::resolve_preview_surface`]; the surface returned now, if any,
+    /// is one an earlier readback already finished.
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn materialize_scaled_surface(
+        &mut self,
+        frame: ProducerFrame,
+        request: PreviewSurfaceRequest,
+    ) -> Option<PublishedSurface> {
+        if frame.width() == 0 || frame.height() == 0 || request.width == 0 || request.height == 0 {
+            return None;
+        }
+        let plan = CompositionPlan::single(
+            frame.width(),
+            frame.height(),
+            CompositionLayer::replace(frame),
+        )
+        .with_cpu_replay_cacheable(false);
+        self.compose_for_outputs(plan, false, Some(request))
+            .preview_surface
+    }
+
     /// Close this render frame's GPU work. The empty submission marks where
     /// the frame's work ends for [`Self::wait_for_gpu_frame_budget`] and hands
     /// wgpu every queue write the frame made, so their staging buffers never
