@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use hypercolor_types::scene::ZoneRole;
 
 use hypercolor_ui::apply_target::ApplyTarget;
-use hypercolor_ui::preview_zone::{PlayerTarget, player_target, preview_zone_for};
+use hypercolor_ui::preview_zone::{
+    PlayerTarget, player_target, preview_frame_owner, preview_zone_for,
+};
 use hypercolor_ui::zones::surface::{Surface, SurfaceKind};
 use hypercolor_ui::zones::{ZoneEffectState, scene_read_settles};
 
@@ -139,4 +141,43 @@ fn a_failed_scene_read_settles_the_preview_target_only_on_its_own_connection() {
     assert!(!scene_read_settles(0, false, 0));
     assert!(!scene_read_settles(0, false, 1));
     assert!(scene_read_settles(1, false, 1));
+}
+
+#[test]
+fn a_single_zone_scene_canvas_belongs_to_the_primary_effect() {
+    assert_eq!(
+        preview_frame_owner(None, true, Some("digital-rain".to_owned()), &[]),
+        Some("digital-rain".to_owned())
+    );
+}
+
+#[test]
+fn a_multi_zone_scene_canvas_belongs_to_no_effect() {
+    // A daemon that cannot select zones streams the scene canvas, a
+    // patchwork of every zone, which must not become anyone's card art.
+    // A scene that never loaded may be one, so its canvas is no one's.
+    let zones = [
+        zone("default", ZoneRole::Primary, "digital-rain"),
+        zone("roli", ZoneRole::Custom, "bubble-garden"),
+    ];
+    assert_eq!(
+        preview_frame_owner(None, false, Some("digital-rain".to_owned()), &zones),
+        None
+    );
+    assert_eq!(
+        preview_frame_owner(None, false, Some("digital-rain".to_owned()), &[]),
+        None
+    );
+}
+
+#[test]
+fn a_shown_zone_s_frames_belong_to_its_sole_effect() {
+    let zones = [
+        zone("default", ZoneRole::Primary, "digital-rain"),
+        zone("roli", ZoneRole::Custom, "bubble-garden"),
+    ];
+    assert_eq!(
+        preview_frame_owner(Some("roli"), false, Some("digital-rain".to_owned()), &zones),
+        Some("bubble-garden".to_owned())
+    );
 }

@@ -153,6 +153,39 @@ impl MainPreviewRequest {
     }
 }
 
+/// The zone the main preview streams: the one the page asked for, unless
+/// this connection's daemon cannot select zones. Such a daemon streams the
+/// scene canvas instead, as every preview did before per-zone selection.
+pub(super) fn followed_preview_zone(
+    wanted: Option<String>,
+    zone_selection_supported: bool,
+) -> Option<String> {
+    wanted.filter(|_| zone_selection_supported)
+}
+
+/// Whether a socket error is the daemon refusing a `zone_preview`
+/// subscribe's `zones` selection. A daemon older than per-zone selection
+/// rejects the field as unknown, and with it the whole subscribe:
+///
+/// ```json
+/// {"type":"error","code":"validation_error",
+///  "details":{"field":"config.zone_preview",
+///             "reason":"unknown field `zones`, expected one of ..."}}
+/// ```
+pub(super) fn rejects_zone_selection(message: &serde_json::Value) -> bool {
+    if message.get("type").and_then(serde_json::Value::as_str) != Some("error") {
+        return false;
+    }
+    let Some(details) = message.get("details") else {
+        return false;
+    };
+    details.get("field").and_then(serde_json::Value::as_str) == Some("config.zone_preview")
+        && details
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|reason| reason.starts_with("unknown field `zones`"))
+}
+
 /// What one pass of the main preview subscription does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum MainPreviewStep {
@@ -695,10 +728,15 @@ mod tests {
     use super::{
         MainPreviewRequest, MainPreviewStep, PreviewSubscriptionRequest, REMOTE_PREVIEW_WIDTH_LOW,
         REMOTE_PREVIEW_WIDTH_MEDIUM, canvas_frame_topics_allowed, desired_preview_fps,
-        main_preview_messages, main_preview_step, preview_canvas_format_for_host,
-        preview_canvas_request_dimensions_for_host, remote_preview_width_for_fps,
-        should_stream_preview, web_viewport_preview_request_dimensions,
+        followed_preview_zone, main_preview_messages, main_preview_step,
+        preview_canvas_format_for_host, preview_canvas_request_dimensions_for_host,
+        rejects_zone_selection, remote_preview_width_for_fps, should_stream_preview,
+        web_viewport_preview_request_dimensions,
     };
+
+    /// What a daemon from before per-zone selection sends back for a
+    /// `zone_preview` subscribe naming `zones`, verbatim.
+    const OLDER_DAEMON_ZONES_REJECTION: &str = r#"{"type":"error","code":"validation_error","message":"Invalid configuration for config.zone_preview: unknown field `zones`, expected one of `fps`, `format`, `width`, `height`","details":{"field":"config.zone_preview","reason":"unknown field `zones`, expected one of `fps`, `format`, `width`, `height`"}}"#;
 
     fn main_request(fps: u32, zone: Option<&str>) -> MainPreviewRequest {
         MainPreviewRequest {
@@ -764,6 +802,53 @@ mod tests {
             main_preview_step(false, true, Some("zone-a".to_owned())),
             MainPreviewStep::Stop
         );
+    }
+
+    #[test]
+    fn an_older_daemon_s_zones_rejection_is_recognized() {
+        let message: serde_json::Value =
+            serde_json::from_str(OLDER_DAEMON_ZONES_REJECTION).expect("captured reply parses");
+        assert!(rejects_zone_selection(&message));
+    }
+
+    #[test]
+    fn other_refusals_leave_zone_selection_alone() {
+        // A current daemon refusing an empty selection, a refusal of
+        // another topic's config, and an unrelated error.
+        for text in [
+            r#"{"type":"error","code":"validation_error","message":"Invalid configuration for config.zone_preview.zones: must not be empty","details":{"field":"config.zone_preview.zones","reason":"must not be empty"}}"#,
+            r#"{"type":"error","code":"validation_error","message":"Invalid configuration for config.frames: unknown field `zones`","details":{"field":"config.frames","reason":"unknown field `zones`"}}"#,
+            r#"{"type":"error","code":"validation_error","message":"Invalid configuration for config.zone_preview: frame too large","details":{"field":"config.zone_preview","reason":"frame too large","width":9000,"height":9000}}"#,
+            r#"{"type":"error","code":"malformed_request","message":"Unknown topic 'zone_preview'"}"#,
+            r#"{"type":"subscribed","topics":[{"topic":"zone_preview"}]}"#,
+        ] {
+            let message: serde_json::Value = serde_json::from_str(text).expect("fixture parses");
+            assert!(!rejects_zone_selection(&message), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_daemon_without_zone_selection_streams_the_scene_canvas() {
+        let wanted = Some("zone-a".to_owned());
+        assert_eq!(followed_preview_zone(wanted.clone(), true), wanted);
+        assert_eq!(followed_preview_zone(wanted, false), None);
+        assert_eq!(followed_preview_zone(None, true), None);
+    }
+
+    #[test]
+    fn a_rejected_zone_subscribe_falls_back_to_the_scene_canvas_alone() {
+        // The daemon refused the zone subscribe, so nothing is live: the
+        // fallback subscribes the scene canvas without unsubscribing
+        // anything first.
+        let fallback = main_request(
+            60,
+            followed_preview_zone(Some("zone-a".to_owned()), false).as_deref(),
+        );
+        assert_eq!(
+            topics(&main_preview_messages(None, &fallback)),
+            [("subscribe".to_owned(), "canvas".to_owned())]
+        );
+        assert_eq!(fallback.zone(), None);
     }
 
     #[test]

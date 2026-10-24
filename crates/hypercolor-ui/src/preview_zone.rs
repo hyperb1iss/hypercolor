@@ -19,7 +19,7 @@ use crate::zones::{ZoneEffectState, ZonesContext};
 pub struct PreviewZoneContext {
     /// The zone `WsContext::canvas_frame` carries, or `None` while it
     /// carries the scene canvas.
-    pub zone: ReadSignal<Option<String>>,
+    pub zone: Memo<Option<String>>,
     pub(crate) set_zone: WriteSignal<Option<String>>,
     /// Lifts the main preview's hold on its first subscription once the
     /// zone it should follow is known.
@@ -29,7 +29,7 @@ pub struct PreviewZoneContext {
 impl PreviewZoneContext {
     #[must_use]
     pub const fn new(
-        zone: ReadSignal<Option<String>>,
+        zone: Memo<Option<String>>,
         set_zone: WriteSignal<Option<String>>,
         set_resolved: WriteSignal<bool>,
     ) -> Self {
@@ -61,6 +61,30 @@ pub fn preview_zone_for(
         primary_zone
     };
     zone.map(ToOwned::to_owned)
+}
+
+/// The effect the main preview's frames belong to, which may file them
+/// as its card art.
+///
+/// The scene canvas belongs to the primary effect only while the loaded
+/// scene has one zone. A multi-zone scene canvas, which a daemon that
+/// cannot select zones streams, is a patchwork no one effect owns, and
+/// the canvas of a scene that has not loaded may be one. A shown zone's
+/// frames belong to its effect when that effect is the zone's only layer.
+#[must_use]
+pub fn preview_frame_owner(
+    shown_zone: Option<&str>,
+    single_zone_scene: bool,
+    primary_effect: Option<String>,
+    zone_effects: &[ZoneEffectState],
+) -> Option<String> {
+    match shown_zone {
+        None => primary_effect.filter(|_| single_zone_scene),
+        Some(zone_id) => zone_effects
+            .iter()
+            .find(|state| state.zone.id == zone_id)
+            .and_then(|state| state.sole_effect_id().map(ToOwned::to_owned)),
+    }
 }
 
 /// What a player beside a preview acts on.
@@ -133,9 +157,16 @@ pub fn follow_preview_zone(pathname: Memo<String>) {
             return;
         }
         let zone = target.get();
-        if preview.zone.get_untracked() != zone {
-            preview.set_zone.set(zone);
-        }
+        // Compared with what was asked for rather than with the shown
+        // zone: a daemon that cannot select zones shows the scene canvas
+        // whatever is asked for.
+        preview.set_zone.maybe_update(|wanted| {
+            let changed = *wanted != zone;
+            if changed {
+                *wanted = zone;
+            }
+            changed
+        });
         preview
             .set_resolved
             .maybe_update(|resolved| !std::mem::replace(resolved, true));

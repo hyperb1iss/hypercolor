@@ -800,20 +800,24 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
 
     // Effect thumbnail store — captures screenshots opportunistically while
     // effects are playing and exposes them to the browse grid for card art.
-    // A frame is captured as the effect that owns it: the primary effect
-    // on the scene canvas, or a followed zone's effect when that effect is
-    // the zone's only layer. A stacked zone's frame belongs to no one effect.
+    // A frame is captured as the effect that owns it (see
+    // `preview_frame_owner`).
     let thumbnail_store = ThumbnailStore::new();
     provide_context(thumbnail_store);
     let preview_zone = ws.preview_zone;
-    let captured_effect_id = Signal::derive(move || match preview_zone.get() {
-        None => active_effect_id.get(),
-        Some(zone_id) => zone_effects.with(|zones| {
-            zones
-                .iter()
-                .find(|state| state.zone.id == zone_id)
-                .and_then(|state| state.sole_effect_id().map(ToOwned::to_owned))
-        }),
+    let captured_effect_id = Signal::derive(move || {
+        let single_zone_scene =
+            zones_ctx.active_scene.with(Option::is_some) && !zones_ctx.multi_zone.get();
+        let primary_effect = active_effect_id.get();
+        let zone_id = preview_zone.get();
+        zone_effects.with(|zones| {
+            crate::preview_zone::preview_frame_owner(
+                zone_id.as_deref(),
+                single_zone_scene,
+                primary_effect,
+                zones,
+            )
+        })
     });
     thumbnails::install_auto_capture(
         thumbnail_store,

@@ -35,11 +35,11 @@ use super::messages::{
 use super::preview::{
     DEFAULT_PREVIEW_FPS_CAP, MainPreviewRequest, MainPreviewStep, PreviewCounterHandle,
     PreviewSubscriptionRequest, canvas_frame_topics_allowed, clear_preview_subscription,
-    clear_screen_preview_subscription, clear_web_viewport_preview_subscription, main_preview_step,
-    request_preview_subscription, request_screen_preview_subscription,
-    request_web_viewport_preview_subscription, send_main_preview_unsubscribe,
-    send_screen_canvas_unsubscribe, send_screen_zones_subscribe, send_screen_zones_unsubscribe,
-    send_web_viewport_canvas_unsubscribe, should_stream_preview,
+    clear_screen_preview_subscription, clear_web_viewport_preview_subscription,
+    followed_preview_zone, main_preview_step, rejects_zone_selection, request_preview_subscription,
+    request_screen_preview_subscription, request_web_viewport_preview_subscription,
+    send_main_preview_unsubscribe, send_screen_canvas_unsubscribe, send_screen_zones_subscribe,
+    send_screen_zones_unsubscribe, send_web_viewport_canvas_unsubscribe, should_stream_preview,
 };
 use super::transport::{
     WebSocketConnectRequest, WebSocketConnection, WebSocketEvent, WebSocketMessage,
@@ -258,8 +258,9 @@ pub struct WsManager {
     pub audio_level: ReadSignal<AudioLevel>,
     pub preview_target_fps: ReadSignal<u32>,
     /// The zone the main preview follows, or `None` for the scene canvas.
-    /// `canvas_frame` carries that zone's own frames while it is set.
-    pub preview_zone: ReadSignal<Option<String>>,
+    /// `canvas_frame` carries that zone's own frames while it is set. A
+    /// daemon that cannot select zones leaves it `None`.
+    pub preview_zone: Memo<Option<String>>,
     /// Retarget the main preview at one zone, or back to the scene canvas.
     pub set_preview_zone: WriteSignal<Option<String>>,
     /// Set once the page knows which zone the main preview follows. The
@@ -345,7 +346,14 @@ impl WsManager {
         let (layer_health, set_layer_health) = signal(HashMap::<String, LayerHealth>::new());
         let (audio_level, set_audio_level) = signal(AudioLevel::default());
         let (preview_target_fps, set_preview_target_fps) = signal(0_u32);
-        let (preview_zone, set_preview_zone) = signal(None::<String>);
+        let (wanted_preview_zone, set_preview_zone) = signal(None::<String>);
+        // Cleared when this connection's daemon refuses a `zones`
+        // selection, and set again on every new socket, since the daemon
+        // may have been upgraded in between.
+        let (zone_selection_supported, set_zone_selection_supported) = signal(true);
+        let preview_zone = Memo::new(move |_| {
+            followed_preview_zone(wanted_preview_zone.get(), zone_selection_supported.get())
+        });
         let (preview_zone_resolved, set_preview_zone_resolved) = signal(false);
         let (engine_preview_target, set_engine_preview_target) = signal(0_u32);
         let (preview_page_cap, set_preview_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
@@ -474,6 +482,9 @@ impl WsManager {
             requested_screen_preview.set_value(None);
             requested_web_viewport_preview.set_value(None);
             preview_counters.end_stream();
+            if !zone_selection_supported.get_untracked() {
+                set_zone_selection_supported.set(true);
+            }
             screen_zones_requested.set_value(false);
             set_preview_fps.set(0.0);
             set_sensors.set(None);
@@ -659,6 +670,23 @@ impl WsManager {
                                     return;
                                 }
                                 InitialSubscriptionAdmission::Pending => {}
+                            }
+                        }
+                        if rejects_zone_selection(&msg) {
+                            // A daemon older than per-zone selection refuses
+                            // the whole zone subscribe, so nothing streams.
+                            // Fall back to the scene canvas for the rest of
+                            // this connection; the refused request was never
+                            // live, so there is nothing to unsubscribe.
+                            if requested_preview.with_value(|request| {
+                                request
+                                    .as_ref()
+                                    .is_some_and(|request| request.zone().is_some())
+                            }) {
+                                requested_preview.set_value(None);
+                            }
+                            if zone_selection_supported.get_untracked() {
+                                set_zone_selection_supported.set(false);
                             }
                         }
                         if is_resync_required(&msg) {
