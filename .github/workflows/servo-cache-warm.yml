@@ -29,7 +29,7 @@ permissions:
 jobs:
   warm-servo:
     name: Servo Cache
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment:
       # Only main may hold the read-write R2 key; every other run reads.
       name: ${{ github.ref == 'refs/heads/main' && 'sccache-writer' || '' }}
