@@ -1995,6 +1995,15 @@ impl SparkleFlinger {
         }
     }
 
+    /// Leave the next display finalization unfinished for one resolve, the
+    /// way a GPU still busy with the frame leaves it.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn defer_next_display_finalize_resolve_for_test(&mut self) {
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
+            gpu.defer_next_display_finalize_resolve();
+        }
+    }
+
     /// Leave the next scene preview map unfinished for one resolve, the way
     /// a GPU still busy with the frame leaves it.
     #[cfg(all(test, feature = "wgpu"))]

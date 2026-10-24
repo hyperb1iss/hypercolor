@@ -679,24 +679,26 @@ mod tests {
         let display_target = DisplayFaceTarget::new(device_id);
         let display_route = rgb_display_route(device_id);
         let dependency_key = SceneDependencyKey::new(1, 1);
-        let mut elapsed_ms = 100;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while harness.display_finalize_runtime.pending_zone_count() == 0 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "no display finalization stayed in flight"
-            );
-            elapsed_ms += 33;
-            let _ = materialize_display_color(
-                &mut harness,
-                zone_id,
-                &display_target,
-                &display_route,
-                dependency_key,
-                elapsed_ms,
-                [255, 0, 0],
-            );
-        }
+        // Hold the finalization in flight the way a busy GPU does; a software
+        // adapter can otherwise finish the readback inside the dispatch call.
+        harness
+            .display_sparkleflinger
+            .defer_next_display_finalize_resolve_for_test();
+        let materialized = materialize_display_color(
+            &mut harness,
+            zone_id,
+            &display_target,
+            &display_route,
+            dependency_key,
+            100,
+            [255, 0, 0],
+        );
+        assert_eq!(materialized, None, "the deferred finalization lands later");
+        assert_eq!(
+            harness.display_finalize_runtime.pending_zone_count(),
+            1,
+            "the deferred finalization should stay in flight"
+        );
         let slots_in_use = |harness: &DisplayLaneHarness| {
             harness
                 .display_sparkleflinger

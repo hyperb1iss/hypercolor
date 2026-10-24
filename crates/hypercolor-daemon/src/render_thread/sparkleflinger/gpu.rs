@@ -242,6 +242,8 @@ pub(crate) struct GpuSparkleFlinger {
     #[cfg(test)]
     defer_preview_map_resolve_once: bool,
     #[cfg(test)]
+    defer_display_finalize_resolve_once: bool,
+    #[cfg(test)]
     fail_next_sampling_readback_preparation: bool,
     #[cfg(test)]
     fail_next_preview_scale_output_preparation: bool,
