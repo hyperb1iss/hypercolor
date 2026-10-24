@@ -96,6 +96,9 @@ pub(crate) async fn maybe_sleep_throttle(
             frame_num_u32,
             u64_to_u32(scene_snapshot.elapsed_ms),
         );
+        // The sleep renders nothing after this frame, so the scene previews
+        // take it now rather than when their cadence next comes due.
+        publication_cadence.make_scene_previews_due();
         let publish_stats = publish_frame_updates(
             state,
             publication_cadence,

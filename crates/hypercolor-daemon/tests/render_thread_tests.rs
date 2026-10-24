@@ -4315,6 +4315,74 @@ async fn the_frame_that_enters_idle_darkens_every_preview_outside_the_cadence() 
     rt.shutdown().await.expect("shutdown");
 }
 
+/// Release sleep clears the outputs, publishes its black frame once, and
+/// then renders nothing until output wakes. The scene canvas and the
+/// `canvas` topic are paced at 1 fps here and the run stays inside the
+/// first cadence slot, so the sleep frame is never preview-due: both have
+/// to take it outside the cadence or keep the last live picture.
+#[tokio::test]
+async fn release_sleep_darkens_the_scene_previews_outside_the_cadence() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    let (power_tx, power_state) = watch::channel(OutputPowerState::default());
+    state.power_state = power_state;
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+    let mut scene = make_scene("Released Scene Previews");
+    scene.zones = overlapping_zones(solid_id);
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    scene.transition.duration_ms = 0;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    let one_fps = PreviewStreamDemand {
+        fps: 1,
+        format: PreviewPixelFormat::Rgb,
+        width: 0,
+        height: 0,
+    };
+    let mut canvas_rx = state.preview_runtime.canvas_receiver();
+    canvas_rx.update_demand(one_fps);
+    let mut scene_rx = state.preview_runtime.scene_canvas_receiver();
+    scene_rx.update_demand(one_fps);
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+        rl.pause();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+    state.render_loop.write().await.resume();
+    let live = |frame: &CanvasFrame| frame.width > 0 && !canvas_frame_is_dark(frame);
+    wait_for_preview_where(&mut canvas_rx, "a live canvas preview", live).await;
+    wait_for_preview_where(&mut scene_rx, "a live scene canvas", live).await;
+
+    state.render_loop.write().await.pause();
+    power_tx.send_replace(OutputPowerState {
+        session_sleeping: true,
+        session_brightness: 0.0,
+        off_output_behavior: OffOutputBehavior::Release,
+        ..OutputPowerState::default()
+    });
+    state.render_loop.write().await.resume();
+
+    wait_for_preview_where(
+        &mut canvas_rx,
+        "a dark canvas preview",
+        canvas_frame_is_dark,
+    )
+    .await;
+    wait_for_preview_where(&mut scene_rx, "a dark scene canvas", canvas_frame_is_dark).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+}
+
 /// Publish a hold's black frame on the preview lanes the way
 /// `OutputContext::publish_static_snapshot` does: the scene canvas, every
 /// zone of the live scene, then the `canvas` topic.
