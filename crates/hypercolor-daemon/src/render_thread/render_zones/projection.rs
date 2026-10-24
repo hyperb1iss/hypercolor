@@ -164,6 +164,17 @@ pub(super) fn compose_authoritative_scene_canvas(
     }
 }
 
+/// Whether every scene zone can be projected into the scene canvas on the
+/// GPU.
+///
+/// The projected scene feeds previews, captures, and display backdrops only;
+/// LED output samples each zone's own texture (Spec 86 §5.1). So projection
+/// needs no particular sampling mode: the target-space fetch rounds to the
+/// nearest texel, which is exact for zones at the scene extent and a nearest
+/// resample otherwise. Nor does any zone's shape veto it. An output without
+/// an affine placement (no extent, or a non-finite one) places nothing, and
+/// a zone without outputs, such as one Studio has just created, places
+/// nothing at all, exactly as the CPU reconstruction rasterizes them.
 pub(super) fn zones_support_projection_composition(
     zones: &[Zone],
     scene_projection_cache: &HashMap<ZoneId, CachedZoneProjection>,
@@ -174,29 +185,16 @@ pub(super) fn zones_support_projection_composition(
         .filter(|zone| zone_contributes_to_scene_canvas(zone))
     {
         scene_zone_count = scene_zone_count.saturating_add(1);
-        let Some(projection) = scene_projection_cache.get(&zone.id) else {
-            return false;
-        };
-        if !projection_supports_composition(projection) {
+        if !scene_projection_cache.contains_key(&zone.id) {
             return false;
         }
     }
     scene_zone_count > 0
 }
 
-/// Whether a zone can be projected into the scene canvas on the GPU.
-///
-/// The projected scene feeds previews, captures, and display backdrops only;
-/// LED output samples each zone's own texture (Spec 86 §5.1). So projection
-/// needs only an affine placement per output, not a particular sampling
-/// mode: the target-space fetch rounds to the nearest texel, which is exact
-/// for zones at the scene extent and a nearest resample otherwise.
-pub(super) fn projection_supports_composition(projection: &CachedZoneProjection) -> bool {
-    !projection.zones.is_empty() && projection.zones.iter().all(|zone| zone.affine.is_some())
-}
-
-/// Add a zone's projection layers to the scene composition, one per output,
-/// in scene composition order.
+/// Add a zone's projection layers to the scene composition, one per placed
+/// output, in scene composition order. Outputs without an affine placement
+/// add no layer, the way the CPU raster skips them.
 ///
 /// `display_layer_start` is the index where display-output layers begin. An
 /// LED output's layer is inserted there and the boundary advances, so LED
@@ -216,7 +214,6 @@ pub(super) fn append_projection_composition_layers_for_zone(
     if projection.scene_width != scene_width
         || projection.scene_height != scene_height
         || projection.layout != zone.layout
-        || !projection_supports_composition(projection)
     {
         return false;
     }
@@ -228,7 +225,11 @@ pub(super) fn append_projection_composition_layers_for_zone(
         "display layers must start within the projected scene layers"
     );
     let mut led_insert_at = (*display_layer_start).min(layers.len());
-    for output in &projection.zones {
+    for output in projection
+        .zones
+        .iter()
+        .filter(|output| output.affine.is_some())
+    {
         let layer =
             CompositionLayer::alpha(frame.clone(), 1.0).with_transform(CompositionTransform {
                 anchor: output.zone.position,

@@ -112,6 +112,21 @@ impl PreviewScene {
         Self::with_zones(registry, vec![zone], sources)
     }
 
+    /// A placed LED zone beside a zone with layers but no members yet, the
+    /// way Studio creates one before any device joins it.
+    fn with_memberless_zone() -> Option<Self> {
+        let registry = builtin_registry();
+        let solid_id = builtin_effect_id(&registry, "solid_color");
+        let case = led_zone("Case", "case_leds", CASE_EXTENT, solid_id);
+        let mut memberless = led_zone("New Zone", "unplaced", CASE_EXTENT, solid_id);
+        memberless.layout.zones.clear();
+        let sources = vec![
+            layer_source(&case, 1, LayerFill::Quadrants(QUADRANTS)),
+            layer_source(&memberless, 2, LayerFill::Solid(YELLOW)),
+        ];
+        Self::with_zones(registry, vec![case, memberless], sources)
+    }
+
     fn with_zones(
         registry: EffectRegistry,
         zones: Vec<Zone>,
@@ -381,6 +396,27 @@ fn single_zone_gpu_scene_publishes_its_zone_preview() {
         LedSamplingStrategy::SparkleFlinger(_)
     ));
     assert_quadrant_preview(&previews, scene.zone(0), SMALL_PREVIEW);
+}
+
+/// A zone with no members places nothing in the scene canvas, but its zone
+/// preview still shows its layers, as it does on the CPU compositor, and
+/// the placed zone beside it keeps sampling and previewing its own texture.
+#[test]
+fn memberless_zone_previews_its_own_layers() {
+    let Some(mut scene) = PreviewScene::with_memberless_zone() else {
+        return;
+    };
+
+    let (result, previews) = scene.render_until_previews(&small_demand(), 2);
+
+    let LedSamplingStrategy::SparkleFlingerZones(set) = &result.led_sampling_strategy else {
+        panic!("a scene with a memberless zone should stay GPU-resident");
+    };
+    let leds = sample_zone_set(&mut scene.sparkleflinger, set);
+    assert_eq!(leds.len(), 1, "only the placed zone has LEDs to sample");
+    assert_eq!(leds[0].zone_id, "case_leds");
+    assert_quadrant_preview(&previews, scene.zone(0), SMALL_PREVIEW);
+    assert_solid_preview(&previews, scene.zone(1), SMALL_PREVIEW, YELLOW);
 }
 
 #[test]

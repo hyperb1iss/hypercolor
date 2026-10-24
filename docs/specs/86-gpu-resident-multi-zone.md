@@ -388,8 +388,13 @@ opaque black base) whenever a consumer requests it: a preview receiver, a
 display face that blends the scene, or a canvas capture. The primary
 composition plan, including active transitions, runs over it exactly as
 today, so display backdrops see transitions. It never feeds LED output, so
-admission drops the sampling-mode and edge-behavior requirements and keeps
-the affine requirement.
+admission drops the sampling-mode and edge-behavior requirements. No zone's
+layout refuses it either. Each output projects through its affine placement,
+and an output without one (no extent, or a non-finite one) projects nothing,
+the way the CPU reconstruction skips it. A zone with no outputs, such as one
+Studio has just created, projects nothing at all. Neither keeps the other
+zones off the GPU projection. The memberless zone still renders, keeps its
+snapshot, and publishes its zone preview (§5.2).
 
 Projection layers land in two strata. Every LED output's layer comes first,
 in zone order, so overlapping LED outputs keep zone-order overwrite, which
@@ -678,6 +683,17 @@ Lightpad and the LUMI keys raised ripples over the bubbles on both blocks.
   while their shape matches, so a newly chosen fallback zone shows black for
   a frame rather than the previous zone's pixels.
 
+- **CPU fallback on a GPU-admitted scene (§6).** Reconcile admits CPU zone
+  targets and the CPU scene surface only for a scene it cannot keep on the
+  GPU, which keeps them out of memory for GPU-resident scenes at any canvas
+  size. A frame of a GPU-admitted scene can still need the CPU path. When
+  its zone textures went away after admission, the frame renders on the
+  CPU. When its projection fails before any zone has a frame, the CPU
+  reconstruction stands in for the empty projection. Either path admits
+  what it needs on its first such frame and warns once. The next reconcile
+  that admits the scene GPU-resident drops them again. Before this, those
+  frames failed the whole scene for want of a CPU target or scene surface.
+
 - **Telemetry (§7).** With no `Unsupported` source, `held_zone_count`
   takes the place of `unsupported_zone_count`, and `multi_zone_sampling`
   warns when a frame held zones (a zone with nothing to sample yet) rather
@@ -729,6 +745,16 @@ without it:
   frame sampled the overlap-baked crossfade. Held LEDs now keep their own
   provenance, and a fade that starts per zone stays in LED space until it
   ends.
+- A zone with layers but no outputs, which Studio creates before any device
+  joins it, blacked out every LED and the scene canvas. Its empty projection
+  failed projection admission, so the whole scene fell to the CPU scene
+  reconstruction, which reconcile had not admitted for a GPU-resident scene.
+  Every frame then failed, released every zone resource, re-reconciled, and
+  logged the same warning. Projection admission now takes any zone (§5.1),
+  and the CPU paths of a GPU-admitted scene admit their resources on demand
+  (§11.1). The frame composer logs a scene render failure when it starts or
+  changes, and once more when the scene renders again, rather than on every
+  frame it persists.
 - A fade into a scene-sized HTML effect sampled the crossfade too, because
   the GPU sampler cannot read an imported Servo texture. The composer now
   copies the imported frame into an immutable compositor snapshot for the

@@ -2568,6 +2568,83 @@ async fn gpu_multi_zone_scene_samples_overlapping_zones_from_their_own_textures(
     assert_eq!(zone_led(&frame, "zone_blue"), Some([0, 0, 255]));
 }
 
+/// A zone with an effect but no members yet, the way Studio creates one,
+/// places nothing in the scene. On the GPU compositor it must not black
+/// out the rest of the scene: the placed zones keep their LEDs and their
+/// boxes in the scene canvas, and the new zone paints nothing there.
+#[cfg(feature = "wgpu")]
+#[tokio::test]
+async fn gpu_memberless_zone_keeps_the_rest_of_the_scene_lit() {
+    let mut state = make_render_state(
+        idle_effect(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+    state.render_acceleration_mode = RenderAccelerationMode::Gpu;
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let mut canvas_rx = state.event_bus.canvas_receiver();
+    let solid_id = {
+        let registry = state.effect_registry.read().await;
+        builtin_effect_id(&registry, "solid_color")
+    };
+
+    let mut scene = make_scene("Memberless Zone");
+    scene.zones = vec![
+        custom_zone(
+            "Left",
+            solid_id,
+            solid_color_controls(255, 0, 0),
+            test_layout(vec![point_zone("zone_left", "mock:left", 0.25, 0.5)]),
+        ),
+        custom_zone(
+            "Right",
+            solid_id,
+            solid_color_controls(0, 0, 255),
+            test_layout(vec![point_zone("zone_right", "mock:right", 0.75, 0.5)]),
+        ),
+        custom_zone(
+            "New Zone",
+            solid_id,
+            solid_color_controls(255, 255, 0),
+            test_layout(Vec::new()),
+        ),
+    ];
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let frame = wait_for_frame_where(&mut frame_rx, |frame| {
+        zone_led(frame, "zone_left") == Some([255, 0, 0])
+            && zone_led(frame, "zone_right") == Some([0, 0, 255])
+    })
+    .await;
+    let canvas = wait_for_canvas_where(&mut canvas_rx, |canvas| {
+        canvas.surface().get_pixel(80, 100) == Rgba::new(255, 0, 0, 255)
+            && canvas.surface().get_pixel(240, 100) == Rgba::new(0, 0, 255, 255)
+    })
+    .await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+    assert_eq!(zone_led(&frame, "zone_left"), Some([255, 0, 0]));
+    assert_eq!(zone_led(&frame, "zone_right"), Some([0, 0, 255]));
+    let yellow = canvas
+        .rgba_bytes()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| **pixel == [255, 255, 0, 255])
+        .count();
+    assert_eq!(yellow, 0, "a memberless zone paints nothing in the scene");
+}
+
 /// A transition out of a multi-zone scene blends every LED from its own old
 /// color, even where zones overlap: the red zone's LED fades toward green
 /// without passing through the blue zone composited over it (Spec 86 §4.1).

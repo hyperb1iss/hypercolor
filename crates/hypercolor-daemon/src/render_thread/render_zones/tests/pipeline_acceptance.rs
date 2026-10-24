@@ -233,6 +233,115 @@ async fn gpu_multi_zone_render_failures_resume_from_retained_colors() {
     }
 }
 
+/// An effect that keeps failing before the scene ever rendered leaves no
+/// retained frame, so every failed frame releases the zone resources. Its
+/// `EffectError` and failed `EffectDegraded` still publish once when the
+/// failure starts and once more when it changes, not on every frame, and
+/// the scene's first good frame publishes one recovery.
+#[tokio::test]
+async fn persistent_effect_failure_publishes_its_events_once_per_transition() {
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut scene = make_scene("Failing Effect");
+    scene.transition.duration_ms = 0;
+    scene.zones = overlapping_zones(solid_id, [255, 0, 0], [0, 0, 255]);
+    scene.unassigned_behavior = UnassignedBehavior::Off;
+    let failing_zone = scene.zones[0].clone();
+    let Some(mut pipeline) = SteppedPipeline::start(
+        RenderAccelerationMode::Cpu,
+        vec![scene.clone()],
+        scene.id,
+        BackendManager::new(),
+    )
+    .await
+    else {
+        return;
+    };
+    let mut events = pipeline.state.event_bus.subscribe_all();
+    let failure = |error: &str| ZoneEffectError {
+        effect_id: solid_id.to_string(),
+        effect_name: "Solid Color".into(),
+        zone_id: failing_zone.id,
+        zone_name: failing_zone.name.clone(),
+        error: error.into(),
+    };
+
+    for (error, frames) in [("renderer lost its device", 12), ("renderer timed out", 6)] {
+        pipeline
+            .zone_runtime()
+            .fail_scene_renders_with_effect_error_for_test(Some(failure(error)));
+        for _ in 0..frames {
+            let _ = pipeline.frame().await;
+        }
+        assert_eq!(
+            drain_effect_events(&mut events),
+            EffectEventCounts {
+                errors: 1,
+                failed: 1,
+                recovered: 0,
+            },
+            "{frames} frames failing with \"{error}\" should publish its events once"
+        );
+    }
+
+    pipeline
+        .zone_runtime()
+        .fail_scene_renders_with_effect_error_for_test(None);
+    pipeline
+        .frame_where("the scene lit again", |frame| {
+            zone_led(frame, "zone_red") == Some([255, 0, 0])
+        })
+        .await;
+    for _ in 0..3 {
+        let _ = pipeline.frame().await;
+    }
+    assert_eq!(
+        drain_effect_events(&mut events),
+        EffectEventCounts {
+            errors: 0,
+            failed: 0,
+            recovered: 1,
+        },
+        "the first good frame should publish one recovery"
+    );
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct EffectEventCounts {
+    errors: usize,
+    failed: usize,
+    recovered: usize,
+}
+
+/// Count the effect error events published since the last drain.
+fn drain_effect_events(
+    events: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> EffectEventCounts {
+    use hypercolor_types::event::EffectDegradationState;
+
+    let mut counts = EffectEventCounts::default();
+    loop {
+        match events.try_recv() {
+            Ok(event) => match event.event {
+                HypercolorEvent::EffectError { .. } => counts.errors += 1,
+                HypercolorEvent::EffectDegraded {
+                    state: EffectDegradationState::Failed,
+                    ..
+                } => counts.failed += 1,
+                HypercolorEvent::EffectDegraded {
+                    state: EffectDegradationState::Recovered,
+                    ..
+                } => counts.recovered += 1,
+                _ => {}
+            },
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                panic!("the test event receiver lagged {skipped} events");
+            }
+            Err(_) => return counts,
+        }
+    }
+}
+
 /// A zone with no snapshot yet whose layers are all still loading samples
 /// nothing on its first frames: its LEDs hold the published colors when the
 /// published frame carries them in the same shape, and go black otherwise

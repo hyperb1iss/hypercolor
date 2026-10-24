@@ -189,6 +189,9 @@ impl ZoneRuntime {
         snapshot
     }
 
+    /// Release every zone resource. The effect error state survives, so a
+    /// failure that keeps releasing them is still recognized as the same
+    /// one; a scene that stops rendering zones forgets it separately.
     pub(crate) fn clear_inactive_zones(&mut self) {
         if !self.has_inactive_zone_resources() {
             return;
@@ -207,8 +210,6 @@ impl ZoneRuntime {
         self.retained_materialized_zone_frames.clear();
         self.reconciled_dependency_key = None;
         self.retained_frame = None;
-        self.last_effect_error = None;
-        self.recovered_effect_error = None;
         self.layer_runtime.clear();
         self.combined_led_layout = self.empty_led_spatial_engine.layout();
         self.combined_led_spatial_engine = self.empty_led_spatial_engine.clone();

@@ -599,6 +599,85 @@ fn active_preview_request_upload_saturation_rejects_replacement() {
     );
 }
 
+/// A projected scene composition that fails frame after frame warns when the
+/// failure starts and when it changes, not on every frame, and logs one
+/// recovery once a composition succeeds.
+#[test]
+fn persistent_projected_scene_failure_warns_once_per_transition() {
+    let Some(mut sparkleflinger) = gpu_test_sparkleflinger() else {
+        return;
+    };
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let sink = std::sync::Arc::clone(&logs);
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(move || CapturedLog(std::sync::Arc::clone(&sink)))
+        .finish();
+    let solid_layers = || {
+        vec![CompositionLayer::replace(ProducerFrame::Canvas(
+            solid_canvas(Rgba::new(255, 0, 0, 255)),
+        ))]
+    };
+
+    tracing::subscriber::with_default(subscriber, || {
+        for _ in 0..8 {
+            gpu_backend_mut(&mut sparkleflinger).fail_next_screen_upload_pool_saturation();
+            let _ = sparkleflinger.compose_projected_scene_layers(4, 4, &mut solid_layers());
+        }
+        // A CPU canvas off the plan's extent is a plan the GPU refuses.
+        for _ in 0..8 {
+            let mut off_extent = vec![CompositionLayer::replace(ProducerFrame::Canvas(
+                Canvas::new(2, 2),
+            ))];
+            let _ = sparkleflinger.compose_projected_scene_layers(4, 4, &mut off_extent);
+        }
+        for _ in 0..3 {
+            let _ = sparkleflinger.compose_projected_scene_layers(4, 4, &mut solid_layers());
+        }
+    });
+
+    let logs = String::from_utf8_lossy(
+        &logs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+    .into_owned();
+    let lines_with = |needle: &str| logs.lines().filter(|line| line.contains(needle)).count();
+    assert_eq!(
+        lines_with("GPU projected scene composition failed"),
+        1,
+        "{logs}"
+    );
+    assert_eq!(
+        lines_with("Unsupported projected GPU scene plan"),
+        1,
+        "{logs}"
+    );
+    assert_eq!(
+        lines_with("GPU projected scene composition recovered failed_frames=8"),
+        1,
+        "{logs}"
+    );
+}
+
+/// Collects one test's formatted log lines.
+struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for CapturedLog {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[test]
 fn active_preview_request_upload_saturation_rejects_clear() {
     let Some(mut sparkleflinger) = gpu_test_sparkleflinger() else {

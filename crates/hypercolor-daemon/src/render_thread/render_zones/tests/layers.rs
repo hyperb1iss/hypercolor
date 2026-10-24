@@ -406,6 +406,87 @@ fn note_effect_error_dedupes_until_cleared() {
     assert_eq!(runtime.note_effect_error(&error), Some(error));
 }
 
+/// A scene render failure logs once when it starts, again only when its
+/// error or outcome changes, and counts every frame it held for in between,
+/// even across the zone resources a failed frame releases.
+#[test]
+fn scene_render_failure_logs_once_per_transition() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let unadmitted = anyhow::anyhow!("CPU scene composition was not admitted");
+    let other = anyhow::anyhow!("render-zone resources were not admitted");
+
+    assert!(runtime.note_scene_render_failure(&unadmitted, false));
+    for _ in 1..457 {
+        assert!(!runtime.note_scene_render_failure(&unadmitted, false));
+    }
+    assert_eq!(runtime.clear_scene_render_failure(), Some(457));
+    assert_eq!(runtime.clear_scene_render_failure(), None);
+
+    assert!(runtime.note_scene_render_failure(&unadmitted, false));
+    assert!(
+        runtime.note_scene_render_failure(&unadmitted, true),
+        "falling back to the retained frame is a new outcome"
+    );
+    assert!(
+        runtime.note_scene_render_failure(&other, true),
+        "a different error is a new failure"
+    );
+
+    let mut zone = sample_zone(4, 4);
+    make_color_fill_zone(&mut zone);
+    runtime
+        .reconcile(
+            std::slice::from_ref(&zone),
+            Some(SceneId::DEFAULT),
+            SceneDependencyKey::new(1, 1),
+            &EffectRegistry::default(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("color fill zone should reconcile");
+    runtime.clear_inactive_zones();
+    assert!(runtime.reconciled_dependency_key.is_none());
+    assert!(
+        !runtime.note_scene_render_failure(&other, true),
+        "releasing zone resources must not forget the logged failure"
+    );
+}
+
+/// A failed frame releases every zone resource but keeps the effect error,
+/// so the same error is not new on the next failed frame. A scene that stops
+/// rendering zones forgets it, so the next failure is new again.
+#[test]
+fn effect_error_survives_released_zone_resources_until_forgotten() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut zone = sample_zone(4, 4);
+    make_color_fill_zone(&mut zone);
+    let error = ZoneEffectError {
+        effect_id: "effect-1".into(),
+        effect_name: "Test Effect".into(),
+        zone_id: zone.id,
+        zone_name: "Test Zone".into(),
+        error: "boom".into(),
+    };
+    runtime
+        .reconcile(
+            std::slice::from_ref(&zone),
+            Some(SceneId::DEFAULT),
+            SceneDependencyKey::new(1, 1),
+            &EffectRegistry::default(),
+            &HashMap::new(),
+            None,
+        )
+        .expect("color fill zone should reconcile");
+
+    assert_eq!(runtime.note_effect_error(&error), Some(error.clone()));
+    runtime.clear_inactive_zones();
+    assert!(runtime.reconciled_dependency_key.is_none());
+    assert_eq!(runtime.note_effect_error(&error), None);
+
+    runtime.forget_effect_error();
+    assert_eq!(runtime.note_effect_error(&error), Some(error));
+}
+
 #[test]
 fn recovered_effect_error_is_reported_once_after_clear() {
     let mut runtime = ZoneRuntime::new(4, 4);

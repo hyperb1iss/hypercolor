@@ -26,6 +26,30 @@ impl ZoneRuntime {
     pub(crate) fn take_recovered_effect_error(&mut self) -> Option<ZoneEffectError> {
         self.recovered_effect_error.take()
     }
+
+    /// Forget the effect error state without reporting a recovery, for a
+    /// scene that no longer renders any zone. The next failure, even the
+    /// same one, publishes again.
+    pub(crate) fn forget_effect_error(&mut self) {
+        self.last_effect_error = None;
+        self.recovered_effect_error = None;
+    }
+
+    /// Count a frame whose scene zones failed to render, `retained` saying
+    /// whether it published the last good frame instead. Returns whether the
+    /// failure is new and should be logged: the first since the scene last
+    /// rendered, or one whose error or outcome differs from the one logged.
+    /// A failure that persists frame after frame logs once.
+    pub(crate) fn note_scene_render_failure(&mut self, error: &Error, retained: bool) -> bool {
+        self.scene_render_failure
+            .note((format!("{error:#}"), retained))
+    }
+
+    /// End the logged scene render failure, if one is open, returning how
+    /// many frames failed since it was logged.
+    pub(crate) fn clear_scene_render_failure(&mut self) -> Option<u64> {
+        self.scene_render_failure.clear()
+    }
 }
 
 pub(super) fn render_layer_effect_error(
