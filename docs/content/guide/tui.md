@@ -75,9 +75,9 @@ The dashboard is the landing screen and the fastest way to see current system st
 
 It is divided into four panels, all resizable by dragging the divider lines with the mouse:
 
-**Now Playing** (top-left): the active effect name, description, author, category, feature badges (audio reactive, control count, preset count), and tags. Below those, a brightness gauge and live FPS readout. In a multi-zone scene, this panel lists each zone with its effect and enabled state; `[/]` cycles the apply target between zones, `x` toggles the targeted zone on or off.
+**Now Playing** (top-left): the active effect name, description, author, category, feature badges (audio reactive, control count, preset count), and tags. Below those, a brightness gauge and live FPS readout. In a multi-zone scene, this panel lists each zone with its effect and enabled state. `[/]` cycles the zone target, and both the preview and every apply or control edit follow it. A display zone can be an edit target, but the preview stays on the Default zone while it is. Press `x` to toggle the targeted zone on or off.
 
-**Preview** (top-right): the live render canvas streamed from the daemon over WebSocket. The canvas adapts automatically to the terminal's image protocol (Kitty, sixel, or Unicode half-blocks). If no canvas data has arrived yet, the panel shows a placeholder.
+**Preview** (top-right): the live render streamed from the daemon over WebSocket. In a scene with more than one LED zone, it shows one zone at a time: the zone target, which starts on the Default zone. The panel title names that zone. A single-zone scene shows its scene canvas. The preview adapts automatically to the terminal's image protocol (Kitty, sixel, or Unicode half-blocks). If no canvas data has arrived yet, the panel shows a placeholder.
 
 **Connected Devices** (middle): a table of every discovered device with columns for Device, Type, LEDs, Status, and FPS, plus a footer totaling LEDs across all devices. Navigate rows with `j`/`k` or the arrow keys; `Enter` jumps to the Devices screen.
 
@@ -109,7 +109,7 @@ Search filters by name, category, and tags simultaneously. The filter is live: r
 
 ### Preview pane
 
-Shows the live canvas for the selected effect. If multiple virtual display simulators are enabled, cycle between them with `h`/`l` or horizontal scroll in the preview pane. The source label in the pane title shows which feed is active.
+Shows the live canvas for the selected effect. If multiple virtual display simulators are enabled, cycle between them with `h`/`l` or horizontal scroll in the preview pane. The source label in the pane title shows which feed is active. In a scene with more than one LED zone, the canvas feed shows the zone target and its label names that zone.
 
 When the effect has named presets, a preset indicator appears at the bottom of the controls pane. Navigate presets with `j`/`k` in the preview pane; `Enter` applies the highlighted preset.
 
@@ -142,6 +142,8 @@ Press `z` (or `Z`) from any screen to expand the canvas preview to fill the enti
 
 In fullscreen mode, the preview transport is chosen automatically based on your terminal's capabilities and the render cost. In Kitty the TUI uses a fast direct-protocol path; in other terminals it falls back to the best graphics protocol the terminal advertises, and to Unicode block-character rendering where none is available.
 
+In a scene with more than one LED zone, `[`/`]` cycle the shown zone here too, and the status line names the zone and its scene.
+
 Press `z` or `Esc` to return to the normal layout.
 
 ## Global keybindings
@@ -156,8 +158,8 @@ These work from any screen and any pane:
 | `M` | Cycle motion sensitivity (Off → Subtle → Full) |
 | `Z` | Toggle fullscreen canvas preview |
 | `C` | Open the scene picker modal |
-| `[` | Cycle zone target backward (multi-zone scenes) |
-| `]` | Cycle zone target forward (multi-zone scenes) |
+| `[` | Cycle the zone target and preview backward (multi-zone scenes) |
+| `]` | Cycle the zone target and preview forward (multi-zone scenes) |
 | `Esc` | Go back / close overlay |
 | `d/e/v` | Switch directly to Dashboard / Effects / Devices |
 
