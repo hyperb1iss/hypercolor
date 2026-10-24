@@ -377,12 +377,64 @@ impl ZonePreviewFrameReceiver {
     }
 }
 
+/// Test seam: one armed hold on the render thread's next frame publication.
+#[cfg(feature = "persistence-test-hooks")]
+#[derive(Debug, Default)]
+struct FramePublicationHoldSlot {
+    armed: std::sync::atomic::AtomicBool,
+    gate: Mutex<Option<FramePublicationGate>>,
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[derive(Debug)]
+struct FramePublicationGate {
+    reached: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+
+/// A test's handle on one held frame publication. Dropping it releases the
+/// frame, so a failing test never leaves the render thread wedged.
+#[cfg(feature = "persistence-test-hooks")]
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct FramePublicationHold {
+    reached: Option<tokio::sync::oneshot::Receiver<()>>,
+    release: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+impl FramePublicationHold {
+    /// Wait until the render thread holds a rendered frame in front of its
+    /// publication.
+    pub async fn reached(&mut self) {
+        if let Some(reached) = self.reached.take() {
+            let _ = reached.await;
+        }
+    }
+
+    /// Let the held frame publish.
+    pub fn release(self) {
+        drop(self);
+    }
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+impl Drop for FramePublicationHold {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PreviewRuntime {
     event_bus: Arc<HypercolorBus>,
     telemetry: Arc<PreviewRuntimeTelemetry>,
     demand_state: Arc<PreviewRuntimeDemandState>,
     interactive_executor: Arc<ArcSwapOption<InteractivePreviewExecutor>>,
+    #[cfg(feature = "persistence-test-hooks")]
+    publication_hold: Arc<FramePublicationHoldSlot>,
 }
 
 impl PreviewRuntime {
@@ -393,7 +445,52 @@ impl PreviewRuntime {
             telemetry: Arc::new(PreviewRuntimeTelemetry::default()),
             demand_state: Arc::new(PreviewRuntimeDemandState::default()),
             interactive_executor: Arc::new(ArcSwapOption::empty()),
+            #[cfg(feature = "persistence-test-hooks")]
+            publication_hold: Arc::default(),
         }
+    }
+
+    /// Hold the next frame the render thread renders while awake just
+    /// before it publishes, so a test can land an output hold while that
+    /// frame is in flight. The frame has already written its outputs.
+    #[cfg(feature = "persistence-test-hooks")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn hold_next_frame_publication(&self) -> FramePublicationHold {
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *self
+            .publication_hold
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(FramePublicationGate {
+            reached: reached_tx,
+            release: release_rx,
+        });
+        self.publication_hold.armed.store(true, Ordering::Release);
+        FramePublicationHold {
+            reached: Some(reached_rx),
+            release: Some(release_tx),
+        }
+    }
+
+    /// Wait out a hold armed by [`Self::hold_next_frame_publication`].
+    #[cfg(feature = "persistence-test-hooks")]
+    pub(crate) async fn pass_frame_publication_hold(&self) {
+        if !self.publication_hold.armed.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let gate = self
+            .publication_hold
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let Some(gate) = gate else {
+            return;
+        };
+        let _ = gate.reached.send(());
+        let _ = gate.release.await;
     }
 
     pub fn install_interactive_executor(&self, executor: Arc<InteractivePreviewExecutor>) {

@@ -995,6 +995,14 @@ impl PublicationCadenceState {
         self.last_scene_canvas_publish_ms = Some(elapsed_ms);
     }
 
+    /// Make the `canvas` and scene canvas previews due on the current frame,
+    /// whatever their cadence. A lane nobody watches still publishes
+    /// nothing.
+    pub(crate) fn make_scene_previews_due(&mut self) {
+        self.last_canvas_preview_publish_ms = None;
+        self.last_scene_canvas_publish_ms = None;
+    }
+
     pub(crate) fn screen_canvas_preview_due(
         &self,
         elapsed_ms: u64,
