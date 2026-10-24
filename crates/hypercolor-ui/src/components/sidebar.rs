@@ -19,10 +19,11 @@ use crate::config_state::ConfigContext;
 use crate::extensions::SidebarExtensionWidgets;
 use crate::icons::*;
 use crate::nav::{NavExtensionItems, nav_model};
-use crate::preview_zone::{PlayerTarget, PreviewZoneContext, player_target};
+use crate::preview_zone::{PlayerTarget, PreviewZoneContext, player_target, shown_zone_state};
 use crate::route_ui::NowPlayingCanvasMode;
 use crate::style_utils::category_accent_rgb;
 use crate::tauri_bridge;
+use crate::zones::ZoneEffectState;
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::random_unit;
 
@@ -129,10 +130,15 @@ pub fn Sidebar() -> impl IntoView {
     // The player acts on the zone the preview shows: the thumbnail's
     // Default zone here, or the zone a page's picker focused.
     let preview_zone = use_context::<PreviewZoneContext>();
-    let shown_zone_effect = Memo::new(move |_| {
-        let zone_id = preview_zone.and_then(|preview| preview.zone.get())?;
-        fx.zone_effects
-            .with(|zones| zones.iter().find(|state| state.zone.id == zone_id).cloned())
+    let shown_zone_effect = Memo::new(move |last_seen: Option<&Option<ZoneEffectState>>| {
+        let zone_id = preview_zone.and_then(|preview| preview.zone.get());
+        fx.zone_effects.with(|zones| {
+            shown_zone_state(
+                zone_id.as_deref(),
+                zones,
+                last_seen.and_then(Option::as_ref),
+            )
+        })
     });
     let player = move || {
         shown_zone_effect.with_untracked(|shown| {

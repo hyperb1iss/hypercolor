@@ -96,6 +96,26 @@ pub struct PlayerTarget {
     pub apply_target: ApplyTarget,
 }
 
+/// The state of the zone a preview shows, for the controls beside it.
+///
+/// A failed scene refetch empties the zone list while the preview keeps
+/// its zone (see [`settled_preview_zone`]), so the state last seen for
+/// that zone stands in until the next document lands. A zone missing from
+/// a loaded scene has no state.
+#[must_use]
+pub fn shown_zone_state(
+    shown_zone: Option<&str>,
+    zone_effects: &[ZoneEffectState],
+    last_seen: Option<&ZoneEffectState>,
+) -> Option<ZoneEffectState> {
+    let zone_id = shown_zone?;
+    zone_effects
+        .iter()
+        .find(|state| state.zone.id == zone_id)
+        .or_else(|| last_seen.filter(|state| zone_effects.is_empty() && state.zone.id == zone_id))
+        .cloned()
+}
+
 /// The target of a player that sits beside a preview: the zone that
 /// preview shows.
 ///
@@ -128,6 +148,26 @@ pub fn player_target(
     }
 }
 
+/// Where the main preview points once a scene read settles.
+///
+/// A read that returned the scene document moves it to `policy`, the
+/// [`preview_zone_for`] answer. A failed read describes no zones, so it
+/// keeps `current`: the scene canvas before any document has loaded, and
+/// the zone already on screen through a failed refetch or a reconnect,
+/// rather than dropping to the scene canvas's patchwork.
+#[must_use]
+pub fn settled_preview_zone(
+    document_loaded: bool,
+    policy: Option<String>,
+    current: Option<&str>,
+) -> Option<String> {
+    if document_loaded {
+        policy
+    } else {
+        current.map(ToOwned::to_owned)
+    }
+}
+
 /// Keep the main preview on the zone the current page should show. Call
 /// once from inside the router, where the route is known.
 pub fn follow_preview_zone(pathname: Memo<String>) {
@@ -156,14 +196,16 @@ pub fn follow_preview_zone(pathname: Memo<String>) {
         if !zones.scene_resolved.get() {
             return;
         }
-        let zone = target.get();
+        let policy = target.get();
+        let document_loaded = zones.active_scene.with(Option::is_some);
         // Compared with what was asked for rather than with the shown
         // zone: a daemon that cannot select zones shows the scene canvas
         // whatever is asked for.
         preview.set_zone.maybe_update(|wanted| {
-            let changed = *wanted != zone;
+            let next = settled_preview_zone(document_loaded, policy, wanted.as_deref());
+            let changed = *wanted != next;
             if changed {
-                *wanted = zone;
+                *wanted = next;
             }
             changed
         });

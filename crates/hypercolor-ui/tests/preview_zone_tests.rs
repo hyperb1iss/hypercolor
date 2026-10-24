@@ -6,7 +6,8 @@ use hypercolor_types::scene::ZoneRole;
 
 use hypercolor_ui::apply_target::ApplyTarget;
 use hypercolor_ui::preview_zone::{
-    PlayerTarget, player_target, preview_frame_owner, preview_zone_for,
+    PlayerTarget, player_target, preview_frame_owner, preview_zone_for, settled_preview_zone,
+    shown_zone_state,
 };
 use hypercolor_ui::zones::surface::{Surface, SurfaceKind};
 use hypercolor_ui::zones::{ZoneEffectState, scene_read_settles};
@@ -96,6 +97,39 @@ fn a_player_beside_the_default_zone_steps_the_default_zone() {
 }
 
 #[test]
+fn the_shown_zone_s_state_comes_from_the_current_scene() {
+    let zones = [
+        zone("default", ZoneRole::Primary, "digital-rain"),
+        zone("roli", ZoneRole::Custom, "bubble-garden"),
+    ];
+    let stale = zone("roli", ZoneRole::Custom, "touch-ripple");
+    assert_eq!(
+        shown_zone_state(Some("roli"), &zones, Some(&stale)),
+        Some(zones[1].clone())
+    );
+    assert_eq!(shown_zone_state(None, &zones, Some(&stale)), None);
+}
+
+#[test]
+fn a_failed_refetch_keeps_the_shown_zone_s_last_state() {
+    // The preview keeps the Default zone through a failed refetch, so the
+    // player beside it must keep targeting the Default zone too rather
+    // than falling back to the quick-apply target.
+    let last = zone("default", ZoneRole::Primary, "digital-rain");
+    assert_eq!(
+        shown_zone_state(Some("default"), &[], Some(&last)),
+        Some(last.clone())
+    );
+}
+
+#[test]
+fn a_shown_zone_missing_from_a_loaded_scene_has_no_state() {
+    let zones = [zone("roli", ZoneRole::Custom, "bubble-garden")];
+    let last = zone("default", ZoneRole::Primary, "digital-rain");
+    assert_eq!(shown_zone_state(Some("default"), &zones, Some(&last)), None);
+}
+
+#[test]
 fn a_player_beside_a_focused_zone_steps_from_that_zone_s_effect() {
     let shown = zone("roli", ZoneRole::Custom, "bubble-garden");
     assert_eq!(
@@ -180,4 +214,28 @@ fn a_shown_zone_s_frames_belong_to_its_sole_effect() {
         preview_frame_owner(Some("roli"), false, Some("digital-rain".to_owned()), &zones),
         Some("bubble-garden".to_owned())
     );
+}
+
+#[test]
+fn a_loaded_scene_document_moves_the_preview_to_the_policy_zone() {
+    assert_eq!(
+        settled_preview_zone(true, Some("default".to_owned()), None),
+        Some("default".to_owned())
+    );
+    assert_eq!(settled_preview_zone(true, None, Some("default")), None);
+}
+
+#[test]
+fn a_failed_scene_read_keeps_the_zone_on_screen() {
+    // A refetch that fails mid-session, or while the socket is down,
+    // must not drop a multi-zone preview onto the scene canvas.
+    assert_eq!(
+        settled_preview_zone(false, None, Some("default")),
+        Some("default".to_owned())
+    );
+}
+
+#[test]
+fn a_first_scene_read_that_fails_keeps_the_scene_canvas() {
+    assert_eq!(settled_preview_zone(false, None, None), None);
 }
