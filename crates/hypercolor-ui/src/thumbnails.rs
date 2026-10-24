@@ -243,9 +243,10 @@ fn spawn_curated_probe(effect_id: String, probe_cache: StoredValue<HashMap<Strin
 
 /// Background auto-capture loop.
 ///
-/// Watches the active effect + canvas frame stream. When a single effect
-/// has been playing for at least `CAPTURE_STABLE_MS` and no valid thumbnail
-/// exists for the current version, captures one frame and stores it.
+/// Watches the effect that owns the preview frames, plus the frames
+/// themselves. When a single effect has owned them for at least
+/// `CAPTURE_STABLE_MS` and no valid thumbnail exists for the current
+/// version, captures one frame and stores it.
 ///
 /// The `effect_lookup` closure maps an effect ID to `(name, version)`. The
 /// daemon's cover endpoint is probed by id; when the effect already has cover
@@ -253,7 +254,7 @@ fn spawn_curated_probe(effect_id: String, probe_cache: StoredValue<HashMap<Strin
 /// paint the authored artwork on top anyway.
 pub fn install_auto_capture<F>(
     store: ThumbnailStore,
-    active_effect_id: ReadSignal<Option<String>>,
+    active_effect_id: Signal<Option<String>>,
     canvas_frame: ReadSignal<Option<CanvasFrame>>,
     effect_lookup: F,
 ) where

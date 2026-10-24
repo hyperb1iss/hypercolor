@@ -1724,6 +1724,7 @@ pub(crate) fn assemble_domains(
         driver_registry,
         config_manager.clone(),
     );
+    let output_scene_plan = scene_manager.plan_reader();
     let scene = SceneContext::new(
         scene_manager,
         runtime_session.clone(),
@@ -1740,6 +1741,7 @@ pub(crate) fn assemble_domains(
         performance,
         render_loop,
         spatial_engine.clone(),
+        output_scene_plan,
         backend_manager,
         preview_runtime,
         devices.clone(),

@@ -220,7 +220,7 @@ subscription per connection.
 | `screen_canvas` | — | Binary | Screen-capture canvas. Control-tier only. |
 | `screen_zones` | — | Binary | Smoothed per-sector ambilight grid from screen capture. Control-tier only. |
 | `web_viewport_canvas` | — | Binary | Servo web-viewport canvas (HTML effect output). |
-| `zone_preview` | — | Binary | Per-zone preview frames, addressed by scene and zone. |
+| `zone_preview` | — | Binary | Per-zone preview frames, addressed by scene and zone. `config.zones` picks which zones arrive. |
 | `metrics` | — | JSON | Periodic render-performance snapshot. |
 | `device_metrics` | — | JSON | Periodic per-device output telemetry. |
 | `sensors` | — | JSON | Periodic host sensor snapshot (system telemetry). |
@@ -738,7 +738,8 @@ configurable topic means "leave this subscription alone".
 
 ### canvas / screen_canvas / web_viewport_canvas / zone_preview config
 
-These four preview topics share the same config shape:
+These four preview topics share the same canvas shape, and `zone_preview`
+adds a zone selection:
 
 | Field | Type | Default | Range / values |
 | --- | --- | --- | --- |
@@ -746,6 +747,34 @@ These four preview topics share the same config shape:
 | `format` | string | `"rgb"` | `"rgb"`, `"rgba"`, or `"jpeg"` |
 | `width` | integer | `0` | unsigned 32-bit; 0 selects the source width or preserves aspect ratio |
 | `height` | integer | `0` | unsigned 32-bit; 0 selects the source height or preserves aspect ratio |
+| `zones` (`zone_preview` only) | array of string | `["all"]` | zone IDs, or `["all"]`; must not be empty |
+
+`zones` works the way it does on `frames`: `"all"` anywhere selects every zone,
+and an ID that names no live zone selects nothing rather than failing, so a
+client can name a zone a scene change is about to create. Only selected zones
+are encoded and sent, and the daemon stages, reads back, and copies previews
+only for the union of zones its subscribers select, so a client watching one
+zone of a busy scene pays for one zone. A patch that narrows the selection
+cancels the streams of zones it drops. A `zones`-only patch keeps the
+subscription's cadence, format, and size, and so does a later subscribe
+without config, because unsubscribing keeps the stored config for the next
+subscribe.
+
+```json
+{
+  "type": "subscribe",
+  "topics": [{
+    "topic": "zone_preview",
+    "config": {
+      "fps": 30,
+      "format": "jpeg",
+      "width": 640,
+      "height": 0,
+      "zones": ["01a15100-16a2-7300-91d2-507b4d2f85ff"]
+    }
+  }]
+}
+```
 
 Raw RGB and RGBA previews retain the full unsigned 32-bit axis vocabulary,
 subject only to the advertised decoded-byte budget. Standard JPEG stores each

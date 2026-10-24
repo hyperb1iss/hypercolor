@@ -69,6 +69,7 @@ use projection::{
     ProjectionBounds, blit_zone_projection, copy_full_scene_identity_projection,
     projection_composition_layers_for_zone, zone_local_position_for_scene_pixel,
 };
+pub(super) use zone_state::zone_is_active;
 use zone_state::{combined_led_state, empty_zone_layout};
 
 /// Initial slot count for the full-resolution scene surface pool. Sized to absorb

@@ -26,7 +26,7 @@
       "description": "Browser viewport effect preview canvas."
     },
     "zone_preview": {
-      "description": "Per-zone preview frame stream."
+      "description": "Per-zone preview frame stream. config.zones names the zones to deliver, or [\"all\"]; the daemon does preview work only for zones some subscriber selects."
     },
     "metrics": {
       "description": "Render pipeline performance metrics."

@@ -575,6 +575,10 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         preview_counters: ws.preview_counters,
     };
     provide_context(ws_ctx);
+    provide_context(crate::preview_zone::PreviewZoneContext::new(
+        ws.preview_zone,
+        ws.set_preview_zone,
+    ));
     provide_context(crate::device_metrics::install_device_metrics_store(ws_ctx));
 
     // Shared zone + scene state — one active-scene resource for the whole
@@ -671,6 +675,26 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                     let indexed = effect_id
                         .as_ref()
                         .and_then(|id| effects.iter().find(|entry| entry.effect.id == *id));
+                    let layer_labels = zone
+                        .layers
+                        .iter()
+                        .filter(|layer| layer.enabled)
+                        .map(|layer| {
+                            let effect_name = match &layer.source {
+                                hypercolor_types::layer::LayerSource::Effect {
+                                    effect_id, ..
+                                } => {
+                                    let effect_id = effect_id.to_string();
+                                    effects
+                                        .iter()
+                                        .find(|entry| entry.effect.id == effect_id)
+                                        .map(|entry| entry.effect.name.as_str())
+                                }
+                                _ => None,
+                            };
+                            crate::zones::surface::layer_label(layer, effect_name)
+                        })
+                        .collect();
                     crate::zones::ZoneEffectState {
                         effect_name: indexed.map(|entry| entry.effect.name.clone()),
                         effect_category: indexed
@@ -682,6 +706,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                             .and_then(|effect| effect.preset_id)
                             .map(|preset_id| preset_id.to_string()),
                         revision: scene.revision,
+                        layer_labels,
                         effect_id,
                         zone: surface,
                     }
@@ -768,11 +793,24 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
 
     // Effect thumbnail store — captures screenshots opportunistically while
     // effects are playing and exposes them to the browse grid for card art.
+    // A frame is captured as the effect that owns it: the primary effect
+    // on the scene canvas, or a followed zone's effect when that effect is
+    // the zone's only layer. A stacked zone's frame belongs to no one effect.
     let thumbnail_store = ThumbnailStore::new();
     provide_context(thumbnail_store);
+    let preview_zone = ws.preview_zone;
+    let captured_effect_id = Signal::derive(move || match preview_zone.get() {
+        None => active_effect_id.get(),
+        Some(zone_id) => zone_effects.with(|zones| {
+            zones
+                .iter()
+                .find(|state| state.zone.id == zone_id)
+                .and_then(|state| state.sole_effect_id().map(ToOwned::to_owned))
+        }),
+    });
     thumbnails::install_auto_capture(
         thumbnail_store,
-        active_effect_id,
+        captured_effect_id,
         ws.canvas_frame,
         move |effect_id| {
             effects_index.with_untracked(|effects| {

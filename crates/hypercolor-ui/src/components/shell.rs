@@ -5,7 +5,7 @@ use hypercolor_leptos_ext::events::document as browser_document;
 use hypercolor_leptos_ext::prelude::now_ms;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use leptos_router::hooks::use_navigate;
+use leptos_router::hooks::{use_location, use_navigate};
 use wasm_bindgen::JsCast;
 
 use hypercolor_types::scene::SceneMutationMode;
@@ -59,6 +59,10 @@ fn focus_page_search() {
 #[component]
 pub fn Shell(children: Children) -> impl IntoView {
     let (palette_open, set_palette_open) = signal(false);
+
+    // One zone per preview: the page's focused zone where it has a zone
+    // picker, the Default zone everywhere else.
+    crate::preview_zone::follow_preview_zone(use_location().pathname);
 
     // Ambient hue extraction — driven by the shared frame-analysis pass in
     // app context. The hue is written to `:root` (not the shell div):

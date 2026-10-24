@@ -29,7 +29,7 @@ use hypercolor_core::input::{
 use hypercolor_core::scene::SceneManager;
 use hypercolor_leptos_ext::ws::registry::{
     CanvasFormat, FramesConfig, InteractivePreviewConfig, InteractivePreviewTarget, TopicId,
-    TopicSet,
+    TopicSet, ZonePreviewConfig,
 };
 use hypercolor_leptos_ext::ws::topic::{TopicSelector, TopicSubscription};
 use hypercolor_leptos_ext::ws::{
@@ -194,6 +194,7 @@ use crate::performance::{
 };
 use crate::preview_runtime::{
     PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
+    ZonePreviewSelection,
 };
 use crate::render_thread::{InputPublicationConsumer, InputPublicationDemandHandle};
 use crate::simulators::SimulatedDisplayExt;
@@ -2313,6 +2314,145 @@ async fn relay_zone_preview_cancels_streams_retired_by_scene_changes() {
     preview_rx.complete(&second);
     relay_handle.abort();
     let _ = relay_handle.await;
+}
+
+#[tokio::test]
+async fn relay_zone_preview_delivers_only_the_selected_zones() {
+    let state = Arc::new(AppState::new());
+    let scene = SceneId::new();
+    let (zone_a, zone_b) = (ZoneId::new(), ZoneId::new());
+    let subscriptions = SubscriptionState::default()
+        .subscribed_unkeyed(
+            &["zone_preview"],
+            serde_json::json!({"zone_preview": {"fps": 60, "zones": [zone_a.to_string()]}}),
+        )
+        .expect("zone preview subscribe applies");
+    let (subscriptions_tx, subscriptions_rx) = watch::channel(subscriptions.clone());
+    let (preview_tx, preview_rx) = preview_outbound_channel();
+    let relay_handle = tokio::spawn(relay_zone_preview(
+        Arc::clone(&state.preview_runtime),
+        preview_tx,
+        subscriptions_rx,
+    ));
+    let stream = |zone: ZoneId| PreviewStreamId::Zone {
+        scene_id: *scene.0.as_bytes(),
+        zone_id: *zone.0.as_bytes(),
+    };
+    let publish_both = |frame_number: u32| {
+        let canvas = Canvas::new(1, 1);
+        state.event_bus.zone_preview_lane().send_replace(
+            [zone_a, zone_b]
+                .into_iter()
+                .map(|zone_id| ZonePreviewFrame {
+                    scene_id: scene,
+                    zone_id,
+                    frame: CanvasFrame::from_canvas(&canvas, frame_number, frame_number),
+                })
+                .collect::<Vec<_>>()
+                .into(),
+        );
+    };
+
+    publish_both(1);
+    let first = receive_zone_preview_items(&preview_rx, 1).await;
+    assert_eq!(first.published(), vec![stream(zone_a)]);
+    assert!(first.cancelled.is_empty());
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert!(
+        preview_rx.try_recv().is_none(),
+        "an unselected zone is never encoded or sent"
+    );
+    assert_eq!(
+        state.preview_runtime.zone_preview_selection(),
+        ZonePreviewSelection::from_zone_ids([zone_a]),
+        "the relay registers its selection for the render thread"
+    );
+
+    let narrowed = subscriptions
+        .subscribed_unkeyed(
+            &["zone_preview"],
+            serde_json::json!({"zone_preview": {"zones": [zone_b.to_string()]}}),
+        )
+        .expect("a zones patch applies in place");
+    assert_eq!(
+        narrowed
+            .config_of::<ZonePreviewConfig>(TopicId::ZonePreview, None)
+            .fps,
+        60,
+        "a zones-only patch keeps the subscription's cadence"
+    );
+    // The scene publishes nothing new: the switch itself must send the
+    // newly selected zone and cancel the dropped zone's in-flight frame.
+    subscriptions_tx
+        .send(narrowed)
+        .expect("relay still listens for subscription changes");
+    let switched = receive_zone_preview_items(&preview_rx, 2).await;
+    assert_eq!(switched.published(), vec![stream(zone_b)]);
+    assert_eq!(
+        switched.cancelled,
+        vec![stream(zone_a)],
+        "the deselected zone's in-flight publication is cancelled"
+    );
+    assert!(!preview_rx.is_current(&first.publications[0]));
+    for publication in first.publications.iter().chain(&switched.publications) {
+        preview_rx.complete(publication);
+    }
+    assert_eq!(
+        state.preview_runtime.zone_preview_selection(),
+        ZonePreviewSelection::from_zone_ids([zone_b])
+    );
+
+    relay_handle.abort();
+    let _ = relay_handle.await;
+    assert_eq!(
+        state.preview_runtime.zone_preview_selection(),
+        ZonePreviewSelection::from_zone_ids([]),
+        "a closed subscription leaves the union"
+    );
+}
+
+/// Zone preview publications and cancellations a relay emitted, in
+/// arrival order. Publications stay in flight until the test completes
+/// them, as they would while a socket writes them.
+struct ZonePreviewItems {
+    publications: Vec<PreviewPublication>,
+    cancelled: Vec<PreviewStreamId>,
+}
+
+impl ZonePreviewItems {
+    fn published(&self) -> Vec<PreviewStreamId> {
+        self.publications
+            .iter()
+            .map(|publication| publication.stream().clone())
+            .collect()
+    }
+}
+
+/// Collect `count` publications and cancellations, or whatever arrived
+/// before the deadline, so a failing assertion shows what the relay did.
+async fn receive_zone_preview_items(
+    receiver: &PreviewOutboundReceiver,
+    count: usize,
+) -> ZonePreviewItems {
+    let mut items = ZonePreviewItems {
+        publications: Vec::new(),
+        cancelled: Vec::new(),
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    while items.publications.len() + items.cancelled.len() < count
+        && tokio::time::Instant::now() < deadline
+    {
+        match receiver.try_recv() {
+            Some(PreviewOutboundItem::Publication(publication)) => {
+                items.publications.push(publication);
+            }
+            Some(PreviewOutboundItem::Cancellation(message)) => {
+                items.cancelled.push(message.stream);
+            }
+            None => tokio::time::sleep(Duration::from_millis(2)).await,
+        }
+    }
+    items
 }
 
 fn try_receive_preview_publication(

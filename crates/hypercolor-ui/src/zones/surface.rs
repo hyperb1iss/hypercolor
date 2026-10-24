@@ -4,7 +4,7 @@
 //! are the same shape, so a multi-zone scene is more rows in the rail,
 //! never a rebuilt editor. Kept leptos-free for `#[path]` tests.
 
-use hypercolor_types::layer::LayerSource;
+use hypercolor_types::layer::{LayerSource, SceneLayer};
 use hypercolor_types::scene::ZoneRole;
 
 use crate::api::ZoneResource;
@@ -116,6 +116,19 @@ fn top_layer_label(zone: &ZoneResource) -> Option<String> {
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| layer_source_kind(&top.source).to_owned()),
     )
+}
+
+/// Display label of one layer: its user-set name, else the effect it
+/// runs (when the caller resolved one), else a plain-words label for its
+/// source kind.
+#[must_use]
+pub fn layer_label(layer: &SceneLayer, effect_name: Option<&str>) -> String {
+    layer
+        .name
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| effect_name.map(ToOwned::to_owned))
+        .unwrap_or_else(|| layer_source_kind(&layer.source).to_owned())
 }
 
 /// Plain-words label for a layer source kind — never an internal enum

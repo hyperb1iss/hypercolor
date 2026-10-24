@@ -2,8 +2,9 @@ use std::time::Instant;
 
 use tracing::{debug, trace, warn};
 
+use hypercolor_core::bus::CanvasFrame;
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::Canvas;
+use hypercolor_types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
@@ -76,6 +77,11 @@ pub(crate) async fn maybe_sleep_throttle(
             state.canvas_dims.height(),
             [0, 0, 0],
         );
+        let zone_preview_frame = static_zone_preview_frame(
+            &surface,
+            frame_num_u32,
+            u64_to_u32(scene_snapshot.elapsed_ms),
+        );
         let publish_stats = publish_frame_updates(
             state,
             publication_cadence,
@@ -108,6 +114,11 @@ pub(crate) async fn maybe_sleep_throttle(
                     budget_us: scene_snapshot.budget_us,
                 },
             },
+        );
+        state.preview_runtime.publish_static_zone_previews(
+            scene_snapshot.scene_runtime.active_scene_id,
+            &scene_snapshot.scene_runtime.resolved_zones,
+            &zone_preview_frame,
         );
         let publish_us = publish_stats.elapsed_us;
         trace!(
@@ -157,6 +168,11 @@ pub(crate) async fn maybe_sleep_throttle(
 
     let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
     let timing_total_us = sample_us.saturating_add(push_us);
+    let zone_preview_frame = static_zone_preview_frame(
+        &surface,
+        frame_num_u32,
+        u64_to_u32(scene_snapshot.elapsed_ms),
+    );
     let publish_stats = publish_frame_updates(
         state,
         publication_cadence,
@@ -190,6 +206,11 @@ pub(crate) async fn maybe_sleep_throttle(
             },
         },
     );
+    state.preview_runtime.publish_static_zone_previews(
+        scene_snapshot.scene_runtime.active_scene_id,
+        &scene_snapshot.scene_runtime.resolved_zones,
+        &zone_preview_frame,
+    );
     let publish_us = publish_stats.elapsed_us;
     let publish_done_at = Instant::now();
     let publish_done_us = micros_between(frame_start, publish_done_at);
@@ -222,6 +243,20 @@ pub(crate) async fn maybe_sleep_throttle(
     throttle.note_sleep_frame_published();
     let mut render_loop = state.render_loop.write().await;
     Some(frame_policy.sleep_throttle_execution(&mut render_loop))
+}
+
+/// The sleep frame as a zone preview: the same static surface the outputs
+/// and the scene canvas get, stamped with this frame's metadata.
+fn static_zone_preview_frame(
+    surface: &PublishedSurface,
+    frame_number: u32,
+    timestamp_ms: u32,
+) -> CanvasFrame {
+    CanvasFrame::from_surface(
+        surface
+            .clone()
+            .with_frame_metadata(frame_number, timestamp_ms),
+    )
 }
 
 #[cfg(test)]

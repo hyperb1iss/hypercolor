@@ -3,29 +3,32 @@
 //! CPU-backed zones hand their canvases straight to frame publication. A GPU
 //! zone's frame is scaled on the GPU to the zone-preview demand and read back
 //! at that transport size. Staging happens only on frames where publication
-//! will admit a zone preview, so a scene nobody previews does no preview work.
+//! will admit a zone preview, so a scene nobody previews does no preview work,
+//! and only for zones a subscriber selected, so a zone nobody previews does
+//! none either.
 
 use std::borrow::Cow;
 
 use hypercolor_types::canvas::PublishedSurface;
-use hypercolor_types::scene::{SceneId, ZoneId};
+use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use tracing::debug;
 
 use super::RenderThreadState;
 use super::pipeline_runtime::PublicationCadenceState;
 use super::producer_queue::ProducerFrame;
 use super::sparkleflinger::SparkleFlinger;
-use crate::preview_runtime::PreviewDemandSummary;
+use crate::preview_runtime::{PreviewDemandSummary, ZonePreviewSelection};
 
 /// This frame's zone-preview demand, read once so staging and collection
 /// agree with frame publication's own cadence gate.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ZonePreviewDemand {
     active: bool,
     due: bool,
     full_resolution: bool,
     max_width: u32,
     max_height: u32,
+    selection: ZonePreviewSelection,
 }
 
 impl ZonePreviewDemand {
@@ -42,6 +45,7 @@ impl ZonePreviewDemand {
         let due = active
             && cadence.zone_preview_due(elapsed_ms, receivers, tracked_receivers, demand.max_fps);
         Self::from_summary(active, due, receivers > tracked_receivers, demand)
+            .with_selection(zone_preview_selection(state))
     }
 
     /// `active` means someone watches zone previews of a live scene; `due`
@@ -62,7 +66,15 @@ impl ZonePreviewDemand {
                 || demand.max_height == 0,
             max_width: demand.max_width,
             max_height: demand.max_height,
+            selection: ZonePreviewSelection::All,
         }
+    }
+
+    /// Limit preview work to the zones `selection` names.
+    #[must_use]
+    pub(crate) fn with_selection(mut self, selection: ZonePreviewSelection) -> Self {
+        self.selection = selection;
+        self
     }
 
     /// The preview extent for a `width` x `height` zone frame, sized the way
@@ -79,11 +91,24 @@ impl ZonePreviewDemand {
     }
 }
 
-/// Stage a transport-sized preview of every GPU zone frame when a zone
-/// preview is due, and release preview resources once nobody watches.
+/// The zones zone-preview publication serves: every zone when some bus
+/// receiver registered no selection (it reads the lane directly), otherwise
+/// the union tracked subscribers selected.
+pub(crate) fn zone_preview_selection(state: &RenderThreadState) -> ZonePreviewSelection {
+    if state.event_bus.zone_preview_receiver_count()
+        > state.preview_runtime.zone_preview_receiver_count()
+    {
+        return ZonePreviewSelection::All;
+    }
+    state.preview_runtime.zone_preview_selection()
+}
+
+/// Stage a transport-sized preview of every selected GPU zone frame when a
+/// zone preview is due, and release preview resources of zones nobody
+/// watches.
 pub(crate) fn stage_gpu_zone_previews(
     sparkleflinger: &mut SparkleFlinger,
-    demand: ZonePreviewDemand,
+    demand: &ZonePreviewDemand,
     zone_canvases: &[(ZoneId, ProducerFrame)],
     display_zone_ids: &[ZoneId],
 ) {
@@ -92,12 +117,13 @@ pub(crate) fn stage_gpu_zone_previews(
         return;
     }
     sparkleflinger.retain_zone_previews(|zone_id| {
-        gpu_preview_zones(zone_canvases, display_zone_ids).any(|(id, _)| *id == zone_id)
+        gpu_preview_zones(zone_canvases, display_zone_ids, &demand.selection)
+            .any(|(id, _)| *id == zone_id)
     });
     if !demand.due {
         return;
     }
-    for (zone_id, frame) in gpu_preview_zones(zone_canvases, display_zone_ids) {
+    for (zone_id, frame) in gpu_preview_zones(zone_canvases, display_zone_ids, &demand.selection) {
         let (width, height) = demand.extent(frame.width(), frame.height());
         if let Err(error) = sparkleflinger.stage_zone_preview(*zone_id, frame, width, height) {
             debug!(%error, %zone_id, "GPU zone preview staging failed; keeping the latched preview");
@@ -105,11 +131,11 @@ pub(crate) fn stage_gpu_zone_previews(
     }
 }
 
-/// The newest finished preview of each GPU zone frame, polled without
-/// blocking. Empty unless a zone preview is due this frame.
+/// The newest finished preview of each selected GPU zone frame, polled
+/// without blocking. Empty unless a zone preview is due this frame.
 pub(crate) fn collect_gpu_zone_previews(
     sparkleflinger: &mut SparkleFlinger,
-    demand: ZonePreviewDemand,
+    demand: &ZonePreviewDemand,
     zone_canvases: &[(ZoneId, ProducerFrame)],
     display_zone_ids: &[ZoneId],
 ) -> Vec<(ZoneId, PublishedSurface)> {
@@ -117,7 +143,7 @@ pub(crate) fn collect_gpu_zone_previews(
         return Vec::new();
     }
     let mut previews = Vec::new();
-    for (zone_id, _) in gpu_preview_zones(zone_canvases, display_zone_ids) {
+    for (zone_id, _) in gpu_preview_zones(zone_canvases, display_zone_ids, &demand.selection) {
         match sparkleflinger.zone_preview_surface(*zone_id) {
             Ok(Some(surface)) => previews.push((*zone_id, surface)),
             Ok(None) => {}
@@ -134,7 +160,7 @@ pub(crate) fn collect_gpu_zone_previews(
 /// landed, because publication cannot read GPU frames itself. CPU frames,
 /// and every frame when no preview is due, pass through untouched.
 pub(crate) fn zone_preview_sources<'a>(
-    demand: ZonePreviewDemand,
+    demand: &ZonePreviewDemand,
     zone_canvases: &'a [(ZoneId, ProducerFrame)],
     gpu_previews: &[(ZoneId, PublishedSurface)],
 ) -> Cow<'a, [(ZoneId, ProducerFrame)]> {
@@ -161,15 +187,59 @@ pub(crate) fn zone_preview_sources<'a>(
     )
 }
 
-/// Scene zones whose frames live on the GPU. Display zones publish their
-/// finalized faces instead.
+/// Add a dark preview for every selected scene zone that renders nothing
+/// this frame: a paused zone, or one with no enabled layers. The render
+/// pass skips those zones, so without an entry a preview following one
+/// would hold its last live frame; the scene canvas shows them dark, and
+/// so do their previews. Every entry shares `dark_surface`, which the
+/// caller hands back from its static surface cache, so an unchanged dark
+/// zone never re-encodes.
+pub(crate) fn with_dark_inactive_zone_previews<'a>(
+    demand: &ZonePreviewDemand,
+    sources: Cow<'a, [(ZoneId, ProducerFrame)]>,
+    zones: &[Zone],
+    dark_surface: impl FnOnce() -> PublishedSurface,
+) -> Cow<'a, [(ZoneId, ProducerFrame)]> {
+    if !demand.due {
+        return sources;
+    }
+    // Collecting an empty iterator allocates nothing, so a frame with no
+    // dark zone pays only the scan.
+    let dark_zones = zones
+        .iter()
+        .filter(|zone| {
+            zone.display_target.is_none()
+                && !super::render_zones::zone_is_active(zone)
+                && demand.selection.includes(&zone.id)
+                && !sources.iter().any(|(zone_id, _)| *zone_id == zone.id)
+        })
+        .map(|zone| zone.id)
+        .collect::<Vec<_>>();
+    if dark_zones.is_empty() {
+        return sources;
+    }
+    let surface = dark_surface();
+    let mut previews = sources.into_owned();
+    previews.extend(
+        dark_zones
+            .into_iter()
+            .map(|zone_id| (zone_id, ProducerFrame::Surface(surface.clone()))),
+    );
+    Cow::Owned(previews)
+}
+
+/// Selected scene zones whose frames live on the GPU. Display zones
+/// publish their finalized faces instead.
 fn gpu_preview_zones<'a>(
     zone_canvases: &'a [(ZoneId, ProducerFrame)],
     display_zone_ids: &'a [ZoneId],
+    selection: &'a ZonePreviewSelection,
 ) -> impl Iterator<Item = &'a (ZoneId, ProducerFrame)> {
-    zone_canvases
-        .iter()
-        .filter(|(zone_id, frame)| frame.is_gpu_resident() && !display_zone_ids.contains(zone_id))
+    zone_canvases.iter().filter(|(zone_id, frame)| {
+        frame.is_gpu_resident()
+            && !display_zone_ids.contains(zone_id)
+            && selection.includes(zone_id)
+    })
 }
 
 #[cfg(test)]
@@ -234,7 +304,7 @@ mod tests {
         )];
         let not_due = ZonePreviewDemand::from_summary(true, false, false, sized_demand(32, 32));
 
-        let sources = zone_preview_sources(not_due, &zone_canvases, &previews);
+        let sources = zone_preview_sources(&not_due, &zone_canvases, &previews);
 
         assert!(matches!(sources, std::borrow::Cow::Borrowed(_)));
     }
@@ -252,7 +322,7 @@ mod tests {
 
         let due = ZonePreviewDemand::from_summary(true, true, false, sized_demand(32, 32));
 
-        let sources = zone_preview_sources(due, &zone_canvases, &previews);
+        let sources = zone_preview_sources(&due, &zone_canvases, &previews);
 
         let ProducerFrame::Canvas(canvas) = &sources[0].1 else {
             panic!("a CPU zone keeps publishing its own canvas");

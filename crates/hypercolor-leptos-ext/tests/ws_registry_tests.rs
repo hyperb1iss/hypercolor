@@ -10,9 +10,10 @@
 use std::collections::BTreeSet;
 
 use hypercolor_leptos_ext::ws::registry::{
-    CanvasConfig, CanvasConfigPatch, DeviceKey, DisplayPreviewConfig, DisplayPreviewConfigPatch,
-    FramesConfig, FramesConfigPatch, InteractivePreviewConfig, MetricsConfig, MetricsConfigPatch,
-    PreviewKey, SpectrumConfig, SpectrumConfigPatch, TopicId,
+    CanvasConfig, CanvasConfigPatch, CanvasFormat, DeviceKey, DisplayPreviewConfig,
+    DisplayPreviewConfigPatch, FramesConfig, FramesConfigPatch, InteractivePreviewConfig,
+    MetricsConfig, MetricsConfigPatch, PreviewKey, SpectrumConfig, SpectrumConfigPatch, TopicId,
+    ZonePreviewConfig, ZonePreviewConfigPatch,
 };
 use hypercolor_leptos_ext::ws::topic::{KeyError, TopicKey, apply_patch_transactionally};
 use serde_json::json;
@@ -109,7 +110,7 @@ fn default_configs_are_the_frozen_wire_defaults() {
         ),
         (
             TopicId::ZonePreview,
-            json!({"fps": 15, "format": "rgb", "width": 0, "height": 0}),
+            json!({"fps": 15, "format": "rgb", "width": 0, "height": 0, "zones": ["all"]}),
         ),
         (TopicId::Metrics, json!({"fps": 1.0})),
         (TopicId::DeviceMetrics, json!({"fps": 1.0})),
@@ -326,6 +327,79 @@ fn frames_patch_validates_cadence_and_zone_selection() {
     let next = apply_patch_transactionally(&config, &accepted).expect("in-range patch applies");
     assert_eq!(next.fps, 60);
     assert_eq!(next.zones, vec!["desk".to_owned()]);
+}
+
+#[test]
+fn zone_preview_patch_selects_zones_and_keeps_the_canvas_rules() {
+    let config = ZonePreviewConfig::default();
+    assert!(config.selects_all());
+    assert_eq!(config.canvas(), CanvasConfig::default());
+
+    let empty = ZonePreviewConfigPatch {
+        zones: Some(Vec::new()),
+        ..ZonePreviewConfigPatch::default()
+    };
+    let error = apply_patch_transactionally(&config, &empty).expect_err("empty zones");
+    assert_eq!(error.field, "zones");
+    assert_eq!(error.reason, "must not be empty");
+
+    for fps in [0_u32, 61] {
+        let patch = ZonePreviewConfigPatch {
+            fps: Some(fps),
+            zones: Some(vec!["desk".to_owned()]),
+            ..ZonePreviewConfigPatch::default()
+        };
+        let error = apply_patch_transactionally(&config, &patch).expect_err("fps out of range");
+        assert_eq!(error.field, "fps");
+        assert_eq!(error.reason, "expected 1..=60");
+    }
+
+    let zone = "019f26d3-d4ee-7dd1-a806-d7114f26919b".to_owned();
+    let patch: ZonePreviewConfigPatch = serde_json::from_value(json!({
+        "fps": 60,
+        "format": "jpeg",
+        "width": 640,
+        "height": 630,
+        "zones": [zone],
+    }))
+    .expect("a full zone preview patch parses");
+    let next = apply_patch_transactionally(&config, &patch).expect("in-range patch applies");
+    assert_eq!(
+        next.canvas(),
+        CanvasConfig {
+            fps: 60,
+            format: CanvasFormat::Jpeg,
+            width: 640,
+            height: 630,
+        }
+    );
+    assert_eq!(next.zones, vec![zone.clone()]);
+    assert!(!next.selects_all());
+
+    let widened = ZonePreviewConfigPatch {
+        zones: Some(vec![zone, "all".to_owned()]),
+        ..ZonePreviewConfigPatch::default()
+    };
+    let next = apply_patch_transactionally(&next, &widened).expect("zones replace in place");
+    assert!(next.selects_all());
+    assert_eq!(next.fps, 60, "a zones-only patch keeps the canvas shape");
+}
+
+#[test]
+fn zone_preview_config_rejects_unknown_fields() {
+    let error = (TopicId::ZonePreview.vtable().apply_patch_json)(
+        &(TopicId::ZonePreview.vtable().default_config_json)(),
+        &json!({"zone": ["all"]}),
+    )
+    .expect_err("a typo'd zone selector must not succeed as a no-op");
+    assert_eq!(error.field, "patch");
+
+    let stale = json!({
+        "fps": 15, "format": "rgb", "width": 0, "height": 0, "zones": ["all"], "gone": true
+    });
+    let error = (TopicId::ZonePreview.vtable().apply_patch_json)(&stale, &json!({"fps": 10}))
+        .expect_err("a stale config field must fail loudly");
+    assert_eq!(error.field, "config");
 }
 
 #[test]

@@ -19,7 +19,7 @@ use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::{BrowserInputPublicationId, DataSourceKind, InputGraphHandle};
 use hypercolor_leptos_ext::ws::registry::{
     Cadence, CanvasConfig, CanvasFormat, DisplayPreviewConfig, FramesConfig, METRICS_FPS_MIN,
-    MetricsConfig, ScreenZonesConfig, SpectrumConfig, TopicId,
+    MetricsConfig, ScreenZonesConfig, SpectrumConfig, TopicId, ZonePreviewConfig,
 };
 use hypercolor_leptos_ext::ws::{
     DisplayPreviewFrame as WireDisplayPreviewFrame,
@@ -59,7 +59,9 @@ use crate::interactive_preview::PreviewResourceLease;
 use crate::output_power::OutputPowerState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
 use crate::performance::{LatestFrameMetrics, render_health_counts};
-use crate::preview_runtime::{PreviewDemandSummary, PreviewPixelFormat, PreviewStreamDemand};
+use crate::preview_runtime::{
+    PreviewDemandSummary, PreviewPixelFormat, PreviewStreamDemand, ZonePreviewSelection,
+};
 
 const BACKPRESSURE_REPORT_INTERVAL: Duration = Duration::from_millis(500);
 pub(super) static WS_PREVIEW_PUBLICATION_QUEUED_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -2157,7 +2159,8 @@ pub(super) async fn relay_zone_preview(
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut preview_rx = None::<crate::preview_runtime::ZonePreviewFrameReceiver>;
-    let mut active_canvas_config = None::<CanvasConfig>;
+    let mut active_config = None::<ActiveZonePreviewConfig>;
+    let mut applied_selection = None::<ZonePreviewSelection>;
     let mut receiver_initialized = false;
     let mut last_sent_surfaces = HashMap::<PreviewStreamId, PreviewSurfaceIdentity>::new();
     let mut pending_send = false;
@@ -2165,22 +2168,29 @@ pub(super) async fn relay_zone_preview(
     let mut last_sent_at = preview_initial_last_sent();
 
     'relay: loop {
-        if active_canvas_config.is_none() {
-            active_canvas_config = {
+        if active_config.is_none() {
+            active_config = {
                 let subs = subscriptions.borrow();
                 if subs.contains(TopicId::ZonePreview) {
-                    Some(subs.config_of::<CanvasConfig>(TopicId::ZonePreview, None))
+                    Some(ActiveZonePreviewConfig::new(
+                        &subs.config_of::<ZonePreviewConfig>(TopicId::ZonePreview, None),
+                    ))
                 } else {
                     None
                 }
             };
         }
-        sync_zone_preview_receiver(&mut preview_rx, active_canvas_config.is_some(), || {
+        sync_zone_preview_receiver(&mut preview_rx, active_config.is_some(), || {
             preview_runtime.zone_preview_receiver()
         });
 
-        let Some(canvas_config) = active_canvas_config.as_ref() else {
+        let Some(ActiveZonePreviewConfig {
+            canvas: canvas_config,
+            selection,
+        }) = active_config.as_ref()
+        else {
             last_sent_surfaces.clear();
+            applied_selection = None;
             receiver_initialized = false;
             pending_send = false;
             last_sent_at = preview_initial_last_sent();
@@ -2188,13 +2198,21 @@ pub(super) async fn relay_zone_preview(
                 break;
             }
             let _ = subscriptions.borrow_and_update();
-            active_canvas_config = None;
+            active_config = None;
             continue;
         };
         let preview_rx = preview_rx
             .as_mut()
             .expect("zone preview receiver should exist while subscribed");
         preview_rx.update_demand(preview_stream_demand(canvas_config));
+        preview_rx.update_selection(selection);
+        // A new selection re-walks the latest previews at once: a zone it
+        // adds sends, and a zone it drops cancels, even while the scene's
+        // content holds still and publishes nothing new.
+        if applied_selection.as_ref() != Some(selection) {
+            pending_send = true;
+            applied_selection = Some(selection.clone());
+        }
 
         if canvas_config.fps != active_fps {
             active_fps = canvas_config.fps.max(1);
@@ -2218,7 +2236,7 @@ pub(super) async fn relay_zone_preview(
                     break;
                 }
                 let _ = subscriptions.borrow_and_update();
-                active_canvas_config = None;
+                active_config = None;
             }
             () = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
                 let zone_previews = {
@@ -2226,7 +2244,13 @@ pub(super) async fn relay_zone_preview(
                     latest.clone()
                 };
                 let mut active_streams = HashSet::new();
-                for zone_preview in zone_previews.iter() {
+                // A zone outside this subscriber's selection is never
+                // encoded or sent, and a stream it already holds retires
+                // below like any other zone that left the scene.
+                for zone_preview in zone_previews
+                    .iter()
+                    .filter(|zone_preview| selection.includes(&zone_preview.zone_id))
+                {
                     let stream = PreviewStreamId::Zone {
                         scene_id: *zone_preview.scene_id.0.as_bytes(),
                         zone_id: *zone_preview.zone_id.0.as_bytes(),
@@ -2255,7 +2279,7 @@ pub(super) async fn relay_zone_preview(
                         PreviewRelayPublish::Published => {}
                         PreviewRelayPublish::Rejected => continue,
                         PreviewRelayPublish::SubscriptionChanged => {
-                            active_canvas_config = None;
+                            active_config = None;
                             continue 'relay;
                         }
                         PreviewRelayPublish::SubscriptionsClosed => break 'relay,
@@ -2295,6 +2319,22 @@ pub(super) fn sync_preview_receiver(
         }
     } else {
         let _ = receiver.take();
+    }
+}
+
+/// A `zone_preview` subscription's config, with its wire zone list parsed
+/// once rather than on every frame the relay paces.
+struct ActiveZonePreviewConfig {
+    canvas: CanvasConfig,
+    selection: ZonePreviewSelection,
+}
+
+impl ActiveZonePreviewConfig {
+    fn new(config: &ZonePreviewConfig) -> Self {
+        Self {
+            canvas: config.canvas(),
+            selection: ZonePreviewSelection::from_wire(&config.zones),
+        }
     }
 }
 

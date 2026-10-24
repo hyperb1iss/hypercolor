@@ -7,7 +7,7 @@ use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::Zone;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
-pub(super) fn zone_is_active(zone: &Zone) -> bool {
+pub(in crate::render_thread) fn zone_is_active(zone: &Zone) -> bool {
     enabled_layer_count(zone) > 0
 }
 
