@@ -187,6 +187,7 @@ use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::interactive_preview::{
     InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
+    InteractivePreviewTarget as RuntimeInteractivePreviewTarget,
 };
 use crate::performance::{
     CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
@@ -4794,7 +4795,7 @@ async fn subscribe_interactive_previews(
         .iter()
         .map(|(preview_id, config)| {
             TopicSubscription::keyed("interactive_preview", *preview_id)
-                .with_config(serde_json::to_value(*config).expect("config serializes"))
+                .with_config(serde_json::to_value(config).expect("config serializes"))
         })
         .collect();
     let state = SubscriptionState::default()
@@ -4962,6 +4963,81 @@ fn an_interactive_preview_subscribe_rejects_invalid_render_config() {
         .expect_err("unsupported interactive preview target must be rejected");
 }
 
+#[test]
+fn an_interactive_preview_zone_target_must_name_a_zone_id() {
+    let zone = ZoneId::new();
+    let state = SubscriptionState::default()
+        .subscribed(vec![
+            TopicSubscription::keyed("interactive_preview", "main")
+                .with_config(serde_json::json!({"target": {"zone": zone.0.to_string()}})),
+        ])
+        .expect("a zone id is admitted whether or not a live zone carries it");
+    let config: InteractivePreviewConfig =
+        state.config_of(TopicId::InteractivePreview, Some("main"));
+    assert_eq!(
+        config.target,
+        InteractivePreviewTarget::Zone(zone.0.to_string())
+    );
+
+    let error = SubscriptionState::default()
+        .subscribed(vec![
+            TopicSubscription::keyed("interactive_preview", "main")
+                .with_config(serde_json::json!({"target": {"zone": "desk"}})),
+        ])
+        .expect_err("a zone target that is not a zone id is refused");
+    assert_eq!(error.code, "validation_error");
+    assert_eq!(
+        error
+            .details
+            .as_ref()
+            .and_then(|details| details["field"].as_str()),
+        Some("config.interactive_preview.target")
+    );
+}
+
+#[tokio::test]
+async fn retargeting_an_interactive_preview_keeps_its_lane_and_publication() {
+    let (handle, routing) = browser_preview_test_context();
+    let executor = browser_preview_test_executor(routing.clone()).await;
+    let (mut session, _outbound, _frames) = browser_preview_session(handle, routing, executor);
+    let scene = interactive_preview_config();
+    subscribe_interactive_preview(&mut session, "main", scene.clone())
+        .await
+        .expect("the scene preview opens");
+    let publication = session
+        .publication_id("main")
+        .expect("the scene preview publishes");
+
+    for zone in [ZoneId::new(), ZoneId::new()] {
+        let mut zoned = scene.clone();
+        zoned.target = InteractivePreviewTarget::Zone(zone.0.to_string());
+        subscribe_interactive_preview(&mut session, "main", zoned.clone())
+            .await
+            .expect("re-subscribing with a zone target retargets the open lane");
+        assert_eq!(session.preview_config("main"), Some(zoned));
+        assert_eq!(
+            session.preview_lane_target("main"),
+            Some(RuntimeInteractivePreviewTarget::Zone(zone)),
+            "the live lane renders the new zone"
+        );
+        assert_eq!(
+            session.publication_id("main"),
+            Some(publication),
+            "a retarget reshapes the lane rather than reopening it"
+        );
+    }
+
+    subscribe_interactive_preview(&mut session, "main", scene.clone())
+        .await
+        .expect("the preview retargets back to the scene");
+    assert_eq!(session.preview_config("main"), Some(scene));
+    assert_eq!(
+        session.preview_lane_target("main"),
+        Some(RuntimeInteractivePreviewTarget::ActiveScene)
+    );
+    assert_eq!(session.publication_id("main"), Some(publication));
+}
+
 #[tokio::test]
 async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized() {
     // Reconciliation walks the requested previews in key order, so a
@@ -4974,7 +5050,7 @@ async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized()
     let (mut session, outbound, frames) = browser_preview_session(handle, routing, executor);
 
     let original = interactive_preview_config();
-    subscribe_interactive_preview(&mut session, "alpha", original)
+    subscribe_interactive_preview(&mut session, "alpha", original.clone())
         .await
         .expect("the first preview opens");
     let publication = session
@@ -5003,13 +5079,13 @@ async fn a_refused_preview_subscribe_restores_the_shape_it_had_already_resized()
         .expect("existing preview publication should be ready");
     assert!(matches!(&in_flight, PreviewOutboundItem::Publication(_)));
 
-    let mut resized = original;
+    let mut resized = original.clone();
     resized.width = 320;
     resized.height = 240;
     // This shape fits the wire's publication budget but not the
     // executor's resource capacity, so it is the lane — not config
     // admission — that refuses, after "alpha" was already resized.
-    let mut refused = original;
+    let mut refused = original.clone();
     refused.width = 4_096;
     refused.height = 4_096;
     let error =

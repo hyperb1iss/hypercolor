@@ -20,7 +20,7 @@ use hypercolor_core::input::{
     InputGraphHandle, InputGraphSnapshot, ScreenBranchPublication, SourceKind,
 };
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::{PublishedSurface, SurfaceDescriptor};
+use hypercolor_types::canvas::{Canvas, PublishedSurface, SurfaceDescriptor};
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::display::DisplayDescriptor;
 use hypercolor_types::event::{HypercolorEvent, ZoneColors};
@@ -41,8 +41,8 @@ use crate::render_thread::gpu_device::GpuRenderDevice;
 use crate::render_thread::sparkleflinger::{PreviewSurfaceRequest, SparkleFlinger};
 use crate::render_thread::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
-    InputPublicationDemandRegistration, InteractivePreviewZoneRuntime, ProducerFrame,
-    RenderSceneContext, SceneDependencyKey, ZoneFrameInputs,
+    InputPublicationDemandRegistration, InteractivePreviewRender, InteractivePreviewZoneRuntime,
+    ProducerFrame, RenderSceneContext, SceneDependencyKey, ZoneFrameInputs,
 };
 
 mod executor;
@@ -60,6 +60,11 @@ static NEXT_CONSUMER_INCARNATION: AtomicU64 = AtomicU64::new(1);
 pub enum InteractivePreviewTarget {
     ActiveScene,
     Scene(SceneId),
+    /// One zone of the active scene. Only its layer stack renders, and the
+    /// lane publishes the zone's own frame rather than the scene
+    /// projection, so the picture is the one the zone's previews show and
+    /// input lands in the zone's effects at the zone's coordinates.
+    Zone(ZoneId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -300,10 +305,31 @@ struct ResolvedPreviewScene {
     scene_id: Option<SceneId>,
     zones_revision: u64,
     zones: Arc<[Zone]>,
+    /// The one zone a zone target renders, or `None` for the whole scene.
+    zone: Option<ZoneId>,
     registry: Arc<EffectRegistry>,
     catalog_generation: u64,
     canvas_width: u32,
     canvas_height: u32,
+}
+
+impl ResolvedPreviewScene {
+    /// The zones the lane renders: the whole scene, or just the targeted
+    /// zone. A targeted zone that is not in the scene renders nothing.
+    fn rendered_zones(&self) -> &[Zone] {
+        let Some(zone_id) = self.zone else {
+            return &self.zones;
+        };
+        self.zones
+            .iter()
+            .position(|zone| zone.id == zone_id)
+            .map_or(&[], |index| &self.zones[index..=index])
+    }
+
+    /// Whether this is a zone target whose zone the scene does not hold.
+    fn targets_missing_zone(&self) -> bool {
+        self.zone.is_some() && self.rendered_zones().is_empty()
+    }
 }
 
 struct PreviewLane {
@@ -327,6 +353,10 @@ struct PreviewLane {
     started: Instant,
     last_tick: Instant,
     retained_frame: Option<Arc<InteractivePreviewFrame>>,
+    /// Whether the newest published frame is the dark frame of a zone that
+    /// renders nothing. A zone that stays dark publishes it once rather
+    /// than re-encoding the same picture every tick.
+    showing_dark: bool,
     zones: Vec<ZoneColors>,
     display_descriptors: HashMap<ZoneId, DisplayDescriptor>,
 }
@@ -943,6 +973,7 @@ impl PreviewLane {
                 started: now,
                 last_tick: now,
                 retained_frame: None,
+                showing_dark: false,
                 zones: Vec::new(),
                 display_descriptors: HashMap::new(),
             },
@@ -993,6 +1024,15 @@ impl PreviewLane {
             self.demand.update(demand.clone());
             self.current_demand = demand;
         }
+        // A zone that left the scene renders nothing and publishes
+        // nothing, the way a `zone_preview` selection naming it selects
+        // nothing; the lane picks it back up if the zone returns.
+        if scene.targets_missing_zone() {
+            self.last_tick = now;
+            self.telemetry
+                .publish_error("preview zone is not in the active scene");
+            return;
+        }
         let screen_extent = PixelExtent::new(scene.canvas_width, scene.canvas_height)
             .expect("resolved preview canvas dimensions are non-empty");
         self.input.read(screen_extent);
@@ -1013,7 +1053,7 @@ impl PreviewLane {
             delta_secs,
         );
         match result {
-            Ok(surface) => self.publish_surface(surface),
+            Ok(frame) => self.publish_lane_frame(frame),
             Err(error) => self.telemetry.publish_error(error),
         }
     }
@@ -1035,17 +1075,21 @@ impl PreviewLane {
             &self.acceleration,
             resources,
         )?;
-        let surface = render_preview_scene(
-            &mut candidate.zone_runtime,
-            &mut candidate.sparkleflinger,
-            &mut candidate.zones,
-            &candidate.display_descriptors,
-            &scene,
-            &self.input,
-            spec,
-            duration_millis_u64(self.started.elapsed()),
-            now.saturating_duration_since(self.last_tick).as_secs_f32(),
-        )?;
+        let frame = if scene.targets_missing_zone() {
+            InteractivePreviewRender::Pending
+        } else {
+            render_preview_scene(
+                &mut candidate.zone_runtime,
+                &mut candidate.sparkleflinger,
+                &mut candidate.zones,
+                &candidate.display_descriptors,
+                &scene,
+                &self.input,
+                spec,
+                duration_millis_u64(self.started.elapsed()),
+                now.saturating_duration_since(self.last_tick).as_secs_f32(),
+            )?
+        };
         let demand = preview_input_demand(&scene, spec.fps);
         if !demand.same_publication_request(&self.current_demand) {
             self.demand.update(demand.clone());
@@ -1070,8 +1114,30 @@ impl PreviewLane {
             .spec_generation
             .store(self.spec_generation, Ordering::Release);
         self.spec_generation_tx.send_replace(self.spec_generation);
-        self.publish_surface(surface);
+        self.showing_dark = false;
+        self.publish_lane_frame(frame);
         Ok(())
+    }
+
+    fn publish_lane_frame(&mut self, frame: InteractivePreviewRender<PublishedSurface>) {
+        match frame {
+            InteractivePreviewRender::Frame(surface) => {
+                self.showing_dark = false;
+                self.publish_surface(surface);
+            }
+            InteractivePreviewRender::Dark if !self.showing_dark => {
+                match Canvas::try_new(self.spec.width, self.spec.height) {
+                    Ok(canvas) => {
+                        self.showing_dark = true;
+                        self.publish_surface(PublishedSurface::from_owned_canvas(canvas, 0, 0));
+                    }
+                    Err(error) => self.telemetry.publish_error(format!(
+                        "preview dark frame could not be allocated: {error}"
+                    )),
+                }
+            }
+            InteractivePreviewRender::Dark | InteractivePreviewRender::Pending => {}
+        }
     }
 
     fn publish_surface(&mut self, surface: PublishedSurface) {
@@ -1153,13 +1219,57 @@ fn render_preview_scene(
     spec: InteractivePreviewSpec,
     elapsed_ms: u64,
     delta_secs: f32,
-) -> Result<PublishedSurface, String> {
-    let context = RenderSceneContext {
-        zones: &scene.zones,
+) -> Result<InteractivePreviewRender<PublishedSurface>, String> {
+    let display_zone_target_fps = HashMap::new();
+    let context = preview_render_context(
+        scene,
+        input,
+        &display_zone_target_fps,
+        display_descriptors,
+        elapsed_ms,
+        delta_secs,
+    );
+    let rendered = match scene.zone {
+        None => zone_runtime
+            .render_scene(context, sparkleflinger, zones)
+            .map(InteractivePreviewRender::Frame),
+        Some(zone_id) => zone_runtime.render_zone(context, zone_id, sparkleflinger, zones),
+    };
+    let frame = rendered
+        .map_err(|error| error.to_string())
+        .and_then(|rendered| match rendered {
+            InteractivePreviewRender::Frame(frame) => {
+                preview_surface(sparkleflinger, frame, spec.width, spec.height)
+                    .map(InteractivePreviewRender::Frame)
+                    .ok_or_else(|| {
+                        "preview frame could not be materialized on its isolated device".to_owned()
+                    })
+            }
+            InteractivePreviewRender::Dark => Ok(InteractivePreviewRender::Dark),
+            InteractivePreviewRender::Pending => Ok(InteractivePreviewRender::Pending),
+        });
+    sparkleflinger.end_gpu_frame();
+    frame
+}
+
+/// What one pass hands the zone runtime: the zones the target renders,
+/// fed the lane's own routed input. A zone target's effects read the
+/// pointer exactly as the client sent it, normalized to the preview,
+/// because the preview is that zone's own canvas.
+fn preview_render_context<'a>(
+    scene: &'a ResolvedPreviewScene,
+    input: &'a PreviewLaneInput,
+    display_zone_target_fps: &'a HashMap<ZoneId, u32>,
+    display_descriptors: &'a HashMap<ZoneId, DisplayDescriptor>,
+    elapsed_ms: u64,
+    delta_secs: f32,
+) -> RenderSceneContext<'a> {
+    RenderSceneContext {
+        zones: scene.rendered_zones(),
         active_scene_id: scene.scene_id,
         dependency_key: SceneDependencyKey::new(scene.zones_revision, scene.catalog_generation),
         elapsed_ms,
-        display_zone_target_fps: &HashMap::new(),
+        display_zone_target_fps,
         display_zone_descriptors: display_descriptors,
         registry: &scene.registry,
         authoritative_spatial_engine: None,
@@ -1174,17 +1284,7 @@ fn render_preview_scene(
             net: input.network(),
             lighting: None,
         },
-    };
-    let surface = zone_runtime
-        .render_scene(context, sparkleflinger, zones)
-        .map_err(|error| error.to_string())
-        .and_then(|rendered| {
-            preview_surface(sparkleflinger, rendered, spec.width, spec.height).ok_or_else(|| {
-                "preview frame could not be materialized on its isolated device".to_owned()
-            })
-        });
-    sparkleflinger.end_gpu_frame();
-    surface
+    }
 }
 
 fn preview_zone_runtime(
@@ -1375,11 +1475,12 @@ impl PreviewSceneCatalogSource {
 
 impl PreviewSceneCatalog {
     fn resolve(&self, target: InteractivePreviewTarget) -> Option<ResolvedPreviewScene> {
-        let (scene_id, zones_revision, zones) = match target {
+        let (scene_id, zones_revision, zones, zone) = match target {
             InteractivePreviewTarget::ActiveScene => (
                 self.active_scene_id,
                 self.active_zones_revision,
                 Arc::clone(&self.active_zones),
+                None,
             ),
             InteractivePreviewTarget::Scene(scene_id) => {
                 let scene = self.scenes.iter().find(|scene| scene.id == scene_id)?;
@@ -1387,13 +1488,21 @@ impl PreviewSceneCatalog {
                     Some(scene.id),
                     scene.zones_revision,
                     Arc::clone(&scene.zones),
+                    None,
                 )
             }
+            InteractivePreviewTarget::Zone(zone_id) => (
+                self.active_scene_id,
+                self.active_zones_revision,
+                Arc::clone(&self.active_zones),
+                Some(zone_id),
+            ),
         };
         Some(ResolvedPreviewScene {
             scene_id,
             zones_revision,
             zones,
+            zone,
             registry: Arc::clone(&self.registry),
             catalog_generation: self.generation,
             canvas_width: self.canvas_width,
@@ -1505,7 +1614,7 @@ fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> Inpu
     let mut media = false;
     let mut network = false;
     let mut sensors = false;
-    for zone in scene.zones.iter().filter(|zone| zone.enabled) {
+    for zone in scene.rendered_zones().iter().filter(|zone| zone.enabled) {
         for layer in zone.layers.iter().filter(|layer| layer.enabled) {
             sensors |= layer
                 .bindings

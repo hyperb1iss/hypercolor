@@ -103,7 +103,10 @@ fn display_preview_config_schema() -> Value {
 
 fn interactive_preview_config_schema() -> Value {
     json!({
-        "target": {"values": ["active_scene"]},
+        "target": {
+            "values": ["active_scene"],
+            "variants": {"zone": {"min_len": 1}},
+        },
         "fps": {"min": STANDARD_FPS_MIN, "max": STANDARD_FPS_MAX},
         "width": {"min": 1},
         "height": {"min": 1},
@@ -660,12 +663,34 @@ impl TopicPatch<DisplayPreviewConfig> for DisplayPreviewConfigPatch {
 }
 
 /// What an interactive preview renders.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// On the wire the scene target is the string `"active_scene"` and a zone
+/// target is the object `{"zone": "<zone id>"}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractivePreviewTarget {
     /// The scene currently active on the daemon.
     #[default]
     ActiveScene,
+    /// One zone of the active scene, by zone id. The lane renders only
+    /// that zone's layer stack on the zone's own canvas, the picture its
+    /// `zone_preview` frames show, so input lands in that zone's effects
+    /// at that zone's coordinates. Like a `zone_preview` selection, an id
+    /// that names no zone of the active scene renders nothing rather than
+    /// failing, so a client may name a zone a scene change is about to
+    /// create or has just removed.
+    Zone(String),
+}
+
+impl InteractivePreviewTarget {
+    /// The zone this target follows, or `None` for the whole scene.
+    #[must_use]
+    pub fn zone(&self) -> Option<&str> {
+        match self {
+            Self::ActiveScene => None,
+            Self::Zone(zone) => Some(zone),
+        }
+    }
 }
 
 /// Per-subscription configuration for the `interactive_preview` topic.
@@ -673,7 +698,7 @@ pub enum InteractivePreviewTarget {
 /// Unlike the passive preview surfaces, an interactive preview has no
 /// server-picked size: the daemon opens a render lane at exactly the
 /// requested shape, so zero dimensions are rejected rather than resolved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InteractivePreviewConfig {
     /// What the preview renders.
@@ -706,7 +731,7 @@ pub const DEFAULT_INTERACTIVE_PREVIEW_WIDTH: u32 = 640;
 pub const DEFAULT_INTERACTIVE_PREVIEW_HEIGHT: u32 = 480;
 
 /// Patch for [`InteractivePreviewConfig`].
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InteractivePreviewConfigPatch {
     /// Replacement target.
@@ -728,8 +753,11 @@ pub struct InteractivePreviewConfigPatch {
 
 impl TopicPatch<InteractivePreviewConfig> for InteractivePreviewConfigPatch {
     fn apply(&self, config: &mut InteractivePreviewConfig) -> Result<(), PatchError> {
-        if let Some(target) = self.target {
-            config.target = target;
+        if let Some(target) = self.target.as_ref() {
+            if target.zone().is_some_and(str::is_empty) {
+                return Err(PatchError::new("target", "zone must not be empty"));
+            }
+            config.target.clone_from(target);
         }
         if let Some(fps) = self.fps {
             validate_range(

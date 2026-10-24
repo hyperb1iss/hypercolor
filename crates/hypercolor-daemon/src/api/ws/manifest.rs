@@ -574,6 +574,36 @@ mod tests {
                         field
                     );
                 }
+                // A tagged variant such as `{"zone": "<id>"}` declares the
+                // bounds of its payload under its tag.
+                if let Some(variants) = bounds.get("variants").and_then(Value::as_object) {
+                    for (tag, variant) in variants {
+                        let min_len = variant
+                            .get("min_len")
+                            .and_then(Value::as_u64)
+                            .and_then(|min_len| usize::try_from(min_len).ok())
+                            .expect("a string variant declares its min_len");
+                        let tagged = |payload: String| {
+                            let mut value = Map::new();
+                            value.insert(tag.clone(), Value::String(payload));
+                            Value::Object(value)
+                        };
+                        assert!(
+                            apply(tagged("z".repeat(min_len))).is_ok(),
+                            "{}.{} variant {tag} at min_len",
+                            vtable.name,
+                            field
+                        );
+                        if min_len > 0 {
+                            assert!(
+                                apply(tagged("z".repeat(min_len - 1))).is_err(),
+                                "{}.{} variant {tag} below min_len",
+                                vtable.name,
+                                field
+                            );
+                        }
+                    }
+                }
                 if let Some(min_items) = bounds.get("min_items").and_then(Value::as_u64) {
                     assert!(min_items > 0, "{}.{} min_items", vtable.name, field);
                     assert!(

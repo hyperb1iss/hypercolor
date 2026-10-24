@@ -225,7 +225,7 @@ subscription per connection.
 | `device_metrics` | — | JSON | Periodic per-device output telemetry. |
 | `sensors` | — | JSON | Periodic host sensor snapshot (system telemetry). |
 | `display_preview` | device id | Binary | One display device's JPEG output preview. |
-| `interactive_preview` | preview id | Binary | An interactive scene preview lane the subscription itself opens. Control-tier only. |
+| `interactive_preview` | preview id | Binary | An interactive preview lane the subscription itself opens, over the active scene or one of its zones. Control-tier only. |
 | `input_events` | — | JSON | Timed keyboard and pointer events from the input pipeline. Control-tier only. |
 
 {% <callout type="warning"> %}
@@ -468,6 +468,40 @@ then streams binary `0x0A` frames naming the same key. Subscribing again with a
 different config resizes or retargets the lane in place, keeping its
 publication. Unlike the passive preview canvases, an interactive lane has no
 server-picked size: zero `width` or `height` is refused rather than resolved.
+
+A multi-zone scene's canvas is a projection of every zone into its devices'
+layout boxes, so a lane on `"active_scene"` shows that projection. To drive one
+zone, target it by ID:
+
+```json
+{
+  "type": "subscribe",
+  "topics": [{
+    "topic": "interactive_preview",
+    "key": "main",
+    "config": {
+      "target": { "zone": "01a15100-16a2-7300-91d2-507b4d2f85ff" },
+      "fps": 30,
+      "width": 640,
+      "height": 630,
+      "format": "jpeg"
+    }
+  }]
+}
+```
+
+A zone lane renders only that zone's layer stack, on the zone's own canvas, so
+its frames show what that zone's `zone_preview` frames show. Injected pointer
+positions are normalized to the preview, and the preview is the zone's canvas,
+so they land in the zone's effects at the zone's own coordinates. A zone that is
+paused or has no enabled layers previews dark. A zone ID that names no zone of
+the active scene is admitted and renders nothing, the way a `zone_preview`
+selection naming it selects nothing, so a client can follow a zone a scene
+change is about to create. If the zone leaves the scene, the lane stops
+publishing and keeps its last frame until the zone returns or the client
+retargets. Moving a live lane to another zone is the same re-subscribe as a
+resize: the lane keeps its publication, and frames rendered for the old target
+are never sent.
 
 Pointer and key batches name the live preview:
 
@@ -820,7 +854,7 @@ the requested shape, so zero dimensions are refused rather than resolved.
 
 | Field | Type | Default | Range / values |
 | --- | --- | --- | --- |
-| `target` | string | `"active_scene"` | `"active_scene"` |
+| `target` | string or object | `"active_scene"` | `"active_scene"`, or `{"zone": "<zone ID>"}` for one zone of the active scene |
 | `fps` | integer | `30` | 1..=60 |
 | `width` | integer | `640` | unsigned 32-bit, non-zero |
 | `height` | integer | `480` | unsigned 32-bit, non-zero |

@@ -244,10 +244,14 @@ pub(super) fn admit_config(
                 format!("config.{}", topic.as_str()),
             )
         }
+        // A zone target must name a zone id, but not a zone the active
+        // scene holds right now: like `zone_preview`, a lane following a
+        // zone the scene lacks renders nothing until the zone appears.
         TopicId::InteractivePreview => {
             let preview = InteractivePreviewConfig::deserialize(config)
                 .expect("a validated interactive preview config deserializes into its own type");
-            validate_interactive_preview_shape(preview.width, preview.height, preview.format)
+            validate_interactive_preview_shape(preview.width, preview.height, preview.format)?;
+            super::session::runtime_preview_target(&preview.target).map(|_| ())
         }
         TopicId::Frames
         | TopicId::Spectrum
