@@ -4821,9 +4821,10 @@ async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resiz
         Arc::clone(&stop),
     );
     let mut last_frame = settled.frame_number;
-    // Custom zones keep their own canvases through a layout resize, so each
-    // keeps its own preview extent.
-    for (width, height) in [(640, 400), (200, 120)] {
+    // A layout publication puts every LED zone on the new canvas, so after
+    // each resize all three zones share its shape: 640 x 400 previews at
+    // 32 x 20, and 200 x 120 at 33 x 20.
+    for ((width, height), extent) in [((640, 400), PREVIEW_SIZE), ((200, 120), (33, 20))] {
         drop(previews_rx);
         wait_until("zone previews to clear without a subscriber", || {
             state.event_bus.zone_preview_lane().borrow().is_empty()
@@ -4854,8 +4855,12 @@ async fn gpu_multi_zone_scene_keeps_every_zone_sampling_across_live_canvas_resiz
         .await;
 
         previews_rx = sized_zone_preview_receiver(&state, PREVIEW_SIZE);
+        let resized_extents = led_zones
+            .iter()
+            .map(|zone_id| (*zone_id, extent))
+            .collect::<Vec<_>>();
         let previews =
-            wait_for_zone_previews_after(&mut previews_rx, last_frame, &initial_extents).await;
+            wait_for_zone_previews_after(&mut previews_rx, last_frame, &resized_extents).await;
         for (zone_id, color) in led_zones.iter().zip(zone_colors) {
             let preview = previews
                 .iter()

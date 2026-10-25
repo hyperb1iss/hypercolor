@@ -791,9 +791,11 @@ impl SceneManager {
 
     /// Create an empty `Custom` LED zone in the target scene.
     ///
-    /// The zone inherits its canvas from an existing LED zone so it stays
-    /// consistent with its siblings; `fallback_canvas` is used only when the
-    /// scene has no LED zone to inherit from.
+    /// The zone takes the canvas its LED siblings share, which every layout
+    /// publication keeps on the active layout's canvas. Reading it from the
+    /// scene, rather than from a size the caller sampled earlier, keeps a
+    /// resize that lands between the two from leaving the new zone behind.
+    /// `fallback_canvas` is used only when the scene has no LED zone yet.
     pub fn create_zone(
         &mut self,
         scene_id: &SceneId,
@@ -1124,11 +1126,14 @@ impl SceneManager {
                 Some(merged)
             })
             .collect();
-        // Canvas dimensions and sampling defaults are mutable; the
-        // layout's own identity (id, name, description, version)
-        // is preserved from the stored layout.
-        zone.layout.canvas_width = layout.canvas_width;
-        zone.layout.canvas_height = layout.canvas_height;
+        // Sampling defaults are mutable; the layout's own identity (id,
+        // name, description, version) is preserved from the stored layout.
+        // An LED zone's canvas follows the active layout's, so only a
+        // display zone takes the request's canvas.
+        if zone.display_target.is_some() {
+            zone.layout.canvas_width = layout.canvas_width;
+            zone.layout.canvas_height = layout.canvas_height;
+        }
         zone.layout.default_sampling_mode = layout.default_sampling_mode;
         zone.layout.default_edge_behavior = layout.default_edge_behavior;
 
@@ -1474,33 +1479,26 @@ impl SceneManager {
             .and_then(|active| active.zones.iter().find(|zone| zone.id == zone_id))
     }
 
-    /// Refresh the active scene's full-scope (primary-role, non-display) zones
-    /// so their `layout` matches the supplied layout.
+    /// Align the active scene's LED zones with the supplied layout.
     ///
     /// The primary zone's layout is a snapshot taken when an effect is
     /// applied. When the active spatial layout changes, that snapshot goes
     /// stale and the render pipeline stops seeing the real device zones. Call
     /// this after applying a new active layout to keep the primary zone in
-    /// sync. Custom and display zones are left alone — they own their own
-    /// layouts.
+    /// sync. In a scene with custom LED zones every LED zone keeps its own
+    /// placements, but its canvas follows the layout's, so a resolution
+    /// change reaches every zone and no zone keeps a shape of its own.
+    /// Display zones are left alone: they render at their face's size.
     ///
     /// Returns `true` if any zone's layout changed.
     pub fn sync_primary_zone_layout(&mut self, layout: &SpatialLayout) -> bool {
         let Some(scene) = self.active_scene_mut() else {
             return false;
         };
-        if scene_has_custom_led_zones(scene) {
-            return false;
-        }
+        let custom = scene_has_custom_led_zones(scene);
         let mut changed = false;
         for zone in &mut scene.zones {
-            if zone.role != ZoneRole::Primary || zone.display_target.is_some() {
-                continue;
-            }
-            if zone.layout != *layout {
-                zone.layout = layout.clone();
-                changed = true;
-            }
+            changed |= align_led_zone(zone, layout, custom);
         }
         if changed {
             bump_zones_revision(scene);
@@ -1519,12 +1517,7 @@ impl SceneManager {
                 self.resolved_zones_revision,
             );
         };
-        if scene_has_custom_led_zones(scene) {
-            return (
-                Arc::clone(&self.resolved_zones),
-                self.resolved_zones_revision,
-            );
-        }
+        let custom = scene_has_custom_led_zones(scene);
 
         let mut changed = false;
         let zones = self
@@ -1532,13 +1525,7 @@ impl SceneManager {
             .iter()
             .cloned()
             .map(|mut zone| {
-                if zone.role == ZoneRole::Primary
-                    && zone.display_target.is_none()
-                    && zone.layout != *layout
-                {
-                    zone.layout = layout.clone();
-                    changed = true;
-                }
+                changed |= align_led_zone(&mut zone, layout, custom);
                 zone
             })
             .collect::<Vec<_>>();
@@ -1763,6 +1750,30 @@ fn remap_zone_device_bindings(
 
 fn display_zone_has_face(zone: &Zone) -> bool {
     effect_layer_id(zone).is_some()
+}
+
+/// Align one zone with the active layout: a primary zone in a scene without
+/// custom LED zones takes the layout whole; any other LED zone keeps its
+/// placements and takes the layout's canvas. Display zones are untouched.
+fn align_led_zone(zone: &mut Zone, layout: &SpatialLayout, custom_scene: bool) -> bool {
+    if zone.display_target.is_some() {
+        return false;
+    }
+    if !custom_scene {
+        if zone.role == ZoneRole::Primary && zone.layout != *layout {
+            zone.layout = layout.clone();
+            return true;
+        }
+        return false;
+    }
+    if zone.layout.canvas_width == layout.canvas_width
+        && zone.layout.canvas_height == layout.canvas_height
+    {
+        return false;
+    }
+    zone.layout.canvas_width = layout.canvas_width;
+    zone.layout.canvas_height = layout.canvas_height;
+    true
 }
 
 fn scene_has_custom_led_zones(scene: &Scene) -> bool {
