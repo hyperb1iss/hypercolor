@@ -311,11 +311,26 @@ pub(crate) fn raise_uncaptured_validation_error(device: &wgpu::Device) {
     });
 }
 
-/// Allocation-creation budget wgpu enforces on DX12-only instances, as a
-/// percent of the native memory budget.
-const DX12_RESOURCE_CREATION_BUDGET_PERCENT: u8 = 80;
-
 /// The instance every compositor device is opened from.
+///
+/// It leaves both of wgpu's memory budget thresholds unset on every
+/// backend, so wgpu never refuses an allocation or loses the device on its
+/// own budget arithmetic. The native budget those thresholds compare
+/// against shrinks whenever other processes use VRAM: NVIDIA's Vulkan
+/// driver reports this process's usage plus the VRAM still free on the
+/// card, and WDDM lowers a process's budget when other applications need
+/// memory. The creation threshold also gates the staging buffer wgpu
+/// allocates for every `Queue::write_buffer` and `Queue::write_texture`
+/// (on DX12 against the local segment on unified adapters and the
+/// non-local segment on discrete ones), and wgpu treats a rejected staging
+/// allocation as device loss. With it set, an ordinary per-frame upload
+/// loses the compositor once the budget runs short, while the card still
+/// has room or the OS could page. Without thresholds, allocations fail only
+/// when the driver or allocator fails them: buffers and textures the
+/// daemon creates report out-of-memory to the error scopes that admit
+/// canvas, sampling, and screen resources, and on DX12 admission can
+/// succeed past the WDDM budget while the OS pages, which beats losing the
+/// compositor.
 fn compositor_instance_descriptor(
     backend_preference: GpuBackendPreference,
 ) -> wgpu::InstanceDescriptor {
@@ -324,46 +339,15 @@ fn compositor_instance_descriptor(
     // non-Windows / feature-disabled builds don't trip the unused-
     // variable lint under `-D warnings`.
     let _ = backend_preference;
+    #[cfg_attr(not(any(test, target_os = "windows")), allow(unused_mut))]
     let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     #[cfg(target_os = "windows")]
     {
         instance_descriptor.backends = windows_backends_for_preference(backend_preference);
     }
-    instance_descriptor.memory_budget_thresholds =
-        memory_budget_thresholds_for(instance_descriptor.backends);
     #[cfg(test)]
     pin_shipped_shader_compilation(&mut instance_descriptor);
     instance_descriptor
-}
-
-/// wgpu memory budget thresholds for an instance limited to `backends`.
-///
-/// The device-loss threshold stays unset on every backend. Crossing it
-/// loses the compositor outright, and the native budget it compares against
-/// shrinks whenever other processes use VRAM: NVIDIA's Vulkan driver
-/// reports this process's usage plus the VRAM still free on the card, and
-/// WDDM lowers a process's budget when other applications need memory.
-///
-/// Only a DX12-only instance keeps the allocation-creation threshold. On
-/// Vulkan, wgpu applies it to the staging buffer behind every
-/// `Queue::write_buffer` and `Queue::write_texture` and treats a rejection
-/// there as device loss, so an ordinary per-frame upload loses the device
-/// once free VRAM falls below a fraction of the daemon's own usage, while
-/// the card still has room and `gpu-allocator` could place the
-/// staging memory in host RAM. Without it, Vulkan allocations fail only
-/// when the driver fails them, and the canvas, sampling, and screen
-/// admission error scopes still see those failures. DX12 staging on a
-/// discrete adapter checks the non-local segment instead, so the threshold
-/// there only rejects device-local creations, which are not fatal, and
-/// admission keeps choosing the CPU fallback before WDDM starts paging. On
-/// a unified-memory DX12 adapter staging checks the local segment as well,
-/// so severe pressure can still lose the device there, as it always could.
-fn memory_budget_thresholds_for(backends: wgpu::Backends) -> wgpu::MemoryBudgetThresholds {
-    wgpu::MemoryBudgetThresholds {
-        for_resource_creation: (backends == wgpu::Backends::DX12)
-            .then_some(DX12_RESOURCE_CREATION_BUDGET_PERCENT),
-        for_device_loss: None,
-    }
 }
 
 /// Make test devices compile shaders the way shipped builds do on users'
@@ -604,41 +588,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_dx12_instances_keep_a_resource_creation_budget() {
-        let dx12 = memory_budget_thresholds_for(wgpu::Backends::DX12);
-        assert_eq!(
-            dx12.for_resource_creation,
-            Some(DX12_RESOURCE_CREATION_BUDGET_PERCENT)
-        );
-        assert_eq!(dx12.for_device_loss, None);
+    fn compositor_instance_leaves_memory_budget_thresholds_to_the_driver() {
+        let thresholds =
+            compositor_instance_descriptor(GpuBackendPreference::Default).memory_budget_thresholds;
 
-        for backends in [
-            wgpu::Backends::VULKAN,
-            wgpu::Backends::METAL,
-            wgpu::Backends::GL,
-            wgpu::Backends::all(),
-        ] {
-            let thresholds = memory_budget_thresholds_for(backends);
-            assert_eq!(thresholds.for_resource_creation, None, "{backends:?}");
-            assert_eq!(thresholds.for_device_loss, None, "{backends:?}");
-        }
-    }
-
-    #[test]
-    fn compositor_instance_applies_its_backend_budget() {
-        let descriptor = compositor_instance_descriptor(GpuBackendPreference::Default);
-        let expected = memory_budget_thresholds_for(descriptor.backends);
-
-        assert_eq!(
-            descriptor.memory_budget_thresholds.for_resource_creation,
-            expected.for_resource_creation
-        );
-        assert_eq!(descriptor.memory_budget_thresholds.for_device_loss, None);
-        #[cfg(target_os = "windows")]
-        assert_eq!(
-            descriptor.memory_budget_thresholds.for_resource_creation,
-            Some(DX12_RESOURCE_CREATION_BUDGET_PERCENT)
-        );
+        assert_eq!(thresholds.for_resource_creation, None);
+        assert_eq!(thresholds.for_device_loss, None);
     }
 
     #[test]
