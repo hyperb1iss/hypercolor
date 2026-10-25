@@ -43,6 +43,7 @@ use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::toasts;
 use crate::ws::messages::layer_health_key;
+use crate::zones::surface::zone_display_name;
 
 use picker::{AddLayerPicker, NewLayerDraft};
 use row::LayerRow;
@@ -151,7 +152,10 @@ pub fn LayerPanel(
                 scene
                     .zones
                     .into_iter()
-                    .map(|zone| (zone.id.to_string(), zone.name))
+                    .map(|zone| {
+                        let name = zone_display_name(&zone.name, zone.role);
+                        (zone.id.to_string(), name)
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()

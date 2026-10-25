@@ -117,7 +117,7 @@ pub fn surfaces_from_zones(zones: &[ZoneResource]) -> Vec<Surface> {
             };
             Surface {
                 id: zone.id.to_string(),
-                name: surface_name(zone, kind),
+                name: zone_display_name(&zone.name, zone.role),
                 kind,
                 enabled: zone.enabled,
                 role: zone.role,
@@ -175,28 +175,18 @@ fn layer_source_kind(source: &LayerSource) -> &'static str {
     }
 }
 
-/// Display name for a surface. A non-`Primary` zone shows its stored
-/// name. The `Primary` zone is the Default zone (§3): it shows the
-/// user's typed name, or **"Default zone"** while still unnamed. The
-/// default zone is a zone at every scale.
-fn surface_name(zone: &ZoneResource, kind: SurfaceKind) -> String {
-    if kind != SurfaceKind::Light || zone.role != ZoneRole::Primary {
-        return zone.name.clone();
-    }
-    if is_blank_default_name(&zone.name) {
-        "Default zone".to_owned()
-    } else {
-        zone.name.clone()
-    }
-}
-
-/// Whether the `Primary` zone still carries its un-customized name. The
-/// daemon seeds the Default zone as "Primary"; until the user renames it,
-/// the rail shows the friendlier "Default zone" instead of leaking that
-/// internal label.
-fn is_blank_default_name(name: &str) -> bool {
+/// The name a zone shows everywhere in the UI: its stored name, trimmed.
+/// The primary zone reads **"Main"** while it has no name of its own,
+/// meaning an empty name or the daemon's seeded "Primary" in any case.
+#[must_use]
+pub fn zone_display_name(name: &str, role: ZoneRole) -> String {
     let trimmed = name.trim();
-    trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary")
+    let unnamed = trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary");
+    if role == ZoneRole::Primary && unnamed {
+        "Main".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 /// What the Stage's now-playing chip names for a surface.
