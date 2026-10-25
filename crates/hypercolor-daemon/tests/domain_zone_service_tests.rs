@@ -61,6 +61,7 @@ fn blank_patch() -> ZoneMetaPatch {
         brightness: None,
         enabled: None,
         make_primary: None,
+        index: None,
     }
 }
 

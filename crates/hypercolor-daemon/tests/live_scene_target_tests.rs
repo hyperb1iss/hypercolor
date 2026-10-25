@@ -96,6 +96,7 @@ fn rename_patch(name: &str) -> ZoneMetaPatch {
         brightness: None,
         enabled: None,
         make_primary: None,
+        index: None,
     }
 }
 

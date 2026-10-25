@@ -86,7 +86,12 @@ Read one live zone resource.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PATCH" path="/api/v1/scene/zones/{zone}"> %}
-Patch the zone's name, enabled state, brightness, or color.
+Patch the zone's name, enabled state, brightness, or color, or move it with
+`index`: its new position in the scene's `zones` order, which counts LED and
+display zones together. An index past the end clamps to the last slot. Every
+field in one request lands in one commit. A patch that changes nothing, such as
+a move to the slot the zone already holds, keeps the revision and publishes no
+event.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="DELETE" path="/api/v1/scene/zones/{zone}"> %}

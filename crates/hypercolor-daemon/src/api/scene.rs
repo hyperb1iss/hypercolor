@@ -191,24 +191,30 @@ pub async fn patch_zone(
         Err(error) => return error.into_response(),
     };
 
-    zone_written_response(
-        crate::domain::zone::update_zone(
-            &state.domains.scene,
-            crate::domain::zone::UpdateZone {
-                zone_id,
-                patch: hypercolor_core::scene::ZoneMetaPatch {
-                    name: body.name,
-                    description: None,
-                    color: body.color,
-                    brightness: body.brightness,
-                    enabled: body.enabled,
-                    make_primary: None,
-                },
-                expected_revision: expected,
+    match crate::domain::zone::update_zone(
+        &state.domains.scene,
+        crate::domain::zone::UpdateZone {
+            zone_id,
+            patch: hypercolor_core::scene::ZoneMetaPatch {
+                name: body.name,
+                description: None,
+                color: body.color,
+                brightness: body.brightness,
+                enabled: body.enabled,
+                make_primary: None,
+                index: body.index,
             },
-        )
-        .await,
+            expected_revision: expected,
+        },
     )
+    .await
+    {
+        Ok(updated) => with_revision(
+            envelope::ok(scene_tree::zone_resource(&updated.zone)),
+            updated.revision,
+        ),
+        Err(error) => error.into_response(),
+    }
 }
 
 /// `DELETE /api/v1/scene/zones/{zone}` — remove a zone.
@@ -532,18 +538,6 @@ fn tree_response(result: Result<TreeWritten, DomainError>) -> Response {
 fn written_response(result: Result<ZoneWritten, DomainError>) -> Response {
     match result {
         Ok(written) => with_revision(envelope::ok(written.zone), written.revision),
-        Err(error) => error.into_response(),
-    }
-}
-
-fn zone_written_response(
-    result: Result<crate::domain::zone::ZoneWritten, DomainError>,
-) -> Response {
-    match result {
-        Ok(written) => with_revision(
-            envelope::ok(scene_tree::zone_resource(&written.zone)),
-            written.commit.revision(),
-        ),
         Err(error) => error.into_response(),
     }
 }

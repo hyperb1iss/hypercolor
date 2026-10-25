@@ -96,6 +96,9 @@ pub struct ZoneMetaPatch {
     pub brightness: Option<f32>,
     pub enabled: Option<bool>,
     pub make_primary: Option<bool>,
+    /// Move the zone to this position in the scene's zone order, clamped
+    /// to the last slot.
+    pub index: Option<usize>,
 }
 
 // ── SceneManager ────────────────────────────────────────────────────────
@@ -868,6 +871,12 @@ impl SceneManager {
         Ok(())
     }
 
+    /// Patch a zone's metadata, role, and position in one step.
+    ///
+    /// A promotion to primary and a move to a different slot are
+    /// structural, so they bump `zones_revision` and are refused on a
+    /// snapshot scene. A move to the slot the zone already holds changes
+    /// nothing.
     pub fn update_zone_meta(
         &mut self,
         scene_id: &SceneId,
@@ -886,6 +895,14 @@ impl SceneManager {
         let Some(index) = scene.zones.iter().position(|zone| zone.id == zone_id) else {
             return Err(ZoneMutationError::ZoneMissing);
         };
+        let last_slot = scene.zones.len().saturating_sub(1);
+        let destination = patch
+            .index
+            .map(|requested| requested.min(last_slot))
+            .filter(|&destination| destination != index);
+        if destination.is_some() && scene.blocks_runtime_mutation() {
+            return Err(ZoneMutationError::SnapshotLocked);
+        }
 
         if role_change {
             for zone in &mut scene.zones {
@@ -896,6 +913,16 @@ impl SceneManager {
             let zone = &mut scene.zones[index];
             zone.role = ZoneRole::Primary;
             zone.display_target = None;
+        }
+        let index = match destination {
+            Some(destination) => {
+                let zone = scene.zones.remove(index);
+                scene.zones.insert(destination, zone);
+                destination
+            }
+            None => index,
+        };
+        if role_change || destination.is_some() {
             bump_zones_revision(scene);
         }
 

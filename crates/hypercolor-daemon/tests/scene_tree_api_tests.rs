@@ -26,7 +26,8 @@ use hypercolor_types::effect::{
     EffectMetadata, EffectSource, EffectState, PresetTemplate,
 };
 use hypercolor_types::event::{
-    ChangeTrigger, EffectStopReason, HypercolorEvent, LayerStackChangeKind, SceneSettingsChangeKind,
+    ChangeTrigger, EffectStopReason, HypercolorEvent, LayerStackChangeKind,
+    SceneSettingsChangeKind, ZoneChangeKind,
 };
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
@@ -1113,6 +1114,150 @@ async fn only_custom_zones_are_created_through_the_zone_route() {
         assert_eq!(body["error"]["code"], "validation_error");
         assert_eq!(body["error"]["details"]["field"], "role");
     }
+}
+
+fn zone_order(document: &serde_json::Value) -> Vec<String> {
+    document["data"]["zones"]
+        .as_array()
+        .expect("zones array")
+        .iter()
+        .map(|zone| zone["id"].as_str().expect("zone id").to_owned())
+        .collect()
+}
+
+fn zone_changes(
+    events: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<(ZoneId, ZoneChangeKind)> {
+    std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|timestamped| match timestamped.event {
+            HypercolorEvent::ZoneChanged { zone_id, kind, .. } => Some((zone_id, kind)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn patching_a_zone_index_moves_it_through_the_whole_zone_order() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let effect_id = seed_tree(&state).await;
+    let panel_id = seed_display_zone(&state, effect_id).await.to_string();
+    let created = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/v1/scene/zones".into(),
+            json!({ "name": "Desk" }),
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let desk_id = body_json(created).await["data"]["id"]
+        .as_str()
+        .expect("zone id")
+        .to_owned();
+    let document = read_document(&app).await;
+    let primary_id = primary_zone(&document)["id"]
+        .as_str()
+        .expect("zone id")
+        .to_owned();
+    assert_eq!(
+        zone_order(&document),
+        [primary_id.clone(), panel_id.clone(), desk_id.clone()],
+        "display zones hold slots in the same order as LED zones"
+    );
+    let revision = document["data"]["revision"].as_u64().expect("revision");
+    let mut events = state.event_bus.subscribe_all();
+
+    // A move rides with the other fields and lands in one commit.
+    let moved = send(
+        &app,
+        if_match(
+            json_request(
+                "PATCH",
+                format!("/api/v1/scene/zones/{desk_id}"),
+                json!({ "index": 0, "name": "Desk Left" }),
+            ),
+            revision,
+        ),
+    )
+    .await;
+    assert_eq!(moved.status(), StatusCode::OK);
+    assert_eq!(response_etag(&moved), format!("\"{}\"", revision + 1));
+    assert_eq!(body_json(moved).await["data"]["name"], "Desk Left");
+    let document = read_document(&app).await;
+    assert_eq!(
+        zone_order(&document),
+        [desk_id.clone(), primary_id.clone(), panel_id.clone()]
+    );
+    let desk_zone_id = ZoneId(desk_id.parse::<Uuid>().expect("zone id parses"));
+    assert_eq!(
+        zone_changes(&mut events),
+        [(desk_zone_id, ZoneChangeKind::Updated)],
+        "a move tells clients to refresh the zone"
+    );
+
+    // The revision the move replaced is stale now.
+    let stale = send(
+        &app,
+        if_match(
+            json_request(
+                "PATCH",
+                format!("/api/v1/scene/zones/{desk_id}"),
+                json!({ "index": 2 }),
+            ),
+            revision,
+        ),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+
+    // An index past the end clamps to the last slot.
+    let clamped = send(
+        &app,
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{primary_id}"),
+            json!({ "index": 99 }),
+        ),
+    )
+    .await;
+    assert_eq!(clamped.status(), StatusCode::OK);
+    assert_eq!(response_etag(&clamped), format!("\"{}\"", revision + 2));
+    let document = read_document(&app).await;
+    assert_eq!(
+        zone_order(&document),
+        [desk_id.clone(), panel_id.clone(), primary_id.clone()]
+    );
+    let _ = zone_changes(&mut events);
+
+    // A move to the slot the zone already holds commits nothing.
+    let unmoved = send(
+        &app,
+        if_match(
+            json_request(
+                "PATCH",
+                format!("/api/v1/scene/zones/{primary_id}"),
+                json!({ "index": 2 }),
+            ),
+            revision + 2,
+        ),
+    )
+    .await;
+    assert_eq!(unmoved.status(), StatusCode::OK);
+    assert_eq!(
+        response_etag(&unmoved),
+        format!("\"{}\"", revision + 2),
+        "a no-op move keeps the revision"
+    );
+    assert_eq!(body_json(unmoved).await["data"]["id"], primary_id.as_str());
+    let document = read_document(&app).await;
+    assert_eq!(document["data"]["revision"], revision + 2);
+    assert_eq!(zone_order(&document), [desk_id, panel_id, primary_id]);
+    assert!(
+        zone_changes(&mut events).is_empty(),
+        "a no-op move publishes nothing"
+    );
 }
 
 // ── Layer stack ──────────────────────────────────────────────────────────

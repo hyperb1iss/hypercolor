@@ -9,7 +9,7 @@
 use hypercolor_core::scene::{ZoneMetaPatch, ZoneMutationError};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 
-use crate::domain::commit::SceneCommit;
+use crate::domain::commit::{SceneCommit, SceneRevision};
 use crate::domain::context::SceneContext;
 use crate::domain::scene::SceneMutation;
 use crate::domain::scene_tree::check_scene_revision;
@@ -30,7 +30,7 @@ pub struct CreateZone {
     pub expected_revision: Option<u64>,
 }
 
-/// Patch a zone's presentation metadata.
+/// Patch a zone's presentation metadata and its place in the zone order.
 #[derive(Debug, Clone)]
 pub struct UpdateZone {
     /// Which zone to patch.
@@ -59,6 +59,18 @@ pub struct ZoneWritten {
     pub zone: Zone,
     /// The commit receipt.
     pub commit: SceneCommit,
+}
+
+/// The outcome of patching a zone.
+#[derive(Debug)]
+pub struct ZoneUpdated {
+    /// The zone as it now stands.
+    pub zone: Zone,
+    /// The scene revision the zone stands at.
+    pub revision: SceneRevision,
+    /// The commit receipt, or `None` when the patch matched what the
+    /// scene already held and so committed nothing.
+    pub commit: Option<SceneCommit>,
 }
 
 /// The outcome of removing a zone.
@@ -112,7 +124,11 @@ pub async fn create_zone(
     Ok(ZoneWritten { zone, commit })
 }
 
-/// Patch a zone's presentation metadata.
+/// Patch a zone's presentation metadata and its place in the zone order.
+///
+/// All fields land in one commit. A patch that leaves every zone as it
+/// was, such as a move to the slot the zone already holds, commits
+/// nothing: the revision stays put and no event is published.
 ///
 /// # Errors
 ///
@@ -121,20 +137,32 @@ pub async fn create_zone(
 pub async fn update_zone(
     ctx: &SceneContext,
     command: UpdateZone,
-) -> Result<ZoneWritten, DomainError> {
+) -> Result<ZoneUpdated, DomainError> {
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("updating a zone")?;
     check_scene_revision(&mutation, command.expected_revision)?;
     crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, command.zone_id)?;
 
+    let before = scene_zones(&mutation, scene_id).cloned();
     let zone = mutation
         .update_zone_meta(scene_id, command.zone_id, command.patch)
         .map_err(|error| zone_error(error, scene_id, Some(command.zone_id), None))?;
+    if scene_zones(&mutation, scene_id) == before.as_ref() {
+        return Ok(ZoneUpdated {
+            zone,
+            revision: mutation.base_revision(),
+            commit: None,
+        });
+    }
 
     let commit = ctx.commit(mutation).await?;
     settle_zone_mutation(ctx).await;
 
-    Ok(ZoneWritten { zone, commit })
+    Ok(ZoneUpdated {
+        zone,
+        revision: commit.revision(),
+        commit: Some(commit),
+    })
 }
 
 /// Remove a custom zone from a scene, dropping the layout exclusions it
@@ -178,6 +206,10 @@ async fn settle_zone_mutation(ctx: &SceneContext) {
     ctx.layout()
         .sync_runtime_connectivity(ctx.layout_runtime())
         .await;
+}
+
+fn scene_zones(mutation: &SceneMutation, scene_id: SceneId) -> Option<&Vec<Zone>> {
+    mutation.scenes().get(&scene_id).map(|scene| &scene.zones)
 }
 
 fn zone_in_scene(
